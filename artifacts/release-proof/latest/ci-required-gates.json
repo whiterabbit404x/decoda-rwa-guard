@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-03T17:52:39.531310+00:00",
-  "commit_sha": "0424848975547c7629f5bb27f18b4e6f1c2cee8f",
-  "branch": "main",
-  "release_channel": "ci",
+  "generated_at": "2026-06-03T18:13:44.825540+00:00",
+  "commit_sha": "e0519e5aef46ea97e84d3a0417d0689686cf2f02",
+  "branch": "claude/funny-faraday-GcIBE",
+  "release_channel": "local",
   "overall_status": "fail",
   "broad_paid_launch_ready": false,
   "required_gates": {
@@ -24,8 +24,12 @@
     },
     "paid_launch_readiness": {
       "status": "fail",
-      "summary": "Paid launch blocked: live provider proof is missing",
+      "summary": "Paid launch blocked: billing provider is not configured; billing webhook secret is missing; email provider is not configured; live provider configuration is missing; live provider proof is missing",
       "blockers": [
+        "billing provider is not configured",
+        "billing webhook secret is missing",
+        "email provider is not configured",
+        "live provider configuration is missing",
         "live provider proof is missing"
       ]
     },
@@ -41,6 +45,10 @@
     }
   },
   "blockers": [
+    "billing provider is not configured",
+    "billing webhook secret is missing",
+    "email provider is not configured",
+    "live provider configuration is missing",
     "live provider proof is missing"
   ],
   "warnings": []

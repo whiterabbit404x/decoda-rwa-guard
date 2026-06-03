@@ -3,30 +3,26 @@ name: Save GitHub ZIP Proof
 # Run manually to commit proof files into the repository.
 # After running, Code → Download ZIP includes artifacts/github-proof/latest/.
 #
-# This workflow:
-#   1. Validates NIW positioning.
-#   2. Regenerates artifacts/staging-proof/latest/summary.json using real GitHub
-#      secrets so configured=true values replace stale "not configured" blockers.
-#   3. Detects whether STAGING_EVM_RPC_URL is configured as a repository secret.
-#   4. Pre-generates a content-addressable live evidence chain from the committed
-#      service summary (services/api/artifacts/live_evidence/latest/summary.json).
-#   5. If secrets are present: regenerates artifacts/live-evidence-proof/latest/summary.json
-#      using a real RPC call (PROOF_REQUIRE_CURRENT_ENV=true + STAGING_* secrets +
-#      LIVE_EVIDENCE_CHAIN_FILE from step 4). Produces provider_ready=true,
-#      live_evidence_ready=true, evidence_source=live when the provider passes.
-#   6. If secrets are absent: regenerates live-evidence-proof fail-closed
-#      (provider_ready=false) with a fresh timestamp so staleness is explicit.
-#   7. Hard-asserts freshness of artifacts/live-evidence-proof/latest/summary.json
-#      (fails if stale or if STAGING secrets are present but proof is still fail-closed).
-#      When secrets are absent the assertion passes with a notice.
-#   8. Runs launch proof (paid SaaS when BILLING_PROVIDER=paddle/stripe, else no-billing).
-#   9. Generates release proof AFTER launch-proof is final, so the manifest hashes the
-#      correct launch-proof.  Validates the manifest immediately.
-#  10. Generates sell-now proof (after release-proof).
-#  11. Generates final-readiness proof (after sell-now-proof).
-#  12. Runs GitHub ZIP proof last.
-#  13. Commits all proof folders (always, even when secrets are absent —
-#      contradiction flags are captured explicitly in sell-now-proof).
+# Step order (A–K per spec):
+#   1. Setup: checkout, python, pip install backend deps, mask/print secrets.
+#   2. NIW + billing diagnostics.
+#   3. Detect STAGING_EVM_RPC_URL presence.
+#   4. Prepare live evidence chain from service summary.
+#   5. Regenerate live-evidence-proof (with or without RPC secrets).
+#   6. Assert live-evidence-proof freshness.
+#   A. Validate live Railway runtime /health → write runtime_validated.
+#      Also writes migrations_validated (database confirmed via health check).
+#   C. Write live_evidence_validated marker if live evidence proof is ready.
+#   E. Regenerate staging-proof with real secrets (reads the markers just written).
+#      Assert no "not configured" blockers remain.
+#   F. Run paid SaaS launch proof in staging/production mode.
+#   G. Generate release proof with --mode staging (runs actual test suites).
+#   K. Validate release proof (manifest SHA256 assertion).
+#   H. Generate sell-now proof.
+#      Warn on sell-now contradiction.
+#   I. Generate final-readiness proof with --mode staging.
+#   J. Generate GitHub ZIP proof.
+#      Stage, commit, and push all proof folders.
 on:
   workflow_dispatch:
 
@@ -34,7 +30,7 @@ jobs:
   save-proof:
     name: Generate and commit GitHub ZIP proof
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: write
 
@@ -82,6 +78,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      - name: Install backend Python dependencies
+        # Required so generate_release_proof.py can import
+        # services/api/app/paid_launch_readiness and run backend test suites.
+        run: |
+          pip install --quiet -r services/api/requirements.txt || true
+          pip install --quiet pytest || true
 
       - name: Mask secret values (values never printed)
         # Mask every sensitive variable so values never appear in logs.
@@ -156,69 +159,6 @@ jobs:
           echo "PADDLE_PRICE_ID configured: ${{ secrets.PADDLE_PRICE_ID != '' }}"
           echo "PADDLE_WEBHOOK_SECRET configured: ${{ secrets.PADDLE_WEBHOOK_SECRET != '' }}"
           echo "RESEND_API_KEY configured: ${{ secrets.RESEND_API_KEY != '' }}"
-
-      - name: Regenerate staging launch proof (with real secrets)
-        # Regenerates artifacts/staging-proof/latest/summary.json using the
-        # job-level secrets. With real credentials, configured=true replaces
-        # stale "not configured" blockers and the generated_at timestamp is fresh.
-        # Does NOT use --strict to avoid circular dependency with launch-proof
-        # artifacts that may not yet reflect the current billing/email state.
-        # The guard step below hard-fails on any remaining "not configured" blocker.
-        env:
-          BILLING_PROVIDER: ${{ secrets.BILLING_PROVIDER }}
-          PADDLE_ENVIRONMENT: ${{ secrets.PADDLE_ENVIRONMENT }}
-          PADDLE_API_KEY: ${{ secrets.PADDLE_API_KEY }}
-          PADDLE_CLIENT_TOKEN: ${{ secrets.PADDLE_CLIENT_TOKEN }}
-          PADDLE_PRICE_ID: ${{ secrets.PADDLE_PRICE_ID }}
-          PADDLE_WEBHOOK_SECRET: ${{ secrets.PADDLE_WEBHOOK_SECRET }}
-          EMAIL_PROVIDER: ${{ secrets.EMAIL_PROVIDER }}
-          MAIL_PROVIDER: ${{ secrets.MAIL_PROVIDER }}
-          EMAIL_DOMAIN: ${{ secrets.EMAIL_DOMAIN }}
-          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-        run: |
-          python scripts/generate_staging_launch_proof.py \
-            --mode staging
-
-      - name: Assert staging proof env vars are configured
-        # Hard failure if any "not configured" blocker survives.
-        # This is the strict gate for environment variable configuration.
-        env:
-          BILLING_PROVIDER: ${{ secrets.BILLING_PROVIDER }}
-          PADDLE_ENVIRONMENT: ${{ secrets.PADDLE_ENVIRONMENT }}
-          PADDLE_API_KEY: ${{ secrets.PADDLE_API_KEY }}
-          PADDLE_CLIENT_TOKEN: ${{ secrets.PADDLE_CLIENT_TOKEN }}
-          PADDLE_PRICE_ID: ${{ secrets.PADDLE_PRICE_ID }}
-          PADDLE_WEBHOOK_SECRET: ${{ secrets.PADDLE_WEBHOOK_SECRET }}
-          EMAIL_PROVIDER: ${{ secrets.EMAIL_PROVIDER }}
-          MAIL_PROVIDER: ${{ secrets.MAIL_PROVIDER }}
-          EMAIL_DOMAIN: ${{ secrets.EMAIL_DOMAIN }}
-          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-        run: |
-          python - <<'PY'
-          import json, sys
-          p = "artifacts/staging-proof/latest/summary.json"
-          data = json.load(open(p, encoding="utf-8"))
-          blockers = data.get("blockers", [])
-          print(json.dumps({
-              "generated_at": data.get("generated_at"),
-              "staging_env_configured": data.get("staging_env_configured"),
-              "staging_runtime_reachable": data.get("staging_runtime_reachable"),
-              "staging_database_reachable": data.get("staging_database_reachable"),
-              "staging_worker_enabled": data.get("staging_worker_enabled"),
-              "staging_auth_configured": data.get("staging_auth_configured"),
-              "broad_paid_saas_ready": data.get("broad_paid_saas_ready"),
-              "blockers": blockers,
-          }, indent=2))
-          not_configured = [b for b in blockers if "not configured" in b]
-          if not_configured:
-              print("ERROR: staging proof still says variables are not configured:")
-              for b in not_configured:
-                  print(f"  - {b}")
-              sys.exit(1)
-          print("OK: no 'not configured' blockers in staging proof")
-          PY
 
       - name: Detect staging provider secrets
         id: staging_secrets
@@ -394,6 +334,89 @@ jobs:
               print('The contradiction will be captured in sell-now-proof contradiction_flags.')
           PY
 
+      # ── Step A+D: Validate live Railway runtime /health ──────────────────────
+      # Calls STAGING_API_URL/health and validates HTTP 200, status="ok",
+      # database_url_configured=true, billing healthy, paddle_price_ids configured.
+      # Writes:
+      #   artifacts/staging-proof/latest/runtime_validated
+      #   artifacts/staging-proof/latest/migrations_validated
+      # Fails the workflow (exit 1) if STAGING_API_URL is set but /health fails,
+      # so degraded billing or an unreachable runtime keeps the proof blocked.
+      - name: Validate staging runtime and write runtime_validated marker
+        run: python scripts/staging/validate_staging_runtime.py
+
+      # ── Step C: Write live_evidence_validated marker ─────────────────────────
+      # Reads artifacts/live-evidence-proof/latest/summary.json (just regenerated).
+      # Writes artifacts/staging-proof/latest/live_evidence_validated when
+      # provider_ready=true AND live_evidence_ready=true AND evidence_source=live.
+      - name: Write live_evidence_validated marker
+        run: python scripts/staging/validate_live_evidence_marker.py
+
+      # ── Step E: Regenerate staging-proof (reads the markers just written) ────
+      - name: Regenerate staging launch proof (with real secrets)
+        # Regenerates artifacts/staging-proof/latest/summary.json using the
+        # job-level secrets. With real credentials, configured=true replaces
+        # stale "not configured" blockers and the generated_at timestamp is fresh.
+        # The markers written in steps A and C are now readable so
+        # staging_runtime_reachable, staging_live_evidence_validated, and
+        # staging_migrations_validated will reflect the current validated state.
+        env:
+          BILLING_PROVIDER: ${{ secrets.BILLING_PROVIDER }}
+          PADDLE_ENVIRONMENT: ${{ secrets.PADDLE_ENVIRONMENT }}
+          PADDLE_API_KEY: ${{ secrets.PADDLE_API_KEY }}
+          PADDLE_CLIENT_TOKEN: ${{ secrets.PADDLE_CLIENT_TOKEN }}
+          PADDLE_PRICE_ID: ${{ secrets.PADDLE_PRICE_ID }}
+          PADDLE_WEBHOOK_SECRET: ${{ secrets.PADDLE_WEBHOOK_SECRET }}
+          EMAIL_PROVIDER: ${{ secrets.EMAIL_PROVIDER }}
+          MAIL_PROVIDER: ${{ secrets.MAIL_PROVIDER }}
+          EMAIL_DOMAIN: ${{ secrets.EMAIL_DOMAIN }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+        run: |
+          python scripts/generate_staging_launch_proof.py \
+            --mode staging
+
+      - name: Assert staging proof env vars are configured
+        # Hard failure if any "not configured" blocker survives.
+        # This is the strict gate for environment variable configuration.
+        env:
+          BILLING_PROVIDER: ${{ secrets.BILLING_PROVIDER }}
+          PADDLE_ENVIRONMENT: ${{ secrets.PADDLE_ENVIRONMENT }}
+          PADDLE_API_KEY: ${{ secrets.PADDLE_API_KEY }}
+          PADDLE_CLIENT_TOKEN: ${{ secrets.PADDLE_CLIENT_TOKEN }}
+          PADDLE_PRICE_ID: ${{ secrets.PADDLE_PRICE_ID }}
+          PADDLE_WEBHOOK_SECRET: ${{ secrets.PADDLE_WEBHOOK_SECRET }}
+          EMAIL_PROVIDER: ${{ secrets.EMAIL_PROVIDER }}
+          MAIL_PROVIDER: ${{ secrets.MAIL_PROVIDER }}
+          EMAIL_DOMAIN: ${{ secrets.EMAIL_DOMAIN }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+        run: |
+          python - <<'PY'
+          import json, sys
+          p = "artifacts/staging-proof/latest/summary.json"
+          data = json.load(open(p, encoding="utf-8"))
+          blockers = data.get("blockers", [])
+          print(json.dumps({
+              "generated_at": data.get("generated_at"),
+              "staging_env_configured": data.get("staging_env_configured"),
+              "staging_runtime_reachable": data.get("staging_runtime_reachable"),
+              "staging_database_reachable": data.get("staging_database_reachable"),
+              "staging_worker_enabled": data.get("staging_worker_enabled"),
+              "staging_auth_configured": data.get("staging_auth_configured"),
+              "broad_paid_saas_ready": data.get("broad_paid_saas_ready"),
+              "blockers": blockers,
+          }, indent=2))
+          not_configured = [b for b in blockers if "not configured" in b]
+          if not_configured:
+              print("ERROR: staging proof still says variables are not configured:")
+              for b in not_configured:
+                  print(f"  - {b}")
+              sys.exit(1)
+          print("OK: no 'not configured' blockers in staging proof")
+          PY
+
+      # ── Step F: Run paid SaaS launch proof ───────────────────────────────────
       - name: Run paid SaaS launch proof
         # Regenerates artifacts/launch-proof/latest/summary.json.
         # Must run BEFORE generate_release_proof so the manifest hashes the final file.
@@ -405,24 +428,30 @@ jobs:
         run: |
           if [ "$BILLING_PROVIDER" = "paddle" ] || [ "$BILLING_PROVIDER" = "stripe" ]; then
             echo "BILLING_PROVIDER=$BILLING_PROVIDER: running paid SaaS launch proof"
-            python scripts/staging/run_paid_saas_launch_proof.py
+            python scripts/staging/run_paid_saas_launch_proof.py --mode staging
           else
             echo "BILLING_PROVIDER=${BILLING_PROVIDER:-none}: running no-billing launch proof"
             export BILLING_PROVIDER=none
             python scripts/staging/run_no_billing_launch_proof.py
           fi
 
+      # ── Step G: Generate release proof ───────────────────────────────────────
       - name: Generate release proof
         # Generates artifacts/release-proof/latest/{ci-required-gates,summary,test-report,manifest}.
+        # --mode staging: runs the key backend test suites and reports real results;
+        #   reads live-evidence-proof for paid_launch_readiness so that gate passes
+        #   when real live evidence was generated in the steps above.
+        # --no-regen-launch-proof: preserves the richer launch-proof from step F.
         # MUST run after launch-proof is finalised so the manifest hashes the correct file.
-        # --no-regen-launch-proof preserves the richer launch-proof written by the step above.
-        run: python scripts/generate_release_proof.py --mode ci --no-regen-launch-proof
+        run: python scripts/generate_release_proof.py --mode staging --no-regen-launch-proof
 
+      # ── Step K: Validate release proof ───────────────────────────────────────
       - name: Validate release proof
         # Hard assertion: manifest SHA256 must match the current launch-proof on disk.
         # Fails the workflow if launch-proof was modified after the manifest was generated.
         run: python scripts/validate_release_proof.py
 
+      # ── Step H: Generate sell-now proof ──────────────────────────────────────
       - name: Generate sell-now proof
         # Aggregates all proof sources into artifacts/sell-now-proof/latest/.
         # Must run after release-proof (and therefore after launch-proof) is refreshed
@@ -473,11 +502,15 @@ jobs:
               print(f'  sell_now_managed_ready={sell_managed}')
           PY
 
+      # ── Step I: Generate final-readiness proof ────────────────────────────────
       - name: Generate final-readiness proof
         # Must run after sell-now-proof and release-proof are both final.
+        # --mode staging: enables staging validation path so staging_runtime_reachable
+        #   and live_evidence validated flags can contribute to broad_paid_saas_ready.
         # Writes artifacts/final-readiness/latest/summary.json.
-        run: python scripts/validate_100_percent_readiness.py --mode ci
+        run: python scripts/validate_100_percent_readiness.py --mode staging
 
+      # ── Step J: Generate GitHub ZIP proof (last) ─────────────────────────────
       - name: Generate GitHub ZIP proof
         # GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SHA,
         # and GITHUB_REF_NAME are standard GitHub Actions environment variables
