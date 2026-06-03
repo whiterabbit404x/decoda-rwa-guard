@@ -576,3 +576,193 @@ def test_validate_release_proof_output_is_ascii_safe(artifact_dirs: dict[str, Pa
         combined.encode('ascii')
     except UnicodeEncodeError as exc:
         pytest.fail(f'validate_release_proof.py emits non-ASCII output that would crash Windows GBK consoles: {exc}')
+
+
+# ---------------------------------------------------------------------------
+# Mode-separation tests: local/CI never paid, staging may be paid
+# ---------------------------------------------------------------------------
+
+def test_local_mode_launch_proof_never_has_paid_launch_ready_true() -> None:
+    """Local mode launch-proof must never have paid_launch_ready=True."""
+    from scripts.generate_release_proof import generate_launch_proof
+
+    proof = generate_launch_proof(mode='local')
+    assert proof['paid_launch_ready'] is False, (
+        f'paid_launch_ready must be False in local mode, got: {proof["paid_launch_ready"]}'
+    )
+    assert proof['broad_paid_saas_ready'] is False, (
+        f'broad_paid_saas_ready must be False in local mode'
+    )
+    assert proof['schema_version'] == 1, (
+        f'schema_version must be 1, got: {proof["schema_version"]}'
+    )
+
+
+def test_ci_mode_launch_proof_never_has_paid_launch_ready_true() -> None:
+    """CI mode launch-proof must never have paid_launch_ready=True."""
+    from scripts.generate_release_proof import generate_launch_proof
+
+    proof = generate_launch_proof(mode='ci')
+    assert proof['paid_launch_ready'] is False, (
+        f'paid_launch_ready must be False in ci mode, got: {proof["paid_launch_ready"]}'
+    )
+    assert proof['broad_paid_saas_ready'] is False, (
+        f'broad_paid_saas_ready must be False in ci mode'
+    )
+
+
+def test_local_mode_release_proof_never_has_paid_launch_ready_true() -> None:
+    """Local mode release-proof must never have paid_launch_ready=True."""
+    from scripts.generate_release_proof import generate_release_proof
+
+    proof = generate_release_proof(mode='local')
+    assert proof['paid_launch_ready'] is False, (
+        f'paid_launch_ready must be False in local mode release-proof, got: {proof["paid_launch_ready"]}'
+    )
+    assert proof['schema_version'] == 1, (
+        f'release-proof schema_version must be 1, got: {proof["schema_version"]}'
+    )
+
+
+def test_launch_proof_schema_version_matches_validator_expectation() -> None:
+    """Schema version produced by generate_release_proof must match what validate_release_proof expects."""
+    from scripts.generate_release_proof import generate_launch_proof
+    from scripts.validate_release_proof import validate_launch_proof
+    import tempfile, os
+
+    proof = generate_launch_proof(mode='local')
+    assert proof['schema_version'] == 1, (
+        'generate_release_proof must produce schema_version=1 to satisfy validate_release_proof'
+    )
+    # Write to a temp file and validate
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        json.dump(proof, f)
+        tmp_path_str = f.name
+    try:
+        ok, issues = validate_launch_proof(Path(tmp_path_str))
+        schema_issues = [i for i in issues if 'schema' in i.lower()]
+        assert not schema_issues, (
+            f'Schema version mismatch between generator and validator: {schema_issues}'
+        )
+    finally:
+        os.unlink(tmp_path_str)
+
+
+def test_validate_release_proof_passes_for_local_fail_closed_artifacts() -> None:
+    """validate_release_proof.py must pass after generate_release_proof.py --mode local."""
+    result = subprocess.run(
+        ['python', 'scripts/generate_release_proof.py', '--mode', 'local'],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f'generate_release_proof.py --mode local failed:\n{result.stderr}'
+    )
+    result2 = subprocess.run(
+        ['python', 'scripts/validate_release_proof.py'],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result2.returncode == 0, (
+        f'validate_release_proof.py failed after local generation:\n'
+        f'{result2.stdout}\n{result2.stderr}'
+    )
+
+
+def test_paid_saas_launch_proof_local_mode_never_has_paid_launch_ready_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run_paid_saas_launch_proof.py --mode local must produce paid_launch_ready=false."""
+    import os, tempfile, shutil
+
+    env = {k: v for k, v in os.environ.items()}
+    env.update({
+        'BILLING_PROVIDER': 'paddle',
+        'PADDLE_API_KEY': 'pdl_api_testkey_dummy',
+        'PADDLE_CLIENT_TOKEN': 'pdl_client_testkey_dummy',
+        'PADDLE_PRICE_ID': 'pri_prod_monthly_dummy',
+        'PADDLE_WEBHOOK_SECRET': 'pdl_whsec_testkey_dummy',
+        'PADDLE_ENVIRONMENT': 'production',
+        'EMAIL_PROVIDER': 'resend',
+        'RESEND_API_KEY': 're_testkey_dummy_abc123',
+        'EMAIL_FROM': 'noreply@decoda.io',
+        'EMAIL_DOMAIN': 'decoda.io',
+    })
+    result = subprocess.run(
+        [sys.executable, 'scripts/staging/run_paid_saas_launch_proof.py', '--mode', 'local'],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, (
+        f'Paid SaaS launch proof should exit 0 even in local mode (gates pass).\n'
+        f'stdout: {result.stdout}\nstderr: {result.stderr}'
+    )
+    artifact = REPO_ROOT / 'artifacts' / 'launch-proof' / 'latest' / 'summary.json'
+    if artifact.exists():
+        data = json.loads(artifact.read_text())
+        assert data.get('paid_launch_ready') is False, (
+            f'paid_launch_ready must be False in local mode, got: {data.get("paid_launch_ready")}'
+        )
+        assert data.get('broad_paid_saas_ready') is False, (
+            f'broad_paid_saas_ready must be False in local mode'
+        )
+        assert data.get('schema_version') == 1, (
+            f'schema_version must be 1, got: {data.get("schema_version")}'
+        )
+        local_blocker = any(
+            'local mode' in b for b in data.get('blockers', [])
+        )
+        assert local_blocker, (
+            f'Blockers must include a local-mode message. blockers={data.get("blockers")}'
+        )
+
+
+def test_paid_saas_launch_proof_staging_mode_can_have_paid_launch_ready_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run_paid_saas_launch_proof.py --mode staging with all gates can set paid_launch_ready=true."""
+    import os
+
+    env = {k: v for k, v in os.environ.items()}
+    env.update({
+        'BILLING_PROVIDER': 'paddle',
+        'PADDLE_API_KEY': 'pdl_api_testkey_dummy',
+        'PADDLE_CLIENT_TOKEN': 'pdl_client_testkey_dummy',
+        'PADDLE_PRICE_ID': 'pri_prod_monthly_dummy',
+        'PADDLE_WEBHOOK_SECRET': 'pdl_whsec_testkey_dummy',
+        'PADDLE_ENVIRONMENT': 'production',
+        'EMAIL_PROVIDER': 'resend',
+        'RESEND_API_KEY': 're_testkey_dummy_abc123',
+        'EMAIL_FROM': 'noreply@decoda.io',
+        'EMAIL_DOMAIN': 'decoda.io',
+    })
+    result = subprocess.run(
+        [sys.executable, 'scripts/staging/run_paid_saas_launch_proof.py', '--mode', 'staging'],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, (
+        f'Paid SaaS launch proof should exit 0 with full Paddle+Resend env in staging mode.\n'
+        f'stdout: {result.stdout}\nstderr: {result.stderr}'
+    )
+    artifact = REPO_ROOT / 'artifacts' / 'launch-proof' / 'latest' / 'summary.json'
+    if artifact.exists():
+        data = json.loads(artifact.read_text())
+        assert data.get('schema_version') == 1, (
+            f'schema_version must be 1 even in staging mode, got: {data.get("schema_version")}'
+        )
+        assert data.get('proof_mode') == 'staging', (
+            f'proof_mode must be staging, got: {data.get("proof_mode")}'
+        )
+        # In staging mode with all gates passing, paid_launch_ready may be true
+        assert data.get('paid_launch_ready') is True, (
+            f'paid_launch_ready should be True in staging mode with all gates passing'
+        )

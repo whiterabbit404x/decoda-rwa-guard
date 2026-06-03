@@ -234,6 +234,7 @@ def write_artifact(
     niw: dict,
     billing_gate: GateResult,
     email_gate: GateResult,
+    mode: str = 'local',
 ) -> None:
     provider = (os.getenv('BILLING_PROVIDER') or '').strip().lower()
 
@@ -284,7 +285,7 @@ def write_artifact(
         allowed_claims.append(f'paid billing configured ({provider})')
     if email_ready:
         allowed_claims.append('email provider configured')
-    if all_gates_pass:
+    if all_gates_pass and mode in {'staging', 'production'}:
         allowed_claims.append('paid SaaS launch ready')
 
     prohibited_claims: list[str] = []
@@ -292,11 +293,36 @@ def write_artifact(
         prohibited_claims.append('Do NOT claim paid SaaS launch is fully ready while gates are failing')
     if not live_evidence.get('live_provider_evidence_ready'):
         prohibited_claims.append('Do NOT claim live EVM monitoring without proven live evidence')
+    if mode in {'local', 'ci', 'fail_closed_local'}:
+        prohibited_claims.append(
+            'Do NOT use this local/CI proof as evidence of paid launch readiness — '
+            'requires staging or production runtime'
+        )
+
+    _local_modes = {'local', 'ci', 'fail_closed_local'}
+    _paid_modes = {'staging', 'production'}
+
+    # In local/CI mode, paid launch readiness can never be proven.
+    # Only staging/production mode with all gates passing may claim readiness.
+    if mode in _local_modes:
+        paid_launch_ready = False
+        broad_paid_saas_ready = False
+        safe_to_sell_broadly_today = False
+        blockers.append(
+            'local mode: paid launch readiness cannot be proven without staging/production runtime'
+        )
+    else:
+        paid_launch_ready = all_gates_pass
+        broad_paid_saas_ready = all_gates_pass
+        safe_to_sell_broadly_today = all_gates_pass and mode in _paid_modes
+
+    readiness_categories['broad_paid_saas_ready'] = broad_paid_saas_ready
 
     payload = {
-        'schema_version': 2,
+        'schema_version': 1,
         'generated_at': datetime.now(timezone.utc).isoformat(),
         'launch_mode': 'paid_saas',
+        'proof_mode': mode,
         'billing_provider': provider,
         'repository': str(REPO_ROOT),
         'readiness_categories': readiness_categories,
@@ -308,9 +334,10 @@ def write_artifact(
         'allowed_claims': allowed_claims,
         'prohibited_claims': prohibited_claims,
         'pilot_ready': managed_pilot.get('managed_pilot_ready', False),
-        'paid_launch_ready': all_gates_pass,
+        'paid_launch_ready': paid_launch_ready,
         'controlled_pilot_ready': managed_pilot.get('managed_pilot_ready', False),
-        'broad_paid_saas_ready': all_gates_pass,
+        'broad_paid_saas_ready': broad_paid_saas_ready,
+        'safe_to_sell_broadly_today': safe_to_sell_broadly_today,
         'readiness': readiness_compat,
         'blockers': blockers,
         'warnings': [],
@@ -377,10 +404,22 @@ def _write_markdown(path: Path, payload: dict) -> None:
 
 
 def main() -> int:
+    import argparse
+    parser = argparse.ArgumentParser(description='Paid SaaS launch proof')
+    parser.add_argument(
+        '--mode',
+        default='local',
+        choices=['local', 'ci', 'fail_closed_local', 'staging', 'production'],
+        help='Proof mode. local/ci/fail_closed_local enforce paid_launch_ready=false.',
+    )
+    args = parser.parse_args()
+    mode = args.mode
+
     provider = (os.getenv('BILLING_PROVIDER') or '').strip().lower()
 
     print('=== Paid SaaS launch proof ===')
     print(f'BILLING_PROVIDER: {provider!r}')
+    print(f'Proof mode: {mode!r}')
 
     if provider in _NO_BILLING_PROVIDERS:
         print(
@@ -424,7 +463,7 @@ def main() -> int:
 
     gates = [billing_provider_gate, billing_gate, email_gate]
 
-    write_artifact(artifact_dir, gates, live_evidence, managed_pilot, niw, billing_gate, email_gate)
+    write_artifact(artifact_dir, gates, live_evidence, managed_pilot, niw, billing_gate, email_gate, mode=mode)
     print(f'\nLaunch proof artifacts written to {artifact_dir.relative_to(REPO_ROOT)}')
 
     failed = [g for g in gates if not g.passed]
