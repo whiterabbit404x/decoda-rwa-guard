@@ -1,6 +1,6 @@
 # No-billing launch proof run
 
-- Generated: 2026-06-02T04:09:39.743680+00:00
+- Generated: 2026-06-03T12:57:12.882094+00:00
 
 ## Readiness Truth Table
 
@@ -29,12 +29,12 @@
 
 ## Steps
 
-- `00_assert_no_billing_mode`: PASS (required=true) — `artifacts/launch-proof/20260602T040810Z/00_assert_no_billing_mode.log`
-- `01_npm_ci`: PASS (required=true) — `artifacts/launch-proof/20260602T040810Z/01_npm_ci.log`
-- `02_build_web`: PASS (required=true) — `artifacts/launch-proof/20260602T040810Z/02_build_web.log`
-- `03_runtime_status_pre_release_gate`: FAIL (required=true) — `artifacts/launch-proof/20260602T040810Z/03_runtime_status_pre_release_gate.log`
-- `04_validate_no_billing_launch`: FAIL (required=true) — `artifacts/launch-proof/20260602T040810Z/04_validate_no_billing_launch.log`
-- `05_validate_production`: FAIL (required=false) — `artifacts/launch-proof/20260602T040810Z/05_validate_production.log`
+- `00_assert_no_billing_mode`: FAIL (required=true) — `artifacts/launch-proof/20260603T125607Z/00_assert_no_billing_mode.log`
+- `01_npm_ci`: PASS (required=true) — `artifacts/launch-proof/20260603T125607Z/01_npm_ci.log`
+- `02_build_web`: PASS (required=true) — `artifacts/launch-proof/20260603T125607Z/02_build_web.log`
+- `03_runtime_status_pre_release_gate`: FAIL (required=true) — `artifacts/launch-proof/20260603T125607Z/03_runtime_status_pre_release_gate.log`
+- `04_validate_no_billing_launch`: FAIL (required=true) — `artifacts/launch-proof/20260603T125607Z/04_validate_no_billing_launch.log`
+- `05_validate_production`: FAIL (required=false) — `artifacts/launch-proof/20260603T125607Z/05_validate_production.log`
 - `06_optional_staging_evidence`: SKIP (required=false) — `n/a`
   - note: Skipped because missing env vars: STAGING_BASE_URL, STAGING_API_URL, STAGING_EVIDENCE_EMAIL, STAGING_EVIDENCE_PASSWORD
 

@@ -21,6 +21,7 @@ REQUIRED_STAGING_ENV = (
     'STAGING_EVIDENCE_PASSWORD',
 )
 NO_BILLING_PROVIDER = 'none'
+_PAID_PROVIDERS = frozenset({'paddle', 'stripe'})
 # Per-step subprocess timeout in seconds. Steps are allowed to fail; the
 # summary is always written even if individual steps time out or fail.
 _STEP_TIMEOUT = 300
@@ -367,6 +368,17 @@ def write_summary(
 
 
 def main() -> int:
+    configured_provider = (os.getenv('BILLING_PROVIDER') or '').strip().lower()
+    if configured_provider in _PAID_PROVIDERS:
+        print(
+            f'\nBLOCKER: BILLING_PROVIDER={configured_provider!r} is a paid billing provider.\n'
+            '  This script is for demo/no-billing (NIW pilot) mode only.\n'
+            f'  Use run_paid_saas_launch_proof.py when BILLING_PROVIDER={configured_provider}.\n'
+            '  This prevents the no-billing proof from masking real billing configuration.',
+            file=sys.stderr,
+        )
+        return 1
+
     timestamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     artifact_dir = ARTIFACT_ROOT / timestamp
     artifact_dir.mkdir(parents=True, exist_ok=True)

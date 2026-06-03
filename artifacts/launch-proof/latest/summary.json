@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "generated_at": "2026-06-02T04:09:39.743680+00:00",
+  "generated_at": "2026-06-03T12:57:12.882094+00:00",
   "repository": "/home/user/decoda-rwa-guard",
   "readiness_categories": {
     "live_provider_evidence_ready": true,
@@ -40,7 +40,7 @@
     "staging_app_configured": false,
     "staging_database_configured": false,
     "staging_worker_enabled": false,
-    "billing_configured": false,
+    "billing_configured": true,
     "email_configured": false,
     "auth_secret_configured": false,
     "broad_paid_saas_ready": false,
@@ -49,7 +49,6 @@
       "staging_app_configured=false",
       "staging_database_configured=false",
       "staging_worker_enabled=false",
-      "billing_configured=false",
       "email_configured=false",
       "auth_secret_configured=false"
     ]
@@ -73,7 +72,7 @@
   "controlled_pilot_ready": true,
   "broad_paid_saas_ready": false,
   "readiness": {
-    "billing_ready": false,
+    "billing_ready": true,
     "billing_webhook_ready": false,
     "email_ready": false,
     "provider_ready": true,
@@ -81,7 +80,6 @@
     "ci_required_gates_ready": false
   },
   "blockers": [
-    "billing not ready",
     "email not ready",
     "staging API not configured",
     "staging database not configured",
@@ -104,9 +102,9 @@
         "import os,sys;provider=os.getenv('BILLING_PROVIDER','').strip().lower();print(f'BILLING_PROVIDER={provider or \"(unset)\"}');sys.exit(0 if provider=='none' else 1)"
       ],
       "required": true,
-      "status": "pass",
-      "returncode": 0,
-      "log_file": "artifacts/launch-proof/20260602T040810Z/00_assert_no_billing_mode.log",
+      "status": "fail",
+      "returncode": 1,
+      "log_file": "artifacts/launch-proof/20260603T125607Z/00_assert_no_billing_mode.log",
       "note": ""
     },
     {
@@ -118,7 +116,7 @@
       "required": true,
       "status": "pass",
       "returncode": 0,
-      "log_file": "artifacts/launch-proof/20260602T040810Z/01_npm_ci.log",
+      "log_file": "artifacts/launch-proof/20260603T125607Z/01_npm_ci.log",
       "note": ""
     },
     {
@@ -131,7 +129,7 @@
       "required": true,
       "status": "pass",
       "returncode": 0,
-      "log_file": "artifacts/launch-proof/20260602T040810Z/02_build_web.log",
+      "log_file": "artifacts/launch-proof/20260603T125607Z/02_build_web.log",
       "note": ""
     },
     {
@@ -143,7 +141,7 @@
       "required": true,
       "status": "fail",
       "returncode": 2,
-      "log_file": "artifacts/launch-proof/20260602T040810Z/03_runtime_status_pre_release_gate.log",
+      "log_file": "artifacts/launch-proof/20260603T125607Z/03_runtime_status_pre_release_gate.log",
       "note": ""
     },
     {
@@ -155,7 +153,7 @@
       "required": true,
       "status": "fail",
       "returncode": 2,
-      "log_file": "artifacts/launch-proof/20260602T040810Z/04_validate_no_billing_launch.log",
+      "log_file": "artifacts/launch-proof/20260603T125607Z/04_validate_no_billing_launch.log",
       "note": ""
     },
     {
@@ -167,7 +165,7 @@
       "required": false,
       "status": "fail",
       "returncode": 2,
-      "log_file": "artifacts/launch-proof/20260602T040810Z/05_validate_production.log",
+      "log_file": "artifacts/launch-proof/20260603T125607Z/05_validate_production.log",
       "note": ""
     },
     {
