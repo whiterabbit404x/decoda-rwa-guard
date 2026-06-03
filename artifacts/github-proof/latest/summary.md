@@ -1,17 +1,17 @@
 # GitHub ZIP Proof
 
-**Generated:** 2026-06-03T13:58:37.812912+00:00  
-**Repository:** whiterabbit404x/decoda-rwa-guard  
-**Branch:** main  
-**Commit:** 838760b4b55b80654a24e70604f2cc9b44d837ca  
-**Run ID:** 26889671140  
+**Generated:** 2026-06-03T14:17:26.718664+00:00  
+**Repository:**   
+**Branch:** claude/nifty-tesla-X1JJq  
+**Commit:** dbc105e2119717526ddf346db23ee64f7fc7bdb4  
+**Run ID:**   
 **Run URL:** _(see summary.json — not repeated here to avoid caching)_  
 
 ## GitHub Actions Status
 
 | Field | Value |
 |---|---|
-| github_actions_visible_green | YES |
+| github_actions_visible_green | NO |
 | zip_includes_this_proof | YES |
 
 ## Sell-now Proof Fields
@@ -27,7 +27,7 @@ _Source: `artifacts/sell-now-proof/latest/summary.json`_
 | live_evidence_ready | YES |
 | evidence_source | live |
 | billing_ready | YES |
-| email_ready | NO |
+| email_ready | YES |
 
 ## What This File Proves
 
