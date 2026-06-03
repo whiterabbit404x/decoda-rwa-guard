@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-03T12:05:18.405912+00:00",
+  "generated_at": "2026-06-03T12:26:57.893889+00:00",
   "mode": "staging",
   "strict": false,
   "release_channel": "staging",
@@ -25,7 +25,7 @@
     "staging_migrations_validated": false,
     "staging_runtime_validated": false,
     "staging_live_evidence_validated": false,
-    "generated_at": "2026-06-03T12:05:18.405940+00:00",
+    "generated_at": "2026-06-03T12:26:57.893912+00:00",
     "blockers": [
       "STAGING_API_URL not configured",
       "STAGING_APP_URL not configured",
