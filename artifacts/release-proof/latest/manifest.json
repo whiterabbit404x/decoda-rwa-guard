@@ -1,28 +1,28 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-01T06:03:00.555118+00:00",
+  "generated_at": "2026-06-03T15:31:53.465225+00:00",
   "release_channel": "local",
-  "commit_sha": "28371bfc1357b3025563915fdf3138c8ac97dd58",
-  "branch": "claude/awesome-thompson-epbMl",
+  "commit_sha": "b01737d77c40fa03f2e45edeb5fe0ee71be568fc",
+  "branch": "claude/relaxed-einstein-MMzac",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "763054b515c686121ad36244b34f28615192505d061e221594d28a9f401eeb67",
-      "size_bytes": 787,
+      "sha256": "c0a7e5f0288f7ad07c941ac22421ea4d8440de2d9029155c04b1103eda50cc9e",
+      "size_bytes": 756,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "cc6e606b4326eacd8a265c187cd4a0eaee76ca0934e39966bd197bb509ee7649",
-      "size_bytes": 2109,
+      "sha256": "0bf0e8a6333f2ed46044c4c0e380bd52d857cac63147602351843b63c7e8dc72",
+      "size_bytes": 1855,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "bbb80d55b41003cc3bfd9c325f670d8fc000a8c49c16a08389acad842ae1df89",
-      "size_bytes": 819,
+      "sha256": "3069020b1ec67a30d7ebcc4de1f4159965f8e754b99a22671af399a659da5854",
+      "size_bytes": 759,
       "required": true,
       "status": "present"
     }

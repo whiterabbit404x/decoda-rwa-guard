@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-03T14:36:15.757756+00:00",
+  "generated_at": "2026-06-03T15:31:50.135384+00:00",
   "mode": "local",
   "strict": true,
-  "overall_score": 96,
+  "overall_score": 90,
   "controlled_pilot_ready": true,
   "broad_paid_saas_ready": false,
   "enterprise_procurement_ready": false,
@@ -38,8 +38,8 @@
       "status": "pass"
     },
     "billing_email_launch_readiness": {
-      "score": 100,
-      "status": "pass"
+      "score": 40,
+      "status": "fail"
     },
     "ci_release_evidence": {
       "score": 100,
@@ -77,7 +77,7 @@
       "note": ""
     },
     "paid_launch_readiness": {
-      "status": "pass",
+      "status": "fail",
       "source": "launch_proof",
       "note": ""
     },
@@ -92,7 +92,7 @@
       "note": ""
     },
     "billing_email_provider_readiness": {
-      "status": "pass",
+      "status": "fail",
       "source": "launch_proof",
       "note": ""
     },
@@ -113,6 +113,7 @@
     }
   },
   "blockers": [
+    "email_ready=false",
     "staging proof present but mode='local'; staging validation requires staging/production mode"
   ],
   "warnings": [
