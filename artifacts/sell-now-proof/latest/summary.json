@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-03T16:57:21.842384+00:00",
+  "generated_at": "2026-06-03T17:52:39.636848+00:00",
   "sell_now_managed_ready": true,
   "broad_paid_saas_ready": false,
   "safe_to_sell_broadly_today": false,
@@ -20,7 +20,7 @@
   "contradiction_flags": [],
   "safe_claims": [
     "controlled pilot ready: single customer with direct onboarding, no billing required",
-    "overall readiness score: 90/100",
+    "overall readiness score: 96/100",
     "live EVM telemetry received and proven in CI artifact",
     "detection \u2192 alert \u2192 incident chain proven from live provider data"
   ],

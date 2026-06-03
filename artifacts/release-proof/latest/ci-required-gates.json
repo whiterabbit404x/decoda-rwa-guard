@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-03T16:57:21.732985+00:00",
-  "commit_sha": "bfb0218cdab5a8bcb3b53b9052957b087fcd131a",
+  "generated_at": "2026-06-03T17:52:39.531310+00:00",
+  "commit_sha": "0424848975547c7629f5bb27f18b4e6f1c2cee8f",
   "branch": "main",
   "release_channel": "ci",
   "overall_status": "fail",

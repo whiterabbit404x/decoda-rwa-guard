@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-03T16:57:20.433739+00:00",
+  "generated_at": "2026-06-03T17:52:38.573474+00:00",
   "mode": "staging",
   "strict": false,
   "release_channel": "staging",
@@ -25,7 +25,7 @@
     "staging_migrations_validated": false,
     "staging_runtime_validated": false,
     "staging_live_evidence_validated": false,
-    "generated_at": "2026-06-03T16:57:20.433753+00:00",
+    "generated_at": "2026-06-03T17:52:38.573489+00:00",
     "blockers": [],
     "warnings": [
       "staging migrations not validated (proof file artifacts/staging-proof/latest/migrations_validated missing)",
@@ -80,14 +80,13 @@
     "warnings": []
   },
   "required_dependencies": {
-    "paid_launch_readiness": "fail",
+    "paid_launch_readiness": "pass",
     "release_proof": "fail",
     "runtime_truthfulness": "pass",
     "evidence_export_truthfulness": "pass",
     "multi_tenant_isolation": "pass"
   },
   "blockers": [
-    "required dependency failed: paid_launch_readiness",
     "required dependency failed: release_proof"
   ],
   "warnings": [

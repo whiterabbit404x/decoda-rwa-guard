@@ -1,6 +1,6 @@
 # Sell-Now Proof
 
-**Generated:** 2026-06-03T16:57:21.842384+00:00
+**Generated:** 2026-06-03T17:52:39.636848+00:00
 
 ## Readiness Summary
 
@@ -36,7 +36,7 @@
 ## Safe Claims
 
 - controlled pilot ready: single customer with direct onboarding, no billing required
-- overall readiness score: 90/100
+- overall readiness score: 96/100
 - live EVM telemetry received and proven in CI artifact
 - detection → alert → incident chain proven from live provider data
 
