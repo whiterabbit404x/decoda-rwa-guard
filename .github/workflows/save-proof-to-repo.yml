@@ -19,7 +19,7 @@ name: Save GitHub ZIP Proof
 #   7. Hard-asserts freshness of artifacts/live-evidence-proof/latest/summary.json
 #      (fails if stale or if STAGING secrets are present but proof is still fail-closed).
 #      When secrets are absent the assertion passes with a notice.
-#   8. Runs sell-now proof and no-billing launch proof.
+#   8. Runs sell-now proof and launch proof (paid SaaS when BILLING_PROVIDER=paddle, else no-billing).
 #   9. Runs GitHub ZIP proof.
 #  10. Commits all proof folders (always, even when secrets are absent —
 #      contradiction flags are captured explicitly in sell-now-proof).
@@ -440,14 +440,22 @@ jobs:
               print(f'  sell_now_managed_ready={sell_managed}')
           PY
 
-      - name: Run no-billing launch proof
+      - name: Run paid SaaS launch proof
         # Regenerates artifacts/launch-proof/latest/summary.json.
-        # BILLING_PROVIDER is forced to 'none' for this step: the no-billing proof
-        # validates the NIW/pilot launch path which intentionally excludes billing.
-        # Broad paid SaaS billing readiness is validated by the staging proof above.
-        env:
-          BILLING_PROVIDER: none
-        run: python scripts/staging/run_no_billing_launch_proof.py
+        # Dispatches to the correct proof script based on BILLING_PROVIDER:
+        #   paddle / stripe  → run_paid_saas_launch_proof.py (validates billing credentials)
+        #   none / empty     → run_no_billing_launch_proof.py (NIW/pilot path, billing disabled)
+        # Uses the job-level BILLING_PROVIDER and PADDLE_* / email secrets so that
+        # billing_ready=true and email_ready=true appear in the artifact when configured.
+        run: |
+          if [ "$BILLING_PROVIDER" = "paddle" ] || [ "$BILLING_PROVIDER" = "stripe" ]; then
+            echo "BILLING_PROVIDER=$BILLING_PROVIDER: running paid SaaS launch proof"
+            python scripts/staging/run_paid_saas_launch_proof.py
+          else
+            echo "BILLING_PROVIDER=${BILLING_PROVIDER:-none}: running no-billing launch proof"
+            export BILLING_PROVIDER=none
+            python scripts/staging/run_no_billing_launch_proof.py
+          fi
 
       - name: Generate GitHub ZIP proof
         # GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SHA,

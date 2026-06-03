@@ -1,0 +1,92 @@
+> phase1-treasury-monorepo@0.1.0 build:web
+> NEXT_PUBLIC_LIVE_MODE_ENABLED=false API_URL=https://api.example.com npm run build --workspace apps/web
+
+
+> @phase1/web@0.1.0 build
+> NEXT_TELEMETRY_DISABLED=1 NEXT_PUBLIC_LIVE_MODE_ENABLED=${NEXT_PUBLIC_LIVE_MODE_ENABLED:-false} API_URL=${API_URL:-https://api.example.com} next build
+
+▲ Next.js 16.2.6 (Turbopack)
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 4.9s
+  Running TypeScript ...
+  Finished TypeScript in 8.3s ...
+  Collecting page data using 3 workers ...
+  Generating static pages using 3 workers (0/7) ...
+  Generating static pages using 3 workers (1/7) 
+  Generating static pages using 3 workers (3/7) 
+  Generating static pages using 3 workers (5/7) 
+✓ Generating static pages using 3 workers (7/7) in 171ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ƒ /
+├ ○ /_not-found
+├ ƒ /alerts
+├ ƒ /api/auth/csrf
+├ ƒ /api/auth/forgot-password
+├ ƒ /api/auth/me
+├ ƒ /api/auth/mfa/complete-signin
+├ ƒ /api/auth/mfa/confirm
+├ ƒ /api/auth/mfa/disable
+├ ƒ /api/auth/mfa/enroll
+├ ƒ /api/auth/resend-verification
+├ ƒ /api/auth/reset-password
+├ ƒ /api/auth/select-workspace
+├ ƒ /api/auth/signin
+├ ƒ /api/auth/signout
+├ ƒ /api/auth/signout-all
+├ ƒ /api/auth/signup
+├ ƒ /api/auth/verify-email
+├ ƒ /api/auth/workspaces
+├ ƒ /api/build-info
+├ ƒ /api/dashboard-page-data
+├ ƒ /api/health
+├ ƒ /api/monitoring/sources
+├ ƒ /api/monitoring/systems
+├ ƒ /api/monitoring/systems/reconcile
+├ ƒ /api/monitoring/systems/repair/treasury-settlement-target
+├ ƒ /api/monitoring/targets/[targetId]/enable
+├ ƒ /api/monitoring/targets/[targetId]/repair
+├ ƒ /api/monitoring/targets/[targetId]/telemetry
+├ ƒ /api/ops/monitoring/runtime-status
+├ ƒ /api/runtime-config
+├ ƒ /assets
+├ ƒ /compliance
+├ ƒ /dashboard
+├ ƒ /evidence
+├ ƒ /exports
+├ ƒ /help
+├ ƒ /history
+├ ƒ /incidents
+├ ƒ /integrations
+├ ƒ /monitored-systems
+├ ƒ /monitoring-sources
+├ ƒ /monitoring-sources/[targetId]/telemetry
+├ ƒ /monitoring-sources/monitored-systems
+├ ƒ /monitoring-sources/targets
+├ ƒ /onboarding
+├ ƒ /privacy
+├ ƒ /reset-password
+├ ƒ /resilience
+├ ƒ /response-actions
+├ ƒ /security
+├ ƒ /settings
+├ ƒ /settings/security
+├ ƒ /sign-in
+├ ○ /sign-out
+├ ƒ /sign-up
+├ ƒ /support
+├ ƒ /system-health
+├ ƒ /system-health/readiness
+├ ƒ /targets
+├ ƒ /templates
+├ ƒ /terms
+├ ƒ /threat
+├ ƒ /trust
+├ ƒ /verify-email
+└ ƒ /workspaces
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
