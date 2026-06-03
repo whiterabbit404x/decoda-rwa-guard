@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-01T06:02:48.173461+00:00",
+  "generated_at": "2026-06-03T14:36:15.757756+00:00",
   "mode": "local",
   "strict": true,
-  "overall_score": 90,
+  "overall_score": 96,
   "controlled_pilot_ready": true,
   "broad_paid_saas_ready": false,
   "enterprise_procurement_ready": false,
@@ -38,8 +38,8 @@
       "status": "pass"
     },
     "billing_email_launch_readiness": {
-      "score": 40,
-      "status": "fail"
+      "score": 100,
+      "status": "pass"
     },
     "ci_release_evidence": {
       "score": 100,
@@ -77,7 +77,7 @@
       "note": ""
     },
     "paid_launch_readiness": {
-      "status": "fail",
+      "status": "pass",
       "source": "launch_proof",
       "note": ""
     },
@@ -92,33 +92,28 @@
       "note": ""
     },
     "billing_email_provider_readiness": {
-      "status": "fail",
+      "status": "pass",
       "source": "launch_proof",
       "note": ""
     },
     "live_evidence_readiness": {
-      "status": "fail",
+      "status": "pass",
       "source": "launch_proof",
       "note": ""
     },
     "staging_proof_validation": {
-      "status": "fail",
+      "status": "pass",
       "source": "staging_proof",
-      "note": "staging_launch_ready=false in staging proof"
+      "note": ""
     },
     "staging_validation": {
       "status": "fail",
       "source": "staging_proof",
-      "note": "staging_launch_ready=False, mode='local'"
+      "note": "staging_launch_ready=True, mode='local'"
     }
   },
   "blockers": [
-    "billing_ready=false",
-    "billing_webhook_ready=false",
-    "email_ready=false",
-    "live evidence not ready: EVM_RPC_URL or STAGING_EVM_RPC_URL not configured",
-    "provider_ready=false",
-    "staging proof: staging_launch_ready=false; BILLING_PROVIDER not configured"
+    "staging proof present but mode='local'; staging validation requires staging/production mode"
   ],
   "warnings": [
     "saas_workflow_validation not run in CI gates"
