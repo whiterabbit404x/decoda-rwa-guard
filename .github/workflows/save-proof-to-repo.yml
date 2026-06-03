@@ -143,6 +143,16 @@ jobs:
           echo "EMAIL_FROM configured: $([ -n "$EMAIL_FROM" ] && echo true || echo false)"
           echo "EMAIL_DOMAIN configured: $([ -n "$EMAIL_DOMAIN" ] && echo true || echo false)"
 
+      - name: Diagnose secret configuration (expression-evaluated)
+        # Prints true/false for each critical secret using GitHub Actions
+        # expression evaluation — safe because the expression is resolved
+        # before the runner sees the value, so nothing is echoed to the log.
+        run: |
+          echo "PADDLE_API_KEY configured: ${{ secrets.PADDLE_API_KEY != '' }}"
+          echo "PADDLE_PRICE_ID configured: ${{ secrets.PADDLE_PRICE_ID != '' }}"
+          echo "PADDLE_WEBHOOK_SECRET configured: ${{ secrets.PADDLE_WEBHOOK_SECRET != '' }}"
+          echo "RESEND_API_KEY configured: ${{ secrets.RESEND_API_KEY != '' }}"
+
       - name: Regenerate staging launch proof (with real secrets)
         # Regenerates artifacts/staging-proof/latest/summary.json using the
         # job-level secrets. With real credentials, configured=true replaces
@@ -150,6 +160,18 @@ jobs:
         # Does NOT use --strict to avoid circular dependency with launch-proof
         # artifacts that may not yet reflect the current billing/email state.
         # The guard step below hard-fails on any remaining "not configured" blocker.
+        env:
+          BILLING_PROVIDER: ${{ secrets.BILLING_PROVIDER }}
+          PADDLE_ENVIRONMENT: ${{ secrets.PADDLE_ENVIRONMENT }}
+          PADDLE_API_KEY: ${{ secrets.PADDLE_API_KEY }}
+          PADDLE_CLIENT_TOKEN: ${{ secrets.PADDLE_CLIENT_TOKEN }}
+          PADDLE_PRICE_ID: ${{ secrets.PADDLE_PRICE_ID }}
+          PADDLE_WEBHOOK_SECRET: ${{ secrets.PADDLE_WEBHOOK_SECRET }}
+          EMAIL_PROVIDER: ${{ secrets.EMAIL_PROVIDER }}
+          MAIL_PROVIDER: ${{ secrets.MAIL_PROVIDER }}
+          EMAIL_DOMAIN: ${{ secrets.EMAIL_DOMAIN }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
         run: |
           python scripts/generate_staging_launch_proof.py \
             --mode staging
@@ -157,6 +179,18 @@ jobs:
       - name: Assert staging proof env vars are configured
         # Hard failure if any "not configured" blocker survives.
         # This is the strict gate for environment variable configuration.
+        env:
+          BILLING_PROVIDER: ${{ secrets.BILLING_PROVIDER }}
+          PADDLE_ENVIRONMENT: ${{ secrets.PADDLE_ENVIRONMENT }}
+          PADDLE_API_KEY: ${{ secrets.PADDLE_API_KEY }}
+          PADDLE_CLIENT_TOKEN: ${{ secrets.PADDLE_CLIENT_TOKEN }}
+          PADDLE_PRICE_ID: ${{ secrets.PADDLE_PRICE_ID }}
+          PADDLE_WEBHOOK_SECRET: ${{ secrets.PADDLE_WEBHOOK_SECRET }}
+          EMAIL_PROVIDER: ${{ secrets.EMAIL_PROVIDER }}
+          MAIL_PROVIDER: ${{ secrets.MAIL_PROVIDER }}
+          EMAIL_DOMAIN: ${{ secrets.EMAIL_DOMAIN }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
         run: |
           python - <<'PY'
           import json, sys
