@@ -1,0 +1,122 @@
+{
+  "schema_version": 2,
+  "generated_at": "2026-06-03T12:55:50.714874+00:00",
+  "launch_mode": "paid_saas",
+  "billing_provider": "paddle",
+  "repository": "/home/user/decoda-rwa-guard",
+  "readiness_categories": {
+    "live_provider_evidence_ready": true,
+    "managed_pilot_ready": true,
+    "niw_positioning_ready": true,
+    "broad_paid_saas_ready": false,
+    "ci_required_gates_ready": false
+  },
+  "live_provider_evidence": {
+    "artifact_available": true,
+    "live_provider_evidence_ready": true,
+    "provider_ready": true,
+    "provider_mode": "live",
+    "live_evidence_ready": true,
+    "evidence_source": "live",
+    "source": "artifacts/live-evidence-proof/latest/summary.json"
+  },
+  "managed_pilot": {
+    "artifact_available": true,
+    "managed_pilot_ready": true,
+    "sell_now_managed_ready": true,
+    "safe_claims": [
+      "controlled pilot ready: single customer with direct onboarding, no billing required",
+      "overall readiness score: 90/100",
+      "live EVM telemetry received and proven in CI artifact",
+      "detection \u2192 alert \u2192 incident chain proven from live provider data"
+    ],
+    "source": "artifacts/sell-now-proof/latest/summary.json"
+  },
+  "niw_positioning": {
+    "niw_positioning_ready": true,
+    "validator_output": "NIW POSITIONING VALIDATION PASSED\n  [OK] docs/NIW_STRATEGIC_INFRASTRUCTURE_GUARD.md\n  [OK] artifacts/niw-strategic-infrastructure-guard/evidence-map.json\n  [OK] evidence-map.json structure valid\n  [OK] all required key phrases present",
+    "validator": "scripts/validate_niw_positioning.py"
+  },
+  "billing": {
+    "billing_ready": true,
+    "billing_webhook_ready": true,
+    "billing_status": "ready",
+    "billing_reason": "Paddle billing configured with required credentials, environment, client token, and price ID.",
+    "billing_missing_env": [],
+    "billing_webhook_missing_env": []
+  },
+  "email": {
+    "email_ready": false,
+    "email_status": "missing",
+    "email_reason": "EMAIL_PROVIDER is not configured.",
+    "email_missing_env": [
+      "EMAIL_PROVIDER"
+    ]
+  },
+  "allowed_claims": [
+    "NIW Strategic Infrastructure Guard positioning ready",
+    "controlled pilot / managed sale ready",
+    "live provider evidence ready",
+    "paid billing configured (paddle)"
+  ],
+  "prohibited_claims": [
+    "Do NOT claim paid SaaS launch is fully ready while gates are failing"
+  ],
+  "pilot_ready": true,
+  "paid_launch_ready": false,
+  "controlled_pilot_ready": true,
+  "broad_paid_saas_ready": false,
+  "readiness": {
+    "billing_ready": true,
+    "billing_webhook_ready": true,
+    "email_ready": false,
+    "provider_ready": true,
+    "live_evidence_ready": true,
+    "ci_required_gates_ready": false
+  },
+  "blockers": [
+    "email not ready \u2014 missing: ['EMAIL_PROVIDER']"
+  ],
+  "warnings": [],
+  "gates": [
+    {
+      "name": "billing_provider",
+      "passed": true,
+      "details": {
+        "billing_provider": "paddle",
+        "is_paid_provider": true,
+        "note": "BILLING_PROVIDER='paddle' is a supported paid provider."
+      }
+    },
+    {
+      "name": "billing",
+      "passed": true,
+      "details": {
+        "billing_ready": true,
+        "billing_webhook_ready": true,
+        "billing_status": "ready",
+        "billing_reason": "Paddle billing configured with required credentials, environment, client token, and price ID.",
+        "billing_missing_env": [],
+        "billing_webhook_missing_env": []
+      }
+    },
+    {
+      "name": "email",
+      "passed": false,
+      "details": {
+        "email_ready": false,
+        "email_status": "missing",
+        "email_reason": "EMAIL_PROVIDER is not configured.",
+        "email_missing_env": [
+          "EMAIL_PROVIDER"
+        ]
+      }
+    }
+  ],
+  "artifact_paths": {
+    "ci_required_gates": "artifacts/release-proof/latest/ci-required-gates.json",
+    "release_summary": "artifacts/release-proof/latest/summary.json",
+    "live_evidence_proof": "artifacts/live-evidence-proof/latest/summary.json",
+    "sell_now_proof": "artifacts/sell-now-proof/latest/summary.json"
+  }
+}

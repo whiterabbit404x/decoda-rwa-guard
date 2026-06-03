@@ -1,0 +1,184 @@
+{
+  "schema_version": 2,
+  "generated_at": "2026-06-03T12:57:12.882094+00:00",
+  "repository": "/home/user/decoda-rwa-guard",
+  "readiness_categories": {
+    "live_provider_evidence_ready": true,
+    "managed_pilot_ready": true,
+    "niw_positioning_ready": true,
+    "broad_paid_saas_ready": false,
+    "ci_required_gates_ready": false
+  },
+  "live_provider_evidence": {
+    "artifact_available": true,
+    "live_provider_evidence_ready": true,
+    "provider_ready": true,
+    "provider_mode": "live",
+    "live_evidence_ready": true,
+    "evidence_source": "live",
+    "source": "artifacts/live-evidence-proof/latest/summary.json"
+  },
+  "managed_pilot": {
+    "artifact_available": true,
+    "managed_pilot_ready": true,
+    "sell_now_managed_ready": true,
+    "safe_claims": [
+      "controlled pilot ready: single customer with direct onboarding, no billing required",
+      "overall readiness score: 90/100",
+      "live EVM telemetry received and proven in CI artifact",
+      "detection \u2192 alert \u2192 incident chain proven from live provider data"
+    ],
+    "source": "artifacts/sell-now-proof/latest/summary.json"
+  },
+  "niw_positioning": {
+    "niw_positioning_ready": true,
+    "validator_output": "NIW POSITIONING VALIDATION PASSED\n  [OK] docs/NIW_STRATEGIC_INFRASTRUCTURE_GUARD.md\n  [OK] artifacts/niw-strategic-infrastructure-guard/evidence-map.json\n  [OK] evidence-map.json structure valid\n  [OK] all required key phrases present",
+    "validator": "scripts/validate_niw_positioning.py"
+  },
+  "broad_paid_saas": {
+    "staging_api_configured": false,
+    "staging_app_configured": false,
+    "staging_database_configured": false,
+    "staging_worker_enabled": false,
+    "billing_configured": true,
+    "email_configured": false,
+    "auth_secret_configured": false,
+    "broad_paid_saas_ready": false,
+    "blockers": [
+      "staging_api_configured=false",
+      "staging_app_configured=false",
+      "staging_database_configured=false",
+      "staging_worker_enabled=false",
+      "email_configured=false",
+      "auth_secret_configured=false"
+    ]
+  },
+  "allowed_claims": [
+    "NIW Strategic Infrastructure Guard positioning ready",
+    "controlled pilot / managed sale ready",
+    "live provider evidence ready",
+    "not broad paid SaaS ready"
+  ],
+  "prohibited_claims": [
+    "broad paid SaaS production ready",
+    "billing ready",
+    "staging runtime fully ready",
+    "staging database fully ready",
+    "worker fully ready"
+  ],
+  "launch_mode": "pilot",
+  "pilot_ready": false,
+  "paid_launch_ready": false,
+  "controlled_pilot_ready": true,
+  "broad_paid_saas_ready": false,
+  "readiness": {
+    "billing_ready": true,
+    "billing_webhook_ready": false,
+    "email_ready": false,
+    "provider_ready": true,
+    "live_evidence_ready": true,
+    "ci_required_gates_ready": false
+  },
+  "blockers": [
+    "email not ready",
+    "staging API not configured",
+    "staging database not configured",
+    "staging worker not enabled",
+    "ci gates not ready"
+  ],
+  "warnings": [],
+  "artifact_paths": {
+    "ci_required_gates": "artifacts/release-proof/latest/ci-required-gates.json",
+    "release_summary": "artifacts/release-proof/latest/summary.json",
+    "live_evidence_proof": "artifacts/live-evidence-proof/latest/summary.json",
+    "sell_now_proof": "artifacts/sell-now-proof/latest/summary.json"
+  },
+  "steps": [
+    {
+      "name": "00_assert_no_billing_mode",
+      "command": [
+        "python",
+        "-c",
+        "import os,sys;provider=os.getenv('BILLING_PROVIDER','').strip().lower();print(f'BILLING_PROVIDER={provider or \"(unset)\"}');sys.exit(0 if provider=='none' else 1)"
+      ],
+      "required": true,
+      "status": "fail",
+      "returncode": 1,
+      "log_file": "artifacts/launch-proof/20260603T125607Z/00_assert_no_billing_mode.log",
+      "note": ""
+    },
+    {
+      "name": "01_npm_ci",
+      "command": [
+        "npm",
+        "ci"
+      ],
+      "required": true,
+      "status": "pass",
+      "returncode": 0,
+      "log_file": "artifacts/launch-proof/20260603T125607Z/01_npm_ci.log",
+      "note": ""
+    },
+    {
+      "name": "02_build_web",
+      "command": [
+        "npm",
+        "run",
+        "build:web"
+      ],
+      "required": true,
+      "status": "pass",
+      "returncode": 0,
+      "log_file": "artifacts/launch-proof/20260603T125607Z/02_build_web.log",
+      "note": ""
+    },
+    {
+      "name": "03_runtime_status_pre_release_gate",
+      "command": [
+        "python",
+        "services/api/scripts/check_monitoring_runtime_live_gate.py"
+      ],
+      "required": true,
+      "status": "fail",
+      "returncode": 2,
+      "log_file": "artifacts/launch-proof/20260603T125607Z/03_runtime_status_pre_release_gate.log",
+      "note": ""
+    },
+    {
+      "name": "04_validate_no_billing_launch",
+      "command": [
+        "make",
+        "validate-no-billing-launch"
+      ],
+      "required": true,
+      "status": "fail",
+      "returncode": 2,
+      "log_file": "artifacts/launch-proof/20260603T125607Z/04_validate_no_billing_launch.log",
+      "note": ""
+    },
+    {
+      "name": "05_validate_production",
+      "command": [
+        "make",
+        "validate-production"
+      ],
+      "required": false,
+      "status": "fail",
+      "returncode": 2,
+      "log_file": "artifacts/launch-proof/20260603T125607Z/05_validate_production.log",
+      "note": ""
+    },
+    {
+      "name": "06_optional_staging_evidence",
+      "command": [
+        "python",
+        "scripts/staging/run_evidence_flow.py"
+      ],
+      "required": false,
+      "status": "skip",
+      "returncode": null,
+      "log_file": "n/a",
+      "note": "Skipped because missing env vars: STAGING_BASE_URL, STAGING_API_URL, STAGING_EVIDENCE_EMAIL, STAGING_EVIDENCE_PASSWORD"
+    }
+  ]
+}
