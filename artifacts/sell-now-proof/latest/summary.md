@@ -1,6 +1,6 @@
 # Sell-Now Proof
 
-**Generated:** 2026-06-01T09:05:27.714692+00:00
+**Generated:** 2026-06-03T13:58:37.550815+00:00
 
 ## Readiness Summary
 
@@ -24,17 +24,14 @@
 | Field | Value |
 |---|---|
 | staging_runtime_reachable | NO |
-| staging_database_reachable | NO |
-| staging_worker_enabled | NO |
-| billing_ready | NO |
+| staging_database_reachable | YES |
+| staging_worker_enabled | YES |
+| billing_ready | YES |
 | email_ready | NO |
 
 ## Blockers
 
 - staging_runtime_reachable=false
-- staging_database_reachable=false
-- staging_worker_enabled=false
-- billing_ready=false: billing provider not configured
 - email_ready=false: email provider not configured
 
 ## Safe Claims

@@ -1,56 +1,49 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-03T12:26:57.893889+00:00",
+  "generated_at": "2026-06-03T13:58:36.537270+00:00",
   "mode": "staging",
   "strict": false,
   "release_channel": "staging",
-  "staging_launch_ready": false,
+  "staging_launch_ready": true,
   "broad_paid_saas_ready": false,
   "safe_to_sell_broadly_today": false,
   "local_validation_ready": false,
-  "staging_env_configured": false,
+  "staging_env_configured": true,
   "staging_runtime_reachable": false,
-  "staging_worker_enabled": false,
-  "staging_database_reachable": false,
-  "staging_auth_configured": false,
-  "staging_live_evidence_ready": false,
+  "staging_worker_enabled": true,
+  "staging_database_reachable": true,
+  "staging_auth_configured": true,
+  "staging_live_evidence_ready": true,
   "staging_launch_validation": {
-    "status": "fail",
-    "staging_environment_present": false,
-    "staging_api_url_present": false,
-    "staging_app_url_present": false,
-    "staging_database_present": false,
-    "staging_auth_secret_present": false,
-    "staging_worker_present": false,
+    "status": "pass",
+    "staging_environment_present": true,
+    "staging_api_url_present": true,
+    "staging_app_url_present": true,
+    "staging_database_present": true,
+    "staging_auth_secret_present": true,
+    "staging_worker_present": true,
     "staging_migrations_validated": false,
     "staging_runtime_validated": false,
     "staging_live_evidence_validated": false,
-    "generated_at": "2026-06-03T12:26:57.893912+00:00",
-    "blockers": [
-      "STAGING_API_URL not configured",
-      "STAGING_APP_URL not configured",
-      "STAGING_DATABASE_URL not configured",
-      "STAGING_AUTH_TOKEN_SECRET not configured",
-      "STAGING_WORKER_ENABLED not configured; staging worker presence not confirmed"
-    ],
+    "generated_at": "2026-06-03T13:58:36.537284+00:00",
+    "blockers": [],
     "warnings": [
-      "STAGING_EVM_RPC_URL not set; staging EVM provider not confirmed",
       "staging migrations not validated (proof file artifacts/staging-proof/latest/migrations_validated missing)",
       "staging runtime not validated (proof file artifacts/staging-proof/latest/runtime_validated missing)",
       "staging live evidence not validated (proof file artifacts/staging-proof/latest/live_evidence_validated missing)"
     ]
   },
   "live_provider_validation": {
-    "status": "fail",
-    "evm_rpc_configured": false,
-    "chain_id_configured": false,
+    "status": "pass",
+    "evm_rpc_configured": true,
+    "chain_id_configured": true,
     "chain_id_observed": "1",
     "provider_health_checked": true,
-    "provider_ready": false,
+    "provider_ready": true,
     "provider_mode": "live",
     "worker_enabled": true,
     "latest_live_telemetry_at": "2026-04-22T14:32:59.583341+00:00",
-    "live_evidence_ready": false,
+    "live_evidence_ready": true,
     "evidence_source": "live",
     "chain": {
       "telemetry_event_id": "48990975-bd17-509b-bfde-e52141b02403",
@@ -60,18 +53,10 @@
       "response_action_id": "02a4ace2-071f-54d7-94e3-57ab0fd00ed3",
       "evidence_package_id": "746fa939-5efe-5b75-8dfd-f94d774cf6cf"
     },
-    "missing": [
-      "EVM_RPC_URL (or STAGING_EVM_RPC_URL) not configured",
-      "live_evidence_ready downgraded: evm_rpc_configured=false; real EVM provider secrets required to claim live evidence"
-    ],
+    "missing": [],
     "contradiction_flags": [],
-    "blockers": [
-      "EVM_RPC_URL (or STAGING_EVM_RPC_URL) not configured",
-      "live_evidence_ready downgraded: evm_rpc_configured=false; real EVM provider secrets required to claim live evidence"
-    ],
-    "warnings": [
-      "EVM_CHAIN_ID (or STAGING_EVM_CHAIN_ID) not configured"
-    ]
+    "blockers": [],
+    "warnings": []
   },
   "billing_production_validation": {
     "status": "pass",
@@ -102,19 +87,10 @@
     "multi_tenant_isolation": "pass"
   },
   "blockers": [
-    "EVM_RPC_URL (or STAGING_EVM_RPC_URL) not configured",
-    "STAGING_API_URL not configured",
-    "STAGING_APP_URL not configured",
-    "STAGING_AUTH_TOKEN_SECRET not configured",
-    "STAGING_DATABASE_URL not configured",
-    "STAGING_WORKER_ENABLED not configured; staging worker presence not confirmed",
-    "live_evidence_ready downgraded: evm_rpc_configured=false; real EVM provider secrets required to claim live evidence",
     "required dependency failed: paid_launch_readiness",
     "required dependency failed: release_proof"
   ],
   "warnings": [
-    "EVM_CHAIN_ID (or STAGING_EVM_CHAIN_ID) not configured",
-    "STAGING_EVM_RPC_URL not set; staging EVM provider not confirmed",
     "staging live evidence not validated (proof file artifacts/staging-proof/latest/live_evidence_validated missing)",
     "staging migrations not validated (proof file artifacts/staging-proof/latest/migrations_validated missing)",
     "staging runtime not validated (proof file artifacts/staging-proof/latest/runtime_validated missing)"
