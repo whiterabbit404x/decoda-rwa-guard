@@ -147,8 +147,9 @@ def check_email_readiness() -> dict[str, Any]:
 
     Never exposes secret values — only boolean presence and missing env var names.
     Fail-closed: missing or unrecognized provider is not ready.
+    MAIL_PROVIDER is accepted as a fallback alias for EMAIL_PROVIDER.
     """
-    provider = (os.getenv('EMAIL_PROVIDER') or '').strip().lower()
+    provider = (os.getenv('EMAIL_PROVIDER') or os.getenv('MAIL_PROVIDER') or '').strip().lower()
 
     if not provider:
         return {

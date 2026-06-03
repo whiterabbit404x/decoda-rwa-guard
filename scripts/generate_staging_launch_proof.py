@@ -565,13 +565,15 @@ def build_billing_production_validation(mode: str) -> dict[str, Any]:
         if not webhook_secret_present:
             blockers.append('PADDLE_WEBHOOK_SECRET not configured')
         webhook_endpoint_validated = webhook_secret_present
+        # Accept plain PADDLE_PRICE_ID or any PADDLE_PRICE_ID_* variant
+        price_id_plain = _env_present('PADDLE_PRICE_ID')
         price_ids = [
             k for k, v in os.environ.items()
             if k.startswith('PADDLE_PRICE_ID_') and v.strip()
         ]
-        price_id_present = bool(price_ids)
+        price_id_present = price_id_plain or bool(price_ids)
         if not price_id_present:
-            blockers.append('No PADDLE_PRICE_ID_* configured')
+            blockers.append('PADDLE_PRICE_ID (or PADDLE_PRICE_ID_*) not configured')
 
     if blockers:
         status = 'fail'
@@ -610,7 +612,8 @@ def build_email_production_validation(mode: str) -> dict[str, Any]:
     blockers: list[str] = []
     warnings: list[str] = []
 
-    email_provider_raw = (os.getenv('EMAIL_PROVIDER') or '').strip().lower()
+    # Accept MAIL_PROVIDER as fallback alias for EMAIL_PROVIDER
+    email_provider_raw = (os.getenv('EMAIL_PROVIDER') or os.getenv('MAIL_PROVIDER') or '').strip().lower()
 
     if not email_provider_raw:
         canonical_provider = 'unknown'

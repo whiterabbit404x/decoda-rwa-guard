@@ -750,3 +750,82 @@ def test_dependency_audit_gate() -> None:
         'postcss <8.5.10 is installed and no risk acceptance doc exists. '
         'Either upgrade postcss to >=8.5.10 or create docs/SECURITY_DEPENDENCY_RISK_ACCEPTANCE.md'
     )
+
+
+# MAIL_PROVIDER alias tests
+def test_mail_provider_alias_accepted_for_resend(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MAIL_PROVIDER=resend is accepted as alias for EMAIL_PROVIDER=resend."""
+    _clear_launch_env(monkeypatch)
+    monkeypatch.delenv('EMAIL_PROVIDER', raising=False)
+    monkeypatch.setenv('MAIL_PROVIDER', 'resend')
+    monkeypatch.setenv('RESEND_API_KEY', 're_testApiKey_alias_xyz')
+    monkeypatch.setenv('EMAIL_FROM', 'alerts@decoda.io')
+    monkeypatch.setenv('EMAIL_DOMAIN', 'decoda.io')
+
+    out = check_email_readiness()
+
+    assert out['email_ready'] is True
+    assert out['email_status'] == 'ready'
+    assert out['email_missing_env'] == []
+
+
+def test_mail_provider_alias_blocked_when_no_provider_at_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing both EMAIL_PROVIDER and MAIL_PROVIDER fails closed."""
+    _clear_launch_env(monkeypatch)
+    monkeypatch.delenv('EMAIL_PROVIDER', raising=False)
+    monkeypatch.delenv('MAIL_PROVIDER', raising=False)
+
+    out = check_email_readiness()
+
+    assert out['email_ready'] is False
+    assert out['email_status'] == 'missing'
+
+
+def test_paid_launch_passes_with_paddle_billing_and_resend_mail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Full Paddle + Resend combination satisfies paid launch readiness."""
+    _clear_launch_env(monkeypatch)
+    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_testkey_combo_xyz')
+    monkeypatch.setenv('PADDLE_CLIENT_TOKEN', 'pdl_client_testkey_combo_xyz')
+    monkeypatch.setenv('PADDLE_PRICE_ID', 'pri_prod_monthly_combo_xyz')
+    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_whsec_testkey_combo_xyz')
+    monkeypatch.setenv('PADDLE_ENVIRONMENT', 'production')
+    monkeypatch.setenv('EMAIL_PROVIDER', 'resend')
+    monkeypatch.setenv('RESEND_API_KEY', 're_testApiKey_combo_xyz')
+    monkeypatch.setenv('EMAIL_FROM', 'noreply@decoda.io')
+    monkeypatch.setenv('EMAIL_DOMAIN', 'decoda.io')
+    monkeypatch.setenv('EVM_RPC_URL', 'https://mainnet.infura.io/v3/proj_combo_xyz')
+    monkeypatch.setenv('LIVE_PROVIDER_PROOF_PRESENT', 'true')
+
+    out = build_paid_launch_readiness()
+
+    assert out['paid_launch_ready'] is True
+    assert out['billing_ready'] is True
+    assert out['billing_webhook_ready'] is True
+    assert out['email_ready'] is True
+    assert out['billing_missing_env'] == []
+    assert out['email_missing_env'] == []
+    assert 'STRIPE_SECRET_KEY' not in out.get('billing_missing_env', [])
+
+
+def test_mail_provider_alias_with_paddle_billing_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MAIL_PROVIDER alias is accepted in full paid launch readiness check with Paddle billing."""
+    _clear_launch_env(monkeypatch)
+    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_testkey_alias_xyz')
+    monkeypatch.setenv('PADDLE_CLIENT_TOKEN', 'pdl_client_testkey_alias_xyz')
+    monkeypatch.setenv('PADDLE_PRICE_ID', 'pri_prod_monthly_alias_xyz')
+    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_whsec_testkey_alias_xyz')
+    monkeypatch.setenv('PADDLE_ENVIRONMENT', 'production')
+    monkeypatch.delenv('EMAIL_PROVIDER', raising=False)
+    monkeypatch.setenv('MAIL_PROVIDER', 'resend')
+    monkeypatch.setenv('RESEND_API_KEY', 're_testApiKey_alias_xyz')
+    monkeypatch.setenv('EMAIL_FROM', 'noreply@decoda.io')
+    monkeypatch.setenv('EMAIL_DOMAIN', 'decoda.io')
+    monkeypatch.setenv('EVM_RPC_URL', 'https://mainnet.infura.io/v3/proj_alias_xyz')
+    monkeypatch.setenv('LIVE_PROVIDER_PROOF_PRESENT', 'true')
+
+    out = build_paid_launch_readiness()
+
+    assert out['email_ready'] is True
+    assert out['paid_launch_ready'] is True
