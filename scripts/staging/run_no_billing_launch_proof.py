@@ -275,7 +275,7 @@ def write_summary(
         blockers.append('ci gates not ready')
 
     payload = {
-        'schema_version': 2,
+        'schema_version': 1,
         'generated_at': datetime.now(timezone.utc).isoformat(),
         'repository': str(REPO_ROOT),
         # Granular readiness truth table

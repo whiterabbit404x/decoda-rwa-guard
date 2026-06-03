@@ -1,6 +1,6 @@
 # Paid SaaS launch proof
 
-- Generated: 2026-06-03T16:47:56.833619+00:00
+- Generated: 2026-06-03T16:46:16.985795+00:00
 - Billing provider: paddle
 - Launch mode: paid_saas
 
@@ -11,7 +11,7 @@
 | live provider evidence ready | READY |
 | managed pilot ready | READY |
 | niw positioning ready | READY |
-| broad paid saas ready | READY |
+| broad paid saas ready | NOT READY |
 | ci required gates ready | READY |
 
 ## Billing / Email
@@ -22,6 +22,10 @@
 | billing_webhook_ready | YES |
 | email_ready | YES |
 
+## Blockers
+
+- local mode: paid launch readiness cannot be proven without staging/production runtime
+
 ## Allowed Claims
 
 - NIW Strategic Infrastructure Guard positioning ready
@@ -29,4 +33,7 @@
 - live provider evidence ready
 - paid billing configured (paddle)
 - email provider configured
-- paid SaaS launch ready
+
+## Prohibited Claims
+
+- Do NOT use this local/CI proof as evidence of paid launch readiness — requires staging or production runtime

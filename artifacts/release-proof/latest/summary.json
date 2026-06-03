@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-03T15:31:53.456277+00:00",
+  "generated_at": "2026-06-03T16:47:57.642438+00:00",
   "release_status": "fail",
   "release_channel": "local",
-  "commit_sha": "b01737d77c40fa03f2e45edeb5fe0ee71be568fc",
-  "branch": "claude/relaxed-einstein-MMzac",
+  "commit_sha": "0b5af765880433dd0999198a353e62ae50f60457",
+  "branch": "claude/affectionate-goldberg-bhnoI",
   "ci_required_gates_ready": false,
   "launch_proof_ready": true,
   "manifest_ready": true,

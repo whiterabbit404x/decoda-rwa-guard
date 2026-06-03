@@ -1,28 +1,28 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-03T15:31:53.465225+00:00",
+  "generated_at": "2026-06-03T16:47:57.650870+00:00",
   "release_channel": "local",
-  "commit_sha": "b01737d77c40fa03f2e45edeb5fe0ee71be568fc",
-  "branch": "claude/relaxed-einstein-MMzac",
+  "commit_sha": "0b5af765880433dd0999198a353e62ae50f60457",
+  "branch": "claude/affectionate-goldberg-bhnoI",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "c0a7e5f0288f7ad07c941ac22421ea4d8440de2d9029155c04b1103eda50cc9e",
-      "size_bytes": 756,
+      "sha256": "f954df5663d12b9dbfe5e14476e321bad6ecce3056b7afcf525dd89aec648eb9",
+      "size_bytes": 761,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "0bf0e8a6333f2ed46044c4c0e380bd52d857cac63147602351843b63c7e8dc72",
-      "size_bytes": 1855,
+      "sha256": "f156ee7ff16f54cbf7d3c8f2f544479b8e2f6a4be2c1efa3da9058ca43f30e98",
+      "size_bytes": 1860,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "3069020b1ec67a30d7ebcc4de1f4159965f8e754b99a22671af399a659da5854",
-      "size_bytes": 759,
+      "sha256": "6e2512c3e89183af47f27f4fbb481ba93752aaa017836fb5e40927b1500d5514",
+      "size_bytes": 1362,
       "required": true,
       "status": "present"
     }

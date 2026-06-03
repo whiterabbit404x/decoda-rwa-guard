@@ -157,11 +157,16 @@ jobs:
       - name: Run staging launch proof tests
         run: python -m pytest services/api/tests/test_staging_launch_proof.py -q
 
-      - name: Generate release proof
+      - name: Generate local fail-closed launch proof and release proof
+        # Step A+B: generate_release_proof.py internally generates the launch-proof
+        # first, then generates ci-required-gates, release-proof summary,
+        # test-report, and manifest — all in one atomic call so the manifest
+        # always hashes the freshly-generated launch-proof.
         if: always()
         run: python scripts/generate_release_proof.py --mode ci
 
       - name: Validate release proof
+        # Step C: manifest SHA256 must match the launch-proof written in step A+B.
         if: always()
         run: python scripts/validate_release_proof.py
 
