@@ -84,7 +84,7 @@ def _run_pytest(test_file: str, timeout: int = 120) -> tuple[bool, str]:
     """Run pytest and return (passed, summary)."""
     try:
         result = subprocess.run(
-            ['python', '-m', 'pytest', test_file, '-q', '--tb=short'],
+            [sys.executable, '-m', 'pytest', test_file, '-q', '--tb=short'],
             cwd=REPO_ROOT,
             text=True,
             capture_output=True,

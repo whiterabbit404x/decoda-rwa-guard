@@ -32,6 +32,7 @@ SOURCES: dict[str, Path] = {
     "live_evidence_proof": REPO_ROOT / "artifacts" / "live-evidence-proof" / "latest" / "summary.json",
     "launch_proof": REPO_ROOT / "artifacts" / "launch-proof" / "latest" / "summary.json",
     "final_readiness": REPO_ROOT / "artifacts" / "final-readiness" / "latest" / "summary.json",
+    "release_proof": REPO_ROOT / "artifacts" / "release-proof" / "latest" / "summary.json",
     "api_live_evidence": (
         REPO_ROOT / "services" / "api" / "artifacts" / "live_evidence" / "latest" / "summary.json"
     ),
@@ -65,6 +66,7 @@ def build_summary(loaded: dict[str, dict | None]) -> dict:
     live_ev = loaded.get("live_evidence_proof") or {}
     launch = loaded.get("launch_proof") or {}
     final_r = loaded.get("final_readiness") or {}
+    release_p = loaded.get("release_proof") or {}
     api_live = loaded.get("api_live_evidence")  # None if absent
 
     contradiction_flags: list[str] = []
@@ -119,6 +121,11 @@ def build_summary(loaded: dict[str, dict | None]) -> dict:
     billing_ready = bool(launch_readiness.get("billing_ready", False))
     email_ready = bool(launch_readiness.get("email_ready", False))
 
+    # ── Release proof fields ──────────────────────────────────────────────────
+    release_status: str = release_p.get("release_status") or "unknown"
+    rp_ci_gates_ready: bool = bool(release_p.get("ci_required_gates_ready", False))
+    rp_test_report_ready: bool = bool(release_p.get("test_report_ready", False))
+
     # ── Cross-source contradiction checks ────────────────────────────────────
     if final_r.get("broad_paid_saas_ready") is True and not billing_ready:
         contradiction_flags.append(
@@ -130,6 +137,28 @@ def build_summary(loaded: dict[str, dict | None]) -> dict:
         contradiction_flags.append(
             "staging-proof live_provider_validation says provider_ready=true "
             "but live-evidence-proof says provider_ready=false"
+        )
+
+    # Release-proof gates: fail if release-proof exists and reports failure
+    if release_p:
+        if release_status == "fail":
+            contradiction_flags.append(
+                "release-proof release_status=fail: required CI gates or test suites are failing; "
+                "safe_to_sell_broadly_today cannot be true"
+            )
+        if not rp_ci_gates_ready:
+            contradiction_flags.append(
+                "release-proof ci_required_gates_ready=false"
+            )
+        if not rp_test_report_ready:
+            contradiction_flags.append(
+                "release-proof test_report_ready=false: required test suites did not all pass"
+            )
+
+    # Final-readiness gate: stricter result wins
+    if final_r.get("safe_to_sell_broadly_today") is False:
+        contradiction_flags.append(
+            "final-readiness says safe_to_sell_broadly_today=false; sell-now must not contradict"
         )
 
     # ── Fail-closed readiness ────────────────────────────────────────────────
@@ -149,7 +178,23 @@ def build_summary(loaded: dict[str, dict | None]) -> dict:
         and email_ready
     )
 
-    safe_to_sell_broadly_today = sell_now_managed_ready and broad_paid_saas_ready
+    # Stricter result wins: if final-readiness says broad_paid_saas_ready=false, honour it
+    if final_r.get("broad_paid_saas_ready") is False and broad_paid_saas_ready:
+        contradiction_flags.append(
+            "sell-now broad_paid_saas_ready=true but final-readiness broad_paid_saas_ready=false; "
+            "stricter result wins"
+        )
+        broad_paid_saas_ready = False
+        sell_now_managed_ready = False
+
+    safe_to_sell_broadly_today = (
+        sell_now_managed_ready
+        and broad_paid_saas_ready
+        and not (release_p and release_status == "fail")
+        and not (release_p and not rp_ci_gates_ready)
+        and not (release_p and not rp_test_report_ready)
+        and final_r.get("safe_to_sell_broadly_today") is not False
+    )
 
     # ── Blockers ─────────────────────────────────────────────────────────────
     blockers: list[str] = []
@@ -240,6 +285,10 @@ def build_summary(loaded: dict[str, dict | None]) -> dict:
         # Providers
         "billing_ready": billing_ready,
         "email_ready": email_ready,
+        # Release proof status
+        "release_status": release_status,
+        "release_ci_gates_ready": rp_ci_gates_ready,
+        "release_test_report_ready": rp_test_report_ready,
         # Diagnostics
         "blockers": blockers,
         "warnings": warnings,

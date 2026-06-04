@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T04:19:22.593635+00:00",
-  "sell_now_managed_ready": true,
-  "broad_paid_saas_ready": true,
-  "safe_to_sell_broadly_today": true,
+  "generated_at": "2026-06-04T04:35:17.392860+00:00",
+  "sell_now_managed_ready": false,
+  "broad_paid_saas_ready": false,
+  "safe_to_sell_broadly_today": false,
   "provider_ready": true,
   "live_evidence_ready": true,
   "evidence_source": "live",
@@ -11,24 +11,42 @@
   "staging_runtime_reachable": true,
   "staging_database_reachable": true,
   "staging_worker_enabled": true,
-  "billing_ready": true,
-  "email_ready": true,
-  "blockers": [],
+  "billing_ready": false,
+  "email_ready": false,
+  "release_status": "fail",
+  "release_ci_gates_ready": false,
+  "release_test_report_ready": true,
+  "blockers": [
+    "contradiction: release-proof release_status=fail: required CI gates or test suites are failing; safe_to_sell_broadly_today cannot be true",
+    "contradiction: release-proof ci_required_gates_ready=false",
+    "contradiction: final-readiness says safe_to_sell_broadly_today=false; sell-now must not contradict",
+    "billing_ready=false: billing provider not configured",
+    "email_ready=false: email provider not configured"
+  ],
   "warnings": [],
-  "contradiction_flags": [],
+  "contradiction_flags": [
+    "release-proof release_status=fail: required CI gates or test suites are failing; safe_to_sell_broadly_today cannot be true",
+    "release-proof ci_required_gates_ready=false",
+    "final-readiness says safe_to_sell_broadly_today=false; sell-now must not contradict"
+  ],
   "safe_claims": [
     "controlled pilot ready: single customer with direct onboarding, no billing required",
-    "overall readiness score: 90/100",
-    "live EVM telemetry received and proven in CI artifact",
-    "detection \u2192 alert \u2192 incident chain proven from live provider data"
+    "overall readiness score: 90/100"
   ],
-  "prohibited_claims": [],
+  "prohibited_claims": [
+    "Do NOT claim live monitoring proven from real RPC data",
+    "Do NOT claim this product is ready for managed or pilot customer delivery",
+    "Do NOT claim broad paid SaaS readiness",
+    "Do NOT claim billing, email, or staging are production-ready",
+    "Do NOT claim safe_to_sell_broadly_today=true"
+  ],
   "sources_loaded": {
     "github_proof": true,
     "staging_proof": true,
     "live_evidence_proof": true,
     "launch_proof": true,
     "final_readiness": true,
+    "release_proof": true,
     "api_live_evidence": true
   },
   "missing_required_sources": []
