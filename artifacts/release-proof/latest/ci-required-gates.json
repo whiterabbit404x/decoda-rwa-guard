@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T14:51:14.677704+00:00",
-  "commit_sha": "ca2670adbf4dbc2e170a876a3293ad32c484dede",
-  "branch": "claude/trusting-mendel-bZXeH",
+  "generated_at": "2026-06-04T15:22:14.877256+00:00",
+  "commit_sha": "a8a31c947a3e3331dcaade94c7844b1c757c437f",
+  "branch": "main",
   "release_channel": "staging",
-  "overall_status": "fail",
+  "overall_status": "pass",
   "broad_paid_launch_ready": false,
   "required_gates": {
     "backend_tests": {
@@ -18,7 +18,7 @@
     "saas_workflow_validation": {
       "status": "pass",
       "command": "python -m pytest services/api/tests/test_saas_workflow_validation.py -q",
-      "summary": ".................................                                        [100%]\n33 passed in 0.47s"
+      "summary": ".................................                                        [100%]\n=============================== warnings summary ===============================\n../../../../../opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/starlette/formparsers.py:12\n  /opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/starlette/formparsers.py:12: PendingDeprecationWarning: Please use `import python_multipart` instead.\n    import multipart\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n33 passed, 1 warning in 0.46s"
     },
     "readiness_validation": {
       "status": "pass",
@@ -26,22 +26,14 @@
       "summary": "Readiness validation passed"
     },
     "paid_launch_readiness": {
-      "status": "fail",
-      "summary": "Paid launch blocked: billing provider is not configured; billing webhook secret is missing; email provider is not configured; live provider configuration is missing; live provider proof is missing",
-      "blockers": [
-        "billing provider is not configured",
-        "billing webhook secret is missing",
-        "email provider is not configured",
-        "live provider configuration is missing",
-        "live provider proof is missing"
-      ]
+      "status": "pass",
+      "summary": "All paid launch gates pass",
+      "blockers": []
     },
     "live_evidence": {
-      "status": "fail",
-      "summary": "Live evidence not available: live evidence not ready: EVM_RPC_URL or STAGING_EVM_RPC_URL not configured",
-      "blockers": [
-        "live evidence not ready: EVM_RPC_URL or STAGING_EVM_RPC_URL not configured"
-      ]
+      "status": "pass",
+      "summary": "Live evidence available",
+      "blockers": []
     },
     "frontend_build": {
       "status": "pass",
@@ -49,13 +41,6 @@
       "summary": "Frontend build passed"
     }
   },
-  "blockers": [
-    "billing provider is not configured",
-    "billing webhook secret is missing",
-    "email provider is not configured",
-    "live evidence not ready: EVM_RPC_URL or STAGING_EVM_RPC_URL not configured",
-    "live provider configuration is missing",
-    "live provider proof is missing"
-  ],
+  "blockers": [],
   "warnings": []
 }

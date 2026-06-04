@@ -1,17 +1,17 @@
 # GitHub ZIP Proof
 
-**Generated:** 2026-06-04T14:51:25.650849+00:00  
-**Repository:**   
-**Branch:** claude/trusting-mendel-bZXeH  
-**Commit:** ca2670adbf4dbc2e170a876a3293ad32c484dede  
-**Run ID:**   
+**Generated:** 2026-06-04T15:22:15.166868+00:00  
+**Repository:** whiterabbit404x/decoda-rwa-guard  
+**Branch:** main  
+**Commit:** a8a31c947a3e3331dcaade94c7844b1c757c437f  
+**Run ID:** 26961343859  
 **Run URL:** _(see summary.json — not repeated here to avoid caching)_  
 
 ## GitHub Actions Status
 
 | Field | Value |
 |---|---|
-| github_actions_visible_green | NO |
+| github_actions_visible_green | YES |
 | zip_includes_this_proof | YES |
 
 ## Sell-now Proof Fields
@@ -20,14 +20,14 @@ _Source: `artifacts/sell-now-proof/latest/summary.json`_
 
 | Field | Value |
 |---|---|
-| sell_now_managed_ready | NO |
-| broad_paid_saas_ready | NO |
-| safe_to_sell_broadly_today | NO |
-| provider_ready | NO |
-| live_evidence_ready | NO |
-| evidence_source | unknown |
-| billing_ready | NO |
-| email_ready | NO |
+| sell_now_managed_ready | YES |
+| broad_paid_saas_ready | YES |
+| safe_to_sell_broadly_today | YES |
+| provider_ready | YES |
+| live_evidence_ready | YES |
+| evidence_source | live |
+| billing_ready | YES |
+| email_ready | YES |
 
 ## What This File Proves
 

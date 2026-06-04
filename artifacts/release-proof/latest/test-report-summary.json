@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T14:51:14.683477+00:00",
+  "generated_at": "2026-06-04T15:22:14.879830+00:00",
   "release_channel": "staging",
-  "commit_sha": "ca2670adbf4dbc2e170a876a3293ad32c484dede",
-  "branch": "claude/trusting-mendel-bZXeH",
+  "commit_sha": "a8a31c947a3e3331dcaade94c7844b1c757c437f",
+  "branch": "main",
   "test_suites": {
     "test_release_proof_artifacts": {
       "name": "test_release_proof_artifacts",
@@ -11,7 +11,7 @@
       "tests_run": 35,
       "tests_passed": 35,
       "tests_failed": 0,
-      "summary": "...................................                                      [100%]\n35 passed in 1.96s"
+      "summary": "...................................                                      [100%]\n35 passed in 1.23s"
     },
     "test_paid_launch_readiness": {
       "name": "test_paid_launch_readiness",
@@ -19,7 +19,7 @@
       "tests_run": 54,
       "tests_passed": 54,
       "tests_failed": 0,
-      "summary": "......................................................                   [100%]\n54 passed in 0.08s"
+      "summary": "......................................................                   [100%]\n54 passed in 0.11s"
     },
     "test_runtime_truthfulness": {
       "name": "test_runtime_truthfulness",
@@ -35,7 +35,7 @@
       "tests_run": 33,
       "tests_passed": 33,
       "tests_failed": 0,
-      "summary": ".................................                                        [100%]\n33 passed in 0.47s"
+      "summary": ".................................                                        [100%]\n=============================== warnings summary ===============================\n../../../../../opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/starlette/formparsers.py:12\n  /opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/starlette/formparsers.py:12: PendingDeprecationWarning: Please use `import python_multipart` instead.\n    import multipart\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n33 passed, 1 warning in 0.46s"
     }
   },
   "overall_status": "pass",

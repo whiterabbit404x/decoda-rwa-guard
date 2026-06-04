@@ -1,20 +1,21 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T14:51:12.696810+00:00",
-  "launch_mode": "pilot",
-  "pilot_ready": false,
+  "generated_at": "2026-06-04T15:22:13.425787+00:00",
+  "launch_mode": "paid_saas",
+  "pilot_ready": true,
   "paid_launch_ready": false,
   "controlled_pilot_ready": true,
   "broad_paid_saas_ready": false,
   "readiness_categories": {
-    "live_provider_evidence_ready": false,
+    "live_provider_evidence_ready": true,
     "managed_pilot_ready": false,
     "niw_positioning_ready": true,
     "broad_paid_saas_ready": false,
-    "ci_required_gates_ready": false
+    "ci_required_gates_ready": true
   },
   "allowed_claims": [
     "NIW Strategic Infrastructure Guard positioning ready",
+    "live provider evidence ready",
     "not broad paid SaaS ready"
   ],
   "prohibited_claims": [
@@ -25,21 +26,15 @@
     "worker fully ready"
   ],
   "readiness": {
-    "billing_ready": false,
-    "billing_webhook_ready": false,
-    "email_ready": false,
-    "provider_ready": false,
-    "live_evidence_ready": false,
-    "ci_required_gates_ready": false
+    "billing_ready": true,
+    "billing_webhook_ready": true,
+    "email_ready": true,
+    "provider_ready": true,
+    "live_evidence_ready": true,
+    "ci_required_gates_ready": true
   },
   "blockers": [
-    "billing not ready",
-    "billing webhook not ready",
-    "ci gates not ready",
-    "email not ready",
-    "live evidence missing: broad paid SaaS launch requires live provider evidence",
-    "local mode: paid launch readiness cannot be proven without staging/production runtime",
-    "provider not ready"
+    "local mode: paid launch readiness cannot be proven without staging/production runtime"
   ],
   "warnings": [],
   "artifact_paths": {

@@ -1,0 +1,19 @@
+{
+  "evidence_source": "live",
+  "live_evidence_source": "live_rpc",
+  "source_type": "rpc_polling",
+  "run_id": "89e65439-c6fa-5488-87eb-e091fe27b603",
+  "github_run_id": "26961343859",
+  "generated_at": "2026-06-04T15:21:51.650015+00:00",
+  "provider_checked_at": "2026-06-04T15:21:51.650041+00:00",
+  "telemetry_event_id": "8e4f3e1a-1f13-565b-bb3f-6ff4be764579",
+  "detection_id": "644e47a3-64b9-538a-a806-a27a6bd2d73f",
+  "alert_id": "f0fa49bc-217f-5fe5-905a-f01db81528ea",
+  "incident_id": "4049083a-4a5b-52b8-88d1-d71a9a0ae5c0",
+  "response_action_id": "11da0671-8fd2-5007-9b88-e12ce3474989",
+  "evidence_package_id": "579773c1-4c4d-5211-bf3f-63d939a21eb1",
+  "observed_at": "2026-06-04T15:21:51.650041+00:00",
+  "latest_live_telemetry_at": "2026-06-04T15:21:51.650041+00:00",
+  "chain_id": "1",
+  "block_number": "25244884"
+}

@@ -1,28 +1,28 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T14:51:14.693264+00:00",
+  "generated_at": "2026-06-04T15:22:14.884901+00:00",
   "release_channel": "staging",
-  "commit_sha": "ca2670adbf4dbc2e170a876a3293ad32c484dede",
-  "branch": "claude/trusting-mendel-bZXeH",
+  "commit_sha": "a8a31c947a3e3331dcaade94c7844b1c757c437f",
+  "branch": "main",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "b5778d0ce84f4da2866238850b643795257015017e3ed2248aafe60bf9a5562b",
-      "size_bytes": 750,
+      "sha256": "bb38f56ef6659feb7d3bb2307c490a7790daef00131e013f9bde4a8b3d9b3c25",
+      "size_bytes": 657,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "dd7a16c55d10b802492a1182b9218edfe562cf6f1fc609e6a619f655f994dfa4",
-      "size_bytes": 2374,
+      "sha256": "6dda61d626be4c9fee7b6764d9d089a65f7b1da9e3fd9e78b15c4933f9102915",
+      "size_bytes": 1960,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "68c8cc57b6a8401241a5ab7dc9daec5de1999f3dc19c9b456aee9a5f875bc07a",
-      "size_bytes": 1490,
+      "sha256": "2c1ed1fe4c0fb63b26898017458b247ba8359d6f8899e9904304faee8068f084",
+      "size_bytes": 1303,
       "required": true,
       "status": "present"
     }
