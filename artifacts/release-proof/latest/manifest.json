@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T10:23:27.639009+00:00",
-  "release_channel": "local",
-  "commit_sha": "375e8744e4c592936b12322dc318c5fdc973fb43",
-  "branch": "claude/amazing-archimedes-IKjWX",
+  "generated_at": "2026-06-04T14:51:14.693264+00:00",
+  "release_channel": "staging",
+  "commit_sha": "ca2670adbf4dbc2e170a876a3293ad32c484dede",
+  "branch": "claude/trusting-mendel-bZXeH",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "ef886a89a52e5b350458bc65ea3679dd55685c44881eeb2909d218e23549de10",
-      "size_bytes": 789,
+      "sha256": "b5778d0ce84f4da2866238850b643795257015017e3ed2248aafe60bf9a5562b",
+      "size_bytes": 750,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "853382f593464329b9850ad5869a8e37af6ed5e862f7079bcb006fb423b7d68a",
-      "size_bytes": 2318,
+      "sha256": "dd7a16c55d10b802492a1182b9218edfe562cf6f1fc609e6a619f655f994dfa4",
+      "size_bytes": 2374,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "bc2cba28ae31dab8cb996bd58d0503dc6c46d39668fb7c3c15bc730c596bb210",
+      "sha256": "68c8cc57b6a8401241a5ab7dc9daec5de1999f3dc19c9b456aee9a5f875bc07a",
       "size_bytes": 1490,
       "required": true,
       "status": "present"

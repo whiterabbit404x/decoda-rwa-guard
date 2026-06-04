@@ -1,22 +1,44 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T10:23:27.630936+00:00",
-  "release_channel": "local",
-  "commit_sha": "375e8744e4c592936b12322dc318c5fdc973fb43",
-  "branch": "claude/amazing-archimedes-IKjWX",
+  "generated_at": "2026-06-04T14:51:14.683477+00:00",
+  "release_channel": "staging",
+  "commit_sha": "ca2670adbf4dbc2e170a876a3293ad32c484dede",
+  "branch": "claude/trusting-mendel-bZXeH",
   "test_suites": {
-    "release_proof_artifacts": {
-      "name": "release-proof-artifacts",
-      "status": "not_run",
-      "tests_run": 0,
-      "tests_passed": 0,
+    "test_release_proof_artifacts": {
+      "name": "test_release_proof_artifacts",
+      "status": "pass",
+      "tests_run": 35,
+      "tests_passed": 35,
       "tests_failed": 0,
-      "summary": "Test not run in local generation mode"
+      "summary": "...................................                                      [100%]\n35 passed in 1.96s"
+    },
+    "test_paid_launch_readiness": {
+      "name": "test_paid_launch_readiness",
+      "status": "pass",
+      "tests_run": 54,
+      "tests_passed": 54,
+      "tests_failed": 0,
+      "summary": "......................................................                   [100%]\n54 passed in 0.08s"
+    },
+    "test_runtime_truthfulness": {
+      "name": "test_runtime_truthfulness",
+      "status": "pass",
+      "tests_run": 38,
+      "tests_passed": 38,
+      "tests_failed": 0,
+      "summary": "......................................                                   [100%]\n38 passed in 0.06s"
+    },
+    "test_saas_workflow_validation": {
+      "name": "test_saas_workflow_validation",
+      "status": "pass",
+      "tests_run": 33,
+      "tests_passed": 33,
+      "tests_failed": 0,
+      "summary": ".................................                                        [100%]\n33 passed in 0.47s"
     }
   },
-  "overall_status": "fail",
-  "blockers": [
-    "test suite not executed in local mode"
-  ],
+  "overall_status": "pass",
+  "blockers": [],
   "warnings": []
 }
