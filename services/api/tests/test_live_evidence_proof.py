@@ -70,6 +70,7 @@ def _real_live_chain(**overrides) -> dict:
         'response_action_id': 'ra-live-001',
         'evidence_package_id': 'pkg-live-001',
         'evidence_source': 'live',
+        'live_evidence_source': 'live_rpc',
         'source_type': 'rpc_polling',
         'observed_at': '2026-05-22T12:00:00+00:00',
         'detection_name': 'live_rpc_event_observed',
@@ -726,6 +727,31 @@ def test_script_live_evidence_chain_rejects_non_live_source(
     lpe = result['live_provider_evidence']
     assert lpe['live_evidence_ready'] is False
     assert lpe['chain']['telemetry_event_id'] is None
+
+
+def test_script_live_evidence_chain_rejects_no_live_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Chain with live_evidence_source missing or not 'live_rpc' is rejected fail-closed."""
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+    monkeypatch.setenv('EVM_CHAIN_ID', '1')
+    monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
+
+    bad_chain = _real_live_chain(live_evidence_source=None)
+    with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_success('0x1', '0x12c4cca')):
+        result = generate_live_evidence_proof(live_evidence_chain=bad_chain)
+
+    lpe = result['live_provider_evidence']
+    assert lpe['live_evidence_ready'] is False, (
+        'Chain with live_evidence_source=None must not satisfy live_evidence_ready'
+    )
+    assert lpe['chain']['telemetry_event_id'] is None, (
+        'No telemetry_event_id must be synthesised from RPC when source is missing'
+    )
+    assert any(
+        'no matching live telemetry event' in m for m in lpe['missing']
+    ), f'Expected no-live-event reason in missing; got: {lpe["missing"]}'
 
 
 # ===========================================================================
