@@ -21,8 +21,8 @@
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "e925696aba048cac3e281b2bd51041aed98fb085b9881929fe232c9d51dc1cc4",
-      "size_bytes": 1303,
+      "sha256": "536c853ff955618a2e849755268e2be72a06b7e590a213a6a853111f1a26ea42",
+      "size_bytes": 1406,
       "required": true,
       "status": "present"
     }
