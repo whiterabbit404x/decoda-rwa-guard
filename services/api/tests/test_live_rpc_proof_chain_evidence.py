@@ -28,12 +28,20 @@ from services.api.app import monitoring_runner
 # Mock DB helpers
 # ---------------------------------------------------------------------------
 
+import uuid as _uuid_mod
+
+
 class _MockResult:
     def __init__(self, row=None):
         self._row = row
 
     def fetchone(self):
         return self._row
+
+    def fetchall(self):
+        if self._row is None:
+            return []
+        return [self._row]
 
 
 _WS_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
@@ -80,6 +88,22 @@ def _build_conn(*, no_existing_detection: bool = True) -> MagicMock:
             return _MockResult({'created_by_user_id': _USER_ID})
         if 'from assets' in sql_norm:
             return _MockResult({'id': _ASSET_ID})
+        # Handle monitored_targets queries (SELECT and INSERT/upsert)
+        if 'monitored_targets' in sql_norm:
+            return _MockResult({'id': _TARGET_ID})
+        # Handle monitoring_runs SELECT queries (INSERT is caught by the generic INSERT handler)
+        if 'from monitoring_runs' in sql_norm:
+            if 'select 1' in sql_norm:
+                return _MockResult({'id': 1})  # confirm row exists after INSERT
+            return _MockResult(None)  # no existing monitoring run → triggers INSERT path
+        # Handle INSERT...RETURNING id for all proof-chain tables
+        # Return the first UUID parameter if available so RETURNING id reflects what was inserted
+        if 'insert into' in sql_norm and 'returning' in sql_norm:
+            first_uuid = next(
+                (p for p in (params or ()) if isinstance(p, str) and len(p) == 36),
+                None,
+            )
+            return _MockResult({'id': first_uuid or str(_uuid_mod.uuid4())})
         return _MockResult(None)
 
     conn.execute.side_effect = _execute

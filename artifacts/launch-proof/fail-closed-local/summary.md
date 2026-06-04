@@ -1,7 +1,7 @@
 # Paid SaaS launch proof
 
-- Generated: 2026-06-04T10:23:26.951678+00:00
-- Billing provider: paddle
+- Generated: 2026-06-04T10:23:34.700414+00:00
+- Billing provider: stripe
 - Launch mode: paid_saas
 
 ## Readiness Gates
@@ -11,7 +11,7 @@
 | live provider evidence ready | NOT READY |
 | managed pilot ready | NOT READY |
 | niw positioning ready | READY |
-| broad paid saas ready | READY |
+| broad paid saas ready | NOT READY |
 | ci required gates ready | READY |
 
 ## Billing / Email
@@ -22,13 +22,17 @@
 | billing_webhook_ready | YES |
 | email_ready | YES |
 
+## Blockers
+
+- local mode: paid launch readiness cannot be proven without staging/production runtime
+
 ## Allowed Claims
 
 - NIW Strategic Infrastructure Guard positioning ready
-- paid billing configured (paddle)
+- paid billing configured (stripe)
 - email provider configured
-- paid SaaS launch ready
 
 ## Prohibited Claims
 
 - Do NOT claim live EVM monitoring without proven live evidence
+- Do NOT use this local/CI proof as evidence of paid launch readiness — requires staging or production runtime

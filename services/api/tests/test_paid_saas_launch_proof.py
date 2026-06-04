@@ -85,7 +85,7 @@ def test_paid_proof_passes_with_dummy_paddle_env(tmp_path: pytest.TempPathFactor
 # 3. Paid proof writes artifact with billing_ready=true, email_ready=true
 def test_paid_proof_artifact_has_billing_and_email_ready(tmp_path: pytest.TempPathFactory) -> None:
     _run_script(PAID_PROOF_SCRIPT, _DUMMY_PADDLE_ENV, tmp_path)
-    artifact = REPO_ROOT / 'artifacts' / 'launch-proof' / 'latest' / 'summary.json'
+    artifact = REPO_ROOT / 'artifacts' / 'launch-proof' / 'fail-closed-local' / 'summary.json'
     if not artifact.exists():
         pytest.skip('launch-proof artifact not yet generated')
     data = json.loads(artifact.read_text())
@@ -246,7 +246,7 @@ def test_dispatch_chooses_correct_script(provider: str, expected_script: str) ->
 # 12. BILLING_PROVIDER=paddle produces launch_mode="paid_saas" in the artifact.
 def test_paddle_produces_paid_saas_launch_mode(tmp_path: pytest.TempPathFactory) -> None:
     _run_script(PAID_PROOF_SCRIPT, _DUMMY_PADDLE_ENV, tmp_path)
-    artifact = REPO_ROOT / 'artifacts' / 'launch-proof' / 'latest' / 'summary.json'
+    artifact = REPO_ROOT / 'artifacts' / 'launch-proof' / 'fail-closed-local' / 'summary.json'
     if not artifact.exists():
         pytest.skip('launch-proof artifact not yet generated')
     data = json.loads(artifact.read_text())
@@ -272,7 +272,7 @@ def test_stripe_produces_paid_saas_launch_mode(tmp_path: pytest.TempPathFactory)
         'EMAIL_DOMAIN': 'decoda.io',
     }
     result = _run_script(PAID_PROOF_SCRIPT, stripe_env, tmp_path)
-    artifact = REPO_ROOT / 'artifacts' / 'launch-proof' / 'latest' / 'summary.json'
+    artifact = REPO_ROOT / 'artifacts' / 'launch-proof' / 'fail-closed-local' / 'summary.json'
     if not artifact.exists():
         pytest.skip('launch-proof artifact not yet generated')
     data = json.loads(artifact.read_text())
