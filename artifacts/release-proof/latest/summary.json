@@ -1,16 +1,20 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T04:46:03.765152+00:00",
-  "release_status": "pass",
+  "generated_at": "2026-06-04T05:38:17.064637+00:00",
+  "release_status": "fail",
   "release_channel": "staging",
-  "commit_sha": "34b70cd2a319d4e3599349e612627b1e9b7cd750",
-  "branch": "main",
-  "ci_required_gates_ready": true,
-  "launch_proof_ready": true,
+  "commit_sha": "3ab3b9049e5bda1f90eeb625c793e0176207a54b",
+  "branch": "claude/tender-tesla-aSsHo",
+  "ci_required_gates_ready": false,
+  "launch_proof_ready": false,
   "manifest_ready": true,
-  "test_report_ready": true,
+  "test_report_ready": false,
   "paid_launch_ready": false,
-  "blockers": [],
+  "blockers": [
+    "ci-required-gates not ready",
+    "launch-proof not ready",
+    "test-report-summary not ready"
+  ],
   "warnings": [],
   "evidence_files": [
     "artifacts/release-proof/latest/ci-required-gates.json",

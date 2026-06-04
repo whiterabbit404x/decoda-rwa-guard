@@ -214,20 +214,190 @@ def test_paddle_billing_gate_passes_with_dummy_env(monkeypatch: pytest.MonkeyPat
 
 
 # 11. Dispatcher logic: paid proof is chosen for paddle, no-billing for none (logic test)
+# Mirrors the bash normalization in save-proof-to-repo.yml:
+#   BILLING_PROVIDER_LC=$(printf '%s' "${BILLING_PROVIDER:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
 @pytest.mark.parametrize('provider,expected_script', [
     ('paddle', 'run_paid_saas_launch_proof.py'),
     ('stripe', 'run_paid_saas_launch_proof.py'),
+    # Mixed-case variants must also route to paid proof after normalization.
+    ('Paddle', 'run_paid_saas_launch_proof.py'),
+    ('PADDLE', 'run_paid_saas_launch_proof.py'),
+    ('Stripe', 'run_paid_saas_launch_proof.py'),
     ('none', 'run_no_billing_launch_proof.py'),
     ('', 'run_no_billing_launch_proof.py'),
     ('disabled', 'run_no_billing_launch_proof.py'),
+    ('no_billing', 'run_no_billing_launch_proof.py'),
 ])
 def test_dispatch_chooses_correct_script(provider: str, expected_script: str) -> None:
+    # Simulate the bash normalization from the workflow step.
+    normalized = provider.strip().lower()
     paid_providers = {'paddle', 'stripe'}
     chosen = (
         'run_paid_saas_launch_proof.py'
-        if provider in paid_providers
+        if normalized in paid_providers
         else 'run_no_billing_launch_proof.py'
     )
     assert chosen == expected_script, (
-        f'For BILLING_PROVIDER={provider!r}, expected {expected_script} but got {chosen}'
+        f'For BILLING_PROVIDER={provider!r} (normalized={normalized!r}), '
+        f'expected {expected_script} but got {chosen}'
+    )
+
+
+# 12. BILLING_PROVIDER=paddle produces launch_mode="paid_saas" in the artifact.
+def test_paddle_produces_paid_saas_launch_mode(tmp_path: pytest.TempPathFactory) -> None:
+    _run_script(PAID_PROOF_SCRIPT, _DUMMY_PADDLE_ENV, tmp_path)
+    artifact = REPO_ROOT / 'artifacts' / 'launch-proof' / 'latest' / 'summary.json'
+    if not artifact.exists():
+        pytest.skip('launch-proof artifact not yet generated')
+    data = json.loads(artifact.read_text())
+    assert data.get('launch_mode') == 'paid_saas', (
+        f'BILLING_PROVIDER=paddle must produce launch_mode="paid_saas", '
+        f'got {data.get("launch_mode")!r}'
+    )
+    assert data.get('billing_provider') == 'paddle', (
+        f'billing_provider must be "paddle" in the artifact'
+    )
+
+
+# 13. BILLING_PROVIDER=stripe produces launch_mode="paid_saas" in the artifact.
+def test_stripe_produces_paid_saas_launch_mode(tmp_path: pytest.TempPathFactory) -> None:
+    stripe_env = {
+        'BILLING_PROVIDER': 'stripe',
+        'STRIPE_SECRET_KEY': 'sk_live_testkey_stripe_dummy',
+        'STRIPE_WEBHOOK_SECRET': 'whsec_testwebhook_stripe_dummy',
+        'STRIPE_PRICE_ID': 'price_monthly_dummy',
+        'EMAIL_PROVIDER': 'resend',
+        'RESEND_API_KEY': 're_testkey_dummy_abc123',
+        'EMAIL_FROM': 'noreply@decoda.io',
+        'EMAIL_DOMAIN': 'decoda.io',
+    }
+    result = _run_script(PAID_PROOF_SCRIPT, stripe_env, tmp_path)
+    artifact = REPO_ROOT / 'artifacts' / 'launch-proof' / 'latest' / 'summary.json'
+    if not artifact.exists():
+        pytest.skip('launch-proof artifact not yet generated')
+    data = json.loads(artifact.read_text())
+    assert data.get('launch_mode') == 'paid_saas', (
+        f'BILLING_PROVIDER=stripe must produce launch_mode="paid_saas", '
+        f'got {data.get("launch_mode")!r}\n'
+        f'stdout: {result.stdout}\nstderr: {result.stderr}'
+    )
+
+
+# 14. assert_proof_consistency Check 5 fails when launch_mode="pilot" but
+#     BILLING_PROVIDER=paddle is set in the environment.
+def test_assert_proof_consistency_check5_fails_pilot_with_paddle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import importlib.util, sys as _sys
+
+    # Build a minimal launch-proof artifact with launch_mode="pilot".
+    launch_dir = tmp_path / 'artifacts' / 'launch-proof' / 'latest'
+    launch_dir.mkdir(parents=True)
+    (launch_dir / 'summary.json').write_text(json.dumps({
+        'schema_version': 1,
+        'generated_at': '2026-01-01T00:00:00+00:00',
+        'launch_mode': 'pilot',
+        'billing_provider': None,
+        'pilot_ready': True,
+        'paid_launch_ready': False,
+        'controlled_pilot_ready': True,
+        'broad_paid_saas_ready': False,
+        'readiness': {},
+        'blockers': [],
+        'warnings': [],
+    }))
+
+    assert_script = REPO_ROOT / 'scripts' / 'assert_proof_consistency.py'
+    result = subprocess.run(
+        [sys.executable, str(assert_script)],
+        cwd=str(REPO_ROOT),
+        env={**os.environ, 'BILLING_PROVIDER': 'paddle',
+             'ASSERT_PROOF_ARTIFACT_ROOT': str(tmp_path)},
+        capture_output=True,
+        encoding='utf-8',
+        timeout=30,
+    )
+    assert result.returncode == 1, (
+        'assert_proof_consistency must exit 1 when launch_mode="pilot" '
+        f'and BILLING_PROVIDER=paddle\nstdout: {result.stdout}\nstderr: {result.stderr}'
+    )
+    assert 'CHECK 5 FAIL' in result.stdout, (
+        f'Expected CHECK 5 FAIL in output.\nstdout: {result.stdout}'
+    )
+
+
+# 15. assert_proof_consistency Check 5 passes when launch_mode="paid_saas"
+#     and BILLING_PROVIDER=paddle is set.
+def test_assert_proof_consistency_check5_passes_paid_saas_with_paddle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launch_dir = tmp_path / 'artifacts' / 'launch-proof' / 'latest'
+    launch_dir.mkdir(parents=True)
+    (launch_dir / 'summary.json').write_text(json.dumps({
+        'schema_version': 1,
+        'generated_at': '2026-01-01T00:00:00+00:00',
+        'launch_mode': 'paid_saas',
+        'billing_provider': 'paddle',
+        'pilot_ready': False,
+        'paid_launch_ready': False,
+        'controlled_pilot_ready': False,
+        'broad_paid_saas_ready': False,
+        'readiness': {},
+        'blockers': [],
+        'warnings': [],
+    }))
+
+    assert_script = REPO_ROOT / 'scripts' / 'assert_proof_consistency.py'
+    result = subprocess.run(
+        [sys.executable, str(assert_script)],
+        cwd=str(REPO_ROOT),
+        env={**os.environ, 'BILLING_PROVIDER': 'paddle',
+             'ASSERT_PROOF_ARTIFACT_ROOT': str(tmp_path)},
+        capture_output=True,
+        encoding='utf-8',
+        timeout=30,
+    )
+    # Check 5 must pass; other checks may warn but the exit code depends on them.
+    assert 'CHECK 5 FAIL' not in result.stdout, (
+        f'CHECK 5 must NOT fail when launch_mode="paid_saas" and BILLING_PROVIDER=paddle.\n'
+        f'stdout: {result.stdout}'
+    )
+
+
+# 16. assert_proof_consistency Check 5 passes when BILLING_PROVIDER=no_billing
+#     even if launch_mode="pilot" (pilot mode is valid without billing).
+def test_assert_proof_consistency_check5_passes_pilot_with_no_billing(
+    tmp_path: Path,
+) -> None:
+    launch_dir = tmp_path / 'artifacts' / 'launch-proof' / 'latest'
+    launch_dir.mkdir(parents=True)
+    (launch_dir / 'summary.json').write_text(json.dumps({
+        'schema_version': 1,
+        'generated_at': '2026-01-01T00:00:00+00:00',
+        'launch_mode': 'pilot',
+        'billing_provider': None,
+        'pilot_ready': True,
+        'paid_launch_ready': False,
+        'controlled_pilot_ready': True,
+        'broad_paid_saas_ready': False,
+        'readiness': {},
+        'blockers': [],
+        'warnings': [],
+    }))
+
+    assert_script = REPO_ROOT / 'scripts' / 'assert_proof_consistency.py'
+    clean_env = {k: v for k, v in os.environ.items()
+                 if k not in ('BILLING_PROVIDER', 'ASSERT_PROOF_ARTIFACT_ROOT')}
+    clean_env['ASSERT_PROOF_ARTIFACT_ROOT'] = str(tmp_path)
+    result = subprocess.run(
+        [sys.executable, str(assert_script)],
+        cwd=str(REPO_ROOT),
+        env=clean_env,
+        capture_output=True,
+        encoding='utf-8',
+        timeout=30,
+    )
+    assert 'CHECK 5 FAIL' not in result.stdout, (
+        f'CHECK 5 must NOT fail when BILLING_PROVIDER is empty and launch_mode="pilot".\n'
+        f'stdout: {result.stdout}'
     )

@@ -1,45 +1,53 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T04:45:59.675766+00:00",
+  "generated_at": "2026-06-04T05:39:50.598840+00:00",
   "mode": "staging",
   "strict": false,
   "release_channel": "staging",
-  "staging_launch_ready": true,
-  "broad_paid_saas_ready": true,
+  "staging_launch_ready": false,
+  "broad_paid_saas_ready": false,
   "safe_to_sell_broadly_today": false,
   "local_validation_ready": false,
-  "staging_env_configured": true,
+  "staging_env_configured": false,
   "staging_runtime_reachable": true,
-  "staging_worker_enabled": true,
-  "staging_database_reachable": true,
-  "staging_auth_configured": true,
-  "staging_live_evidence_ready": true,
+  "staging_worker_enabled": false,
+  "staging_database_reachable": false,
+  "staging_auth_configured": false,
+  "staging_live_evidence_ready": false,
   "staging_launch_validation": {
-    "status": "pass",
-    "staging_environment_present": true,
-    "staging_api_url_present": true,
-    "staging_app_url_present": true,
-    "staging_database_present": true,
-    "staging_auth_secret_present": true,
-    "staging_worker_present": true,
+    "status": "fail",
+    "staging_environment_present": false,
+    "staging_api_url_present": false,
+    "staging_app_url_present": false,
+    "staging_database_present": false,
+    "staging_auth_secret_present": false,
+    "staging_worker_present": false,
     "staging_migrations_validated": true,
     "staging_runtime_validated": true,
     "staging_live_evidence_validated": true,
-    "generated_at": "2026-06-04T04:45:59.675776+00:00",
-    "blockers": [],
-    "warnings": []
+    "generated_at": "2026-06-04T05:39:50.598869+00:00",
+    "blockers": [
+      "STAGING_API_URL not configured",
+      "STAGING_APP_URL not configured",
+      "STAGING_DATABASE_URL not configured",
+      "STAGING_AUTH_TOKEN_SECRET not configured",
+      "STAGING_WORKER_ENABLED not configured; staging worker presence not confirmed"
+    ],
+    "warnings": [
+      "STAGING_EVM_RPC_URL not set; staging EVM provider not confirmed"
+    ]
   },
   "live_provider_validation": {
-    "status": "pass",
-    "evm_rpc_configured": true,
-    "chain_id_configured": true,
+    "status": "fail",
+    "evm_rpc_configured": false,
+    "chain_id_configured": false,
     "chain_id_observed": "1",
     "provider_health_checked": true,
-    "provider_ready": true,
+    "provider_ready": false,
     "provider_mode": "live",
     "worker_enabled": true,
     "latest_live_telemetry_at": "2026-04-22T14:32:59.583341+00:00",
-    "live_evidence_ready": true,
+    "live_evidence_ready": false,
     "evidence_source": "live",
     "chain": {
       "telemetry_event_id": "48990975-bd17-509b-bfde-e52141b02403",
@@ -49,39 +57,73 @@
       "response_action_id": "02a4ace2-071f-54d7-94e3-57ab0fd00ed3",
       "evidence_package_id": "746fa939-5efe-5b75-8dfd-f94d774cf6cf"
     },
-    "missing": [],
+    "missing": [
+      "EVM_RPC_URL (or STAGING_EVM_RPC_URL) not configured",
+      "live_evidence_ready downgraded: evm_rpc_configured=false; real EVM provider secrets required to claim live evidence"
+    ],
     "contradiction_flags": [],
-    "blockers": [],
-    "warnings": []
+    "blockers": [
+      "EVM_RPC_URL (or STAGING_EVM_RPC_URL) not configured",
+      "live_evidence_ready downgraded: evm_rpc_configured=false; real EVM provider secrets required to claim live evidence"
+    ],
+    "warnings": [
+      "EVM_CHAIN_ID (or STAGING_EVM_CHAIN_ID) not configured"
+    ]
   },
   "billing_production_validation": {
-    "status": "pass",
+    "status": "fail",
     "billing_provider": "other",
-    "live_secret_key_present": true,
-    "webhook_secret_present": true,
-    "price_id_present": true,
-    "webhook_endpoint_validated": true,
+    "live_secret_key_present": false,
+    "webhook_secret_present": false,
+    "price_id_present": false,
+    "webhook_endpoint_validated": false,
     "test_mode_detected": false,
-    "blockers": [],
+    "blockers": [
+      "PADDLE_API_KEY not configured",
+      "PADDLE_WEBHOOK_SECRET not configured",
+      "PADDLE_PRICE_ID (or PADDLE_PRICE_ID_*) not configured"
+    ],
     "warnings": []
   },
   "email_production_validation": {
-    "status": "pass",
-    "provider": "resend",
-    "api_key_present": true,
-    "sender_present": true,
-    "domain_present": true,
-    "production_sender_validated": true,
-    "blockers": [],
+    "status": "fail",
+    "provider": "unknown",
+    "api_key_present": false,
+    "sender_present": false,
+    "domain_present": false,
+    "production_sender_validated": false,
+    "blockers": [
+      "EMAIL_PROVIDER not configured",
+      "EMAIL_FROM not configured; production sender address required",
+      "EMAIL_DOMAIN not configured; production domain required"
+    ],
     "warnings": []
   },
   "required_dependencies": {
     "paid_launch_readiness": "pass",
-    "release_proof": "pass",
+    "release_proof": "fail",
     "runtime_truthfulness": "pass",
     "evidence_export_truthfulness": "pass",
     "multi_tenant_isolation": "pass"
   },
-  "blockers": [],
-  "warnings": []
+  "blockers": [
+    "EMAIL_DOMAIN not configured; production domain required",
+    "EMAIL_FROM not configured; production sender address required",
+    "EMAIL_PROVIDER not configured",
+    "EVM_RPC_URL (or STAGING_EVM_RPC_URL) not configured",
+    "PADDLE_API_KEY not configured",
+    "PADDLE_PRICE_ID (or PADDLE_PRICE_ID_*) not configured",
+    "PADDLE_WEBHOOK_SECRET not configured",
+    "STAGING_API_URL not configured",
+    "STAGING_APP_URL not configured",
+    "STAGING_AUTH_TOKEN_SECRET not configured",
+    "STAGING_DATABASE_URL not configured",
+    "STAGING_WORKER_ENABLED not configured; staging worker presence not confirmed",
+    "live_evidence_ready downgraded: evm_rpc_configured=false; real EVM provider secrets required to claim live evidence",
+    "required dependency failed: release_proof"
+  ],
+  "warnings": [
+    "EVM_CHAIN_ID (or STAGING_EVM_CHAIN_ID) not configured",
+    "STAGING_EVM_RPC_URL not set; staging EVM provider not confirmed"
+  ]
 }

@@ -1,21 +1,21 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T05:15:43.180440+00:00",
-  "mode": "staging",
-  "strict": false,
-  "overall_score": 100,
+  "generated_at": "2026-06-04T05:39:33.102644+00:00",
+  "mode": "local",
+  "strict": true,
+  "overall_score": 96,
   "controlled_pilot_ready": true,
-  "broad_paid_saas_ready": true,
-  "enterprise_procurement_ready": true,
-  "production_100_percent_ready": true,
+  "broad_paid_saas_ready": false,
+  "enterprise_procurement_ready": false,
+  "production_100_percent_ready": false,
   "categories": {
     "product_concept": {
       "score": 100,
       "status": "pass"
     },
     "saas_workflow": {
-      "score": 100,
-      "status": "pass"
+      "score": 75,
+      "status": "warn"
     },
     "runtime_truthfulness": {
       "score": 100,
@@ -62,7 +62,7 @@
       "note": "requires npm run build in CI"
     },
     "saas_workflow_validation": {
-      "status": "pass",
+      "status": "not_run",
       "source": "ci_gates",
       "note": ""
     },
@@ -107,13 +107,17 @@
       "note": ""
     },
     "staging_validation": {
-      "status": "pass",
+      "status": "fail",
       "source": "staging_proof",
-      "note": ""
+      "note": "staging_launch_ready=True, mode='local'"
     }
   },
-  "blockers": [],
-  "warnings": [],
+  "blockers": [
+    "staging proof present but mode='local'; staging validation requires staging/production mode"
+  ],
+  "warnings": [
+    "saas_workflow_validation not run in CI gates"
+  ],
   "proof_artifacts": [
     "/home/user/decoda-rwa-guard/artifacts/launch-proof/latest/summary.json",
     "/home/user/decoda-rwa-guard/artifacts/release-proof/latest/summary.json",
@@ -122,5 +126,5 @@
     "/home/user/decoda-rwa-guard/artifacts/final-readiness/latest/summary.json"
   ],
   "safe_to_sell_broadly_today": false,
-  "safe_to_sell_reason": "Cannot sell broadly without --strict flag. Strict mode requires all gates to pass with live evidence."
+  "safe_to_sell_reason": "Cannot sell broadly from local mode. Run with --mode staging --strict or --mode production --strict using real provider credentials and live evidence."
 }

@@ -428,12 +428,16 @@ jobs:
         #   none / empty / other  → run_no_billing_launch_proof.py (NIW/pilot path, billing disabled)
         # Uses the job-level BILLING_PROVIDER and PADDLE_* / email secrets so that
         # billing_ready=true and email_ready=true appear in the artifact when configured.
+        # IMPORTANT: normalize BILLING_PROVIDER to lowercase so secrets like "Paddle"
+        # or "PADDLE" route correctly. The Python scripts already normalize internally
+        # but the bash comparison is case-sensitive without this step.
         run: |
-          if [ "$BILLING_PROVIDER" = "paddle" ] || [ "$BILLING_PROVIDER" = "stripe" ]; then
-            echo "BILLING_PROVIDER=$BILLING_PROVIDER: running paid SaaS launch proof"
+          BILLING_PROVIDER_LC=$(printf '%s' "${BILLING_PROVIDER:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+          if [ "$BILLING_PROVIDER_LC" = "paddle" ] || [ "$BILLING_PROVIDER_LC" = "stripe" ]; then
+            echo "BILLING_PROVIDER=$BILLING_PROVIDER_LC: running paid SaaS launch proof"
             python scripts/staging/run_paid_saas_launch_proof.py --mode staging
           else
-            echo "BILLING_PROVIDER=${BILLING_PROVIDER:-none}: running no-billing launch proof"
+            echo "BILLING_PROVIDER=${BILLING_PROVIDER_LC:-none}: running no-billing launch proof"
             export BILLING_PROVIDER=none
             python scripts/staging/run_no_billing_launch_proof.py
           fi

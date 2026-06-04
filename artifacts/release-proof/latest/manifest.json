@@ -1,28 +1,28 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T04:46:03.768311+00:00",
+  "generated_at": "2026-06-04T05:38:17.071371+00:00",
   "release_channel": "staging",
-  "commit_sha": "34b70cd2a319d4e3599349e612627b1e9b7cd750",
-  "branch": "main",
+  "commit_sha": "3ab3b9049e5bda1f90eeb625c793e0176207a54b",
+  "branch": "claude/tender-tesla-aSsHo",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "cee677737841c8e0a7f4c73782691fae7fdd3b245a5c7fbf642134c66c729f90",
-      "size_bytes": 657,
+      "sha256": "e49ea173b8930a690b372746077d7c04a651de550fd1319a25f688d859f83dad",
+      "size_bytes": 785,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "5ff6343d6e206353724274a685dcd1214975b1603e6aa374f2d7606752177043",
-      "size_bytes": 1956,
+      "sha256": "020b72dbe7f2be0678f82c215229f4a9cad2f551691eee7695c07b1ee265e5e0",
+      "size_bytes": 1959,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "4677f8c3121b22882403a2126a7689ed7075df19fa72f2cad2e96419a75c72d6",
-      "size_bytes": 1204,
+      "sha256": "113cea853dbc0f07b97b545eb22b1d6111c88caeb7b94b8dd501dbacff61ccc2",
+      "size_bytes": 4043,
       "required": true,
       "status": "present"
     }
