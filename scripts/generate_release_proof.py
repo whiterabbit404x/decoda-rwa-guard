@@ -587,9 +587,20 @@ def generate_launch_proof(*, mode: str) -> dict[str, Any]:
     if not readiness['provider_ready']:
         blockers.append('provider not ready')
     if not readiness['live_evidence_ready']:
-        blockers.append('live evidence not ready')
+        blockers.append('live evidence missing: broad paid SaaS launch requires live provider evidence')
     if not readiness['ci_required_gates_ready']:
         blockers.append('ci gates not ready')
+
+    # In local/CI mode, broad paid SaaS readiness can never be proven regardless of gate states.
+    _local_modes_set = {'local', 'ci', 'fail_closed_local'}
+    if mode in _local_modes_set:
+        blockers.append(
+            'local mode: paid launch readiness cannot be proven without staging/production runtime'
+        )
+
+    # Safety fallback: broad_paid_saas_ready=false must always have at least one blocker.
+    if not broad_paid_saas_ready and not blockers:
+        blockers.append('paid SaaS launch blocked: one or more required readiness gates are not proven')
 
     # managed_pilot_ready: read from sell-now-proof artifact (file read, fail-closed).
     managed_pilot_ready = False

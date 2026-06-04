@@ -1,6 +1,6 @@
 # Paid SaaS launch proof
 
-- Generated: 2026-06-04T06:19:08.022799+00:00
+- Generated: 2026-06-04T06:25:44.204306+00:00
 - Billing provider: paddle
 - Launch mode: paid_saas
 
@@ -9,7 +9,7 @@
 | Gate | Status |
 |---|---|
 | live provider evidence ready | READY |
-| managed pilot ready | READY |
+| managed pilot ready | NOT READY |
 | niw positioning ready | READY |
 | broad paid saas ready | READY |
 | ci required gates ready | READY |
@@ -25,7 +25,6 @@
 ## Allowed Claims
 
 - NIW Strategic Infrastructure Guard positioning ready
-- controlled pilot / managed sale ready
 - live provider evidence ready
 - paid billing configured (paddle)
 - email provider configured

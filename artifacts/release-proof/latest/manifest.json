@@ -1,28 +1,28 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T06:19:10.588533+00:00",
-  "release_channel": "staging",
-  "commit_sha": "648a6d2ae5302564044a574253b5cbe53488ff8f",
-  "branch": "main",
+  "generated_at": "2026-06-04T06:25:55.742116+00:00",
+  "release_channel": "local",
+  "commit_sha": "37f1fea7d360394a87b564e219795a90b8de0ac4",
+  "branch": "claude/fervent-gauss-yhJJB",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "79872735c1356919f3f37f7ba86e40c9e17e2b519c539002affae14997ba6e7b",
-      "size_bytes": 733,
+      "sha256": "bc74f9e7c5041da211ed4ca13f6c7424fcceed1c82f857a5e6d1d1f88ab7cc52",
+      "size_bytes": 753,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "69951758f71318b2a2b8ce3d279dacd8aaf52b8316c569a65bbf05c53ba7efb5",
-      "size_bytes": 1956,
+      "sha256": "2734e9031f0009a723cdabb06221c335a9d66b7443db3a0c49f378393a2ff800",
+      "size_bytes": 1852,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "2a8f6985cc902ddc18bf85b0acf117d242f55ba1b5a2989b5e04b30dcfec10f2",
-      "size_bytes": 1252,
+      "sha256": "4570600131de189d04ca99aa686cae21f715e0c37e4b057d7a9142995c5f4d9c",
+      "size_bytes": 1411,
       "required": true,
       "status": "present"
     }
