@@ -619,3 +619,159 @@ def test_on_disk_live_evidence_not_stale_when_enterprise_claimed() -> None:
         f'final-readiness claims enterprise_procurement_ready=True '
         f'but live-evidence-proof telemetry is stale: {blockers}'
     )
+
+
+# ---------------------------------------------------------------------------
+# Cross-artifact consistency tests (Task — final-readiness must be authoritative)
+#
+# These tests fail if any "latest" summary contradicts final-readiness.
+# ---------------------------------------------------------------------------
+
+_FINAL_READINESS_PATH = REPO_ROOT / 'artifacts' / 'final-readiness' / 'latest' / 'summary.json'
+_LAUNCH_PROOF_PATH = REPO_ROOT / 'artifacts' / 'launch-proof' / 'latest' / 'summary.json'
+_CI_GATES_PATH = REPO_ROOT / 'artifacts' / 'release-proof' / 'latest' / 'ci-required-gates.json'
+_SVC_LIVE_EVIDENCE_PATH = (
+    REPO_ROOT / 'services' / 'api' / 'artifacts' / 'live_evidence' / 'latest' / 'summary.json'
+)
+_LIVE_EVIDENCE_PROOF_PATH = (
+    REPO_ROOT / 'artifacts' / 'live-evidence-proof' / 'latest' / 'summary.json'
+)
+
+
+def _load_artifact(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
+
+
+def test_cross_artifact_launch_proof_consistent_with_final_readiness() -> None:
+    """
+    If final-readiness says broad_paid_saas_ready=True, launch-proof must
+    also say broad_paid_saas_ready=True and paid_launch_ready=True.
+    """
+    final = _load_artifact(_FINAL_READINESS_PATH)
+    launch = _load_artifact(_LAUNCH_PROOF_PATH)
+    if final is None or launch is None:
+        pytest.skip('on-disk artifacts not present')
+
+    if not final.get('broad_paid_saas_ready'):
+        return  # final says not ready — no contradiction to check
+
+    assert launch.get('broad_paid_saas_ready') is True, (
+        'CONTRADICTION: final-readiness says broad_paid_saas_ready=True '
+        'but launch-proof/latest/summary.json says broad_paid_saas_ready=False; '
+        'regenerate launch-proof with proof_mode=staging'
+    )
+    assert launch.get('paid_launch_ready') is True, (
+        'CONTRADICTION: final-readiness says broad_paid_saas_ready=True '
+        'but launch-proof/latest/summary.json says paid_launch_ready=False; '
+        'regenerate launch-proof with proof_mode=staging'
+    )
+
+
+def test_cross_artifact_ci_gates_consistent_with_final_readiness() -> None:
+    """
+    If final-readiness says broad_paid_saas_ready=True, ci-required-gates
+    must say broad_paid_launch_ready=True.
+    """
+    final = _load_artifact(_FINAL_READINESS_PATH)
+    gates = _load_artifact(_CI_GATES_PATH)
+    if final is None or gates is None:
+        pytest.skip('on-disk artifacts not present')
+
+    if not final.get('broad_paid_saas_ready'):
+        return  # final says not ready — no contradiction to check
+
+    assert gates.get('broad_paid_launch_ready') is True, (
+        'CONTRADICTION: final-readiness says broad_paid_saas_ready=True '
+        'but release-proof/latest/ci-required-gates.json says broad_paid_launch_ready=False; '
+        'regenerate ci-required-gates with staging release_channel and all gates passing'
+    )
+
+
+def test_cross_artifact_svc_live_evidence_consistent_with_final_readiness() -> None:
+    """
+    services/api/artifacts/live_evidence/latest/summary.json must agree with
+    final-readiness on enterprise_procurement_ready. Stale April telemetry must
+    not be present as the latest live evidence when final-readiness claims enterprise ready.
+    """
+    final = _load_artifact(_FINAL_READINESS_PATH)
+    svc = _load_artifact(_SVC_LIVE_EVIDENCE_PATH)
+    if final is None or svc is None:
+        pytest.skip('on-disk artifacts not present')
+
+    if not final.get('enterprise_procurement_ready'):
+        return  # not claiming enterprise ready — nothing to contradict
+
+    assert svc.get('enterprise_procurement_ready') is True, (
+        'CONTRADICTION: final-readiness says enterprise_procurement_ready=True '
+        'but services/api/artifacts/live_evidence/latest/summary.json says False; '
+        'regenerate services live_evidence summary from the current live-evidence-proof chain'
+    )
+    assert svc.get('live_evidence_ready') is True, (
+        'CONTRADICTION: final-readiness says enterprise_procurement_ready=True '
+        'but services/api/artifacts/live_evidence/latest/summary.json says live_evidence_ready=False'
+    )
+
+
+def test_cross_artifact_no_stale_april_telemetry_in_any_latest_summary() -> None:
+    """
+    No "latest" artifact summary may reference April 2026 telemetry as the
+    current live evidence when final-readiness claims enterprise/broad ready.
+
+    Stale April 2026 timestamp: 2026-04-22T* must not appear in latest_live_telemetry_at
+    of any proof artifact when the system claims to be enterprise-ready.
+    """
+    final = _load_artifact(_FINAL_READINESS_PATH)
+    if final is None:
+        pytest.skip('final-readiness artifact not present')
+
+    if not final.get('enterprise_procurement_ready'):
+        return
+
+    stale_month_prefix = '2026-04-'
+
+    for name, path in [
+        ('live-evidence-proof', _LIVE_EVIDENCE_PROOF_PATH),
+        ('services/api live_evidence', _SVC_LIVE_EVIDENCE_PATH),
+    ]:
+        artifact = _load_artifact(path)
+        if artifact is None:
+            continue
+
+        # Check top-level and nested telemetry timestamps
+        top_ts = artifact.get('latest_live_telemetry_at', '')
+        lpe_ts = (artifact.get('live_provider_evidence') or {}).get('latest_live_telemetry_at', '')
+        for ts_value in (top_ts, lpe_ts):
+            if ts_value and str(ts_value).startswith(stale_month_prefix):
+                raise AssertionError(
+                    f'STALE TELEMETRY: {name} has latest_live_telemetry_at={ts_value!r} '
+                    f'which is April 2026 data used as current live evidence '
+                    f'while final-readiness claims enterprise_procurement_ready=True; '
+                    f'regenerate from fresh June 2026 live RPC evidence'
+                )
+
+
+def test_cross_artifact_launch_proof_has_no_local_mode_blocker_when_broad_ready() -> None:
+    """
+    When final-readiness says broad_paid_saas_ready=True, launch-proof must not
+    contain a 'local mode' blocker — that would contradict the staging proof mode.
+    """
+    final = _load_artifact(_FINAL_READINESS_PATH)
+    launch = _load_artifact(_LAUNCH_PROOF_PATH)
+    if final is None or launch is None:
+        pytest.skip('on-disk artifacts not present')
+
+    if not final.get('broad_paid_saas_ready'):
+        return
+
+    blockers = launch.get('blockers', [])
+    local_mode_blockers = [b for b in blockers if 'local mode' in str(b).lower()]
+    assert not local_mode_blockers, (
+        f'CONTRADICTION: final-readiness says broad_paid_saas_ready=True '
+        f'but launch-proof has local-mode blockers: {local_mode_blockers}; '
+        f'regenerate launch-proof with proof_mode=staging'
+    )

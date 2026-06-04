@@ -90,9 +90,19 @@ def validate_ci_required_gates(path: Path) -> tuple[bool, list[str]]:
                 if gate_status not in {'pass', 'not_run'}:  # not_run is allowed for local mode
                     issues.append(f'ci-required-gates: overall_status=pass but {gate_name}={gate_status}')
 
-    # Check broad_paid_launch_ready is never true
+    # broad_paid_launch_ready is only allowed in staging/production with overall_status=pass
     if gates.get('broad_paid_launch_ready') is True:
-        issues.append('ci-required-gates: broad_paid_launch_ready must never be true')
+        channel = str(gates.get('release_channel', 'local')).lower()
+        if channel not in ('staging', 'production'):
+            issues.append(
+                f'ci-required-gates: broad_paid_launch_ready=true '
+                f'requires release_channel=staging/production, got channel={channel!r}'
+            )
+        if overall_status != 'pass':
+            issues.append(
+                f'ci-required-gates: broad_paid_launch_ready=true '
+                f'requires overall_status=pass, got {overall_status!r}'
+            )
 
     # Check for secrets
     secrets = _has_secret_like_value(gates)
