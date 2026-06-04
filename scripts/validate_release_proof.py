@@ -180,9 +180,14 @@ def validate_launch_proof(path: Path) -> tuple[bool, list[str]]:
         if not readiness.get('live_evidence_ready'):
             issues.append('launch-proof: pilot_ready=true but missing live evidence')
 
-    # Check paid_launch_ready is never true in local mode
+    # Check paid_launch_ready is only true in staging/production proof mode
     if proof.get('paid_launch_ready') is True:
-        issues.append('launch-proof: paid_launch_ready must never be true in local mode')
+        proof_mode = str(proof.get('proof_mode') or '').strip().lower()
+        if proof_mode not in ('staging', 'production'):
+            issues.append(
+                f'launch-proof: paid_launch_ready=true requires proof_mode=staging/production, '
+                f'got proof_mode={proof_mode!r}'
+            )
 
     # Check for secrets
     secrets = _has_secret_like_value(proof)

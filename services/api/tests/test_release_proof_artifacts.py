@@ -110,15 +110,18 @@ def test_missing_live_evidence_blocks_broad_paid_saas() -> None:
 
 
 # Test C: Missing CI gate makes release_status fail
-def test_missing_ci_gate_makes_release_status_fail() -> None:
-    """Verify missing CI gate blocks release status."""
+def test_missing_ci_gate_makes_release_status_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify missing CI gate blocks release status when no artifacts exist on disk."""
+    import scripts.generate_release_proof as grp
+    monkeypatch.setattr(grp, 'REPO_ROOT', tmp_path)
+
     from scripts.generate_release_proof import generate_release_proof
 
     release_proof = generate_release_proof(mode='local', strict=False)
 
-    # In local mode without CI gates, release should not pass
-    # (ci_required_gates_ready should be false if gates artifact is missing)
+    # In local mode without CI gates artifact, release should not pass
     assert release_proof['release_status'] == 'fail'
+    assert release_proof['ci_required_gates_ready'] is False
 
 
 # Test D: Paid launch readiness blockers are captured
@@ -899,8 +902,10 @@ def test_save_proof_workflow_step_order() -> None:
     launch_idx      = _index('launch proof')
     release_idx     = _index('generate release proof')
     validate_idx    = _index('validate release proof')
-    sell_now_idx    = _index('sell-now proof')
+    staging_regen_idx = _index('regenerate staging proof after release proof')
     final_idx       = _index('final-readiness')
+    sell_now_idx    = _index('sell-now proof')
+    consistency_idx = _index('assert proof consistency')
     github_idx      = _index('github zip proof')
 
     assert launch_idx != -1,   f'No "launch proof" step found in save-proof job. Steps: {step_names}'
@@ -917,18 +922,33 @@ def test_save_proof_workflow_step_order() -> None:
         f'generate-release-proof step ({release_idx}) must come before validate-release-proof step ({validate_idx}). '
         f'Steps: {step_names}'
     )
-    assert validate_idx < sell_now_idx, (
-        f'validate-release-proof step ({validate_idx}) must come before sell-now-proof step ({sell_now_idx}). '
-        f'Steps: {step_names}'
-    )
+    # staging-proof must be regenerated after release-proof so required_dependencies are fresh
+    if staging_regen_idx != -1:
+        assert validate_idx < staging_regen_idx, (
+            f'validate-release-proof step ({validate_idx}) must come before '
+            f'staging-proof-regen step ({staging_regen_idx}). Steps: {step_names}'
+        )
+    # final-readiness must run before sell-now so sell-now reads the current broad_paid_saas_ready
+    if final_idx != -1:
+        assert final_idx < sell_now_idx, (
+            f'final-readiness step ({final_idx}) must come before sell-now-proof step ({sell_now_idx}). '
+            f'sell-now reads final-readiness to detect contradictions. Steps: {step_names}'
+        )
     assert sell_now_idx < github_idx, (
         f'sell-now-proof step ({sell_now_idx}) must come before github-zip-proof step ({github_idx}). '
         f'Steps: {step_names}'
     )
-    if final_idx != -1:
-        assert sell_now_idx < final_idx, (
-            f'sell-now-proof step ({sell_now_idx}) must come before final-readiness step ({final_idx}).'
+    # consistency assertion must run before commit/push
+    if consistency_idx != -1:
+        assert sell_now_idx < consistency_idx, (
+            f'sell-now-proof step ({sell_now_idx}) must come before '
+            f'consistency-assertion step ({consistency_idx}). Steps: {step_names}'
         )
+        assert consistency_idx < github_idx, (
+            f'consistency-assertion step ({consistency_idx}) must come before '
+            f'github-zip-proof step ({github_idx}). Steps: {step_names}'
+        )
+    if final_idx != -1:
         assert final_idx < github_idx, (
             f'final-readiness step ({final_idx}) must come before github-zip-proof step ({github_idx}).'
         )

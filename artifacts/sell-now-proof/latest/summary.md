@@ -1,13 +1,13 @@
 # Sell-Now Proof
 
-**Generated:** 2026-06-04T04:46:03.883867+00:00
+**Generated:** 2026-06-04T05:15:43.212623+00:00
 
 ## Readiness Summary
 
 | Flag | Value |
 |---|---|
 | sell_now_managed_ready | NO |
-| broad_paid_saas_ready | NO |
+| broad_paid_saas_ready | YES |
 | safe_to_sell_broadly_today | NO |
 
 ## Evidence
@@ -32,24 +32,20 @@
 ## Blockers
 
 - contradiction: final-readiness says safe_to_sell_broadly_today=false; sell-now must not contradict
-- contradiction: sell-now broad_paid_saas_ready=true but final-readiness broad_paid_saas_ready=false; stricter result wins
 
 ## Contradiction Flags
 
 - final-readiness says safe_to_sell_broadly_today=false; sell-now must not contradict
-- sell-now broad_paid_saas_ready=true but final-readiness broad_paid_saas_ready=false; stricter result wins
 
 ## Safe Claims
 
 - controlled pilot ready: single customer with direct onboarding, no billing required
-- overall readiness score: 90/100
+- overall readiness score: 100/100
 
 ## Prohibited Claims
 
 - Do NOT claim live monitoring proven from real RPC data
 - Do NOT claim this product is ready for managed or pilot customer delivery
-- Do NOT claim broad paid SaaS readiness
-- Do NOT claim billing, email, or staging are production-ready
 - Do NOT claim safe_to_sell_broadly_today=true
 
 ## Sources

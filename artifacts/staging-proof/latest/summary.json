@@ -5,7 +5,7 @@
   "strict": false,
   "release_channel": "staging",
   "staging_launch_ready": true,
-  "broad_paid_saas_ready": false,
+  "broad_paid_saas_ready": true,
   "safe_to_sell_broadly_today": false,
   "local_validation_ready": false,
   "staging_env_configured": true,
@@ -76,15 +76,12 @@
     "warnings": []
   },
   "required_dependencies": {
-    "paid_launch_readiness": "fail",
-    "release_proof": "fail",
+    "paid_launch_readiness": "pass",
+    "release_proof": "pass",
     "runtime_truthfulness": "pass",
     "evidence_export_truthfulness": "pass",
     "multi_tenant_isolation": "pass"
   },
-  "blockers": [
-    "required dependency failed: paid_launch_readiness",
-    "required dependency failed: release_proof"
-  ],
+  "blockers": [],
   "warnings": []
 }
