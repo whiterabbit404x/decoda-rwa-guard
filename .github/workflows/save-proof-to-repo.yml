@@ -240,102 +240,45 @@ jobs:
           PY
 
       - name: Regenerate live-evidence-proof (with provider secrets)
-        # Runs only when STAGING_EVM_RPC_URL is configured. Uses
-        # PROOF_REQUIRE_CURRENT_ENV=true so no committed artifact satisfies
-        # live_evidence_ready — only the live RPC call and the freshly generated
-        # chain file (LIVE_EVIDENCE_CHAIN_FILE) can do so.
+        # Runs only when STAGING_EVM_RPC_URL is configured.
+        # Uses regenerate_live_evidence_proof.py which creates a current-run
+        # telemetry event directly from the live RPC response (eth_chainId +
+        # eth_blockNumber). All chain elements share a run_id for correlation.
+        # Does NOT require a pre-existing service summary with live_evidence_ready=true.
+        # Writes to artifacts/live-evidence-proof/latest/ (canonical proof path).
         if: steps.staging_secrets.outputs.present == 'true'
         env:
-          PROOF_REQUIRE_CURRENT_ENV: "true"
           STAGING_EVM_RPC_URL: ${{ secrets.STAGING_EVM_RPC_URL }}
           STAGING_EVM_CHAIN_ID: ${{ secrets.STAGING_EVM_CHAIN_ID }}
-          STAGING_WORKER_ENABLED: "true"
-          LIVE_EVIDENCE_CHAIN_FILE: "/tmp/live_evidence_chain.json"
-        run: python scripts/generate_live_evidence_proof.py
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: python scripts/regenerate_live_evidence_proof.py
 
       - name: Regenerate live-evidence-proof (no secrets — fail closed)
         # No RPC secrets available — regenerate with a fresh timestamp so the
         # committed artifact is not silently stale. Result: provider_ready=false,
-        # live_evidence_ready=false. sell-now-proof will capture the contradiction
-        # with api/live_evidence explicitly as blockers.
+        # live_evidence_ready=false. sell-now-proof will capture the contradiction.
+        # IMPORTANT: writes to no-secrets-test/ path, NOT to latest/, so it cannot
+        # overwrite the provider-secrets proof if secrets are later present.
         if: steps.staging_secrets.outputs.present != 'true'
         env:
           PROOF_REQUIRE_CURRENT_ENV: "true"
-        run: python scripts/generate_live_evidence_proof.py
+        run: python scripts/regenerate_live_evidence_proof.py --no-secrets-test
 
       - name: Assert live-evidence-proof freshness and content
         # Hard failure in two cases:
-        #   1. The proof file is stale (generated_at > 20 min ago) — the regeneration
-        #      step failed silently.
-        #   2. STAGING_EVM_RPC_URL is configured but the proof is still fail-closed —
-        #      the RPC call failed or the chain file was not found.
-        # When STAGING secrets are absent the step passes with a notice so the
-        # workflow can proceed and commit the explicit contradiction captured in
-        # sell-now-proof.
+        #   1. The proof file is stale (generated_at > 20 min ago).
+        #   2. STAGING_EVM_RPC_URL is configured but live_evidence_source != "live_rpc"
+        #      or live_evidence_ready=false.
+        # When STAGING secrets are absent, passes with a notice.
         env:
           STAGING_SECRETS_PRESENT: ${{ steps.staging_secrets.outputs.present }}
         run: |
-          python - <<'PY'
-          import json, os, sys
-          from datetime import datetime, timezone
-          from pathlib import Path
-
-          staging_present = os.getenv('STAGING_SECRETS_PRESENT', 'false').lower() == 'true'
-          proof_path = Path('artifacts/live-evidence-proof/latest/summary.json')
-
-          if not proof_path.exists():
-              print('ERROR: artifacts/live-evidence-proof/latest/summary.json not found',
-                    file=sys.stderr)
-              sys.exit(1)
-
-          proof = json.loads(proof_path.read_text())
-          generated_at_str = str(proof.get('generated_at') or '')
-          lpe = proof.get('live_provider_evidence', {})
-
-          if not generated_at_str:
-              print('ERROR: live-evidence-proof missing generated_at field', file=sys.stderr)
-              sys.exit(1)
-
-          try:
-              generated_at = datetime.fromisoformat(generated_at_str)
-              if generated_at.tzinfo is None:
-                  generated_at = generated_at.replace(tzinfo=timezone.utc)
-              age_minutes = (datetime.now(timezone.utc) - generated_at).total_seconds() / 60
-          except Exception as exc:
-              print(f'ERROR: cannot parse generated_at {generated_at_str!r}: {exc}',
-                    file=sys.stderr)
-              sys.exit(1)
-
-          if age_minutes > 20:
-              print(f'ERROR: live-evidence-proof is stale — generated {age_minutes:.1f} min ago '
-                    f'({generated_at_str}). The regeneration step did not produce a fresh file.',
-                    file=sys.stderr)
-              sys.exit(1)
-
-          print(f'OK: live-evidence-proof is fresh ({age_minutes:.1f} min old, {generated_at_str})')
-
-          if staging_present:
-              pr  = bool(lpe.get('provider_ready'))
-              le  = bool(lpe.get('live_evidence_ready'))
-              src = str(lpe.get('evidence_source') or '').strip().lower()
-              if not pr or not le or src != 'live':
-                  print('::error::STAGING_EVM_RPC_URL is configured but live-evidence-proof '
-                        'is still fail-closed.', file=sys.stderr)
-                  print(f'  provider_ready={pr}  live_evidence_ready={le}  '
-                        f'evidence_source={src!r}', file=sys.stderr)
-                  for m in (lpe.get('missing') or []):
-                      print(f'  missing: {m}', file=sys.stderr)
-                  for f in (lpe.get('contradiction_flags') or []):
-                      print(f'  contradiction: {f}', file=sys.stderr)
-                  sys.exit(1)
-              print('OK: provider_ready=true  live_evidence_ready=true  evidence_source=live')
-          else:
-              print('::notice::STAGING secrets absent — live-evidence-proof is fail-closed (expected).')
-              print(f'  provider_ready={lpe.get("provider_ready")}')
-              print(f'  live_evidence_ready={lpe.get("live_evidence_ready")}')
-              print(f'  evidence_source={lpe.get("evidence_source")!r}')
-              print('The contradiction will be captured in sell-now-proof contradiction_flags.')
-          PY
+          if [ "$STAGING_SECRETS_PRESENT" = "true" ]; then
+            python scripts/validate_live_evidence_proof.py
+          else
+            echo "::notice::STAGING secrets absent — live-evidence-proof is fail-closed (expected)."
+            python scripts/validate_live_evidence_proof.py --no-rpc-required
+          fi
 
       # ── Step A+D: Validate live Railway runtime /health ──────────────────────
       # Calls STAGING_API_URL/health and validates HTTP 200, status="ok",

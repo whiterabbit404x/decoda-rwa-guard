@@ -899,3 +899,404 @@ def test_require_current_env_with_staging_rpc_allows_live_proof(
     assert lpe['provider_ready'] is True
     assert lpe['live_evidence_ready'] is True
     assert lpe['evidence_source'] == 'live'
+
+
+# ===========================================================================
+# regenerate_live_evidence_proof — new script tests (Requirements 1–8)
+# ===========================================================================
+
+from scripts.regenerate_live_evidence_proof import regenerate_live_evidence_proof as regen_proof
+
+_REGEN_RPC_PATCH = 'scripts.regenerate_live_evidence_proof._rpc_call'
+
+
+def _mock_regen_rpc_success(
+    chain_id_hex: str = '0x1',
+    block_hex: str = '0x181a5c2',
+) -> Any:
+    """Return a side_effect for regenerate script: eth_chainId then eth_blockNumber."""
+    responses = iter([
+        {'result': chain_id_hex, 'jsonrpc': '2.0', 'id': 1},
+        {'result': block_hex, 'jsonrpc': '2.0', 'id': 1},
+        # eth_getBlockByNumber (optional enrichment) — return empty result
+        {'result': {'transactions': []}, 'jsonrpc': '2.0', 'id': 1},
+    ])
+
+    def _side(url: str, method: str, params: list | None = None, timeout: int = 10) -> dict:
+        return next(responses, {'result': None})
+
+    return _side
+
+
+def _mock_regen_rpc_error() -> Any:
+    def _side(url: str, method: str, params: list | None = None, timeout: int = 10) -> dict:
+        return {'error': 'URLError: <urlopen error [Errno 111] Connection refused>'}
+    return _side
+
+
+# ---------------------------------------------------------------------------
+# Requirement 7a: fail if EVM_RPC_URL exists but live_evidence_source="unknown"
+# ---------------------------------------------------------------------------
+
+def test_regen_rpc_configured_but_unreachable_gives_unknown_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When EVM_RPC_URL is configured but RPC fails, live_evidence_source must be 'unknown'."""
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+
+    with patch(_REGEN_RPC_PATCH, side_effect=_mock_regen_rpc_error()):
+        result = regen_proof()
+
+    lpe = result['live_provider_evidence']
+    assert lpe['live_evidence_source'] == 'unknown'
+    assert lpe['live_evidence_ready'] is False
+    assert lpe['provider_ready'] is False
+
+
+def test_regen_no_rpc_url_gives_unknown_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When EVM_RPC_URL is absent, live_evidence_source must be 'unknown'."""
+    _clear_provider_env(monkeypatch)
+
+    result = regen_proof()
+
+    lpe = result['live_provider_evidence']
+    assert lpe['live_evidence_source'] == 'unknown'
+    assert lpe['live_evidence_ready'] is False
+    assert lpe['provider_ready'] is False
+
+
+# ---------------------------------------------------------------------------
+# Requirement 7b: fail if provider_ready=true but no matching telemetry_event_id
+# ---------------------------------------------------------------------------
+
+def test_regen_successful_rpc_creates_telemetry_event_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Successful RPC must create a telemetry_event_id in the chain."""
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+    monkeypatch.setenv('EVM_CHAIN_ID', '1')
+
+    with patch(_REGEN_RPC_PATCH, side_effect=_mock_regen_rpc_success('0x1', '0x181a5c2')):
+        result = regen_proof()
+
+    lpe = result['live_provider_evidence']
+    assert lpe['provider_ready'] is True
+    chain = lpe.get('chain', {})
+    assert chain.get('telemetry_event_id') is not None, (
+        'provider_ready=true must produce a telemetry_event_id'
+    )
+
+
+def test_regen_chain_id_mismatch_no_telemetry_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Chain ID mismatch → provider_ready=false, telemetry_event_id=None."""
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+    monkeypatch.setenv('EVM_CHAIN_ID', '137')  # Polygon configured, Ethereum returned
+
+    with patch(_REGEN_RPC_PATCH, side_effect=_mock_regen_rpc_success('0x1', '0x181a5c2')):
+        result = regen_proof()
+
+    lpe = result['live_provider_evidence']
+    assert lpe['provider_ready'] is False
+    assert lpe['chain'].get('telemetry_event_id') is None
+    assert any('chain_id_mismatch' in f for f in lpe['contradiction_flags'])
+
+
+# ---------------------------------------------------------------------------
+# Requirement 7c: fail if no-secrets test overwrites provider proof
+# ---------------------------------------------------------------------------
+
+def test_regen_no_secrets_test_flag_uses_separate_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """--no-secrets-test writes to no-secrets-test/ not latest/."""
+    import json as _json
+    import scripts.regenerate_live_evidence_proof as regen_mod
+
+    _clear_provider_env(monkeypatch)
+
+    no_secrets_dir = tmp_path / 'artifacts' / 'live-evidence-proof' / 'no-secrets-test' / 'latest'
+    latest_dir = tmp_path / 'artifacts' / 'live-evidence-proof' / 'latest'
+    no_secrets_dir.mkdir(parents=True)
+    latest_dir.mkdir(parents=True)
+
+    provider_proof = {'schema_version': 1, 'generated_at': '2026-06-04T00:00:00+00:00',
+                      'live_provider_evidence': {'live_evidence_source': 'live_rpc',
+                                                 'live_evidence_ready': True}}
+    (latest_dir / 'summary.json').write_text(_json.dumps(provider_proof))
+
+    no_secrets_out = no_secrets_dir
+    monkeypatch.setattr(regen_mod, 'REPO_ROOT', tmp_path)
+    monkeypatch.setattr(regen_mod, '_DEFAULT_OUT_DIR', latest_dir)
+    monkeypatch.setattr(regen_mod, '_NO_SECRETS_OUT_DIR', no_secrets_dir)
+
+    regen_mod.main(strict=False, out_dir=no_secrets_dir)
+
+    # Provider proof must not have been overwritten
+    written_latest = _json.loads((latest_dir / 'summary.json').read_text())
+    assert written_latest['live_provider_evidence']['live_evidence_source'] == 'live_rpc', (
+        'no-secrets test must not overwrite provider proof in latest/'
+    )
+
+    # no-secrets test proof must exist in separate path
+    assert (no_secrets_dir / 'summary.json').exists(), (
+        'no-secrets test proof must be written to no-secrets-test/ path'
+    )
+    no_secrets_proof = _json.loads((no_secrets_dir / 'summary.json').read_text())
+    assert no_secrets_proof['live_provider_evidence']['live_evidence_source'] == 'unknown', (
+        'no-secrets test (no RPC) must produce live_evidence_source=unknown'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Requirement 7d: fail if chain elements don't share the same run_id
+# ---------------------------------------------------------------------------
+
+def test_regen_all_chain_elements_share_run_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All chain elements (telemetry, detection, alert, incident, action, package) must share run_id."""
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+    monkeypatch.setenv('EVM_CHAIN_ID', '1')
+
+    with patch(_REGEN_RPC_PATCH, side_effect=_mock_regen_rpc_success('0x1', '0x181a5c2')):
+        result = regen_proof()
+
+    lpe = result['live_provider_evidence']
+    assert lpe['live_evidence_ready'] is True
+    run_id = lpe.get('run_id')
+    assert run_id is not None, 'run_id must be set when live_evidence_ready=true'
+
+    for record_name in (
+        'telemetry_record', 'detection_record', 'alert_record',
+        'incident_record', 'response_action_record', 'evidence_package_record',
+    ):
+        record = lpe.get(record_name, {})
+        record_run_id = record.get('run_id')
+        assert record_run_id == run_id, (
+            f'{record_name}.run_id={record_run_id!r} != proof run_id={run_id!r}; '
+            f'all chain elements must share the same run_id'
+        )
+
+    chain = lpe.get('chain', {})
+    assert chain.get('run_id') == run_id, (
+        f'chain.run_id={chain.get("run_id")!r} != proof run_id={run_id!r}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Full success path: live_evidence_source="live_rpc", all chain IDs present
+# ---------------------------------------------------------------------------
+
+def test_regen_successful_rpc_produces_live_rpc_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Successful RPC → live_evidence_source='live_rpc', all proof gates pass."""
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+    monkeypatch.setenv('EVM_CHAIN_ID', '1')
+
+    with patch(_REGEN_RPC_PATCH, side_effect=_mock_regen_rpc_success('0x1', '0x181a5c2')):
+        result = regen_proof()
+
+    lpe = result['live_provider_evidence']
+
+    assert lpe['provider_ready'] is True
+    assert lpe['live_evidence_source'] == 'live_rpc'
+    assert lpe['evidence_source'] == 'live'
+    assert lpe['live_evidence_ready'] is True
+    assert lpe['missing'] == []
+    assert lpe['contradiction_flags'] == []
+
+    chain = lpe['chain']
+    assert chain['telemetry_event_id'] is not None
+    assert chain['detection_id'] is not None
+    assert chain['alert_id'] is not None
+    assert chain['incident_id'] is not None
+    assert chain['response_action_id'] is not None
+    assert chain['evidence_package_id'] is not None
+
+    tel = lpe.get('telemetry_record', {})
+    assert tel.get('block_number') is not None
+    assert tel.get('chain_id') == '1'
+    assert tel.get('source') == 'live_rpc'
+    assert tel.get('live_evidence_source') == 'live_rpc'
+
+
+def test_regen_includes_run_id_and_github_run_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Current-run telemetry event must include run_id and github_run_id correlation fields."""
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+    monkeypatch.setenv('EVM_CHAIN_ID', '1')
+    monkeypatch.setenv('GITHUB_RUN_ID', '9876543210')
+
+    with patch(_REGEN_RPC_PATCH, side_effect=_mock_regen_rpc_success('0x1', '0x181a5c2')):
+        result = regen_proof(github_run_id='9876543210')
+
+    lpe = result['live_provider_evidence']
+    assert lpe.get('run_id') is not None
+    assert lpe.get('github_run_id') == '9876543210'
+
+    tel = lpe.get('telemetry_record', {})
+    assert tel.get('run_id') is not None
+    assert tel.get('github_run_id') == '9876543210'
+    assert tel.get('generated_at') is not None
+    assert tel.get('provider_checked_at') is not None
+    assert tel.get('latest_block_number') is not None
+
+
+def test_regen_chain_id_from_rpc_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """chain_id in the proof must reflect the actual RPC response."""
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+
+    with patch(_REGEN_RPC_PATCH, side_effect=_mock_regen_rpc_success('0x89', '0x181a5c2')):
+        result = regen_proof()
+
+    lpe = result['live_provider_evidence']
+    assert lpe['chain_id_observed'] == '137'  # 0x89 = 137 (Polygon)
+    assert lpe['provider_ready'] is True
+
+    tel = lpe.get('telemetry_record', {})
+    assert tel.get('chain_id') == '137'
+
+
+# ---------------------------------------------------------------------------
+# validate_live_evidence_proof — unit tests
+# ---------------------------------------------------------------------------
+
+def test_validate_proof_fails_when_evm_url_set_but_source_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """validate_live_evidence_proof fails when EVM_RPC_URL is set but live_evidence_source=unknown."""
+    import json as _json
+    from scripts.validate_live_evidence_proof import validate_live_evidence_proof
+
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+
+    from datetime import datetime, timezone
+    proof = {
+        'schema_version': 1,
+        'generated_at': datetime.now(timezone.utc).isoformat(),
+        'live_provider_evidence': {
+            'provider_ready': True,
+            'live_evidence_source': 'unknown',
+            'evidence_source': 'unknown',
+            'live_evidence_ready': False,
+            'run_id': None,
+            'chain': {'telemetry_event_id': None},
+            'missing': ['Live RPC provider checked successfully, but no matching live telemetry event was found.'],
+            'contradiction_flags': [],
+        },
+    }
+    proof_path = tmp_path / 'summary.json'
+    proof_path.write_text(_json.dumps(proof))
+
+    ok, errors = validate_live_evidence_proof(proof_path=proof_path, require_rpc=True)
+
+    assert ok is False
+    assert any('live_evidence_source' in e for e in errors), (
+        f'Expected live_evidence_source error; got: {errors}'
+    )
+
+
+def test_validate_proof_fails_when_provider_ready_but_no_telemetry_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """validate_live_evidence_proof fails when provider_ready=true but telemetry_event_id is None."""
+    import json as _json
+    from scripts.validate_live_evidence_proof import validate_live_evidence_proof
+
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+
+    from datetime import datetime, timezone
+    proof = {
+        'schema_version': 1,
+        'generated_at': datetime.now(timezone.utc).isoformat(),
+        'live_provider_evidence': {
+            'provider_ready': True,
+            'live_evidence_source': 'unknown',
+            'evidence_source': 'unknown',
+            'live_evidence_ready': False,
+            'run_id': None,
+            'chain': {'telemetry_event_id': None, 'detection_id': None},
+            'missing': [],
+            'contradiction_flags': [],
+        },
+    }
+    proof_path = tmp_path / 'summary.json'
+    proof_path.write_text(_json.dumps(proof))
+
+    ok, errors = validate_live_evidence_proof(proof_path=proof_path, require_rpc=True)
+
+    assert ok is False
+    assert any('telemetry_event_id' in e for e in errors), (
+        f'Expected telemetry_event_id error; got: {errors}'
+    )
+
+
+def test_validate_proof_fails_when_run_ids_inconsistent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """validate_live_evidence_proof fails when chain elements have different run_ids."""
+    import json as _json
+    from scripts.validate_live_evidence_proof import validate_live_evidence_proof
+
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+
+    from datetime import datetime, timezone
+    run_id_a = 'run-aaa-111'
+    run_id_b = 'run-bbb-222'
+    proof = {
+        'schema_version': 1,
+        'generated_at': datetime.now(timezone.utc).isoformat(),
+        'live_provider_evidence': {
+            'provider_ready': True,
+            'live_evidence_source': 'live_rpc',
+            'evidence_source': 'live',
+            'live_evidence_ready': True,
+            'run_id': run_id_a,
+            'chain': {
+                'run_id': run_id_a,
+                'telemetry_event_id': 'tel-001',
+                'detection_id': 'det-001',
+                'alert_id': 'alert-001',
+                'incident_id': 'inc-001',
+                'response_action_id': 'ra-001',
+                'evidence_package_id': 'pkg-001',
+            },
+            'telemetry_record': {'run_id': run_id_a, 'telemetry_event_id': 'tel-001'},
+            'detection_record': {'run_id': run_id_a, 'detection_id': 'det-001'},
+            'alert_record': {'run_id': run_id_b, 'alert_id': 'alert-001'},  # mismatched
+            'incident_record': {'run_id': run_id_a, 'incident_id': 'inc-001'},
+            'response_action_record': {'run_id': run_id_a, 'response_action_id': 'ra-001'},
+            'evidence_package_record': {'run_id': run_id_b, 'evidence_package_id': 'pkg-001'},  # mismatched
+            'missing': [],
+            'contradiction_flags': [],
+        },
+    }
+    proof_path = tmp_path / 'summary.json'
+    proof_path.write_text(_json.dumps(proof))
+
+    ok, errors = validate_live_evidence_proof(proof_path=proof_path, require_rpc=True)
+
+    assert ok is False
+    assert any('run_id' in e for e in errors), (
+        f'Expected run_id mismatch error; got: {errors}'
+    )
