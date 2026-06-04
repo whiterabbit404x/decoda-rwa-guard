@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T05:39:28.816940+00:00",
+  "generated_at": "2026-06-04T05:39:27.992561+00:00",
   "launch_mode": "paid_saas",
   "proof_mode": "local",
-  "billing_provider": "stripe",
+  "billing_provider": "paddle",
   "repository": "/home/user/decoda-rwa-guard",
   "readiness_categories": {
     "live_provider_evidence_ready": true,
@@ -40,7 +40,7 @@
     "billing_ready": true,
     "billing_webhook_ready": true,
     "billing_status": "ready",
-    "billing_reason": "Stripe billing configured with required credentials and price ID.",
+    "billing_reason": "Paddle billing configured with required credentials, environment, client token, and price ID.",
     "billing_missing_env": [],
     "billing_webhook_missing_env": []
   },
@@ -53,7 +53,7 @@
   "allowed_claims": [
     "NIW Strategic Infrastructure Guard positioning ready",
     "live provider evidence ready",
-    "paid billing configured (stripe)",
+    "paid billing configured (paddle)",
     "email provider configured"
   ],
   "prohibited_claims": [
@@ -81,9 +81,9 @@
       "name": "billing_provider",
       "passed": true,
       "details": {
-        "billing_provider": "stripe",
+        "billing_provider": "paddle",
         "is_paid_provider": true,
-        "note": "BILLING_PROVIDER='stripe' is a supported paid provider."
+        "note": "BILLING_PROVIDER='paddle' is a supported paid provider."
       }
     },
     {
@@ -93,7 +93,7 @@
         "billing_ready": true,
         "billing_webhook_ready": true,
         "billing_status": "ready",
-        "billing_reason": "Stripe billing configured with required credentials and price ID.",
+        "billing_reason": "Paddle billing configured with required credentials, environment, client token, and price ID.",
         "billing_missing_env": [],
         "billing_webhook_missing_env": []
       }

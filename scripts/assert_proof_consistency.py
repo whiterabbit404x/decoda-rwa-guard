@@ -23,9 +23,14 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+# Allow tests to override artifact root via env var so tests can provide
+# isolated artifact fixtures without touching the real repo artifacts.
+_ARTIFACT_ROOT_OVERRIDE = os.getenv('ASSERT_PROOF_ARTIFACT_ROOT', '')
+_ARTIFACT_ROOT = Path(_ARTIFACT_ROOT_OVERRIDE) if _ARTIFACT_ROOT_OVERRIDE else REPO_ROOT
+
 
 def _load(rel_path: str) -> dict | None:
-    p = REPO_ROOT / rel_path
+    p = _ARTIFACT_ROOT / rel_path
     if not p.exists():
         return None
     try:

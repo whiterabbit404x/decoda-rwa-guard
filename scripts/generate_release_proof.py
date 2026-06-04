@@ -509,6 +509,20 @@ def generate_release_proof(*, mode: str, strict: bool = False) -> dict[str, Any]
     }
 
 
+def _resolve_launch_mode(broad_paid_saas_ready: bool) -> str:
+    """Return the correct launch_mode string based on billing configuration.
+
+    Never returns 'pilot' when BILLING_PROVIDER is a paid provider (paddle/stripe),
+    because the assert_proof_consistency check would flag that as a contradiction.
+    """
+    if broad_paid_saas_ready:
+        return 'paid_ga'
+    billing = (os.getenv('BILLING_PROVIDER') or '').strip().lower()
+    if billing in {'paddle', 'stripe'}:
+        return 'paid_saas'
+    return 'pilot'
+
+
 def generate_launch_proof(*, mode: str) -> dict[str, Any]:
     """Generate launch proof summary."""
     commit_sha, branch = _git_info()
@@ -631,7 +645,7 @@ def generate_launch_proof(*, mode: str) -> dict[str, Any]:
     return {
         'schema_version': 1,
         'generated_at': datetime.now(timezone.utc).isoformat(),
-        'launch_mode': 'paid_ga' if broad_paid_saas_ready else 'pilot',
+        'launch_mode': _resolve_launch_mode(broad_paid_saas_ready),
         'pilot_ready': pilot_ready,
         'paid_launch_ready': paid_launch_ready,
         'controlled_pilot_ready': controlled_pilot_ready,

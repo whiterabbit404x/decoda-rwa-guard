@@ -1,44 +1,38 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T04:46:03.761959+00:00",
+  "generated_at": "2026-06-04T05:38:17.059156+00:00",
   "release_channel": "staging",
-  "commit_sha": "34b70cd2a319d4e3599349e612627b1e9b7cd750",
-  "branch": "main",
+  "commit_sha": "3ab3b9049e5bda1f90eeb625c793e0176207a54b",
+  "branch": "claude/tender-tesla-aSsHo",
   "test_suites": {
     "test_release_proof_artifacts": {
       "name": "test_release_proof_artifacts",
-      "status": "pass",
-      "tests_run": 35,
-      "tests_passed": 35,
+      "status": "fail",
+      "tests_run": 0,
+      "tests_passed": 0,
       "tests_failed": 0,
-      "summary": "...................................                                      [100%]\n35 passed in 1.48s"
+      "summary": "/usr/local/bin/python: No module named pytest"
     },
     "test_paid_launch_readiness": {
       "name": "test_paid_launch_readiness",
-      "status": "pass",
-      "tests_run": 54,
-      "tests_passed": 54,
+      "status": "fail",
+      "tests_run": 0,
+      "tests_passed": 0,
       "tests_failed": 0,
-      "summary": "......................................................                   [100%]\n54 passed in 0.15s"
+      "summary": "/usr/local/bin/python: No module named pytest"
     },
     "test_runtime_truthfulness": {
       "name": "test_runtime_truthfulness",
-      "status": "pass",
-      "tests_run": 38,
-      "tests_passed": 38,
+      "status": "fail",
+      "tests_run": 0,
+      "tests_passed": 0,
       "tests_failed": 0,
-      "summary": "......................................                                   [100%]\n38 passed in 0.08s"
-    },
-    "test_saas_workflow_validation": {
-      "name": "test_saas_workflow_validation",
-      "status": "pass",
-      "tests_run": 33,
-      "tests_passed": 33,
-      "tests_failed": 0,
-      "summary": ".................................                                        [100%]\n=============================== warnings summary ===============================\n../../../../../opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/starlette/formparsers.py:12\n  /opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/starlette/formparsers.py:12: PendingDeprecationWarning: Please use `import python_multipart` instead.\n    import multipart\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n33 passed, 1 warning in 0.58s"
+      "summary": "/usr/local/bin/python: No module named pytest"
     }
   },
-  "overall_status": "pass",
-  "blockers": [],
+  "overall_status": "fail",
+  "blockers": [
+    "one or more backend test suites failed"
+  ],
   "warnings": []
 }

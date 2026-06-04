@@ -1,7 +1,7 @@
 # Paid SaaS launch proof
 
-- Generated: 2026-06-04T05:39:28.816940+00:00
-- Billing provider: stripe
+- Generated: 2026-06-04T05:37:15.666889+00:00
+- Billing provider: paddle
 - Launch mode: paid_saas
 
 ## Readiness Gates
@@ -30,7 +30,7 @@
 
 - NIW Strategic Infrastructure Guard positioning ready
 - live provider evidence ready
-- paid billing configured (stripe)
+- paid billing configured (paddle)
 - email provider configured
 
 ## Prohibited Claims
