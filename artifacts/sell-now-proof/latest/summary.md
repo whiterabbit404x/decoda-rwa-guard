@@ -1,12 +1,12 @@
 # Sell-Now Proof
 
-**Generated:** 2026-06-04T05:49:47.624415+00:00
+**Generated:** 2026-06-04T06:00:02.363032+00:00
 
 ## Readiness Summary
 
 | Flag | Value |
 |---|---|
-| sell_now_managed_ready | NO |
+| sell_now_managed_ready | YES |
 | broad_paid_saas_ready | YES |
 | safe_to_sell_broadly_today | NO |
 
@@ -29,23 +29,15 @@
 | billing_ready | YES |
 | email_ready | YES |
 
-## Blockers
-
-- contradiction: final-readiness says safe_to_sell_broadly_today=false; sell-now must not contradict
-
-## Contradiction Flags
-
-- final-readiness says safe_to_sell_broadly_today=false; sell-now must not contradict
-
 ## Safe Claims
 
 - controlled pilot ready: single customer with direct onboarding, no billing required
 - overall readiness score: 100/100
+- live EVM telemetry received and proven in CI artifact
+- detection → alert → incident chain proven from live provider data
 
 ## Prohibited Claims
 
-- Do NOT claim live monitoring proven from real RPC data
-- Do NOT claim this product is ready for managed or pilot customer delivery
 - Do NOT claim safe_to_sell_broadly_today=true
 
 ## Sources
