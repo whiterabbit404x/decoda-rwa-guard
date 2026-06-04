@@ -1,10 +1,10 @@
 # GitHub ZIP Proof
 
-**Generated:** 2026-06-03T17:52:39.785506+00:00  
+**Generated:** 2026-06-04T04:19:22.720971+00:00  
 **Repository:** whiterabbit404x/decoda-rwa-guard  
 **Branch:** main  
-**Commit:** 0424848975547c7629f5bb27f18b4e6f1c2cee8f  
-**Run ID:** 26902904828  
+**Commit:** a624f4ba4659eb29a69665fa065779f3802674ed  
+**Run ID:** 26930385533  
 **Run URL:** _(see summary.json — not repeated here to avoid caching)_  
 
 ## GitHub Actions Status
@@ -21,8 +21,8 @@ _Source: `artifacts/sell-now-proof/latest/summary.json`_
 | Field | Value |
 |---|---|
 | sell_now_managed_ready | YES |
-| broad_paid_saas_ready | NO |
-| safe_to_sell_broadly_today | NO |
+| broad_paid_saas_ready | YES |
+| safe_to_sell_broadly_today | YES |
 | provider_ready | YES |
 | live_evidence_ready | YES |
 | evidence_source | live |

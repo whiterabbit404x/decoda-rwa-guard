@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-03T18:13:44.761722+00:00",
+  "generated_at": "2026-06-04T04:19:20.672290+00:00",
   "launch_mode": "pilot",
   "pilot_ready": true,
   "paid_launch_ready": false,
@@ -11,7 +11,7 @@
     "managed_pilot_ready": true,
     "niw_positioning_ready": true,
     "broad_paid_saas_ready": false,
-    "ci_required_gates_ready": false
+    "ci_required_gates_ready": true
   },
   "allowed_claims": [
     "NIW Strategic Infrastructure Guard positioning ready",
@@ -27,19 +27,14 @@
     "worker fully ready"
   ],
   "readiness": {
-    "billing_ready": false,
-    "billing_webhook_ready": false,
-    "email_ready": false,
+    "billing_ready": true,
+    "billing_webhook_ready": true,
+    "email_ready": true,
     "provider_ready": true,
     "live_evidence_ready": true,
-    "ci_required_gates_ready": false
+    "ci_required_gates_ready": true
   },
-  "blockers": [
-    "billing not ready",
-    "billing webhook not ready",
-    "ci gates not ready",
-    "email not ready"
-  ],
+  "blockers": [],
   "warnings": [],
   "artifact_paths": {
     "ci_required_gates": "artifacts/release-proof/latest/ci-required-gates.json",

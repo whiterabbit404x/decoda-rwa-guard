@@ -1,28 +1,28 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-03T18:13:44.839203+00:00",
-  "release_channel": "local",
-  "commit_sha": "e0519e5aef46ea97e84d3a0417d0689686cf2f02",
-  "branch": "claude/funny-faraday-GcIBE",
+  "generated_at": "2026-06-04T04:19:22.479838+00:00",
+  "release_channel": "staging",
+  "commit_sha": "a624f4ba4659eb29a69665fa065779f3802674ed",
+  "branch": "main",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "a39e4fd9e455c208cd770b6a6e0997e6136bb97433cfc4b52fe0fe8a0778029d",
-      "size_bytes": 753,
+      "sha256": "9ed5286cefc27ee28fd67ba0248a02f063a511108fb5b2fbb234897f12ca0cfa",
+      "size_bytes": 733,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "e3dc0086707958ee98ac496a6fab976b2d93cb64aafdd3b3efd3c17baad9c06a",
-      "size_bytes": 1852,
+      "sha256": "a8e93a4915056773e95dd9cd71db7afd59d68cecff9dfdb79377cb60579f0287",
+      "size_bytes": 1956,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "1a0ccf2a3b5c84aea5672d9afeedaa182888d5020abc83a4002a9fdc658c3629",
-      "size_bytes": 1362,
+      "sha256": "4e38f2565939b9fe733d3690e1a18efc0f0c6aae6fecc647c52e23fe9a2cbc8e",
+      "size_bytes": 1248,
       "required": true,
       "status": "present"
     }

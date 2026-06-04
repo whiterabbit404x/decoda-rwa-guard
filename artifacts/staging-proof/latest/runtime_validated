@@ -1,0 +1,10 @@
+{
+  "validated_at": "2026-06-04T04:19:18.373761+00:00",
+  "http_status": 200,
+  "health_status": "ok",
+  "app_mode": "production",
+  "database_url_configured": true,
+  "billing_status": "healthy",
+  "billing_available": true,
+  "paddle_price_ids_configured": null
+}
