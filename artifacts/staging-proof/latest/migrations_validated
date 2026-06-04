@@ -1,5 +1,5 @@
 {
-  "validated_at": "2026-06-04T06:19:05.917717+00:00",
+  "validated_at": "2026-06-04T07:18:18.506309+00:00",
   "method": "health_endpoint",
   "note": "App /health confirms database connectivity; migrations are implied (app would not start without them)."
 }

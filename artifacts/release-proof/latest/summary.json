@@ -1,19 +1,16 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T06:25:55.737427+00:00",
-  "release_status": "fail",
-  "release_channel": "local",
-  "commit_sha": "37f1fea7d360394a87b564e219795a90b8de0ac4",
-  "branch": "claude/fervent-gauss-yhJJB",
-  "ci_required_gates_ready": false,
+  "generated_at": "2026-06-04T07:18:22.239635+00:00",
+  "release_status": "pass",
+  "release_channel": "staging",
+  "commit_sha": "cdbaa75fb6619cddc2ab4fc32cbf495224e3091a",
+  "branch": "main",
+  "ci_required_gates_ready": true,
   "launch_proof_ready": true,
   "manifest_ready": true,
-  "test_report_ready": false,
+  "test_report_ready": true,
   "paid_launch_ready": false,
-  "blockers": [
-    "ci-required-gates not ready",
-    "test-report-summary not ready"
-  ],
+  "blockers": [],
   "warnings": [],
   "evidence_files": [
     "artifacts/release-proof/latest/ci-required-gates.json",

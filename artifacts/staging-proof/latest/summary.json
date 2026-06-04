@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T06:19:10.722660+00:00",
+  "generated_at": "2026-06-04T07:18:22.368655+00:00",
   "mode": "staging",
   "strict": false,
   "release_channel": "staging",
   "staging_launch_ready": true,
-  "broad_paid_saas_ready": false,
-  "safe_to_sell_broadly_today": false,
+  "broad_paid_saas_ready": true,
+  "safe_to_sell_broadly_today": true,
   "local_validation_ready": false,
   "staging_env_configured": true,
   "staging_runtime_reachable": true,
@@ -25,7 +25,7 @@
     "staging_migrations_validated": true,
     "staging_runtime_validated": true,
     "staging_live_evidence_validated": true,
-    "generated_at": "2026-06-04T06:19:10.722673+00:00",
+    "generated_at": "2026-06-04T07:18:22.368668+00:00",
     "blockers": [],
     "warnings": []
   },
@@ -77,13 +77,11 @@
   },
   "required_dependencies": {
     "paid_launch_readiness": "pass",
-    "release_proof": "fail",
+    "release_proof": "pass",
     "runtime_truthfulness": "pass",
     "evidence_export_truthfulness": "pass",
     "multi_tenant_isolation": "pass"
   },
-  "blockers": [
-    "required dependency failed: release_proof"
-  ],
+  "blockers": [],
   "warnings": []
 }
