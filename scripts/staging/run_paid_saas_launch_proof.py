@@ -142,6 +142,17 @@ def check_billing_provider_gate() -> GateResult:
     )
 
 
+def _read_final_readiness() -> dict:
+    """Load final-readiness artifact for cross-artifact fail-closed checks."""
+    summary_path = REPO_ROOT / 'artifacts' / 'final-readiness' / 'latest' / 'summary.json'
+    if not summary_path.exists():
+        return {}
+    try:
+        return json.loads(summary_path.read_text(encoding='utf-8'))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
 def _read_live_evidence_readiness() -> dict:
     summary_path = REPO_ROOT / 'artifacts' / 'live-evidence-proof' / 'latest' / 'summary.json'
     if not summary_path.exists():
@@ -243,8 +254,10 @@ def write_artifact(
     email_ready = email_gate.details.get('email_ready', False)
     all_gates_pass = all(g.passed for g in gates)
 
+    # Live evidence readiness requires both provider ready AND fresh telemetry.
+    _live_provider_evidence_ready = bool(live_evidence.get('live_provider_evidence_ready', False))
     readiness_categories = {
-        'live_provider_evidence_ready': live_evidence.get('live_provider_evidence_ready', False),
+        'live_provider_evidence_ready': _live_provider_evidence_ready,
         'managed_pilot_ready': managed_pilot.get('managed_pilot_ready', False),
         'niw_positioning_ready': niw.get('niw_positioning_ready', False),
         'broad_paid_saas_ready': all_gates_pass,
@@ -315,6 +328,36 @@ def write_artifact(
         paid_launch_ready = all_gates_pass
         broad_paid_saas_ready = all_gates_pass
         safe_to_sell_broadly_today = all_gates_pass and mode in _paid_modes
+
+    # ── Cross-artifact fail-closed: stricter result wins ─────────────────────
+    # If final-readiness has been generated and says a gate is blocked, honour it.
+    # This prevents launch-proof from overclaiming readiness that final-readiness blocks.
+    final_r = _read_final_readiness()
+    if final_r:
+        if final_r.get('broad_paid_saas_ready') is False and broad_paid_saas_ready:
+            blockers.append(
+                'final-readiness broad_paid_saas_ready=false: '
+                'live telemetry freshness, frontend_build, or readiness_validation gate is blocking'
+            )
+            broad_paid_saas_ready = False
+            paid_launch_ready = False
+
+        if final_r.get('safe_to_sell_broadly_today') is False and safe_to_sell_broadly_today:
+            blockers.append(
+                'final-readiness safe_to_sell_broadly_today=false: cannot claim broad paid SaaS readiness'
+            )
+            safe_to_sell_broadly_today = False
+
+        if final_r.get('production_100_percent_ready') is False and paid_launch_ready:
+            _fr_blockers = final_r.get('blockers', [])
+            _reason = _fr_blockers[0] if _fr_blockers else 'production_100_percent_ready=false'
+            blockers.append(f'final-readiness production_100_percent_ready=false: {_reason}')
+            paid_launch_ready = False
+
+    # Force live_evidence_ready to false when live-evidence-proof says stale/not-ready.
+    # This prevents readiness_compat from overclaiming live evidence.
+    if not live_evidence.get('live_provider_evidence_ready', False):
+        readiness_compat['live_evidence_ready'] = False
 
     readiness_categories['broad_paid_saas_ready'] = broad_paid_saas_ready
 

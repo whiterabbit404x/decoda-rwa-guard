@@ -33,6 +33,7 @@ SOURCES: dict[str, Path] = {
     "launch_proof": REPO_ROOT / "artifacts" / "launch-proof" / "latest" / "summary.json",
     "final_readiness": REPO_ROOT / "artifacts" / "final-readiness" / "latest" / "summary.json",
     "release_proof": REPO_ROOT / "artifacts" / "release-proof" / "latest" / "summary.json",
+    "ci_gates": REPO_ROOT / "artifacts" / "release-proof" / "latest" / "ci-required-gates.json",
     "api_live_evidence": (
         REPO_ROOT / "services" / "api" / "artifacts" / "live_evidence" / "latest" / "summary.json"
     ),
@@ -67,6 +68,7 @@ def build_summary(loaded: dict[str, dict | None]) -> dict:
     launch = loaded.get("launch_proof") or {}
     final_r = loaded.get("final_readiness") or {}
     release_p = loaded.get("release_proof") or {}
+    ci_gates = loaded.get("ci_gates") or {}
     api_live = loaded.get("api_live_evidence")  # None if absent
 
     contradiction_flags: list[str] = []
@@ -188,12 +190,43 @@ def build_summary(loaded: dict[str, dict | None]) -> dict:
         and email_ready
     )
 
-    # Stricter result wins: if final-readiness says broad_paid_saas_ready=false, honour it
-    if final_r.get("broad_paid_saas_ready") is False and broad_paid_saas_ready:
-        contradiction_flags.append(
-            "sell-now broad_paid_saas_ready=true but final-readiness broad_paid_saas_ready=false; "
-            "stricter result wins"
+    # ── Blockers ─────────────────────────────────────────────────────────────
+    blockers: list[str] = []
+
+    # Explicit fail-closed checks for frontend_build and readiness_validation.
+    # These gates are not directly in the sell-now computation, but they block
+    # broad paid SaaS in final-readiness. Surface them directly here as well.
+    _rg = ci_gates.get("required_gates", {}) if ci_gates else {}
+    _fb_status = _rg.get("frontend_build", {}).get("status", "not_run") if _rg else "not_run"
+    _rv_status = _rg.get("readiness_validation", {}).get("status", "not_run") if _rg else "not_run"
+    if _fb_status not in ("pass",):
+        blockers.append(
+            f"frontend_build {_fb_status}: run npm run build in CI; "
+            "broad paid SaaS requires a passing frontend build"
         )
+        broad_paid_saas_ready = False
+        sell_now_managed_ready = False
+    if _rv_status not in ("pass",):
+        blockers.append(
+            f"readiness_validation {_rv_status}: run validate_production_readiness.py; "
+            "broad paid SaaS requires a passing readiness validation"
+        )
+        broad_paid_saas_ready = False
+        sell_now_managed_ready = False
+
+    # Explicit check for live telemetry freshness failure.
+    _lpe_freshness = lpe.get("freshness_check", {})
+    if _lpe_freshness.get("status") == "fail":
+        _fresh_reason = _lpe_freshness.get("reason") or "live telemetry freshness check failed"
+        blockers.append(f"live telemetry freshness check failed: {_fresh_reason}")
+        sell_now_managed_ready = False
+
+    # Stricter result wins: if final-readiness says broad_paid_saas_ready=false, honour it.
+    # This is NOT a contradiction (final-readiness is authoritative); add only to blockers.
+    if final_r.get("broad_paid_saas_ready") is False and broad_paid_saas_ready:
+        _fr_b = final_r.get("blockers", [])
+        _reason = _fr_b[0] if _fr_b else "final-readiness broad_paid_saas_ready=false"
+        blockers.append(f"final-readiness blocked broad_paid_saas_ready: {_reason}")
         broad_paid_saas_ready = False
         sell_now_managed_ready = False
 
@@ -205,9 +238,6 @@ def build_summary(loaded: dict[str, dict | None]) -> dict:
         and not (release_p and not rp_test_report_ready)
         and final_r.get("safe_to_sell_broadly_today") is not False
     )
-
-    # ── Blockers ─────────────────────────────────────────────────────────────
-    blockers: list[str] = []
 
     if not provider_ready:
         blockers.append("provider_ready=false: live RPC provider not configured or not proven in CI artifact")
@@ -234,12 +264,11 @@ def build_summary(loaded: dict[str, dict | None]) -> dict:
     if not github_actions_visible_green:
         warnings.append("github_actions_visible_green=false: CI green status not proven in artifact")
 
+    _warn_optional = {"api_live_evidence", "ci_gates"}
     for key, path in SOURCES.items():
         if loaded.get(key) is None:
-            if key == "api_live_evidence":
-                warnings.append(
-                    "optional source missing: services/api/artifacts/live_evidence/latest/summary.json"
-                )
+            if key in _warn_optional:
+                warnings.append(f"optional source missing: {path.relative_to(REPO_ROOT)}")
             else:
                 warnings.append(f"required source missing: {path.relative_to(REPO_ROOT)}")
 
@@ -269,10 +298,11 @@ def build_summary(loaded: dict[str, dict | None]) -> dict:
         prohibited_claims.append("Do NOT claim safe_to_sell_broadly_today=true")
 
     # ── Missing required sources ─────────────────────────────────────────────
+    _optional_sources = {"api_live_evidence", "ci_gates"}
     missing_required = [
         str(SOURCES[k].relative_to(REPO_ROOT))
         for k in SOURCES
-        if k != "api_live_evidence" and loaded.get(k) is None
+        if k not in _optional_sources and loaded.get(k) is None
     ]
 
     return {

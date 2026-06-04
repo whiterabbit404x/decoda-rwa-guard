@@ -5,35 +5,42 @@
   "proof_mode": "staging",
   "billing_provider": "paddle",
   "pilot_ready": true,
-  "paid_launch_ready": true,
+  "paid_launch_ready": false,
   "controlled_pilot_ready": true,
-  "broad_paid_saas_ready": true,
-  "safe_to_sell_broadly_today": true,
+  "broad_paid_saas_ready": false,
+  "safe_to_sell_broadly_today": false,
   "readiness_categories": {
-    "live_provider_evidence_ready": true,
+    "live_provider_evidence_ready": false,
     "managed_pilot_ready": true,
     "niw_positioning_ready": true,
-    "broad_paid_saas_ready": true,
-    "ci_required_gates_ready": true
+    "broad_paid_saas_ready": false,
+    "ci_required_gates_ready": false
   },
   "allowed_claims": [
     "NIW Strategic Infrastructure Guard positioning ready",
-    "controlled pilot / managed sale ready",
-    "live provider evidence ready",
-    "paid billing configured (paddle)",
-    "email provider configured",
-    "paid SaaS launch ready"
+    "controlled pilot / managed sale ready"
   ],
-  "prohibited_claims": [],
+  "prohibited_claims": [
+    "Do NOT claim broad paid SaaS launch ready",
+    "Do NOT claim safe_to_sell_broadly_today=true",
+    "Do NOT claim live provider evidence ready: live telemetry is 43 days stale (freshness window: 30 days)",
+    "Do NOT claim production_100_percent_ready=true: frontend_build and readiness_validation not run"
+  ],
   "readiness": {
     "billing_ready": true,
     "billing_webhook_ready": true,
     "email_ready": true,
     "provider_ready": true,
-    "live_evidence_ready": true,
-    "ci_required_gates_ready": true
+    "live_evidence_ready": false,
+    "ci_required_gates_ready": false
   },
-  "blockers": [],
+  "blockers": [
+    "live telemetry is stale: latest_live_telemetry_at='2026-04-22T14:32:59.583341+00:00' is 43 days before proof generated_at; freshness window is 30 days — a new telemetry → detection → alert → incident → response_action → evidence_package chain is required during the proof run",
+    "frontend_build not_run: run npm run build in CI or mark production_100_percent_ready=false",
+    "readiness_validation not_run: run validate_production_readiness.py or mark production_100_percent_ready=false",
+    "final-readiness broad_paid_saas_ready=false: live telemetry freshness, frontend_build, or readiness_validation gate is blocking",
+    "final-readiness production_100_percent_ready=false: frontend_build not_run: run npm run build in CI or mark production_100_percent_ready=false"
+  ],
   "warnings": [],
   "artifact_paths": {
     "ci_required_gates": "artifacts/release-proof/latest/ci-required-gates.json",

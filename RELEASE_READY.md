@@ -1,8 +1,52 @@
 # RELEASE_READY
 
-Last reconciled: **2026-05-03**.
+Last reconciled: **2026-06-04**.
 
 This checklist is **fail-closed**: readiness is granted only by passing gates with verifiable evidence, never by fallback/demo assumptions.
+
+## Current readiness posture (as of 2026-06-04)
+
+| Tier | Status | Blockers |
+|---|---|---|
+| **Controlled / staging prototype** | **READY** | None — `controlled_pilot_ready=true` in final-readiness |
+| **Broad paid SaaS** | **BLOCKED** | Live telemetry stale (43 days; window 30 days), `frontend_build=not_run`, `readiness_validation=not_run` |
+| **Enterprise procurement** | **BLOCKED** | Requires broad paid SaaS ready + SOC 2/control evidence, key rotation automation, IR runbooks, and full production validation |
+
+### What "READY" means for controlled / staging prototype
+- Single customer with direct onboarding; no self-serve billing required.
+- Live EVM provider configured and chain connectivity proven.
+- Detection → alert → incident → response_action → evidence_package chain exists in the live evidence artifact (chain IDs present).
+- All 10 readiness categories score 100/100 in the final-readiness audit.
+- Claim: `controlled_pilot_ready=true` (see `artifacts/final-readiness/latest/summary.json`).
+
+### What is blocking broad paid SaaS
+Three gates must all pass before `broad_paid_saas_ready` can be `true`:
+
+1. **Fresh live telemetry** — `latest_live_telemetry_at` must be within 30 days of the proof run.
+   Current: April 2026 telemetry is 43 days old. A new monitoring cycle must generate a fresh
+   telemetry → detection → alert → incident → response_action → evidence_package chain.
+
+2. **Frontend build** — `npm run build` must pass in CI and be recorded in `ci-required-gates.json`
+   with `frontend_build.status=pass`. Current: `not_run`.
+
+3. **Readiness validation** — `python services/api/scripts/validate_production_readiness.py` must
+   pass and be recorded in `ci-required-gates.json` with `readiness_validation.status=pass`.
+   Current: `not_run`.
+
+Do NOT claim `broad_paid_saas_ready=true` or `safe_to_sell_broadly_today=true` until all three
+gates pass in staging or production strict mode.
+
+### What is blocking enterprise procurement
+All broad paid SaaS blockers above, plus:
+- Formal SOC 2 Type II control evidence package (or equivalent).
+- Key rotation automation documented and proven.
+- Incident response runbooks complete and tested.
+- Full production validation run (`--mode production --strict`) with live credentials.
+- Security questionnaire responses and legal/commercial terms prepared.
+
+Do NOT claim `enterprise_procurement_ready=true` until all of the above are complete.
+
+---
 
 ## Validation commands, checklists, and artifact paths
 
@@ -73,9 +117,9 @@ Enterprise procurement is **not ready** until broad paid self-serve is ready **a
 
 ## Current repository posture
 
-- **Controlled pilot launch:** ready only when `make validate-readiness-proof` passes and pilot evidence gates remain fail-closed.
-- **Broad paid self-serve:** not ready until full broad gates (billing/email/provider/staging included) pass.
-- **Enterprise procurement:** not ready until broad paid self-serve is ready plus live/staging provider evidence, security controls, and production validation are complete.
+- **Controlled / staging prototype:** READY. `controlled_pilot_ready=true` in `artifacts/final-readiness/latest/summary.json`.
+- **Broad paid SaaS:** BLOCKED. Requires fresh live telemetry (within 30 days), `frontend_build=pass` in CI, and `readiness_validation=pass` in CI. All three are currently missing.
+- **Enterprise procurement:** BLOCKED. Requires broad paid SaaS ready plus SOC 2/control evidence, key rotation, IR runbooks, and production validation.
 
 ---
 
