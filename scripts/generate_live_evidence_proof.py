@@ -203,15 +203,23 @@ def _load_live_evidence_chain_from_env() -> dict[str, Any] | None:
     return None
 
 
+_LIVE_EVIDENCE_SOURCES = frozenset({'live', 'live_rpc'})
+
+
 def _validated_live_evidence_chain(chain: Any) -> dict[str, Any] | None:
     """
     Validate that ``chain`` carries a complete live-event proof.
 
-    Requires:
-      - evidence_source == 'live'
+    Requires one of:
+      - evidence_source in ('live', 'live_rpc')
+      - source == 'live_rpc'
       - source_type == 'rpc_polling'
-      - telemetry_event_id, detection_id, alert_id, evidence_package_id all truthy
-      - incident_id or response_action_id truthy
+
+    When evidence_source is explicitly set it must be a recognized live source
+    (fixture/demo/synthetic/static/historical/unknown/simulator are rejected).
+
+    Also requires: telemetry_event_id, detection_id, alert_id, evidence_package_id
+    all truthy; and incident_id or response_action_id truthy.
 
     Returns the normalized chain on success, None otherwise. No IDs are
     invented; missing fields cause rejection rather than substitution.
@@ -220,7 +228,19 @@ def _validated_live_evidence_chain(chain: Any) -> dict[str, Any] | None:
         return None
     evidence_source = str(chain.get('evidence_source') or '').strip().lower()
     source_type = str(chain.get('source_type') or '').strip().lower()
-    if evidence_source != 'live' or source_type != 'rpc_polling':
+    source = str(chain.get('source') or '').strip().lower()
+
+    # When evidence_source is set it must explicitly name a live source.
+    if evidence_source and evidence_source not in _LIVE_EVIDENCE_SOURCES:
+        return None
+
+    # At least one live indicator must be present.
+    is_live = (
+        evidence_source in _LIVE_EVIDENCE_SOURCES
+        or source == 'live_rpc'
+        or source_type == 'rpc_polling'
+    )
+    if not is_live:
         return None
     required = ('telemetry_event_id', 'detection_id', 'alert_id', 'evidence_package_id')
     if not all(str(chain.get(k) or '').strip() for k in required):
@@ -440,25 +460,32 @@ def generate_live_evidence_proof(
     # --- Look for real live-event evidence; never synthesise from RPC alone ---
     # Sources checked in order:
     #   a) explicit live_evidence_chain argument
-    #   b) LIVE_EVIDENCE_CHAIN_JSON env var
-    #   c) LIVE_EVIDENCE_CHAIN_FILE env var
-    #   d) artifacts/live-evidence-proof/latest/live_evidence_chain.json (default path)
+    #   b) LIVE_EVIDENCE_CHAIN_JSON env var  (only when no explicit arg was given)
+    #   c) LIVE_EVIDENCE_CHAIN_FILE env var  (only when no explicit arg was given)
+    #   d) artifacts/live-evidence-proof/latest/live_evidence_chain.json (default path,
+    #      only when no explicit arg was given)
+    #
+    # When live_evidence_chain is explicitly provided (non-None) and validation fails,
+    # we do NOT fall back to env vars or the default file — the caller's chain is
+    # authoritative and a rejected chain means no valid evidence is available.
+    explicit_chain_provided = live_evidence_chain is not None
     real_chain = _validated_live_evidence_chain(live_evidence_chain)
-    if real_chain is None:
-        real_chain = _validated_live_evidence_chain(_load_live_evidence_chain_from_env())
-    if real_chain is None and not require_current_env:
-        # Skip this committed file when require_current_env=True so that
-        # historical artifacts can never satisfy live_evidence_ready in the
-        # no-secrets CI validation job.
-        _default_chain_file = (
-            REPO_ROOT / 'artifacts' / 'live-evidence-proof' / 'latest' / 'live_evidence_chain.json'
-        )
-        if _default_chain_file.exists():
-            try:
-                with open(_default_chain_file) as _f:
-                    real_chain = _validated_live_evidence_chain(json.load(_f))
-            except Exception:
-                pass
+    if not explicit_chain_provided:
+        if real_chain is None:
+            real_chain = _validated_live_evidence_chain(_load_live_evidence_chain_from_env())
+        if real_chain is None and not require_current_env:
+            # Skip this committed file when require_current_env=True so that
+            # historical artifacts can never satisfy live_evidence_ready in the
+            # no-secrets CI validation job.
+            _default_chain_file = (
+                REPO_ROOT / 'artifacts' / 'live-evidence-proof' / 'latest' / 'live_evidence_chain.json'
+            )
+            if _default_chain_file.exists():
+                try:
+                    with open(_default_chain_file) as _f:
+                        real_chain = _validated_live_evidence_chain(json.load(_f))
+                except Exception:
+                    pass
 
     # --- Evidence-level issue: RPC works but no matching live event observed ---
     if real_chain is None:
