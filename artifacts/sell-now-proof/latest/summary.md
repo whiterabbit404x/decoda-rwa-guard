@@ -1,6 +1,6 @@
 # Sell-Now Proof
 
-**Generated:** 2026-06-04T10:23:08.723063+00:00
+**Generated:** 2026-06-04T14:51:21.540502+00:00
 
 ## Readiness Summary
 
@@ -14,9 +14,9 @@
 
 | Field | Value |
 |---|---|
-| provider_ready | YES |
+| provider_ready | NO |
 | live_evidence_ready | NO |
-| evidence_source | live |
+| evidence_source | unknown |
 | github_actions_visible_green | YES |
 
 ## Staging / Infrastructure
@@ -24,32 +24,34 @@
 | Field | Value |
 |---|---|
 | staging_runtime_reachable | YES |
-| staging_database_reachable | YES |
-| staging_worker_enabled | YES |
+| staging_database_reachable | NO |
+| staging_worker_enabled | NO |
 | billing_ready | NO |
 | email_ready | NO |
 
 ## Blockers
 
+- provider_ready=false: live RPC provider not configured or not proven in CI artifact
 - live_evidence_ready=false: no live telemetry chain proven in CI artifact
+- evidence_source='unknown': not live evidence
+- contradiction: api/live_evidence says provider_ready=true but live-evidence-proof says provider_ready=false
 - contradiction: release-proof release_status=fail: required CI gates or test suites are failing; safe_to_sell_broadly_today cannot be true
 - contradiction: release-proof ci_required_gates_ready=false
-- contradiction: release-proof test_report_ready=false: required test suites did not all pass
-- contradiction: final-readiness (strict=true) says safe_to_sell_broadly_today=false; sell-now must not contradict
+- staging_database_reachable=false
+- staging_worker_enabled=false
 - billing_ready=false: billing provider not configured
 - email_ready=false: email provider not configured
 
 ## Contradiction Flags
 
+- api/live_evidence says provider_ready=true but live-evidence-proof says provider_ready=false
 - release-proof release_status=fail: required CI gates or test suites are failing; safe_to_sell_broadly_today cannot be true
 - release-proof ci_required_gates_ready=false
-- release-proof test_report_ready=false: required test suites did not all pass
-- final-readiness (strict=true) says safe_to_sell_broadly_today=false; sell-now must not contradict
 
 ## Safe Claims
 
 - controlled pilot ready: single customer with direct onboarding, no billing required
-- overall readiness score: 90/100
+- overall readiness score: 94/100
 
 ## Prohibited Claims
 

@@ -301,6 +301,16 @@ def generate_ci_required_gates(
     commit_sha, branch = _git_info()
     _not_run_note = 'Not run in local mode' if mode == 'local' else 'Not run'
 
+    # Read pre-run gate outcomes set by explicit CI steps before this script runs.
+    # In staging/CI mode the workflow sets FRONTEND_BUILD_STATUS and
+    # READINESS_VALIDATION_STATUS to "pass" or "fail" so the gates reflect
+    # real results rather than "not_run".  In local mode the env vars are absent
+    # so both gates remain "not_run" (fail-closed for local dev).
+    _fb_env = os.environ.get('FRONTEND_BUILD_STATUS', '').strip().lower()
+    _rv_env = os.environ.get('READINESS_VALIDATION_STATUS', '').strip().lower()
+    _fb_status = _fb_env if _fb_env in ('pass', 'fail') else 'not_run'
+    _rv_status = _rv_env if _rv_env in ('pass', 'fail') else 'not_run'
+
     gates: dict[str, Any] = {
         'backend_tests': {
             'status': 'not_run',
@@ -313,9 +323,15 @@ def generate_ci_required_gates(
             'summary': _not_run_note,
         },
         'readiness_validation': {
-            'status': 'not_run',
-            'command': 'python services/api/scripts/validate_production_readiness.py',
-            'summary': _not_run_note,
+            'status': _rv_status,
+            'command': 'python scripts/validate_readiness.py',
+            'summary': (
+                'Readiness validation passed'
+                if _rv_status == 'pass'
+                else 'Readiness validation failed: see CI logs'
+                if _rv_status == 'fail'
+                else _not_run_note
+            ),
         },
         'paid_launch_readiness': {
             'status': 'not_run',
@@ -328,9 +344,15 @@ def generate_ci_required_gates(
             'blockers': [],
         },
         'frontend_build': {
-            'status': 'not_run',
+            'status': _fb_status,
             'command': 'npm run build',
-            'summary': _not_run_note,
+            'summary': (
+                'Frontend build passed'
+                if _fb_status == 'pass'
+                else 'Frontend build failed: see CI logs'
+                if _fb_status == 'fail'
+                else _not_run_note
+            ),
         },
     }
 

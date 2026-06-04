@@ -1,19 +1,18 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T10:23:27.635031+00:00",
+  "generated_at": "2026-06-04T14:51:14.688885+00:00",
   "release_status": "fail",
-  "release_channel": "local",
-  "commit_sha": "375e8744e4c592936b12322dc318c5fdc973fb43",
-  "branch": "claude/amazing-archimedes-IKjWX",
+  "release_channel": "staging",
+  "commit_sha": "ca2670adbf4dbc2e170a876a3293ad32c484dede",
+  "branch": "claude/trusting-mendel-bZXeH",
   "ci_required_gates_ready": false,
   "launch_proof_ready": false,
   "manifest_ready": true,
-  "test_report_ready": false,
+  "test_report_ready": true,
   "paid_launch_ready": false,
   "blockers": [
     "ci-required-gates not ready",
-    "launch-proof not ready",
-    "test-report-summary not ready"
+    "launch-proof not ready"
   ],
   "warnings": [],
   "evidence_files": [

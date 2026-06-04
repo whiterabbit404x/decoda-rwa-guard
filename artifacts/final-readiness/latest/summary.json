@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T10:53:45.169559+00:00",
-  "mode": "staging",
+  "generated_at": "2026-06-04T14:51:34.439696+00:00",
+  "mode": "local",
   "strict": true,
-  "overall_score": 90,
+  "overall_score": 94,
   "controlled_pilot_ready": true,
   "broad_paid_saas_ready": false,
   "enterprise_procurement_ready": false,
@@ -14,8 +14,8 @@
       "status": "pass"
     },
     "saas_workflow": {
-      "score": 75,
-      "status": "warn"
+      "score": 100,
+      "status": "pass"
     },
     "runtime_truthfulness": {
       "score": 100,
@@ -57,17 +57,17 @@
       "note": ""
     },
     "frontend_build": {
-      "status": "not_run",
+      "status": "pass",
       "source": "ci_gates",
       "note": "requires npm run build in CI"
     },
     "readiness_validation": {
-      "status": "not_run",
+      "status": "pass",
       "source": "ci_gates",
       "note": "requires validate_production_readiness.py"
     },
     "saas_workflow_validation": {
-      "status": "not_run",
+      "status": "pass",
       "source": "ci_gates",
       "note": ""
     },
@@ -107,28 +107,25 @@
       "note": ""
     },
     "staging_proof_validation": {
-      "status": "pass",
+      "status": "fail",
       "source": "staging_proof",
-      "note": ""
+      "note": "staging_launch_ready=false in staging proof"
     },
     "staging_validation": {
-      "status": "pass",
+      "status": "fail",
       "source": "staging_proof",
-      "note": ""
+      "note": "staging_launch_ready=False, mode='local'"
     }
   },
   "blockers": [
     "billing_ready=false",
     "billing_webhook_ready=false",
     "email_ready=false",
-    "frontend_build not_run: run npm run build in CI or mark production_100_percent_ready=false",
     "live evidence not ready: EVM_RPC_URL or STAGING_EVM_RPC_URL not configured",
     "provider_ready=false",
-    "readiness_validation not_run: run validate_production_readiness.py or mark production_100_percent_ready=false"
+    "staging proof: staging_launch_ready=false; BILLING_PROVIDER not configured"
   ],
-  "warnings": [
-    "saas_workflow_validation not run in CI gates"
-  ],
+  "warnings": [],
   "proof_artifacts": [
     "/home/user/decoda-rwa-guard/artifacts/launch-proof/latest/summary.json",
     "/home/user/decoda-rwa-guard/artifacts/release-proof/latest/summary.json",
@@ -137,5 +134,5 @@
     "/home/user/decoda-rwa-guard/artifacts/final-readiness/latest/summary.json"
   ],
   "safe_to_sell_broadly_today": false,
-  "safe_to_sell_reason": "Live evidence is required before broad sales. Simulator evidence does not qualify."
+  "safe_to_sell_reason": "Cannot sell broadly from local mode. Run with --mode staging --strict or --mode production --strict using real provider credentials and live evidence."
 }

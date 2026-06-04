@@ -1,26 +1,29 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T10:23:27.626859+00:00",
-  "commit_sha": "375e8744e4c592936b12322dc318c5fdc973fb43",
-  "branch": "claude/amazing-archimedes-IKjWX",
-  "release_channel": "local",
+  "generated_at": "2026-06-04T14:51:14.677704+00:00",
+  "commit_sha": "ca2670adbf4dbc2e170a876a3293ad32c484dede",
+  "branch": "claude/trusting-mendel-bZXeH",
+  "release_channel": "staging",
   "overall_status": "fail",
   "broad_paid_launch_ready": false,
   "required_gates": {
     "backend_tests": {
-      "status": "not_run",
+      "status": "pass",
       "command": "python -m pytest services/api/tests/ -q",
-      "summary": "Not run in local mode"
+      "summary": "test_release_proof_artifacts:pass | test_paid_launch_readiness:pass | test_runtime_truthfulness:pass | test_saas_workflow_validation:pass",
+      "tests_run": 160,
+      "tests_passed": 160,
+      "tests_failed": 0
     },
     "saas_workflow_validation": {
-      "status": "not_run",
-      "command": "python services/api/scripts/validate_staging.py",
-      "summary": "Not run in local mode"
+      "status": "pass",
+      "command": "python -m pytest services/api/tests/test_saas_workflow_validation.py -q",
+      "summary": ".................................                                        [100%]\n33 passed in 0.47s"
     },
     "readiness_validation": {
-      "status": "not_run",
-      "command": "python services/api/scripts/validate_production_readiness.py",
-      "summary": "Not run in local mode"
+      "status": "pass",
+      "command": "python scripts/validate_readiness.py",
+      "summary": "Readiness validation passed"
     },
     "paid_launch_readiness": {
       "status": "fail",
@@ -35,22 +38,22 @@
     },
     "live_evidence": {
       "status": "fail",
-      "summary": "Live evidence not available: live evidence not ready: live_telemetry_fresh_during_proof_run: telemetry is 43 days old; run a new monitoring cycle to generate fresh evidence",
+      "summary": "Live evidence not available: live evidence not ready: EVM_RPC_URL or STAGING_EVM_RPC_URL not configured",
       "blockers": [
-        "live evidence not ready: live_telemetry_fresh_during_proof_run: telemetry is 43 days old; run a new monitoring cycle to generate fresh evidence"
+        "live evidence not ready: EVM_RPC_URL or STAGING_EVM_RPC_URL not configured"
       ]
     },
     "frontend_build": {
-      "status": "not_run",
+      "status": "pass",
       "command": "npm run build",
-      "summary": "Not run in local mode"
+      "summary": "Frontend build passed"
     }
   },
   "blockers": [
     "billing provider is not configured",
     "billing webhook secret is missing",
     "email provider is not configured",
-    "live evidence not ready: live_telemetry_fresh_during_proof_run: telemetry is 43 days old; run a new monitoring cycle to generate fresh evidence",
+    "live evidence not ready: EVM_RPC_URL or STAGING_EVM_RPC_URL not configured",
     "live provider configuration is missing",
     "live provider proof is missing"
   ],

@@ -385,14 +385,79 @@ jobs:
             python scripts/staging/run_no_billing_launch_proof.py
           fi
 
+      # ── Pre-G: Run frontend build ─────────────────────────────────────────────
+      # Runs `npm ci && npm run build` inside apps/web (the Next.js frontend).
+      # continue-on-error so the workflow records the real pass/fail result rather
+      # than aborting — the gate status is written to GITHUB_ENV and forwarded to
+      # generate_release_proof.py which records it in ci-required-gates.json.
+      # The gate remains "fail" (never faked "pass") if the build exits non-zero.
+      - name: Run frontend build
+        id: frontend_build
+        continue-on-error: true
+        run: |
+          FRONTEND_DIR="apps/web"
+          if [ ! -f "$FRONTEND_DIR/package.json" ]; then
+            echo "::error::Frontend package.json not found at $FRONTEND_DIR/package.json"
+            exit 1
+          fi
+          cd "$FRONTEND_DIR"
+          echo "Installing frontend dependencies..."
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+          echo "Running npm run build..."
+          npm run build
+
+      # ── Pre-G: Run readiness validation ──────────────────────────────────────
+      # Runs scripts/validate_readiness.py which checks:
+      #   1. Required proof artifacts from prior steps exist and are valid JSON
+      #   2. No "not configured" blockers remain in staging proof
+      #   3. Python backend module imports cleanly
+      # continue-on-error so the result (pass/fail) is recorded — never faked.
+      - name: Run readiness validation
+        id: readiness_validation
+        continue-on-error: true
+        env:
+          STAGING_API_URL: ${{ secrets.STAGING_API_URL }}
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          STAGING_AUTH_TOKEN_SECRET: ${{ secrets.STAGING_AUTH_TOKEN_SECRET }}
+        run: python scripts/validate_readiness.py
+
+      # ── Pre-G: Export gate outcomes as env vars ───────────────────────────────
+      # Translates step outcome ("success"/"failure") into FRONTEND_BUILD_STATUS
+      # and READINESS_VALIDATION_STATUS env vars consumed by generate_release_proof.py.
+      # Runs with `if: always()` so it executes even when the above steps fail.
+      - name: Export gate outcomes to GITHUB_ENV
+        if: always()
+        run: |
+          if [ "${{ steps.frontend_build.outcome }}" = "success" ]; then
+            echo "FRONTEND_BUILD_STATUS=pass" >> "$GITHUB_ENV"
+            echo "frontend_build: pass"
+          else
+            echo "FRONTEND_BUILD_STATUS=fail" >> "$GITHUB_ENV"
+            echo "frontend_build: fail (outcome=${{ steps.frontend_build.outcome }})"
+          fi
+          if [ "${{ steps.readiness_validation.outcome }}" = "success" ]; then
+            echo "READINESS_VALIDATION_STATUS=pass" >> "$GITHUB_ENV"
+            echo "readiness_validation: pass"
+          else
+            echo "READINESS_VALIDATION_STATUS=fail" >> "$GITHUB_ENV"
+            echo "readiness_validation: fail (outcome=${{ steps.readiness_validation.outcome }})"
+          fi
+
       # ── Step G: Generate release proof ───────────────────────────────────────
+      # Generates artifacts/release-proof/latest/{ci-required-gates,summary,test-report,manifest}.
+      # --mode staging: runs the key backend test suites and reports real results;
+      #   reads live-evidence-proof for paid_launch_readiness so that gate passes
+      #   when real live evidence was generated in the steps above.
+      # --no-regen-launch-proof: preserves the richer launch-proof from step F.
+      # MUST run after launch-proof is finalised so the manifest hashes the correct file.
+      # FRONTEND_BUILD_STATUS and READINESS_VALIDATION_STATUS (set above) are read
+      # by generate_release_proof.py so ci-required-gates.json records real results.
       - name: Generate release proof
-        # Generates artifacts/release-proof/latest/{ci-required-gates,summary,test-report,manifest}.
-        # --mode staging: runs the key backend test suites and reports real results;
-        #   reads live-evidence-proof for paid_launch_readiness so that gate passes
-        #   when real live evidence was generated in the steps above.
-        # --no-regen-launch-proof: preserves the richer launch-proof from step F.
-        # MUST run after launch-proof is finalised so the manifest hashes the correct file.
+        if: always()
         run: python scripts/generate_release_proof.py --mode staging --no-regen-launch-proof
 
       # ── Step K: Validate release proof ───────────────────────────────────────
