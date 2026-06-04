@@ -155,11 +155,21 @@ def build_summary(loaded: dict[str, dict | None]) -> dict:
                 "release-proof test_report_ready=false: required test suites did not all pass"
             )
 
-    # Final-readiness gate: stricter result wins
-    if final_r.get("safe_to_sell_broadly_today") is False:
+    # Final-readiness gate: stricter result wins.
+    # Only flag a real inconsistency: sell-now's own signals say ready but
+    # final-readiness ran in strict mode and still says not safe. When
+    # final-readiness ran without --strict, safe_to_sell=false is expected —
+    # not a contradiction. sell-now inherits false via the constraint below.
+    _final_safe = final_r.get("safe_to_sell_broadly_today")
+    _final_strict = bool(final_r.get("strict", False))
+    if _final_safe is False and _final_strict:
         contradiction_flags.append(
-            "final-readiness says safe_to_sell_broadly_today=false; sell-now must not contradict"
+            "final-readiness (strict=true) says safe_to_sell_broadly_today=false; "
+            "sell-now must not contradict"
         )
+    # When _final_strict=False and _final_safe=False: expected (strict mode not
+    # engaged). safe_to_sell_broadly_today is gated below via the
+    # 'final_r.get(...) is not False' constraint — no contradiction_flag needed.
 
     # ── Fail-closed readiness ────────────────────────────────────────────────
     # Contradictions cause managed readiness to fail

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T05:49:47.578029+00:00",
+  "generated_at": "2026-06-04T06:03:28.474699+00:00",
   "mode": "staging",
   "strict": false,
   "overall_score": 100,
@@ -115,11 +115,11 @@
   "blockers": [],
   "warnings": [],
   "proof_artifacts": [
-    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/launch-proof/latest/summary.json",
-    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/release-proof/latest/summary.json",
-    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/release-proof/latest/ci-required-gates.json",
-    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/staging-proof/latest/summary.json",
-    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/final-readiness/latest/summary.json"
+    "/home/user/decoda-rwa-guard/artifacts/launch-proof/latest/summary.json",
+    "/home/user/decoda-rwa-guard/artifacts/release-proof/latest/summary.json",
+    "/home/user/decoda-rwa-guard/artifacts/release-proof/latest/ci-required-gates.json",
+    "/home/user/decoda-rwa-guard/artifacts/staging-proof/latest/summary.json",
+    "/home/user/decoda-rwa-guard/artifacts/final-readiness/latest/summary.json"
   ],
   "safe_to_sell_broadly_today": false,
   "safe_to_sell_reason": "Cannot sell broadly without --strict flag. Strict mode requires all gates to pass with live evidence."

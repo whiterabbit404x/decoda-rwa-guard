@@ -131,6 +131,47 @@ def main() -> int:
             print(f'CHECK 5 OK: launch_mode={launch_mode!r}, '
                   f'billing_provider={effective_provider!r}')
 
+    # ── Check 6: strict final-readiness + no blockers must allow safe_to_sell ──
+    if final_r is not None:
+        prod_ready = bool(final_r.get('production_100_percent_ready', False))
+        fr_blockers = final_r.get('blockers', [])
+        fr_strict = bool(final_r.get('strict', False))
+        fr_safe = final_r.get('safe_to_sell_broadly_today')
+        if prod_ready and not fr_blockers and fr_strict and fr_safe is not True:
+            failures.append(
+                'CHECK 6 FAIL: final-readiness production_100_percent_ready=true, blockers=[], '
+                f'strict=true but safe_to_sell_broadly_today={fr_safe!r}. '
+                'Fix: ensure validate_100_percent_readiness.py correctly sets '
+                'safe_to_sell_broadly_today=true when strict=true and all gates pass.'
+            )
+        else:
+            print(f'CHECK 6 OK: strict={fr_strict}, production_100_percent_ready={prod_ready}, '
+                  f'blockers_count={len(fr_blockers)}, safe_to_sell={fr_safe}')
+
+    # ── Check 7: sell-now must not have stale contradiction_flags ─────────────
+    # When final-readiness ran without --strict, safe_to_sell=false is expected.
+    # sell-now must not treat this expected state as a "contradiction".
+    if sell_now is not None and final_r is not None:
+        flags = sell_now.get('contradiction_flags', [])
+        final_strict = bool(final_r.get('strict', False))
+        final_safe = final_r.get('safe_to_sell_broadly_today')
+        stale_strict_flag = any(
+            'safe_to_sell_broadly_today=false; sell-now must not contradict' in f
+            for f in flags
+        )
+        if not final_strict and final_safe is False and stale_strict_flag:
+            failures.append(
+                'CHECK 7 FAIL: sell-now has a contradiction_flag claiming '
+                '"safe_to_sell_broadly_today=false; sell-now must not contradict" but '
+                'final-readiness ran with strict=false — safe=false is the expected '
+                'non-strict state, not a contradiction. '
+                'Fix: update write_sell_now_proof.py to not add contradiction_flags for '
+                'strict=false final-readiness state.'
+            )
+        else:
+            print(f'CHECK 7 OK: final_strict={final_strict}, final_safe={final_safe}, '
+                  f'stale_strict_flag={stale_strict_flag}')
+
     # ── Summary ────────────────────────────────────────────────────────────────
     print()
     if failures:

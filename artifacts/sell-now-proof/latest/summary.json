@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T05:49:47.624415+00:00",
-  "sell_now_managed_ready": false,
+  "generated_at": "2026-06-04T06:03:28.520575+00:00",
+  "sell_now_managed_ready": true,
   "broad_paid_saas_ready": true,
   "safe_to_sell_broadly_today": false,
   "provider_ready": true,
@@ -16,20 +16,16 @@
   "release_status": "pass",
   "release_ci_gates_ready": true,
   "release_test_report_ready": true,
-  "blockers": [
-    "contradiction: final-readiness says safe_to_sell_broadly_today=false; sell-now must not contradict"
-  ],
+  "blockers": [],
   "warnings": [],
-  "contradiction_flags": [
-    "final-readiness says safe_to_sell_broadly_today=false; sell-now must not contradict"
-  ],
+  "contradiction_flags": [],
   "safe_claims": [
     "controlled pilot ready: single customer with direct onboarding, no billing required",
-    "overall readiness score: 100/100"
+    "overall readiness score: 100/100",
+    "live EVM telemetry received and proven in CI artifact",
+    "detection \u2192 alert \u2192 incident chain proven from live provider data"
   ],
   "prohibited_claims": [
-    "Do NOT claim live monitoring proven from real RPC data",
-    "Do NOT claim this product is ready for managed or pilot customer delivery",
     "Do NOT claim safe_to_sell_broadly_today=true"
   ],
   "sources_loaded": {

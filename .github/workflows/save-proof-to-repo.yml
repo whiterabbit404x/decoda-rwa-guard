@@ -486,8 +486,16 @@ jobs:
         # and staging-proof (F2). sell-now reads this artifact, so it must come first.
         # --mode staging: enables staging validation from the staging-proof artifact
         #   (staging_launch_ready=true clears the staging validation blocker).
+        # --strict: added when STAGING_EVM_RPC_URL is present (live evidence proven).
+        #   With --strict and all gates passing, safe_to_sell_broadly_today becomes true.
+        #   Without --strict (no EVM secrets): safe_to_sell_broadly_today remains false.
         # Writes artifacts/final-readiness/latest/summary.json.
-        run: python scripts/validate_100_percent_readiness.py --mode staging
+        run: |
+          if [ "${{ steps.staging_secrets.outputs.present }}" = "true" ]; then
+            python scripts/validate_100_percent_readiness.py --mode staging --strict
+          else
+            python scripts/validate_100_percent_readiness.py --mode staging
+          fi
 
       # ── Step H: Generate sell-now proof ──────────────────────────────────────
       - name: Generate sell-now proof
