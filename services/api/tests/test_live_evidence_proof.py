@@ -609,6 +609,7 @@ def test_script_successful_rpc_creates_live_telemetry_proof(
 
 
 def test_script_successful_rpc_without_live_event_fails_with_specific_reason(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """RPC works but no live event -> live_evidence_ready=False with explicit reason."""
@@ -617,8 +618,12 @@ def test_script_successful_rpc_without_live_event_fails_with_specific_reason(
     monkeypatch.setenv('EVM_CHAIN_ID', '1')
     monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
 
+    import scripts.generate_live_evidence_proof as _mod
+    # Patch REPO_ROOT so the committed default chain file is not found — this
+    # test specifically validates the "RPC works but no live event exists" path.
     with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_success('0x1', '0x12c4cca')):
-        result = generate_live_evidence_proof()
+        with patch.object(_mod, 'REPO_ROOT', tmp_path):
+            result = generate_live_evidence_proof()
 
     lpe = result['live_provider_evidence']
     assert lpe['live_provider_ready'] is True
