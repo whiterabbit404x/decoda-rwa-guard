@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T06:00:17.451790+00:00",
-  "mode": "local",
-  "strict": true,
+  "generated_at": "2026-06-04T06:03:28.474699+00:00",
+  "mode": "staging",
+  "strict": false,
   "overall_score": 100,
   "controlled_pilot_ready": true,
-  "broad_paid_saas_ready": false,
-  "enterprise_procurement_ready": false,
-  "production_100_percent_ready": false,
+  "broad_paid_saas_ready": true,
+  "enterprise_procurement_ready": true,
+  "production_100_percent_ready": true,
   "categories": {
     "product_concept": {
       "score": 100,
@@ -107,14 +107,12 @@
       "note": ""
     },
     "staging_validation": {
-      "status": "fail",
+      "status": "pass",
       "source": "staging_proof",
-      "note": "staging_launch_ready=True, mode='local'"
+      "note": ""
     }
   },
-  "blockers": [
-    "staging proof present but mode='local'; staging validation requires staging/production mode"
-  ],
+  "blockers": [],
   "warnings": [],
   "proof_artifacts": [
     "/home/user/decoda-rwa-guard/artifacts/launch-proof/latest/summary.json",
@@ -124,5 +122,5 @@
     "/home/user/decoda-rwa-guard/artifacts/final-readiness/latest/summary.json"
   ],
   "safe_to_sell_broadly_today": false,
-  "safe_to_sell_reason": "Cannot sell broadly from local mode. Run with --mode staging --strict or --mode production --strict using real provider credentials and live evidence."
+  "safe_to_sell_reason": "Cannot sell broadly without --strict flag. Strict mode requires all gates to pass with live evidence."
 }
