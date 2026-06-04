@@ -14,15 +14,15 @@
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "6dda61d626be4c9fee7b6764d9d089a65f7b1da9e3fd9e78b15c4933f9102915",
-      "size_bytes": 1960,
+      "sha256": "abd508bb8713141109634616855913a4250e1977691a66603c5e7c745a1930cf",
+      "size_bytes": 1959,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "2c1ed1fe4c0fb63b26898017458b247ba8359d6f8899e9904304faee8068f084",
-      "size_bytes": 1303,
+      "sha256": "a9495b472fe265f9619b063b53bcf2e5c1c742e65af639f613113451217d60fe",
+      "size_bytes": 1528,
       "required": true,
       "status": "present"
     }
