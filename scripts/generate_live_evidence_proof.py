@@ -210,6 +210,7 @@ def _validated_live_evidence_chain(chain: Any) -> dict[str, Any] | None:
     Requires:
       - evidence_source == 'live'
       - source_type == 'rpc_polling'
+      - live_evidence_source == 'live_rpc' (absent or any other value is rejected)
       - telemetry_event_id, detection_id, alert_id, evidence_package_id all truthy
       - incident_id or response_action_id truthy
 
@@ -221,6 +222,9 @@ def _validated_live_evidence_chain(chain: Any) -> dict[str, Any] | None:
     evidence_source = str(chain.get('evidence_source') or '').strip().lower()
     source_type = str(chain.get('source_type') or '').strip().lower()
     if evidence_source != 'live' or source_type != 'rpc_polling':
+        return None
+    live_evidence_source = str(chain.get('live_evidence_source') or '').strip().lower()
+    if live_evidence_source != 'live_rpc':
         return None
     required = ('telemetry_event_id', 'detection_id', 'alert_id', 'evidence_package_id')
     if not all(str(chain.get(k) or '').strip() for k in required):
@@ -446,19 +450,6 @@ def generate_live_evidence_proof(
     real_chain = _validated_live_evidence_chain(live_evidence_chain)
     if real_chain is None:
         real_chain = _validated_live_evidence_chain(_load_live_evidence_chain_from_env())
-    if real_chain is None and not require_current_env:
-        # Skip this committed file when require_current_env=True so that
-        # historical artifacts can never satisfy live_evidence_ready in the
-        # no-secrets CI validation job.
-        _default_chain_file = (
-            REPO_ROOT / 'artifacts' / 'live-evidence-proof' / 'latest' / 'live_evidence_chain.json'
-        )
-        if _default_chain_file.exists():
-            try:
-                with open(_default_chain_file) as _f:
-                    real_chain = _validated_live_evidence_chain(json.load(_f))
-            except Exception:
-                pass
 
     # --- Evidence-level issue: RPC works but no matching live event observed ---
     if real_chain is None:
