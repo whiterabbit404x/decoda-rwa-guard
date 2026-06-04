@@ -211,7 +211,11 @@ def _check_staging_validation(
     """Check staging validation using staging proof artifact.
 
     Fail-closed: returns False unless staging proof artifact exists,
-    staging_launch_ready=true, mode is staging/production, AND strict=True.
+    staging_launch_ready=true, and mode is staging/production.
+
+    Note: --strict is NOT required for staging validation itself.
+    --strict only gates safe_to_sell_broadly_today (handled separately).
+    This ensures staging_validation.status agrees with the blockers list.
     """
     if staging_proof is None:
         if mode in ('staging', 'production'):
@@ -220,13 +224,6 @@ def _check_staging_validation(
                 'is required before broad selling'
             ]
         return False, ['staging proof artifact missing; staging validation not available in local/ci mode']
-
-    # --strict is required to consider staging proof validated in staging/production mode
-    if mode in ('staging', 'production') and not strict:
-        return False, [
-            'staging validation missing: staging runtime/database/auth/worker proof '
-            'is required before broad selling'
-        ]
 
     staging_launch_ready = bool(staging_proof.get('staging_launch_ready'))
     if not staging_launch_ready:

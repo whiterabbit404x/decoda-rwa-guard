@@ -314,22 +314,51 @@ def test_j_missing_provider_blocks_broad_paid_saas(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# K. Missing staging validation blocks safe_to_sell_broadly_today.
+# K. Missing staging proof artifact blocks safe_to_sell_broadly_today.
 # ---------------------------------------------------------------------------
 def test_k_missing_staging_validation_blocks_safe_to_sell(tmp_path: Path) -> None:
     lp_dir = _write_launch_proof(tmp_path)
     rp_dir = _write_release_proof(tmp_path)
     _write_ci_gates(tmp_path)
+    # Explicitly point at an empty staging-proof dir so staging_proof=None
+    sp_dir = tmp_path / 'staging-proof' / 'latest'
+    sp_dir.mkdir(parents=True, exist_ok=True)
 
-    # Even in staging mode without --strict, staging_validation is not proven
     result = build_final_readiness(
         mode='staging',
         strict=False,
         launch_proof_dir=lp_dir,
         release_proof_dir=rp_dir,
+        staging_proof_dir=sp_dir,
     )
     assert result['safe_to_sell_broadly_today'] is False
     assert any('staging' in b.lower() for b in result['blockers'])
+
+
+# ---------------------------------------------------------------------------
+# K2. Valid staging proof without --strict passes staging validation.
+# (--strict gates only safe_to_sell_broadly_today, not staging validation itself)
+# ---------------------------------------------------------------------------
+def test_k2_valid_staging_proof_without_strict_clears_staging_blocker(tmp_path: Path) -> None:
+    lp_dir = _write_launch_proof(tmp_path)
+    rp_dir = _write_release_proof(tmp_path)
+    _write_ci_gates(tmp_path)
+    sp_dir = _write_staging_proof(tmp_path, staging_launch_ready=True)
+
+    result = build_final_readiness(
+        mode='staging',
+        strict=False,
+        launch_proof_dir=lp_dir,
+        release_proof_dir=rp_dir,
+        staging_proof_dir=sp_dir,
+    )
+    # staging_launch_ready=True → no "staging validation missing" blocker
+    assert not any('staging validation missing' in b for b in result['blockers']), (
+        f'Expected no staging-validation-missing blocker with valid proof (strict=False), '
+        f'got: {result["blockers"]}'
+    )
+    # safe_to_sell still requires --strict regardless
+    assert result['safe_to_sell_broadly_today'] is False
 
 
 # ---------------------------------------------------------------------------
