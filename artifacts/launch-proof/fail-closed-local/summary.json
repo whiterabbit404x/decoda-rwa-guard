@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T10:23:34.700414+00:00",
+  "generated_at": "2026-06-04T14:51:11.815326+00:00",
   "launch_mode": "paid_saas",
   "proof_mode": "local",
-  "billing_provider": "stripe",
+  "billing_provider": "paddle",
   "repository": "/home/user/decoda-rwa-guard",
   "readiness_categories": {
     "live_provider_evidence_ready": false,
@@ -15,10 +15,10 @@
   "live_provider_evidence": {
     "artifact_available": true,
     "live_provider_evidence_ready": false,
-    "provider_ready": true,
-    "provider_mode": "live",
+    "provider_ready": false,
+    "provider_mode": "disabled",
     "live_evidence_ready": false,
-    "evidence_source": "live",
+    "evidence_source": "unknown",
     "source": "artifacts/live-evidence-proof/latest/summary.json"
   },
   "managed_pilot": {
@@ -40,7 +40,7 @@
     "billing_ready": true,
     "billing_webhook_ready": true,
     "billing_status": "ready",
-    "billing_reason": "Stripe billing configured with required credentials and price ID.",
+    "billing_reason": "Paddle billing configured with required credentials, environment, client token, and price ID.",
     "billing_missing_env": [],
     "billing_webhook_missing_env": []
   },
@@ -52,7 +52,7 @@
   },
   "allowed_claims": [
     "NIW Strategic Infrastructure Guard positioning ready",
-    "paid billing configured (stripe)",
+    "paid billing configured (paddle)",
     "email provider configured"
   ],
   "prohibited_claims": [
@@ -68,7 +68,7 @@
     "billing_ready": true,
     "billing_webhook_ready": true,
     "email_ready": true,
-    "provider_ready": true,
+    "provider_ready": false,
     "live_evidence_ready": false,
     "ci_required_gates_ready": true
   },
@@ -81,9 +81,9 @@
       "name": "billing_provider",
       "passed": true,
       "details": {
-        "billing_provider": "stripe",
+        "billing_provider": "paddle",
         "is_paid_provider": true,
-        "note": "BILLING_PROVIDER='stripe' is a supported paid provider."
+        "note": "BILLING_PROVIDER='paddle' is a supported paid provider."
       }
     },
     {
@@ -93,7 +93,7 @@
         "billing_ready": true,
         "billing_webhook_ready": true,
         "billing_status": "ready",
-        "billing_reason": "Stripe billing configured with required credentials and price ID.",
+        "billing_reason": "Paddle billing configured with required credentials, environment, client token, and price ID.",
         "billing_missing_env": [],
         "billing_webhook_missing_env": []
       }
