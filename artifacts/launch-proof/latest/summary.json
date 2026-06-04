@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T05:49:45.388142+00:00",
+  "generated_at": "2026-06-04T06:19:08.642812+00:00",
   "launch_mode": "paid_saas",
   "pilot_ready": true,
   "paid_launch_ready": false,
@@ -8,13 +8,14 @@
   "broad_paid_saas_ready": false,
   "readiness_categories": {
     "live_provider_evidence_ready": true,
-    "managed_pilot_ready": false,
+    "managed_pilot_ready": true,
     "niw_positioning_ready": true,
     "broad_paid_saas_ready": false,
     "ci_required_gates_ready": true
   },
   "allowed_claims": [
     "NIW Strategic Infrastructure Guard positioning ready",
+    "controlled pilot / managed sale ready",
     "live provider evidence ready",
     "not broad paid SaaS ready"
   ],

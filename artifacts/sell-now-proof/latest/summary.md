@@ -1,12 +1,12 @@
 # Sell-Now Proof
 
-**Generated:** 2026-06-04T06:03:28.520575+00:00
+**Generated:** 2026-06-04T06:19:10.821426+00:00
 
 ## Readiness Summary
 
 | Flag | Value |
 |---|---|
-| sell_now_managed_ready | YES |
+| sell_now_managed_ready | NO |
 | broad_paid_saas_ready | YES |
 | safe_to_sell_broadly_today | NO |
 
@@ -29,15 +29,27 @@
 | billing_ready | YES |
 | email_ready | YES |
 
+## Blockers
+
+- contradiction: release-proof release_status=fail: required CI gates or test suites are failing; safe_to_sell_broadly_today cannot be true
+- contradiction: release-proof ci_required_gates_ready=false
+- contradiction: release-proof test_report_ready=false: required test suites did not all pass
+
+## Contradiction Flags
+
+- release-proof release_status=fail: required CI gates or test suites are failing; safe_to_sell_broadly_today cannot be true
+- release-proof ci_required_gates_ready=false
+- release-proof test_report_ready=false: required test suites did not all pass
+
 ## Safe Claims
 
 - controlled pilot ready: single customer with direct onboarding, no billing required
 - overall readiness score: 100/100
-- live EVM telemetry received and proven in CI artifact
-- detection → alert → incident chain proven from live provider data
 
 ## Prohibited Claims
 
+- Do NOT claim live monitoring proven from real RPC data
+- Do NOT claim this product is ready for managed or pilot customer delivery
 - Do NOT claim safe_to_sell_broadly_today=true
 
 ## Sources
