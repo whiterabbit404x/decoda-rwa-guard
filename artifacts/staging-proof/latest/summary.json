@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T04:19:18.463221+00:00",
+  "generated_at": "2026-06-04T04:45:59.675766+00:00",
   "mode": "staging",
   "strict": false,
   "release_channel": "staging",
@@ -25,7 +25,7 @@
     "staging_migrations_validated": true,
     "staging_runtime_validated": true,
     "staging_live_evidence_validated": true,
-    "generated_at": "2026-06-04T04:19:18.463230+00:00",
+    "generated_at": "2026-06-04T04:45:59.675776+00:00",
     "blockers": [],
     "warnings": []
   },

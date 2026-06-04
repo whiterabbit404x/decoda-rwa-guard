@@ -1,6 +1,6 @@
 # Sell-Now Proof
 
-**Generated:** 2026-06-04T04:35:17.392860+00:00
+**Generated:** 2026-06-04T04:46:03.883867+00:00
 
 ## Readiness Summary
 
@@ -26,22 +26,18 @@
 | staging_runtime_reachable | YES |
 | staging_database_reachable | YES |
 | staging_worker_enabled | YES |
-| billing_ready | NO |
-| email_ready | NO |
+| billing_ready | YES |
+| email_ready | YES |
 
 ## Blockers
 
-- contradiction: release-proof release_status=fail: required CI gates or test suites are failing; safe_to_sell_broadly_today cannot be true
-- contradiction: release-proof ci_required_gates_ready=false
 - contradiction: final-readiness says safe_to_sell_broadly_today=false; sell-now must not contradict
-- billing_ready=false: billing provider not configured
-- email_ready=false: email provider not configured
+- contradiction: sell-now broad_paid_saas_ready=true but final-readiness broad_paid_saas_ready=false; stricter result wins
 
 ## Contradiction Flags
 
-- release-proof release_status=fail: required CI gates or test suites are failing; safe_to_sell_broadly_today cannot be true
-- release-proof ci_required_gates_ready=false
 - final-readiness says safe_to_sell_broadly_today=false; sell-now must not contradict
+- sell-now broad_paid_saas_ready=true but final-readiness broad_paid_saas_ready=false; stricter result wins
 
 ## Safe Claims
 

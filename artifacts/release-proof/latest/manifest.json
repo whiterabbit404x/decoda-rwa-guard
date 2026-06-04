@@ -1,28 +1,28 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T04:35:24.024548+00:00",
-  "release_channel": "local",
-  "commit_sha": "ec16effc9c39a809ad9b59051fb74c205dba47bb",
-  "branch": "claude/gallant-keller-aSuXc",
+  "generated_at": "2026-06-04T04:46:03.768311+00:00",
+  "release_channel": "staging",
+  "commit_sha": "34b70cd2a319d4e3599349e612627b1e9b7cd750",
+  "branch": "main",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "c59f1939cf1bad499d5204725e53c7ed5130734ae67a6077a2b91c2ca9e17a60",
-      "size_bytes": 754,
+      "sha256": "cee677737841c8e0a7f4c73782691fae7fdd3b245a5c7fbf642134c66c729f90",
+      "size_bytes": 657,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "2b03b6db549007208f352cc916f4fc21c26de915b61697434b4cea8d528e2e3e",
-      "size_bytes": 1853,
+      "sha256": "5ff6343d6e206353724274a685dcd1214975b1603e6aa374f2d7606752177043",
+      "size_bytes": 1956,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "3475e5324443be4454b2e29e1026f9dff3d707bb20cd30f700471993ad03889e",
-      "size_bytes": 1318,
+      "sha256": "4677f8c3121b22882403a2126a7689ed7075df19fa72f2cad2e96419a75c72d6",
+      "size_bytes": 1204,
       "required": true,
       "status": "present"
     }

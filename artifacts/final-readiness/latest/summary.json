@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T04:35:22.242417+00:00",
-  "mode": "local",
-  "strict": true,
-  "overall_score": 90,
+  "generated_at": "2026-06-04T04:46:03.968793+00:00",
+  "mode": "staging",
+  "strict": false,
+  "overall_score": 100,
   "controlled_pilot_ready": true,
   "broad_paid_saas_ready": false,
   "enterprise_procurement_ready": false,
@@ -14,8 +14,8 @@
       "status": "pass"
     },
     "saas_workflow": {
-      "score": 75,
-      "status": "warn"
+      "score": 100,
+      "status": "pass"
     },
     "runtime_truthfulness": {
       "score": 100,
@@ -38,8 +38,8 @@
       "status": "pass"
     },
     "billing_email_launch_readiness": {
-      "score": 40,
-      "status": "fail"
+      "score": 100,
+      "status": "pass"
     },
     "ci_release_evidence": {
       "score": 100,
@@ -62,7 +62,7 @@
       "note": "requires npm run build in CI"
     },
     "saas_workflow_validation": {
-      "status": "not_run",
+      "status": "pass",
       "source": "ci_gates",
       "note": ""
     },
@@ -77,7 +77,7 @@
       "note": ""
     },
     "paid_launch_readiness": {
-      "status": "fail",
+      "status": "pass",
       "source": "launch_proof",
       "note": ""
     },
@@ -92,7 +92,7 @@
       "note": ""
     },
     "billing_email_provider_readiness": {
-      "status": "fail",
+      "status": "pass",
       "source": "launch_proof",
       "note": ""
     },
@@ -107,27 +107,22 @@
       "note": ""
     },
     "staging_validation": {
-      "status": "fail",
+      "status": "pass",
       "source": "staging_proof",
-      "note": "staging_launch_ready=True, mode='local'"
+      "note": ""
     }
   },
   "blockers": [
-    "billing_ready=false",
-    "billing_webhook_ready=false",
-    "email_ready=false",
-    "staging proof present but mode='local'; staging validation requires staging/production mode"
+    "staging validation missing: staging runtime/database/auth/worker proof is required before broad selling"
   ],
-  "warnings": [
-    "saas_workflow_validation not run in CI gates"
-  ],
+  "warnings": [],
   "proof_artifacts": [
-    "/home/user/decoda-rwa-guard/artifacts/launch-proof/latest/summary.json",
-    "/home/user/decoda-rwa-guard/artifacts/release-proof/latest/summary.json",
-    "/home/user/decoda-rwa-guard/artifacts/release-proof/latest/ci-required-gates.json",
-    "/home/user/decoda-rwa-guard/artifacts/staging-proof/latest/summary.json",
-    "/home/user/decoda-rwa-guard/artifacts/final-readiness/latest/summary.json"
+    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/launch-proof/latest/summary.json",
+    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/release-proof/latest/summary.json",
+    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/release-proof/latest/ci-required-gates.json",
+    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/staging-proof/latest/summary.json",
+    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/final-readiness/latest/summary.json"
   ],
   "safe_to_sell_broadly_today": false,
-  "safe_to_sell_reason": "Cannot sell broadly from local mode. Run with --mode staging --strict or --mode production --strict using real provider credentials and live evidence."
+  "safe_to_sell_reason": "Cannot sell broadly without --strict flag. Strict mode requires all gates to pass with live evidence."
 }
