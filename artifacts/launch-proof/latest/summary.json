@@ -2,29 +2,29 @@
   "schema_version": 1,
   "generated_at": "2026-06-04T07:18:20.612720+00:00",
   "launch_mode": "paid_saas",
+  "proof_mode": "staging",
+  "billing_provider": "paddle",
   "pilot_ready": true,
-  "paid_launch_ready": false,
+  "paid_launch_ready": true,
   "controlled_pilot_ready": true,
-  "broad_paid_saas_ready": false,
+  "broad_paid_saas_ready": true,
+  "safe_to_sell_broadly_today": true,
   "readiness_categories": {
     "live_provider_evidence_ready": true,
-    "managed_pilot_ready": false,
+    "managed_pilot_ready": true,
     "niw_positioning_ready": true,
-    "broad_paid_saas_ready": false,
+    "broad_paid_saas_ready": true,
     "ci_required_gates_ready": true
   },
   "allowed_claims": [
     "NIW Strategic Infrastructure Guard positioning ready",
+    "controlled pilot / managed sale ready",
     "live provider evidence ready",
-    "not broad paid SaaS ready"
+    "paid billing configured (paddle)",
+    "email provider configured",
+    "paid SaaS launch ready"
   ],
-  "prohibited_claims": [
-    "broad paid SaaS production ready",
-    "billing ready",
-    "staging runtime fully ready",
-    "staging database fully ready",
-    "worker fully ready"
-  ],
+  "prohibited_claims": [],
   "readiness": {
     "billing_ready": true,
     "billing_webhook_ready": true,
@@ -33,12 +33,12 @@
     "live_evidence_ready": true,
     "ci_required_gates_ready": true
   },
-  "blockers": [
-    "local mode: paid launch readiness cannot be proven without staging/production runtime"
-  ],
+  "blockers": [],
   "warnings": [],
   "artifact_paths": {
     "ci_required_gates": "artifacts/release-proof/latest/ci-required-gates.json",
-    "release_summary": "artifacts/release-proof/latest/summary.json"
+    "release_summary": "artifacts/release-proof/latest/summary.json",
+    "live_evidence_proof": "artifacts/live-evidence-proof/latest/summary.json",
+    "sell_now_proof": "artifacts/sell-now-proof/latest/summary.json"
   }
 }

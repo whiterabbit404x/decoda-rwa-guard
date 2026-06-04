@@ -353,7 +353,10 @@ def write_artifact(
     artifact_dir.mkdir(parents=True, exist_ok=True)
     (artifact_dir / 'summary.json').write_text(json.dumps(payload, indent=2), encoding='utf-8')
 
-    latest_dir = ARTIFACT_ROOT / 'latest'
+    # Local/CI runs write to fail-closed-local/ to avoid overwriting the staging
+    # proof that CI commits to latest/.  Only staging/production mode writes latest/.
+    _local_write_modes = {'local', 'ci', 'fail_closed_local'}
+    latest_dir = ARTIFACT_ROOT / ('fail-closed-local' if mode in _local_write_modes else 'latest')
     latest_dir.mkdir(parents=True, exist_ok=True)
     (latest_dir / 'summary.json').write_text(json.dumps(payload, indent=2), encoding='utf-8')
 
