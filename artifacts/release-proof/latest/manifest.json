@@ -1,28 +1,28 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T07:18:22.242027+00:00",
-  "release_channel": "staging",
-  "commit_sha": "cdbaa75fb6619cddc2ab4fc32cbf495224e3091a",
-  "branch": "main",
+  "generated_at": "2026-06-04T10:23:27.639009+00:00",
+  "release_channel": "local",
+  "commit_sha": "375e8744e4c592936b12322dc318c5fdc973fb43",
+  "branch": "claude/amazing-archimedes-IKjWX",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "7a5ac1deade6c670a1e9c78d14937548f0557ac8d82ac6e41e23952745d3ef9e",
-      "size_bytes": 657,
+      "sha256": "ef886a89a52e5b350458bc65ea3679dd55685c44881eeb2909d218e23549de10",
+      "size_bytes": 789,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "cbe14605ce139d5d9fa8556924bfcb8ace1313d076694097467c01670d51e3e0",
-      "size_bytes": 1956,
+      "sha256": "853382f593464329b9850ad5869a8e37af6ed5e862f7079bcb006fb423b7d68a",
+      "size_bytes": 2318,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "536c853ff955618a2e849755268e2be72a06b7e590a213a6a853111f1a26ea42",
-      "size_bytes": 1406,
+      "sha256": "bc2cba28ae31dab8cb996bd58d0503dc6c46d39668fb7c3c15bc730c596bb210",
+      "size_bytes": 1490,
       "required": true,
       "status": "present"
     }

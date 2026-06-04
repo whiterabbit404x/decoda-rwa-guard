@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T09:26:09.483728+00:00",
+  "generated_at": "2026-06-04T10:24:55.409484+00:00",
   "mode": "local",
   "strict": true,
-  "overall_score": 100,
+  "overall_score": 90,
   "controlled_pilot_ready": true,
   "broad_paid_saas_ready": false,
   "enterprise_procurement_ready": false,
@@ -14,8 +14,8 @@
       "status": "pass"
     },
     "saas_workflow": {
-      "score": 100,
-      "status": "pass"
+      "score": 75,
+      "status": "warn"
     },
     "runtime_truthfulness": {
       "score": 100,
@@ -38,8 +38,8 @@
       "status": "pass"
     },
     "billing_email_launch_readiness": {
-      "score": 100,
-      "status": "pass"
+      "score": 40,
+      "status": "fail"
     },
     "ci_release_evidence": {
       "score": 100,
@@ -67,7 +67,7 @@
       "note": "requires validate_production_readiness.py"
     },
     "saas_workflow_validation": {
-      "status": "pass",
+      "status": "not_run",
       "source": "ci_gates",
       "note": ""
     },
@@ -82,7 +82,7 @@
       "note": ""
     },
     "paid_launch_readiness": {
-      "status": "pass",
+      "status": "fail",
       "source": "launch_proof",
       "note": ""
     },
@@ -97,7 +97,7 @@
       "note": ""
     },
     "billing_email_provider_readiness": {
-      "status": "pass",
+      "status": "fail",
       "source": "launch_proof",
       "note": ""
     },
@@ -118,12 +118,18 @@
     }
   },
   "blockers": [
+    "billing_ready=false",
+    "billing_webhook_ready=false",
+    "email_ready=false",
     "frontend_build not_run: run npm run build in CI or mark production_100_percent_ready=false",
     "live evidence not ready: live telemetry is stale: latest_live_telemetry_at='2026-04-22T14:32:59.583341+00:00' is 43 days before proof generated_at; freshness window is 30 days \u2014 a new telemetry \u2192 detection \u2192 alert \u2192 incident \u2192 response_action \u2192 evidence_package chain is required during the proof run",
+    "provider_ready=false",
     "readiness_validation not_run: run validate_production_readiness.py or mark production_100_percent_ready=false",
     "staging proof present but mode='local'; staging validation requires staging/production mode"
   ],
-  "warnings": [],
+  "warnings": [
+    "saas_workflow_validation not run in CI gates"
+  ],
   "proof_artifacts": [
     "/home/user/decoda-rwa-guard/artifacts/launch-proof/latest/summary.json",
     "/home/user/decoda-rwa-guard/artifacts/release-proof/latest/summary.json",
