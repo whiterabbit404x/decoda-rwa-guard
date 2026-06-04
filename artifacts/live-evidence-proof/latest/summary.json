@@ -1,102 +1,39 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T07:18:16.986513+00:00",
+  "generated_at": "2026-06-04T10:53:39.301859+00:00",
   "live_provider_evidence": {
-    "provider_ready": true,
-    "provider_mode": "live",
-    "provider_health_checked": true,
-    "provider_checked_at": "2026-06-04T07:18:16.986531+00:00",
-    "provider_url_masked": "https://mainnet.infura.io/v3/[masked]",
-    "chain_id_configured": true,
-    "chain_id_observed": "1",
-    "block_number_observed": "25242482",
-    "worker_enabled": true,
-    "live_provider_ready": true,
-    "live_provider_receipt_ready": true,
+    "provider_ready": false,
+    "provider_mode": "disabled",
+    "provider_health_checked": false,
+    "provider_checked_at": null,
+    "provider_url_masked": "",
+    "chain_id_configured": false,
+    "chain_id_observed": null,
+    "block_number_observed": null,
+    "worker_enabled": false,
+    "live_provider_ready": false,
+    "live_provider_receipt_ready": false,
     "live_telemetry_ready": false,
     "live_detection_ready": false,
     "live_alert_ready": false,
     "live_incident_ready": false,
-    "evidence_source": "live",
-    "latest_live_telemetry_at": "2026-04-22T14:32:59.583341+00:00",
+    "evidence_source": "unknown",
+    "live_evidence_source": "unknown",
+    "latest_live_telemetry_at": null,
     "live_evidence_ready": false,
-    "staleness_reason": "live telemetry is stale: latest_live_telemetry_at='2026-04-22T14:32:59.583341+00:00' is 43 days before proof generated_at; freshness window is 30 days — a new telemetry → detection → alert → incident → response_action → evidence_package chain is required during the proof run",
-    "freshness_check": {
-      "status": "fail",
-      "generated_at": "2026-06-04T07:18:16.986513+00:00",
-      "latest_live_telemetry_at": "2026-04-22T14:32:59.583341+00:00",
-      "telemetry_age_days": 43,
-      "freshness_window_days": 30,
-      "reason": "April 2026 telemetry used in June 2026 proof run; exceeds 30-day freshness window"
-    },
+    "run_id": null,
+    "github_run_id": null,
     "chain": {
-      "telemetry_event_id": "48990975-bd17-509b-bfde-e52141b02403",
-      "detection_id": "23e8e4e4-0a53-5f4a-b9c4-f24bfa2922a5",
-      "alert_id": "d7b3a3c9-18c8-5a7a-98d5-f7d88099e136",
-      "incident_id": "fdfebd6b-9551-5b1e-a2de-ecd04d3281d8",
-      "response_action_id": "02a4ace2-071f-54d7-94e3-57ab0fd00ed3",
-      "evidence_package_id": "746fa939-5efe-5b75-8dfd-f94d774cf6cf"
-    },
-    "telemetry_record": {
-      "telemetry_event_id": "48990975-bd17-509b-bfde-e52141b02403",
-      "observed_at": "2026-04-22T14:32:59.583341+00:00",
-      "evidence_source": "live",
-      "provider_mode": "live",
-      "source_type": "rpc_polling",
-      "chain_id": "1",
-      "block_number": "25242482",
-      "raw_rpc_response_hash": "607687a47a4bd142f183aa35aa9a9707",
-      "transaction_hash": "0x2b681b73d08c7528a5fd90428517c32228102b0458b495c8d4d1ae6d9388f2ac",
-      "workspace_id": null,
-      "target_id": null,
-      "asset_id": null
-    },
-    "detection_record": {
-      "detection_id": "23e8e4e4-0a53-5f4a-b9c4-f24bfa2922a5",
-      "detection_name": "live_rpc_event_observed",
-      "telemetry_event_id": "48990975-bd17-509b-bfde-e52141b02403",
-      "observed_at": "2026-04-22T14:32:59.583341+00:00",
-      "evidence_source": "live",
-      "source_type": "rpc_polling",
-      "severity": "informational",
-      "confidence": "high"
-    },
-    "alert_record": {
-      "alert_id": "d7b3a3c9-18c8-5a7a-98d5-f7d88099e136",
-      "detection_id": "23e8e4e4-0a53-5f4a-b9c4-f24bfa2922a5",
-      "observed_at": "2026-04-22T14:32:59.583341+00:00",
-      "evidence_source": "live"
-    },
-    "incident_record": {
-      "incident_id": "fdfebd6b-9551-5b1e-a2de-ecd04d3281d8",
-      "alert_id": "d7b3a3c9-18c8-5a7a-98d5-f7d88099e136",
-      "observed_at": "2026-04-22T14:32:59.583341+00:00",
-      "evidence_source": "live"
-    },
-    "response_action_record": {
-      "response_action_id": "02a4ace2-071f-54d7-94e3-57ab0fd00ed3",
-      "alert_id": "d7b3a3c9-18c8-5a7a-98d5-f7d88099e136",
-      "observed_at": "2026-04-22T14:32:59.583341+00:00",
-      "evidence_source": "live"
-    },
-    "evidence_package_record": {
-      "evidence_package_id": "746fa939-5efe-5b75-8dfd-f94d774cf6cf",
-      "telemetry_event_id": "48990975-bd17-509b-bfde-e52141b02403",
-      "detection_id": "23e8e4e4-0a53-5f4a-b9c4-f24bfa2922a5",
-      "alert_id": "d7b3a3c9-18c8-5a7a-98d5-f7d88099e136",
-      "incident_id": "fdfebd6b-9551-5b1e-a2de-ecd04d3281d8",
-      "response_action_id": "02a4ace2-071f-54d7-94e3-57ab0fd00ed3",
-      "evidence_source": "live",
-      "provider_mode": "live",
-      "source_type": "rpc_polling",
-      "provider_url_masked": "https://mainnet.infura.io/v3/[masked]",
-      "chain_id": "1",
-      "block_number": "25242482",
-      "raw_rpc_response_hash": "607687a47a4bd142f183aa35aa9a9707",
-      "exported_at": "2026-04-22T14:32:59.583341+00:00"
+      "run_id": null,
+      "telemetry_event_id": null,
+      "detection_id": null,
+      "alert_id": null,
+      "incident_id": null,
+      "response_action_id": null,
+      "evidence_package_id": null
     },
     "missing": [
-      "live_telemetry_fresh_during_proof_run: telemetry is 43 days old; run a new monitoring cycle to generate fresh evidence"
+      "EVM_RPC_URL or STAGING_EVM_RPC_URL not configured"
     ],
     "contradiction_flags": []
   }

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T10:24:55.409484+00:00",
-  "mode": "local",
+  "generated_at": "2026-06-04T10:53:45.169559+00:00",
+  "mode": "staging",
   "strict": true,
   "overall_score": 90,
   "controlled_pilot_ready": true,
@@ -112,9 +112,9 @@
       "note": ""
     },
     "staging_validation": {
-      "status": "fail",
+      "status": "pass",
       "source": "staging_proof",
-      "note": "staging_launch_ready=True, mode='local'"
+      "note": ""
     }
   },
   "blockers": [
@@ -122,10 +122,9 @@
     "billing_webhook_ready=false",
     "email_ready=false",
     "frontend_build not_run: run npm run build in CI or mark production_100_percent_ready=false",
-    "live evidence not ready: live telemetry is stale: latest_live_telemetry_at='2026-04-22T14:32:59.583341+00:00' is 43 days before proof generated_at; freshness window is 30 days \u2014 a new telemetry \u2192 detection \u2192 alert \u2192 incident \u2192 response_action \u2192 evidence_package chain is required during the proof run",
+    "live evidence not ready: EVM_RPC_URL or STAGING_EVM_RPC_URL not configured",
     "provider_ready=false",
-    "readiness_validation not_run: run validate_production_readiness.py or mark production_100_percent_ready=false",
-    "staging proof present but mode='local'; staging validation requires staging/production mode"
+    "readiness_validation not_run: run validate_production_readiness.py or mark production_100_percent_ready=false"
   ],
   "warnings": [
     "saas_workflow_validation not run in CI gates"
@@ -138,5 +137,5 @@
     "/home/user/decoda-rwa-guard/artifacts/final-readiness/latest/summary.json"
   ],
   "safe_to_sell_broadly_today": false,
-  "safe_to_sell_reason": "Cannot sell broadly from local mode. Run with --mode staging --strict or --mode production --strict using real provider credentials and live evidence."
+  "safe_to_sell_reason": "Live evidence is required before broad sales. Simulator evidence does not qualify."
 }
