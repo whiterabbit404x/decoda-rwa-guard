@@ -5,15 +5,15 @@
   "strict": false,
   "release_channel": "staging",
   "staging_launch_ready": true,
-  "broad_paid_saas_ready": true,
-  "safe_to_sell_broadly_today": true,
+  "broad_paid_saas_ready": false,
+  "safe_to_sell_broadly_today": false,
   "local_validation_ready": false,
   "staging_env_configured": true,
   "staging_runtime_reachable": true,
   "staging_worker_enabled": true,
   "staging_database_reachable": true,
   "staging_auth_configured": true,
-  "staging_live_evidence_ready": true,
+  "staging_live_evidence_ready": false,
   "staging_launch_validation": {
     "status": "pass",
     "staging_environment_present": true,
@@ -24,10 +24,12 @@
     "staging_worker_present": true,
     "staging_migrations_validated": true,
     "staging_runtime_validated": true,
-    "staging_live_evidence_validated": true,
+    "staging_live_evidence_validated": false,
     "generated_at": "2026-06-04T07:18:22.368668+00:00",
     "blockers": [],
-    "warnings": []
+    "warnings": [
+      "staging_live_evidence_validated=false: live telemetry is stale (43 days old); fresh evidence requires a new monitoring cycle"
+    ]
   },
   "live_provider_validation": {
     "status": "pass",
@@ -39,8 +41,16 @@
     "provider_mode": "live",
     "worker_enabled": true,
     "latest_live_telemetry_at": "2026-04-22T14:32:59.583341+00:00",
-    "live_evidence_ready": true,
+    "live_evidence_ready": false,
     "evidence_source": "live",
+    "freshness_check": {
+      "status": "fail",
+      "generated_at": "2026-06-04T07:18:22.368655+00:00",
+      "latest_live_telemetry_at": "2026-04-22T14:32:59.583341+00:00",
+      "telemetry_age_days": 43,
+      "freshness_window_days": 30,
+      "reason": "April 2026 telemetry used in June 2026 proof run; exceeds 30-day freshness window; a new telemetry → detection → alert → incident → response_action → evidence_package chain is required during the proof run"
+    },
     "chain": {
       "telemetry_event_id": "48990975-bd17-509b-bfde-e52141b02403",
       "detection_id": "23e8e4e4-0a53-5f4a-b9c4-f24bfa2922a5",
@@ -52,7 +62,9 @@
     "missing": [],
     "contradiction_flags": [],
     "blockers": [],
-    "warnings": []
+    "warnings": [
+      "live_evidence_ready=false: live telemetry is 43 days old; freshness window is 30 days"
+    ]
   },
   "billing_production_validation": {
     "status": "pass",
@@ -82,6 +94,11 @@
     "evidence_export_truthfulness": "pass",
     "multi_tenant_isolation": "pass"
   },
-  "blockers": [],
-  "warnings": []
+  "blockers": [
+    "live_telemetry_stale: latest_live_telemetry_at='2026-04-22T14:32:59.583341+00:00' is 43 days old; freshness window is 30 days; broad paid SaaS launch requires fresh live evidence"
+  ],
+  "warnings": [
+    "staging environment is configured and healthy; live evidence chain exists but telemetry is stale",
+    "re-run monitoring cycle to generate fresh telemetry → detection → alert → incident → response_action → evidence_package"
+  ]
 }

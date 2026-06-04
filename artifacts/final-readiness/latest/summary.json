@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T07:18:22.408843+00:00",
-  "mode": "staging",
+  "generated_at": "2026-06-04T09:26:09.483728+00:00",
+  "mode": "local",
   "strict": true,
   "overall_score": 100,
   "controlled_pilot_ready": true,
-  "broad_paid_saas_ready": true,
-  "enterprise_procurement_ready": true,
-  "production_100_percent_ready": true,
+  "broad_paid_saas_ready": false,
+  "enterprise_procurement_ready": false,
+  "production_100_percent_ready": false,
   "categories": {
     "product_concept": {
       "score": 100,
@@ -61,6 +61,11 @@
       "source": "ci_gates",
       "note": "requires npm run build in CI"
     },
+    "readiness_validation": {
+      "status": "not_run",
+      "source": "ci_gates",
+      "note": "requires validate_production_readiness.py"
+    },
     "saas_workflow_validation": {
       "status": "pass",
       "source": "ci_gates",
@@ -97,8 +102,8 @@
       "note": ""
     },
     "live_evidence_readiness": {
-      "status": "pass",
-      "source": "launch_proof",
+      "status": "fail",
+      "source": "live_evidence_proof",
       "note": ""
     },
     "staging_proof_validation": {
@@ -107,20 +112,25 @@
       "note": ""
     },
     "staging_validation": {
-      "status": "pass",
+      "status": "fail",
       "source": "staging_proof",
-      "note": ""
+      "note": "staging_launch_ready=True, mode='local'"
     }
   },
-  "blockers": [],
+  "blockers": [
+    "frontend_build not_run: run npm run build in CI or mark production_100_percent_ready=false",
+    "live evidence not ready: live telemetry is stale: latest_live_telemetry_at='2026-04-22T14:32:59.583341+00:00' is 43 days before proof generated_at; freshness window is 30 days \u2014 a new telemetry \u2192 detection \u2192 alert \u2192 incident \u2192 response_action \u2192 evidence_package chain is required during the proof run",
+    "readiness_validation not_run: run validate_production_readiness.py or mark production_100_percent_ready=false",
+    "staging proof present but mode='local'; staging validation requires staging/production mode"
+  ],
   "warnings": [],
   "proof_artifacts": [
-    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/launch-proof/latest/summary.json",
-    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/release-proof/latest/summary.json",
-    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/release-proof/latest/ci-required-gates.json",
-    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/staging-proof/latest/summary.json",
-    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/final-readiness/latest/summary.json"
+    "/home/user/decoda-rwa-guard/artifacts/launch-proof/latest/summary.json",
+    "/home/user/decoda-rwa-guard/artifacts/release-proof/latest/summary.json",
+    "/home/user/decoda-rwa-guard/artifacts/release-proof/latest/ci-required-gates.json",
+    "/home/user/decoda-rwa-guard/artifacts/staging-proof/latest/summary.json",
+    "/home/user/decoda-rwa-guard/artifacts/final-readiness/latest/summary.json"
   ],
-  "safe_to_sell_broadly_today": true,
-  "safe_to_sell_reason": "All required gates pass in verified staging/production environment."
+  "safe_to_sell_broadly_today": false,
+  "safe_to_sell_reason": "Cannot sell broadly from local mode. Run with --mode staging --strict or --mode production --strict using real provider credentials and live evidence."
 }

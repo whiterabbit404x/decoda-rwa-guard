@@ -13,13 +13,22 @@
     "worker_enabled": true,
     "live_provider_ready": true,
     "live_provider_receipt_ready": true,
-    "live_telemetry_ready": true,
-    "live_detection_ready": true,
-    "live_alert_ready": true,
-    "live_incident_ready": true,
+    "live_telemetry_ready": false,
+    "live_detection_ready": false,
+    "live_alert_ready": false,
+    "live_incident_ready": false,
     "evidence_source": "live",
     "latest_live_telemetry_at": "2026-04-22T14:32:59.583341+00:00",
-    "live_evidence_ready": true,
+    "live_evidence_ready": false,
+    "staleness_reason": "live telemetry is stale: latest_live_telemetry_at='2026-04-22T14:32:59.583341+00:00' is 43 days before proof generated_at; freshness window is 30 days — a new telemetry → detection → alert → incident → response_action → evidence_package chain is required during the proof run",
+    "freshness_check": {
+      "status": "fail",
+      "generated_at": "2026-06-04T07:18:16.986513+00:00",
+      "latest_live_telemetry_at": "2026-04-22T14:32:59.583341+00:00",
+      "telemetry_age_days": 43,
+      "freshness_window_days": 30,
+      "reason": "April 2026 telemetry used in June 2026 proof run; exceeds 30-day freshness window"
+    },
     "chain": {
       "telemetry_event_id": "48990975-bd17-509b-bfde-e52141b02403",
       "detection_id": "23e8e4e4-0a53-5f4a-b9c4-f24bfa2922a5",
@@ -86,7 +95,9 @@
       "raw_rpc_response_hash": "607687a47a4bd142f183aa35aa9a9707",
       "exported_at": "2026-04-22T14:32:59.583341+00:00"
     },
-    "missing": [],
+    "missing": [
+      "live_telemetry_fresh_during_proof_run: telemetry is 43 days old; run a new monitoring cycle to generate fresh evidence"
+    ],
     "contradiction_flags": []
   }
 }

@@ -29,6 +29,8 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+LIVE_EVIDENCE_FRESHNESS_WINDOW_DAYS = 30
+
 _SECRET_PATTERNS = re.compile(
     r'(sk_live_[A-Za-z0-9]{10,}|sk_test_[A-Za-z0-9]{10,}'
     r'|whsec_[A-Za-z0-9]{10,}|SG\.[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16})',
@@ -309,6 +311,34 @@ def validate_staging_proof(artifact_path: Path) -> tuple[bool, list[str], list[s
             'OVERCLAIM: billing_production_validation.status=pass '
             'but test_mode_detected=true'
         )
+
+    # Rule 9: live evidence freshness gate
+    _telemetry_at = live_val.get('latest_live_telemetry_at')
+    _proof_generated_at = artifact.get('generated_at')
+    if _telemetry_at and _proof_generated_at:
+        try:
+            from datetime import datetime, timezone as _tz
+            t_dt = datetime.fromisoformat(_telemetry_at)
+            r_dt = datetime.fromisoformat(_proof_generated_at)
+            if t_dt.tzinfo is None:
+                t_dt = t_dt.replace(tzinfo=_tz.utc)
+            if r_dt.tzinfo is None:
+                r_dt = r_dt.replace(tzinfo=_tz.utc)
+            _age_days = (r_dt - t_dt).days
+            if _age_days > LIVE_EVIDENCE_FRESHNESS_WINDOW_DAYS:
+                _stale_msg = (
+                    f'live telemetry is stale: latest_live_telemetry_at={_telemetry_at!r} '
+                    f'is {_age_days} days before proof generated_at={_proof_generated_at!r}; '
+                    f'freshness window is {LIVE_EVIDENCE_FRESHNESS_WINDOW_DAYS} days'
+                )
+                if live_val.get('live_evidence_ready'):
+                    errors.append(f'OVERCLAIM: live_evidence_ready=true but {_stale_msg}')
+                elif broad_ready:
+                    errors.append(f'OVERCLAIM: broad_paid_saas_ready=true but {_stale_msg}')
+                else:
+                    warnings.append(f'FRESHNESS WARNING: {_stale_msg}')
+        except Exception:
+            pass
 
     # Informational warnings (not errors)
     if not broad_ready:
