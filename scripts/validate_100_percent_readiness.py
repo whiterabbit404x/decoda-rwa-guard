@@ -64,6 +64,9 @@ _CATEGORY_WEIGHTS: dict[str, int] = {
 
 assert sum(_CATEGORY_WEIGHTS.values()) == 100
 
+# Live evidence freshness window: telemetry must be within this many days of proof generation.
+LIVE_EVIDENCE_FRESHNESS_WINDOW_DAYS = 30
+
 
 def _load_json(path: Path) -> dict[str, Any] | None:
     if not path.exists():
@@ -87,6 +90,39 @@ def _redact_obj(obj: Any) -> Any:
     if isinstance(obj, list):
         return [_redact_obj(v) for v in obj]
     return obj
+
+
+def _check_telemetry_freshness(
+    telemetry_at: str | None,
+    proof_generated_at: str | None,
+    window_days: int = LIVE_EVIDENCE_FRESHNESS_WINDOW_DAYS,
+) -> tuple[bool, list[str]]:
+    """Return (fresh, blockers). fresh=False when telemetry is older than window_days."""
+    if not telemetry_at:
+        return False, [
+            'latest_live_telemetry_at missing from live evidence proof; '
+            'cannot confirm live evidence freshness'
+        ]
+    try:
+        t_dt = datetime.fromisoformat(telemetry_at)
+        ref_str = proof_generated_at or datetime.now(timezone.utc).isoformat()
+        r_dt = datetime.fromisoformat(ref_str)
+        if t_dt.tzinfo is None:
+            t_dt = t_dt.replace(tzinfo=timezone.utc)
+        if r_dt.tzinfo is None:
+            r_dt = r_dt.replace(tzinfo=timezone.utc)
+        age_days = (r_dt - t_dt).days
+        if age_days > window_days:
+            return False, [
+                f'live telemetry is stale: latest_live_telemetry_at={telemetry_at!r} is '
+                f'{age_days} days before proof generated_at; '
+                f'freshness window is {window_days} days — '
+                'a new telemetry → detection → alert → incident → response_action → '
+                'evidence_package chain is required during the proof run'
+            ]
+        return True, []
+    except Exception as exc:
+        return False, [f'cannot parse telemetry freshness timestamps: {exc}']
 
 
 def _category(score: int, status: str) -> dict[str, Any]:
@@ -184,7 +220,30 @@ def _check_live_evidence(
                             + ', '.join(missing_ids)
                         )
                         return False, blockers
+                    # Freshness gate: telemetry must be within the configured window
+                    telemetry_at = (
+                        lpe.get('latest_live_telemetry_at')
+                        or (lpe.get('telemetry_record') or {}).get('observed_at')
+                    )
+                    proof_gen_at = data.get('generated_at')
+                    fresh_ok, fresh_blockers = _check_telemetry_freshness(telemetry_at, proof_gen_at)
+                    if not fresh_ok:
+                        blockers.extend(fresh_blockers)
+                        return False, blockers
                     return True, []
+                elif lpe.get('live_evidence_ready') is False:
+                    # Explicitly not ready — report reason and do not fall through to launch-proof
+                    stale = lpe.get('staleness_reason') or lpe.get('freshness_check_failed')
+                    missing_items = lpe.get('missing', [])
+                    if stale:
+                        blockers.append(f'live evidence not ready: {stale}')
+                    elif missing_items:
+                        blockers.append(f'live evidence not ready: {missing_items[0]}')
+                    else:
+                        blockers.append(
+                            'live evidence not ready: live_evidence_ready=false in live-evidence-proof'
+                        )
+                    return False, blockers
                 # Present but not ready — surface first missing item
                 missing = lpe.get('missing', [])
                 if missing:
@@ -379,6 +438,7 @@ def _build_required_gates(
     mode: str,
     strict: bool,
     staging_proof: dict[str, Any] | None = None,
+    live_evidence_ok: bool | None = None,
 ) -> dict[str, Any]:
     def _gate(status: str, source: str, note: str = '') -> dict[str, Any]:
         return {'status': status, 'source': source, 'note': note}
@@ -396,6 +456,16 @@ def _build_required_gates(
     else:
         fb_status = 'not_run'
     gates['frontend_build'] = _gate(fb_status, 'ci_gates', 'requires npm run build in CI')
+
+    # readiness_validation
+    if ci_gates is not None:
+        rv_gate = ci_gates.get('required_gates', {}).get('readiness_validation', {})
+        rv_status = rv_gate.get('status', 'not_run')
+    else:
+        rv_status = 'not_run'
+    gates['readiness_validation'] = _gate(
+        rv_status, 'ci_gates', 'requires validate_production_readiness.py'
+    )
 
     # saas_workflow_validation
     if ci_gates is not None:
@@ -438,11 +508,16 @@ def _build_required_gates(
     # billing_email_provider_readiness (mirrors paid_launch_readiness gate)
     gates['billing_email_provider_readiness'] = gates['paid_launch_readiness'].copy()
 
-    # live_evidence_readiness
-    if launch_proof is not None:
+    # live_evidence_readiness — prefer the verified live_ok result from _check_live_evidence
+    if live_evidence_ok is not None:
+        gates['live_evidence_readiness'] = _gate(
+            'pass' if live_evidence_ok else 'fail',
+            'live_evidence_proof' if live_evidence_ok is False else 'launch_proof',
+        )
+    elif launch_proof is not None:
         readiness = launch_proof.get('readiness', {})
-        live_ok = bool(readiness.get('live_evidence_ready'))
-        gates['live_evidence_readiness'] = _gate('pass' if live_ok else 'fail', 'launch_proof')
+        _live_rdy = bool(readiness.get('live_evidence_ready'))
+        gates['live_evidence_readiness'] = _gate('pass' if _live_rdy else 'fail', 'launch_proof')
     else:
         gates['live_evidence_readiness'] = _gate('fail', 'launch_proof', 'launch-proof missing')
 
@@ -522,16 +597,28 @@ def build_final_readiness(
     blockers.extend(cg_blockers)
     # staging blockers are added via _check_staging_validation below
 
+    # Gate: frontend_build and readiness_validation must not be not_run for production readiness
+    if ci_gates is not None:
+        _rg = ci_gates.get('required_gates', {})
+        _fb_status = _rg.get('frontend_build', {}).get('status', 'not_run')
+        _rv_status = _rg.get('readiness_validation', {}).get('status', 'not_run')
+        if _fb_status not in ('pass',):
+            blockers.append(
+                f'frontend_build {_fb_status}: run npm run build in CI '
+                'or mark production_100_percent_ready=false'
+            )
+        if _rv_status not in ('pass',):
+            blockers.append(
+                f'readiness_validation {_rv_status}: run validate_production_readiness.py '
+                'or mark production_100_percent_ready=false'
+            )
+
     categories = _evaluate_categories(
         launch_proof, release_proof, ci_gates,
         mode, strict, blockers, warnings,
     )
 
     overall_score = _compute_overall_score(categories)
-
-    required_gates = _build_required_gates(
-        launch_proof, release_proof, ci_gates, mode, strict, staging_proof,
-    )
 
     # Derived readiness flags
     all_cats_pass = all(
@@ -549,6 +636,11 @@ def build_final_readiness(
     if not staging_ok:
         blockers.extend(staging_blockers)
 
+    required_gates = _build_required_gates(
+        launch_proof, release_proof, ci_gates, mode, strict, staging_proof,
+        live_evidence_ok=live_ok,
+    )
+
     controlled_pilot_ready = (
         categories.get('saas_workflow', {}).get('status') in ('pass', 'warn')
         and categories.get('runtime_truthfulness', {}).get('status') == 'pass'
@@ -556,9 +648,24 @@ def build_final_readiness(
         and not any('launch-proof missing' in b for b in blockers)
     )
 
+    # broad launch requires frontend build and readiness validation to have run
+    _frontend_build_ok = True
+    _readiness_validation_ok = True
+    if ci_gates is not None:
+        _rg = ci_gates.get('required_gates', {})
+        if _rg.get('frontend_build', {}).get('status', 'not_run') not in ('pass',):
+            _frontend_build_ok = False
+        if _rg.get('readiness_validation', {}).get('status', 'not_run') not in ('pass',):
+            _readiness_validation_ok = False
+    else:
+        _frontend_build_ok = False
+        _readiness_validation_ok = False
+
     broad_paid_saas_ready = (
         live_ok
         and staging_ok
+        and _frontend_build_ok
+        and _readiness_validation_ok
         and categories.get('billing_email_launch_readiness', {}).get('status') == 'pass'
         and all_cats_pass
         and mode in ('staging', 'production')
@@ -597,7 +704,11 @@ def build_final_readiness(
             'Strict mode requires all gates to pass with live evidence.'
         )
     elif not live_ok:
-        safe_reason = 'Live evidence is required before broad sales. Simulator evidence does not qualify.'
+        _stale_blockers = [b for b in live_blockers if 'stale' in b or 'fresh' in b.lower()]
+        if _stale_blockers:
+            safe_reason = _stale_blockers[0]
+        else:
+            safe_reason = 'Live evidence is required before broad sales. Simulator evidence does not qualify.'
     elif not staging_ok:
         safe_reason = 'Staging validation must complete successfully with real credentials before broad sales.'
     elif blockers:
