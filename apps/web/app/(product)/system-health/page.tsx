@@ -42,7 +42,7 @@ const COMPONENTS = [
   'Detection Engine',
   'Alert Engine',
   'Database',
-  'Redis / Queue',
+  'Redis/Queue',
   'Provider Connectors',
   'Evidence Export',
 ] as const;
@@ -176,7 +176,7 @@ function buildComponentRows(truth: any, summaryMissing: boolean): ComponentRow[]
       lastCheck: hasPoll ? formatShortTime(truth.last_poll_at) : 'Unavailable',
     },
     {
-      component: 'Redis / Queue',
+      component: 'Redis/Queue',
       status: monitoringLive && reportingSystems > 0 ? 'Unknown' : workspaceConfigured ? 'Unknown' : 'Not Configured',
       uptime: 'Unknown',
       responseTime: 'Unavailable',

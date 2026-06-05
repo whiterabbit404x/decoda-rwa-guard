@@ -22,19 +22,21 @@ export default async function DashboardPage() {
         ? 'document-navigation'
         : 'unknown';
 
-  console.debug('[dashboard-page-data trace] source=dashboard-server-entry', {
-    route: '/dashboard',
-    pathname: nextUrl ?? '/dashboard',
-    requestKind,
-    headers: {
-      nextUrl,
-      rsc,
-      purpose,
-      middlewarePrefetch,
-      secFetchDest,
-      secFetchMode,
-    },
-  });
+  if (process.env.NODE_ENV !== 'production') {
+    console.debug('[dashboard-page-data trace] source=dashboard-server-entry', {
+      route: '/dashboard',
+      pathname: nextUrl ?? '/dashboard',
+      requestKind,
+      headers: {
+        nextUrl,
+        rsc,
+        purpose,
+        middlewarePrefetch,
+        secFetchDest,
+        secFetchMode,
+      },
+    });
+  }
   const initialData = await fetchDashboardPageData(undefined, { requestSource: 'ssr-dashboard-render' });
 
   return <DashboardLiveHydrator initialData={initialData} />;

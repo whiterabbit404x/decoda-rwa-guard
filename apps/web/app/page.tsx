@@ -9,26 +9,31 @@ const trustBadges = [
     check: true,
     label: 'Live EVM Telemetry',
     sub: 'Proven in CI — block data captured from Ethereum mainnet',
+    href: '/live-proof',
   },
   {
     check: true,
     label: 'Full Evidence Chain',
     sub: 'Telemetry → Detection → Alert → Incident → Export proven end-to-end',
+    href: '/live-proof',
   },
   {
     check: true,
     label: '100/100 Readiness',
     sub: 'All 35 production gates passing — broad paid SaaS ready',
+    href: '/live-proof',
   },
   {
     check: true,
     label: 'CI Gates Green',
     sub: 'Release proof generated and validated on every push',
+    href: '/live-proof',
   },
   {
     check: true,
     label: 'Billing & Email Ready',
     sub: 'Paddle billing and transactional email provider configured',
+    href: '/trust',
   },
 ];
 
@@ -443,8 +448,18 @@ export default async function MarketingHomePage() {
 
   return (
     <>
+      {/* ── Skip to main content (accessibility) ──────────────── */}
+      <a href="#main-content" className="skipToContent">Skip to main content</a>
+
       {/* ── Top nav ──────────────────────────────────────────── */}
       <header className="mktNav">
+        {/* Hidden checkbox for CSS mobile menu toggle */}
+        <input
+          type="checkbox"
+          id="mktMobileMenuToggle"
+          className="mktMobileToggleInput"
+          aria-hidden="true"
+        />
         <div className="mktNavInner">
           <Link href="/" className="mktNavLogo" prefetch={false}>
             <ShieldMark />
@@ -464,10 +479,33 @@ export default async function MarketingHomePage() {
             <Link href="/sign-in" className="mktNavSignIn" prefetch={false}>Sign in</Link>
             <Link href="/sign-up" className="mktNavStartPilot" prefetch={false}>Start monitoring →</Link>
           </div>
+          {/* Hamburger toggle label (visible on mobile) */}
+          <label
+            htmlFor="mktMobileMenuToggle"
+            className="mktMobileHamburger"
+            aria-label="Open navigation menu"
+          >
+            <span className="mktMobileBar" aria-hidden="true" />
+            <span className="mktMobileBar" aria-hidden="true" />
+            <span className="mktMobileBar" aria-hidden="true" />
+          </label>
         </div>
+        {/* Mobile nav overlay */}
+        <nav className="mktMobileNav" aria-label="Mobile navigation">
+          <a href="#platform" className="mktMobileNavLink">Product</a>
+          <a href="#how-it-works" className="mktMobileNavLink">How it works</a>
+          <a href="#pricing" className="mktMobileNavLink">Pricing</a>
+          <Link href="/live-proof" className="mktMobileNavLink" prefetch={false}>Live Proof</Link>
+          <Link href="/trust" className="mktMobileNavLink" prefetch={false}>Trust</Link>
+          <hr className="mktMobileNavDivider" />
+          <Link href="/sign-in" className="mktMobileNavLink" prefetch={false}>Sign in</Link>
+          <Link href="/sign-up" className="mktMobileNavLink mktMobileNavLinkCta" prefetch={false}>
+            Start monitoring →
+          </Link>
+        </nav>
       </header>
 
-      <main className="mktPage">
+      <main id="main-content" className="mktPage">
         {/* ── Hero ─────────────────────────────────────────────── */}
         <section className="mktHero">
           <div className="mktHeroContent">
@@ -550,13 +588,13 @@ export default async function MarketingHomePage() {
         {/* ── Trust badges ──────────────────────────────────────── */}
         <section className="mktTrustStrip" aria-label="Production proof points">
           {trustBadges.map((badge) => (
-            <div key={badge.label} className="mktTrustBadge">
+            <Link key={badge.label} href={badge.href} className="mktTrustBadge" prefetch={false}>
               <span className="mktTrustBadgeCheck" aria-hidden="true">✓</span>
               <div className="mktTrustBadgeBody">
                 <span className="mktTrustBadgeLabel">{badge.label}</span>
                 <span className="mktTrustBadgeSub">{badge.sub}</span>
               </div>
-            </div>
+            </Link>
           ))}
         </section>
 

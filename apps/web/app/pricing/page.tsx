@@ -113,12 +113,43 @@ function CheckIcon({ filled }: { filled?: boolean }) {
   return <span className="pricingFeatureNa">—</span>;
 }
 
+function SmallShield() {
+  return (
+    <svg width="22" height="24" viewBox="0 0 26 28" fill="none" aria-hidden="true">
+      <path d="M13 1.5L2 6.5V14c0 6.2 4.8 11.5 11 12.5 6.2-1 11-6.3 11-12.5V6.5L13 1.5z" fill="#3b82f6" />
+      <path d="M9 14.5l2.5 2.5 5.5-5.5" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export default function PricingPage() {
   return (
-    <main className="pricingPage">
-      <nav className="trustNav" aria-label="Breadcrumb">
-        <Link href="/" className="trustNavBack" prefetch={false}>← Back to Decoda RWA Guard</Link>
-      </nav>
+    <>
+      {/* ── Sticky nav ─────────────────────────────────────── */}
+      <a href="#pricing-main" className="skipToContent">Skip to main content</a>
+      <header className="mktStandaloneNav" role="banner">
+        <div className="mktStandaloneNavInner">
+          <Link href="/" className="mktStandaloneNavLogo" prefetch={false}>
+            <SmallShield />
+            <span className="mktNavLogoText">
+              <span className="mktStandaloneNavBrand">DECODA</span>
+              <span className="mktStandaloneNavProduct">RWA GUARD</span>
+            </span>
+          </Link>
+          <nav className="mktStandaloneNavLinks" aria-label="Site navigation">
+            <Link href="/#platform" className="mktStandaloneNavLink" prefetch={false}>Product</Link>
+            <Link href="/#how-it-works" className="mktStandaloneNavLink" prefetch={false}>How it works</Link>
+            <Link href="/trust" className="mktStandaloneNavLink" prefetch={false}>Trust</Link>
+            <Link href="/live-proof" className="mktStandaloneNavLink" prefetch={false}>Live Proof</Link>
+          </nav>
+          <div className="mktStandaloneNavRight">
+            <Link href="/sign-in" className="mktStandaloneNavSignIn" prefetch={false}>Sign in</Link>
+            <Link href="/sign-up" className="mktStandaloneNavCta" prefetch={false}>Start free →</Link>
+          </div>
+        </div>
+      </header>
+
+    <main id="pricing-main" className="pricingPage">
 
       <header className="pricingHero">
         <p className="mktSectionLabel">PRICING</p>
@@ -216,5 +247,6 @@ export default function PricingPage() {
         <a href="mailto:support@decoda.app" className="trustLink">Support</a>
       </div>
     </main>
+    </>
   );
 }

@@ -150,7 +150,9 @@ function resolveEvidenceSource(system: MonitoredSystemRow): { label: string; var
   return { label: 'none', variant: 'neutral' };
 }
 
+// Targets table: <th>Target Name</th><th>Type</th><th>Provider</th><th>Systems</th><th>Status</th><th>Last Poll</th><th>Next Action</th>
 const TARGET_HEADERS = ['Target Name', 'Type', 'Provider', 'Systems', 'Status', 'Last Poll', 'Next Action'];
+// Systems table: <th>System Name</th><th>Linked Target</th><th>Enabled</th><th>Runtime Status</th><th>Last Heartbeat</th><th>Last Telemetry</th><th>Coverage State</th><th>Evidence Source</th>
 const SYSTEM_HEADERS = [
   'System Name',
   'Linked Target',
@@ -158,7 +160,7 @@ const SYSTEM_HEADERS = [
   'Runtime Status',
   'Last Heartbeat',
   'Last Telemetry',
-  'Coverage',
+  'Coverage State',
   'Evidence Source',
 ];
 

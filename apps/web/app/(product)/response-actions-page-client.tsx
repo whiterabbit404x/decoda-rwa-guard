@@ -1,5 +1,6 @@
 ﻿'use client';
 
+// fallback examples remain clearly marked as SIMULATED
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
