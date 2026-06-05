@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-05T15:33:51.213577+00:00",
+  "generated_at": "2026-06-05T17:38:28.603544+00:00",
   "launch_mode": "paid_saas",
   "proof_mode": "local",
   "billing_provider": "paddle",
   "repository": "/home/user/decoda-rwa-guard",
   "readiness_categories": {
-    "live_provider_evidence_ready": true,
+    "live_provider_evidence_ready": false,
     "managed_pilot_ready": true,
     "niw_positioning_ready": true,
     "broad_paid_saas_ready": false,
@@ -14,11 +14,11 @@
   },
   "live_provider_evidence": {
     "artifact_available": true,
-    "live_provider_evidence_ready": true,
-    "provider_ready": true,
-    "provider_mode": "live",
-    "live_evidence_ready": true,
-    "evidence_source": "live",
+    "live_provider_evidence_ready": false,
+    "provider_ready": false,
+    "provider_mode": "disabled",
+    "live_evidence_ready": false,
+    "evidence_source": "unknown",
     "source": "artifacts/live-evidence-proof/latest/summary.json"
   },
   "managed_pilot": {
@@ -55,11 +55,11 @@
   "allowed_claims": [
     "NIW Strategic Infrastructure Guard positioning ready",
     "controlled pilot / managed sale ready",
-    "live provider evidence ready",
     "paid billing configured (paddle)",
     "email provider configured"
   ],
   "prohibited_claims": [
+    "Do NOT claim live EVM monitoring without proven live evidence",
     "Do NOT use this local/CI proof as evidence of paid launch readiness \u2014 requires staging or production runtime"
   ],
   "pilot_ready": true,
@@ -71,8 +71,8 @@
     "billing_ready": true,
     "billing_webhook_ready": true,
     "email_ready": true,
-    "provider_ready": true,
-    "live_evidence_ready": true,
+    "provider_ready": false,
+    "live_evidence_ready": false,
     "ci_required_gates_ready": true
   },
   "blockers": [

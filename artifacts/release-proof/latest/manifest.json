@@ -1,28 +1,28 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-05T16:08:27.399922+00:00",
-  "release_channel": "staging",
-  "commit_sha": "9587f3c4769c9379565001a32f8866059411fc6a",
-  "branch": "main",
+  "generated_at": "2026-06-05T17:38:29.318776+00:00",
+  "release_channel": "local",
+  "commit_sha": "6bc8d7108b6c5d52254d3cd960dc75ee7380902d",
+  "branch": "claude/zen-dirac-XWYCy",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "85ae0abf48b6bb5f23db66ee0ce2e5efa997c9a6e521e3819a3de596a34f5732",
-      "size_bytes": 656,
+      "sha256": "38e045bf710967efbf65aef07c270df7ce8fad671f8b590dee1567fb36bc7536",
+      "size_bytes": 780,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "5afcfc4dc6fa917b7ee8fffb5d0735d71edc7aae005e81a4714627e3b27f0388",
-      "size_bytes": 1959,
+      "sha256": "6f28e299168c722dee5abfc38d1c26d2b2a6d37dc93d43e7a0c90eb562830fd4",
+      "size_bytes": 2078,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "3b42ac8251c059776605a567124aca6ccc1acfaaefcfdc41b65305de9b1f0a7e",
-      "size_bytes": 4068,
+      "sha256": "7e30b44e987ac8cfec2abdc3fe71a3409361cf005345e9140cb0358462378afa",
+      "size_bytes": 1534,
       "required": true,
       "status": "present"
     }
