@@ -1,28 +1,28 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-05T07:38:31.527071+00:00",
-  "release_channel": "staging",
-  "commit_sha": "a7ff99ba60865972df7656714f6f53be657559e7",
-  "branch": "main",
+  "generated_at": "2026-06-05T08:28:38.650354+00:00",
+  "release_channel": "local",
+  "commit_sha": "42376b4b27f70cd3ce0ddfaa7c1551dd8bf2279f",
+  "branch": "claude/fervent-archimedes-Z2UNw",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "e0a19012d0a5cac7b857a910c3598a4ef4bd37087fe1847ab435be41e1ff1c7a",
-      "size_bytes": 657,
+      "sha256": "52dfdaf3aefc205bb1febfa25a2fdcaa09e3e4d4ac7fdd538b42a40c6041adfd",
+      "size_bytes": 758,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "39bdd66ae74d3bcb277f40ee1420a4016da80a624ef99c9768ada129659ba7b1",
-      "size_bytes": 1960,
+      "sha256": "1097dbe63f3a7dab74ca32554cea1f597ca5e007de02cfe382efed74740a136f",
+      "size_bytes": 1833,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "e5633c12c5aeceb5e24a4337c4b2be51115358dc79b323122700dbd02fec909a",
-      "size_bytes": 1347,
+      "sha256": "f6aa841dce8d6edbd394eae187a4f600c8d505efbedb112347c1c564beb5dada",
+      "size_bytes": 1455,
       "required": true,
       "status": "present"
     }

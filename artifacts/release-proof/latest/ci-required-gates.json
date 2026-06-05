@@ -1,34 +1,37 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-05T07:38:31.517249+00:00",
-  "commit_sha": "a7ff99ba60865972df7656714f6f53be657559e7",
-  "branch": "main",
-  "release_channel": "staging",
-  "overall_status": "pass",
+  "generated_at": "2026-06-05T08:28:38.635182+00:00",
+  "commit_sha": "42376b4b27f70cd3ce0ddfaa7c1551dd8bf2279f",
+  "branch": "claude/fervent-archimedes-Z2UNw",
+  "release_channel": "local",
+  "overall_status": "fail",
   "broad_paid_launch_ready": false,
   "required_gates": {
     "backend_tests": {
-      "status": "pass",
+      "status": "not_run",
       "command": "python -m pytest services/api/tests/ -q",
-      "summary": "test_release_proof_artifacts:pass | test_paid_launch_readiness:pass | test_runtime_truthfulness:pass | test_saas_workflow_validation:pass",
-      "tests_run": 160,
-      "tests_passed": 160,
-      "tests_failed": 0
+      "summary": "Not run in local mode"
     },
     "saas_workflow_validation": {
-      "status": "pass",
-      "command": "python -m pytest services/api/tests/test_saas_workflow_validation.py -q",
-      "summary": ".................................                                        [100%]\n=============================== warnings summary ===============================\n../../../../../opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/starlette/formparsers.py:12\n  /opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/starlette/formparsers.py:12: PendingDeprecationWarning: Please use `import python_multipart` instead.\n    import multipart\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n33 passed, 1 warning in 0.65s"
+      "status": "not_run",
+      "command": "python services/api/scripts/validate_staging.py",
+      "summary": "Not run in local mode"
     },
     "readiness_validation": {
-      "status": "pass",
+      "status": "not_run",
       "command": "python scripts/validate_readiness.py",
-      "summary": "Readiness validation passed"
+      "summary": "Not run in local mode"
     },
     "paid_launch_readiness": {
-      "status": "pass",
-      "summary": "All paid launch gates pass",
-      "blockers": []
+      "status": "fail",
+      "summary": "Paid launch blocked: billing provider is not configured; billing webhook secret is missing; email provider is not configured; live provider configuration is missing; live provider proof is missing",
+      "blockers": [
+        "billing provider is not configured",
+        "billing webhook secret is missing",
+        "email provider is not configured",
+        "live provider configuration is missing",
+        "live provider proof is missing"
+      ]
     },
     "live_evidence": {
       "status": "pass",
@@ -36,11 +39,17 @@
       "blockers": []
     },
     "frontend_build": {
-      "status": "pass",
+      "status": "not_run",
       "command": "npm run build",
-      "summary": "Frontend build passed"
+      "summary": "Not run in local mode"
     }
   },
-  "blockers": [],
+  "blockers": [
+    "billing provider is not configured",
+    "billing webhook secret is missing",
+    "email provider is not configured",
+    "live provider configuration is missing",
+    "live provider proof is missing"
+  ],
   "warnings": []
 }

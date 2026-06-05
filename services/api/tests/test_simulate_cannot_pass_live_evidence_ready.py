@@ -173,6 +173,7 @@ def test_check_live_evidence_accepts_complete_live_artifact(tmp_path: Path) -> N
         'chain': _ALL_CHAIN_IDS,
         'missing': [],
         'contradiction_flags': [],
+        'latest_live_telemetry_at': '2026-06-05T00:00:00+00:00',
     }
     artifact_dir = _write_artifact(tmp_path, lpe)
 

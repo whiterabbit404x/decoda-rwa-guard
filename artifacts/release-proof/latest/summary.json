@@ -1,16 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-05T07:38:31.523845+00:00",
-  "release_status": "pass",
-  "release_channel": "staging",
-  "commit_sha": "a7ff99ba60865972df7656714f6f53be657559e7",
-  "branch": "main",
-  "ci_required_gates_ready": true,
+  "generated_at": "2026-06-05T08:28:38.644727+00:00",
+  "release_status": "fail",
+  "release_channel": "local",
+  "commit_sha": "42376b4b27f70cd3ce0ddfaa7c1551dd8bf2279f",
+  "branch": "claude/fervent-archimedes-Z2UNw",
+  "ci_required_gates_ready": false,
   "launch_proof_ready": true,
   "manifest_ready": true,
-  "test_report_ready": true,
+  "test_report_ready": false,
   "paid_launch_ready": false,
-  "blockers": [],
+  "blockers": [
+    "ci-required-gates not ready",
+    "test-report-summary not ready"
+  ],
   "warnings": [],
   "evidence_files": [
     "artifacts/release-proof/latest/ci-required-gates.json",

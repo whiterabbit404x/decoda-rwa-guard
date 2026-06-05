@@ -205,6 +205,19 @@ def _load_live_evidence_chain_from_env() -> dict[str, Any] | None:
 
 _LIVE_EVIDENCE_SOURCES = frozenset({'live', 'live_rpc'})
 
+# source_type values that indicate simulated/synthetic data regardless of evidence_source.
+_NON_LIVE_SOURCE_TYPES = frozenset({
+    'fixture', 'simulator', 'guided_simulator', 'demo',
+    'static', 'historical', 'synthetic',
+})
+
+class _UnsetSentinel:
+    """Sentinel for 'live_evidence_chain not provided'. Attribute-checked so reload-safe."""
+    _IS_UNSET = True
+
+# Sentinel: distinguishes "caller passed None explicitly" from "no argument given".
+_UNSET: Any = _UnsetSentinel()
+
 
 def _validated_live_evidence_chain(chain: Any) -> dict[str, Any] | None:
     """
@@ -217,6 +230,9 @@ def _validated_live_evidence_chain(chain: Any) -> dict[str, Any] | None:
 
     When evidence_source is explicitly set it must be a recognized live source
     (fixture/demo/synthetic/static/historical/unknown/simulator are rejected).
+
+    source_type must not be a known non-live type (fixture, simulator, demo, etc.)
+    even when evidence_source claims 'live'.
 
     Also requires: telemetry_event_id, detection_id, alert_id, evidence_package_id
     all truthy; and incident_id or response_action_id truthy.
@@ -232,6 +248,10 @@ def _validated_live_evidence_chain(chain: Any) -> dict[str, Any] | None:
 
     # When evidence_source is set it must explicitly name a live source.
     if evidence_source and evidence_source not in _LIVE_EVIDENCE_SOURCES:
+        return None
+
+    # Reject non-live source_types even when evidence_source claims 'live'.
+    if source_type and source_type in _NON_LIVE_SOURCE_TYPES:
         return None
 
     # At least one live indicator must be present.
@@ -255,7 +275,7 @@ def _validated_live_evidence_chain(chain: Any) -> dict[str, Any] | None:
 def generate_live_evidence_proof(
     *,
     rpc_url_override: str | None = None,
-    live_evidence_chain: dict[str, Any] | None = None,
+    live_evidence_chain: Any = _UNSET,
     require_current_env: bool = False,
 ) -> dict[str, Any]:
     """
@@ -276,15 +296,19 @@ def generate_live_evidence_proof(
         live_evidence_chain: real telemetry chain captured by the monitoring
             worker (telemetry_event_id, detection_id, alert_id,
             incident_id/response_action_id, evidence_package_id; evidence_source
-            must be 'live' and source_type 'rpc_polling'). When None, the
-            function also looks at the LIVE_EVIDENCE_CHAIN_JSON /
-            LIVE_EVIDENCE_CHAIN_FILE env vars. When no valid chain is found and
-            RPC is healthy, the proof reports live_provider_ready=True but
-            live_evidence_ready=False with the explicit no-live-event reason.
+            must be 'live' and source_type 'rpc_polling').
+            - When omitted (_UNSET): env vars LIVE_EVIDENCE_CHAIN_JSON /
+              LIVE_EVIDENCE_CHAIN_FILE are consulted as fallback.
+            - When explicitly None: no fallback; treated as "no chain available".
+            - When a dict: validated directly; no fallback if validation fails.
+            When no valid chain is found and RPC is healthy, the proof reports
+            live_provider_ready=True but live_evidence_ready=False with the
+            explicit no-live-event reason.
         require_current_env: When True (PROOF_REQUIRE_CURRENT_ENV=true), committed
             artifact files are not consulted. Only current environment variables
             and explicitly passed arguments are trusted. This is required for the
-            no-secrets CI validation job.
+            no-secrets CI validation job. (Retained for compatibility; on-disk
+            chain fallback is no longer performed by this function.)
     """
     now = datetime.now(timezone.utc).isoformat()
     provider_missing: list[str] = []   # blocks provider_ready
@@ -459,17 +483,20 @@ def generate_live_evidence_proof(
 
     # --- Look for real live-event evidence; never synthesise from RPC alone ---
     # Sources checked in order:
-    #   a) explicit live_evidence_chain argument
+    #   a) explicit live_evidence_chain argument (when caller passes a dict or None)
     #   b) LIVE_EVIDENCE_CHAIN_JSON env var  (only when no explicit arg was given)
     #   c) LIVE_EVIDENCE_CHAIN_FILE env var  (only when no explicit arg was given)
     #   d) artifacts/live-evidence-proof/latest/live_evidence_chain.json (default path,
-    #      only when no explicit arg was given)
+    #      only when no explicit arg was given and require_current_env=False)
     #
-    # When live_evidence_chain is explicitly provided (non-None) and validation fails,
-    # we do NOT fall back to env vars or the default file — the caller's chain is
-    # authoritative and a rejected chain means no valid evidence is available.
-    explicit_chain_provided = live_evidence_chain is not None
-    real_chain = _validated_live_evidence_chain(live_evidence_chain)
+    # Sentinel semantics:
+    #   live_evidence_chain=_UNSET  → arg omitted; env vars and default file fallback apply.
+    #   live_evidence_chain=None    → explicit "no chain"; no fallback at all.
+    #   live_evidence_chain=<dict>  → validated directly; no fallback if rejected.
+    _chain_is_unset = getattr(live_evidence_chain, '_IS_UNSET', False)
+    explicit_chain_provided = not _chain_is_unset
+    actual_chain = None if _chain_is_unset else live_evidence_chain
+    real_chain = _validated_live_evidence_chain(actual_chain)
     if not explicit_chain_provided:
         if real_chain is None:
             real_chain = _validated_live_evidence_chain(_load_live_evidence_chain_from_env())
