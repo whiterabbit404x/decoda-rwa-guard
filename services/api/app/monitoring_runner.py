@@ -4065,27 +4065,27 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                             with connection.transaction():
                                 connection.execute(
                                     '''
-                                    UPDATE monitored_systems
-                                    SET last_heartbeat = NOW(),
-                                        runtime_status = %s,
-                                        status = %s
-                                    WHERE id = %s::uuid
-                                      AND workspace_id = %s::uuid
+                              UPDATE monitored_systems
+                              SET last_heartbeat = NOW(),
+                                  runtime_status = %s,
+                                  status = %s
+                              WHERE id = %s::uuid
+                              AND workspace_id = %s::uuid
                                     ''',
                                     (*status_params, str(target['workspace_id'])),
                                 )
                                 connection.execute(
                                     '''
-                                    UPDATE monitored_systems ms
-                                    SET last_heartbeat = NOW(),
-                                        last_event_at = COALESCE(%s, last_event_at),
-                                        last_coverage_telemetry_at = COALESCE(%s, last_coverage_telemetry_at),
-                                        freshness_status = %s,
-                                        confidence_status = %s,
-                                        coverage_reason = %s,
-                                        last_error_text = NULL
-                                    WHERE ms.id = %s::uuid
-                                      AND ms.workspace_id = %s::uuid
+                              UPDATE monitored_systems ms
+                              SET last_heartbeat = NOW(),
+                                  last_event_at = COALESCE(%s, last_event_at),
+                                  last_coverage_telemetry_at = COALESCE(%s, last_coverage_telemetry_at),
+                                  freshness_status = %s,
+                                  confidence_status = %s,
+                                  coverage_reason = %s,
+                                  last_error_text = NULL
+                              WHERE ms.id = %s::uuid
+                              AND ms.workspace_id = %s::uuid
                                     ''',
                                     (
                                         result.get('last_event_at') or target.get('watcher_last_event_at'),
