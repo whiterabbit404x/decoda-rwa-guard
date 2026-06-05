@@ -597,6 +597,27 @@ def build_final_readiness(
     blockers.extend(cg_blockers)
     # staging blockers are added via _check_staging_validation below
 
+    # Gate: launch-proof paid_launch_ready must be True in staging/production mode.
+    # Individual readiness fields (billing_ready, email_ready, etc.) may all be True
+    # while paid_launch_ready=False when the proof was generated in local/no-secret mode.
+    # This check prevents final-readiness from claiming production_100_percent_ready=True
+    # when the launch-proof was never proven in a real staging/production environment.
+    _lp_paid_ready = False
+    if launch_proof is not None:
+        _lp_paid_ready = bool(launch_proof.get('paid_launch_ready', False))
+        if mode in ('staging', 'production') and not _lp_paid_ready:
+            _lp_blockers_list = launch_proof.get('blockers', [])
+            if any('local mode' in b for b in _lp_blockers_list):
+                blockers.append(
+                    'launch-proof paid_launch_ready=false: generated in local/no-secret mode; '
+                    'regenerate via save-proof-to-repo.yml with staging billing secrets'
+                )
+            else:
+                blockers.append(
+                    'launch-proof paid_launch_ready=false; '
+                    'all billing, email, and live evidence gates must pass in staging/production mode'
+                )
+
     # Gate: frontend_build and readiness_validation must not be not_run for production readiness
     if ci_gates is not None:
         _rg = ci_gates.get('required_gates', {})
@@ -664,6 +685,7 @@ def build_final_readiness(
     broad_paid_saas_ready = (
         live_ok
         and staging_ok
+        and _lp_paid_ready
         and _frontend_build_ok
         and _readiness_validation_ok
         and categories.get('billing_email_launch_readiness', {}).get('status') == 'pass'

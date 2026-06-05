@@ -619,3 +619,133 @@ def test_on_disk_live_evidence_not_stale_when_enterprise_claimed() -> None:
         f'final-readiness claims enterprise_procurement_ready=True '
         f'but live-evidence-proof telemetry is stale: {blockers}'
     )
+
+
+# ---------------------------------------------------------------------------
+# Regression: paid_launch_ready=False in launch-proof must block final-readiness
+# ---------------------------------------------------------------------------
+
+def test_paid_launch_false_blocks_production_100_percent_ready(tmp_path: Path) -> None:
+    """
+    When launch-proof has paid_launch_ready=False (local/no-secret mode),
+    production_100_percent_ready must be False in staging mode,
+    even if all individual readiness fields are True.
+    This regression test prevents the contradiction where final-readiness
+    claims production_100_percent_ready=True but launch-proof says paid_launch_ready=False.
+    """
+    lp_dir = _write_launch_proof(
+        tmp_path,
+        paid_launch_ready=False,
+        broad_paid_saas_ready=False,
+        blockers=['local mode: paid launch readiness cannot be proven without staging/production runtime'],
+    )
+    rp_dir = _write_release_proof(tmp_path)
+    _write_ci_gates(tmp_path, frontend_build_status='pass', readiness_validation_status='pass')
+    lep_dir = _write_live_evidence_proof(tmp_path, live_evidence_ready=True)
+    sp_dir = _write_staging_proof(tmp_path, staging_launch_ready=True)
+
+    result = build_final_readiness(
+        mode='staging',
+        strict=True,
+        launch_proof_dir=lp_dir,
+        release_proof_dir=rp_dir,
+        staging_proof_dir=sp_dir,
+        live_evidence_proof_dir=lep_dir,
+    )
+    assert result['production_100_percent_ready'] is False, (
+        'REGRESSION: production_100_percent_ready must be False when '
+        'launch-proof has paid_launch_ready=False (local/no-secret mode). '
+        'Fix: validate_100_percent_readiness.py must check paid_launch_ready, '
+        'not only individual billing/email/provider fields.'
+    )
+    assert any('paid_launch_ready=false' in b.lower() for b in result['blockers']), (
+        f'Expected paid_launch_ready blocker, got: {result["blockers"]}'
+    )
+
+
+def test_paid_launch_false_blocks_broad_paid_saas_ready(tmp_path: Path) -> None:
+    """
+    When launch-proof has paid_launch_ready=False, broad_paid_saas_ready must be False
+    in staging mode, even if all individual readiness fields are True.
+    """
+    lp_dir = _write_launch_proof(
+        tmp_path,
+        paid_launch_ready=False,
+        broad_paid_saas_ready=False,
+        blockers=['local mode: paid launch readiness cannot be proven without staging/production runtime'],
+    )
+    rp_dir = _write_release_proof(tmp_path)
+    _write_ci_gates(tmp_path, frontend_build_status='pass', readiness_validation_status='pass')
+    lep_dir = _write_live_evidence_proof(tmp_path, live_evidence_ready=True)
+    sp_dir = _write_staging_proof(tmp_path, staging_launch_ready=True)
+
+    result = build_final_readiness(
+        mode='staging',
+        strict=True,
+        launch_proof_dir=lp_dir,
+        release_proof_dir=rp_dir,
+        staging_proof_dir=sp_dir,
+        live_evidence_proof_dir=lep_dir,
+    )
+    assert result['broad_paid_saas_ready'] is False, (
+        'REGRESSION: broad_paid_saas_ready must be False when '
+        'launch-proof has paid_launch_ready=False.'
+    )
+
+
+def test_paid_launch_true_allows_production_ready_with_all_gates(tmp_path: Path) -> None:
+    """
+    Positive control: when launch-proof has paid_launch_ready=True and all other gates pass,
+    production_100_percent_ready may be True in staging mode with --strict.
+    """
+    lp_dir = _write_launch_proof(tmp_path, paid_launch_ready=True, broad_paid_saas_ready=True)
+    rp_dir = _write_release_proof(tmp_path)
+    _write_ci_gates(tmp_path, frontend_build_status='pass', readiness_validation_status='pass')
+    lep_dir = _write_live_evidence_proof(tmp_path, live_evidence_ready=True)
+    sp_dir = _write_staging_proof(tmp_path, staging_launch_ready=True)
+
+    result = build_final_readiness(
+        mode='staging',
+        strict=True,
+        launch_proof_dir=lp_dir,
+        release_proof_dir=rp_dir,
+        staging_proof_dir=sp_dir,
+        live_evidence_proof_dir=lep_dir,
+    )
+    assert result['production_100_percent_ready'] is True, (
+        f'Expected production_100_percent_ready=True with all gates passing, '
+        f'blockers: {result["blockers"]}'
+    )
+    assert result['broad_paid_saas_ready'] is True, (
+        f'Expected broad_paid_saas_ready=True with all gates passing, '
+        f'blockers: {result["blockers"]}'
+    )
+
+
+def test_local_mode_does_not_write_to_latest(tmp_path: Path) -> None:
+    """
+    Running validate_100_percent_readiness.py in local mode must write to
+    a non-latest path so that staged staging artifacts are never overwritten
+    by local dev runs that lack staging credentials.
+    """
+    import subprocess
+    import sys
+
+    # Run the script in local mode, pointing at a temp directory
+    result = subprocess.run(
+        [sys.executable, 'scripts/validate_100_percent_readiness.py', '--mode', 'local'],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    # local mode should not modify artifacts/final-readiness/latest/
+    # It must write to artifacts/final-readiness/local-test/ instead.
+    assert 'local-test' in result.stdout, (
+        'local mode must write to local-test/ path, not latest/. '
+        f'stdout: {result.stdout}'
+    )
+    assert 'artifacts/final-readiness/latest' not in result.stdout, (
+        'local mode must NOT write to latest/. '
+        f'stdout: {result.stdout}'
+    )
