@@ -7,22 +7,22 @@
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "fa5cccc6cc83ba3454e0a93b7c8cace50b7a0e8beef12dfae1f880e0408e0649",
-      "size_bytes": 657,
+      "sha256": "4a7745625a521baace7330bb5f8e17fef0e1d3d625722557c6453d23d386d865",
+      "size_bytes": 656,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "6713b6950fe798420b9b5908c7299a0dac2e0e0a4cf616b9c71b6c795dd3123f",
-      "size_bytes": 1960,
+      "sha256": "f88c33c5c8cb7afa69b3e50a548c40f6b0fee0d9c4972b897e922657c6cc4cf0",
+      "size_bytes": 1959,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "ed6bab6f6049296016d616516dd6ffc8e16f5f5991bb432b51db9e2172a718f8",
-      "size_bytes": 1347,
+      "sha256": "adce74ac6df6b629c796351cab1c01f2d22de6d9ea8e3a8ff9451f47aee22eec",
+      "size_bytes": 1550,
       "required": true,
       "status": "present"
     }

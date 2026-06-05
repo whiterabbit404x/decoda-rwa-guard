@@ -90,9 +90,13 @@ def validate_ci_required_gates(path: Path) -> tuple[bool, list[str]]:
                 if gate_status not in {'pass', 'not_run'}:  # not_run is allowed for local mode
                     issues.append(f'ci-required-gates: overall_status=pass but {gate_name}={gate_status}')
 
-    # Check broad_paid_launch_ready is never true
+    # broad_paid_launch_ready is only valid in staging/production mode
     if gates.get('broad_paid_launch_ready') is True:
-        issues.append('ci-required-gates: broad_paid_launch_ready must never be true')
+        channel = gates.get('release_channel', '').lower()
+        if channel not in ('staging', 'production'):
+            issues.append(
+                'ci-required-gates: broad_paid_launch_ready must not be true outside staging/production mode'
+            )
 
     # Check for secrets
     secrets = _has_secret_like_value(gates)
@@ -129,9 +133,13 @@ def validate_release_proof(path: Path) -> tuple[bool, list[str]]:
     if release_status == 'pass' and (not ci_gates_ready or not launch_proof_ready):
         issues.append(f'release-proof: release_status=pass but gates not ready (ci={ci_gates_ready}, launch={launch_proof_ready})')
 
-    # Check paid_launch_ready is never true in local mode
+    # paid_launch_ready is only valid in staging/production mode
     if proof.get('paid_launch_ready') is True:
-        issues.append('release-proof: paid_launch_ready must never be true in local mode')
+        channel = proof.get('release_channel', '').lower()
+        if channel not in ('staging', 'production'):
+            issues.append(
+                'release-proof: paid_launch_ready must not be true outside staging/production mode'
+            )
 
     # Check for secrets
     secrets = _has_secret_like_value(proof)

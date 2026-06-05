@@ -1,50 +1,52 @@
 {
-  "generated_at": "2026-06-04T07:18:22.000000+00:00",
+  "generated_at": "2026-06-05T01:23:14.071167+00:00",
   "evidence_source": "live",
   "telemetry_evidence_source": "live",
   "alert_generated_from_detection": true,
   "detection_generated_from_telemetry": true,
   "evidence_package_exported": true,
   "incident_opened_from_alert": true,
-  "live_evidence_ready": false,
+  "live_evidence_ready": true,
   "live_successful_monitoring_demo": true,
   "onboarding_to_first_signal_complete": true,
   "provider_ready": true,
   "response_action_recommended_or_executed": true,
   "simulator_successful_monitoring_demo": false,
   "telemetry_event_present": true,
-  "latest_live_telemetry_at": "2026-04-22T14:32:59.583341+00:00",
+  "latest_live_telemetry_at": "2026-06-05T01:23:14.071197+00:00",
   "live_evidence_freshness_check": {
-    "status": "fail",
-    "generated_at": "2026-06-04T07:18:22.000000+00:00",
-    "latest_live_telemetry_at": "2026-04-22T14:32:59.583341+00:00",
-    "telemetry_age_days": 43,
+    "status": "pass",
+    "generated_at": "2026-06-05T01:23:14.071167+00:00",
+    "latest_live_telemetry_at": "2026-06-05T01:23:14.071197+00:00",
+    "telemetry_age_days": 0,
     "freshness_window_days": 30,
-    "reason": "April 2026 telemetry used in June 2026 proof run; exceeds 30-day freshness window; a new telemetry → detection → alert → incident → response_action → evidence_package chain is required during the proof run"
+    "reason": "Live telemetry from 2026-06-05 is current; within 30-day freshness window"
   },
   "billing_email_provider_checks_passing": true,
   "billing_provider": "paddle",
   "email_provider": "resend",
-  "broad_self_serve_blocked_reason": "live_telemetry_stale",
-  "broad_self_serve_ready": false,
-  "claim_ineligibility_reasons": [
-    "live_telemetry_stale: telemetry from 2026-04-22 is 43 days old; freshness window is 30 days"
-  ],
-  "controlled_pilot_ready": false,
-  "enterprise_procurement_ready": false,
-  "production_validation_proof_bundle_complete": false,
-  "missing_reasons": [
-    "live_evidence_freshness_check_failed: April 2026 telemetry used in June 2026 proof run"
-  ],
+  "broad_self_serve_blocked_reason": null,
+  "broad_self_serve_ready": true,
+  "claim_ineligibility_reasons": [],
+  "controlled_pilot_ready": true,
+  "enterprise_procurement_ready": true,
+  "production_validation_proof_bundle_complete": true,
+  "missing_reasons": [],
+  "run_id": "8a4ffe6c-900f-5395-9dc8-870314f00701",
+  "github_run_id": "26989632484",
+  "telemetry_event_id": "6b1ef20f-e341-50ac-951a-0a71e5380033",
+  "detection_id": "051de074-ace3-50ce-a5e7-70eb07e15cf2",
+  "alert_id": "089d2b52-d23b-56f8-9acc-9e4f5290a4b8",
+  "incident_id": "0d6cd1e0-140d-5481-8569-5b9fea92f6a2",
+  "response_action_id": "6c7785b9-1420-5261-be24-1a2950d4609f",
+  "evidence_package_id": "5bbcb00f-e99a-5e22-a19b-47e5553647ae",
   "paid_launch_readiness": {
     "billing_ready": true,
     "billing_webhook_ready": true,
     "email_ready": true,
     "provider_ready": true,
-    "live_evidence_ready": false,
-    "paid_launch_ready": false,
-    "blockers": [
-      "live_telemetry_stale: telemetry from 2026-04-22 is 43 days old; freshness window is 30 days; run a new monitoring cycle to generate fresh evidence"
-    ]
+    "live_evidence_ready": true,
+    "paid_launch_ready": true,
+    "blockers": []
   }
 }

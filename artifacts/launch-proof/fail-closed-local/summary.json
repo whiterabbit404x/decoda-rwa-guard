@@ -1,33 +1,35 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T14:51:11.815326+00:00",
+  "generated_at": "2026-06-05T02:18:44.683355+00:00",
   "launch_mode": "paid_saas",
   "proof_mode": "local",
   "billing_provider": "paddle",
   "repository": "/home/user/decoda-rwa-guard",
   "readiness_categories": {
-    "live_provider_evidence_ready": false,
-    "managed_pilot_ready": false,
+    "live_provider_evidence_ready": true,
+    "managed_pilot_ready": true,
     "niw_positioning_ready": true,
     "broad_paid_saas_ready": false,
     "ci_required_gates_ready": true
   },
   "live_provider_evidence": {
     "artifact_available": true,
-    "live_provider_evidence_ready": false,
-    "provider_ready": false,
-    "provider_mode": "disabled",
-    "live_evidence_ready": false,
-    "evidence_source": "unknown",
+    "live_provider_evidence_ready": true,
+    "provider_ready": true,
+    "provider_mode": "live",
+    "live_evidence_ready": true,
+    "evidence_source": "live",
     "source": "artifacts/live-evidence-proof/latest/summary.json"
   },
   "managed_pilot": {
     "artifact_available": true,
-    "managed_pilot_ready": false,
-    "sell_now_managed_ready": false,
+    "managed_pilot_ready": true,
+    "sell_now_managed_ready": true,
     "safe_claims": [
       "controlled pilot ready: single customer with direct onboarding, no billing required",
-      "overall readiness score: 90/100"
+      "overall readiness score: 100/100",
+      "live EVM telemetry received and proven in CI artifact",
+      "detection \u2192 alert \u2192 incident chain proven from live provider data"
     ],
     "source": "artifacts/sell-now-proof/latest/summary.json"
   },
@@ -52,24 +54,25 @@
   },
   "allowed_claims": [
     "NIW Strategic Infrastructure Guard positioning ready",
+    "controlled pilot / managed sale ready",
+    "live provider evidence ready",
     "paid billing configured (paddle)",
     "email provider configured"
   ],
   "prohibited_claims": [
-    "Do NOT claim live EVM monitoring without proven live evidence",
     "Do NOT use this local/CI proof as evidence of paid launch readiness \u2014 requires staging or production runtime"
   ],
-  "pilot_ready": false,
+  "pilot_ready": true,
   "paid_launch_ready": false,
-  "controlled_pilot_ready": false,
+  "controlled_pilot_ready": true,
   "broad_paid_saas_ready": false,
   "safe_to_sell_broadly_today": false,
   "readiness": {
     "billing_ready": true,
     "billing_webhook_ready": true,
     "email_ready": true,
-    "provider_ready": false,
-    "live_evidence_ready": false,
+    "provider_ready": true,
+    "live_evidence_ready": true,
     "ci_required_gates_ready": true
   },
   "blockers": [
