@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-05T14:22:20.526567+00:00",
+  "generated_at": "2026-06-05T15:32:14.495442+00:00",
   "github_runtime_context": true,
   "github_actions_visible_green": true,
   "repository": "whiterabbit404x/decoda-rwa-guard",
   "branch": "main",
-  "commit": "b197afd67e04403d3fed4a8d7f60600fd8626033",
-  "run_id": "27020436766",
-  "run_url": "https://github.com/whiterabbit404x/decoda-rwa-guard/actions/runs/27020436766",
+  "commit": "d9fcac8b7f64af7f37ef300ec8b2c0a5ce4b6902",
+  "run_id": "27024114489",
+  "run_url": "https://github.com/whiterabbit404x/decoda-rwa-guard/actions/runs/27024114489",
   "zip_includes_this_proof": true,
   "sell_now_proof": {
     "sell_now_managed_ready": true,
