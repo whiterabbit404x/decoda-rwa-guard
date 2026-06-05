@@ -1,16 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-05T14:22:20.180708+00:00",
-  "release_status": "pass",
-  "release_channel": "staging",
-  "commit_sha": "b197afd67e04403d3fed4a8d7f60600fd8626033",
-  "branch": "main",
-  "ci_required_gates_ready": true,
+  "generated_at": "2026-06-05T15:33:52.030460+00:00",
+  "release_status": "fail",
+  "release_channel": "local",
+  "commit_sha": "d9fcac8b7f64af7f37ef300ec8b2c0a5ce4b6902",
+  "branch": "claude/sharp-newton-vRnG7",
+  "ci_required_gates_ready": false,
   "launch_proof_ready": true,
   "manifest_ready": true,
-  "test_report_ready": true,
-  "paid_launch_ready": true,
-  "blockers": [],
+  "test_report_ready": false,
+  "paid_launch_ready": false,
+  "blockers": [
+    "ci-required-gates not ready",
+    "test-report-summary not ready"
+  ],
   "warnings": [],
   "evidence_files": [
     "artifacts/release-proof/latest/ci-required-gates.json",
