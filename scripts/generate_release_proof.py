@@ -430,6 +430,20 @@ def generate_ci_required_gates(
             if gate_data.get('status') == 'not_run':
                 blockers.append(f'{gate_name} not run in strict mode')
 
+    # Propagate broad_paid_launch_ready from the on-disk launch-proof in staging/production
+    # mode only. In local/CI mode this remains false (fail-closed) regardless of any
+    # pre-existing staging artifacts in the working tree.
+    _broad_paid_launch_ready = False
+    if mode in ('staging', 'production'):
+        _lp_path = REPO_ROOT / 'artifacts' / 'launch-proof' / 'latest' / 'summary.json'
+        if _lp_path.exists():
+            try:
+                with open(_lp_path) as _lp_f:
+                    _lp_data = json.load(_lp_f)
+                _broad_paid_launch_ready = bool(_lp_data.get('broad_paid_saas_ready', False))
+            except Exception:
+                pass
+
     return {
         'schema_version': 1,
         'generated_at': datetime.now(timezone.utc).isoformat(),
@@ -437,7 +451,7 @@ def generate_ci_required_gates(
         'branch': branch,
         'release_channel': mode,
         'overall_status': 'pass' if overall_pass and not blockers else 'fail',
-        'broad_paid_launch_ready': False,  # never pass broad launch from release-proof generation
+        'broad_paid_launch_ready': _broad_paid_launch_ready,
         'required_gates': gates,
         'blockers': sorted(set(blockers)),
         'warnings': [],
@@ -508,6 +522,22 @@ def generate_release_proof(*, mode: str, strict: bool = False) -> dict[str, Any]
         and not blockers
     )
 
+    # Propagate paid_launch_ready from the on-disk launch-proof in staging/production mode
+    # only. When save-proof-to-repo.yml runs run_paid_saas_launch_proof.py --mode staging
+    # (step F) and then calls generate_release_proof.py --no-regen-launch-proof (step G),
+    # the release-proof summary correctly reflects the staging launch-proof state.
+    # In local/CI mode this remains false (fail-closed) regardless of on-disk artifacts.
+    _paid_launch_ready = False
+    if mode in ('staging', 'production'):
+        _lp_path = REPO_ROOT / 'artifacts' / 'launch-proof' / 'latest' / 'summary.json'
+        if _lp_path.exists():
+            try:
+                with open(_lp_path) as _lp_f:
+                    _lp_data = json.load(_lp_f)
+                _paid_launch_ready = bool(_lp_data.get('paid_launch_ready', False))
+            except Exception:
+                pass
+
     return {
         'schema_version': 1,
         'generated_at': datetime.now(timezone.utc).isoformat(),
@@ -519,7 +549,7 @@ def generate_release_proof(*, mode: str, strict: bool = False) -> dict[str, Any]
         'launch_proof_ready': launch_proof_ready,
         'manifest_ready': manifest_ready,
         'test_report_ready': test_report_ready,
-        'paid_launch_ready': False,  # Never pass broad paid launch in local mode
+        'paid_launch_ready': _paid_launch_ready,  # propagated from on-disk launch-proof
         'blockers': sorted(set(blockers)),
         'warnings': [],
         'evidence_files': [
@@ -558,8 +588,12 @@ def generate_launch_proof(*, mode: str) -> dict[str, Any]:
 
     pilot_ready = live_ok  # Fail closed: local mode requires live evidence
     controlled_pilot_ready = True  # Can be true for controlled pilots without full paid GA
-    broad_paid_saas_ready = False  # Never pass in local mode
-    paid_launch_ready = False  # Never pass in local mode
+
+    # In staging/production mode, allow broad_paid_saas_ready=true when all gates pass.
+    # In local/CI mode these remain false (fail-closed without real staging credentials).
+    _staging_modes = {'staging', 'production'}
+    broad_paid_saas_ready = False
+    paid_launch_ready = False
 
     # provider_ready: prefer paid_launch result; fall back to service summary when
     # live evidence is proven (service summary already confirms provider was reachable).
@@ -619,6 +653,19 @@ def generate_launch_proof(*, mode: str) -> dict[str, Any]:
         blockers.append(
             'local mode: paid launch readiness cannot be proven without staging/production runtime'
         )
+    elif mode in _staging_modes and not blockers:
+        # Staging/production mode with all gates passing: allow paid_launch_ready=true.
+        all_gates_pass = (
+            paid_launch.get('billing_ready', False)
+            and paid_launch.get('billing_webhook_ready', False)
+            and paid_launch.get('email_ready', False)
+            and readiness.get('provider_ready', False)
+            and readiness.get('live_evidence_ready', False)
+            and readiness.get('ci_required_gates_ready', False)
+        )
+        if all_gates_pass:
+            paid_launch_ready = True
+            broad_paid_saas_ready = True
 
     # Safety fallback: broad_paid_saas_ready=false must always have at least one blocker.
     if not broad_paid_saas_ready and not blockers:

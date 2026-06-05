@@ -745,14 +745,24 @@ def build_final_readiness(
 def main(mode: str = 'local', strict: bool = False) -> int:
     print(f'[validate-100-percent-readiness] mode={mode} strict={strict}')
 
-    final_dir = REPO_ROOT / 'artifacts' / 'final-readiness' / 'latest'
-    final_dir.mkdir(parents=True, exist_ok=True)
-
     summary = build_final_readiness(
         mode=mode,
         strict=strict,
         live_evidence_proof_dir=REPO_ROOT / 'artifacts' / 'live-evidence-proof' / 'latest',
     )
+
+    # Route the output path based on mode and readiness outcome.
+    # Only staging/production mode may write to latest/. Local/CI mode writes to a
+    # fail-closed path so that staging-generated latest/ artifacts are never overwritten
+    # by local runs that lack staging credentials.
+    _staging_modes = {'staging', 'production'}
+    if mode in _staging_modes:
+        final_dir = REPO_ROOT / 'artifacts' / 'final-readiness' / 'latest'
+    else:
+        # local/ci/fail_closed_local: write to a non-latest path so the
+        # committed staging artifacts are preserved.
+        final_dir = REPO_ROOT / 'artifacts' / 'final-readiness' / 'local-test'
+    final_dir.mkdir(parents=True, exist_ok=True)
 
     out_path = final_dir / 'summary.json'
     with open(out_path, 'w') as f:
