@@ -1,28 +1,28 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-05T15:33:52.034399+00:00",
-  "release_channel": "local",
-  "commit_sha": "d9fcac8b7f64af7f37ef300ec8b2c0a5ce4b6902",
-  "branch": "claude/sharp-newton-vRnG7",
+  "generated_at": "2026-06-05T16:08:27.399922+00:00",
+  "release_channel": "staging",
+  "commit_sha": "9587f3c4769c9379565001a32f8866059411fc6a",
+  "branch": "main",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "be5d4b04d7bc97c2ef6287763f8e9164b83ff2e8c25cc14ffdb4bd7bde39f182",
-      "size_bytes": 752,
+      "sha256": "85ae0abf48b6bb5f23db66ee0ce2e5efa997c9a6e521e3819a3de596a34f5732",
+      "size_bytes": 656,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "1a8374b3659c937db11f1b9d69e09abb419951c6176f32223a7074897bc47186",
-      "size_bytes": 1827,
+      "sha256": "5afcfc4dc6fa917b7ee8fffb5d0735d71edc7aae005e81a4714627e3b27f0388",
+      "size_bytes": 1959,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "1fcfe37e4fa9a9f834f5cc2a35a17062b8bd741de12e36c972ae0e5ede0fd220",
-      "size_bytes": 1455,
+      "sha256": "3b42ac8251c059776605a567124aca6ccc1acfaaefcfdc41b65305de9b1f0a7e",
+      "size_bytes": 4068,
       "required": true,
       "status": "present"
     }
