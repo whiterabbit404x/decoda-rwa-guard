@@ -5576,3 +5576,312 @@ td .tableMeta {
   }
 }
 
+/* ============================================================
+   ACCESSIBILITY & POLISH IMPROVEMENTS
+   ============================================================ */
+
+/* ── Skip to main content ───────────────────────────────────── */
+.skipToContent {
+  position: absolute;
+  top: -56px;
+  left: 1rem;
+  padding: 0.55rem 1.1rem;
+  background: #3b82f6;
+  color: #fff;
+  font-size: 0.88rem;
+  font-weight: 600;
+  text-decoration: none;
+  border-radius: 0 0 8px 8px;
+  z-index: 9999;
+  transition: top 0.18s ease;
+  white-space: nowrap;
+}
+
+.skipToContent:focus,
+.skipToContent:focus-visible {
+  top: 0;
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+/* ── Global focus-visible (keyboard navigation) ─────────────── */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+label:focus-visible,
+[role="button"]:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Don't show focus ring on mouse click */
+a:focus:not(:focus-visible),
+button:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* ── Mobile hamburger menu (marketing pages) ─────────────────── */
+.mktMobileToggleInput {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.mktMobileHamburger {
+  display: none;
+  flex-direction: column;
+  justify-content: space-between;
+  width: 30px;
+  height: 22px;
+  cursor: pointer;
+  padding: 2px 0;
+  flex-shrink: 0;
+}
+
+.mktMobileBar {
+  display: block;
+  width: 100%;
+  height: 2px;
+  background: #8b949e;
+  border-radius: 2px;
+  transition: transform 0.22s ease, opacity 0.22s ease, background 0.22s;
+}
+
+.mktMobileHamburger:hover .mktMobileBar {
+  background: #e6edf3;
+}
+
+/* Mobile nav overlay */
+.mktMobileNav {
+  display: none;
+  position: fixed;
+  top: 64px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(7, 11, 20, 0.97);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  z-index: 98;
+  flex-direction: column;
+  padding: 1.25rem 1rem;
+  gap: 0.15rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  overflow-y: auto;
+}
+
+.mktMobileNavLink {
+  display: block;
+  padding: 0.85rem 1rem;
+  color: #9ba7b4;
+  text-decoration: none;
+  font-size: 1rem;
+  font-weight: 500;
+  border-radius: 10px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.mktMobileNavLink:hover {
+  color: #e6edf3;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.mktMobileNavDivider {
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  margin: 0.6rem 0;
+}
+
+.mktMobileNavLinkCta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.85rem 1rem;
+  border-radius: 10px;
+  background: rgba(59, 130, 246, 0.14);
+  border: 1px solid rgba(59, 130, 246, 0.32);
+  color: #93c5fd !important;
+  font-weight: 600;
+  margin-top: 0.25rem;
+}
+
+.mktMobileNavLinkCta:hover {
+  background: rgba(59, 130, 246, 0.22) !important;
+  color: #bfdbfe !important;
+}
+
+@media (max-width: 720px) {
+  /* Show hamburger button */
+  .mktMobileHamburger {
+    display: flex;
+  }
+
+  /* Show mobile nav when checkbox is checked */
+  .mktMobileToggleInput:checked ~ .mktMobileNav {
+    display: flex;
+  }
+
+  /* Animate bars to X when open */
+  .mktMobileToggleInput:checked ~ .mktNavInner .mktMobileHamburger .mktMobileBar:nth-child(1) {
+    transform: translateY(10px) rotate(45deg);
+    background: #e6edf3;
+  }
+  .mktMobileToggleInput:checked ~ .mktNavInner .mktMobileHamburger .mktMobileBar:nth-child(2) {
+    opacity: 0;
+    transform: scaleX(0);
+  }
+  .mktMobileToggleInput:checked ~ .mktNavInner .mktMobileHamburger .mktMobileBar:nth-child(3) {
+    transform: translateY(-10px) rotate(-45deg);
+    background: #e6edf3;
+  }
+}
+
+/* ── Trust badge as link ──────────────────────────────────────── */
+a.mktTrustBadge {
+  text-decoration: none;
+  transition: border-color 0.18s, background 0.18s;
+  cursor: pointer;
+}
+
+a.mktTrustBadge:hover {
+  border-color: rgba(59, 130, 246, 0.35);
+  background: rgba(59, 130, 246, 0.06);
+}
+
+/* ── Standalone page nav (pricing, trust) ────────────────────── */
+.mktStandaloneNav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: rgba(7, 11, 20, 0.92);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  margin-bottom: 0;
+}
+
+.mktStandaloneNavInner {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0 clamp(1rem, 3vw, 3rem);
+  height: 60px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.mktStandaloneNavLogo {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  text-decoration: none;
+  flex-shrink: 0;
+  color: #e6edf3;
+}
+
+.mktStandaloneNavBrand {
+  font-size: 0.95rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+.mktStandaloneNavProduct {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #6aa9ff;
+  letter-spacing: 0.06em;
+}
+
+.mktStandaloneNavLinks {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  flex: 1;
+}
+
+.mktStandaloneNavLink {
+  padding: 0.4rem 0.75rem;
+  color: #9ba7b4;
+  text-decoration: none;
+  font-size: 0.86rem;
+  font-weight: 500;
+  border-radius: 7px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.mktStandaloneNavLink:hover {
+  color: #e6edf3;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.mktStandaloneNavRight {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-shrink: 0;
+}
+
+.mktStandaloneNavSignIn {
+  color: #9ba7b4;
+  text-decoration: none;
+  font-size: 0.85rem;
+  font-weight: 500;
+  padding: 0.38rem 0.7rem;
+  border-radius: 7px;
+  transition: color 0.15s;
+}
+
+.mktStandaloneNavSignIn:hover { color: #e6edf3; }
+
+.mktStandaloneNavCta {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.45rem 1rem;
+  border-radius: 999px;
+  background: #3b82f6;
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background 0.15s;
+}
+
+.mktStandaloneNavCta:hover { background: #2563eb; }
+
+@media (max-width: 640px) {
+  .mktStandaloneNavLinks { display: none; }
+  .mktStandaloneNavSignIn { display: none; }
+}
+
+/* ── Improved trust strip hover ──────────────────────────────── */
+.mktTrustStrip {
+  cursor: default;
+}
+
+/* ── Onboarding stepper improved visuals ─────────────────────── */
+.onboardingStepItem[data-step-status="complete"] .stepCircle {
+  background: rgba(34, 197, 94, 0.15);
+  border-color: rgba(34, 197, 94, 0.5);
+  color: #4ade80;
+}
+
+.onboardingStepItem[data-step-status="current"] .stepCircle {
+  background: rgba(59, 130, 246, 0.18);
+  border-color: rgba(59, 130, 246, 0.6);
+  color: #93c5fd;
+  box-shadow: 0 0 12px rgba(59, 130, 246, 0.25);
+}
+
+.onboardingStepItem[data-step-status="upcoming"] .stepCircle {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: #5a6478;
+}
+

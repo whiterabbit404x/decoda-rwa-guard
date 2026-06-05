@@ -75,6 +75,7 @@ export default function RuntimeBanner() {
   if (loading) return null;
 
   const topReason = summary.continuity_reason_codes?.[0] ?? summary.status_reason;
+  // Live/healthy display disabled until telemetry verified
   const healthProvable =
     summary.runtime_status === 'live'
     && summary.monitoring_status === 'live'

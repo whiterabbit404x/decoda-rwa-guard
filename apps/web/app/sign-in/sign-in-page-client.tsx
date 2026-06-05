@@ -251,7 +251,7 @@ export default function SignInPageClient({
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (loading) return;
+    if (loading) { return; }
 
     setLoading(true);
     setError(null);

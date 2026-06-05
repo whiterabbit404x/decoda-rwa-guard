@@ -82,6 +82,7 @@ function progressFromRuntimeSummary(summary: WorkspaceMonitoringTruth): Onboardi
   };
 }
 
+// Self-serve setup wizard — guides users through the full asset → monitor → evidence workflow
 export default function OnboardingPageClient({ apiUrl }: { apiUrl: string }) {
   const { authHeaders } = usePilotAuth();
   const { summary } = useRuntimeSummary();
@@ -185,7 +186,7 @@ export default function OnboardingPageClient({ apiUrl }: { apiUrl: string }) {
 
         {/* Next Step card | Resources card */}
         <div className="onboardingCardsRow">
-          <ActionPanel title="Next Step">
+          <ActionPanel title="Next Action">
             <div data-testid="next-step-card">
               {sessionExpired ? (
                 <p className="onboardingError" data-testid="session-expired-notice">

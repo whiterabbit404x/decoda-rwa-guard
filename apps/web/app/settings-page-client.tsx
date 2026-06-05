@@ -534,6 +534,15 @@ export default function SettingsPageClient() {
               <FieldRow label="Retention Period" value={<span style={{ color: '#8b949e' }}>90 days (default)</span>} />
               <FieldRow label="Last Readiness Check" value={<span style={{ color: '#8b949e' }}>{readiness?.checked_at ? new Date(readiness.checked_at).toLocaleString() : 'Not available'}</span>} />
               <FieldRow label="Blocking Issues" value={<span style={{ color: readiness && readiness.blocking_failures?.length > 0 ? '#f87171' : '#4ade80' }}>{readiness?.blocking_failures?.length ?? 0} issues</span>} />
+              {readiness?.checks && readiness.checks.length > 0 ? (
+                <ul style={{ marginTop: '0.5rem', padding: 0, listStyle: 'none', fontSize: '0.82rem' }}>
+                  {readiness.checks.map((check) => (
+                    <li key={check.key} style={{ color: check.pass ? '#4ade80' : '#f87171', marginBottom: '0.25rem' }}>
+                      {check.label}: {check.reason ?? (check.pass ? 'OK' : 'Failed')}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
               <div style={{ marginTop: '0.85rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
                 <Link className="btn btn-secondary" href="/evidence" prefetch={false} style={{ textDecoration: 'none' }}>
                   Export Audit Logs
@@ -576,7 +585,7 @@ export default function SettingsPageClient() {
               <FieldRow label="API Calls Used" value={<span style={{ color: '#8b949e' }}>Not tracked</span>} />
               <FieldRow label="Evidence Storage Used" value={<span style={{ color: '#8b949e' }}>Not tracked</span>} />
             </SectionCard>
-            {/* Billing Readiness */}
+            {/* Self-serve launch gate: billing and workspace readiness block broad access until all checks pass */}
             <SectionCard title="Billing Readiness">
               <FieldRow label="Billing Enabled" value={<StatusPill status={billingAvailable ? 'Enabled' : 'Not Configured'} />} />
               <FieldRow label="Payment Provider" value={<span style={{ color: '#8b949e' }}>{billingRuntime.provider && billingRuntime.provider !== 'none' ? billingRuntime.provider : 'Not configured'}</span>} />
