@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-05T01:23:41.540235+00:00",
+  "generated_at": "2026-06-05T07:38:31.660001+00:00",
   "mode": "staging",
   "strict": false,
   "release_channel": "staging",
@@ -25,7 +25,7 @@
     "staging_migrations_validated": true,
     "staging_runtime_validated": true,
     "staging_live_evidence_validated": true,
-    "generated_at": "2026-06-05T01:23:41.540246+00:00",
+    "generated_at": "2026-06-05T07:38:31.660014+00:00",
     "blockers": [],
     "warnings": []
   },
@@ -38,16 +38,16 @@
     "provider_ready": true,
     "provider_mode": "live",
     "worker_enabled": true,
-    "latest_live_telemetry_at": "2026-06-05T01:23:14.071197+00:00",
+    "latest_live_telemetry_at": "2026-06-05T07:38:02.310521+00:00",
     "live_evidence_ready": true,
     "evidence_source": "live",
     "chain": {
-      "telemetry_event_id": "6b1ef20f-e341-50ac-951a-0a71e5380033",
-      "detection_id": "051de074-ace3-50ce-a5e7-70eb07e15cf2",
-      "alert_id": "089d2b52-d23b-56f8-9acc-9e4f5290a4b8",
-      "incident_id": "0d6cd1e0-140d-5481-8569-5b9fea92f6a2",
-      "response_action_id": "6c7785b9-1420-5261-be24-1a2950d4609f",
-      "evidence_package_id": "5bbcb00f-e99a-5e22-a19b-47e5553647ae"
+      "telemetry_event_id": "5f412034-5487-55e6-95be-f8d8b9af376c",
+      "detection_id": "e3667887-b028-5406-87be-804c32fac0f4",
+      "alert_id": "298955f3-e588-5b0a-bafa-a61423383322",
+      "incident_id": "63b114c4-7b5f-52af-a499-0354e694e420",
+      "response_action_id": "600265db-a17e-57c8-8609-348ab7a4a2f7",
+      "evidence_package_id": "2dff70a1-dc85-537d-b49e-a136b4ba350c"
     },
     "missing": [],
     "contradiction_flags": [],

@@ -1,40 +1,30 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-05T01:23:39.840103+00:00",
-  "proof_mode": "staging",
+  "generated_at": "2026-06-05T07:38:29.537606+00:00",
   "launch_mode": "paid_saas",
   "pilot_ready": true,
-  "paid_launch_ready": true,
+  "paid_launch_ready": false,
   "controlled_pilot_ready": true,
-  "broad_paid_saas_ready": true,
+  "broad_paid_saas_ready": false,
   "readiness_categories": {
     "live_provider_evidence_ready": true,
     "managed_pilot_ready": true,
     "niw_positioning_ready": true,
-    "broad_paid_saas_ready": true,
+    "broad_paid_saas_ready": false,
     "ci_required_gates_ready": true
-  },
-  "broad_paid_saas": {
-    "staging_api_configured": true,
-    "staging_app_configured": true,
-    "staging_database_configured": true,
-    "staging_worker_enabled": true,
-    "billing_configured": true,
-    "email_configured": true,
-    "auth_secret_configured": true
   },
   "allowed_claims": [
     "NIW Strategic Infrastructure Guard positioning ready",
     "controlled pilot / managed sale ready",
     "live provider evidence ready",
+    "not broad paid SaaS ready"
+  ],
+  "prohibited_claims": [
     "broad paid SaaS production ready",
     "billing ready",
     "staging runtime fully ready",
     "staging database fully ready",
     "worker fully ready"
-  ],
-  "prohibited_claims": [
-    "not broad paid SaaS ready"
   ],
   "readiness": {
     "billing_ready": true,
@@ -44,7 +34,9 @@
     "live_evidence_ready": true,
     "ci_required_gates_ready": true
   },
-  "blockers": [],
+  "blockers": [
+    "local mode: paid launch readiness cannot be proven without staging/production runtime"
+  ],
   "warnings": [],
   "artifact_paths": {
     "ci_required_gates": "artifacts/release-proof/latest/ci-required-gates.json",
