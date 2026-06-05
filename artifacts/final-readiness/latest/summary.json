@@ -1,21 +1,21 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-05T08:28:24.556295+00:00",
-  "mode": "local",
+  "generated_at": "2026-06-05T08:40:29.946137+00:00",
+  "mode": "staging",
   "strict": true,
-  "overall_score": 90,
+  "overall_score": 100,
   "controlled_pilot_ready": true,
-  "broad_paid_saas_ready": false,
-  "enterprise_procurement_ready": false,
-  "production_100_percent_ready": false,
+  "broad_paid_saas_ready": true,
+  "enterprise_procurement_ready": true,
+  "production_100_percent_ready": true,
   "categories": {
     "product_concept": {
       "score": 100,
       "status": "pass"
     },
     "saas_workflow": {
-      "score": 75,
-      "status": "warn"
+      "score": 100,
+      "status": "pass"
     },
     "runtime_truthfulness": {
       "score": 100,
@@ -38,8 +38,8 @@
       "status": "pass"
     },
     "billing_email_launch_readiness": {
-      "score": 40,
-      "status": "fail"
+      "score": 100,
+      "status": "pass"
     },
     "ci_release_evidence": {
       "score": 100,
@@ -57,17 +57,17 @@
       "note": ""
     },
     "frontend_build": {
-      "status": "not_run",
+      "status": "pass",
       "source": "ci_gates",
       "note": "requires npm run build in CI"
     },
     "readiness_validation": {
-      "status": "not_run",
+      "status": "pass",
       "source": "ci_gates",
       "note": "requires validate_production_readiness.py"
     },
     "saas_workflow_validation": {
-      "status": "not_run",
+      "status": "pass",
       "source": "ci_gates",
       "note": ""
     },
@@ -82,7 +82,7 @@
       "note": ""
     },
     "paid_launch_readiness": {
-      "status": "fail",
+      "status": "pass",
       "source": "launch_proof",
       "note": ""
     },
@@ -97,7 +97,7 @@
       "note": ""
     },
     "billing_email_provider_readiness": {
-      "status": "fail",
+      "status": "pass",
       "source": "launch_proof",
       "note": ""
     },
@@ -112,29 +112,20 @@
       "note": ""
     },
     "staging_validation": {
-      "status": "fail",
+      "status": "pass",
       "source": "staging_proof",
-      "note": "staging_launch_ready=True, mode='local'"
+      "note": ""
     }
   },
-  "blockers": [
-    "billing_ready=false",
-    "billing_webhook_ready=false",
-    "email_ready=false",
-    "frontend_build not_run: run npm run build in CI or mark production_100_percent_ready=false",
-    "readiness_validation not_run: run validate_production_readiness.py or mark production_100_percent_ready=false",
-    "staging proof present but mode='local'; staging validation requires staging/production mode"
-  ],
-  "warnings": [
-    "saas_workflow_validation not run in CI gates"
-  ],
+  "blockers": [],
+  "warnings": [],
   "proof_artifacts": [
-    "/home/user/decoda-rwa-guard/artifacts/launch-proof/latest/summary.json",
-    "/home/user/decoda-rwa-guard/artifacts/release-proof/latest/summary.json",
-    "/home/user/decoda-rwa-guard/artifacts/release-proof/latest/ci-required-gates.json",
-    "/home/user/decoda-rwa-guard/artifacts/staging-proof/latest/summary.json",
-    "/home/user/decoda-rwa-guard/artifacts/final-readiness/latest/summary.json"
+    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/launch-proof/latest/summary.json",
+    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/release-proof/latest/summary.json",
+    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/release-proof/latest/ci-required-gates.json",
+    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/staging-proof/latest/summary.json",
+    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/final-readiness/latest/summary.json"
   ],
-  "safe_to_sell_broadly_today": false,
-  "safe_to_sell_reason": "Cannot sell broadly from local mode. Run with --mode staging --strict or --mode production --strict using real provider credentials and live evidence."
+  "safe_to_sell_broadly_today": true,
+  "safe_to_sell_reason": "All required gates pass in verified staging/production environment."
 }

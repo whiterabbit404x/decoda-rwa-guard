@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-05T08:28:38.527261+00:00",
-  "launch_mode": "pilot",
+  "generated_at": "2026-06-05T08:40:27.923958+00:00",
+  "launch_mode": "paid_saas",
   "pilot_ready": true,
   "paid_launch_ready": false,
   "controlled_pilot_ready": true,
@@ -11,7 +11,7 @@
     "managed_pilot_ready": true,
     "niw_positioning_ready": true,
     "broad_paid_saas_ready": false,
-    "ci_required_gates_ready": false
+    "ci_required_gates_ready": true
   },
   "allowed_claims": [
     "NIW Strategic Infrastructure Guard positioning ready",
@@ -27,18 +27,14 @@
     "worker fully ready"
   ],
   "readiness": {
-    "billing_ready": false,
-    "billing_webhook_ready": false,
-    "email_ready": false,
+    "billing_ready": true,
+    "billing_webhook_ready": true,
+    "email_ready": true,
     "provider_ready": true,
     "live_evidence_ready": true,
-    "ci_required_gates_ready": false
+    "ci_required_gates_ready": true
   },
   "blockers": [
-    "billing not ready",
-    "billing webhook not ready",
-    "ci gates not ready",
-    "email not ready",
     "local mode: paid launch readiness cannot be proven without staging/production runtime"
   ],
   "warnings": [],
