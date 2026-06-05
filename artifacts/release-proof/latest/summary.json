@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-05T14:22:20.180708+00:00",
+  "generated_at": "2026-06-05T15:32:14.124262+00:00",
   "release_status": "pass",
   "release_channel": "staging",
-  "commit_sha": "b197afd67e04403d3fed4a8d7f60600fd8626033",
+  "commit_sha": "d9fcac8b7f64af7f37ef300ec8b2c0a5ce4b6902",
   "branch": "main",
   "ci_required_gates_ready": true,
   "launch_proof_ready": true,

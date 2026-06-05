@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-05T14:22:20.183678+00:00",
+  "generated_at": "2026-06-05T15:32:14.127471+00:00",
   "release_channel": "staging",
-  "commit_sha": "b197afd67e04403d3fed4a8d7f60600fd8626033",
+  "commit_sha": "d9fcac8b7f64af7f37ef300ec8b2c0a5ce4b6902",
   "branch": "main",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "84c40c6f8b90b85023cb7f7f0e155af6cae4bf918f47e25bd308cc7a37b5d2cb",
+      "sha256": "a56ae2ffb43ea6e7c0f585f713c79d018f4bf1e69b18dafc33ab349d03a1f468",
       "size_bytes": 656,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "2053764396377eb6712ba3a2d9bd1c08a59f1bec280a4545c5f44a650dae3941",
+      "sha256": "38b6a60d163b261a997fbb0fa26ccb56d417f17ec46c47bc6054bb329ac9db22",
       "size_bytes": 1959,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "5f5b42f086f42857c99480a232b19f24064ba2e81b64359c407e1334662f0f90",
+      "sha256": "6f4ab7886b5973ac0ec0b778451add11ece506ea65a607d2475dc2ca842f27ee",
       "size_bytes": 4068,
       "required": true,
       "status": "present"
