@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-05T08:40:29.758293+00:00",
+  "generated_at": "2026-06-05T14:22:20.180708+00:00",
   "release_status": "pass",
   "release_channel": "staging",
-  "commit_sha": "401e0ad355eb62f7d2461f9dc29ed2d079061a34",
+  "commit_sha": "b197afd67e04403d3fed4a8d7f60600fd8626033",
   "branch": "main",
   "ci_required_gates_ready": true,
   "launch_proof_ready": true,
   "manifest_ready": true,
   "test_report_ready": true,
-  "paid_launch_ready": false,
+  "paid_launch_ready": true,
   "blockers": [],
   "warnings": [],
   "evidence_files": [

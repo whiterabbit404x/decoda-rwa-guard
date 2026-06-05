@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-05T12:49:17.357992+00:00",
+  "generated_at": "2026-06-05T14:22:20.357453+00:00",
   "mode": "staging",
   "strict": true,
   "overall_score": 100,
   "controlled_pilot_ready": true,
-  "broad_paid_saas_ready": false,
-  "enterprise_procurement_ready": false,
-  "production_100_percent_ready": false,
+  "broad_paid_saas_ready": true,
+  "enterprise_procurement_ready": true,
+  "production_100_percent_ready": true,
   "categories": {
     "product_concept": {
       "score": 100,
@@ -117,17 +117,15 @@
       "note": ""
     }
   },
-  "blockers": [
-    "launch-proof paid_launch_ready=false: generated in local/no-secret mode; regenerate via save-proof-to-repo.yml with staging billing secrets"
-  ],
+  "blockers": [],
   "warnings": [],
   "proof_artifacts": [
-    "/home/user/decoda-rwa-guard/artifacts/launch-proof/latest/summary.json",
-    "/home/user/decoda-rwa-guard/artifacts/release-proof/latest/summary.json",
-    "/home/user/decoda-rwa-guard/artifacts/release-proof/latest/ci-required-gates.json",
-    "/home/user/decoda-rwa-guard/artifacts/staging-proof/latest/summary.json",
-    "/home/user/decoda-rwa-guard/artifacts/final-readiness/latest/summary.json"
+    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/launch-proof/latest/summary.json",
+    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/release-proof/latest/summary.json",
+    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/release-proof/latest/ci-required-gates.json",
+    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/staging-proof/latest/summary.json",
+    "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard/artifacts/final-readiness/latest/summary.json"
   ],
-  "safe_to_sell_broadly_today": false,
-  "safe_to_sell_reason": "Blocked by: launch-proof paid_launch_ready=false: generated in local/no-secret mode; regenerate via save-proof-to-repo.yml with staging billing secrets"
+  "safe_to_sell_broadly_today": true,
+  "safe_to_sell_reason": "All required gates pass in verified staging/production environment."
 }
