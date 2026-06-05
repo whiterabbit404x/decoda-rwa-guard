@@ -9,7 +9,7 @@
   "launch_proof_ready": true,
   "manifest_ready": true,
   "test_report_ready": true,
-  "paid_launch_ready": false,
+  "paid_launch_ready": true,
   "blockers": [],
   "warnings": [],
   "evidence_files": [

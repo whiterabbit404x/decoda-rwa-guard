@@ -5,7 +5,7 @@
   "branch": "main",
   "release_channel": "staging",
   "overall_status": "pass",
-  "broad_paid_launch_ready": false,
+  "broad_paid_launch_ready": true,
   "required_gates": {
     "backend_tests": {
       "status": "pass",
