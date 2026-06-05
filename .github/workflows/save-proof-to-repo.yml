@@ -280,6 +280,15 @@ jobs:
             python scripts/validate_live_evidence_proof.py --no-rpc-required
           fi
 
+      # ── Sync api live_evidence from live-evidence-proof ─────────────────────
+      # Derives services/api/artifacts/live_evidence/latest/summary.json from the
+      # freshly regenerated live-evidence-proof so both artifacts share the same
+      # run_id, telemetry timestamp, and chain IDs.
+      # Fail-closed: exits 1 if the proof does not have live_evidence_ready=true,
+      # so a bad proof cannot silently propagate to the API service artifact.
+      - name: Sync api live_evidence from live-evidence-proof
+        run: python scripts/sync_api_live_evidence_from_proof.py
+
       # ── Step A+D: Validate live Railway runtime /health ──────────────────────
       # Calls STAGING_API_URL/health and validates HTTP 200, status="ok",
       # database_url_configured=true, billing healthy, paddle_price_ids configured.
@@ -584,6 +593,7 @@ jobs:
           git add artifacts/sell-now-proof/latest/
           git add artifacts/final-readiness/latest/
           git add artifacts/github-proof/latest/
+          git add services/api/artifacts/live_evidence/latest/
 
       - name: Commit proof files (skip if unchanged)
         run: |

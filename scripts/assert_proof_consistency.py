@@ -172,6 +172,88 @@ def main() -> int:
             print(f'CHECK 7 OK: final_strict={final_strict}, final_safe={final_safe}, '
                   f'stale_strict_flag={stale_strict_flag}')
 
+    ci_gates = _load('artifacts/release-proof/latest/ci-required-gates.json')
+
+    # ── Check 8: final-readiness=true must not contradict launch-proof ─────────
+    # If final-readiness says production_100_percent_ready=true, the launch-proof
+    # must also say paid_launch_ready=true and broad_paid_saas_ready=true.
+    if final_r is not None and launch_p is not None:
+        fr_prod_ready = bool(final_r.get('production_100_percent_ready', False))
+        lp_paid_ready = bool(launch_p.get('paid_launch_ready', False))
+        lp_broad = bool(launch_p.get('broad_paid_saas_ready', False))
+        if fr_prod_ready and not lp_paid_ready:
+            failures.append(
+                'CHECK 8 FAIL: final-readiness says production_100_percent_ready=true but '
+                'launch-proof says paid_launch_ready=false. '
+                'Fix: regenerate launch-proof in staging/production mode via '
+                'run_paid_saas_launch_proof.py --mode staging (save-proof-to-repo.yml step F).'
+            )
+        elif fr_prod_ready and not lp_broad:
+            failures.append(
+                'CHECK 8 FAIL: final-readiness says production_100_percent_ready=true but '
+                'launch-proof says broad_paid_saas_ready=false. '
+                'Fix: regenerate launch-proof in staging mode so broad_paid_saas_ready=true '
+                'is committed to latest/.'
+            )
+        else:
+            print(f'CHECK 8 OK: production_100_percent_ready={fr_prod_ready}, '
+                  f'paid_launch_ready={lp_paid_ready}, broad_paid_saas_ready={lp_broad}')
+
+    # ── Check 9: final-readiness broad_paid=true must not contradict release-proof ─
+    if final_r is not None and release_p is not None:
+        fr_broad = bool(final_r.get('broad_paid_saas_ready', False))
+        rp_paid = bool(release_p.get('paid_launch_ready', False))
+        if fr_broad and not rp_paid:
+            failures.append(
+                'CHECK 9 FAIL: final-readiness says broad_paid_saas_ready=true but '
+                'release-proof says paid_launch_ready=false. '
+                'Fix: regenerate release-proof with generate_release_proof.py --mode staging '
+                'after the launch-proof has been regenerated in staging mode.'
+            )
+        else:
+            print(f'CHECK 9 OK: fr_broad_paid_saas_ready={fr_broad}, '
+                  f'release_proof_paid_launch_ready={rp_paid}')
+
+    # ── Check 10: final-readiness broad_paid=true must not contradict ci-gates ──
+    if final_r is not None and ci_gates is not None:
+        fr_broad = bool(final_r.get('broad_paid_saas_ready', False))
+        cg_broad = ci_gates.get('broad_paid_launch_ready')
+        if fr_broad and cg_broad is False:
+            failures.append(
+                'CHECK 10 FAIL: final-readiness says broad_paid_saas_ready=true but '
+                'ci-required-gates says broad_paid_launch_ready=false. '
+                'Fix: regenerate ci-required-gates with generate_release_proof.py --mode staging '
+                'after the launch-proof has broad_paid_saas_ready=true.'
+            )
+        else:
+            print(f'CHECK 10 OK: fr_broad_paid_saas_ready={fr_broad}, '
+                  f'ci_gates_broad_paid_launch_ready={cg_broad}')
+
+    # ── Check 11: services/api live_evidence must not be older than live-evidence-proof ──
+    live_ev_proof = _load('artifacts/live-evidence-proof/latest/summary.json')
+    api_live_ev = _load('services/api/artifacts/live_evidence/latest/summary.json')
+    if live_ev_proof is not None and api_live_ev is not None:
+        from datetime import datetime, timezone
+        def _parse_dt(s: str | None):
+            if not s:
+                return None
+            try:
+                return datetime.fromisoformat(str(s).replace('Z', '+00:00'))
+            except (ValueError, AttributeError):
+                return None
+        lpe = live_ev_proof.get('live_provider_evidence', {})
+        proof_ts = _parse_dt(lpe.get('latest_live_telemetry_at'))
+        api_ts = _parse_dt(api_live_ev.get('latest_live_telemetry_at'))
+        if proof_ts and api_ts and api_ts < proof_ts:
+            failures.append(
+                f'CHECK 11 FAIL: services/api live_evidence telemetry is {api_ts.isoformat()} '
+                f'but live-evidence-proof has fresher telemetry at {proof_ts.isoformat()}. '
+                'Fix: regenerate services/api/artifacts/live_evidence/latest/summary.json '
+                'from the current live-evidence-proof chain.'
+            )
+        else:
+            print(f'CHECK 11 OK: api_live_telemetry={api_ts}, proof_telemetry={proof_ts}')
+
     # ── Summary ────────────────────────────────────────────────────────────────
     print()
     if failures:
