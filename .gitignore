@@ -23,3 +23,6 @@ contracts/core/cache/
 test-results/
 playwright-report/
 *.tsbuildinfo
+
+# Local-mode proof artifacts (non-staging test outputs — never commit these)
+artifacts/*/local-test/
