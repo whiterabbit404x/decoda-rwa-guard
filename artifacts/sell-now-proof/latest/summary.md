@@ -1,6 +1,6 @@
 # Sell-Now Proof
 
-**Generated:** 2026-06-04T15:22:15.066011+00:00
+**Generated:** 2026-06-05T01:23:41.614415+00:00
 
 ## Readiness Summary
 
@@ -17,7 +17,7 @@
 | provider_ready | YES |
 | live_evidence_ready | YES |
 | evidence_source | live |
-| github_actions_visible_green | NO |
+| github_actions_visible_green | YES |
 
 ## Staging / Infrastructure
 
@@ -28,10 +28,6 @@
 | staging_worker_enabled | YES |
 | billing_ready | YES |
 | email_ready | YES |
-
-## Warnings
-
-- github_actions_visible_green=false: CI green status not proven in artifact
 
 ## Safe Claims
 

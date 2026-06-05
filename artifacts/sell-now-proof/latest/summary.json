@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-04T15:22:15.066011+00:00",
+  "generated_at": "2026-06-05T01:23:41.614415+00:00",
   "sell_now_managed_ready": true,
   "broad_paid_saas_ready": true,
   "safe_to_sell_broadly_today": true,
   "provider_ready": true,
   "live_evidence_ready": true,
   "evidence_source": "live",
-  "github_actions_visible_green": false,
+  "github_actions_visible_green": true,
   "staging_runtime_reachable": true,
   "staging_database_reachable": true,
   "staging_worker_enabled": true,
@@ -17,9 +17,7 @@
   "release_ci_gates_ready": true,
   "release_test_report_ready": true,
   "blockers": [],
-  "warnings": [
-    "github_actions_visible_green=false: CI green status not proven in artifact"
-  ],
+  "warnings": [],
   "contradiction_flags": [],
   "safe_claims": [
     "controlled pilot ready: single customer with direct onboarding, no billing required",

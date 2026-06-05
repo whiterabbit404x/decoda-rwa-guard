@@ -1,10 +1,10 @@
 # GitHub ZIP Proof
 
-**Generated:** 2026-06-04T15:22:15.166868+00:00  
+**Generated:** 2026-06-05T01:23:41.729594+00:00  
 **Repository:** whiterabbit404x/decoda-rwa-guard  
 **Branch:** main  
-**Commit:** a8a31c947a3e3331dcaade94c7844b1c757c437f  
-**Run ID:** 26961343859  
+**Commit:** 0417826058d52ad14a1a82e6a7be1fa8802fc8d5  
+**Run ID:** 26989632484  
 **Run URL:** _(see summary.json — not repeated here to avoid caching)_  
 
 ## GitHub Actions Status
