@@ -4164,3 +4164,1415 @@ td .tableMeta {
 }
 /* === MARKETING HOMEPAGE REDESIGN END === */
 
+/* ============================================================
+   NEW MARKETING SECTIONS — landing page additions
+   ============================================================ */
+
+/* ── Tertiary CTA ─────────────────────────────────────────── */
+.mktCtaTertiary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.72rem 1.35rem;
+  border: 1px solid rgba(106, 169, 255, 0.28);
+  border-radius: 9px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #6aa9ff;
+  background: transparent;
+  text-decoration: none;
+  transition: border-color 0.18s, color 0.18s, background 0.18s;
+  white-space: nowrap;
+}
+
+.mktCtaTertiary:hover {
+  border-color: rgba(106, 169, 255, 0.55);
+  color: #93c5fd;
+  background: rgba(59, 130, 246, 0.07);
+}
+
+/* ── Section subtitle ─────────────────────────────────────── */
+.mktSectionSubtitle {
+  font-size: 0.97rem;
+  color: #8b949e;
+  margin: 0.35rem 0 0;
+  max-width: 56ch;
+  line-height: 1.6;
+}
+
+/* ── Preview label ────────────────────────────────────────── */
+.mktPreviewLabel {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 0.85rem;
+}
+
+.mktPreviewBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.3rem 0.85rem;
+  border-radius: 999px;
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.22);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #fbbf24;
+  letter-spacing: 0.03em;
+}
+
+/* ── Trust badges strip ───────────────────────────────────── */
+.mktTrustStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 2.5rem 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  margin: 0 0 3.5rem;
+}
+
+.mktTrustBadge {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  flex: 1;
+  min-width: 220px;
+  background: rgba(14, 22, 37, 0.7);
+  border: 1px solid rgba(59, 130, 246, 0.14);
+  border-radius: 12px;
+  padding: 0.9rem 1.1rem;
+  transition: border-color 0.18s;
+}
+
+.mktTrustBadge:hover {
+  border-color: rgba(59, 130, 246, 0.3);
+}
+
+.mktTrustBadgeCheck {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(34, 197, 94, 0.15);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  color: #4ade80;
+  font-size: 0.72rem;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+}
+
+.mktTrustBadgeBody {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.mktTrustBadgeLabel {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #e6edf3;
+}
+
+.mktTrustBadgeSub {
+  font-size: 0.73rem;
+  color: #5a6478;
+  line-height: 1.45;
+}
+
+/* ── Problem section ──────────────────────────────────────── */
+.mktProblemGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.25rem;
+  margin-top: 2rem;
+}
+
+.mktProblemCard {
+  background: linear-gradient(155deg, rgba(14, 22, 37, 0.97) 0%, rgba(8, 14, 26, 0.95) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 14px;
+  padding: 1.5rem;
+  position: relative;
+  overflow: hidden;
+}
+
+.mktProblemCard::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+}
+
+.mktProblemCard--exploit::before { background: linear-gradient(90deg, #f87171, transparent); }
+.mktProblemCard--compliance::before { background: linear-gradient(90deg, #fbbf24, transparent); }
+.mktProblemCard--recovery::before { background: linear-gradient(90deg, #60a5fa, transparent); }
+
+.mktProblemHeading {
+  font-size: 0.97rem;
+  font-weight: 700;
+  color: #e6edf3;
+  margin: 0 0 0.75rem;
+}
+
+.mktProblemBody {
+  font-size: 0.85rem;
+  color: #8b949e;
+  line-height: 1.62;
+  margin: 0;
+}
+
+/* ── How it works ─────────────────────────────────────────── */
+.mktHowGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.5rem;
+  margin-top: 2rem;
+  position: relative;
+}
+
+.mktHowStep {
+  background: linear-gradient(155deg, rgba(14, 22, 37, 0.97) 0%, rgba(8, 14, 26, 0.95) 100%);
+  border: 1px solid rgba(59, 130, 246, 0.14);
+  border-radius: 14px;
+  padding: 1.5rem;
+  position: relative;
+}
+
+.mktHowStepNum {
+  font-size: 2rem;
+  font-weight: 800;
+  color: rgba(59, 130, 246, 0.25);
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 0.75rem;
+  line-height: 1;
+}
+
+.mktHowStepTitle {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #e6edf3;
+  margin: 0 0 0.55rem;
+}
+
+.mktHowStepDesc {
+  font-size: 0.86rem;
+  color: #8b949e;
+  line-height: 1.62;
+  margin: 0;
+}
+
+.mktHowConnector {
+  position: absolute;
+  top: 50%;
+  right: -1.1rem;
+  transform: translateY(-50%);
+  color: #3b82f6;
+  font-size: 1.1rem;
+  z-index: 1;
+}
+
+.mktHowFlowBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 1.75rem;
+  padding: 0.85rem 1.25rem;
+  background: rgba(14, 22, 37, 0.7);
+  border: 1px solid rgba(59, 130, 246, 0.12);
+  border-radius: 12px;
+}
+
+.mktHowFlowItem {
+  font-size: 0.77rem;
+  font-weight: 600;
+  color: #8b949e;
+  padding: 0.2rem 0.6rem;
+  border-radius: 6px;
+  background: transparent;
+}
+
+.mktHowFlowItem--active {
+  color: #93c5fd;
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.mktHowFlowArrow {
+  color: #3b4a5e;
+  font-size: 0.8rem;
+}
+
+/* ── Who it's for ─────────────────────────────────────────── */
+.mktWhoGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.25rem;
+  margin-top: 2rem;
+}
+
+.mktWhoCard {
+  background: linear-gradient(155deg, rgba(14, 22, 37, 0.97) 0%, rgba(8, 14, 26, 0.95) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 14px;
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.mktWhoRole {
+  font-size: 0.97rem;
+  font-weight: 700;
+  color: #e6edf3;
+  margin: 0;
+}
+
+.mktWhoDesc {
+  font-size: 0.85rem;
+  color: #8b949e;
+  line-height: 1.6;
+  margin: 0;
+  flex: 1;
+}
+
+.mktWhoTags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.25rem;
+}
+
+.mktWhoTag {
+  display: inline-flex;
+  padding: 0.2rem 0.6rem;
+  border-radius: 6px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.18);
+  color: #6aa9ff;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+/* ── Pricing section ──────────────────────────────────────── */
+.mktPricingGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.25rem;
+  margin-top: 2.5rem;
+  align-items: start;
+}
+
+.mktPricingCard {
+  background: linear-gradient(160deg, rgba(14, 22, 37, 0.97) 0%, rgba(8, 14, 26, 0.95) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  padding: 1.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  position: relative;
+}
+
+.mktPricingCard--featured {
+  border-color: rgba(59, 130, 246, 0.4);
+  box-shadow: 0 0 50px rgba(59, 130, 246, 0.08);
+  background: linear-gradient(160deg, rgba(20, 30, 55, 0.98) 0%, rgba(10, 18, 38, 0.97) 100%);
+}
+
+.mktPricingBadge {
+  position: absolute;
+  top: -0.65rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #3b82f6;
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0.22rem 0.75rem;
+  border-radius: 999px;
+  white-space: nowrap;
+  letter-spacing: 0.04em;
+}
+
+.mktPricingCardTier {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #6aa9ff;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 0.25rem;
+}
+
+.mktPricingCardPrice {
+  font-size: 2.25rem;
+  font-weight: 800;
+  color: #e6edf3;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+
+.mktPricingCardPriceSub {
+  font-size: 0.77rem;
+  color: #5a6478;
+  margin-bottom: 0.5rem;
+}
+
+.mktPricingCardDesc {
+  font-size: 0.84rem;
+  color: #8b949e;
+  line-height: 1.55;
+  margin: 0 0 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.mktPricingCardFeatures {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.mktPricingCardFeature {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.83rem;
+  color: #9ba7b4;
+}
+
+.mktPricingCardCta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem 1.25rem;
+  border-radius: 9px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  text-decoration: none;
+  border: 1px solid rgba(106, 169, 255, 0.3);
+  color: #6aa9ff;
+  background: transparent;
+  transition: all 0.18s;
+  margin-top: auto;
+}
+
+.mktPricingCardCta:hover {
+  background: rgba(59, 130, 246, 0.1);
+  border-color: rgba(106, 169, 255, 0.55);
+}
+
+.mktPricingCardCta--featured {
+  background: #3b82f6;
+  border-color: #3b82f6;
+  color: #fff;
+}
+
+.mktPricingCardCta--featured:hover {
+  background: #2563eb;
+  border-color: #2563eb;
+}
+
+.mktPricingNote {
+  text-align: center;
+  font-size: 0.78rem;
+  color: #5a6478;
+  margin: 1.25rem 0 0;
+  line-height: 1.5;
+}
+
+/* ── Security callout ─────────────────────────────────────── */
+.mktSecurityCallout {
+  margin: 4.5rem 0;
+  background: linear-gradient(155deg, rgba(14, 22, 50, 0.88) 0%, rgba(8, 14, 26, 0.94) 100%);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 16px;
+  padding: 2rem 2rem;
+}
+
+.mktSecurityCalloutInner {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.mktSecurityCalloutIcon {
+  flex-shrink: 0;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: rgba(59, 130, 246, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mktSecurityCalloutBody {
+  flex: 1;
+}
+
+.mktSecurityCalloutTitle {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #e6edf3;
+  margin: 0 0 0.35rem;
+}
+
+.mktSecurityCalloutDesc {
+  font-size: 0.86rem;
+  color: #8b949e;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.mktSecurityCalloutLink {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.65rem 1.25rem;
+  border-radius: 9px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #6aa9ff;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: all 0.18s;
+}
+
+.mktSecurityCalloutLink:hover {
+  background: rgba(59, 130, 246, 0.1);
+  border-color: rgba(59, 130, 246, 0.5);
+}
+
+/* ── FAQ ──────────────────────────────────────────────────── */
+.mktFaqGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem;
+  margin-top: 2rem;
+}
+
+.mktFaqItem {
+  background: rgba(14, 22, 37, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  padding: 1.25rem;
+}
+
+.mktFaqQ {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #c9d1d9;
+  margin: 0 0 0.55rem;
+}
+
+.mktFaqA {
+  font-size: 0.84rem;
+  color: #8b949e;
+  line-height: 1.62;
+  margin: 0;
+}
+
+/* ── Footer ───────────────────────────────────────────────── */
+.mktFooter {
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  margin-top: 5rem;
+  padding: 3rem clamp(1.5rem, 4vw, 5rem) 2rem;
+  background: rgba(7, 11, 20, 0.96);
+}
+
+.mktFooterInner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 2.5rem;
+  margin-bottom: 2.5rem;
+  flex-wrap: wrap;
+}
+
+.mktFooterBrand {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  max-width: 300px;
+}
+
+.mktFooterLogo {
+  text-decoration: none;
+}
+
+.mktFooterTagline {
+  font-size: 0.83rem;
+  color: #5a6478;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.mktFooterLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.5rem;
+  align-items: flex-start;
+}
+
+.mktFooterLink {
+  font-size: 0.82rem;
+  color: #5a6478;
+  text-decoration: none;
+  transition: color 0.15s;
+}
+
+.mktFooterLink:hover {
+  color: #8b949e;
+}
+
+.mktFooterBottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 1.5rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.mktFooterCopy {
+  font-size: 0.77rem;
+  color: #3d4a5c;
+}
+
+.mktFooterContact {
+  font-size: 0.77rem;
+}
+
+/* ============================================================
+   SECURITY & TRUST PAGE
+   ============================================================ */
+
+.trustPage {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 2rem clamp(1rem, 3vw, 2.5rem) 5rem;
+  color: #e6edf3;
+}
+
+.trustNav {
+  margin-bottom: 2.5rem;
+}
+
+.trustNavBack {
+  font-size: 0.84rem;
+  color: #5a6478;
+  text-decoration: none;
+  transition: color 0.15s;
+}
+
+.trustNavBack:hover {
+  color: #8b949e;
+}
+
+.trustHero {
+  margin-bottom: 4rem;
+}
+
+.trustHeroTitle {
+  font-size: clamp(1.8rem, 3vw, 2.6rem);
+  font-weight: 800;
+  color: #e6edf3;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+  margin: 0.5rem 0 1rem;
+}
+
+.trustHeroSubtitle {
+  font-size: 1rem;
+  color: #8b949e;
+  line-height: 1.65;
+  margin: 0 0 1.5rem;
+  max-width: 60ch;
+}
+
+.trustHeroBadges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.trustHeroBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.28rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.trustHeroBadge--green {
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.28);
+  color: #4ade80;
+}
+
+.trustHeroBadge--yellow {
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.28);
+  color: #fbbf24;
+}
+
+.trustSection {
+  margin-bottom: 3.5rem;
+}
+
+.trustSectionTitle {
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: #e6edf3;
+  margin: 0 0 1.25rem;
+  padding-bottom: 0.65rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.trustSectionIntro {
+  font-size: 0.9rem;
+  color: #8b949e;
+  line-height: 1.65;
+  margin: 0 0 1.25rem;
+  max-width: 60ch;
+}
+
+.trustPrincipleGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.trustPrincipleCard {
+  background: rgba(14, 22, 37, 0.7);
+  border: 1px solid rgba(59, 130, 246, 0.12);
+  border-radius: 12px;
+  padding: 1.25rem;
+  transition: border-color 0.18s;
+}
+
+.trustPrincipleCard:hover {
+  border-color: rgba(59, 130, 246, 0.28);
+}
+
+.trustPrincipleIcon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 0.75rem;
+  background: rgba(59, 130, 246, 0.12);
+  color: #60a5fa;
+}
+
+.trustPrincipleIcon--failclosed  { background: rgba(239, 68, 68, 0.1); color: #f87171; }
+.trustPrincipleIcon--truthful    { background: rgba(59, 130, 246, 0.1); color: #60a5fa; }
+.trustPrincipleIcon--isolation   { background: rgba(167, 139, 250, 0.1); color: #a78bfa; }
+.trustPrincipleIcon--evidence    { background: rgba(52, 211, 153, 0.1); color: #34d399; }
+.trustPrincipleIcon--auditlog    { background: rgba(251, 191, 36, 0.1); color: #fbbf24; }
+.trustPrincipleIcon--proofgates  { background: rgba(59, 130, 246, 0.1); color: #60a5fa; }
+
+.trustPrincipleTitle {
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: #e6edf3;
+  margin: 0 0 0.4rem;
+}
+
+.trustPrincipleBody {
+  font-size: 0.84rem;
+  color: #8b949e;
+  line-height: 1.62;
+  margin: 0;
+}
+
+.trustCalloutSection {
+  padding: 0;
+}
+
+.trustCallout {
+  background: linear-gradient(155deg, rgba(14, 22, 50, 0.88), rgba(8, 14, 26, 0.94));
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 14px;
+  padding: 1.75rem 2rem;
+}
+
+.trustCalloutTitle {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #e6edf3;
+  margin: 0 0 0.65rem;
+}
+
+.trustCalloutIntro {
+  font-size: 0.88rem;
+  color: #8b949e;
+  line-height: 1.6;
+  margin: 0 0 1rem;
+}
+
+.trustRuleList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.trustRuleList li {
+  font-size: 0.86rem;
+  color: #c9d1d9;
+  padding-left: 1.25rem;
+  position: relative;
+}
+
+.trustRuleList li::before {
+  content: '→';
+  position: absolute;
+  left: 0;
+  color: #3b82f6;
+  font-size: 0.75rem;
+}
+
+.trustDataList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.trustDataItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  font-size: 0.86rem;
+  color: #9ba7b4;
+  line-height: 1.5;
+}
+
+.trustDataCheck {
+  flex-shrink: 0;
+  color: #4ade80;
+  font-weight: 700;
+  margin-top: 0.05rem;
+}
+
+.trustFaqGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.trustFaqItem {
+  background: rgba(14, 22, 37, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  padding: 1.25rem;
+}
+
+.trustFaqQ {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #c9d1d9;
+  margin: 0 0 0.5rem;
+}
+
+.trustFaqA {
+  font-size: 0.84rem;
+  color: #8b949e;
+  line-height: 1.62;
+  margin: 0;
+}
+
+.trustDisclosureSection {
+  padding: 0;
+}
+
+.trustDisclosureCard {
+  background: rgba(14, 22, 37, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 14px;
+  padding: 1.75rem 2rem;
+}
+
+.trustDisclosureTitle {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #e6edf3;
+  margin: 0 0 0.65rem;
+}
+
+.trustDisclosureBody {
+  font-size: 0.88rem;
+  color: #8b949e;
+  line-height: 1.65;
+  margin: 0 0 0.75rem;
+}
+
+.trustDisclosureContact {
+  font-size: 0.88rem;
+  color: #8b949e;
+  margin: 0;
+}
+
+.trustOpsList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.trustOpsList li {
+  font-size: 0.87rem;
+  color: #9ba7b4;
+  line-height: 1.55;
+  padding-left: 1.25rem;
+  position: relative;
+}
+
+.trustOpsList li::before {
+  content: '·';
+  position: absolute;
+  left: 0.25rem;
+  color: #3b4a5e;
+}
+
+.trustLink {
+  color: #6aa9ff;
+  text-decoration: none;
+  font-size: 0.84rem;
+  transition: color 0.15s;
+}
+
+.trustLink:hover {
+  color: #93c5fd;
+}
+
+.trustFooterLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+  margin-top: 3rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+/* ============================================================
+   PRICING PAGE
+   ============================================================ */
+
+.pricingPage {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 2rem clamp(1rem, 3vw, 2.5rem) 5rem;
+  color: #e6edf3;
+}
+
+.pricingHero {
+  text-align: center;
+  margin-bottom: 3.5rem;
+}
+
+.pricingHeroTitle {
+  font-size: clamp(1.9rem, 3vw, 2.8rem);
+  font-weight: 800;
+  color: #e6edf3;
+  letter-spacing: -0.025em;
+  margin: 0.5rem 0 1rem;
+}
+
+.pricingHeroSubtitle {
+  font-size: 1rem;
+  color: #8b949e;
+  line-height: 1.65;
+  margin: 0 auto;
+  max-width: 54ch;
+}
+
+.pricingTierGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.25rem;
+  align-items: start;
+  margin-bottom: 4rem;
+}
+
+.pricingTierCard {
+  background: linear-gradient(160deg, rgba(14, 22, 37, 0.97) 0%, rgba(8, 14, 26, 0.95) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  padding: 1.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  position: relative;
+}
+
+.pricingTierCard--featured {
+  border-color: rgba(59, 130, 246, 0.4);
+  box-shadow: 0 0 50px rgba(59, 130, 246, 0.07);
+}
+
+.pricingTierBadge {
+  position: absolute;
+  top: -0.65rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #3b82f6;
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0.22rem 0.75rem;
+  border-radius: 999px;
+  white-space: nowrap;
+  letter-spacing: 0.04em;
+}
+
+.pricingTierName {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #6aa9ff;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.pricingTierPrice {
+  font-size: 2.4rem;
+  font-weight: 800;
+  color: #e6edf3;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+
+.pricingTierPriceSub {
+  font-size: 0.77rem;
+  color: #5a6478;
+  margin-bottom: 0.35rem;
+}
+
+.pricingTierDesc {
+  font-size: 0.85rem;
+  color: #8b949e;
+  line-height: 1.55;
+  margin: 0 0 1.25rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.pricingTierCta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.8rem 1.25rem;
+  border-radius: 9px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  text-decoration: none;
+  border: 1px solid rgba(106, 169, 255, 0.3);
+  color: #6aa9ff;
+  background: transparent;
+  transition: all 0.18s;
+}
+
+.pricingTierCta:hover {
+  background: rgba(59, 130, 246, 0.1);
+  border-color: rgba(106, 169, 255, 0.55);
+}
+
+.pricingTierCta--featured {
+  background: #3b82f6;
+  border-color: #3b82f6;
+  color: #fff;
+}
+
+.pricingTierCta--featured:hover {
+  background: #2563eb;
+  border-color: #2563eb;
+}
+
+.pricingComparisonSection {
+  margin-bottom: 4rem;
+}
+
+.pricingComparisonTitle {
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: #e6edf3;
+  margin: 0 0 1.5rem;
+}
+
+.pricingComparisonWrap {
+  overflow-x: auto;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.pricingComparisonTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+}
+
+.pricingComparisonTable th {
+  padding: 0.9rem 1.25rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #5a6478;
+  text-transform: uppercase;
+  text-align: left;
+  background: rgba(14, 22, 37, 0.85);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.pricingComparisonFeaturedCol {
+  color: #6aa9ff !important;
+  background: rgba(59, 130, 246, 0.07) !important;
+}
+
+.pricingComparisonTable td {
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  vertical-align: middle;
+}
+
+.pricingComparisonTable tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.pricingComparisonFeatureLabel {
+  color: #9ba7b4;
+  font-weight: 500;
+}
+
+.pricingComparisonFeatureCol {
+  min-width: 200px;
+}
+
+.pricingComparisonValue {
+  color: #8b949e;
+  text-align: center;
+}
+
+.pricingComparisonFeaturedValue {
+  background: rgba(59, 130, 246, 0.04);
+}
+
+.pricingFeatureNa {
+  color: #3d4a5c;
+}
+
+.pricingFeatureText {
+  color: #9ba7b4;
+}
+
+.pricingFaqSection {
+  margin-bottom: 4rem;
+}
+
+.pricingFaqTitle {
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: #e6edf3;
+  margin: 0 0 1.5rem;
+}
+
+.pricingEnterpriseCallout {
+  background: linear-gradient(155deg, rgba(14, 22, 50, 0.88), rgba(8, 14, 26, 0.94));
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 16px;
+  padding: 2.5rem;
+  text-align: center;
+  margin-bottom: 3rem;
+}
+
+.pricingEnterpriseTitle {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: #e6edf3;
+  margin: 0 0 0.75rem;
+}
+
+.pricingEnterpriseDesc {
+  font-size: 0.93rem;
+  color: #8b949e;
+  line-height: 1.65;
+  margin: 0 auto 1.75rem;
+  max-width: 52ch;
+}
+
+/* ============================================================
+   LIVE PROOF PAGE
+   ============================================================ */
+
+.proofPage {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 2rem clamp(1rem, 3vw, 2.5rem) 5rem;
+  color: #e6edf3;
+}
+
+.proofHero {
+  margin-bottom: 3rem;
+}
+
+.proofHeroTitle {
+  font-size: clamp(1.8rem, 3vw, 2.5rem);
+  font-weight: 800;
+  color: #e6edf3;
+  letter-spacing: -0.025em;
+  margin: 0.5rem 0 1rem;
+}
+
+.proofHeroSubtitle {
+  font-size: 0.97rem;
+  color: #8b949e;
+  line-height: 1.65;
+  margin: 0 0 1.5rem;
+  max-width: 60ch;
+}
+
+.proofSummaryBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.4rem 1rem;
+  border-radius: 10px;
+  font-size: 0.83rem;
+  font-weight: 700;
+}
+
+.proofSummaryBadge--pass {
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  color: #4ade80;
+}
+
+.proofSummaryBadge--fail {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #f87171;
+}
+
+.proofSummaryBadge--warn {
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  color: #fbbf24;
+}
+
+.proofGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem;
+  margin-bottom: 3rem;
+}
+
+.proofCard {
+  background: rgba(14, 22, 37, 0.8);
+  border-radius: 14px;
+  padding: 1.25rem 1.4rem;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.proofCard--pass  { border-color: rgba(34, 197, 94, 0.2); }
+.proofCard--fail  { border-color: rgba(239, 68, 68, 0.2); }
+.proofCard--unknown { border-color: rgba(255, 255, 255, 0.07); }
+
+.proofCardHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.proofCardTitle {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #c9d1d9;
+  margin: 0;
+  line-height: 1.3;
+}
+
+.proofCardStatus {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 0.22rem 0.65rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.proofCardStatus--pass    { background: rgba(34, 197, 94, 0.12); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.25); }
+.proofCardStatus--fail    { background: rgba(239, 68, 68, 0.12); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.25); }
+.proofCardStatus--unknown { background: rgba(91, 100, 120, 0.15); color: #5a6478; border: 1px solid rgba(91, 100, 120, 0.2); }
+
+.proofCardTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+.proofCardTable tr {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.proofCardTable tr:last-child {
+  border-bottom: none;
+}
+
+.proofCardLabel {
+  color: #5a6478;
+  padding: 0.35rem 0.5rem 0.35rem 0;
+  width: 42%;
+  vertical-align: top;
+  font-weight: 500;
+}
+
+.proofCardValue {
+  color: #9ba7b4;
+  padding: 0.35rem 0;
+  font-family: ui-monospace, 'Cascadia Code', monospace;
+  word-break: break-all;
+  font-size: 0.73rem;
+}
+
+.proofCardNote {
+  font-size: 0.77rem;
+  color: #5a6478;
+  line-height: 1.55;
+  margin: 0.75rem 0 0;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  font-style: italic;
+}
+
+.proofHonestyNote {
+  background: rgba(14, 22, 37, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  padding: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.proofHonestyTitle {
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: #c9d1d9;
+  margin: 0 0 0.75rem;
+}
+
+.proofHonestyList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.proofHonestyList li {
+  font-size: 0.83rem;
+  color: #8b949e;
+  line-height: 1.5;
+  padding-left: 1.1rem;
+  position: relative;
+}
+
+.proofHonestyList li::before {
+  content: '·';
+  position: absolute;
+  left: 0.2rem;
+  color: #3b4a5e;
+}
+
+.proofHonestyList code {
+  font-family: ui-monospace, 'Cascadia Code', monospace;
+  font-size: 0.8em;
+  background: rgba(59, 130, 246, 0.1);
+  color: #6aa9ff;
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+
+/* ============================================================
+   RESPONSIVE — new sections
+   ============================================================ */
+
+@media (max-width: 980px) {
+  .mktProblemGrid,
+  .mktHowGrid,
+  .mktWhoGrid,
+  .mktPricingGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .mktHowConnector {
+    display: none;
+  }
+
+  .mktSecurityCalloutInner {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+
+  .mktSecurityCalloutLink {
+    align-self: flex-start;
+  }
+
+  .trustPrincipleGrid,
+  .trustFaqGrid,
+  .mktFaqGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .proofGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .pricingTierGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .mktTrustStrip {
+    flex-direction: column;
+  }
+
+  .mktTrustBadge {
+    min-width: unset;
+  }
+
+  .mktHowFlowBar {
+    display: none;
+  }
+
+  .mktFooterInner {
+    flex-direction: column;
+  }
+
+  .mktFooterLinks {
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+}
+
