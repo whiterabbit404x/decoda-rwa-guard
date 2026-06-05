@@ -897,6 +897,21 @@ def main(mode: str = 'local', strict: bool = False, regen_launch_proof: bool = T
     # test-report-summary reflect the same actual test run.
     test_results: dict[str, Any] | None = None
     if mode != 'local':
+        # Snapshot the launch-proof before running tests.  Tests in
+        # test_release_proof_artifacts.py call generate_release_proof.py --mode local
+        # and run_paid_saas_launch_proof.py --mode staging as subprocesses, which
+        # overwrite artifacts/launch-proof/latest/summary.json.  Without a snapshot
+        # generate_ci_required_gates would read the test-contaminated (local-mode)
+        # version and report broad_paid_launch_ready=false even after step F of
+        # save-proof-to-repo.yml wrote the staging proof with paid_launch_ready=true.
+        _lp_snap_path = REPO_ROOT / 'artifacts' / 'launch-proof' / 'latest' / 'summary.json'
+        _lp_snapshot: bytes | None = None
+        if not regen_launch_proof and _lp_snap_path.exists():
+            try:
+                _lp_snapshot = _lp_snap_path.read_bytes()
+            except OSError:
+                pass
+
         print(f'[generate-release-proof] running test suites for mode={mode} ...')
         test_results = _run_test_suite(mode)
         status_label = 'PASS' if test_results.get('passed') else 'FAIL'
@@ -905,6 +920,16 @@ def main(mode: str = 'local', strict: bool = False, regen_launch_proof: bool = T
             f'({test_results.get("tests_run", 0)} run, '
             f'{test_results.get("tests_failed", 0)} failed)'
         )
+
+        # Restore launch-proof snapshot after tests so downstream functions read
+        # the staging-mode proof written by run_paid_saas_launch_proof.py (step F),
+        # not the local-mode artifact left by the test subprocesses.
+        if _lp_snapshot is not None:
+            try:
+                _lp_snap_path.write_bytes(_lp_snapshot)
+                print('[generate-release-proof] restored launch-proof snapshot after test suite')
+            except OSError:
+                pass
 
     # Create artifact directories
     release_proof_dir = REPO_ROOT / 'artifacts' / 'release-proof' / 'latest'
