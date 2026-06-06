@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
+
+_log = logging.getLogger(__name__)
 
 
 class ExportStorage(Protocol):
@@ -13,6 +16,10 @@ class ExportStorage(Protocol):
         ...
 
     def read_bytes(self, *, object_key: str) -> bytes:
+        ...
+
+    def object_lock_status(self) -> dict[str, Any]:
+        """Return object-lock/WORM metadata for this backend."""
         ...
 
 
@@ -33,6 +40,15 @@ class LocalExportStorage:
             raise FileNotFoundError(f'Export object missing for key {object_key}')
         return target.read_bytes()
 
+    def object_lock_status(self) -> dict[str, Any]:
+        return {
+            'object_lock_enabled': False,
+            'retention_mode': None,
+            'retention_until': None,
+            'worm': False,
+            'warning': 'Local filesystem storage is not WORM. Evidence may not be durable or tamper-proof.',
+        }
+
 
 @dataclass
 class S3ExportStorage:
@@ -41,6 +57,7 @@ class S3ExportStorage:
     prefix: str
     endpoint: str | None = None
     backend_name: str = 's3'
+    _object_lock_enabled: bool | None = field(default=None, repr=False)
 
     def _client(self):
         import boto3
@@ -59,6 +76,27 @@ class S3ExportStorage:
         response = self._client().get_object(Bucket=self.bucket, Key=object_key)
         return response['Body'].read()
 
+    def object_lock_status(self) -> dict[str, Any]:
+        # Use env override if available (avoids live S3 call in tests)
+        env_override = os.getenv('EXPORT_S3_OBJECT_LOCK_ENABLED', '').strip().lower()
+        if env_override == 'true':
+            return {'object_lock_enabled': True, 'retention_mode': None, 'retention_until': None, 'worm': True}
+        if env_override == 'false':
+            return {'object_lock_enabled': False, 'retention_mode': None, 'retention_until': None, 'worm': False}
+        try:
+            resp = self._client().get_object_lock_configuration(Bucket=self.bucket)
+            cfg = resp.get('ObjectLockConfiguration', {})
+            enabled = cfg.get('ObjectLockEnabled') == 'Enabled'
+            rule = (cfg.get('Rule') or {}).get('DefaultRetention') or {}
+            return {
+                'object_lock_enabled': enabled,
+                'retention_mode': rule.get('Mode'),
+                'retention_until': None,
+                'worm': enabled,
+            }
+        except Exception:
+            return {'object_lock_enabled': None, 'retention_mode': None, 'retention_until': None, 'worm': None}
+
 
 def load_export_storage() -> ExportStorage:
     backend = os.getenv('EXPORT_STORAGE_BACKEND', 'local').strip().lower()
@@ -74,7 +112,20 @@ def load_export_storage() -> ExportStorage:
         return S3ExportStorage(bucket=bucket, region=region, prefix=prefix, endpoint=endpoint)
 
     if app_mode in {'production', 'staging'}:
-        raise RuntimeError('Local export storage backend is disabled in staging/production. Set EXPORT_STORAGE_BACKEND=s3.')
+        allow_local = os.getenv('EXPORT_ALLOW_LOCAL_IN_PRODUCTION', '').strip().lower() == 'true'
+        if not allow_local:
+            raise RuntimeError(
+                'Local export storage backend is disabled in staging/production. '
+                'Set EXPORT_STORAGE_BACKEND=s3 and configure EXPORT_S3_BUCKET. '
+                'To override (unsafe), set EXPORT_ALLOW_LOCAL_IN_PRODUCTION=true.'
+            )
+        _log.warning(
+            'export_storage_local_in_production app_mode=%s '
+            'EXPORT_ALLOW_LOCAL_IN_PRODUCTION=true: '
+            'Using non-WORM ephemeral local storage. '
+            'Evidence is NOT durable and NOT tamper-proof.',
+            app_mode,
+        )
 
     export_root = Path(os.getenv('EXPORTS_DIR', '/tmp/decoda-exports')).resolve()
     return LocalExportStorage(root_dir=export_root)

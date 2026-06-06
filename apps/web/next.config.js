@@ -5,13 +5,18 @@ runBuildEnvironmentValidation(process.env);
 const isProd = process.env.NODE_ENV === 'production' || process.env.APP_MODE === 'production';
 
 // Content-Security-Policy for Next.js
-// unsafe-inline is required for Next.js inline styles/scripts injected at runtime.
-// unsafe-eval is required for Next.js hot-reload in dev and some webpack chunks in prod.
-// These are intentional trade-offs for Next.js compatibility; a nonce-based CSP would
-// require custom Next.js middleware and is deferred.
+// unsafe-inline in script-src/style-src: required for Next.js runtime-injected inline
+//   scripts and styles. A nonce-based approach requires custom Next.js middleware and
+//   is deferred to a future hardening pass.
+// unsafe-eval in script-src: required ONLY in development for hot-reload (HMR) and
+//   webpack dev-server. Production Next.js builds do NOT use eval(); it is excluded
+//   from the production CSP.
+const scriptSrcDev  = "'self' 'unsafe-inline' 'unsafe-eval'";
+const scriptSrcProd = "'self' 'unsafe-inline'";
+
 const CSP = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+  `script-src ${isProd ? scriptSrcProd : scriptSrcDev}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self'",

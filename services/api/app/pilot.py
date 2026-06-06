@@ -2056,6 +2056,9 @@ def log_audit(
     workspace_id: str | None,
     metadata: dict[str, Any] | None = None,
 ) -> None:
+    from services.api.app.evidence_signing import compute_audit_row_hash, canonical_json as _cj
+    import hashlib as _hl
+
     safe_metadata = metadata or {}
     request_id = request.headers.get('x-request-id') if request else None
     _client = getattr(request, 'client', None) if request else None
@@ -2064,13 +2067,53 @@ def log_audit(
         safe_metadata = {**safe_metadata, 'request_id': request_id}
     if ip_address and not safe_metadata.get('source_ip'):
         safe_metadata = {**safe_metadata, 'source_ip': ip_address}
+
+    row_id = str(uuid.uuid4())
+    now = utc_now()
+    now_iso = now.isoformat()
+
+    # Compute workspace-scoped chain tip to build previous_row_hash
+    previous_row_hash: str | None = None
+    try:
+        prev_row = connection.execute(
+            '''
+            SELECT row_hash FROM audit_logs
+            WHERE workspace_id %s
+              AND row_hash IS NOT NULL
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            ''' % ('= %s' if workspace_id else 'IS NULL',),
+            ((workspace_id,) if workspace_id else ()),
+        ).fetchone()
+        if prev_row:
+            previous_row_hash = str(prev_row['row_hash']) if prev_row.get('row_hash') else None
+    except Exception:
+        previous_row_hash = None
+
+    # Compute row hash
+    try:
+        metadata_sha256 = _hl.sha256(_cj(safe_metadata)).hexdigest()
+        row_hash = compute_audit_row_hash(
+            row_id=row_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            created_at_iso=now_iso,
+            metadata_sha256=metadata_sha256,
+            previous_row_hash=previous_row_hash,
+        )
+    except Exception:
+        row_hash = None
+
     connection.execute(
         '''
-        INSERT INTO audit_logs (id, workspace_id, user_id, action, entity_type, entity_id, ip_address, metadata, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, NOW())
+        INSERT INTO audit_logs (id, workspace_id, user_id, action, entity_type, entity_id, ip_address, metadata, created_at, row_hash, previous_row_hash, hash_algorithm, sealed_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s)
         ''',
         (
-            str(uuid.uuid4()),
+            row_id,
             workspace_id,
             user_id,
             action,
@@ -2078,6 +2121,11 @@ def log_audit(
             entity_id,
             ip_address,
             _json_dumps(safe_metadata),
+            now,
+            row_hash,
+            previous_row_hash,
+            'sha256' if row_hash else None,
+            now if row_hash else None,
         ),
     )
 
@@ -14351,7 +14399,7 @@ def _build_customer_export_summary(
 
 
 def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: str) -> dict[str, Any]:
-    job = connection.execute('SELECT id, export_type, format, filters FROM export_jobs WHERE id = %s AND workspace_id = %s', (export_id, workspace_id)).fetchone()
+    job = connection.execute('SELECT id, export_type, format, filters, requested_by_user_id FROM export_jobs WHERE id = %s AND workspace_id = %s', (export_id, workspace_id)).fetchone()
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Export not found.')
     rows: list[dict[str, Any]]
@@ -14790,7 +14838,64 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             }]
         case _:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported export type.')
+
     storage = load_export_storage()
+
+    # P0: Add cryptographic evidence manifest + HMAC seal for evidentiary export types.
+    export_type_val = str(job['export_type'])
+    _signing_meta: dict[str, Any] = {}
+    if export_type_val in {'proof_bundle', 'incident_report'} and rows and isinstance(rows[0], dict):
+        from services.api.app.evidence_signing import (
+            build_evidence_manifest,
+            seal_manifest,
+            signing_metadata as _signing_metadata_fn,
+        )
+        try:
+            _bundle_dict: dict[str, Any] = rows[0]
+            _generated_at = utc_now_iso()
+            _source_resource_id = str(filters.get('incident_id') or '').strip() or export_id
+            _requested_by = str(job.get('requested_by_user_id') or '') or None
+
+            # Fetch latest audit chain tip for this workspace to anchor the export
+            _audit_chain_head: str | None = None
+            try:
+                _tip_row = connection.execute(
+                    '''
+                    SELECT row_hash FROM audit_logs
+                    WHERE workspace_id = %s AND row_hash IS NOT NULL
+                    ORDER BY created_at DESC, id DESC LIMIT 1
+                    ''',
+                    (workspace_id,),
+                ).fetchone()
+                if _tip_row:
+                    _audit_chain_head = str(_tip_row['row_hash']) if _tip_row.get('row_hash') else None
+            except Exception:
+                _audit_chain_head = None
+
+            _manifest, _ = build_evidence_manifest(
+                export_id=export_id,
+                export_type=export_type_val,
+                workspace_id=workspace_id,
+                generated_at=_generated_at,
+                generated_by_user_id=_requested_by,
+                source_resource_type='incident',
+                source_resource_id=_source_resource_id,
+                storage_backend=storage.backend_name,
+                file_values=_bundle_dict,
+                previous_audit_anchor_hash=_audit_chain_head,
+            )
+            _seal = seal_manifest(_manifest)
+            rows[0]['manifest.json'] = _manifest
+            rows[0]['seal.json'] = _seal
+            _signing_meta = _signing_metadata_fn(_manifest, _seal)
+            artifact_meta.update({'signing': _signing_meta})
+        except RuntimeError as _sign_exc:
+            # Fail closed in production when signing secret is missing
+            connection.execute("UPDATE export_jobs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s", (str(_sign_exc), export_id))
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(_sign_exc))
+        except Exception:
+            artifact_meta['signing'] = {'signed': False, 'error': 'signing_failed'}
+
     try:
         if str(job['format']) == 'json':
             content = json.dumps({'rows': rows}, indent=2).encode('utf-8')
