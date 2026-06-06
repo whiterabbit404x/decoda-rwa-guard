@@ -47,6 +47,11 @@ class _UrlOpenResponse:
 class ApiRiskDashboardTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = TestClient(app)
+        self._auth_patcher = patch.object(api_main, 'authenticate_request', lambda r: {'id': 'test-user', 'email': 'test@example.com'})
+        self._auth_patcher.start()
+
+    def tearDown(self) -> None:
+        self._auth_patcher.stop()
 
     def test_health_endpoint_starts_cleanly(self) -> None:
         response = self.client.get('/health')
@@ -209,6 +214,11 @@ class ApiRiskDashboardTests(unittest.TestCase):
 class ApiThreatGatewayTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = TestClient(app)
+        self._auth_patcher = patch.object(api_main, 'authenticate_request', lambda r: {'id': 'test-user', 'email': 'test@example.com'})
+        self._auth_patcher.start()
+
+    def tearDown(self) -> None:
+        self._auth_patcher.stop()
 
     def test_threat_dashboard_prefers_live_payload(self) -> None:
         live_payload = {
@@ -254,6 +264,11 @@ class ApiThreatGatewayTests(unittest.TestCase):
 class ApiResilienceGatewayTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = TestClient(app)
+        self._auth_patcher = patch.object(api_main, 'authenticate_request', lambda r: {'id': 'test-user', 'email': 'test@example.com'})
+        self._auth_patcher.start()
+
+    def tearDown(self) -> None:
+        self._auth_patcher.stop()
 
     def test_resilience_dashboard_incidents_include_normalized_risk_fields(self) -> None:
         payload = api_main.fallback_resilience_dashboard()

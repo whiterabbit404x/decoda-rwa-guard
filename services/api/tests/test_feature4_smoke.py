@@ -72,6 +72,7 @@ def test_feature4_live_gateway_shapes(client: TestClient, api_main, sample_paylo
         'summary': 'Live incident', 'metadata': {}, 'attestation_hash': 'a' * 64, 'fingerprint': 'aaaaaaaaaaaaaaaa', 'source': 'live', 'degraded': False,
     }
 
+    monkeypatch.setattr(api_main, 'authenticate_request', lambda r: {'id': 'test-user'})
     monkeypatch.setattr(api_main, 'fetch_resilience_dashboard', lambda: live_dashboard)
     monkeypatch.setattr(api_main, 'proxy_resilience_post', lambda path, body: live_incident if path == 'incidents/record' else live_backstop if path == 'backstop/evaluate' else live_reconcile)
     monkeypatch.setattr(api_main, 'proxy_resilience_get', lambda path: [live_incident] if path == 'incidents' else live_incident if path == 'incidents/evt-0099' else None)
@@ -85,6 +86,7 @@ def test_feature4_live_gateway_shapes(client: TestClient, api_main, sample_paylo
 
 
 def test_feature4_gateway_fallback_works_when_reconciliation_service_is_unavailable(client: TestClient, api_main, sample_payloads: dict[str, dict[str, Any]], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(api_main, 'authenticate_request', lambda r: {'id': 'test-user'})
     monkeypatch.setattr(api_main, 'fetch_resilience_dashboard', lambda: None)
     monkeypatch.setattr(api_main, 'proxy_resilience_post', lambda path, body: None)
     monkeypatch.setattr(api_main, 'proxy_resilience_get', lambda path: None)
@@ -106,6 +108,7 @@ def test_feature4_gateway_fallback_works_when_reconciliation_service_is_unavaila
 
 
 def test_feature4_dashboard_fallback_stays_up_when_sample_files_are_missing(client: TestClient, api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(api_main, 'authenticate_request', lambda r: {'id': 'test-user'})
     monkeypatch.setattr(api_main, 'fetch_resilience_dashboard', lambda: None)
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -138,6 +141,7 @@ def test_feature4_embedded_local_dashboard_is_live_when_service_url_is_localhost
     class _EmbeddedModule:
         engine = _EmbeddedEngine()
 
+    monkeypatch.setattr(api_main, 'authenticate_request', lambda r: {'id': 'test-user'})
     monkeypatch.setattr(api_main, 'RECONCILIATION_SERVICE_URL_ENV', None)
     monkeypatch.setattr(api_main, 'RECONCILIATION_SERVICE_URL', 'http://localhost:8005')
     monkeypatch.setattr(api_main, 'request_json', lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('remote proxy should not be used')))

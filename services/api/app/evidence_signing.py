@@ -49,8 +49,10 @@ def _require_signing_secret() -> tuple[bytes, bool]:
     secret = _get_signing_secret()
     if secret is not None:
         return secret, True
-    app_mode = os.getenv('APP_MODE', 'local').strip().lower()
-    if app_mode in {'production', 'staging'}:
+    app_mode = os.getenv('APP_MODE', '').strip().lower()
+    app_env = os.getenv('APP_ENV', '').strip().lower()
+    is_production = app_mode in {'production', 'staging'} or app_env in {'production', 'staging', 'prod'}
+    if is_production:
         raise RuntimeError(
             'EXPORT_SIGNING_SECRET (or EVIDENCE_SIGNING_SECRET) is required in '
             'production/staging. Export bundle signing is mandatory. '

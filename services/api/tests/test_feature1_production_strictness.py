@@ -6,6 +6,7 @@ from services.api.app import main
 
 
 def test_threat_analysis_endpoint_fails_closed_without_provider(monkeypatch) -> None:
+    monkeypatch.setattr(main, 'authenticate_request', lambda r: {'id': 'test-user'})
     monkeypatch.setattr(main, 'proxy_threat', lambda *_args, **_kwargs: None)
     client = TestClient(main.app)
     response = client.post('/threat/analyze/transaction', json={'tx_hash': '0x1'})

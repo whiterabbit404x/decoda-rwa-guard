@@ -445,7 +445,14 @@ def main() -> int:
         expected_counterparty = str(accounts[2]).lower()
         unexpected_counterparty = str(accounts[3]).lower()
         proof_email = _proof_email()
-        token, workspace_id = _bootstrap_auth(api_url, email=proof_email, password='ProofPass123!')
+        proof_password = os.environ.get('PROOF_PASSWORD', '').strip()
+        if not proof_password:
+            raise RuntimeError(
+                'PROOF_PASSWORD environment variable is required. '
+                'Set it to the password for the proof user account. '
+                'Do not hardcode credentials in this script.'
+            )
+        token, workspace_id = _bootstrap_auth(api_url, email=proof_email, password=proof_password)
 
         proof_contract_address = os.getenv('FEATURE1_PROOF_CONTRACT_ADDRESS', DEFAULT_PROOF_CONTRACT).strip().lower()
         _asset_id, target_id = _create_asset_and_target(

@@ -25,10 +25,10 @@ def test_architecture_sections_ops_dashboard_contract_fields_present() -> None:
 
     expected_fields = [
         "'dashboard': dashboard()",
-        "'risk_dashboard': risk_dashboard()",
-        "'threat_dashboard': threat_dashboard()",
-        "'compliance_dashboard': compliance_dashboard()",
-        "'resilience_dashboard': resilience_dashboard()",
+        "'risk_dashboard': risk_dashboard(request)",
+        "'threat_dashboard': threat_dashboard(request)",
+        "'compliance_dashboard': compliance_dashboard(request)",
+        "'resilience_dashboard': resilience_dashboard(request)",
         "'workspace_monitoring_summary':",
         "'background_loop_health':",
     ]

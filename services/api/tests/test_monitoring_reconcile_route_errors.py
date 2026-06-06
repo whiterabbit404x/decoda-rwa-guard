@@ -429,6 +429,10 @@ def test_ops_monitoring_runtime_status_exposes_continuity_contract_fields_unmodi
 
 def test_ops_monitoring_run_returns_structured_error_for_unexpected_exception(monkeypatch, caplog):
     monkeypatch.setenv('APP_ENV', 'development')
+    monkeypatch.setattr(api_main, 'enforce_auth_rate_limit', lambda *_a, **_kw: None)
+    monkeypatch.setattr(api_main, 'require_ops_rbac_guard', lambda *_a, **_kw: None)
+    monkeypatch.setattr(api_main, 'pg_connection', lambda: __import__('contextlib').nullcontext(None))
+    monkeypatch.setattr(api_main, 'ensure_pilot_schema', lambda *_a, **_kw: None)
     monkeypatch.setattr(
         api_main,
         'run_monitoring_cycle',

@@ -191,6 +191,7 @@ from services.api.app.pilot import (
     delete_monitored_system,
     run_guided_threat_workflow,
     delete_account,
+    require_ops_rbac_guard,
 )
 from services.api.app.monitoring_runner import (
     get_background_loop_health,
@@ -493,6 +494,17 @@ def _is_local_dev_mode() -> bool:
     app_env = os.getenv('APP_ENV', os.getenv('APP_MODE', 'development')).strip().lower()
     enable_flag = os.getenv('ENABLE_LOCAL_DEV_SUPPORT', '').strip().lower()
     return app_env in {'local', 'development', 'dev'} or enable_flag == 'true'
+
+
+def _require_debug_endpoint_allowed() -> None:
+    """Raise 404 for debug endpoints unless explicitly enabled in non-production environments."""
+    env = os.getenv('APP_ENV', os.getenv('APP_MODE', 'development')).strip().lower()
+    if env in {'production', 'prod', 'staging'}:
+        enabled = os.getenv('ENABLE_DEBUG_ENDPOINTS', '').strip().lower() in {'1', 'true', 'yes', 'on'}
+        if not enabled:
+            raise HTTPException(status_code=404, detail='Not found.')
+    elif os.getenv('ENABLE_DEBUG_ENDPOINTS', '').strip().lower() == 'false':
+        raise HTTPException(status_code=404, detail='Not found.')
 
 
 def _normalize_origin(origin: str) -> str | None:
@@ -2110,6 +2122,7 @@ def health_diagnostics() -> dict[str, Any]:
 
 @app.get('/debug/fixtures', summary='Read-only fixture diagnostics', description='Returns the deployed backend build id plus resolved fixture directories and file existence flags for deploy verification.')
 def debug_fixtures() -> dict[str, Any]:
+    _require_debug_endpoint_allowed()
     return {
         'status': 'ok',
         'service': SERVICE_NAME,
@@ -2119,6 +2132,7 @@ def debug_fixtures() -> dict[str, Any]:
 
 @app.get('/debug/downstream-status', summary='Downstream dependency diagnostics', description='Returns dependency mode, registry state, and payload truth for each embedded or proxied downstream service.')
 def debug_downstream_status() -> dict[str, Any]:
+    _require_debug_endpoint_allowed()
     seed_embedded_dependency_registry()
     return {
         'status': 'ok',
@@ -2173,7 +2187,8 @@ def dashboard() -> dict[str, object]:
 
 
 @app.get('/risk/dashboard', summary='Dashboard risk feed', description='Builds the dashboard transaction queue from live risk-engine evaluations and falls back to explicit demo-safe records when the risk-engine is unavailable.')
-def risk_dashboard() -> dict[str, object]:
+def risk_dashboard(request: Request) -> dict[str, object]:
+    authenticate_request(request)
     queue = build_risk_dashboard_queue()
     live_count = sum(1 for item in queue if item['live_data'])
     degraded = live_count != len(queue)
@@ -2208,7 +2223,8 @@ def risk_dashboard() -> dict[str, object]:
 
 
 @app.get('/threat/dashboard', summary='Feature 2 threat dashboard feed', description='Returns the threat-engine dashboard payload when available and explicit fallback demo data when the threat-engine is unavailable.')
-def threat_dashboard() -> dict[str, Any]:
+def threat_dashboard(request: Request) -> dict[str, Any]:
+    authenticate_request(request)
     payload = fetch_threat_dashboard()
     if payload is not None:
         return payload
@@ -2259,25 +2275,29 @@ def _attach_rule_evidence_catalog(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.post('/threat/analyze/contract', summary='Feature 2 contract analysis', description='Proxies a contract analysis request to the threat-engine and falls back to a conservative local rule summary if the engine is unavailable.')
-def threat_analyze_contract(payload: dict[str, Any]) -> dict[str, Any]:
+def threat_analyze_contract(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    authenticate_request(request)
     normalized, _ = normalize_threat_payload('contract', payload)
     return _require_threat_response('contract', normalized)
 
 
 @app.post('/threat/analyze/transaction', summary='Feature 2 transaction analysis', description='Proxies a transaction intent analysis request to the threat-engine and falls back to a conservative local rule summary if the engine is unavailable.')
-def threat_analyze_transaction(payload: dict[str, Any]) -> dict[str, Any]:
+def threat_analyze_transaction(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    authenticate_request(request)
     normalized, _ = normalize_threat_payload('transaction', payload)
     return _require_threat_response('transaction', normalized)
 
 
 @app.post('/threat/analyze/market', summary='Feature 2 market anomaly analysis', description='Proxies a market anomaly request to the threat-engine and falls back to a conservative local rule summary if the engine is unavailable.')
-def threat_analyze_market(payload: dict[str, Any]) -> dict[str, Any]:
+def threat_analyze_market(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    authenticate_request(request)
     normalized, _ = normalize_threat_payload('market', payload)
     return _require_threat_response('market', normalized)
 
 
 @app.get('/compliance/dashboard', summary='Feature 3 compliance dashboard feed', description='Returns the compliance-service dashboard payload when available and explicit fallback demo data when the compliance service is unavailable.')
-def compliance_dashboard() -> dict[str, Any]:
+def compliance_dashboard(request: Request) -> dict[str, Any]:
+    authenticate_request(request)
     payload = fetch_compliance_dashboard()
     if payload is not None:
         return payload
@@ -2286,31 +2306,36 @@ def compliance_dashboard() -> dict[str, Any]:
 
 
 @app.post('/compliance/screen/transfer', summary='Feature 3 transfer compliance screening', description='Proxies a transfer screening request to the compliance service and falls back to a conservative deterministic local decision if the service is unavailable.')
-def compliance_screen_transfer(payload: dict[str, Any]) -> dict[str, Any]:
+def compliance_screen_transfer(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    authenticate_request(request)
     response = proxy_compliance('screen/transfer', payload)
     return response or fallback_transfer_screening(payload)
 
 
 @app.post('/compliance/screen/residency', summary='Feature 3 residency compliance screening', description='Proxies a residency screening request to the compliance service and falls back to a deterministic local policy response if the service is unavailable.')
-def compliance_screen_residency(payload: dict[str, Any]) -> dict[str, Any]:
+def compliance_screen_residency(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    authenticate_request(request)
     response = proxy_compliance('screen/residency', payload)
     return response or fallback_residency_screening(payload)
 
 
 @app.get('/compliance/policy/state', summary='Feature 3 compliance policy state', description='Returns live compliance policy state when the compliance service is available and fallback demo policy state otherwise.')
-def compliance_policy_state() -> dict[str, Any]:
+def compliance_policy_state(request: Request) -> dict[str, Any]:
+    authenticate_request(request)
     response = fetch_compliance_policy_state()
     return response or fallback_compliance_dashboard()['policy_state']
 
 
 @app.get('/compliance/governance/actions', summary='Feature 3 governance actions list', description='Returns governance actions from the compliance service or fallback demo ledger actions when unavailable.')
-def compliance_governance_actions() -> list[dict[str, Any]]:
+def compliance_governance_actions(request: Request) -> list[dict[str, Any]]:
+    authenticate_request(request)
     response = fetch_compliance_governance_actions()
     return response or fallback_compliance_dashboard()['latest_governance_actions']
 
 
 @app.get('/compliance/governance/actions/{action_id}', summary='Feature 3 governance action detail', description='Returns one governance action from the compliance service or fallback data when unavailable.')
-def compliance_governance_action(action_id: str) -> dict[str, Any]:
+def compliance_governance_action(action_id: str, request: Request) -> dict[str, Any]:
+    authenticate_request(request)
     response = fetch_compliance_governance_action(action_id)
     if response is not None:
         return response
@@ -2321,13 +2346,15 @@ def compliance_governance_action(action_id: str) -> dict[str, Any]:
 
 
 @app.post('/compliance/governance/actions', summary='Feature 3 governance action create', description='Creates a governance action via the compliance service or records a deterministic fallback action when the service is unavailable.')
-def compliance_create_governance_action(payload: dict[str, Any]) -> dict[str, Any]:
+def compliance_create_governance_action(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    authenticate_request(request)
     response = proxy_compliance('governance/actions', payload)
     return response or fallback_governance_action(payload)
 
 
 @app.get('/resilience/dashboard', summary='Feature 4 resilience dashboard feed', description='Returns the reconciliation-service dashboard payload when available and explicit fallback resilience data when the service is unavailable.')
-def resilience_dashboard() -> dict[str, Any]:
+def resilience_dashboard(request: Request) -> dict[str, Any]:
+    authenticate_request(request)
     payload = fetch_resilience_dashboard()
     if payload is not None:
         return with_resilience_normalized_risk(payload)
@@ -2344,42 +2371,47 @@ def ops_dashboard_page_data(request: Request) -> dict[str, Any]:
     runtime_payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
     return {
         'dashboard': dashboard(),
-        'risk_dashboard': risk_dashboard(),
-        'threat_dashboard': threat_dashboard(),
-        'compliance_dashboard': compliance_dashboard(),
-        'resilience_dashboard': resilience_dashboard(),
+        'risk_dashboard': risk_dashboard(request),
+        'threat_dashboard': threat_dashboard(request),
+        'compliance_dashboard': compliance_dashboard(request),
+        'resilience_dashboard': resilience_dashboard(request),
         'workspace_monitoring_summary': runtime_payload.get('workspace_monitoring_summary'),
         'background_loop_health': runtime_payload.get('background_loop_health'),
     }
 
 
 @app.post('/resilience/reconcile/state', summary='Feature 4 cross-chain reconciliation', description='Proxies a reconciliation request to the reconciliation-service and falls back to a deterministic local reconciliation summary if the service is unavailable.')
-def resilience_reconcile_state(payload: dict[str, Any]) -> dict[str, Any]:
+def resilience_reconcile_state(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    authenticate_request(request)
     response = proxy_resilience_post('reconcile/state', payload)
     return response or fallback_reconcile_state(payload)
 
 
 @app.post('/resilience/backstop/evaluate', summary='Feature 4 liquidity backstop evaluation', description='Proxies a backstop evaluation request to the reconciliation-service and falls back to deterministic local safeguards when the service is unavailable.')
-def resilience_backstop_evaluate(payload: dict[str, Any]) -> dict[str, Any]:
+def resilience_backstop_evaluate(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    authenticate_request(request)
     response = proxy_resilience_post('backstop/evaluate', payload)
     return response or fallback_backstop_evaluate(payload)
 
 
 @app.post('/resilience/incidents/record', summary='Feature 4 resilience incident create', description='Creates a resilience incident via the reconciliation-service or records a deterministic fallback incident when the service is unavailable.')
-def resilience_record_incident(payload: dict[str, Any]) -> dict[str, Any]:
+def resilience_record_incident(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    authenticate_request(request)
     response = proxy_resilience_post('incidents/record', payload)
     return response or fallback_incident_record(payload)
 
 
 @app.get('/resilience/incidents', summary='Feature 4 resilience incident list', description='Returns resilience incidents from the reconciliation-service or fallback incident ledger rows when unavailable.')
-def resilience_incidents() -> list[dict[str, Any]]:
+def resilience_incidents(request: Request) -> list[dict[str, Any]]:
+    authenticate_request(request)
     response = proxy_resilience_get('incidents')
     incidents = response or fallback_resilience_dashboard()['latest_incidents']
     return [with_resilience_incident_normalized_risk(incident) for incident in incidents]
 
 
 @app.get('/resilience/incidents/{event_id}', summary='Feature 4 resilience incident detail', description='Returns one resilience incident from the reconciliation-service or fallback data when unavailable.')
-def resilience_incident(event_id: str) -> dict[str, Any]:
+def resilience_incident(event_id: str, request: Request) -> dict[str, Any]:
+    authenticate_request(request)
     response = proxy_resilience_get(f'incidents/{event_id}')
     if response is not None:
         return with_resilience_incident_normalized_risk(response)
@@ -2476,7 +2508,11 @@ def auth_mfa_disable(payload: dict[str, Any], request: Request) -> dict[str, Any
 
 
 @app.post('/ops/jobs/run', summary='Run queued background jobs (operator)')
-def ops_run_jobs(payload: dict[str, Any]) -> dict[str, Any]:
+def ops_run_jobs(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    enforce_auth_rate_limit(request, 'ops_jobs_run')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        require_ops_rbac_guard(connection, request)
     worker_id = str(payload.get('worker_id', 'api-sync-worker')).strip() or 'api-sync-worker'
     limit = int(payload.get('limit', 20))
     return with_auth_schema_json(lambda: run_background_jobs(worker_id=worker_id, limit=max(1, min(limit, 100))))
@@ -2484,6 +2520,10 @@ def ops_run_jobs(payload: dict[str, Any]) -> dict[str, Any]:
 
 @app.post('/ops/monitoring/run', summary='Run monitoring worker cycle (operator)')
 def ops_run_monitoring(payload: dict[str, Any], request: Request) -> Any:
+    enforce_auth_rate_limit(request, 'ops_monitoring_run')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        require_ops_rbac_guard(connection, request)
     worker_name = str(payload.get('worker_name', 'monitoring-worker')).strip() or 'monitoring-worker'
     limit = int(payload.get('limit', 50))
     try:
@@ -4983,7 +5023,7 @@ def fallback_compliance_dashboard() -> dict[str, Any]:
 def fallback_transfer_screening(payload: dict[str, Any]) -> dict[str, Any]:
     policy = payload.get('asset_transfer_policy', {})
     sanctions = payload.get('sender_sanctions_flag') or payload.get('receiver_sanctions_flag')
-    blocklisted = payload.get('sender_wallet') == '0xblocked000000000000000000000000000000003' or payload.get('receiver_wallet') == '0xblocked000000000000000000000000000000003'
+    blocklisted = bool(payload.get('sender_blocklist_match') or payload.get('receiver_blocklist_match'))
     asset_paused = policy.get('asset_status') == 'paused'
     incomplete_kyc = payload.get('sender_kyc_status') != 'verified' or payload.get('receiver_kyc_status') != 'verified'
     review_jurisdictions = set(policy.get('review_jurisdictions', []))
