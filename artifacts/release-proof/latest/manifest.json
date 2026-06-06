@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-06T09:16:47.099390+00:00",
+  "generated_at": "2026-06-06T14:22:41.315120+00:00",
   "release_channel": "local",
-  "commit_sha": "a28ffa4e090b200e00de1ac6904140c5ad667ebc",
-  "branch": "claude/cool-pasteur-zDVmc",
+  "commit_sha": "aee174371c12e98033359f986756c639491c864a",
+  "branch": "claude/nice-meitner-XS3mE",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "b60fed6e3fea527ba6101e3a1077ff478f69aac055eb52eba413e8ebd4df9155",
+      "sha256": "7fe93533c267051fc9b4fd9af140e7a29f5682e6cb591d97768b5ca5ff23f2e6",
       "size_bytes": 752,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "defac65131b27d29c5780c79894be0f2380d6e1c2a8508a726d534d05e4d67b9",
+      "sha256": "1b65e2de21d9e3e2991244b1b4de1f9b5fb5b04ee3d38daa57bb7be743e347cc",
       "size_bytes": 1827,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "3b51ec00ee9f8bac95bd6310c08d35f692da0579738087c55164fe43434e9c43",
+      "sha256": "2a1bc08a781ba038c683dafc702284cd5c52cbf9e6510ec0e7fbdc81b2f29a79",
       "size_bytes": 1455,
       "required": true,
       "status": "present"
