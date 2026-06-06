@@ -49,8 +49,8 @@ ROLE_CANONICAL_MAP = {
     'analyst': 'analyst',
     'viewer': 'viewer',
 }
-AUTH_WINDOW_SECONDS = 60
-AUTH_MAX_ATTEMPTS = 10
+AUTH_WINDOW_SECONDS = 15 * 60
+AUTH_MAX_ATTEMPTS = 5
 CORE_PILOT_TABLES = (
     'users',
     'workspaces',
@@ -734,7 +734,17 @@ def validate_runtime_configuration() -> dict[str, Any]:
                 detail='EMAIL_RESEND_API_KEY is required when EMAIL_PROVIDER=resend in production.',
             )
 
-        _record_check('redis_url', bool(os.getenv('REDIS_URL', '').strip()), required=True, detail='REDIS_URL is required in production for shared auth rate limiting.')
+        redis_url = os.getenv('REDIS_URL', '').strip()
+        upstash_url = os.getenv('UPSTASH_REDIS_REST_URL', '').strip()
+        upstash_token = os.getenv('UPSTASH_REDIS_REST_TOKEN', '').strip()
+        distributed_rate_limiter_configured = bool(redis_url or (upstash_url and upstash_token))
+        _record_check(
+            'distributed_rate_limiter',
+            distributed_rate_limiter_configured,
+            required=False,
+            detail='Redis/Upstash is optional; auth rate limiting will use an in-memory per-process fallback when unavailable.',
+            severity='warning',
+        )
 
         billing_status = billing_runtime_status()
         strict_billing = env_flag('STRICT_PRODUCTION_BILLING')
@@ -1279,8 +1289,11 @@ def get_admin_readiness(request: Request) -> dict[str, Any]:
             "database_reachable": True,
             "auth_session_configured": True,
             "required_env_vars_present": bool(os.getenv("DATABASE_URL") and os.getenv("APP_BASE_URL") and os.getenv("API_BASE_URL")),
-            "redis_required": str(os.getenv("REDIS_REQUIRED", "false")).lower() in {"1", "true", "yes", "on"},
-            "redis_configured": bool(os.getenv("REDIS_URL")),
+            "redis_required": False,
+            "redis_configured": bool(
+                os.getenv("REDIS_URL")
+                or (os.getenv("UPSTASH_REDIS_REST_URL") and os.getenv("UPSTASH_REDIS_REST_TOKEN"))
+            ),
             "billing_required": str(os.getenv("BILLING_REQUIRED", "false")).lower() in {"1", "true", "yes", "on"},
             "paid_ui_disabled": str(os.getenv("PAID_UI_DISABLED", "false")).lower() in {"1", "true", "yes", "on"},
             "billing_configured": bool(billing.get("configured") or billing.get("available")),
@@ -1917,75 +1930,119 @@ def _validate_session(connection: Any, token: str, payload: dict[str, Any]) -> N
     )
 
 
-def enforce_auth_rate_limit(request: Request, action: str) -> None:
-    client_host = request.client.host if request.client else 'unknown'
-    redis_url = os.getenv('REDIS_URL', '').strip()
-    is_production = os.getenv('APP_ENV', os.getenv('APP_MODE', 'development')).strip().lower() in {'production', 'prod'}
+def _rate_limit_subject(identifier: str | None) -> str:
+    normalized = str(identifier or '').strip().lower()
+    if not normalized:
+        return 'unknown'
+    return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
 
-    if not redis_url and is_production:
-        logger.error(
-            'auth_rate_limit_redis_required_missing action=%s; REDIS_URL is required in production',
-            action,
-            extra={'event': 'rate_limit.production_redis_missing'},
+
+def _emit_rate_limit_fallback_warning(reason: str) -> None:
+    should_emit = False
+    now = monotonic()
+    with _rate_limit_fallback_warning_lock:
+        last_emitted = _rate_limit_fallback_last_emitted.get(RATE_LIMIT_FALLBACK_REDIS_UNAVAILABLE_KEY)
+        if last_emitted is None or now - last_emitted >= RATE_LIMIT_FALLBACK_WARNING_WINDOW_SECONDS:
+            _rate_limit_fallback_last_emitted[RATE_LIMIT_FALLBACK_REDIS_UNAVAILABLE_KEY] = now
+            should_emit = True
+    if should_emit:
+        logger.warning(
+            'Rate limiter fallback active: Redis unavailable. reason=%s',
+            reason,
+            extra={'event': 'rate_limit.fallback', 'fallback_key': RATE_LIMIT_FALLBACK_REDIS_UNAVAILABLE_KEY},
         )
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail='Service configuration error: distributed rate limiter unavailable.',
-        )
+
+
+def _upstash_command(base_url: str, token: str, command: list[Any]) -> Any:
+    request = UrlRequest(
+        f"{base_url.rstrip('/')}",
+        data=json.dumps(command).encode('utf-8'),
+        headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
+        method='POST',
+    )
+    with urlopen(request, timeout=2) as response:
+        payload = json.loads(response.read().decode('utf-8'))
+    if payload.get('error'):
+        raise RuntimeError(str(payload['error']))
+    return payload.get('result')
+
+
+def _distributed_rate_limit_attempts(key: str) -> int | None:
+    redis_url = os.getenv('REDIS_URL', '').strip()
+    upstash_url = os.getenv('UPSTASH_REDIS_REST_URL', '').strip()
+    upstash_token = os.getenv('UPSTASH_REDIS_REST_TOKEN', '').strip()
 
     if redis_url:
         global _redis_rate_limiter
         with _redis_rate_limiter_lock:
             if _redis_rate_limiter is None:
                 redis_module = importlib.import_module('redis')
-                _redis_rate_limiter = redis_module.Redis.from_url(redis_url, decode_responses=True)
-        key = f'pilot:rate:{action}:{client_host}'
-        try:
-            attempts = int(_redis_rate_limiter.incr(key))
-            if attempts == 1:
-                _redis_rate_limiter.expire(key, AUTH_WINDOW_SECONDS)
+                _redis_rate_limiter = redis_module.Redis.from_url(
+                    redis_url,
+                    decode_responses=True,
+                    socket_connect_timeout=2,
+                    socket_timeout=2,
+                )
+        attempts = int(_redis_rate_limiter.incr(key))
+        if attempts == 1:
+            _redis_rate_limiter.expire(key, AUTH_WINDOW_SECONDS)
+        return attempts
+
+    if upstash_url and upstash_token:
+        attempts = int(_upstash_command(upstash_url, upstash_token, ['INCR', key]))
+        if attempts == 1:
+            _upstash_command(upstash_url, upstash_token, ['EXPIRE', key, AUTH_WINDOW_SECONDS])
+        return attempts
+
+    return None
+
+
+def _enforce_in_memory_rate_limit(key: str) -> None:
+    now = monotonic()
+    cutoff = now - AUTH_WINDOW_SECONDS
+    with _rate_limit_lock:
+        expired_keys: list[str] = []
+        for existing_key, stamps in _rate_limit_state.items():
+            active_stamps = [stamp for stamp in stamps if stamp >= cutoff]
+            if active_stamps:
+                _rate_limit_state[existing_key] = active_stamps
+            else:
+                expired_keys.append(existing_key)
+        for expired_key in expired_keys:
+            _rate_limit_state.pop(expired_key, None)
+
+        attempts = _rate_limit_state.get(key, [])
+        if len(attempts) >= AUTH_MAX_ATTEMPTS:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail='Too many authentication attempts. Please retry shortly.',
+            )
+        attempts.append(now)
+        _rate_limit_state[key] = attempts
+
+
+def enforce_auth_rate_limit(request: Request, action: str, identifier: str | None = None) -> None:
+    client_host = request.client.host if request.client else 'unknown'
+    subject = _rate_limit_subject(identifier)
+    key = f'pilot:rate:{action}:{client_host}:{subject}'
+
+    try:
+        attempts = _distributed_rate_limit_attempts(key)
+        if attempts is not None:
             if attempts > AUTH_MAX_ATTEMPTS:
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                     detail='Too many authentication attempts. Please retry shortly.',
                 )
             return
-        except HTTPException:
-            raise
-        except Exception as exc:
-            condensed_error = str(exc).strip().splitlines()[0] if str(exc).strip() else 'unknown_error'
-            if is_production:
-                logger.error(
-                    'redis rate limiter failed in production; refusing fallback error=%s',
-                    condensed_error,
-                    extra={'event': 'rate_limit.production_redis_failure'},
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail='Service temporarily unavailable: rate limiter unreachable.',
-                )
-            should_emit_info = False
-            now = monotonic()
-            with _rate_limit_fallback_warning_lock:
-                last_emitted = _rate_limit_fallback_last_emitted.get(RATE_LIMIT_FALLBACK_REDIS_UNAVAILABLE_KEY)
-                if last_emitted is None or now - last_emitted >= RATE_LIMIT_FALLBACK_WARNING_WINDOW_SECONDS:
-                    _rate_limit_fallback_last_emitted[RATE_LIMIT_FALLBACK_REDIS_UNAVAILABLE_KEY] = now
-                    should_emit_info = True
-            if should_emit_info:
-                logger.info(
-                    'redis rate limiter unavailable; falling back to in-memory limiter error=%s',
-                    condensed_error,
-                    extra={'event': 'rate_limit.fallback', 'fallback_key': RATE_LIMIT_FALLBACK_REDIS_UNAVAILABLE_KEY},
-                )
-    key = f'{action}:{client_host}'
-    cutoff = monotonic() - AUTH_WINDOW_SECONDS
-    with _rate_limit_lock:
-        attempts = [stamp for stamp in _rate_limit_state.get(key, []) if stamp >= cutoff]
-        if len(attempts) >= AUTH_MAX_ATTEMPTS:
-            _rate_limit_state[key] = attempts
-            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail='Too many authentication attempts. Please retry shortly.')
-        attempts.append(monotonic())
-        _rate_limit_state[key] = attempts
+        _emit_rate_limit_fallback_warning('not configured')
+    except HTTPException:
+        raise
+    except Exception as exc:
+        condensed_error = str(exc).strip().splitlines()[0] if str(exc).strip() else 'unknown_error'
+        _emit_rate_limit_fallback_warning(condensed_error)
+
+    _enforce_in_memory_rate_limit(key)
 
 
 def _normalize_email(email: str) -> str:

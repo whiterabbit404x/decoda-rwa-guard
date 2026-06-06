@@ -103,7 +103,7 @@ def test_authenticated_mutation_with_valid_csrf_passes_csrf_gate(monkeypatch):
 def test_unauthenticated_mutation_skips_csrf_check(monkeypatch):
     monkeypatch.setenv('AUTH_TOKEN_SECRET', 'test-secret-for-csrf')
     # Signup is exempt; should not get CSRF 403
-    monkeypatch.setattr(api_main, 'enforce_auth_rate_limit', lambda req, action: None)
+    monkeypatch.setattr(api_main, 'enforce_auth_rate_limit', lambda req, action, identifier=None: None)
     monkeypatch.setattr(api_main, 'signup_user', lambda payload, request: {'access_token': 't'})
     response = client.post('/auth/signup', json={'email': 'x@x.com', 'password': 'pass'})
     # May fail for other reasons (live mode etc.) but not CSRF
@@ -112,7 +112,7 @@ def test_unauthenticated_mutation_skips_csrf_check(monkeypatch):
 
 def test_csrf_exempt_signin_requires_no_csrf(monkeypatch):
     monkeypatch.setenv('AUTH_TOKEN_SECRET', 'test-secret-for-csrf')
-    monkeypatch.setattr(api_main, 'enforce_auth_rate_limit', lambda req, action: None)
+    monkeypatch.setattr(api_main, 'enforce_auth_rate_limit', lambda req, action, identifier=None: None)
     monkeypatch.setattr(api_main, 'signin_user', lambda payload, request: {'access_token': 't'})
     response = client.post(
         '/auth/signin',

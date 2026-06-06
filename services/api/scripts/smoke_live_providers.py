@@ -86,16 +86,22 @@ def check_billing_provider() -> dict[str, Any]:
 
 
 def check_redis_requirement() -> dict[str, Any]:
-    app_env = (os.getenv('APP_ENV', 'development') or 'development').strip().lower()
     redis = os.getenv('REDIS_URL', '').strip()
-    if app_env == 'production' and not redis:
-        return classify('redis_requirement', 'fail', 'APP_ENV=production requires REDIS_URL for distributed auth controls.', ['Set REDIS_URL before production launch.'])
-    if not redis:
-        return classify('redis_requirement', 'not_configured', 'REDIS_URL is not set (allowed only outside production).', ['Set REDIS_URL in staging/production to mirror launch topology.'])
-    parsed = urllib.parse.urlparse(redis)
-    if parsed.scheme not in {'redis', 'rediss'} or not parsed.hostname:
-        return classify('redis_requirement', 'fail', 'REDIS_URL format is invalid.', ['Use redis:// or rediss:// with host.'])
-    return classify('redis_requirement', 'verified', f'REDIS_URL configured with scheme {parsed.scheme}.', metadata={'host': parsed.hostname, 'port': parsed.port or 6379})
+    upstash_url = os.getenv('UPSTASH_REDIS_REST_URL', '').strip()
+    upstash_token = os.getenv('UPSTASH_REDIS_REST_TOKEN', '').strip()
+    if redis:
+        parsed = urllib.parse.urlparse(redis)
+        if parsed.scheme not in {'redis', 'rediss'} or not parsed.hostname:
+            return classify('redis_requirement', 'fail', 'REDIS_URL format is invalid.', ['Use redis:// or rediss:// with host.'])
+        return classify('redis_requirement', 'verified', f'Optional REDIS_URL configured with scheme {parsed.scheme}.', metadata={'host': parsed.hostname, 'port': parsed.port or 6379})
+    if upstash_url or upstash_token:
+        if not upstash_url or not upstash_token:
+            return classify('redis_requirement', 'fail', 'Upstash rate limiting requires both REST URL and token.', ['Set both UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN, or unset both to use the in-memory fallback.'])
+        parsed = urllib.parse.urlparse(upstash_url)
+        if parsed.scheme != 'https' or not parsed.hostname:
+            return classify('redis_requirement', 'fail', 'UPSTASH_REDIS_REST_URL format is invalid.', ['Use an https:// Upstash REST URL.'])
+        return classify('redis_requirement', 'verified', 'Optional Upstash Redis REST rate limiter is configured.', metadata={'host': parsed.hostname})
+    return classify('redis_requirement', 'configured_unverified', 'Redis/Upstash is not configured; auth uses the per-process in-memory fallback.', ['Configure Redis or Upstash for distributed rate limiting when horizontal scaling requires shared counters.'])
 
 
 def check_api_readiness() -> dict[str, Any]:

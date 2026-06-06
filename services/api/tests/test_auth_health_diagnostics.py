@@ -99,9 +99,35 @@ def test_pilot_signin_raises_clear_schema_error_when_users_table_is_missing(pilo
     assert 'users' in str(exc_info.value.detail)
 
 
+def test_auth_signin_with_missing_redis_continues_to_credential_check(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    from services.api.app import pilot
+
+    client = TestClient(api_main.app)
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.delenv('REDIS_URL', raising=False)
+    monkeypatch.delenv('UPSTASH_REDIS_REST_URL', raising=False)
+    monkeypatch.delenv('UPSTASH_REDIS_REST_TOKEN', raising=False)
+    monkeypatch.setattr(pilot, '_redis_rate_limiter', None)
+    monkeypatch.setattr(pilot, '_rate_limit_state', {})
+    monkeypatch.setattr(pilot, '_rate_limit_fallback_last_emitted', {})
+    credential_checks: list[dict[str, object]] = []
+
+    def _credential_check(payload, request):
+        credential_checks.append(payload)
+        raise HTTPException(status_code=401, detail='Invalid email or password.')
+
+    monkeypatch.setattr(api_main, 'signin_user', _credential_check)
+
+    response = client.post('/auth/signin', json={'email': 'team@example.com', 'password': 'wrong-password'})
+
+    assert response.status_code == 401
+    assert credential_checks == [{'email': 'team@example.com', 'password': 'wrong-password'}]
+    assert 'rate limiter unreachable' not in response.text.lower()
+
+
 def test_auth_signin_route_returns_json_schema_error_instead_of_500(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
     client = TestClient(api_main.app)
-    monkeypatch.setattr(api_main, 'enforce_auth_rate_limit', lambda request, action: None)
+    monkeypatch.setattr(api_main, 'enforce_auth_rate_limit', lambda request, action, identifier=None: None)
 
     def _raise_schema_error(payload, request):
         raise HTTPException(status_code=503, detail='Pilot auth schema is not initialized. Missing required tables: users.')
@@ -122,7 +148,7 @@ def test_auth_signin_route_returns_json_schema_error_instead_of_500(api_main, mo
 
 def test_auth_signin_route_returns_graceful_json_when_auth_db_is_unavailable(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
     client = TestClient(api_main.app)
-    monkeypatch.setattr(api_main, 'enforce_auth_rate_limit', lambda request, action: None)
+    monkeypatch.setattr(api_main, 'enforce_auth_rate_limit', lambda request, action, identifier=None: None)
 
     def _raise_db_degraded(payload, request):
         raise HTTPException(
@@ -150,7 +176,7 @@ def test_auth_signin_route_returns_graceful_json_when_auth_db_is_unavailable(api
 
 def test_auth_signin_route_supports_generic_postgres_dsn_without_neon_host(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
     client = TestClient(api_main.app)
-    monkeypatch.setattr(api_main, 'enforce_auth_rate_limit', lambda request, action: None)
+    monkeypatch.setattr(api_main, 'enforce_auth_rate_limit', lambda request, action, identifier=None: None)
     monkeypatch.setattr(api_main, 'database_url', lambda: 'postgresql://pilot:pilot@db.internal.local:5432/decoda')
 
     def _raise_db_unavailable(payload, request):
@@ -286,7 +312,8 @@ def test_health_readiness_reports_not_ready_when_production_dependencies_missing
     assert response.status_code == 200
     assert payload['status'] == 'not_ready'
     assert any('EMAIL_PROVIDER=console is not allowed in production' in error for error in payload['errors'])
-    assert any('REDIS_URL is required in production' in error for error in payload['errors'])
+    assert not any('REDIS' in error.upper() or 'UPSTASH' in error.upper() for error in payload['errors'])
+    assert payload['checks']['distributed_rate_limiter']['required'] is False
 
 
 def test_health_details_route_reports_readiness_flags_and_missing_tables(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
