@@ -22,9 +22,29 @@ Body/query workspace override rule:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from fastapi import HTTPException, status
+
+_SAFE_IDENTIFIER_RE = re.compile(r'^[a-z][a-z0-9_]{0,62}$')
+
+
+def validate_identifier(name: str, label: str = 'identifier') -> str:
+    """Validate a SQL table or column identifier against a safe allowlist pattern.
+
+    Raises ValueError for any name that does not match the safe pattern.
+    Returns the validated name unchanged.
+    """
+    if not _SAFE_IDENTIFIER_RE.match(name):
+        raise ValueError(
+            f'Unsafe SQL {label}: {name!r}. '
+            'Identifiers must start with a letter, contain only lowercase letters, digits, and underscores, and be at most 63 characters.'
+        )
+    return name
+
+
+validate_table_name = validate_identifier
 
 
 def require_object_in_workspace(
@@ -44,6 +64,10 @@ def require_object_in_workspace(
     Optionally filters out soft-deleted rows when deleted_col is provided.
     Never leaks cross-workspace object existence.
     """
+    validate_identifier(table, 'table')
+    validate_identifier(id_col, 'id_col')
+    if deleted_col is not None:
+        validate_identifier(deleted_col, 'deleted_col')
     extra = f' AND {deleted_col} IS NULL' if deleted_col else ''
     row = connection.execute(
         f'SELECT * FROM {table} WHERE {id_col} = %s AND workspace_id = %s{extra}',

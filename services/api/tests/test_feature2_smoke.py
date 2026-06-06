@@ -89,6 +89,7 @@ def test_feature2_endpoints_return_live_safe_smoke_shapes(client: TestClient, ap
         'message': 'Live threat-engine response.',
     }
 
+    monkeypatch.setattr(api_main, 'authenticate_request', lambda r: {'id': 'test-user'})
     if endpoint == '/threat/dashboard':
         monkeypatch.setattr(api_main, 'fetch_threat_dashboard', lambda: live_dashboard)
         response = client.get(endpoint)
@@ -161,6 +162,7 @@ def test_feature2_embedded_local_dashboard_is_live_when_service_url_is_localhost
             return {'safe_transaction': {}}
 
     monkeypatch.setattr(api_main, 'THREAT_ENGINE_URL_ENV', None)
+    monkeypatch.setattr(api_main, 'authenticate_request', lambda r: {'id': 'test-user'})
     monkeypatch.setattr(api_main, 'THREAT_ENGINE_URL', 'http://localhost:8002')
     monkeypatch.setattr(api_main, 'request_json', lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('remote proxy should not be used')))
     monkeypatch.setattr(api_main, 'load_embedded_service_main', lambda service_slug: _EmbeddedModule())
@@ -190,6 +192,7 @@ def test_feature2_remote_dashboard_rejects_upstream_fallback_payload(client: Tes
         'recent_detections': [],
     }
 
+    monkeypatch.setattr(api_main, 'authenticate_request', lambda r: {'id': 'test-user'})
     monkeypatch.setattr(api_main, 'THREAT_ENGINE_URL_ENV', 'https://railway.example')
     monkeypatch.setattr(api_main, 'THREAT_ENGINE_URL', 'https://railway.example')
     monkeypatch.setattr(api_main, 'request_json', lambda *args, **kwargs: fallback_payload)
@@ -231,6 +234,7 @@ def test_threat_analysis_endpoints_normalize_legacy_payload_before_proxy(client:
             'degraded': False,
         }
 
+    monkeypatch.setattr(api_main, 'authenticate_request', lambda r: {'id': 'test-user'})
     monkeypatch.setattr(api_main, 'proxy_threat', _proxy)
     response = client.post('/threat/analyze/transaction', json=payload)
     assert response.status_code == 200
@@ -275,6 +279,7 @@ def test_threat_analysis_preserves_valid_schema_for_live_path(
             'degraded': False,
         }
 
+    monkeypatch.setattr(api_main, 'authenticate_request', lambda r: {'id': 'test-user'})
     monkeypatch.setattr(api_main, 'proxy_threat', _proxy)
     response = client.post(endpoint, json=sample_payloads[payload_key])
     assert response.status_code == 200

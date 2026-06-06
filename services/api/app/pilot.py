@@ -39,6 +39,15 @@ from services.api.app.secret_crypto import decrypt_secret, encrypt_secret, read_
 from services.api.app.export_storage import load_export_storage
 from services.api.app.production_readiness import build_production_readiness
 
+_SAFE_IDENTIFIER_RE = re.compile(r'^[a-z][a-z0-9_]{0,62}$')
+
+
+def _validate_sql_identifier(name: str, label: str = 'identifier') -> None:
+    """Reject unsafe SQL table/column identifiers before f-string interpolation."""
+    if not _SAFE_IDENTIFIER_RE.match(name):
+        raise ValueError(f'Unsafe SQL {label}: {name!r}')
+
+
 ROLE_VALUES = {'owner', 'admin', 'analyst', 'viewer', 'workspace_owner', 'workspace_admin', 'workspace_member'}
 ROLE_CANONICAL_MAP = {
     'workspace_owner': 'owner',
@@ -706,6 +715,30 @@ def validate_runtime_configuration() -> dict[str, Any]:
             detail='Postgres required when LIVE_MODE_ENABLED=true in production.',
         )
         _record_check('auth_token_secret', auth_token_secret_configured(), required=True, detail='AUTH_TOKEN_SECRET must be configured in production.')
+        _KNOWN_WEAK_SECRETS = {
+            'changeme', 'local', 'test', 'secret', 'password',
+            'decoda-dev-signing-secret-not-for-production',
+            'proofpass123!', 'pdl_whsec_local',
+            'replace-with-long-random-secret',
+        }
+        auth_secret_raw = os.getenv('AUTH_TOKEN_SECRET', os.getenv('JWT_SECRET', '')).strip()
+        if auth_secret_raw and auth_secret_raw.lower() in _KNOWN_WEAK_SECRETS:
+            _record_check(
+                'auth_token_secret_not_default',
+                False,
+                required=True,
+                detail='AUTH_TOKEN_SECRET is a known weak or default value. Set a strong random secret in production.',
+            )
+
+        export_signing_secret = os.getenv('EXPORT_SIGNING_SECRET', os.getenv('EVIDENCE_SIGNING_SECRET', '')).strip()
+        export_secret_weak = export_signing_secret.lower() in _KNOWN_WEAK_SECRETS if export_signing_secret else False
+        _record_check(
+            'export_signing_secret',
+            bool(export_signing_secret) and not export_secret_weak,
+            required=True,
+            detail='EXPORT_SIGNING_SECRET (or EVIDENCE_SIGNING_SECRET) must be configured in production with a strong value.',
+        )
+
         try:
             validate_encryption_bootstrap()
             _record_check('secret_encryption_key', True, required=True, detail='SECRET_ENCRYPTION_KEY is configured.')
@@ -825,6 +858,7 @@ def get_workspace_readiness(request: Request) -> dict[str, Any]:
         workspace_id = workspace_context['workspace']['id']
 
         def _workspace_count(table: str) -> int:
+            _validate_sql_identifier(table, 'table')
             row = connection.execute(f'SELECT COUNT(*) AS count FROM {table} WHERE workspace_id = %s', (workspace_id,)).fetchone()
             return int((row or {}).get('count') or 0)
 
@@ -1217,6 +1251,7 @@ def get_admin_readiness(request: Request) -> dict[str, Any]:
         workspace_id = workspace_context["workspace"]["id"]
 
         def _safe_count(table: str) -> int:
+            _validate_sql_identifier(table, 'table')
             try:
                 row = connection.execute(f"SELECT COUNT(*) AS count FROM {table} WHERE workspace_id = %s", (workspace_id,)).fetchone()
                 return int((row or {}).get("count") or 0)
@@ -1224,6 +1259,8 @@ def get_admin_readiness(request: Request) -> dict[str, Any]:
                 return 0
 
         def _safe_latest_ts(table: str, column: str = "created_at") -> str | None:
+            _validate_sql_identifier(table, 'table')
+            _validate_sql_identifier(column, 'column')
             try:
                 row = connection.execute(f"SELECT {column} AS value FROM {table} WHERE workspace_id = %s ORDER BY {column} DESC LIMIT 1", (workspace_id,)).fetchone()
                 value = (row or {}).get("value")

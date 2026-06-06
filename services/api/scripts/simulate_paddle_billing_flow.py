@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 from contextlib import contextmanager
 from pathlib import Path
 import sys
@@ -49,7 +50,13 @@ def signed_payload(secret: str, payload: dict[str, object]) -> tuple[str, str, b
 
 
 def main() -> None:
-    secret = 'pdl_whsec_local'
+    secret = os.environ.get('PADDLE_WEBHOOK_SECRET', '').strip()
+    if not secret:
+        raise SystemExit(
+            'PADDLE_WEBHOOK_SECRET environment variable is required. '
+            'Set it to the Paddle webhook signing secret for this environment. '
+            'Do not hardcode credentials in this script.'
+        )
     payload = {
         'event_id': 'evt_signup_subscribed',
         'event_type': 'subscription.created',

@@ -37,6 +37,7 @@ def _embedded_mode(api_main) -> None:
 def test_embedded_live_dashboards_use_real_service_modules() -> None:
     api_main = load_api_module()
     _embedded_mode(api_main)
+    api_main.authenticate_request = lambda r: {'id': 'test-user', 'email': 'test@example.com'}
     client = TestClient(api_main.app)
 
     risk = client.get('/risk/dashboard')
@@ -71,6 +72,7 @@ def test_embedded_live_dashboards_use_real_service_modules() -> None:
 def test_dashboard_registry_reports_live_when_all_embedded_services_are_available() -> None:
     api_main = load_api_module()
     _embedded_mode(api_main)
+    api_main.authenticate_request = lambda r: {'id': 'test-user', 'email': 'test@example.com'}
     client = TestClient(api_main.app)
 
     for endpoint in (
@@ -111,6 +113,7 @@ def test_dashboard_registry_reports_live_when_all_embedded_services_are_availabl
 def test_dashboard_page_aggregate_endpoint_returns_all_dashboard_sections() -> None:
     api_main = load_api_module()
     _embedded_mode(api_main)
+    api_main.authenticate_request = lambda r: {'id': 'test-user', 'email': 'test@example.com'}
     client = TestClient(api_main.app)
 
     response = client.get('/ops/dashboard-page-data')

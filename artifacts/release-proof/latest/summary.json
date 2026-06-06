@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-06T09:16:47.095486+00:00",
+  "generated_at": "2026-06-06T14:22:41.311005+00:00",
   "release_status": "fail",
   "release_channel": "local",
-  "commit_sha": "a28ffa4e090b200e00de1ac6904140c5ad667ebc",
-  "branch": "claude/cool-pasteur-zDVmc",
+  "commit_sha": "aee174371c12e98033359f986756c639491c864a",
+  "branch": "claude/nice-meitner-XS3mE",
   "ci_required_gates_ready": false,
   "launch_proof_ready": true,
   "manifest_ready": true,
