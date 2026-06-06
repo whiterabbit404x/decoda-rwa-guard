@@ -29,6 +29,8 @@ from services.api.app.pilot import (
     accept_workspace_invitation,
     auth_token_secret_configured,
     authenticate_request,
+    issue_csrf_token,
+    validate_csrf_token,
     authenticate_with_connection,
     build_history_response,
     create_governance_action_record,
@@ -1690,6 +1692,54 @@ async def log_disallowed_cors_origin(request: Request, call_next):
                 request.url.path,
             )
     return await call_next(request)
+
+
+_CSRF_SAFE_METHODS = frozenset({'GET', 'HEAD', 'OPTIONS'})
+# Paths exempt from CSRF enforcement even when authenticated.
+# Billing webhooks use provider-signed payloads; auth bootstrap endpoints
+# are unauthenticated by definition.
+_CSRF_EXEMPT_PREFIXES = (
+    '/health',
+    '/billing/webhooks',
+    '/api/billing',
+    '/auth/signin',
+    '/auth/signup',
+    '/auth/verify-email',
+    '/auth/forgot-password',
+    '/auth/reset-password',
+    '/auth/mfa/complete-signin',
+    '/auth/resend-verification',
+    '/auth/csrf-token',
+)
+
+
+@app.middleware('http')
+async def enforce_csrf_on_mutations(request: Request, call_next):
+    if request.method in _CSRF_SAFE_METHODS:
+        return await call_next(request)
+    # CSRF enforcement requires AUTH_TOKEN_SECRET to sign/validate tokens.
+    # Without it the entire auth system is non-functional, so skip in that case.
+    if not auth_token_secret_configured():
+        return await call_next(request)
+    path = request.url.path
+    for prefix in _CSRF_EXEMPT_PREFIXES:
+        if path == prefix or path.startswith(prefix + '/'):
+            return await call_next(request)
+    authorization = request.headers.get('authorization', '')
+    if not authorization.startswith('Bearer '):
+        return await call_next(request)
+    csrf_token = request.headers.get('x-csrf-token', '').strip()
+    if not csrf_token or not validate_csrf_token(csrf_token):
+        return JSONResponse(
+            {'detail': 'CSRF token missing or invalid.', 'code': 'CSRF_INVALID'},
+            status_code=403,
+        )
+    return await call_next(request)
+
+
+@app.get('/auth/csrf-token', summary='Issue a CSRF token for state-changing requests')
+def auth_csrf_token_endpoint() -> dict[str, Any]:
+    return {'csrf_token': issue_csrf_token()}
 
 
 @app.get('/health', summary='API health check', description='Returns the API runtime mode and local persistence configuration.')

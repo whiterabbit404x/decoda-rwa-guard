@@ -73,6 +73,18 @@ _QUERY_ERROR_PATTERNS = (
 
 _KEYVALUE_HOST_PATTERN = re.compile(r'(?:^|\s)host\s*=\s*([^\s]+)')
 _FIRST_SENTENCE_PATTERN = re.compile(r'^(.+?[.!?])(?:\s|$)')
+# Patterns to scrub sensitive DSN/credential data from error strings before logging.
+_DSN_URL_PATTERN = re.compile(
+    r'(?:postgres(?:ql)?(?:\+[a-z0-9]+)?|rediss?|mysql|mongodb)://[^\s@]*:[^\s@]*@[^\s/?#]+',
+    re.IGNORECASE,
+)
+_PASSWORD_KV_PATTERN = re.compile(r'\bpassword\s*=\s*\S+', re.IGNORECASE)
+
+
+def _scrub_credentials(text: str) -> str:
+    text = _DSN_URL_PATTERN.sub('[dsn-redacted]', text)
+    text = _PASSWORD_KV_PATTERN.sub('password=[redacted]', text)
+    return text
 
 
 def _normalize_message(exc: Exception) -> str:
@@ -144,7 +156,7 @@ def normalize_db_error_snippet(raw_error: str | None, *, snippet_limit: int = 12
     collapsed = ' '.join(str(raw_error or '').split())
     if not collapsed:
         return None
-
+    collapsed = _scrub_credentials(collapsed)
     first_sentence_match = _FIRST_SENTENCE_PATTERN.match(collapsed)
     snippet = first_sentence_match.group(1) if first_sentence_match else collapsed
     if len(snippet) > snippet_limit:
