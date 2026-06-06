@@ -310,7 +310,7 @@ The API now includes real self-serve security foundations intended for public-be
   - database-backed `background_jobs` queue
   - `python services/api/scripts/run_worker.py` worker loop
   - `POST /ops/jobs/run` operator one-shot job execution
-- **Distributed auth rate limiting** with Redis when `REDIS_URL` is configured, with safe in-memory fallback for local/dev only.
+- **Distributed auth rate limiting** with Redis when `REDIS_URL` is configured, with a safe per-process in-memory fallback when Redis/Upstash is missing or unreachable.
 - **Startup runtime validation** for production-like environments (fails fast for missing critical auth config, warns on unsafe production settings).
 
 ### New API environment variables
@@ -323,7 +323,7 @@ The API now includes real self-serve security foundations intended for public-be
 - `EMAIL_FROM=no-reply@decoda.app`
 - `EMAIL_BRAND_NAME=Decoda RWA Guard`
 - `EMAIL_RESEND_API_KEY=...` (required when `EMAIL_PROVIDER=resend`)
-- `REDIS_URL=redis://...` (required for distributed rate limiting)
+- `REDIS_URL=redis://...` or Upstash REST credentials (optional; enables distributed rate limiting)
 - `BACKGROUND_JOBS_MODE=inline|queued`
 
 ### Worker process
@@ -1584,9 +1584,7 @@ Frontend now supports:
 
 ### Production safety defaults
 - `/health/readiness` now reports production readiness with blocking errors.
-- Production now treats these as blocking misconfiguration:
-  - `EMAIL_PROVIDER=console`
-  - missing `REDIS_URL` (shared auth throttling required)
+- Production now treats `EMAIL_PROVIDER=console` as a blocking misconfiguration. Redis/Upstash is optional; authentication falls back to per-process rate limiting when it is unavailable.
 
 ### One-command production validation
 Run:
@@ -1614,7 +1612,7 @@ When `APP_ENV=production` and `LIVE_MODE_ENABLED=true`, startup validation now r
 - `EMAIL_PROVIDER` (must not be `console`)
 - `EMAIL_FROM`
 - provider key(s): `EMAIL_RESEND_API_KEY` when `EMAIL_PROVIDER=resend`
-- `REDIS_URL`
+- Redis/Upstash credentials are optional; configure `REDIS_URL` or both Upstash REST variables for distributed counters.
 - billing credentials are optional by default (startup remains healthy for core product when `BILLING_PROVIDER=none` or billing credentials are missing).
 - if strict billing is enabled (`STRICT_PRODUCTION_BILLING=true`), readiness becomes `not_ready` until provider credentials are present.
 
@@ -1676,7 +1674,7 @@ The smoke report now classifies each provider check as `verified`, `configured_u
 
 - Email provider and sender domain setup
 - Billing provider coherence (Paddle/Stripe credentials + configuration)
-- Redis production requirement enforcement
+- Optional Redis/Upstash distributed rate-limiter configuration
 - Staging API `/health/readiness` response
 - EVM RPC reachability + `eth_chainId` probe when `EVM_RPC_URL` is set
 
@@ -1720,7 +1718,7 @@ Validation explicitly separates dependency-missing, browser-binaries-missing, an
 - Deploy and verify build output before running staging evidence.
 
 ### Railway (services/api)
-- Required baseline envs: `APP_ENV=production`, `LIVE_MODE_ENABLED=true`, `DATABASE_URL`, `AUTH_TOKEN_SECRET`, `REDIS_URL`.
+- Required baseline envs: `APP_ENV=production`, `LIVE_MODE_ENABLED=true`, `DATABASE_URL`, `AUTH_TOKEN_SECRET`. Redis/Upstash is optional.
 - Email launch path: `EMAIL_PROVIDER=resend`, `EMAIL_FROM`, `EMAIL_RESEND_API_KEY`.
 - Billing launch path: `BILLING_PROVIDER=paddle|stripe` + matching webhook/API secrets.
 

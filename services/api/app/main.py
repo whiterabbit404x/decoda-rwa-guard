@@ -2391,13 +2391,13 @@ def resilience_incident(event_id: str) -> dict[str, Any]:
 
 @app.post('/auth/signup', summary='Create a live-mode pilot user')
 def auth_signup(payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    enforce_auth_rate_limit(request, 'signup')
+    enforce_auth_rate_limit(request, 'signup', payload.get('email'))
     return with_auth_schema_json(lambda: signup_user(payload, request))
 
 
 @app.post('/auth/signin', summary='Sign in a live-mode pilot user')
 def auth_signin(payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    enforce_auth_rate_limit(request, 'signin')
+    enforce_auth_rate_limit(request, 'signin', payload.get('email'))
     return with_auth_schema_json(lambda: signin_user(payload, request))
 
 
@@ -2437,7 +2437,7 @@ def auth_me(request: Request) -> dict[str, Any]:
 
 @app.post('/auth/resend-verification', summary='Resend email verification link')
 def auth_resend_verification(payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    enforce_auth_rate_limit(request, 'resend_verification')
+    enforce_auth_rate_limit(request, 'resend_verification', payload.get('email'))
     return with_auth_schema_json(lambda: request_email_verification(payload, request))
 
 
@@ -2448,7 +2448,7 @@ def auth_verify_email(payload: dict[str, Any], request: Request) -> dict[str, An
 
 @app.post('/auth/forgot-password', summary='Request password reset token')
 def auth_forgot_password(payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    enforce_auth_rate_limit(request, 'forgot_password')
+    enforce_auth_rate_limit(request, 'forgot_password', payload.get('email'))
     return with_auth_schema_json(lambda: request_password_reset(payload, request))
 
 

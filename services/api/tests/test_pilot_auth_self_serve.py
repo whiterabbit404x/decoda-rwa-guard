@@ -345,7 +345,7 @@ def test_enforce_auth_rate_limit_redis_failure_logs_are_throttled_per_window(
     now = {'value': 1_000.0}
     monkeypatch.setattr(pilot_module, 'monotonic', lambda: now['value'])
 
-    with caplog.at_level('INFO'):
+    with caplog.at_level('WARNING'):
         for current in (1_000.0, 1_010.0, 1_020.0, 1_030.0, 1_301.0):
             now['value'] = current
             pilot_module.enforce_auth_rate_limit(_request(), 'signin')
@@ -353,10 +353,10 @@ def test_enforce_auth_rate_limit_redis_failure_logs_are_throttled_per_window(
     degraded_records = [
         record.message
         for record in caplog.records
-        if 'redis rate limiter unavailable; falling back to in-memory limiter error=dns lookup failed' in record.message
+        if 'Rate limiter fallback active: Redis unavailable. reason=dns lookup failed' in record.message
     ]
     assert len(degraded_records) == 2
-    assert all(record.levelname == 'INFO' for record in caplog.records if 'redis rate limiter unavailable; falling back to in-memory limiter error=dns lookup failed' in record.message)
+    assert all(record.levelname == 'WARNING' for record in caplog.records if 'Rate limiter fallback active: Redis unavailable. reason=dns lookup failed' in record.message)
 
 
 def test_json_safe_value_serializes_uuid_and_datetime(pilot_module) -> None:

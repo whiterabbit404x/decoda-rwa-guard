@@ -21,7 +21,7 @@ def test_auth_verify_email_route_delegates(monkeypatch):
 def test_auth_reset_password_route_applies_rate_limit(monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
-    monkeypatch.setattr(api_main, 'enforce_auth_rate_limit', lambda request, action: calls.append(action))
+    monkeypatch.setattr(api_main, 'enforce_auth_rate_limit', lambda request, action, identifier=None: calls.append(action))
     monkeypatch.setattr(api_main, 'reset_password', lambda payload, request: {'password_reset': True})
 
     response = client.post('/auth/reset-password', json={'token': 't', 'password': 'StrongPass1234'})
