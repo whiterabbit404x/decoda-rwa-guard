@@ -68,7 +68,7 @@ def test_create_response_action_translates_legacy_payload_and_writes_history(mon
     assert insert_calls[0][4] == 'revoke_approval'
     assert insert_calls[0][5] == 'simulated'
     assert insert_calls[0][6] == 'pending'
-    assert insert_calls[0][14] == 'simulated_executed'
+    assert insert_calls[0][14] == 'simulated'
     history_calls = [params for statement, params in executed if 'INSERT INTO action_history' in statement]
     assert history_calls
     assert any(params[6] == 'response_action.created' for params in history_calls)

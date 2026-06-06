@@ -401,7 +401,22 @@ function RiskOverviewCard({
             </div>
             <div className="execRiskStat">
               <span className="execRiskStatLabel">Telemetry</span>
-              <span className="execRiskStatValue execRiskStatValue--success">Fresh</span>
+              <span
+                className={`execRiskStatValue${
+                  monitoringTruth.telemetry_freshness === 'fresh'
+                    ? ' execRiskStatValue--success'
+                    : monitoringTruth.telemetry_freshness === 'stale'
+                    ? ' execRiskStatValue--warning'
+                    : ' execRiskStatValue--muted'
+                }`}
+                data-telemetry-freshness={monitoringTruth.telemetry_freshness}
+              >
+                {monitoringTruth.telemetry_freshness === 'fresh'
+                  ? 'Fresh'
+                  : monitoringTruth.telemetry_freshness === 'stale'
+                  ? 'Stale'
+                  : 'Unavailable'}
+              </span>
             </div>
           </div>
           {riskStatus ? (
@@ -409,7 +424,7 @@ function RiskOverviewCard({
           ) : null}
           <div className="execChartPlaceholder">
             <p className="muted" style={{ textAlign: 'center', fontSize: '0.82rem' }}>
-              Risk timeline →connect live telemetry to populate chart
+              No telemetry history available yet.
             </p>
           </div>
         </div>
