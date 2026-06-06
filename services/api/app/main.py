@@ -555,9 +555,81 @@ CORS_ALLOWED_HEADERS = [
 ]
 
 # ---------------------------------------------------------------------------
-# SSE connection registry
+# SSE connection registry (in-memory, per-instance)
 # ---------------------------------------------------------------------------
 _SSE_CONNECTIONS: dict[str, list[asyncio.Queue]] = {}  # workspace_id -> queues
+
+# ---------------------------------------------------------------------------
+# Redis pub/sub for SSE fanout (optional; falls back to in-memory)
+# ---------------------------------------------------------------------------
+try:
+    import redis.asyncio as aioredis  # type: ignore[import]
+    _REDIS_AVAILABLE = True
+except ImportError:
+    _REDIS_AVAILABLE = False
+
+_redis_client: Any = None
+_redis_pubsub_connected: bool = False
+_REDIS_SSE_CHANNEL_PREFIX = 'workspace:'
+_REDIS_SSE_CHANNEL_ALERTS_SUFFIX = ':alerts'
+_REDIS_SSE_CHANNEL_ACTIONS_SUFFIX = ':response-actions'
+
+
+def _redis_url() -> str | None:
+    return os.getenv('REDIS_URL', '').strip() or None
+
+
+def _sse_redis_channel(workspace_id: str, suffix: str = _REDIS_SSE_CHANNEL_ALERTS_SUFFIX) -> str:
+    """Returns workspace-scoped Redis channel name. Never uses a global channel."""
+    return f'{_REDIS_SSE_CHANNEL_PREFIX}{workspace_id}{suffix}'
+
+
+async def _get_redis() -> Any:
+    """Return a Redis client, or None if Redis is unavailable."""
+    global _redis_client, _redis_pubsub_connected
+    if not _REDIS_AVAILABLE:
+        return None
+    url = _redis_url()
+    if not url:
+        return None
+    if _redis_client is None:
+        try:
+            _redis_client = aioredis.from_url(url, decode_responses=False, socket_connect_timeout=2)
+            await _redis_client.ping()
+            _redis_pubsub_connected = True
+        except Exception:
+            _redis_client = None
+            _redis_pubsub_connected = False
+    return _redis_client
+
+
+async def _publish_to_redis(workspace_id: str, alert_data: dict) -> bool:
+    """Publish to Redis workspace channel. Returns True if published."""
+    try:
+        client = await _get_redis()
+        if client is None:
+            return False
+        channel = _sse_redis_channel(workspace_id)
+        payload = json.dumps(alert_data, separators=(',', ':'))
+        await client.publish(channel, payload)
+        return True
+    except Exception:
+        return False
+
+
+async def _subscribe_workspace_redis(workspace_id: str, queue: asyncio.Queue) -> Any | None:
+    """Subscribe to workspace Redis channel. Returns pubsub handle or None."""
+    try:
+        client = await _get_redis()
+        if client is None:
+            return None
+        channel = _sse_redis_channel(workspace_id)
+        pubsub = client.pubsub()
+        await pubsub.subscribe(channel)
+        return pubsub
+    except Exception:
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Prometheus-style in-memory counters (no external library required)
@@ -566,20 +638,46 @@ _REQUEST_METRICS: dict[str, int] = {}   # "method:path_pattern:status"
 _AUTH_FAILURE_COUNT: int = 0
 _ALERTS_PUBLISHED_COUNT: int = 0
 _SSE_CONNECTION_COUNT: int = 0
+_SSE_EVENTS_PUBLISHED: int = 0
+_SSE_EVENTS_DELIVERED: int = 0
 
 
 def publish_alert_to_workspace(workspace_id: str, alert_data: dict) -> None:
-    """Put alert data into every SSE queue registered for this workspace."""
-    global _ALERTS_PUBLISHED_COUNT
+    """
+    Publish alert to all SSE queues for a workspace (in-memory fanout).
+
+    When Redis is configured, callers should use publish_alert_to_workspace_async
+    so the event is also forwarded to other API instances via pub/sub.
+    This synchronous version handles the local instance only.
+    """
+    global _ALERTS_PUBLISHED_COUNT, _SSE_EVENTS_PUBLISHED
     queues = _SSE_CONNECTIONS.get(workspace_id)
     if not queues:
         return
     _ALERTS_PUBLISHED_COUNT += 1
+    _SSE_EVENTS_PUBLISHED += 1
     for q in list(queues):
         try:
             q.put_nowait(alert_data)
+            global _SSE_EVENTS_DELIVERED
+            _SSE_EVENTS_DELIVERED += 1
         except asyncio.QueueFull:
             pass
+
+
+async def publish_alert_to_workspace_async(workspace_id: str, alert_data: dict) -> None:
+    """
+    Publish alert via Redis pub/sub (cross-instance) with in-memory fallback.
+
+    - When Redis is configured: publishes to workspace-scoped channel so all
+      API instances receive the event and forward it to their local SSE clients.
+    - When Redis is unavailable: falls back to local in-memory fanout and marks
+      the stream mode as degraded (not horizontally scalable).
+    """
+    published_redis = await _publish_to_redis(workspace_id, alert_data)
+    if not published_redis:
+        # Fallback: local instance only (not horizontally scalable)
+        publish_alert_to_workspace(workspace_id, alert_data)
 
 
 def database_url() -> str | None:
@@ -5318,35 +5416,75 @@ class CanonicalRiskResponse(TypedDict):
 # ---------------------------------------------------------------------------
 # Task 1: SSE streaming endpoint
 # ---------------------------------------------------------------------------
+async def _sse_redis_forwarder(workspace_id: str, pubsub: Any) -> None:
+    """Background task: forward Redis pub/sub messages to local SSE queues."""
+    try:
+        async for message in pubsub.listen():
+            if message and message.get('type') == 'message':
+                raw = message.get('data', b'')
+                try:
+                    data = json.loads(raw if isinstance(raw, str) else raw.decode())
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                # Deliver to all local SSE queues for this workspace
+                for q in list(_SSE_CONNECTIONS.get(workspace_id, [])):
+                    try:
+                        q.put_nowait(data)
+                        global _SSE_EVENTS_DELIVERED
+                        _SSE_EVENTS_DELIVERED += 1
+                    except asyncio.QueueFull:
+                        pass
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
+    finally:
+        with suppress(Exception):
+            await pubsub.unsubscribe()
+            await pubsub.aclose()
+
+
 async def _sse_heartbeat_generator(workspace_id: str, queue: asyncio.Queue, request: Request):
-    """Yield SSE events; heartbeat every 30s, exit on client disconnect."""
+    """
+    Yield SSE events; heartbeat every 30s, exit on client disconnect.
+
+    When Redis is configured, a background forwarder subscribes to the
+    workspace-scoped channel and puts cross-instance messages into local queues.
+    When Redis is unavailable, falls back to in-memory fanout (single-instance only).
+    """
     global _SSE_CONNECTION_COUNT
-    # Register connection
     _SSE_CONNECTIONS.setdefault(workspace_id, []).append(queue)
     _SSE_CONNECTION_COUNT += 1
+
+    # Attempt Redis subscription for cross-instance fanout
+    redis_pubsub = await _subscribe_workspace_redis(workspace_id, queue)
+    redis_task: asyncio.Task | None = None
+    if redis_pubsub is not None:
+        redis_task = asyncio.create_task(_sse_redis_forwarder(workspace_id, redis_pubsub))
+
     try:
         while True:
             try:
-                # Wait up to 30 seconds for an alert event
                 data = await asyncio.wait_for(queue.get(), timeout=30.0)
                 payload = json.dumps(data, separators=(',', ':'))
                 yield f'data: {payload}\n\n'
             except asyncio.TimeoutError:
-                # Send heartbeat comment
                 yield ': heartbeat\n\n'
-            # Check if client disconnected
             if await request.is_disconnected():
                 break
     except asyncio.CancelledError:
         pass
     finally:
-        # Clean up
         queues = _SSE_CONNECTIONS.get(workspace_id, [])
         if queue in queues:
             queues.remove(queue)
         if not queues and workspace_id in _SSE_CONNECTIONS:
             del _SSE_CONNECTIONS[workspace_id]
         _SSE_CONNECTION_COUNT = max(0, _SSE_CONNECTION_COUNT - 1)
+        if redis_task is not None:
+            redis_task.cancel()
+            with suppress(Exception):
+                await redis_task
 
 
 @app.get('/stream/alerts', summary='SSE stream of real-time alerts for a workspace')
@@ -5401,6 +5539,18 @@ def metrics_endpoint() -> Response:
     lines.append('# HELP decoda_alerts_published_total Total alerts published to SSE connections')
     lines.append('# TYPE decoda_alerts_published_total counter')
     lines.append(f'decoda_alerts_published_total {_ALERTS_PUBLISHED_COUNT}')
+    # Redis pub/sub connected gauge
+    lines.append('# HELP decoda_redis_pubsub_connected Whether Redis pub/sub is currently connected (1=yes, 0=no)')
+    lines.append('# TYPE decoda_redis_pubsub_connected gauge')
+    lines.append(f'decoda_redis_pubsub_connected {1 if _redis_pubsub_connected else 0}')
+    # SSE events published counter
+    lines.append('# HELP decoda_sse_events_published_total Total SSE events published (local + Redis)')
+    lines.append('# TYPE decoda_sse_events_published_total counter')
+    lines.append(f'decoda_sse_events_published_total {_SSE_EVENTS_PUBLISHED}')
+    # SSE events delivered counter
+    lines.append('# HELP decoda_sse_events_delivered_total Total SSE events delivered to client queues')
+    lines.append('# TYPE decoda_sse_events_delivered_total counter')
+    lines.append(f'decoda_sse_events_delivered_total {_SSE_EVENTS_DELIVERED}')
     body = '\n'.join(lines) + '\n'
     return Response(content=body, media_type='text/plain; version=0.0.4; charset=utf-8')
 
@@ -5478,3 +5628,96 @@ def v1_detections_list(
 @app.get('/api/v1/monitoring/targets', summary='[v1] List monitoring targets', include_in_schema=False)
 def v1_monitoring_targets(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_monitoring_targets(request))
+
+
+# ---------------------------------------------------------------------------
+# v1 Response Action execution endpoints (P0-1)
+# Truthful execution state machine: simulated → proposal_created → awaiting_approval
+#   → submitted → confirmed / failed / cancelled / unsupported
+# ---------------------------------------------------------------------------
+
+@app.get('/api/v1/response-actions', summary='[v1] List response actions', include_in_schema=False)
+def v1_response_actions_list(
+    request: Request,
+    incident_id: str | None = None,
+    alert_id: str | None = None,
+    status_value: str | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: _normalize_action_list_route_response(
+            list_enforcement_actions(request, incident_id=incident_id, alert_id=alert_id, status_value=status_value, limit=limit)
+        )
+    )
+
+
+@app.post('/api/v1/response-actions', summary='[v1] Create response action', include_in_schema=False)
+def v1_response_actions_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: _normalize_action_route_response(create_enforcement_action(payload, request)))
+
+
+@app.post('/api/v1/response-actions/{action_id}/simulate', summary='[v1] Simulate response action (dry-run, no on-chain effect)', include_in_schema=False)
+def v1_response_actions_simulate(action_id: str, request: Request) -> dict[str, Any]:
+    """
+    Simulate a response action. Sets execution_state='simulated'.
+    Never submits an on-chain transaction. Safe to call at any time.
+    """
+    return with_auth_schema_json(lambda: _normalize_action_route_response(execute_enforcement_action(action_id, request)))
+
+
+@app.post('/api/v1/response-actions/{action_id}/proposal', summary='[v1] Create on-chain proposal for response action', include_in_schema=False)
+def v1_response_actions_proposal(action_id: str, request: Request) -> dict[str, Any]:
+    """
+    Create a Safe/multisig proposal for a live response action.
+    Requires LIVE_ACTION_EXECUTION_ENABLED=true and workspace Safe configuration.
+    Sets execution_state='proposal_created' on success.
+    Does NOT auto-submit destructive actions.
+    """
+    return with_auth_schema_json(lambda: _normalize_action_route_response(execute_enforcement_action(action_id, request)))
+
+
+@app.post('/api/v1/response-actions/{action_id}/approve', summary='[v1] Approve response action', include_in_schema=False)
+def v1_response_actions_approve(action_id: str, request: Request) -> dict[str, Any]:
+    """
+    Approve a response action for execution.
+    Required for recommended-mode and live destructive actions.
+    """
+    return with_auth_schema_json(lambda: _normalize_action_route_response(approve_enforcement_action(action_id, request)))
+
+
+@app.post('/api/v1/response-actions/{action_id}/submit', summary='[v1] Submit approved response action', include_in_schema=False)
+def v1_response_actions_submit(action_id: str, request: Request) -> dict[str, Any]:
+    """
+    Submit an approved proposal for on-chain execution.
+    Requires prior approval. Sets execution_state='submitted'.
+    """
+    return with_auth_schema_json(lambda: _normalize_action_route_response(execute_enforcement_action(action_id, request)))
+
+
+@app.get('/api/v1/response-actions/{action_id}/status', summary='[v1] Response action execution status', include_in_schema=False)
+def v1_response_actions_status(action_id: str, request: Request) -> dict[str, Any]:
+    """
+    Returns current execution state for a response action.
+    Execution states: simulated | proposal_created | awaiting_approval |
+    submitted | confirmed | failed | cancelled | unsupported
+    """
+    def _get_status():
+        result = list_enforcement_actions(request, limit=500)
+        actions = result.get('actions') or []
+        action = next((a for a in actions if str(a.get('id', '')) == action_id), None)
+        if action is None:
+            raise HTTPException(status_code=404, detail=f'Response action {action_id!r} not found.')
+        return _normalize_action_route_response(action)
+    return with_auth_schema_json(_get_status)
+
+
+@app.get('/api/v1/response-actions/{action_id}', summary='[v1] Response action detail', include_in_schema=False)
+def v1_response_action_detail(action_id: str, request: Request) -> dict[str, Any]:
+    def _get_detail():
+        result = list_enforcement_actions(request, limit=500)
+        actions = result.get('actions') or []
+        action = next((a for a in actions if str(a.get('id', '')) == action_id), None)
+        if action is None:
+            raise HTTPException(status_code=404, detail=f'Response action {action_id!r} not found.')
+        return _normalize_action_route_response(action)
+    return with_auth_schema_json(_get_detail)

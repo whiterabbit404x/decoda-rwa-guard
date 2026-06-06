@@ -12718,7 +12718,7 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
                         'from_status': None,
                         'to_status': status_value,
                         'mode': mode,
-                        'execution_state': 'proposed' if mode == 'live' else 'simulated_executed',
+                        'execution_state': 'proposed' if mode == 'live' else 'simulated',
                         'reason': 'created',
                     }
                 )
@@ -12762,7 +12762,7 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
                 token_contract,
                 spender,
                 calldata,
-                'proposed' if mode == 'live' else 'simulated_executed',
+                'proposed' if mode == 'live' else 'simulated',
                 _json_dumps(execution_metadata),
                 _json_dumps(execution_artifacts),
                 _json_dumps([]),
@@ -12830,7 +12830,7 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
                 'action_type': action_type,
                 'mode': mode,
                 'calldata': calldata,
-                'execution_state': 'proposed' if mode == 'live' else 'simulated_executed',
+                'execution_state': 'proposed' if mode == 'live' else 'simulated',
                 'live_execution_path': capability.get('live_execution_path'),
                 'execution_artifacts': execution_artifacts,
                 'provider_receipts': [],
@@ -13004,9 +13004,9 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             if str(action.get('approved_by_user_id')) == str(user.get('id')):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Live action execution requires a separate approver and executor.')
             metadata['step_up'] = _require_live_action_step_up_auth(request, user=user)
-        execution_state = 'simulated_executed'
+        execution_state = 'simulated'
         next_status = 'executed'
-        result_summary = 'Action executed in simulation mode.'
+        result_summary = 'Action simulated. No on-chain transaction was submitted.'
         if mode == 'recommended':
             metadata['execution_mode'] = 'recommended'
             metadata['execution_state'] = 'recommended_approved'
@@ -13016,7 +13016,7 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             result_code = 202
             provider_name = 'recommended'
         elif mode != 'live':
-            metadata['execution_mode'] = 'simulated'
+            metadata['execution_mode'] = 'simulation'
         elif capability.get('live_execution_path') == 'safe':
             safe_response = _propose_safe_transaction(
                 action_id,
@@ -13304,8 +13304,16 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         if attestation:
             external_references['attestation'] = attestation
             external_references['attestation_hash'] = attestation
-        timeline_event_type = 'response_action.proposed' if execution_state == 'proposed' else 'response_action.executed'
-        timeline_message = 'Response action proposed; awaiting external execution.' if execution_state == 'proposed' else 'Response action executed.'
+        _proposal_states = {'proposed', 'proposal_created', 'awaiting_approval'}
+        if execution_state in _proposal_states:
+            timeline_event_type = 'response_action.proposed'
+            timeline_message = 'Response action proposed; awaiting external execution.'
+        elif execution_state == 'simulated':
+            timeline_event_type = 'response_action.simulated'
+            timeline_message = 'Response action simulated. No on-chain transaction was submitted.'
+        else:
+            timeline_event_type = 'response_action.executed'
+            timeline_message = 'Response action executed.'
         append_incident_timeline_event(
             connection,
             workspace_id=workspace_context['workspace_id'],

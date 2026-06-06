@@ -681,3 +681,106 @@ def test_derive_confidence_status_unavailable_when_contradictions_and_unknown_so
         signal_freshness={'telemetry': 'unavailable'},
     )
     assert result == 'unavailable'
+
+
+# ---------------------------------------------------------------------------
+# New P0-2 tests: derive_confidence_status full range
+# ---------------------------------------------------------------------------
+
+def test_derive_confidence_status_unavailable_when_no_live_provider():
+    result = derive_confidence_status(
+        contradiction_flags=[],
+        evidence_source='none',
+        signal_freshness={'telemetry': 'current', 'heartbeat': 'current', 'poll': 'current'},
+    )
+    assert result == 'unavailable', 'No live evidence source must yield unavailable'
+
+
+def test_derive_confidence_status_unavailable_when_telemetry_missing():
+    result = derive_confidence_status(
+        contradiction_flags=[],
+        evidence_source='live_provider',
+        signal_freshness={'telemetry': 'unavailable'},
+    )
+    assert result == 'unavailable'
+
+
+def test_derive_confidence_status_unavailable_when_telemetry_unknown():
+    result = derive_confidence_status(
+        contradiction_flags=[],
+        evidence_source='live_provider',
+        signal_freshness={'telemetry': 'unknown'},
+    )
+    assert result == 'unavailable'
+
+
+def test_derive_confidence_status_low_when_telemetry_stale():
+    result = derive_confidence_status(
+        contradiction_flags=[],
+        evidence_source='live_provider',
+        signal_freshness={'telemetry': 'stale', 'heartbeat': 'current', 'poll': 'current'},
+    )
+    assert result == 'low', 'Stale telemetry must yield low confidence'
+
+
+def test_derive_confidence_status_high_when_all_current():
+    result = derive_confidence_status(
+        contradiction_flags=[],
+        evidence_source='live_provider',
+        signal_freshness={'telemetry': 'current', 'heartbeat': 'current', 'poll': 'current'},
+    )
+    assert result == 'high', 'All signals current must yield high confidence'
+
+
+def test_derive_confidence_status_medium_when_only_heartbeat_current():
+    result = derive_confidence_status(
+        contradiction_flags=[],
+        evidence_source='live_provider',
+        signal_freshness={'telemetry': 'current', 'heartbeat': 'current', 'poll': 'stale'},
+    )
+    assert result == 'medium', 'Telemetry + heartbeat but stale poll must yield medium'
+
+
+def test_derive_confidence_status_medium_when_only_poll_current():
+    result = derive_confidence_status(
+        contradiction_flags=[],
+        evidence_source='live_provider',
+        signal_freshness={'telemetry': 'current', 'heartbeat': 'stale', 'poll': 'current'},
+    )
+    assert result == 'medium', 'Telemetry + poll but stale heartbeat must yield medium'
+
+
+def test_derive_confidence_status_low_when_telemetry_current_but_no_heartbeat_or_poll():
+    result = derive_confidence_status(
+        contradiction_flags=[],
+        evidence_source='live_provider',
+        signal_freshness={'telemetry': 'current'},
+    )
+    assert result == 'low', 'Telemetry current but no heartbeat/poll must yield low'
+
+
+def test_derive_confidence_status_contradiction_forces_unavailable_for_unknown_source():
+    result = derive_confidence_status(
+        contradiction_flags=['healthy_without_reporting_systems'],
+        evidence_source='unknown',
+        signal_freshness={'telemetry': 'current'},
+    )
+    assert result == 'unavailable'
+
+
+def test_derive_confidence_status_high_not_returned_with_stale_telemetry():
+    result = derive_confidence_status(
+        contradiction_flags=[],
+        evidence_source='live_provider',
+        signal_freshness={'telemetry': 'stale', 'heartbeat': 'current', 'poll': 'current'},
+    )
+    assert result != 'high', 'Stale telemetry must never yield high confidence'
+
+
+def test_derive_confidence_status_high_not_returned_with_unknown_source():
+    result = derive_confidence_status(
+        contradiction_flags=[],
+        evidence_source='',
+        signal_freshness={'telemetry': 'current', 'heartbeat': 'current', 'poll': 'current'},
+    )
+    assert result != 'high', 'Unknown evidence source must never yield high confidence'

@@ -192,11 +192,29 @@ def derive_confidence_status(
     signal_freshness: dict[str, str],
 ) -> str:
     """
-    Returns safe confidence_status.  When contradictions exist or telemetry is not
-    current, confidence is never elevated to high.
+    Returns safe confidence_status based on contradictions, evidence source, and signal freshness.
+
+    - 'unavailable': no live evidence source, or telemetry missing/unknown
+    - 'low': live source but telemetry stale, or provider exists but signals partial
+    - 'medium': telemetry current but only one of heartbeat/poll is current
+    - 'high': telemetry, heartbeat, and poll all current with no contradictions
+
+    Never returns 'high' unless all strict criteria pass.
     """
     if contradiction_flags:
         return 'low' if evidence_source not in _UNKNOWN_EVIDENCE_SOURCES else 'unavailable'
-    if signal_freshness.get('telemetry') in {'unavailable', 'unknown', 'stale'}:
+    if evidence_source in _UNKNOWN_EVIDENCE_SOURCES:
         return 'unavailable'
-    return 'unavailable'
+    telemetry = signal_freshness.get('telemetry')
+    if telemetry in {'unavailable', 'unknown', None}:
+        return 'unavailable'
+    if telemetry == 'stale':
+        return 'low'
+    # telemetry is 'current' — upgrade based on heartbeat + poll presence
+    heartbeat = signal_freshness.get('heartbeat')
+    poll = signal_freshness.get('poll')
+    if heartbeat == 'current' and poll == 'current':
+        return 'high'
+    if heartbeat == 'current' or poll == 'current':
+        return 'medium'
+    return 'low'

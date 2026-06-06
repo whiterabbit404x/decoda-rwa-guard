@@ -173,7 +173,7 @@ def test_incident_timeline_records_evidence_escalation_and_action_execution_path
         'evidence.linked',
         'response_action.created',
         'response_action.proposed',
-        'response_action.executed',
+        'response_action.simulated',   # simulated mode uses truthful 'simulated' event type
         'response_action.manual_required',
         'response_action.executed',
         'response_action.unsupported',
@@ -260,7 +260,7 @@ def test_audit_chain_detection_alert_incident_action_ids_remain_linked(monkeypat
     request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
     pilot.execute_enforcement_action('act-sim', request)
 
-    executed_event = next(metadata for event, metadata in timeline_events if event == 'response_action.executed')
-    assert executed_event['response_action_id'] == 'act-sim'
-    assert executed_event['alert_id'] == 'alert-1'
-    assert executed_event['status'] == 'executed'
+    simulated_event = next(metadata for event, metadata in timeline_events if event == 'response_action.simulated')
+    assert simulated_event['response_action_id'] == 'act-sim'
+    assert simulated_event['alert_id'] == 'alert-1'
+    assert simulated_event['status'] == 'executed'

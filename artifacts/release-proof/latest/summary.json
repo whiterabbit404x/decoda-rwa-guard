@@ -1,16 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-05T16:08:27.396828+00:00",
-  "release_status": "pass",
-  "release_channel": "staging",
-  "commit_sha": "9587f3c4769c9379565001a32f8866059411fc6a",
-  "branch": "main",
-  "ci_required_gates_ready": true,
+  "generated_at": "2026-06-06T09:16:47.095486+00:00",
+  "release_status": "fail",
+  "release_channel": "local",
+  "commit_sha": "a28ffa4e090b200e00de1ac6904140c5ad667ebc",
+  "branch": "claude/cool-pasteur-zDVmc",
+  "ci_required_gates_ready": false,
   "launch_proof_ready": true,
   "manifest_ready": true,
-  "test_report_ready": true,
-  "paid_launch_ready": true,
-  "blockers": [],
+  "test_report_ready": false,
+  "paid_launch_ready": false,
+  "blockers": [
+    "ci-required-gates not ready",
+    "test-report-summary not ready"
+  ],
   "warnings": [],
   "evidence_files": [
     "artifacts/release-proof/latest/ci-required-gates.json",
