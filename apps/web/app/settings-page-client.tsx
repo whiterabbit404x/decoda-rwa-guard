@@ -243,6 +243,19 @@ export default function SettingsPageClient() {
     window.location.href = payload.checkout_url;
   }
 
+  async function openBillingPortal() {
+    setSubmitting(true);
+    const res = await call('/billing/portal-session', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    setSubmitting(false);
+    if (!res.ok) { setMessage('Unable to open billing portal. Contact support if billing is active.'); return; }
+    const payload = await res.json();
+    if (payload.portal_url) {
+      window.location.href = payload.portal_url;
+    } else {
+      setMessage('Billing portal URL not returned. Contact support.');
+    }
+  }
+
   const billingStatus = subscription?.status ?? 'Not Configured';
   const billingAvailable = billingEnabled(billingRuntime);
   const nearSeatLimit = seatSummary ? seatSummary.used >= seatSummary.limit : false;
@@ -571,8 +584,15 @@ export default function SettingsPageClient() {
               {nearSeatLimit ? <p style={{ marginTop: '0.5rem', color: '#fbbf24', fontSize: '0.82rem' }}>Seat limit reached. Contact support to expand access.</p> : null}
               {billingStatus === 'past_due' ? <p style={{ marginTop: '0.5rem', color: '#f87171', fontSize: '0.82rem' }}>Billing is past due. Update billing details to avoid disruption.</p> : null}
               <div style={{ marginTop: '0.85rem' }}>
-                <button className="btn btn-secondary" type="button" disabled style={{ opacity: 0.5, cursor: 'not-allowed' }}>
-                  Manage Plan -Action not configured
+                <button
+                  className="btn btn-secondary"
+                  type="button"
+                  disabled={submitting || !billingAvailable}
+                  style={{ opacity: billingAvailable ? 1 : 0.5, cursor: billingAvailable ? 'pointer' : 'not-allowed' }}
+                  onClick={() => void openBillingPortal()}
+                  title={billingAvailable ? 'Open billing portal to manage subscription and invoices' : 'Billing provider not configured'}
+                >
+                  {submitting ? 'Opening...' : 'Manage Billing'}
                 </button>
               </div>
             </SectionCard>

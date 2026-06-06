@@ -3003,7 +3003,7 @@ def signup_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         user = build_user_response(connection, user_id)
     return {
         'verification_required': True,
-        'verification_token': verification_token if env_flag('AUTH_EXPOSE_DEBUG_TOKENS', default=False) else None,
+        'verification_token': None,  # tokens never exposed in API responses
         'user': user,
     }
 
@@ -3299,7 +3299,7 @@ def mfa_begin_enrollment(request: Request) -> dict[str, Any]:
         issuer = os.getenv('MFA_ISSUER', 'Decoda RWA Guard')
         uri = f'otpauth://totp/{issuer}:{user["email"]}?secret={secret}&issuer={issuer}&digits=6&period=30'
         connection.commit()
-        return {'secret': secret if env_flag('AUTH_EXPOSE_DEBUG_TOKENS', default=False) else None, 'otpauth_uri': uri}
+        return {'secret': None, 'otpauth_uri': uri}  # tokens never exposed in API responses
 
 
 def mfa_confirm_enrollment(payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -3365,7 +3365,7 @@ def request_email_verification(payload: dict[str, Any], request: Request) -> dic
         token = _create_user_token(connection, str(user['id']), 'email_verification', EMAIL_VERIFICATION_TTL_MINUTES, request=request)
         _dispatch_transactional_email(connection, to_email=email, purpose='email_verification', token=token, request=request)
         connection.commit()
-        return {'sent': True, 'verification_token': token if env_flag('AUTH_EXPOSE_DEBUG_TOKENS', default=False) else None}
+        return {'sent': True, 'verification_token': None}  # tokens never exposed in API responses
 
 
 def verify_email_token(payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -3403,7 +3403,7 @@ def request_password_reset(payload: dict[str, Any], request: Request) -> dict[st
         token = _create_user_token(connection, str(user['id']), 'password_reset', PASSWORD_RESET_TTL_MINUTES, request=request)
         _dispatch_transactional_email(connection, to_email=email, purpose='password_reset', token=token, request=request)
         connection.commit()
-        return {'sent': True, 'reset_token': token if env_flag('AUTH_EXPOSE_DEBUG_TOKENS', default=False) else None}
+        return {'sent': True, 'reset_token': None}  # tokens never exposed in API responses
 
 
 def reset_password(payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -14917,3 +14917,46 @@ def apply_template(template_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Template not found.')
     module_key, config = template_map[template_id]
     return put_module_config(module_key, {'config': config}, request)
+
+
+def delete_account(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Permanently delete the authenticated user account (GDPR Article 17).
+
+    Requires current_password confirmation. Soft-deletes and anonymizes personal
+    data while retaining legally required audit records in anonymized form.
+    Sessions and tokens are revoked immediately.
+    """
+    require_live_mode()
+    current_password = str(payload.get('current_password', '')).strip()
+    if not current_password:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='current_password is required to delete your account.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        user_id = str(user['id'])
+        row = connection.execute(
+            'SELECT id, password_hash, deleted_at FROM users WHERE id = %s',
+            (user_id,),
+        ).fetchone()
+        if row is None or row.get('deleted_at') is not None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='User not found.')
+        if not verify_password(current_password, row.get('password_hash') or ''):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Current password is incorrect.')
+        anonymized_email = f'deleted_{user_id}@deleted.invalid'
+        connection.execute(
+            "UPDATE users SET deleted_at = NOW(), email = %s, full_name = 'Deleted User' WHERE id = %s",
+            (anonymized_email, user_id),
+        )
+        connection.execute('DELETE FROM auth_sessions WHERE user_id = %s', (user_id,))
+        connection.execute(
+            "UPDATE auth_tokens SET revoked_at = NOW() WHERE user_id = %s AND revoked_at IS NULL",
+            (user_id,),
+        )
+        # Anonymize personal references in audit logs but retain security evidence
+        connection.execute(
+            "UPDATE audit_logs SET user_id = NULL, metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{_deleted}', 'true') WHERE user_id = %s",
+            (user_id,),
+        )
+        log_audit(connection, action='account.deleted', entity_type='user', entity_id=user_id, request=request, user_id=None, workspace_id=None, metadata={'reason': 'gdpr_delete'})
+        connection.commit()
+    return {'deleted': True}

@@ -114,3 +114,15 @@ def read_encrypted_env(name: str, *, aad: str = '') -> str:
     if raw.startswith(f'{SECRET_SCHEME_V1}:') or raw.startswith('legacy_b64:'):
         return decrypt_secret(raw, aad=aad)
     return raw
+
+
+def validate_secret_encryption_key_at_startup() -> None:
+    import logging
+    _log = logging.getLogger(__name__)
+    app_mode = os.getenv('APP_MODE', 'local').strip().lower()
+    if app_mode in {'production', 'staging'}:
+        _secret_key_required()  # raises RuntimeError if missing/invalid
+        _log.info('secret_encryption_key_validated app_mode=%s', app_mode)
+    else:
+        if not os.getenv('SECRET_ENCRYPTION_KEY', '').strip():
+            _log.warning('SECRET_ENCRYPTION_KEY not set; secret encryption disabled in %s mode', app_mode)
