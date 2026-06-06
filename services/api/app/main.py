@@ -21,8 +21,10 @@ from urllib.request import Request as UrlRequest, urlopen
 
 from contextlib import asynccontextmanager
 
+import hmac as _hmac_mod
+import uuid as _uuid_mod
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from services.api.app.pilot import (
@@ -188,6 +190,7 @@ from services.api.app.pilot import (
     patch_monitored_system,
     delete_monitored_system,
     run_guided_threat_workflow,
+    delete_account,
 )
 from services.api.app.monitoring_runner import (
     get_background_loop_health,
@@ -214,6 +217,8 @@ from services.api.app.db_failure import (
     extract_db_host_from_dsn,
     normalize_db_error_snippet,
 )
+from services.api.app.secret_crypto import validate_secret_encryption_key_at_startup
+from services.api.app.structured_logging import configure_logging
 
 
 def _find_repo_root(start: Path) -> Path:
@@ -251,6 +256,7 @@ from phase1_local.dev_support import (
 load_env_file()
 
 logger = logging.getLogger(__name__)
+configure_logging(service='api')
 
 SERVICE_NAME = 'api'
 PORT = int(os.getenv('PORT', 8000))
@@ -539,7 +545,35 @@ CORS_ALLOWED_HEADERS = [
     'Pragma',
     'X-CSRF-Token',
     'X-Workspace-Id',
+    'X-API-Key',
 ]
+
+# ---------------------------------------------------------------------------
+# SSE connection registry
+# ---------------------------------------------------------------------------
+_SSE_CONNECTIONS: dict[str, list[asyncio.Queue]] = {}  # workspace_id -> queues
+
+# ---------------------------------------------------------------------------
+# Prometheus-style in-memory counters (no external library required)
+# ---------------------------------------------------------------------------
+_REQUEST_METRICS: dict[str, int] = {}   # "method:path_pattern:status"
+_AUTH_FAILURE_COUNT: int = 0
+_ALERTS_PUBLISHED_COUNT: int = 0
+_SSE_CONNECTION_COUNT: int = 0
+
+
+def publish_alert_to_workspace(workspace_id: str, alert_data: dict) -> None:
+    """Put alert data into every SSE queue registered for this workspace."""
+    global _ALERTS_PUBLISHED_COUNT
+    queues = _SSE_CONNECTIONS.get(workspace_id)
+    if not queues:
+        return
+    _ALERTS_PUBLISHED_COUNT += 1
+    for q in list(queues):
+        try:
+            q.put_nowait(alert_data)
+        except asyncio.QueueFull:
+            pass
 
 
 def database_url() -> str | None:
@@ -1466,6 +1500,7 @@ def bootstrap_live_pilot() -> dict[str, Any]:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global MONITORING_BACKGROUND_TASK, MONITORING_LOOP_RUNTIME_STATE
+    validate_secret_encryption_key_at_startup()
     seed_service(SERVICE_NAME, PORT, DETAIL, DEFAULT_METRICS)
     seed_embedded_dependency_registry()
     bootstrap_live_pilot()
@@ -1640,6 +1675,96 @@ logger.info(
 )
 
 
+# ---------------------------------------------------------------------------
+# Task 4: Trace-ID middleware (added last so it runs first in ASGI chain)
+# ---------------------------------------------------------------------------
+@app.middleware('http')
+async def trace_id_middleware(request: Request, call_next):
+    incoming = request.headers.get('X-Request-ID', '') or request.headers.get('X-Trace-ID', '')
+    trace_id = incoming.strip()[:64] if incoming.strip() else str(_uuid_mod.uuid4())
+    request.state.trace_id = trace_id
+    response = await call_next(request)
+    response.headers['X-Trace-ID'] = trace_id
+    return response
+
+
+# ---------------------------------------------------------------------------
+# Task 5: Request metrics middleware
+# ---------------------------------------------------------------------------
+@app.middleware('http')
+async def request_metrics_middleware(request: Request, call_next):
+    response = await call_next(request)
+    path_pattern = request.url.path
+    key = f"{request.method}:{path_pattern}:{response.status_code}"
+    _REQUEST_METRICS[key] = _REQUEST_METRICS.get(key, 0) + 1
+    return response
+
+
+# ---------------------------------------------------------------------------
+# Task 3: API key enforcement middleware for /api/v1/* routes
+# ---------------------------------------------------------------------------
+_API_KEY_EXEMPT_PREFIXES = ('/health', '/ops/', '/auth/', '/billing/webhooks/', '/api/billing/')
+
+
+@app.middleware('http')
+async def api_key_enforcement_middleware(request: Request, call_next):
+    global _AUTH_FAILURE_COUNT
+    path = request.url.path
+    if not path.startswith('/api/v1/'):
+        return await call_next(request)
+    # Check exempt prefixes (none start with /api/v1/ but kept for extensibility)
+    for prefix in _API_KEY_EXEMPT_PREFIXES:
+        if path == prefix or path.startswith(prefix):
+            return await call_next(request)
+    api_key_header = request.headers.get('X-API-Key', '').strip()
+    if not api_key_header:
+        _AUTH_FAILURE_COUNT += 1
+        return JSONResponse(
+            {'detail': 'X-API-Key required', 'code': 'API_KEY_MISSING'},
+            status_code=401,
+        )
+    # Query DB for matching key by prefix
+    secret_prefix = api_key_header[:12]
+    from services.api.app.pilot import _hash_workspace_api_key_secret as _hash_key
+    candidate_hash = _hash_key(api_key_header)
+    try:
+        with pg_connection() as conn:
+            rows = conn.execute(
+                '''
+                SELECT id, workspace_id, secret_hash, revoked_at, scopes
+                FROM api_keys
+                WHERE secret_prefix = %s AND revoked_at IS NULL
+                LIMIT 5
+                ''',
+                (secret_prefix,),
+            ).fetchall()
+            matched = None
+            for row in rows:
+                stored_hash = str(row['secret_hash'] or '')
+                if _hmac_mod.compare_digest(stored_hash.encode(), candidate_hash.encode()):
+                    matched = row
+                    break
+            if matched is None:
+                _AUTH_FAILURE_COUNT += 1
+                return JSONResponse(
+                    {'detail': 'Invalid API key', 'code': 'API_KEY_INVALID'},
+                    status_code=401,
+                )
+            # Update last_used_at
+            conn.execute(
+                'UPDATE api_keys SET last_used_at = NOW() WHERE id = %s',
+                (matched['id'],),
+            )
+            conn.commit()
+            request.state.workspace_id = str(matched['workspace_id'])
+    except Exception:
+        logger.exception('api_key_enforcement_middleware_db_error')
+        _AUTH_FAILURE_COUNT += 1
+        return JSONResponse(
+            {'detail': 'Invalid API key', 'code': 'API_KEY_INVALID'},
+            status_code=401,
+        )
+    return await call_next(request)
 
 
 @app.middleware('http')
@@ -3546,7 +3671,11 @@ def alerts_resolve(alert_id: str, request: Request) -> dict[str, Any]:
 
 @app.post('/alerts/{alert_id}/escalate', summary='Escalate alert to incident')
 def alerts_escalate(alert_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: escalate_alert_to_incident(alert_id, payload, request))
+    result = with_auth_schema_json(lambda: escalate_alert_to_incident(alert_id, payload, request))
+    workspace_id = request.headers.get('x-workspace-id', '') or ''
+    if workspace_id and isinstance(result, dict):
+        publish_alert_to_workspace(workspace_id, {'type': 'alert', 'alert_type': 'escalation', 'alert_id': alert_id})
+    return result
 
 
 @app.get('/alerts/{alert_id}/evidence', summary='List alert evidence payload')
@@ -3880,6 +4009,10 @@ def _persist_live_analysis(request: Request, payload: dict[str, Any], response_p
             response_payload=response_payload,
         )
         connection.commit()
+        publish_alert_to_workspace(
+            workspace_context['workspace_id'],
+            {'type': 'alert', 'alert_type': analysis_type, 'title': title, 'analysis_run_id': analysis_run_id},
+        )
         return {
             **response_payload,
             'pilot_saved': True,
@@ -3958,6 +4091,10 @@ def pilot_compliance_governance_action(payload: dict[str, Any], request: Request
         )
         log_audit(connection, action='governance.action', entity_type='governance_action', entity_id=governance_action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'target_id': response.get('target_id') or payload.get('target_id')})
         connection.commit()
+    publish_alert_to_workspace(
+        workspace_context['workspace_id'],
+        {'type': 'alert', 'alert_type': 'governance_action', 'title': str(response.get('action_type') or payload.get('action_type') or 'Governance action'), 'analysis_run_id': analysis_run_id},
+    )
     return {**response, 'pilot_saved': True, 'analysis_run_id': analysis_run_id, 'governance_action_id': governance_action_id, 'workspace': workspace_context['workspace']}
 
 
@@ -4010,6 +4147,10 @@ def pilot_resilience_record_incident(payload: dict[str, Any], request: Request) 
         )
         log_audit(connection, action='incident.record', entity_type='incident', entity_id=incident_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'severity': response.get('severity') or payload.get('severity')})
         connection.commit()
+    publish_alert_to_workspace(
+        workspace_context['workspace_id'],
+        {'type': 'alert', 'alert_type': 'resilience_incident', 'title': str(response.get('event_type') or payload.get('event_type') or 'Resilience incident'), 'analysis_run_id': analysis_run_id},
+    )
     return {**response, 'pilot_saved': True, 'analysis_run_id': analysis_run_id, 'incident_id': incident_id, 'workspace': workspace_context['workspace']}
 
 
@@ -5159,3 +5300,168 @@ class CanonicalRiskResponse(TypedDict):
     redemption_liquidity_stress: int
     contagion_risk_label: str
     regulatory_evidence_priority: Literal['low', 'medium', 'high']
+
+
+# ---------------------------------------------------------------------------
+# Task 1: SSE streaming endpoint
+# ---------------------------------------------------------------------------
+async def _sse_heartbeat_generator(workspace_id: str, queue: asyncio.Queue, request: Request):
+    """Yield SSE events; heartbeat every 30s, exit on client disconnect."""
+    global _SSE_CONNECTION_COUNT
+    # Register connection
+    _SSE_CONNECTIONS.setdefault(workspace_id, []).append(queue)
+    _SSE_CONNECTION_COUNT += 1
+    try:
+        while True:
+            try:
+                # Wait up to 30 seconds for an alert event
+                data = await asyncio.wait_for(queue.get(), timeout=30.0)
+                payload = json.dumps(data, separators=(',', ':'))
+                yield f'data: {payload}\n\n'
+            except asyncio.TimeoutError:
+                # Send heartbeat comment
+                yield ': heartbeat\n\n'
+            # Check if client disconnected
+            if await request.is_disconnected():
+                break
+    except asyncio.CancelledError:
+        pass
+    finally:
+        # Clean up
+        queues = _SSE_CONNECTIONS.get(workspace_id, [])
+        if queue in queues:
+            queues.remove(queue)
+        if not queues and workspace_id in _SSE_CONNECTIONS:
+            del _SSE_CONNECTIONS[workspace_id]
+        _SSE_CONNECTION_COUNT = max(0, _SSE_CONNECTION_COUNT - 1)
+
+
+@app.get('/stream/alerts', summary='SSE stream of real-time alerts for a workspace')
+async def stream_alerts(request: Request):
+    """Server-Sent Events stream. Authenticates via Bearer token and X-Workspace-Id."""
+    try:
+        user = authenticate_request(request)
+    except HTTPException as exc:
+        return JSONResponse({'detail': exc.detail, 'code': 'UNAUTHENTICATED'}, status_code=401)
+    workspace_id = request.headers.get('x-workspace-id', '').strip()
+    if not workspace_id:
+        # Fall back to user's current workspace
+        workspace_id = str(user.get('current_workspace_id') or user.get('id') or 'default')
+    queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+    headers: dict[str, str] = {'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
+    trace_id = getattr(request.state, 'trace_id', None)
+    if trace_id:
+        headers['X-Trace-ID'] = trace_id
+    return StreamingResponse(
+        _sse_heartbeat_generator(workspace_id, queue, request),
+        media_type='text/event-stream',
+        headers=headers,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Task 5: /metrics endpoint (raw Prometheus text format)
+# ---------------------------------------------------------------------------
+@app.get('/metrics', summary='Prometheus-format metrics scrape endpoint', include_in_schema=False)
+def metrics_endpoint() -> Response:
+    lines: list[str] = []
+    # HTTP request totals
+    lines.append('# HELP decoda_http_requests_total Total HTTP requests by method, path, and status')
+    lines.append('# TYPE decoda_http_requests_total counter')
+    for key, count in _REQUEST_METRICS.items():
+        parts = key.split(':', 2)
+        if len(parts) == 3:
+            method, path_val, status_code = parts
+        else:
+            method, path_val, status_code = key, 'unknown', 'unknown'
+        path_val = path_val.replace('"', '\\"')
+        lines.append(f'decoda_http_requests_total{{method="{method}",path="{path_val}",status="{status_code}"}} {count}')
+    # Active SSE connections gauge
+    lines.append('# HELP decoda_stream_connections_active Current active SSE stream connections')
+    lines.append('# TYPE decoda_stream_connections_active gauge')
+    lines.append(f'decoda_stream_connections_active {_SSE_CONNECTION_COUNT}')
+    # Auth failures counter
+    lines.append('# HELP decoda_auth_failures_total Total authentication failures')
+    lines.append('# TYPE decoda_auth_failures_total counter')
+    lines.append(f'decoda_auth_failures_total {_AUTH_FAILURE_COUNT}')
+    # Alerts published counter
+    lines.append('# HELP decoda_alerts_published_total Total alerts published to SSE connections')
+    lines.append('# TYPE decoda_alerts_published_total counter')
+    lines.append(f'decoda_alerts_published_total {_ALERTS_PUBLISHED_COUNT}')
+    body = '\n'.join(lines) + '\n'
+    return Response(content=body, media_type='text/plain; version=0.0.4; charset=utf-8')
+
+
+# ---------------------------------------------------------------------------
+# Task 6: GDPR delete account endpoint
+# ---------------------------------------------------------------------------
+@app.delete('/auth/delete-account', summary='Permanently delete account and all personal data (GDPR)')
+async def delete_account_endpoint(request: Request) -> dict[str, Any]:
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    return with_auth_schema_json(lambda: delete_account(payload, request))
+
+
+# ---------------------------------------------------------------------------
+# /api/v1 versioned route aliases (P1-3)
+# Authentication for /api/v1/* is enforced by api_key_enforcement_middleware.
+# ---------------------------------------------------------------------------
+
+
+@app.get('/api/v1/alerts', summary='[v1] List alerts', include_in_schema=False)
+def v1_alerts_list(
+    request: Request,
+    severity: str | None = None,
+    module: str | None = None,
+    target_id: str | None = None,
+    status_value: str | None = None,
+    source: str | None = None,
+) -> dict[str, Any]:
+    try:
+        return with_auth_schema_json(
+            lambda: list_alerts(request, severity=severity, module=module, target_id=target_id, status_value=status_value, source=source)
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error('v1_alerts_list_failed error=%s', exc)
+        raise HTTPException(status_code=500, detail='Unable to list alerts.') from None
+
+
+@app.get('/api/v1/alerts/{alert_id}', summary='[v1] Alert detail', include_in_schema=False)
+def v1_alert_detail(alert_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_alert(alert_id, request))
+
+
+@app.get('/api/v1/incidents', summary='[v1] List incidents', include_in_schema=False)
+def v1_incidents_list(request: Request, status_value: str | None = None) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_incidents(request, status_value=status_value))
+
+
+@app.get('/api/v1/assets', summary='[v1] List assets', include_in_schema=False)
+def v1_assets_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_assets(request))
+
+
+@app.get('/api/v1/targets', summary='[v1] List targets', include_in_schema=False)
+def v1_targets_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_targets(request))
+
+
+@app.get('/api/v1/detections', summary='[v1] List detections', include_in_schema=False)
+def v1_detections_list(
+    request: Request,
+    limit: int = 50,
+    severity: str | None = None,
+    status_value: str | None = None,
+) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: list_detections(request, limit=limit, severity=severity, status_value=status_value)
+    )
+
+
+@app.get('/api/v1/monitoring/targets', summary='[v1] List monitoring targets', include_in_schema=False)
+def v1_monitoring_targets(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_monitoring_targets(request))

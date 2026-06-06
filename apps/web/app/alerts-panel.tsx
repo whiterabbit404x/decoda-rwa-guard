@@ -124,6 +124,7 @@ export default function AlertsPanel() {
   const [evidenceSourceFilter, setEvidenceSourceFilter] = useState('');
   const [dataLoading, setDataLoading] = useState(false);
   const [message, setMessage] = useState('');
+  const [streamStatus, setStreamStatus] = useState<'connected' | 'reconnecting' | 'polling' | 'offline'>('offline');
 
   const counts = runtime?.counts as Record<string, number> | undefined;
   const workspaceEvidenceSource: string = summary.evidence_source_summary ?? '';
@@ -160,6 +161,73 @@ export default function AlertsPanel() {
       cancelled = true;
     };
   }, [apiUrl, authHeaders, runtimeLoading, severityFilter, statusFilter]);
+
+  // SSE streaming — supplements polling with real-time alert updates.
+  // Falls back gracefully to polling if the stream endpoint is unavailable.
+  useEffect(() => {
+    if (runtimeLoading) return;
+    let abortController: AbortController | null = null;
+    let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+    let active = true;
+
+    async function connectStream() {
+      if (!active) return;
+      setStreamStatus('reconnecting');
+      abortController = new AbortController();
+      try {
+        const headers = authHeaders();
+        const res = await fetch(`${apiUrl}/stream/alerts`, {
+          headers,
+          signal: abortController.signal,
+        });
+        if (!res.ok || !res.body) {
+          setStreamStatus('polling');
+          return;
+        }
+        setStreamStatus('connected');
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (active) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const payload = JSON.parse(line.slice(6)) as { type?: string; payload?: AlertRow };
+                if (payload.type === 'alert' && payload.payload) {
+                  setAlerts((prev) => {
+                    const exists = prev.find((a) => a.id === payload.payload!.id);
+                    if (exists) return prev.map((a) => (a.id === payload.payload!.id ? payload.payload! : a));
+                    return [payload.payload!, ...prev].slice(0, 200);
+                  });
+                }
+              } catch {
+                // Ignore malformed SSE data lines
+              }
+            }
+          }
+        }
+      } catch (err: unknown) {
+        if ((err as Error)?.name === 'AbortError') return;
+        setStreamStatus('polling');
+        if (active) {
+          reconnectTimeout = setTimeout(() => void connectStream(), 5000);
+        }
+      }
+    }
+
+    void connectStream();
+    return () => {
+      active = false;
+      abortController?.abort();
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      setStreamStatus('offline');
+    };
+  }, [apiUrl, authHeaders, runtimeLoading]);
 
   const filteredAlerts = useMemo(() => {
     return alerts.filter((a) => {
@@ -233,6 +301,33 @@ export default function AlertsPanel() {
 
   return (
     <section className="featureSection">
+      {/* ── Stream status indicator ────────────────────────────────── */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+        <span
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: '50%',
+            background:
+              streamStatus === 'connected'
+                ? '#22c55e'
+                : streamStatus === 'reconnecting'
+                  ? '#f59e0b'
+                  : '#6b7280',
+            display: 'inline-block',
+          }}
+        />
+        <span style={{ fontSize: '0.72rem', color: '#94a3b8' }}>
+          {streamStatus === 'connected'
+            ? 'Live connected'
+            : streamStatus === 'reconnecting'
+              ? 'Reconnecting...'
+              : streamStatus === 'polling'
+                ? 'Polling fallback'
+                : 'Offline'}
+        </span>
+      </div>
+
       {/* ── Metric row ─────────────────────────────────────────────── */}
       <div
         style={{
