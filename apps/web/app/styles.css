@@ -5885,3 +5885,497 @@ a.mktTrustBadge:hover {
   color: #5a6478;
 }
 
+/* === SIGN UP SAAS REDESIGN === */
+.suPage {
+  min-height: 100vh;
+  background: #070b14;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.suBgGlow {
+  position: absolute;
+  top: -20%;
+  left: -10%;
+  width: 60%;
+  height: 70%;
+  background: radial-gradient(ellipse at 30% 30%, rgba(59, 130, 246, 0.13) 0%, transparent 65%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.suBgGrid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(59, 130, 246, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(59, 130, 246, 0.04) 1px, transparent 1px);
+  background-size: 48px 48px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.suWrapper {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2.5rem 1.5rem 3rem;
+}
+
+.suOuter {
+  width: 100%;
+  max-width: 1200px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3rem;
+  align-items: start;
+}
+
+/* ── Left brand panel ──────────────────────────────────────── */
+.suBrand {
+  padding: 1rem 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 600px;
+}
+
+.suBrandInner {
+  flex: 1;
+}
+
+.suLogoHeader {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 2rem;
+}
+
+.suLogoIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  flex-shrink: 0;
+}
+
+.suLogoText {
+  display: flex;
+  flex-direction: column;
+  line-height: 1;
+}
+
+.suLogoName {
+  font-size: 1.1rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: #e6edf3;
+}
+
+.suLogoSub {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  color: #3b82f6;
+  margin-top: 0.18rem;
+}
+
+.suBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.8rem;
+  border-radius: 999px;
+  border: 1px solid rgba(59, 130, 246, 0.38);
+  background: rgba(59, 130, 246, 0.1);
+  color: #93c5fd;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 1.75rem;
+}
+
+.suHeadline {
+  font-size: clamp(1.8rem, 3vw, 2.6rem);
+  font-weight: 800;
+  line-height: 1.16;
+  color: #f0f6fc;
+  margin: 0 0 1.25rem;
+  letter-spacing: -0.025em;
+}
+
+.suHeadlineAccent {
+  background: linear-gradient(90deg, #3b82f6, #60a5fa, #93c5fd);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.suLede {
+  font-size: 0.95rem;
+  line-height: 1.65;
+  color: #8b949e;
+  margin: 0 0 2.25rem;
+  max-width: 42ch;
+}
+
+.suFeatureCards {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.suFeatureCard {
+  display: flex;
+  gap: 0.9rem;
+  align-items: flex-start;
+  padding: 0.9rem 1rem;
+  border-radius: 12px;
+  background: rgba(14, 22, 37, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  transition: border-color 0.15s;
+}
+
+.suFeatureCard:hover {
+  border-color: rgba(59, 130, 246, 0.2);
+}
+
+.suFeatureCardIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  color: #93c5fd;
+  flex-shrink: 0;
+}
+
+.suFeatureCardTitle {
+  margin: 0 0 0.2rem;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #e6edf3;
+}
+
+.suFeatureCardDesc {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #8b949e;
+  line-height: 1.5;
+}
+
+.suTrustSection {
+  margin-top: 2.25rem;
+  padding-top: 1.75rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.suTrustLine {
+  font-size: 0.82rem;
+  color: #5a6478;
+  margin: 0 0 1rem;
+}
+
+.suPartners {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+}
+
+.suPartner {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #3d4d5f;
+  text-transform: uppercase;
+}
+
+/* ── Right form card ───────────────────────────────────────── */
+.suFormPanel {
+  display: flex;
+  flex-direction: column;
+}
+
+.suCard {
+  background: rgba(14, 22, 37, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 20px;
+  padding: 2.5rem;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5), 0 0 0 0.5px rgba(59, 130, 246, 0.06);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.suCardTitle {
+  margin: 0 0 0.4rem;
+  font-size: 1.45rem;
+  font-weight: 700;
+  color: #f0f6fc;
+  letter-spacing: -0.02em;
+}
+
+.suCardSubtitle {
+  margin: 0 0 1.75rem;
+  font-size: 0.9rem;
+  color: #8b949e;
+  line-height: 1.5;
+}
+
+.suFormGroup {
+  margin-bottom: 1rem;
+}
+
+.suLabel {
+  display: block;
+  margin-bottom: 0.45rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #8b949e;
+}
+
+.suInputWrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.suInputIcon {
+  position: absolute;
+  left: 0.9rem;
+  color: #5a6478;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.suInput {
+  width: 100%;
+  padding: 0.72rem 0.9rem;
+  background: #0d1422;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  color: #e6edf3;
+  font: inherit;
+  font-size: 0.925rem;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.suInput::placeholder {
+  color: #3d4d5f;
+}
+
+.suInput:focus {
+  outline: none;
+  border-color: rgba(59, 130, 246, 0.55);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
+}
+
+.suInputWithIcon {
+  padding-left: 2.6rem;
+}
+
+.suInputWithToggle {
+  padding-right: 2.8rem;
+}
+
+.suPasswordToggle {
+  position: absolute;
+  right: 0.8rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: #5a6478;
+  cursor: pointer;
+  padding: 0.25rem;
+  border-radius: 4px;
+  transition: color 0.15s;
+}
+
+.suPasswordToggle:hover {
+  color: #93c5fd;
+}
+
+.suInputHint {
+  margin: 0.4rem 0 0;
+  font-size: 0.78rem;
+  color: #5a6478;
+  line-height: 1.4;
+}
+
+.suAlert {
+  padding: 0.65rem 0.9rem;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  margin-bottom: 1rem;
+  line-height: 1.5;
+}
+
+.suAlertError {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.28);
+  color: #fca5a5;
+}
+
+.suAlertWarn {
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.28);
+  color: #fde68a;
+}
+
+.suSubmitBtn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.82rem 1rem;
+  border-radius: 10px;
+  border: none;
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+  color: #fff;
+  font: inherit;
+  font-size: 0.975rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s, box-shadow 0.15s;
+  box-shadow: 0 4px 16px rgba(37, 99, 235, 0.38);
+  margin-bottom: 1.25rem;
+}
+
+.suSubmitBtn:hover:not(:disabled) {
+  box-shadow: 0 6px 24px rgba(37, 99, 235, 0.55);
+  opacity: 0.93;
+}
+
+.suSubmitBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.suDivider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.suDividerLine {
+  flex: 1;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.suDividerText {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: #5a6478;
+  white-space: nowrap;
+}
+
+.suSocialRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.65rem;
+  margin-bottom: 1.25rem;
+}
+
+.suSocialBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.03);
+  color: #8b949e;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: not-allowed;
+  opacity: 0.55;
+  transition: none;
+}
+
+.suAccountRow {
+  margin: 0 0 1.1rem;
+  font-size: 0.875rem;
+  color: #8b949e;
+  text-align: center;
+}
+
+.suLink {
+  color: #3b82f6;
+  text-decoration: none;
+  font-weight: 500;
+  transition: color 0.15s;
+}
+
+.suLink:hover {
+  color: #60a5fa;
+  text-decoration: underline;
+}
+
+.suPrivacyNote {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  margin: 0;
+  font-size: 0.78rem;
+  color: #5a6478;
+  text-align: center;
+}
+
+/* ── Sign-up responsive ────────────────────────────────────── */
+@media (max-width: 900px) {
+  .suOuter {
+    grid-template-columns: 1fr;
+    gap: 2rem;
+  }
+
+  .suBrand {
+    min-height: auto;
+    order: 2;
+  }
+
+  .suFormPanel {
+    order: 1;
+  }
+}
+
+@media (max-width: 540px) {
+  .suWrapper {
+    padding: 1.5rem 1rem 2rem;
+  }
+
+  .suCard {
+    padding: 1.75rem 1.25rem;
+  }
+
+  .suSocialRow {
+    grid-template-columns: 1fr;
+  }
+
+  .suHeadline {
+    font-size: 1.75rem;
+  }
+}
+
