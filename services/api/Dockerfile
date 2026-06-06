@@ -10,7 +10,8 @@ WORKDIR /app
 COPY services/api/requirements.txt services/api/requirements.txt
 
 RUN python -m pip install --upgrade pip \
-    && python -m pip install -r services/api/requirements.txt
+    && python -m pip install -r services/api/requirements.txt \
+    && useradd --system --create-home --uid 1001 --shell /sbin/nologin app
 
 # Railway must build this Dockerfile from the repository root so these sibling
 # service fixture directories remain available during COPY.
@@ -24,5 +25,7 @@ COPY services/compliance-service/app ./services/compliance-service/app
 COPY services/compliance-service/data ./services/compliance-service/data
 COPY services/reconciliation-service/app ./services/reconciliation-service/app
 COPY services/reconciliation-service/data ./services/reconciliation-service/data
+
+USER app
 
 CMD ["sh", "-c", "${APP_START_COMMAND:-uvicorn services.api.app.main:app --host 0.0.0.0 --port ${PORT:-8000}}"]

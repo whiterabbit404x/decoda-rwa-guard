@@ -98,6 +98,9 @@ RATE_LIMIT_FALLBACK_REDIS_UNAVAILABLE_KEY = 'rate_limit.fallback.redis_unavailab
 logger = logging.getLogger(__name__)
 _redis_rate_limiter: Any | None = None
 _redis_rate_limiter_lock = threading.Lock()
+_session_blacklist_redis: Any | None = None
+_session_blacklist_redis_lock = threading.Lock()
+CSRF_TOKEN_WINDOW_SECONDS = 3600
 _workspace_reconcile_lock = threading.Lock()
 _workspace_reconcile_inflight: dict[str, dict[str, Any]] = {}
 WORKSPACE_RECONCILE_CACHE_SECONDS = 30
@@ -1583,6 +1586,37 @@ def _b64url_decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + padding)
 
 
+def _get_session_blacklist_redis() -> Any | None:
+    redis_url = os.getenv('REDIS_URL', '').strip()
+    if not redis_url:
+        return None
+    global _session_blacklist_redis
+    with _session_blacklist_redis_lock:
+        if _session_blacklist_redis is None:
+            redis_module = importlib.import_module('redis')
+            _session_blacklist_redis = redis_module.Redis.from_url(redis_url, decode_responses=True)
+    return _session_blacklist_redis
+
+
+def _blacklist_session_token(token_hash: str, ttl_seconds: int) -> None:
+    try:
+        r = _get_session_blacklist_redis()
+        if r is not None:
+            r.setex(f'pilot:session:revoked:{token_hash}', max(ttl_seconds, 60), '1')
+    except Exception:
+        pass  # Redis failure must not block revocation; DB revoked_at is the authoritative source
+
+
+def _is_session_blacklisted(token_hash: str) -> bool:
+    try:
+        r = _get_session_blacklist_redis()
+        if r is not None:
+            return bool(r.exists(f'pilot:session:revoked:{token_hash}'))
+    except Exception:
+        pass
+    return False
+
+
 def auth_token_secret_configured() -> bool:
     return bool(os.getenv('AUTH_TOKEN_SECRET', '').strip() or os.getenv('JWT_SECRET', '').strip())
 
@@ -1596,6 +1630,38 @@ def token_secret() -> str:
 
 def _auth_token_hash(value: str) -> str:
     return hashlib.sha256(f'{token_secret()}::{value}'.encode('utf-8')).hexdigest()
+
+
+def issue_csrf_token() -> str:
+    nonce = secrets.token_hex(16)
+    window = int(utc_now().timestamp()) // CSRF_TOKEN_WINDOW_SECONDS
+    sig = hmac.new(
+        token_secret().encode('utf-8'),
+        f'{nonce}:{window}'.encode('utf-8'),
+        hashlib.sha256,
+    ).hexdigest()
+    return f'{nonce}.{sig}'
+
+
+def validate_csrf_token(token: str) -> bool:
+    if not token:
+        return False
+    try:
+        nonce, sig = token.rsplit('.', 1)
+    except ValueError:
+        return False
+    if not nonce or not sig:
+        return False
+    try:
+        secret = token_secret().encode('utf-8')
+    except Exception:
+        return False
+    now_window = int(utc_now().timestamp()) // CSRF_TOKEN_WINDOW_SECONDS
+    for window in (now_window, now_window - 1):
+        expected = hmac.new(secret, f'{nonce}:{window}'.encode('utf-8'), hashlib.sha256).hexdigest()
+        if hmac.compare_digest(expected, sig):
+            return True
+    return False
 
 
 def _normalize_workspace_role(role: str) -> str:
@@ -1750,22 +1816,49 @@ def _dispatch_transactional_email(
     )
 
 
+def _scrypt_maxmem(n: int, r: int) -> int:
+    # 2x headroom over the theoretical minimum (128 * N * r)
+    return max(n * r * 128 * 2, 67108864)
+
+
 def hash_password(password: str) -> str:
+    n, r, p = 2**16, 8, 1
     salt = secrets.token_bytes(16)
-    digest = hashlib.scrypt(password.encode('utf-8'), salt=salt, n=2**14, r=8, p=1)
-    return f"scrypt${_b64url(salt)}${_b64url(digest)}"
+    digest = hashlib.scrypt(password.encode('utf-8'), salt=salt, n=n, r=r, p=p, maxmem=_scrypt_maxmem(n, r))
+    # Format: scrypt$<log2n>$<r>$<p>$<salt_b64>$<digest_b64>
+    return f"scrypt$16${r}${p}${_b64url(salt)}${_b64url(digest)}"
 
 
 def verify_password(password: str, encoded_password: str) -> bool:
+    parts = encoded_password.split('$')
+    if not parts or parts[0] != 'scrypt':
+        return False
+    if len(parts) == 3:
+        # Legacy format (n=2**14, r=8, p=1): scrypt$<salt_b64>$<digest_b64>
+        n, r, p = 2**14, 8, 1
+        try:
+            salt = _b64url_decode(parts[1])
+            expected = _b64url_decode(parts[2])
+        except Exception:
+            return False
+    elif len(parts) == 6:
+        # Current format: scrypt$<log2n>$<r>$<p>$<salt_b64>$<digest_b64>
+        try:
+            n = 2 ** int(parts[1])
+            r = int(parts[2])
+            p = int(parts[3])
+            salt = _b64url_decode(parts[4])
+            expected = _b64url_decode(parts[5])
+        except Exception:
+            return False
+    else:
+        return False
     try:
-        scheme, salt_raw, digest_raw = encoded_password.split('$', 2)
-    except ValueError:
+        candidate = hashlib.scrypt(
+            password.encode('utf-8'), salt=salt, n=n, r=r, p=p, maxmem=_scrypt_maxmem(n, r)
+        )
+    except Exception:
         return False
-    if scheme != 'scrypt':
-        return False
-    salt = _b64url_decode(salt_raw)
-    expected = _b64url_decode(digest_raw)
-    candidate = hashlib.scrypt(password.encode('utf-8'), salt=salt, n=2**14, r=8, p=1)
     return hmac.compare_digest(candidate, expected)
 
 
@@ -1800,6 +1893,9 @@ def decode_access_token(token: str) -> dict[str, Any]:
 
 def _validate_session(connection: Any, token: str, payload: dict[str, Any]) -> None:
     session_hash = _auth_token_hash(token)
+    # Fast-path: Redis blacklist check for immediate revocation
+    if _is_session_blacklisted(session_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Session is no longer active.')
     session = connection.execute(
         '''
         SELECT revoked_at, expires_at
@@ -1824,6 +1920,19 @@ def _validate_session(connection: Any, token: str, payload: dict[str, Any]) -> N
 def enforce_auth_rate_limit(request: Request, action: str) -> None:
     client_host = request.client.host if request.client else 'unknown'
     redis_url = os.getenv('REDIS_URL', '').strip()
+    is_production = os.getenv('APP_ENV', os.getenv('APP_MODE', 'development')).strip().lower() in {'production', 'prod'}
+
+    if not redis_url and is_production:
+        logger.error(
+            'auth_rate_limit_redis_required_missing action=%s; REDIS_URL is required in production',
+            action,
+            extra={'event': 'rate_limit.production_redis_missing'},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Service configuration error: distributed rate limiter unavailable.',
+        )
+
     if redis_url:
         global _redis_rate_limiter
         with _redis_rate_limiter_lock:
@@ -1845,6 +1954,16 @@ def enforce_auth_rate_limit(request: Request, action: str) -> None:
             raise
         except Exception as exc:
             condensed_error = str(exc).strip().splitlines()[0] if str(exc).strip() else 'unknown_error'
+            if is_production:
+                logger.error(
+                    'redis rate limiter failed in production; refusing fallback error=%s',
+                    condensed_error,
+                    extra={'event': 'rate_limit.production_redis_failure'},
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail='Service temporarily unavailable: rate limiter unreachable.',
+                )
             should_emit_info = False
             now = monotonic()
             with _rate_limit_fallback_warning_lock:
@@ -3053,13 +3172,14 @@ def signout_user(request: Request) -> dict[str, Any]:
     require_live_mode()
     authorization = request.headers.get('authorization', '')
     token = authorization.split(' ', 1)[1].strip() if authorization.startswith('Bearer ') else ''
+    token_hash = _auth_token_hash(token) if token else None
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
-        if token:
+        if token_hash:
             connection.execute(
                 'UPDATE auth_sessions SET revoked_at = NOW(), updated_at = NOW() WHERE session_token_hash = %s',
-                (_auth_token_hash(token),),
+                (token_hash,),
             )
         log_audit(
             connection,
@@ -3072,6 +3192,8 @@ def signout_user(request: Request) -> dict[str, Any]:
             metadata={},
         )
         connection.commit()
+    if token_hash:
+        _blacklist_session_token(token_hash, SESSION_TTL_HOURS * 3600)
     return {'signed_out': True}
 
 
@@ -3080,6 +3202,10 @@ def signout_all_sessions(request: Request) -> dict[str, Any]:
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
+        active_sessions = connection.execute(
+            'SELECT session_token_hash FROM auth_sessions WHERE user_id = %s AND revoked_at IS NULL',
+            (user['id'],),
+        ).fetchall()
         connection.execute(
             'UPDATE auth_sessions SET revoked_at = NOW(), updated_at = NOW() WHERE user_id = %s AND revoked_at IS NULL',
             (user['id'],),
@@ -3090,7 +3216,9 @@ def signout_all_sessions(request: Request) -> dict[str, Any]:
         )
         log_audit(connection, action='auth.signout_all', entity_type='user', entity_id=user['id'], request=request, user_id=user['id'], workspace_id=user['current_workspace_id'], metadata={})
         connection.commit()
-        return {'signed_out_all': True}
+    for row in active_sessions:
+        _blacklist_session_token(str(row['session_token_hash']), SESSION_TTL_HOURS * 3600)
+    return {'signed_out_all': True}
 
 
 def list_active_sessions(request: Request) -> dict[str, Any]:
@@ -3115,6 +3243,10 @@ def revoke_session(request: Request, session_id: str) -> dict[str, Any]:
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
+        session_row = connection.execute(
+            'SELECT session_token_hash, expires_at FROM auth_sessions WHERE id = %s AND user_id = %s AND revoked_at IS NULL',
+            (session_id, user['id']),
+        ).fetchone()
         result = connection.execute(
             '''
             UPDATE auth_sessions
@@ -3123,8 +3255,17 @@ def revoke_session(request: Request, session_id: str) -> dict[str, Any]:
             ''',
             (session_id, user['id']),
         )
+        revoked = bool(getattr(result, 'rowcount', 0))
         connection.commit()
-        return {'revoked': bool(getattr(result, 'rowcount', 0))}
+    if revoked and session_row:
+        expires_at = session_row.get('expires_at')
+        if expires_at:
+            remaining = int((expires_at - utc_now()).total_seconds())
+            ttl_seconds = max(remaining, 60)
+        else:
+            ttl_seconds = SESSION_TTL_HOURS * 3600
+        _blacklist_session_token(str(session_row['session_token_hash']), ttl_seconds)
+    return {'revoked': revoked}
 
 
 def _totp_code(secret: str, at_time: datetime | None = None, digits: int = 6, period: int = 30) -> str:
