@@ -1967,6 +1967,50 @@ async def enforce_csrf_on_mutations(request: Request, call_next):
     return await call_next(request)
 
 
+# ---------------------------------------------------------------------------
+# P7: Request body size limits
+# ---------------------------------------------------------------------------
+_BODY_SIZE_EXEMPT_PREFIXES = ('/health', '/metrics', '/stream/')
+
+_DEFAULT_MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024   # 10 MiB for general JSON
+_DEFAULT_MAX_UPLOAD_BODY_BYTES  = 50 * 1024 * 1024   # 50 MiB for uploads
+_DEFAULT_MAX_INGEST_BODY_BYTES  = 20 * 1024 * 1024   # 20 MiB for telemetry ingest
+
+_UPLOAD_PATH_PREFIXES  = ('/uploads/', '/export/', '/exports/')
+_INGEST_PATH_PREFIXES  = ('/telemetry/', '/monitoring/ingest/', '/ingest/')
+
+
+def _resolve_body_limit(path: str) -> int:
+    for prefix in _UPLOAD_PATH_PREFIXES:
+        if path.startswith(prefix):
+            return int(os.getenv('MAX_UPLOAD_BODY_BYTES', _DEFAULT_MAX_UPLOAD_BODY_BYTES))
+    for prefix in _INGEST_PATH_PREFIXES:
+        if path.startswith(prefix):
+            return int(os.getenv('MAX_INGEST_BODY_BYTES', _DEFAULT_MAX_INGEST_BODY_BYTES))
+    return int(os.getenv('MAX_REQUEST_BODY_BYTES', _DEFAULT_MAX_REQUEST_BODY_BYTES))
+
+
+@app.middleware('http')
+async def body_size_limit_middleware(request: Request, call_next):
+    path = request.url.path
+    for prefix in _BODY_SIZE_EXEMPT_PREFIXES:
+        if path == prefix or path.startswith(prefix):
+            return await call_next(request)
+    content_length_header = request.headers.get('content-length', '').strip()
+    if content_length_header:
+        try:
+            declared_size = int(content_length_header)
+        except ValueError:
+            declared_size = 0
+        limit = _resolve_body_limit(path)
+        if declared_size > limit:
+            return JSONResponse(
+                {'detail': f'Request body too large. Maximum {limit} bytes allowed.', 'code': 'PAYLOAD_TOO_LARGE'},
+                status_code=413,
+            )
+    return await call_next(request)
+
+
 @app.get('/auth/csrf-token', summary='Issue a CSRF token for state-changing requests')
 def auth_csrf_token_endpoint() -> dict[str, Any]:
     return {'csrf_token': issue_csrf_token()}
@@ -5240,13 +5284,22 @@ def build_risk_summary(queue: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _sanitize_demo_tx_hash(tx_hash: str) -> str:
+    """In production, demo placeholder hashes must not appear in API responses."""
+    if tx_hash and str(tx_hash).lower().startswith('0xphase1'):
+        app_mode = os.getenv('APP_MODE', 'local').strip().lower()
+        if app_mode in {'production', 'staging'}:
+            return '[demo-placeholder-redacted]'
+    return tx_hash
+
+
 def serialize_queue_item(item: dict[str, Any]) -> dict[str, Any]:
     request = item['request']
     evaluation = item['evaluation']
     return {
         'id': item['id'],
         'label': item['label'],
-        'tx_hash': request['transaction_payload']['tx_hash'],
+        'tx_hash': _sanitize_demo_tx_hash(request['transaction_payload']['tx_hash']),
         'from_address': request['transaction_payload']['from_address'],
         'to_address': request['transaction_payload']['to_address'],
         'contract_name': request['contract_metadata']['contract_name'],
@@ -5277,7 +5330,7 @@ def build_risk_alerts(queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 'recommendation': item['evaluation']['recommendation'],
                 'rule': top_rule['summary'] if top_rule else 'Manual review requested.',
                 'explanation': item['evaluation']['explanation'],
-                'tx_hash': item['request']['transaction_payload']['tx_hash'],
+                'tx_hash': _sanitize_demo_tx_hash(item['request']['transaction_payload']['tx_hash']),
                 'status': 'Open' if item['evaluation']['recommendation'] == 'BLOCK' else 'Reviewing',
                 'normalized_risk': build_normalized_risk(item['evaluation'], degraded=not item['live_data']),
             }

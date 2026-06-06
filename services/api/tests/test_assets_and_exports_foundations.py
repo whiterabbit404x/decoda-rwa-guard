@@ -91,7 +91,7 @@ class _FakeConnection:
     def execute(self, query, params=None):
         normalized = ' '.join(str(query).split())
         if 'FROM export_jobs WHERE id = %s AND workspace_id = %s' in normalized:
-            return _FakeRow({'id': 'exp-1', 'export_type': 'proof_bundle', 'format': 'json', 'filters': {'incident_id': 'inc-1', 'include_raw_events': True}})
+            return _FakeRow({'id': 'exp-1', 'export_type': 'proof_bundle', 'format': 'json', 'filters': {'incident_id': 'inc-1', 'include_raw_events': True}, 'requested_by_user_id': None})
         if 'SELECT * FROM incidents WHERE workspace_id = %s AND id = %s' in normalized:
             return _FakeRow({'id': 'inc-1', 'workspace_id': 'ws-1', 'title': 'Incident', 'severity': 'high'})
         if 'FROM alerts a JOIN detection_metrics dm ON dm.alert_id = a.id' in normalized:
@@ -102,6 +102,8 @@ class _FakeConnection:
             return _FakeRow([{'id': 'action-1', 'action_type': 'notify_team', 'status': 'completed', 'mode': 'simulated', 'execution_metadata': None, 'created_at': '2026-01-01T00:05:00Z', 'executed_at': None, 'rolled_back_at': None}])
         if 'FROM detections' in normalized and 'linked_alert_id = ANY' in normalized:
             return _FakeRow([{'id': 'det-1', 'detection_type': 'anomaly', 'severity': 'high', 'confidence': 0.9, 'evidence_source': 'simulator', 'status': 'open', 'detected_at': '2026-01-01T00:01:00Z', 'title': 'Test detection'}])
+        if 'FROM audit_logs' in normalized and 'row_hash IS NOT NULL' in normalized:
+            return _FakeRow(None)  # audit chain tip query
         if 'FROM audit_logs' in normalized:
             return _FakeRow([])
         if "UPDATE export_jobs SET status = 'completed'" in normalized:
@@ -122,6 +124,7 @@ def test_generate_export_artifact_proof_bundle_contains_expected_files(monkeypat
     expected_keys = {
         'alerts.json', 'detection_metrics.json', 'evidence.json', 'incidents.json',
         'summary.json', 'detections.json', 'response_actions.json', 'audit_log.json',
+        'manifest.json', 'seal.json',
     }
     assert set(row.keys()) == expected_keys
     summary = row['summary.json']
@@ -141,7 +144,7 @@ def test_generate_export_artifact_report_template_includes_metadata(monkeypatch:
         def execute(self, query, params=None):
             normalized = ' '.join(str(query).split())
             if 'FROM export_jobs WHERE id = %s AND workspace_id = %s' in normalized:
-                return _FakeRow({'id': 'exp-2', 'export_type': 'report', 'format': 'json', 'filters': {'report_template': 'oracle_integrity_report', 'evidence_refs': [{'kind': 'alert', 'id': 'alert-1'}]}})
+                return _FakeRow({'id': 'exp-2', 'export_type': 'report', 'format': 'json', 'filters': {'report_template': 'oracle_integrity_report', 'evidence_refs': [{'kind': 'alert', 'id': 'alert-1'}]}, 'requested_by_user_id': None})
             if 'FROM analysis_runs WHERE workspace_id = %s' in normalized:
                 return _FakeRow([{'id': 'run-1', 'analysis_type': 'oracle', 'status': 'completed', 'title': 'Oracle variance', 'summary': 'ok', 'created_at': '2026-01-01T00:00:00Z'}])
             return super().execute(query, params)
