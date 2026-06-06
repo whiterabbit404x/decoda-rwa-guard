@@ -73,7 +73,10 @@ app = FastAPI(
 
 @app.on_event('startup')
 def startup() -> None:
-    seed_service(SERVICE_NAME, PORT, DETAIL, DEFAULT_METRICS)
+    app_env = os.getenv('APP_ENV', os.getenv('APP_MODE', 'development')).strip().lower()
+    enable_flag = os.getenv('ENABLE_LOCAL_DEV_SUPPORT', '').strip().lower()
+    if app_env in {'local', 'development', 'dev'} or enable_flag == 'true':
+        seed_service(SERVICE_NAME, PORT, DETAIL, DEFAULT_METRICS)
 
 
 @app.get('/health', summary='Compliance-service health check', description='Returns runtime details for the compliance service.')

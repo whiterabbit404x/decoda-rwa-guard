@@ -6,6 +6,82 @@ Implemented P0 and P1 enterprise-readiness fixes to qualify Decoda RWA Guard as 
 
 ---
 
+## Railway Production Crash Fix (2026-06-06)
+
+### Root Cause
+
+Railway production crashed on startup with:
+
+```
+PermissionError: [Errno 13] Permission denied: '/app/postgresql:'
+Application startup failed.
+```
+
+Call chain:
+```
+services/api/app/main.py lifespan
+  -> seed_service(SERVICE_NAME, PORT, DETAIL, DEFAULT_METRICS)
+  -> phase1_local/dev_support.py :: sqlite_connection()
+  -> resolve_sqlite_path()
+  -> os.getenv('DATABASE_URL')  # returned postgresql://neondb_owner:...@...neon.tech/neondb
+  -> Path('postgresql://...').parent.mkdir(parents=True, exist_ok=True)
+  -> PermissionError: [Errno 13] Permission denied: '/app/postgresql:'
+```
+
+`resolve_sqlite_path()` fell through to using the raw `DATABASE_URL` value (after failing to strip `sqlite:///` prefix) as a filesystem path, then tried to `mkdir` it.
+
+### Exact Fix
+
+**`phase1_local/dev_support.py`**
+- Added `_URL_SCHEMES` tuple and `_looks_like_url()` helper.
+- `resolve_sqlite_path()` raises `RuntimeError` with a clear message if the resolved path starts with any of `postgres://`, `postgresql://`, `mysql://`, `http://`, `https://`.
+- mkdir is never called on URL-looking strings.
+
+**`services/api/app/main.py`**
+- Added `_is_local_dev_mode()`: returns `True` only when `APP_ENV` ∈ `{local, development, dev}` or `ENABLE_LOCAL_DEV_SUPPORT=true`.
+- `lifespan`: `seed_service()` and `seed_embedded_dependency_registry()` are now inside `if _is_local_dev_mode():`.
+- `/services` endpoint: all SQLite dev_support calls are inside `if _is_local_dev_mode():`. Production returns `{'mode': 'production', 'services': []}`.
+- `/dashboard` endpoint: same guard. Production returns `{'mode': 'production', 'services': [], 'cards': []}`.
+- `/state` endpoint: same guard. Production returns `None` fields.
+
+**`services/compliance-service/app/main.py`**
+**`services/reconciliation-service/app/main.py`**
+**`services/risk-engine/app/main.py`**
+**`services/threat-engine/app/main.py`**
+**`services/oracle-service/app/main.py`**
+- All `startup()` handlers now check `APP_ENV` / `ENABLE_LOCAL_DEV_SUPPORT` before calling `seed_service()`.
+
+### Production startup items preserved (not changed)
+
+- `validate_secret_encryption_key_at_startup()` — still runs unconditionally
+- `bootstrap_live_pilot()` — still runs unconditionally
+- `emit_startup_fixture_diagnostics()` — still runs unconditionally
+- `set_background_loop_health()` — still runs unconditionally
+- Live monitoring loop — still runs when `LIVE_MONITORING_ENABLED=true`
+- CORS middleware configuration — unchanged
+- Migrations / schema readiness — unchanged
+
+### Tests Added
+
+`services/api/tests/test_railway_crash_fix.py` — 22 tests, all passing:
+- `TestDevSupportRefusesUrls` (10 tests): `resolve_sqlite_path()` raises on `postgres://`, `postgresql://`, `mysql://`, `http://`, `https://` in both `DATABASE_URL` and `SQLITE_PATH`; accepts local paths; accepts `sqlite:///` prefix; never calls `mkdir` on URL strings.
+- `TestIsLocalDevMode` (8 tests): helper returns `False` for `production`/`prod`, `True` for `local`/`development`/`dev`, honours `ENABLE_LOCAL_DEV_SUPPORT=true` override, defaults to `True` with no env set.
+- `TestProductionLifespanSkipsSeedService` (2 tests): `seed_service` and `seed_embedded_dependency_registry` are NOT called in production; ARE called in dev.
+- `TestProductionPostgresNeverTouchesSQLite` (2 tests): Postgres `DATABASE_URL` causes `RuntimeError` in dev_support; `mkdir` is never called with URL-like path.
+
+### Required Railway Env Vars
+
+| Variable | Production value | Purpose |
+|---|---|---|
+| `APP_ENV` | `production` | Disables phase1_local SQLite dev seeding |
+| `DATABASE_URL` | `postgresql://...` | Production Postgres connection (Neon/Railway) |
+| `SECRET_ENCRYPTION_KEY` | (set) | Required by `validate_secret_encryption_key_at_startup()` |
+| `ENABLE_LOCAL_DEV_SUPPORT` | (unset or `false`) | Must NOT be `true` in production |
+
+Do NOT set `SQLITE_PATH` in production.
+
+---
+
 ## P0 Fixes
 
 ### P0-1: Real-Time Streaming (SSE)

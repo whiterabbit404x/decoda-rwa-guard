@@ -11,6 +11,12 @@ from typing import Any, Iterable
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SQLITE_PATH = REPO_ROOT / '.data' / 'phase1.db'
 
+_URL_SCHEMES = ('postgres://', 'postgresql://', 'mysql://', 'http://', 'https://')
+
+
+def _looks_like_url(value: str) -> bool:
+    return any(value.startswith(scheme) for scheme in _URL_SCHEMES)
+
 
 def load_env_file(env_path: Path | None = None) -> None:
     candidate = env_path or Path.cwd() / '.env'
@@ -31,6 +37,12 @@ def utc_now() -> str:
 def resolve_sqlite_path() -> Path:
     configured = os.getenv('SQLITE_PATH') or os.getenv('DATABASE_URL', '').removeprefix('sqlite:///')
     raw_path = configured or str(DEFAULT_SQLITE_PATH)
+    if _looks_like_url(raw_path):
+        raise RuntimeError(
+            f"dev_support configuration error: resolved path looks like a remote database URL ({raw_path!r}). "
+            "phase1_local SQLite dev support must not be used in production. "
+            "Set APP_ENV=production to skip dev seeding, or set SQLITE_PATH to a local file path in dev mode."
+        )
     path = Path(raw_path)
     if not path.is_absolute():
         path = REPO_ROOT / path

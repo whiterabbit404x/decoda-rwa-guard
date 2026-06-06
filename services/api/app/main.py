@@ -489,6 +489,12 @@ def _is_production_like_runtime() -> bool:
     return mode in {'production', 'prod'}
 
 
+def _is_local_dev_mode() -> bool:
+    app_env = os.getenv('APP_ENV', os.getenv('APP_MODE', 'development')).strip().lower()
+    enable_flag = os.getenv('ENABLE_LOCAL_DEV_SUPPORT', '').strip().lower()
+    return app_env in {'local', 'development', 'dev'} or enable_flag == 'true'
+
+
 def _normalize_origin(origin: str) -> str | None:
     value = (origin or '').strip()
     if not value:
@@ -1501,8 +1507,9 @@ def bootstrap_live_pilot() -> dict[str, Any]:
 async def lifespan(_: FastAPI):
     global MONITORING_BACKGROUND_TASK, MONITORING_LOOP_RUNTIME_STATE
     validate_secret_encryption_key_at_startup()
-    seed_service(SERVICE_NAME, PORT, DETAIL, DEFAULT_METRICS)
-    seed_embedded_dependency_registry()
+    if _is_local_dev_mode():
+        seed_service(SERVICE_NAME, PORT, DETAIL, DEFAULT_METRICS)
+        seed_embedded_dependency_registry()
     bootstrap_live_pilot()
     emit_startup_fixture_diagnostics()
     set_background_loop_health(
@@ -1989,32 +1996,38 @@ def health_details() -> dict[str, Any]:
 
 @app.get('/state', summary='API seeded state', description='Returns the service registry row written into the shared local SQLite file.')
 def state() -> dict[str, object]:
-    return {
-        'service': load_service(SERVICE_NAME),
-        'sqlite_path': str(resolve_sqlite_path()),
-        'local_registry_database_url': local_database_url(),
-    }
+    if _is_local_dev_mode():
+        return {
+            'service': load_service(SERVICE_NAME),
+            'sqlite_path': str(resolve_sqlite_path()),
+            'local_registry_database_url': local_database_url(),
+        }
+    return {'service': None, 'sqlite_path': None, 'local_registry_database_url': None}
 
 
 @app.get('/services', summary='List registered local services', description='Returns the shared local service registry used to populate the dashboard status cards.')
 def services() -> dict[str, object]:
-    seed_service(SERVICE_NAME, PORT, DETAIL, DEFAULT_METRICS)
-    seed_embedded_dependency_registry()
-    payload = dashboard_payload()
-    return {
-        'mode': payload['mode'],
-        'database_url': masked_database_url(),
-        'services': payload['services'],
-    }
+    if _is_local_dev_mode():
+        seed_service(SERVICE_NAME, PORT, DETAIL, DEFAULT_METRICS)
+        seed_embedded_dependency_registry()
+        payload = dashboard_payload()
+        return {
+            'mode': payload['mode'],
+            'database_url': masked_database_url(),
+            'services': payload['services'],
+        }
+    return {'mode': 'production', 'database_url': masked_database_url(), 'services': []}
 
 
 @app.get('/dashboard', summary='Dashboard service snapshot', description='Returns the local dashboard summary cards and service registry information for the frontend.')
 def dashboard() -> dict[str, object]:
-    seed_service(SERVICE_NAME, PORT, DETAIL, DEFAULT_METRICS)
-    seed_embedded_dependency_registry()
-    payload = dict(dashboard_payload())
-    payload['database_url'] = masked_database_url()
-    return payload
+    if _is_local_dev_mode():
+        seed_service(SERVICE_NAME, PORT, DETAIL, DEFAULT_METRICS)
+        seed_embedded_dependency_registry()
+        payload = dict(dashboard_payload())
+        payload['database_url'] = masked_database_url()
+        return payload
+    return {'mode': 'production', 'database_url': masked_database_url(), 'services': [], 'cards': []}
 
 
 @app.get('/risk/dashboard', summary='Dashboard risk feed', description='Builds the dashboard transaction queue from live risk-engine evaluations and falls back to explicit demo-safe records when the risk-engine is unavailable.')
