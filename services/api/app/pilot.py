@@ -811,7 +811,7 @@ def validate_runtime_configuration() -> dict[str, Any]:
         export_secret_weak = export_signing_secret.lower() in _KNOWN_WEAK_SECRETS if export_signing_secret else False
         _record_check(
             'export_signing_secret',
-            bool(export_signing_secret) and not export_secret_weak,
+            bool(export_signing_secret) and not export_secret_weak and managed_key_provider() != 'env',
             required=True,
             detail='A strong evidence-signing key must be configured in production.',
         )
