@@ -157,14 +157,14 @@ def test_seal_dev_mode_includes_warning(monkeypatch):
     assert 'DEV_MODE' in seal['warning']
 
 
-def test_seal_production_mode_no_warning(monkeypatch):
+def test_seal_production_strict_mode_rejects_static_environment_secret(monkeypatch):
     monkeypatch.setenv('APP_MODE', 'production')
+    monkeypatch.setenv('MANAGED_KEY_PROVIDER', 'env')
+    monkeypatch.setenv('MANAGED_KEY_ENFORCEMENT', 'strict')
     monkeypatch.setenv('EXPORT_SIGNING_SECRET', 'production-signing-secret-32bytesXX')
     manifest, _ = _build_manifest_and_files()
-    seal = seal_manifest(manifest)
-    assert 'warning' not in seal
-    monkeypatch.setenv('APP_MODE', 'local')
-    monkeypatch.delenv('EXPORT_SIGNING_SECRET', raising=False)
+    with pytest.raises(RuntimeError, match='MANAGED_KEY_ENFORCEMENT=strict'):
+        seal_manifest(manifest)
 
 
 def test_seal_production_without_secret_raises(monkeypatch):
