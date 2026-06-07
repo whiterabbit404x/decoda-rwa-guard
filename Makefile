@@ -186,3 +186,6 @@ validate-100-percent-readiness:
 
 validate-niw-positioning:
 	python scripts/validate_niw_positioning.py
+
+validate-backup-restore:
+	RESTORE_VALIDATION_ISOLATED=true python services/api/scripts/validate_backup_restore.py
