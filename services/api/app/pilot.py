@@ -36,7 +36,11 @@ from services.api.app.db_failure import (
     normalize_db_error_snippet,
 )
 from services.api.app.secret_crypto import decrypt_secret, encrypt_secret, read_encrypted_env, validate_encryption_bootstrap
-from services.api.app.managed_keys import load_managed_key, managed_key_provider, managed_keys_ready
+from services.api.app.managed_keys import (
+    load_managed_key,
+    managed_key_enforcement_mode,
+    managed_key_provider,
+)
 from services.api.app.export_storage import load_export_storage
 from services.api.app.production_readiness import build_production_readiness
 from services.api.app.paid_launch_readiness import check_billing_readiness
@@ -769,8 +773,19 @@ def validate_runtime_configuration() -> dict[str, Any]:
             required=mode_summary['live_mode_requested'],
             detail='Postgres required when LIVE_MODE_ENABLED=true in production.',
         )
-        _record_check('managed_key_provider', managed_key_provider() != 'env', required=True, detail='Production authentication, encryption, and evidence signing keys must use a managed key provider.')
-        _record_check('auth_token_secret', auth_token_secret_configured(), required=True, detail='Managed authentication key must be configured in production.')
+        managed_provider_configured = managed_key_provider() != 'env'
+        strict_managed_keys = managed_key_enforcement_mode() == 'strict'
+        _record_check(
+            'managed_key_provider',
+            managed_provider_configured,
+            required=strict_managed_keys,
+            severity='error' if strict_managed_keys else 'warning',
+            detail=(
+                'Production is using legacy environment-backed cryptographic keys. Configure MANAGED_KEY_PROVIDER and key secret IDs, '
+                'then set MANAGED_KEY_ENFORCEMENT=strict.'
+            ),
+        )
+        _record_check('auth_token_secret', auth_token_secret_configured(), required=True, detail='Authentication key must be configured in production.')
         _KNOWN_WEAK_SECRETS = {
             'changeme', 'local', 'test', 'secret', 'password',
             'decoda-dev-signing-secret-not-for-production',
@@ -798,12 +813,12 @@ def validate_runtime_configuration() -> dict[str, Any]:
             'export_signing_secret',
             bool(export_signing_secret) and not export_secret_weak and managed_key_provider() != 'env',
             required=True,
-            detail='A strong managed evidence-signing key must be configured in production.',
+            detail='A strong evidence-signing key must be configured in production.',
         )
 
         try:
             validate_encryption_bootstrap()
-            _record_check('secret_encryption_key', managed_keys_ready(), required=True, detail='Managed encryption key is configured.')
+            _record_check('secret_encryption_key', True, required=True, detail='Encryption key is configured.')
         except Exception as exc:
             _record_check('secret_encryption_key', False, required=True, detail=str(exc))
 

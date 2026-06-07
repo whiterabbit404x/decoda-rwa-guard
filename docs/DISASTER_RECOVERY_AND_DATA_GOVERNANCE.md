@@ -81,11 +81,19 @@ Review deletion events weekly and reconcile exported-object tombstones with prov
 
 ## Managed keys and rotation
 
-Production/staging set `MANAGED_KEY_PROVIDER=aws_secrets_manager`; static auth, encryption, and signing keys are rejected. Configure:
+Production/staging should set `MANAGED_KEY_PROVIDER=aws_secrets_manager`. To prevent a deployment outage, the default `MANAGED_KEY_ENFORCEMENT=compatibility` temporarily accepts pre-existing `AUTH_TOKEN_SECRET`, `SECRET_ENCRYPTION_KEY`, and `EXPORT_SIGNING_SECRET` values while emitting startup warnings and a failing, non-blocking `managed_key_provider` readiness check. Configure:
 
 * `AUTH_TOKEN_KEY_SECRET_ID` and optional `AUTH_TOKEN_KEY_VERSION`
 * `SECRET_ENCRYPTION_KEY_SECRET_ID`, `SECRET_ENCRYPTION_KEY_ENCODING=base64`, and optional version
 * `EVIDENCE_SIGNING_KEY_SECRET_ID` and optional version
+
+Safe rollout procedure:
+
+1. Deploy with `MANAGED_KEY_ENFORCEMENT=compatibility`; existing environment keys continue to work.
+2. Provision and test all three managed secret IDs in every active and recovery region.
+3. Set `MANAGED_KEY_PROVIDER=aws_secrets_manager` while enforcement remains `compatibility`, deploy, and verify authentication, existing secret decryption, new export signing, and historical evidence verification.
+4. Set `MANAGED_KEY_ENFORCEMENT=strict` only after the managed-provider deployment is healthy. Strict mode then fails startup if configuration regresses to environment-backed keys.
+5. Do not rotate an environment-backed encryption or signing key during compatibility mode because `env-current` cannot identify old provider material. Move to versioned managed secrets first.
 
 Rotation procedure:
 

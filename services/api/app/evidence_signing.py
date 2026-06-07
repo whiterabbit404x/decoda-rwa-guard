@@ -19,7 +19,12 @@ import logging
 import os
 from typing import Any
 
-from services.api.app.managed_keys import load_managed_key, managed_key_provider
+from services.api.app.managed_keys import (
+    load_managed_key,
+    managed_key_enforcement_mode,
+    managed_key_provider,
+    using_legacy_environment_keys,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -46,31 +51,36 @@ def signing_available() -> bool:
 
 def validate_signing_secret_at_startup() -> None:
     """Fail closed unless production/staging signing material is managed and loadable."""
-    secret = _get_signing_secret()
     prod = _is_production_like()
-    if prod and managed_key_provider() == 'env':
-        raise RuntimeError('Production evidence signing requires MANAGED_KEY_PROVIDER; static environment signing secrets are forbidden.')
+    if prod and managed_key_provider() == 'env' and managed_key_enforcement_mode() == 'strict':
+        raise RuntimeError('MANAGED_KEY_ENFORCEMENT=strict forbids EXPORT_SIGNING_SECRET environment operation.')
+    secret = _get_signing_secret()
     if prod and secret is None:
-        raise RuntimeError('Managed evidence signing key is required in production/staging.')
+        raise RuntimeError('EXPORT_SIGNING_SECRET or a managed evidence signing key is required in production/staging.')
     if prod and secret == _DEV_FALLBACK_SECRET:
-        raise RuntimeError('The development evidence signing key is forbidden in production/staging.')
+        raise RuntimeError('The development evidence signing dev fallback is forbidden in production/staging.')
     if secret is None:
         _log.info('evidence_signing_mode=dev_test_key')
+    elif using_legacy_environment_keys():
+        _log.warning(
+            'evidence_signing_mode=legacy_environment_key enforcement=%s; migrate to MANAGED_KEY_PROVIDER before enabling strict enforcement',
+            managed_key_enforcement_mode(),
+        )
     else:
         _log.info('evidence_signing_mode=%s key_id=%s', managed_key_provider(), _signing_key_id())
 
 
 def _require_signing_secret() -> tuple[bytes, bool]:
-    secret = _get_signing_secret()
     prod = _is_production_like()
-    if prod and managed_key_provider() == 'env':
-        raise RuntimeError('EXPORT_SIGNING_SECRET environment operation is forbidden in production; configure a managed evidence signing key provider.')
+    if prod and managed_key_provider() == 'env' and managed_key_enforcement_mode() == 'strict':
+        raise RuntimeError('MANAGED_KEY_ENFORCEMENT=strict forbids EXPORT_SIGNING_SECRET environment operation.')
+    secret = _get_signing_secret()
     if secret is not None:
         if prod and secret == _DEV_FALLBACK_SECRET:
-            raise RuntimeError('The development evidence signing key is forbidden in production/staging.')
+            raise RuntimeError('The development evidence signing dev fallback is forbidden in production/staging.')
         return secret, True
     if prod:
-        raise RuntimeError('Managed evidence signing key is required in production/staging.')
+        raise RuntimeError('EXPORT_SIGNING_SECRET or a managed evidence signing key is required in production/staging.')
     return _DEV_FALLBACK_SECRET, False
 
 

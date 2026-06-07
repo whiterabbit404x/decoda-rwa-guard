@@ -22,9 +22,30 @@ def clear_key_cache():
 def test_production_rejects_static_environment_keys(monkeypatch):
     monkeypatch.setenv('APP_MODE', 'production')
     monkeypatch.setenv('MANAGED_KEY_PROVIDER', 'env')
+    monkeypatch.setenv('MANAGED_KEY_ENFORCEMENT', 'strict')
     monkeypatch.setenv('AUTH_TOKEN_SECRET', 'not-allowed')
     with pytest.raises(RuntimeError, match='static environment keys are forbidden'):
         managed_keys.load_managed_key('AUTH')
+
+
+def test_production_compatibility_mode_loads_existing_environment_keys(monkeypatch):
+    monkeypatch.setenv('APP_MODE', 'production')
+    monkeypatch.setenv('MANAGED_KEY_PROVIDER', 'env')
+    monkeypatch.delenv('MANAGED_KEY_ENFORCEMENT', raising=False)
+    monkeypatch.setenv('AUTH_TOKEN_SECRET', 'existing-production-auth-secret')
+    key = managed_keys.load_managed_key('AUTH')
+    assert key.provider == 'env'
+    assert key.version == 'env-current'
+    assert key.material == b'existing-production-auth-secret'
+
+
+def test_strict_mode_rejects_environment_keys_after_migration(monkeypatch):
+    monkeypatch.setenv('APP_MODE', 'production')
+    monkeypatch.setenv('MANAGED_KEY_PROVIDER', 'env')
+    monkeypatch.setenv('MANAGED_KEY_ENFORCEMENT', 'strict')
+    monkeypatch.setenv('SECRET_ENCRYPTION_KEY', base64.b64encode(b'1' * 32).decode('ascii'))
+    with pytest.raises(RuntimeError, match='MANAGED_KEY_ENFORCEMENT=strict'):
+        managed_keys.load_managed_key('ENCRYPTION')
 
 
 def test_aws_secret_manager_loads_requested_historical_version(monkeypatch):
@@ -126,3 +147,10 @@ def test_audit_chain_verification_accepts_recorded_retention_anchor():
     )
     assert verify_audit_chain([row])['valid'] is False
     assert verify_audit_chain([row], initial_previous_hash=previous)['valid'] is True
+
+
+def test_runbook_documents_no_downtime_strict_cutover():
+    runbook = Path('docs/DISASTER_RECOVERY_AND_DATA_GOVERNANCE.md').read_text()
+    assert 'MANAGED_KEY_ENFORCEMENT=compatibility' in runbook
+    assert 'MANAGED_KEY_ENFORCEMENT=strict' in runbook
+    assert 'Do not rotate an environment-backed encryption or signing key' in runbook

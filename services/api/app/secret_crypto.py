@@ -6,7 +6,12 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from services.api.app.managed_keys import load_managed_key, managed_keys_ready, production_like
+from services.api.app.managed_keys import (
+    load_managed_key,
+    managed_key_enforcement_mode,
+    production_like,
+    using_legacy_environment_keys,
+)
 
 from fastapi import HTTPException, status
 
@@ -53,7 +58,11 @@ def _secret_key_required(*, version: str | None = None) -> tuple[bytes, dict[str
 
 
 def encryption_ready() -> bool:
-    return managed_keys_ready() if production_like() else bool(os.getenv('SECRET_ENCRYPTION_KEY', '').strip())
+    try:
+        key, _ = _secret_key_required()
+        return bool(key)
+    except RuntimeError:
+        return False
 
 
 def encrypt_secret(value: str, *, aad: str = '') -> str:
@@ -138,10 +147,17 @@ def read_encrypted_env(name: str, *, aad: str = '') -> str:
 def validate_secret_encryption_key_at_startup() -> None:
     import logging
     _log = logging.getLogger(__name__)
-    app_mode = os.getenv('APP_MODE', 'local').strip().lower()
-    if app_mode in {'production', 'staging'}:
-        _secret_key_required()  # raises RuntimeError if managed provider/key is missing or invalid
-        _log.info('secret_encryption_key_validated app_mode=%s', app_mode)
+    app_mode = os.getenv('APP_MODE', os.getenv('APP_ENV', 'local')).strip().lower()
+    if production_like():
+        _secret_key_required()  # raises RuntimeError if key material is missing or invalid
+        if using_legacy_environment_keys():
+            _log.warning(
+                'secret_encryption_mode=legacy_environment_key app_mode=%s enforcement=%s; migrate to MANAGED_KEY_PROVIDER before enabling strict enforcement',
+                app_mode,
+                managed_key_enforcement_mode(),
+            )
+        else:
+            _log.info('secret_encryption_key_validated app_mode=%s', app_mode)
     else:
         if not os.getenv('SECRET_ENCRYPTION_KEY', '').strip():
             _log.warning('SECRET_ENCRYPTION_KEY not set; secret encryption disabled in %s mode', app_mode)

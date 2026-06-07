@@ -1,8 +1,9 @@
 """Version-aware managed key loading for production cryptographic material.
 
-Production and staging use a managed secret provider. Environment-backed keys remain
-available only for local development and tests. AWS Secrets Manager versions are
-addressable so historical evidence can be verified after rotation.
+Production and staging should use a managed secret provider. A compatibility mode keeps
+pre-existing environment-backed deployments available during rollout; strict enforcement
+is opt-in until managed secret identifiers have been provisioned. AWS Secrets Manager
+versions are addressable so historical evidence can be verified after rotation.
 """
 from __future__ import annotations
 
@@ -35,6 +36,23 @@ def production_like() -> bool:
 
 def managed_key_provider() -> str:
     return os.getenv('MANAGED_KEY_PROVIDER', 'env').strip().lower() or 'env'
+
+
+def managed_key_enforcement_mode() -> str:
+    raw = os.getenv('MANAGED_KEY_ENFORCEMENT', 'compatibility').strip().lower()
+    aliases = {'warn': 'compatibility', 'legacy': 'compatibility', 'enforce': 'strict'}
+    mode = aliases.get(raw, raw)
+    if mode not in {'compatibility', 'strict'}:
+        raise RuntimeError('MANAGED_KEY_ENFORCEMENT must be compatibility or strict.')
+    return mode
+
+
+def legacy_environment_keys_allowed() -> bool:
+    return not production_like() or managed_key_enforcement_mode() == 'compatibility'
+
+
+def using_legacy_environment_keys() -> bool:
+    return production_like() and managed_key_provider() == 'env'
 
 
 def _purpose_env_prefix(purpose: str) -> str:
@@ -101,8 +119,11 @@ def _load_key_cached(purpose: str, version: str | None) -> ManagedKey:
 
     if provider != 'env':
         raise RuntimeError(f'Unsupported MANAGED_KEY_PROVIDER: {provider}')
-    if production_like():
-        raise RuntimeError('MANAGED_KEY_PROVIDER must be a managed provider in staging/production; static environment keys are forbidden.')
+    if not legacy_environment_keys_allowed():
+        raise RuntimeError(
+            'MANAGED_KEY_PROVIDER must be a managed provider when '
+            'MANAGED_KEY_ENFORCEMENT=strict; static environment keys are forbidden.'
+        )
 
     legacy_names = {
         'AUTH': ('AUTH_TOKEN_SECRET', 'JWT_SECRET'),
@@ -125,9 +146,7 @@ def load_managed_key(purpose: str, *, version: str | None = None) -> ManagedKey:
 
 
 def managed_keys_ready() -> bool:
-    if production_like():
-        return managed_key_provider() not in {'', 'env'}
-    return True
+    return managed_key_provider() not in {'', 'env'}
 
 
 def clear_managed_key_cache() -> None:
