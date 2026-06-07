@@ -1,5 +1,12 @@
 # Enterprise Readiness
 
+
+## Current billing and rate-limit gate (2026-06-07)
+
+Enterprise readiness remains fail-closed. Paddle satisfies billing only when `BILLING_PROVIDER=paddle` and `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`, `PADDLE_PRICE_ID`, and a valid `PADDLE_ENVIRONMENT` (`sandbox` or `production`) are configured with non-placeholder values. Stripe secrets are provider-specific and are not required for Paddle.
+
+Production may temporarily start without Redis only when `REDIS_TEMPORARILY_DISABLED=true` is explicit. That mode uses an in-memory limiter and must report degraded readiness with `rate_limit_enterprise_ready=false` and `enterprise_ready=false`. It is acceptable only for temporary single-instance/staging operation and is not horizontally scalable. Enterprise procurement remains blocked until `REDIS_URL` (or complete Upstash Redis REST credentials) enables distributed rate limiting. All existing authentication, authorization, evidence-signing, encryption, live-evidence, and truthfulness gates remain required.
+
 This document describes the enterprise-grade controls implemented in Decoda RWA Guard.
 
 ---

@@ -40,8 +40,10 @@ from scripts.generate_staging_launch_proof import (
     build_billing_production_validation,
     build_email_production_validation,
     build_live_provider_validation,
+    build_rate_limit_validation,
     build_staging_launch_validation,
     generate_staging_proof,
+    main as generate_staging_proof_main,
 )
 from scripts.validate_staging_launch_proof import validate_staging_proof
 
@@ -1189,6 +1191,7 @@ def test_paddle_plus_resend_staging_billing_and_email_pass(monkeypatch: pytest.M
     # Billing
     monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
     monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_full_combo_xyz')
+    monkeypatch.setenv('PADDLE_ENVIRONMENT', 'production')
     monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_whsec_full_combo_xyz')
     monkeypatch.setenv('PADDLE_PRICE_ID', 'pri_prod_monthly_full_combo_xyz')
     monkeypatch.delenv('STRIPE_SECRET_KEY', raising=False)
@@ -1207,3 +1210,54 @@ def test_paddle_plus_resend_staging_billing_and_email_pass(monkeypatch: pytest.M
     assert email['provider'] == 'resend'
     assert email['status'] == 'pass'
     assert email['blockers'] == []
+
+
+def test_staging_rate_limit_temporary_disable_is_degraded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv('REDIS_URL', raising=False)
+    monkeypatch.delenv('UPSTASH_REDIS_REST_URL', raising=False)
+    monkeypatch.delenv('UPSTASH_REDIS_REST_TOKEN', raising=False)
+    monkeypatch.setenv('REDIS_TEMPORARILY_DISABLED', 'true')
+
+    result = build_rate_limit_validation('staging')
+
+    assert result['redis_status'] == 'disabled_temporary'
+    assert result['rate_limit_backend'] == 'memory'
+    assert result['rate_limit_enterprise_ready'] is False
+    assert result['enterprise_ready'] is False
+    assert 'not horizontally scalable' in result['warning']
+
+
+def test_staging_rate_limit_with_redis_is_enterprise_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('REDIS_URL', 'redis://localhost:6379/0')
+    monkeypatch.setenv('REDIS_TEMPORARILY_DISABLED', 'true')
+
+    result = build_rate_limit_validation('staging')
+
+    assert result['redis_status'] == 'configured'
+    assert result['rate_limit_backend'] == 'redis'
+    assert result['rate_limit_enterprise_ready'] is True
+    assert result['enterprise_ready'] is True
+
+
+def test_strict_staging_proof_fails_when_enterprise_rate_limit_is_degraded(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        'scripts.generate_staging_launch_proof.generate_staging_proof',
+        lambda **kwargs: {
+            'staging_launch_ready': True,
+            'broad_paid_saas_ready': True,
+            'safe_to_sell_broadly_today': True,
+            'enterprise_ready': False,
+            'redis_status': 'disabled_temporary',
+            'billing_production_validation': {'billing_provider': 'paddle', 'billing_ready': True},
+            'blockers': [],
+            'warnings': ['Redis disabled temporarily; in-memory rate limiting is not horizontally scalable'],
+        },
+    )
+
+    exit_code = generate_staging_proof_main(
+        mode='staging', strict=True, out_path=tmp_path / 'summary.json',
+    )
+
+    assert exit_code == 1

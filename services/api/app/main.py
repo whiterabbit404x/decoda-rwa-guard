@@ -2101,9 +2101,16 @@ def health_readiness() -> dict[str, Any]:
         'app_mode': os.getenv('APP_MODE', 'local'),
         'app_env': app_env,
         'production_live_mode_drift': production_live_mode_drift,
+        'redis_configured': bool(checks.get('redis_configured', rate_limit_backend == 'redis')),
+        'redis_status': checks.get('redis_status', 'configured' if rate_limit_backend == 'redis' else 'not_configured'),
         'rate_limit_backend': rate_limit_backend,
         'rate_limit_enterprise_ready': bool(rate_limit_enterprise_ready),
         'enterprise_ready': bool(rate_limit_enterprise_ready) and not errors,
+        'warning': (
+            'Redis disabled temporarily; in-memory rate limiting is not horizontally scalable'
+            if checks.get('redis_status') == 'disabled_temporary'
+            else None
+        ),
         'errors': errors,
         'warnings': warnings,
         'checks': checks,

@@ -42,6 +42,8 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from services.api.app.paid_launch_readiness import check_billing_readiness
+
 _SECRET_PATTERNS = re.compile(
     r'(sk_live_|sk_test_|whsec_|SG\.[A-Za-z0-9_-]{20,}|rk_live_|pk_live_|AKIA[A-Z0-9]{16})',
     re.IGNORECASE,
@@ -485,113 +487,91 @@ def build_live_provider_validation(
 # ---------------------------------------------------------------------------
 
 def build_billing_production_validation(mode: str) -> dict[str, Any]:
-    """
-    Validate billing provider is in production mode.
-
-    Rules:
-    - Stripe test keys (sk_test_*) do not satisfy production billing.
-    - Missing webhook validation blocks production billing.
-    - Unknown provider fails closed.
-    Never exposes key values — only presence and mode flags.
-    """
+    """Validate provider-specific billing configuration without exposing secrets."""
+    readiness = check_billing_readiness()
+    provider = (os.getenv('BILLING_PROVIDER') or '').strip().lower()
     blockers: list[str] = []
-    warnings: list[str] = []
+    if not readiness['billing_ready']:
+        blockers.append(readiness['billing_reason'])
+    if not readiness['billing_webhook_ready']:
+        blockers.append(readiness['billing_webhook_reason'])
+    stripe_test_mode = (
+        provider == 'stripe'
+        and (os.getenv('STRIPE_SECRET_KEY') or '').strip().startswith(('sk_test_', 'rk_test_'))
+    )
+    if stripe_test_mode:
+        blockers.append('STRIPE_SECRET_KEY is a test-mode key; live Stripe credentials are required')
 
-    billing_provider_raw = (os.getenv('BILLING_PROVIDER') or '').strip().lower()
-
-    if not billing_provider_raw or billing_provider_raw == 'none':
-        canonical_provider = 'unknown'
-        blockers.append('BILLING_PROVIDER not configured')
-    elif billing_provider_raw == 'stripe':
-        canonical_provider = 'stripe'
-    elif billing_provider_raw == 'paddle':
-        canonical_provider = 'other'
-    else:
-        canonical_provider = 'unknown'
-        blockers.append(
-            f"BILLING_PROVIDER='{billing_provider_raw}' is not a recognized production provider; "
-            'supported: stripe, paddle'
-        )
-
-    live_secret_key_present = False
-    webhook_secret_present = False
-    price_id_present = False
-    webhook_endpoint_validated = False
-    test_mode_detected = False
-
-    if canonical_provider == 'stripe':
-        stripe_key = _env_val('STRIPE_SECRET_KEY')
-        if stripe_key:
-            if stripe_key.startswith('sk_test_') or stripe_key.startswith('rk_test_'):
-                test_mode_detected = True
-                live_secret_key_present = False
-                blockers.append(
-                    'STRIPE_SECRET_KEY is a test-mode key; '
-                    'only live keys (sk_live_*) satisfy production billing'
-                )
-            elif stripe_key.startswith('sk_live_') or stripe_key.startswith('rk_live_'):
-                live_secret_key_present = True
-            else:
-                live_secret_key_present = False
-                blockers.append(
-                    'STRIPE_SECRET_KEY has an unrecognized format; '
-                    'only sk_live_* keys satisfy production billing'
-                )
-        else:
-            blockers.append('STRIPE_SECRET_KEY not configured')
-
-        webhook_raw = _env_val('STRIPE_WEBHOOK_SECRET')
-        if webhook_raw:
-            webhook_secret_present = True
-            if webhook_raw.startswith('whsec_'):
-                webhook_endpoint_validated = True
-            else:
-                warnings.append('STRIPE_WEBHOOK_SECRET does not start with whsec_; may be misconfigured')
-        else:
-            webhook_secret_present = False
-            webhook_endpoint_validated = False
-            blockers.append('STRIPE_WEBHOOK_SECRET not configured; webhook validation will fail')
-
-        price_id_present = _env_present('STRIPE_PRICE_ID')
-        if not price_id_present:
-            blockers.append('STRIPE_PRICE_ID not configured')
-
-    elif canonical_provider == 'other':
-        # Paddle
-        live_secret_key_present = _env_present('PADDLE_API_KEY')
-        if not live_secret_key_present:
-            blockers.append('PADDLE_API_KEY not configured')
-        webhook_secret_present = _env_present('PADDLE_WEBHOOK_SECRET')
-        if not webhook_secret_present:
-            blockers.append('PADDLE_WEBHOOK_SECRET not configured')
-        webhook_endpoint_validated = webhook_secret_present
-        # Accept plain PADDLE_PRICE_ID or any PADDLE_PRICE_ID_* variant
-        price_id_plain = _env_present('PADDLE_PRICE_ID')
-        price_ids = [
-            k for k, v in os.environ.items()
-            if k.startswith('PADDLE_PRICE_ID_') and v.strip()
-        ]
-        price_id_present = price_id_plain or bool(price_ids)
-        if not price_id_present:
-            blockers.append('PADDLE_PRICE_ID (or PADDLE_PRICE_ID_*) not configured')
-
-    if blockers:
-        status = 'fail'
-    elif mode in ('staging', 'production'):
-        status = 'pass'
-    else:
-        status = 'fail'  # fail-closed in local/ci
-
+    status = (
+        'pass'
+        if not blockers and mode in ('staging', 'production')
+        else 'fail'
+    )
     return {
         'status': status,
-        'billing_provider': canonical_provider,
-        'live_secret_key_present': live_secret_key_present,
-        'webhook_secret_present': webhook_secret_present,
-        'price_id_present': price_id_present,
-        'webhook_endpoint_validated': webhook_endpoint_validated,
-        'test_mode_detected': test_mode_detected,
+        'billing_provider': provider or 'unknown',
+        'billing_ready': bool(readiness['billing_ready']),
+        'billing_webhook_ready': bool(readiness['billing_webhook_ready']),
+        'api_credential_present': not any(
+            name in readiness['billing_missing_env']
+            for name in ('STRIPE_SECRET_KEY', 'PADDLE_API_KEY')
+        ),
+        'live_secret_key_present': not any(
+            name in readiness['billing_missing_env']
+            for name in ('STRIPE_SECRET_KEY', 'PADDLE_API_KEY')
+        ),
+        'webhook_secret_present': bool(readiness['billing_webhook_ready']),
+        'webhook_endpoint_validated': bool(readiness['billing_webhook_ready']),
+        'price_id_present': not any(
+            name in readiness['billing_missing_env']
+            for name in ('STRIPE_PRICE_ID', 'PADDLE_PRICE_ID')
+        ),
+        'environment_valid': (
+            (os.getenv('PADDLE_ENVIRONMENT') or '').strip().lower() in {'sandbox', 'production'}
+            if provider == 'paddle'
+            else True
+        ),
+        'test_mode_detected': (
+            stripe_test_mode
+        ),
+        'missing_env': list(readiness['billing_missing_env']),
         'blockers': blockers,
-        'warnings': warnings,
+        'warnings': [],
+    }
+
+
+def build_rate_limit_validation(mode: str) -> dict[str, Any]:
+    redis_configured = bool(
+        (os.getenv('REDIS_URL') or '').strip()
+        or (
+            (os.getenv('UPSTASH_REDIS_REST_URL') or '').strip()
+            and (os.getenv('UPSTASH_REDIS_REST_TOKEN') or '').strip()
+        )
+    )
+    temporarily_disabled = (os.getenv('REDIS_TEMPORARILY_DISABLED') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+    production_like = mode in {'staging', 'production'}
+    warning = None
+    blockers: list[str] = []
+    if redis_configured:
+        status = 'configured'
+    elif production_like and temporarily_disabled:
+        status = 'disabled_temporary'
+        warning = 'Redis disabled temporarily; in-memory rate limiting is not horizontally scalable'
+    elif production_like:
+        status = 'missing'
+        blockers.append('Redis is required for enterprise-ready distributed rate limiting')
+    else:
+        status = 'memory_local'
+
+    return {
+        'redis_configured': redis_configured,
+        'redis_status': status,
+        'rate_limit_backend': 'redis' if redis_configured else 'memory',
+        'rate_limit_enterprise_ready': redis_configured,
+        'enterprise_ready': redis_configured and not blockers,
+        'warning': warning,
+        'blockers': blockers,
+        'warnings': [warning] if warning else [],
     }
 
 
@@ -835,6 +815,10 @@ def _generate_blocker4_proof(mode: str, strict: bool) -> dict[str, Any]:
         'staging_launch_validation': staging_validation,
         'live_provider_validation': _make_live_provider_stub(),
         'billing_production_validation': _make_billing_stub(),
+        'rate_limit_validation': build_rate_limit_validation(mode),
+        'redis_status': build_rate_limit_validation(mode)['redis_status'],
+        'rate_limit_enterprise_ready': build_rate_limit_validation(mode)['rate_limit_enterprise_ready'],
+        'enterprise_ready': False,
         'email_production_validation': _make_email_stub(),
         'required_dependencies': _make_deps_stub(),
         'blockers': sorted(set(all_blockers)),
@@ -890,6 +874,7 @@ def generate_staging_proof(
         live_evidence_proof_path=live_evidence_proof_dir / 'summary.json',
     )
     billing_validation = build_billing_production_validation(mode)
+    rate_limit_validation = build_rate_limit_validation(mode)
     email_validation = build_email_production_validation(mode)
     required_dependencies = build_required_dependencies(launch_proof_dir, release_proof_dir)
 
@@ -902,6 +887,7 @@ def generate_staging_proof(
     all_warnings.extend(live_provider_validation.get('warnings', []))
     all_blockers.extend(billing_validation.get('blockers', []))
     all_warnings.extend(billing_validation.get('warnings', []))
+    all_warnings.extend(rate_limit_validation.get('warnings', []))
     all_blockers.extend(email_validation.get('blockers', []))
     all_warnings.extend(email_validation.get('warnings', []))
 
@@ -982,6 +968,10 @@ def generate_staging_proof(
         'staging_launch_validation': staging_validation,
         'live_provider_validation': live_provider_validation,
         'billing_production_validation': billing_validation,
+        'rate_limit_validation': rate_limit_validation,
+        'redis_status': rate_limit_validation['redis_status'],
+        'rate_limit_enterprise_ready': rate_limit_validation['rate_limit_enterprise_ready'],
+        'enterprise_ready': broad_paid_saas_ready and rate_limit_validation['rate_limit_enterprise_ready'],
         'email_production_validation': email_validation,
         'required_dependencies': required_dependencies,
         'blockers': sorted(set(all_blockers)),
@@ -1023,6 +1013,11 @@ def main(
     print(f'[generate-staging-launch-proof] staging_launch_ready={staging_ready}')
     print(f'[generate-staging-launch-proof] broad_paid_saas_ready={broad_ready}')
     print(f'[generate-staging-launch-proof] safe_to_sell_broadly_today={safe}')
+    billing = summary.get('billing_production_validation', {})
+    print(f"[generate-staging-launch-proof] billing_provider={billing.get('billing_provider', 'unknown')}")
+    print(f"[generate-staging-launch-proof] billing_ready={billing.get('billing_ready', False)}")
+    print(f"[generate-staging-launch-proof] redis_status={summary.get('redis_status', 'unknown')}")
+    print(f"[generate-staging-launch-proof] enterprise_ready={summary.get('enterprise_ready', False)}")
 
     if summary['blockers']:
         print('[generate-staging-launch-proof] Blockers:')
@@ -1043,6 +1038,9 @@ def main(
         else:
             if not broad_ready:
                 print('[generate-staging-launch-proof] FAIL: broad_paid_saas_ready=false in strict mode')
+                return 1
+            if not summary.get('enterprise_ready', False):
+                print('[generate-staging-launch-proof] FAIL: enterprise_ready=false in strict mode')
                 return 1
 
     return 0

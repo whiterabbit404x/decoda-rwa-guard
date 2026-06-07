@@ -1,5 +1,16 @@
 # Audit Fix Plan
 
+
+## 2026-06-07 correction: Paddle billing and explicit Redis degradation
+
+The launch plan must not assume Stripe. Billing validation is provider-specific:
+
+- Paddle requires `BILLING_PROVIDER=paddle`, `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`, `PADDLE_PRICE_ID`, and `PADDLE_ENVIRONMENT=sandbox|production`.
+- Stripe requires its own `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and `STRIPE_PRICE_ID` only when `BILLING_PROVIDER=stripe`.
+- Missing, unsupported, or placeholder configuration fails billing readiness without exposing secret values.
+
+Redis may be intentionally deferred with `REDIS_TEMPORARILY_DISABLED=true`. This avoids a production startup crash but is a degraded single-instance/staging posture: `redis_configured=false`, `rate_limit_backend=memory`, `rate_limit_enterprise_ready=false`, and `enterprise_ready=false`. Enterprise procurement remains blocked until Redis-backed distributed rate limiting is configured. This exception does not relax auth, security, evidence-signing, live-provider, or truthfulness checks.
+
 ## Summary
 
 Implemented P0 and P1 enterprise-readiness fixes to qualify Decoda RWA Guard as a production-grade live cybersecurity monitoring platform.

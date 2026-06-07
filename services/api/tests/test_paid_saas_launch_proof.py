@@ -27,10 +27,10 @@ NO_BILLING_SCRIPT = REPO_ROOT / 'scripts' / 'staging' / 'run_no_billing_launch_p
 
 _DUMMY_PADDLE_ENV = {
     'BILLING_PROVIDER': 'paddle',
-    'PADDLE_API_KEY': 'pdl_api_testkey_dummy',
-    'PADDLE_CLIENT_TOKEN': 'pdl_client_testkey_dummy',
-    'PADDLE_PRICE_ID': 'pri_prod_monthly_dummy',
-    'PADDLE_WEBHOOK_SECRET': 'pdl_whsec_testkey_dummy',
+    'PADDLE_API_KEY': 'pdl_api_valid_live_abc',
+    'PADDLE_CLIENT_TOKEN': 'pdl_client_valid_live_abc',
+    'PADDLE_PRICE_ID': 'pri_prod_monthly_valid_abc',
+    'PADDLE_WEBHOOK_SECRET': 'pdl_whsec_valid_live_abc',
     'PADDLE_ENVIRONMENT': 'production',
     'EMAIL_PROVIDER': 'resend',
     'RESEND_API_KEY': 're_testkey_dummy_abc123',
@@ -192,20 +192,20 @@ def test_resend_email_gate_passes_with_dummy_env(monkeypatch: pytest.MonkeyPatch
 
 
 # 10. Paddle billing gate passes with dummy Paddle env vars (unit-level)
-def test_paddle_billing_gate_passes_with_dummy_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_paddle_billing_gate_passes_with_valid_env(monkeypatch: pytest.MonkeyPatch) -> None:
     sys.path.insert(0, str(REPO_ROOT / 'services' / 'api'))
     from app.paid_launch_readiness import check_billing_readiness
 
     monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
-    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_testkey_dummy')
-    monkeypatch.setenv('PADDLE_CLIENT_TOKEN', 'pdl_client_testkey_dummy')
-    monkeypatch.setenv('PADDLE_PRICE_ID', 'pri_prod_monthly_dummy')
-    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_whsec_testkey_dummy')
+    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_valid_live_abc')
+    monkeypatch.setenv('PADDLE_CLIENT_TOKEN', 'pdl_client_valid_live_abc')
+    monkeypatch.setenv('PADDLE_PRICE_ID', 'pri_prod_monthly_valid_abc')
+    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_whsec_valid_live_abc')
     monkeypatch.setenv('PADDLE_ENVIRONMENT', 'production')
 
     result = check_billing_readiness()
     assert result['billing_ready'] is True, (
-        f'billing_ready must be True with Paddle dummy env. result={result}'
+        f'billing_ready must be True with valid Paddle env. result={result}'
     )
     assert result['billing_webhook_ready'] is True
     assert result['billing_missing_env'] == []

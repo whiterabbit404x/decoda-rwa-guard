@@ -15,7 +15,8 @@ Config env vars:
   REDIS_URL                              — primary Redis backend
   UPSTASH_REDIS_REST_URL                 — Upstash HTTP Redis
   UPSTASH_REDIS_REST_TOKEN               — Upstash token
-  ALLOW_IN_MEMORY_RATE_LIMIT_IN_PRODUCTION — break-glass override; enterprise_ready=false
+  REDIS_TEMPORARILY_DISABLED              — explicit temporary degraded mode; enterprise_ready=false
+  ALLOW_IN_MEMORY_RATE_LIMIT_IN_PRODUCTION — legacy break-glass alias; enterprise_ready=false
 """
 from __future__ import annotations
 

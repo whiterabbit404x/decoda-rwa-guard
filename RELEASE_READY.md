@@ -1,8 +1,19 @@
 # RELEASE_READY
 
-Last reconciled: **2026-05-03**.
+Last reconciled: **2026-06-07**.
 
 This checklist is **fail-closed**: readiness is granted only by passing gates with verifiable evidence, never by fallback/demo assumptions.
+
+## Paddle billing and temporary Redis posture (2026-06-07)
+
+- **Billing provider:** Paddle is a first-class paid-launch provider. Set `BILLING_PROVIDER=paddle`, `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`, `PADDLE_PRICE_ID`, and `PADDLE_ENVIRONMENT=sandbox|production`. `PADDLE_CLIENT_TOKEN` is optional unless a browser flow specifically uses it. Stripe variables are not required when Paddle is selected.
+- **Billing status wording:** readiness reports Paddle as `configured`, `missing`, or `invalid`; it never includes credential values. Missing or unsupported providers fail closed.
+- **Redis status:** `REDIS_TEMPORARILY_DISABLED=true` permits staging/production startup with the in-memory limiter when Redis is intentionally deferred. Readiness must report `status=degraded`, `redis_configured=false`, `rate_limit_backend=memory`, `rate_limit_enterprise_ready=false`, and `enterprise_ready=false`.
+- **Broad paid self-serve:** depends on Paddle billing, production email, EVM/live-provider evidence, evidence signing, auth/security, and the existing staging gates. A temporary Redis skip does not make enterprise claims true.
+- **Enterprise procurement:** **not ready until Redis-backed distributed rate limiting is enabled**, even if all broad self-serve gates pass.
+
+> `REDIS_TEMPORARILY_DISABLED=true` is acceptable only for temporary single-instance/staging use. It is not enterprise-ready and not horizontally scalable.
+
 
 ## Validation commands, checklists, and artifact paths
 
@@ -105,7 +116,7 @@ Last updated: **2026-05-21**.
 | Provider | Required | Optional |
 |---|---|---|
 | Stripe billing | `BILLING_PROVIDER=stripe`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID` | `STRIPE_PORTAL_CONFIGURATION_ID` |
-| Paddle billing | `BILLING_PROVIDER=paddle`, `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`, `PADDLE_PRICE_ID_*` | — |
+| Paddle billing | `BILLING_PROVIDER=paddle`, `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`, `PADDLE_PRICE_ID` (or `PADDLE_PRICE_ID_*`), `PADDLE_ENVIRONMENT=sandbox|production` | `PADDLE_CLIENT_TOKEN`, `PADDLE_SUCCESS_URL`, `PADDLE_CANCEL_URL`, legacy seller/vendor ID |
 | SendGrid email | `EMAIL_PROVIDER=sendgrid`, `SENDGRID_API_KEY`, `EMAIL_FROM` | `EMAIL_DOMAIN` |
 | Resend email | `EMAIL_PROVIDER=resend`, `RESEND_API_KEY`, `EMAIL_FROM` | — |
 | SMTP email | `EMAIL_PROVIDER=smtp`, `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`, `EMAIL_FROM` | — |

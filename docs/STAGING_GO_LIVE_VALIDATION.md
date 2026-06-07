@@ -174,7 +174,7 @@ Common blockers and remediation:
 | Blocker | Remediation |
 |---|---|
 | `STAGING_API_URL not configured` | Set `STAGING_API_URL` env var |
-| `BILLING_PROVIDER not configured` | Set `BILLING_PROVIDER=stripe` |
+| `BILLING_PROVIDER not configured` | Set `BILLING_PROVIDER=paddle` with Paddle API key, webhook secret, price ID, and environment (or configure Stripe explicitly) |
 | `STRIPE_SECRET_KEY is a test-mode key` | Replace `sk_test_*` with `sk_live_*` |
 | `STRIPE_WEBHOOK_SECRET not configured` | Configure Stripe webhook endpoint and set `STRIPE_WEBHOOK_SECRET` |
 | `evidence source is simulator` | Produce real live telemetry before validating |

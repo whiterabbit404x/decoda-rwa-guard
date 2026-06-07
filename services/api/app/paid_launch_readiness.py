@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 _PLACEHOLDER_MARKERS = frozenset({
     'example', 'changeme', 'replace-me', 'placeholder', 'test-key', 'your_',
+})
+_BILLING_PLACEHOLDER_TOKENS = frozenset({
+    'example', 'changeme', 'replace', 'placeholder', 'test', 'testkey',
+    'demo', 'local', 'dummy', 'your',
 })
 
 
@@ -16,6 +21,19 @@ def _has_placeholder(value: str) -> bool:
 def _env_ok(name: str) -> bool:
     val = (os.getenv(name) or '').strip()
     return bool(val) and not _has_placeholder(val)
+
+
+def _billing_value_ok(value: str) -> bool:
+    tokens = {token for token in re.split(r'[^a-z0-9]+', value.lower()) if token}
+    return bool(value) and not bool(tokens & _BILLING_PLACEHOLDER_TOKENS)
+
+
+def _billing_env_ok(name: str) -> bool:
+    return _billing_value_ok((os.getenv(name) or '').strip())
+
+
+def _billing_missing_from(names: list[str]) -> list[str]:
+    return [n for n in names if not _billing_env_ok(n)]
 
 
 def _missing_from(names: list[str]) -> list[str]:
@@ -50,8 +68,8 @@ def check_billing_readiness() -> dict[str, Any]:
     if provider == 'stripe':
         billing_required = ['STRIPE_SECRET_KEY', 'STRIPE_PRICE_ID']
         webhook_required = ['STRIPE_WEBHOOK_SECRET']
-        billing_missing = _missing_from(billing_required)
-        webhook_missing = _missing_from(webhook_required)
+        billing_missing = _billing_missing_from(billing_required)
+        webhook_missing = _billing_missing_from(webhook_required)
         billing_ready = not billing_missing
         webhook_ready = not webhook_missing
         return {
@@ -74,19 +92,22 @@ def check_billing_readiness() -> dict[str, Any]:
         }
 
     if provider == 'paddle':
-        billing_required = ['PADDLE_API_KEY', 'PADDLE_CLIENT_TOKEN', 'PADDLE_ENVIRONMENT']
+        billing_required = ['PADDLE_API_KEY', 'PADDLE_ENVIRONMENT']
         webhook_required = ['PADDLE_WEBHOOK_SECRET']
         # Accept PADDLE_PRICE_ID (simple form) or any PADDLE_PRICE_ID_* (multi-plan form)
-        price_id_plain = _env_ok('PADDLE_PRICE_ID')
+        price_id_plain = _billing_env_ok('PADDLE_PRICE_ID')
         price_id_variants = [
             k for k, v in os.environ.items()
-            if k.startswith('PADDLE_PRICE_ID_') and v.strip() and not _has_placeholder(v.strip())
+            if k.startswith('PADDLE_PRICE_ID_') and v.strip() and _billing_value_ok(v.strip())
         ]
         price_configured = price_id_plain or bool(price_id_variants)
-        billing_missing = _missing_from(billing_required)
+        billing_missing = _billing_missing_from(billing_required)
+        paddle_environment = (os.getenv('PADDLE_ENVIRONMENT') or '').strip().lower()
+        if _billing_env_ok('PADDLE_ENVIRONMENT') and paddle_environment not in {'sandbox', 'production'}:
+            billing_missing.append('PADDLE_ENVIRONMENT')
         if not price_configured:
             billing_missing.append('PADDLE_PRICE_ID')
-        webhook_missing = _missing_from(webhook_required)
+        webhook_missing = _billing_missing_from(webhook_required)
         billing_ready = not billing_missing
         webhook_ready = not webhook_missing
         price_env_label = 'PADDLE_PRICE_ID' if price_id_plain else ('PADDLE_PRICE_ID_*' if price_id_variants else 'PADDLE_PRICE_ID')
@@ -94,7 +115,7 @@ def check_billing_readiness() -> dict[str, Any]:
             'billing_ready': billing_ready,
             'billing_status': 'ready' if billing_ready else 'missing',
             'billing_reason': (
-                'Paddle billing configured with required credentials, environment, client token, and price ID.'
+                'Paddle billing configured with required credentials, environment, and price ID.'
                 if billing_ready
                 else f'Paddle billing missing required configuration: {billing_missing}'
             ),
