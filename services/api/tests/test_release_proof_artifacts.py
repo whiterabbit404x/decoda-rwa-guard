@@ -24,6 +24,20 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
 
 
+_VALID_PADDLE_PROOF_ENV = {
+    'BILLING_PROVIDER': 'paddle',
+    'PADDLE_API_KEY': 'pdl_api_ci_fixture_abc123',
+    'PADDLE_CLIENT_TOKEN': 'pdl_client_ci_fixture_abc123',
+    'PADDLE_PRICE_ID': 'pri_ci_monthly_abc123',
+    'PADDLE_WEBHOOK_SECRET': 'pdl_whsec_ci_fixture_abc123',
+    'PADDLE_ENVIRONMENT': 'production',
+    'EMAIL_PROVIDER': 'resend',
+    'RESEND_API_KEY': 're_ci_fixture_abc123',
+    'EMAIL_FROM': 'noreply@decoda.io',
+    'EMAIL_DOMAIN': 'decoda.io',
+}
+
+
 @pytest.fixture
 def artifact_dirs(tmp_path: Path) -> dict[str, Path]:
     """Create temporary artifact directories."""
@@ -678,21 +692,10 @@ def test_paid_saas_launch_proof_local_mode_never_has_paid_launch_ready_true(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """run_paid_saas_launch_proof.py --mode local must produce paid_launch_ready=false."""
-    import os, tempfile, shutil
+    import os
 
     env = {k: v for k, v in os.environ.items()}
-    env.update({
-        'BILLING_PROVIDER': 'paddle',
-        'PADDLE_API_KEY': 'pdl_api_testkey_dummy',
-        'PADDLE_CLIENT_TOKEN': 'pdl_client_testkey_dummy',
-        'PADDLE_PRICE_ID': 'pri_prod_monthly_dummy',
-        'PADDLE_WEBHOOK_SECRET': 'pdl_whsec_testkey_dummy',
-        'PADDLE_ENVIRONMENT': 'production',
-        'EMAIL_PROVIDER': 'resend',
-        'RESEND_API_KEY': 're_testkey_dummy_abc123',
-        'EMAIL_FROM': 'noreply@decoda.io',
-        'EMAIL_DOMAIN': 'decoda.io',
-    })
+    env.update(_VALID_PADDLE_PROOF_ENV)
     result = subprocess.run(
         [sys.executable, 'scripts/staging/run_paid_saas_launch_proof.py', '--mode', 'local'],
         cwd=REPO_ROOT,
@@ -732,18 +735,7 @@ def test_paid_saas_launch_proof_staging_mode_can_have_paid_launch_ready_true(
     import os
 
     env = {k: v for k, v in os.environ.items()}
-    env.update({
-        'BILLING_PROVIDER': 'paddle',
-        'PADDLE_API_KEY': 'pdl_api_testkey_dummy',
-        'PADDLE_CLIENT_TOKEN': 'pdl_client_testkey_dummy',
-        'PADDLE_PRICE_ID': 'pri_prod_monthly_dummy',
-        'PADDLE_WEBHOOK_SECRET': 'pdl_whsec_testkey_dummy',
-        'PADDLE_ENVIRONMENT': 'production',
-        'EMAIL_PROVIDER': 'resend',
-        'RESEND_API_KEY': 're_testkey_dummy_abc123',
-        'EMAIL_FROM': 'noreply@decoda.io',
-        'EMAIL_DOMAIN': 'decoda.io',
-    })
+    env.update(_VALID_PADDLE_PROOF_ENV)
     result = subprocess.run(
         [sys.executable, 'scripts/staging/run_paid_saas_launch_proof.py', '--mode', 'staging'],
         cwd=REPO_ROOT,
@@ -753,7 +745,7 @@ def test_paid_saas_launch_proof_staging_mode_can_have_paid_launch_ready_true(
         timeout=60,
     )
     assert result.returncode == 0, (
-        f'Paid SaaS launch proof should exit 0 with full Paddle+Resend env in staging mode.\n'
+        f'Paid SaaS launch proof should exit 0 with valid Paddle+Resend fixture env in staging mode.\n'
         f'stdout: {result.stdout}\nstderr: {result.stderr}'
     )
     artifact = REPO_ROOT / 'artifacts' / 'launch-proof' / 'latest' / 'summary.json'
