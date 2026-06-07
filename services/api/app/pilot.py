@@ -39,6 +39,10 @@ from services.api.app.secret_crypto import decrypt_secret, encrypt_secret, read_
 from services.api.app.export_storage import load_export_storage
 from services.api.app.production_readiness import build_production_readiness
 from services.api.app.paid_launch_readiness import check_billing_readiness
+from services.api.app.observability import current_trace_id, increment, gauge, observe, report_error, span, send_external_oncall_alert
+
+_ACTIVE_DB_CONNECTIONS = 0
+_ACTIVE_DB_CONNECTIONS_LOCK = threading.Lock()
 
 _SAFE_IDENTIFIER_RE = re.compile(r'^[a-z][a-z0-9_]{0,62}$')
 
@@ -592,8 +596,27 @@ def pg_connection() -> Iterable[Any]:
     psycopg, dict_row = load_psycopg()
     resolved_db_url = _resolve_database_url_for_connection(db_url)
     connect_options = _database_connect_options()
-    with psycopg.connect(resolved_db_url, row_factory=dict_row, **connect_options) as connection:
-        yield connection
+    global _ACTIVE_DB_CONNECTIONS
+    started = monotonic()
+    with _ACTIVE_DB_CONNECTIONS_LOCK:
+        _ACTIVE_DB_CONNECTIONS += 1
+        active = _ACTIVE_DB_CONNECTIONS
+    gauge('decoda_database_connections_active', active)
+    try:
+        try:
+            connection = psycopg.connect(resolved_db_url, row_factory=dict_row, **connect_options)
+        except Exception as exc:
+            increment('decoda_database_failures_total', error_type=type(exc).__name__)
+            raise
+        observe('decoda_database_connection_wait_seconds', monotonic() - started)
+        with span('database.connection', backend='postgres'):
+            with connection:
+                yield connection
+    finally:
+        with _ACTIVE_DB_CONNECTIONS_LOCK:
+            _ACTIVE_DB_CONNECTIONS -= 1
+            active = _ACTIVE_DB_CONNECTIONS
+        gauge('decoda_database_connections_active', active)
 
 
 def require_live_mode() -> None:
@@ -6028,6 +6051,58 @@ def seed_demo_workspace(email: str, password: str, workspace_name: str, full_nam
         }
 
 
+
+def _process_notification_attempts(connection: Any, limit: int) -> dict[str, int]:
+    rows = connection.execute(
+        '''SELECT a.*, d.name AS destination_name, d.destination_type, d.config, d.secret_encrypted, d.enabled,
+                  p.retry_schedule_seconds, p.escalation_after_seconds, p.escalation_destination_ids
+           FROM notification_attempts a JOIN notification_destinations d ON d.id=a.destination_id
+           LEFT JOIN notification_policies p ON p.id=a.policy_id
+           WHERE a.status='queued' AND COALESCE(a.next_attempt_at,NOW()) <= NOW()
+           ORDER BY a.created_at ASC LIMIT %s FOR UPDATE SKIP LOCKED''', (limit,)
+    ).fetchall()
+    succeeded = failed = exhausted = 0
+    for row in rows:
+        attempt_id = str(row['id'])
+        attempt = int(row.get('attempt') or 0) + 1
+        connection.execute("UPDATE notification_attempts SET status='delivering', attempt=%s, updated_at=NOW() WHERE id=%s", (attempt, attempt_id))
+        event = dict(row.get('payload') or {})
+        event.update({'event_id': row['event_id'], 'event_type': row['event_type'], 'severity': row['severity'], 'asset_id': row.get('asset_id'), 'trace_id': row.get('trace_id')})
+        try:
+            with span('notification.deliver', destination_type=row['destination_type'], attempt=attempt):
+                response_status = _deliver_notification_destination(dict(row), event)
+            connection.execute("UPDATE notification_attempts SET status='succeeded', response_status=%s, updated_at=NOW() WHERE id=%s", (response_status, attempt_id))
+            increment('decoda_notification_attempts_total', destination=row['destination_type'], outcome='succeeded')
+            succeeded += 1
+        except Exception as exc:
+            schedule = [int(v) for v in (row.get('retry_schedule_seconds') or [30, 120, 600, 1800])]
+            terminal = attempt >= int(row.get('max_attempts') or len(schedule) + 1)
+            delay = schedule[min(attempt - 1, len(schedule) - 1)] if schedule else 60
+            connection.execute(
+                '''UPDATE notification_attempts SET status=%s,error_code=%s,error_message=%s,
+                   next_attempt_at=CASE WHEN %s THEN NULL ELSE NOW()+(%s || ' seconds')::interval END,updated_at=NOW() WHERE id=%s''',
+                ('exhausted' if terminal else 'queued', type(exc).__name__, str(exc)[:1000], terminal, delay, attempt_id),
+            )
+            increment('decoda_notification_attempts_total', destination=row['destination_type'], outcome='exhausted' if terminal else 'retry')
+            report_error(exc, operation='notification.deliver', destination_type=row['destination_type'], attempt_id=attempt_id, terminal=terminal)
+            if terminal:
+                exhausted += 1
+                send_external_oncall_alert('delivery_retries_exhausted', 'Notification delivery exhausted all retries.', attempt_id=attempt_id, destination_type=row['destination_type'], event_id=row['event_id'])
+                for escalation_destination_id in (row.get('escalation_destination_ids') or []):
+                    if str(escalation_destination_id) == str(row.get('destination_id')):
+                        continue
+                    connection.execute(
+                        '''INSERT INTO notification_attempts
+                           (id,workspace_id,policy_id,destination_id,event_id,event_type,severity,asset_id,payload,attempt,max_attempts,status,next_attempt_at,trace_id)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,0,%s,'queued',NOW(),%s)''',
+                        (str(uuid.uuid4()), row['workspace_id'], row.get('policy_id'), escalation_destination_id, row['event_id'],
+                         row['event_type'], row['severity'], row.get('asset_id'), _json_dumps(event), max(1, len(schedule)+1), row.get('trace_id')),
+                    )
+            else:
+                failed += 1
+    return {'notification_succeeded': succeeded, 'notification_failed': failed, 'notification_exhausted': exhausted}
+
+
 def run_background_jobs(*, worker_id: str = 'worker', limit: int = 20) -> dict[str, Any]:
     require_live_mode()
     processed = 0
@@ -6117,8 +6192,58 @@ def run_background_jobs(*, worker_id: str = 'worker', limit: int = 20) -> dict[s
                         ('failed' if terminal else 'queued', safe_error, next_attempt, str(payload['delivery_id'])),
                     )
                 logger.exception('background job failed', extra={'event': 'jobs.failed', 'job_id': job_id, 'job_type': row['job_type']})
+        notification_summary = _process_notification_attempts(connection, limit)
         connection.commit()
-    return {'processed': processed, 'failed': failed}
+    return {'processed': processed, 'failed': failed, **notification_summary}
+
+
+def evaluate_monitoring_system_alerts(*, stale_after_seconds: int = 120) -> dict[str, int]:
+    """Persist and externally route failures in the monitoring system itself."""
+    counts = {'missing_heartbeats': 0, 'stale_telemetry': 0, 'proof_chain_failures': 0, 'exhausted_retries': 0}
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        checks = [
+            ('missing_heartbeat', 'critical', 'Monitoring watcher heartbeat is missing.',
+             '''SELECT watcher_name AS fingerprint, jsonb_build_object('last_heartbeat_at',last_heartbeat_at,'status',status) AS details
+                FROM monitoring_watcher_state WHERE last_heartbeat_at IS NULL OR last_heartbeat_at < NOW()-(%s || ' seconds')::interval''', (stale_after_seconds,), 'missing_heartbeats'),
+            ('stale_telemetry', 'critical', 'Workspace telemetry is stale.',
+             '''SELECT workspace_id::text AS fingerprint, jsonb_build_object('latest_telemetry_at',MAX(observed_at)) AS details
+                FROM telemetry_events GROUP BY workspace_id HAVING MAX(observed_at) < NOW()-(%s || ' seconds')::interval''', (stale_after_seconds * 2,), 'stale_telemetry'),
+            ('proof_chain_failure', 'critical', 'Monitoring proof chain verification failed.',
+             '''SELECT workspace_id::text AS fingerprint, jsonb_build_object('failed_records',COUNT(*)) AS details
+                FROM audit_logs WHERE metadata->>'proof_chain_status'='failed' AND created_at > NOW()-INTERVAL '15 minutes' GROUP BY workspace_id''', (), 'proof_chain_failures'),
+            ('delivery_retries_exhausted', 'critical', 'Notification delivery retries are exhausted.',
+             '''SELECT workspace_id::text AS fingerprint, jsonb_build_object('exhausted_attempts',COUNT(*)) AS details
+                FROM notification_attempts WHERE status='exhausted' AND updated_at > NOW()-INTERVAL '15 minutes' GROUP BY workspace_id''', (), 'exhausted_retries'),
+        ]
+        for alert_type, severity, summary, query, params, count_key in checks:
+            try:
+                rows = connection.execute(query, params).fetchall()
+            except Exception as exc:
+                logger.warning('self_monitoring_check_unavailable alert_type=%s error_type=%s', alert_type, type(exc).__name__)
+                continue
+            for row in rows:
+                fingerprint = str(row.get('fingerprint') or 'global')
+                existing_alert = connection.execute(
+                    '''SELECT external_delivery_status, updated_at FROM monitoring_system_alerts
+                       WHERE alert_type=%s AND fingerprint=%s AND updated_at > NOW()-INTERVAL '15 minutes' ''',
+                    (alert_type, fingerprint),
+                ).fetchone()
+                connection.execute(
+                    '''INSERT INTO monitoring_system_alerts (id,alert_type,fingerprint,severity,summary,details,status,external_delivery_status,last_observed_at)
+                       VALUES (%s,%s,%s,%s,%s,%s::jsonb,'open','pending',NOW())
+                       ON CONFLICT (alert_type,fingerprint) DO UPDATE SET severity=EXCLUDED.severity,summary=EXCLUDED.summary,
+                       details=EXCLUDED.details,status='open',last_observed_at=NOW(),updated_at=NOW()''',
+                    (str(uuid.uuid4()), alert_type, fingerprint, severity, summary, _json_dumps(row.get('details') or {})),
+                )
+                delivered = bool(existing_alert and existing_alert.get('external_delivery_status') == 'delivered')
+                if not delivered:
+                    delivered = send_external_oncall_alert(alert_type, summary, fingerprint=fingerprint, details=row.get('details') or {})
+                if delivered:
+                    connection.execute("UPDATE monitoring_system_alerts SET external_delivery_status='delivered',updated_at=NOW() WHERE alert_type=%s AND fingerprint=%s", (alert_type, fingerprint))
+                counts[count_key] += 1
+        connection.commit()
+    return counts
 
 
 def reconcile_monitored_systems_for_enabled_targets() -> dict[str, Any]:
@@ -7553,6 +7678,206 @@ def _normalize_routing_payload(payload: dict[str, Any], *, channel_type: str) ->
     }
 
 
+
+def _notification_policy_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    severity = str(payload.get('severity_threshold') or 'medium').lower()
+    if severity not in {'info', 'low', 'medium', 'high', 'critical'}:
+        raise HTTPException(status_code=400, detail='Invalid severity_threshold.')
+    retry_schedule = [max(1, int(value)) for value in (payload.get('retry_schedule_seconds') or [30, 120, 600, 1800])][:10]
+    return {
+        'name': str(payload.get('name') or '').strip(),
+        'severity_threshold': severity,
+        'asset_ids': [str(v) for v in (payload.get('asset_ids') or []) if str(v)],
+        'event_types': [str(v) for v in (payload.get('event_types') or ['alert.created']) if str(v)],
+        'destination_ids': [str(v) for v in (payload.get('destination_ids') or []) if str(v)],
+        'retry_schedule_seconds': retry_schedule,
+        'suppression_seconds': max(0, int(payload.get('suppression_seconds') or 0)),
+        'escalation_after_seconds': max(0, int(payload['escalation_after_seconds'])) if payload.get('escalation_after_seconds') is not None else None,
+        'escalation_destination_ids': [str(v) for v in (payload.get('escalation_destination_ids') or []) if str(v)],
+        'enabled': bool(payload.get('enabled', True)),
+    }
+
+
+def list_notification_configuration(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        _, workspace = _require_workspace_permission(connection, request, 'webhooks.manage')
+        workspace_id = workspace['workspace_id']
+        destinations = connection.execute(
+            '''SELECT id, name, destination_type, config, enabled, created_at, updated_at
+               FROM notification_destinations WHERE workspace_id = %s ORDER BY created_at DESC''', (workspace_id,)
+        ).fetchall()
+        policies = connection.execute(
+            '''SELECT id, name, severity_threshold, asset_ids, event_types, destination_ids,
+                      retry_schedule_seconds, suppression_seconds, escalation_after_seconds,
+                      escalation_destination_ids, enabled, created_at, updated_at
+               FROM notification_policies WHERE workspace_id = %s ORDER BY created_at DESC''', (workspace_id,)
+        ).fetchall()
+        return {'destinations': [_json_safe_value(dict(row)) for row in destinations], 'policies': [_json_safe_value(dict(row)) for row in policies]}
+
+
+def create_notification_destination(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    destination_type = str(payload.get('destination_type') or '').lower()
+    if destination_type not in {'webhook', 'pagerduty', 'slack', 'teams', 'email', 'siem_syslog'}:
+        raise HTTPException(status_code=400, detail='Unsupported notification destination type.')
+    name = str(payload.get('name') or '').strip()
+    if not name:
+        raise HTTPException(status_code=400, detail='Destination name is required.')
+    config = payload.get('config') if isinstance(payload.get('config'), dict) else {}
+    secret = str(payload.get('secret') or '').strip()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace = _require_workspace_permission(connection, request, 'webhooks.manage')
+        destination_id = str(uuid.uuid4())
+        encrypted = _encode_secret_value(secret, aad=f'notification:{workspace["workspace_id"]}:{destination_id}') if secret else None
+        connection.execute(
+            '''INSERT INTO notification_destinations
+               (id, workspace_id, name, destination_type, config, secret_encrypted, enabled, created_by_user_id)
+               VALUES (%s,%s,%s,%s,%s::jsonb,%s,%s,%s)''',
+            (destination_id, workspace['workspace_id'], name, destination_type, _json_dumps(config), encrypted, bool(payload.get('enabled', True)), user['id']),
+        )
+        connection.commit()
+        return {'id': destination_id, 'name': name, 'destination_type': destination_type, 'config': config, 'enabled': bool(payload.get('enabled', True))}
+
+
+def upsert_notification_policy(payload: dict[str, Any], request: Request, policy_id: str | None = None) -> dict[str, Any]:
+    require_live_mode()
+    normalized = _notification_policy_payload(payload)
+    if not normalized['name']:
+        raise HTTPException(status_code=400, detail='Policy name is required.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace = _require_workspace_permission(connection, request, 'webhooks.manage')
+        resolved_id = policy_id or str(uuid.uuid4())
+        if policy_id:
+            result = connection.execute(
+                '''UPDATE notification_policies SET name=%s,severity_threshold=%s,asset_ids=%s::jsonb,event_types=%s::jsonb,
+                   destination_ids=%s::jsonb,retry_schedule_seconds=%s::jsonb,suppression_seconds=%s,escalation_after_seconds=%s,
+                   escalation_destination_ids=%s::jsonb,enabled=%s,updated_at=NOW() WHERE id=%s AND workspace_id=%s''',
+                (normalized['name'], normalized['severity_threshold'], _json_dumps(normalized['asset_ids']), _json_dumps(normalized['event_types']),
+                 _json_dumps(normalized['destination_ids']), _json_dumps(normalized['retry_schedule_seconds']), normalized['suppression_seconds'],
+                 normalized['escalation_after_seconds'], _json_dumps(normalized['escalation_destination_ids']), normalized['enabled'], policy_id, workspace['workspace_id']),
+            )
+            if result.rowcount == 0:
+                raise HTTPException(status_code=404, detail='Notification policy not found.')
+        else:
+            connection.execute(
+                '''INSERT INTO notification_policies
+                   (id,workspace_id,name,severity_threshold,asset_ids,event_types,destination_ids,retry_schedule_seconds,
+                    suppression_seconds,escalation_after_seconds,escalation_destination_ids,enabled,created_by_user_id)
+                   VALUES (%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s,%s::jsonb,%s,%s)''',
+                (resolved_id, workspace['workspace_id'], normalized['name'], normalized['severity_threshold'], _json_dumps(normalized['asset_ids']),
+                 _json_dumps(normalized['event_types']), _json_dumps(normalized['destination_ids']), _json_dumps(normalized['retry_schedule_seconds']),
+                 normalized['suppression_seconds'], normalized['escalation_after_seconds'], _json_dumps(normalized['escalation_destination_ids']), normalized['enabled'], user['id']),
+            )
+        connection.commit()
+        return {'id': resolved_id, **normalized}
+
+
+def list_notification_attempts(request: Request, limit: int = 100) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        _, workspace = _require_workspace_permission(connection, request, 'webhooks.manage')
+        rows = connection.execute(
+            '''SELECT a.*, d.name AS destination_name, d.destination_type, p.name AS policy_name
+               FROM notification_attempts a LEFT JOIN notification_destinations d ON d.id=a.destination_id
+               LEFT JOIN notification_policies p ON p.id=a.policy_id
+               WHERE a.workspace_id=%s ORDER BY a.created_at DESC LIMIT %s''', (workspace['workspace_id'], min(max(limit, 1), 500))
+        ).fetchall()
+        return {'attempts': [_json_safe_value(dict(row)) for row in rows]}
+
+
+def acknowledge_notification_attempt(attempt_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace = _require_workspace_permission(connection, request, 'webhooks.manage')
+        result = connection.execute(
+            '''UPDATE notification_attempts SET status='acknowledged', acknowledged_at=NOW(), acknowledged_by_user_id=%s,
+               acknowledgement_note=%s, updated_at=NOW() WHERE id=%s AND workspace_id=%s''',
+            (user['id'], str(payload.get('note') or '')[:1000], attempt_id, workspace['workspace_id']),
+        )
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail='Notification attempt not found.')
+        connection.commit()
+        return {'id': attempt_id, 'status': 'acknowledged'}
+
+
+def _queue_notification_policy_deliveries(connection: Any, *, workspace_id: str, event_id: str, event_type: str,
+                                            severity: str, asset_id: str | None, payload: dict[str, Any]) -> int:
+    policies = connection.execute('SELECT * FROM notification_policies WHERE workspace_id=%s AND enabled=TRUE', (workspace_id,)).fetchall()
+    queued = 0
+    for policy in policies:
+        if not _severity_meets_threshold(severity, str(policy.get('severity_threshold') or 'medium')):
+            continue
+        if policy.get('event_types') and event_type not in policy['event_types']:
+            continue
+        if policy.get('asset_ids') and str(asset_id or '') not in [str(v) for v in policy['asset_ids']]:
+            continue
+        schedule = [int(v) for v in (policy.get('retry_schedule_seconds') or [30, 120, 600, 1800])]
+        for destination_id in policy.get('destination_ids') or []:
+            suppressed = False
+            if int(policy.get('suppression_seconds') or 0) > 0:
+                recent = connection.execute(
+                    '''SELECT 1 FROM notification_attempts WHERE workspace_id=%s AND policy_id=%s AND destination_id=%s
+                       AND event_type=%s AND COALESCE(asset_id,'')=COALESCE(%s,'')
+                       AND created_at > NOW() - (%s || ' seconds')::interval LIMIT 1''',
+                    (workspace_id, policy['id'], destination_id, event_type, asset_id, int(policy['suppression_seconds'])),
+                ).fetchone()
+                suppressed = recent is not None
+            connection.execute(
+                '''INSERT INTO notification_attempts
+                   (id,workspace_id,policy_id,destination_id,event_id,event_type,severity,asset_id,payload,attempt,max_attempts,status,next_attempt_at,trace_id)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,0,%s,%s,NOW(),%s)''',
+                (str(uuid.uuid4()), workspace_id, policy['id'], destination_id, event_id, event_type, severity, asset_id,
+                 _json_dumps(payload), max(1, len(schedule)+1), 'suppressed' if suppressed else 'queued', current_trace_id() or None),
+            )
+            queued += 0 if suppressed else 1
+    return queued
+
+
+def _deliver_notification_destination(destination: dict[str, Any], event: dict[str, Any]) -> int:
+    destination_type = str(destination['destination_type'])
+    config = destination.get('config') or {}
+    secret = _decode_secret_value(str(destination.get('secret_encrypted') or ''), aad=f'notification:{destination["workspace_id"]}:{destination["id"]}') if destination.get('secret_encrypted') else ''
+    if destination_type == 'email':
+        _send_email(str(config.get('address') or secret), f"[{event.get('severity','medium').upper()}] {event.get('event_type')}", _json_dumps(event))
+        return 202
+    if destination_type == 'siem_syslog' and str(config.get('transport') or 'https') in {'udp', 'tcp'}:
+        host, port = str(config.get('host') or 'localhost'), int(config.get('port') or 514)
+        message = ('<134>1 ' + utc_now_iso() + ' decoda notification - - - ' + _json_dumps(event)).encode()
+        sock_type = socket.SOCK_DGRAM if config.get('transport', 'udp') == 'udp' else socket.SOCK_STREAM
+        with socket.socket(socket.AF_INET, sock_type) as client:
+            client.settimeout(8)
+            if sock_type == socket.SOCK_STREAM:
+                client.connect((host, port))
+                client.sendall(message + b'\n')
+            else:
+                client.sendto(message, (host, port))
+        return 200
+    url = str(config.get('url') or secret)
+    if not url:
+        raise RuntimeError(f'{destination_type} destination URL is not configured')
+    body = event
+    if destination_type == 'pagerduty':
+        body = {'routing_key': secret or config.get('routing_key'), 'event_action': 'trigger', 'dedup_key': event.get('event_id'),
+                'payload': {'summary': event.get('summary') or event.get('event_type'), 'severity': event.get('severity', 'error'), 'source': 'decoda', 'custom_details': event}}
+    elif destination_type == 'slack':
+        body = {'text': f"[{event.get('severity','medium').upper()}] {event.get('summary') or event.get('event_type')}"}
+    elif destination_type == 'teams':
+        body = {'type': 'message', 'attachments': [{'contentType': 'application/vnd.microsoft.card.adaptive', 'content': {'type': 'AdaptiveCard', 'version': '1.4', 'body': [{'type': 'TextBlock', 'weight': 'Bolder', 'text': event.get('summary') or event.get('event_type')}, {'type': 'TextBlock', 'wrap': True, 'text': _json_dumps(event)[:3000]}]}}]}
+    encoded = _json_dumps(body).encode()
+    headers = {'Content-Type': 'application/json', 'X-Decoda-Trace-ID': current_trace_id()}
+    if destination_type in {'webhook', 'siem_syslog'} and secret:
+        headers['Authorization'] = f'Bearer {secret}'
+    with urlopen(UrlRequest(url, data=encoded, headers=headers, method='POST'), timeout=8) as response:
+        response.read(4096)
+        return int(response.status)
+
+
 def list_webhooks(request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
@@ -8325,6 +8650,12 @@ def _queue_alert_deliveries(
                 },
                 max_attempts=4,
             )
+
+
+    _queue_notification_policy_deliveries(
+        connection, workspace_id=workspace_id, event_id=alert_id, event_type='alert.created', severity=severity,
+        asset_id=str(payload.get('asset_id') or payload.get('target_id') or '') or None, payload=event_payload,
+    )
 
 
 

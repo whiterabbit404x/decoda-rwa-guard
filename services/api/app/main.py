@@ -120,6 +120,11 @@ from services.api.app.pilot import (
     list_slack_deliveries,
     list_alert_routing_rules,
     list_webhooks,
+    list_notification_configuration,
+    create_notification_destination,
+    upsert_notification_policy,
+    list_notification_attempts,
+    acknowledge_notification_attempt,
     process_stripe_webhook,
     process_paddle_webhook,
     rotate_webhook_secret,
@@ -240,6 +245,7 @@ from services.api.app.db_failure import (
 from services.api.app.secret_crypto import validate_secret_encryption_key_at_startup
 from services.api.app.evidence_signing import validate_signing_secret_at_startup
 from services.api.app.structured_logging import configure_logging
+from services.api.app.observability import bind_trace, reset_trace, increment, observe, prometheus_metrics, report_error
 
 
 def _find_repo_root(start: Path) -> Path:
@@ -1818,11 +1824,28 @@ logger.info(
 # ---------------------------------------------------------------------------
 @app.middleware('http')
 async def trace_id_middleware(request: Request, call_next):
-    incoming = request.headers.get('X-Request-ID', '') or request.headers.get('X-Trace-ID', '')
-    trace_id = incoming.strip()[:64] if incoming.strip() else str(_uuid_mod.uuid4())
+    incoming = request.headers.get('traceparent', '') or request.headers.get('X-Request-ID', '') or request.headers.get('X-Trace-ID', '')
+    if incoming.startswith('00-') and len(incoming.split('-')) >= 4:
+        trace_id = incoming.split('-')[1]
+    else:
+        trace_id = incoming.strip()[:64] if incoming.strip() else _uuid_mod.uuid4().hex
+    correlation_id = (request.headers.get('X-Correlation-ID', '').strip()[:64] or trace_id)
+    tokens = bind_trace(trace_id)
     request.state.trace_id = trace_id
-    response = await call_next(request)
+    request.state.correlation_id = correlation_id
+    started = asyncio.get_running_loop().time()
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        increment('decoda_http_requests_total', method=request.method, route=request.url.path, status='500')
+        report_error(exc, operation='http_request', route=request.url.path, method=request.method, correlation_id=correlation_id)
+        raise
+    finally:
+        observe('decoda_http_request_duration_seconds', asyncio.get_running_loop().time() - started, method=request.method, route=request.url.path)
+        reset_trace(tokens)
     response.headers['X-Trace-ID'] = trace_id
+    response.headers['X-Correlation-ID'] = correlation_id
+    response.headers['traceparent'] = f'00-{trace_id[:32].ljust(32, "0")}-{_uuid_mod.uuid4().hex[:16]}-01'
     return response
 
 
@@ -1835,6 +1858,9 @@ async def request_metrics_middleware(request: Request, call_next):
     path_pattern = request.url.path
     key = f"{request.method}:{path_pattern}:{response.status_code}"
     _REQUEST_METRICS[key] = _REQUEST_METRICS.get(key, 0) + 1
+    increment('decoda_http_requests_total', method=request.method, route=path_pattern, status=response.status_code)
+    if response.status_code in {401, 403, 429}:
+        increment('decoda_auth_anomalies_total', route=path_pattern, status=response.status_code)
     return response
 
 
@@ -4154,6 +4180,41 @@ def exports_download(export_id: str, request: Request) -> Response:
     content, filename = with_auth_schema_json(lambda: get_export_artifact_content(export_id, request))
     media_type = 'application/json' if filename.endswith('.json') else 'text/csv'
     return Response(content=content, media_type=media_type, headers={'Content-Disposition': f'attachment; filename={filename}'})
+
+
+@app.get('/metrics', include_in_schema=False)
+def metrics() -> Response:
+    return Response(prometheus_metrics(), media_type='text/plain; version=0.0.4')
+
+
+@app.get('/integrations/notifications', summary='List workspace notification destinations and policies')
+def integrations_notifications_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_notification_configuration(request))
+
+
+@app.post('/integrations/notifications/destinations', summary='Create notification destination')
+def integrations_notifications_destination_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_notification_destination(payload, request))
+
+
+@app.post('/integrations/notifications/policies', summary='Create notification policy')
+def integrations_notifications_policy_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: upsert_notification_policy(payload, request))
+
+
+@app.patch('/integrations/notifications/policies/{policy_id}', summary='Update notification policy')
+def integrations_notifications_policy_patch(policy_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: upsert_notification_policy(payload, request, policy_id))
+
+
+@app.get('/integrations/notifications/attempts', summary='List notification delivery attempts')
+def integrations_notifications_attempts(request: Request, limit: int = 100) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_notification_attempts(request, limit))
+
+
+@app.post('/integrations/notifications/attempts/{attempt_id}/acknowledge', summary='Acknowledge a notification')
+def integrations_notifications_acknowledge(attempt_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: acknowledge_notification_attempt(attempt_id, payload, request))
 
 
 @app.get('/integrations/webhooks', summary='List outbound integration webhooks')

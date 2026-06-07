@@ -18,6 +18,7 @@ from services.api.app.evm_activity_provider import (
     _make_event_id,
     _topic_to_address,
 )
+from services.api.app.observability import increment, gauge, observe, span, report_error
 from services.api.app.monitoring_runner import ActivityEvent, mark_receipt_removed, process_ingested_event
 from services.api.app.pilot import ensure_pilot_schema, log_audit, pg_connection
 
@@ -232,6 +233,7 @@ class EvmIngestor:
                     self.state['last_processed_block'] = max(int(self.state.get('last_processed_block') or 0), int(event.payload.get('block_number') or 0))
         if processed:
             self.state['metrics']['rpc_backfills'] += 1
+            increment('decoda_ingestion_backfills_total', chain=self.chain_network)
         return processed
 
     def _handle_removed_log(self, log: dict[str, Any]) -> None:
@@ -329,6 +331,8 @@ class EvmIngestor:
                             process_ingested_event(connection, target=target, event=event, ingestion_mode='live')
                             connection.commit()
                         self.state['metrics']['events_ingested'] += 1
+                        increment('decoda_ingestion_events_total', chain=self.chain_network)
+                        increment('decoda_detection_throughput_total', chain=self.chain_network)
                         self.state['last_processed_block'] = max(int(self.state.get('last_processed_block') or 0), int(event.payload.get('block_number') or 0))
 
     async def run_forever(self) -> None:
@@ -358,6 +362,7 @@ class EvmIngestor:
                 continue
             except Exception as exc:
                 self.state['metrics']['ws_reconnects'] += 1
+                increment('decoda_provider_failures_total', provider='evm_websocket', error_type=type(exc).__name__)
                 self.state['degraded'] = True
                 self.state['degraded_reason'] = str(exc)[:160]
                 head = _hex_to_int(self._rpc_call('eth_blockNumber', [])) if self.rpc_url else None

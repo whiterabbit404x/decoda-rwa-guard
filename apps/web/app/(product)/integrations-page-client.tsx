@@ -469,14 +469,9 @@ export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
             </p>
           </div>
 
-          <button
-            className="btn btn-primary"
-            type="button"
-            disabled
-            title="Action not configured"
-          >
-            Add Integration
-          </button>
+          <Link className="btn btn-primary" href="/settings/notifications" prefetch={false}>
+            Manage notification policies
+          </Link>
         </div>
 
         <div className="threeColumnSection" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>

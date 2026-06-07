@@ -7,7 +7,9 @@ import socket
 import time
 
 from services.api.app.activity_providers import validate_monitoring_config_or_raise
+from services.api.app.pilot import evaluate_monitoring_system_alerts
 from services.api.app.monitoring_runner import run_monitoring_cycle
+from services.api.app.observability import increment, gauge, observe, span, send_external_oncall_alert
 from services.api.app.pilot import runtime_environment_identity, startup_schema_init_plan
 
 
@@ -112,7 +114,9 @@ def main() -> int:
     )
     while True:
         try:
-            summary = run_monitoring_cycle(worker_name=args.worker_name, limit=args.limit, trigger_type='scheduler')
+            cycle_started = time.monotonic()
+            with span('monitoring.worker.cycle', worker_name=args.worker_name):
+                summary = run_monitoring_cycle(worker_name=args.worker_name, limit=args.limit, trigger_type='scheduler')
             effective_due_count = int(summary.get('effective_due_count', summary.get('due_targets', 0)) or 0)
             soonest_due_in_seconds = summary.get('soonest_due_in_seconds')
             if soonest_due_in_seconds is not None:
@@ -125,6 +129,15 @@ def main() -> int:
                 effective_due_count=effective_due_count,
                 soonest_due_in_seconds=soonest_due_in_seconds,
             )
+            observe('decoda_monitoring_cycle_duration_seconds', time.monotonic() - cycle_started, worker=args.worker_name)
+            gauge('decoda_monitoring_worker_healthy', 1, worker=args.worker_name)
+            increment('decoda_monitoring_targets_checked_total', int(summary.get('checked', 0) or 0), worker=args.worker_name)
+            increment('decoda_detection_events_total', int(summary.get('alerts_generated', 0) or 0), worker=args.worker_name)
+            self_monitoring = evaluate_monitoring_system_alerts(stale_after_seconds=max(60, int(args.interval_seconds) * 4))
+            if any(self_monitoring.values()):
+                increment('decoda_self_monitoring_findings_total', sum(self_monitoring.values()))
+            if summary.get('proof_chain_failed') or summary.get('proof_chain_status') == 'failed':
+                send_external_oncall_alert('proof_chain_failure', 'Monitoring proof chain failed.', worker=args.worker_name, summary=summary)
             logger.info(
                 'monitoring cycle summary due=%s effective_due_count=%s checked=%s alerts=%s live_mode=%s soonest_due_in_seconds=%s next_sleep_seconds=%s',
                 summary.get('due_targets', 0),
@@ -135,7 +148,10 @@ def main() -> int:
                 soonest_due_in_seconds,
                 next_sleep_seconds,
             )
-        except Exception:
+        except Exception as exc:
+            gauge('decoda_monitoring_worker_healthy', 0, worker=args.worker_name)
+            increment('decoda_monitoring_worker_failures_total', worker=args.worker_name)
+            send_external_oncall_alert('missing_heartbeat', 'Monitoring worker cycle failed; heartbeat is at risk.', worker=args.worker_name, error_type=type(exc).__name__)
             logger.exception('monitoring worker cycle error')
             next_sleep_seconds = min(30.0, max(1.0, float(args.interval_seconds)))
         if args.once:
