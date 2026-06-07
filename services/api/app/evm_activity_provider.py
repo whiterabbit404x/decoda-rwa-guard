@@ -29,6 +29,13 @@ def _resolve_evm_rpc_url() -> str:
     return (os.getenv('STAGING_EVM_RPC_URL') or os.getenv('EVM_RPC_URL') or '').strip()
 
 
+def _resolve_evm_rpc_urls() -> list[str]:
+    """Return ordered primary/failover endpoints without exposing them in health payloads."""
+    values = [_resolve_evm_rpc_url()]
+    values.extend(part.strip() for part in os.getenv('EVM_RPC_FAILOVER_URLS', '').split(','))
+    return list(dict.fromkeys(value for value in values if value))
+
+
 def probe_rpc_health(rpc_url: str | None = None) -> dict[str, Any]:
     """
     Call eth_chainId and eth_blockNumber against the configured RPC endpoint.
@@ -44,7 +51,7 @@ def probe_rpc_health(rpc_url: str | None = None) -> dict[str, Any]:
     url = (rpc_url or _resolve_evm_rpc_url()).strip()
     if not url:
         return {'ok': False, 'chain_id_hex': None, 'chain_id_int': None, 'block_number_hex': None, 'block_number_int': None, 'error': 'rpc_url_not_configured'}
-    client = JsonRpcClient(url)
+    client = FailoverJsonRpcClient(_resolve_evm_rpc_urls()) if rpc_url is None else JsonRpcClient(url)
     try:
         chain_hex = str(client.call('eth_chainId', []) or '')
         block_hex = str(client.call('eth_blockNumber', []) or '')
@@ -100,6 +107,26 @@ class JsonRpcClient:
         if body.get('error'):
             raise RuntimeError(f"json-rpc error: {body['error']}")
         return body.get('result')
+
+
+@dataclass
+class FailoverJsonRpcClient:
+    rpc_urls: list[str]
+    active_index: int = 0
+
+    def call(self, method: str, params: list[Any]) -> Any:
+        if not self.rpc_urls:
+            raise RuntimeError('rpc_url_not_configured')
+        errors: list[str] = []
+        for offset in range(len(self.rpc_urls)):
+            index = (self.active_index + offset) % len(self.rpc_urls)
+            try:
+                result = JsonRpcClient(self.rpc_urls[index]).call(method, params)
+                self.active_index = index
+                return result
+            except Exception as exc:
+                errors.append(str(exc)[:160] or exc.__class__.__name__)
+        raise RuntimeError(f"all_rpc_providers_unavailable:{','.join(errors)}")
 
 
 @dataclass
@@ -311,7 +338,7 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     if not target_address.startswith('0x'):
         return []
 
-    client = rpc_client or JsonRpcClient(rpc_url)
+    client = rpc_client or FailoverJsonRpcClient(_resolve_evm_rpc_urls())
     ws_configured = bool((os.getenv('EVM_WS_URL') or '').strip())
     preferred_source = 'polling'
     fallback_source = 'polling'

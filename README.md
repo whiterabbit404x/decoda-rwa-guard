@@ -1878,3 +1878,13 @@ The monitoring pipeline now runs as a real background loop:
 
 - If only HTTP RPC is configured (no websocket), event latency depends on polling interval and batch/backfill settings.
 - Production mode does not create synthetic telemetry when `LIVE_MONITORING_ENABLED=true`.
+
+### Monitoring reliability deployment
+
+Production monitoring requires at least two independently scheduled monitoring-worker replicas. Do not set the same `MONITORING_WORKER_NAME` on every replica; when it is omitted, the worker derives a stable per-instance name from `RAILWAY_REPLICA_ID` or `HOSTNAME`. The `/ops/monitoring/health` response fails the worker-heartbeat SLO when fewer than `MONITORING_SLO_MINIMUM_ACTIVE_WORKERS` (default `2`) have fresh heartbeats.
+
+The monitoring delivery queue is PostgreSQL-backed; Redis is not on the monitoring-delivery critical path. Jobs use expiring leases, bounded exponential retries, idempotency keys, and a terminal dead-letter state. Scale the `monitoring-worker` Procfile process to at least two replicas and run the isolated external canary on a scheduler:
+
+```bash
+python -m services.api.app.run_monitoring_synthetic_check
+```

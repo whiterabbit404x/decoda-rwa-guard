@@ -83,6 +83,22 @@ def build_production_readiness(*, env_checks:dict[str,Any], runtime:dict[str,Any
         checks["Runtime"].append(_check(key, label, status, f"{label} observed." if ok else f"{label} missing.", "live" if ok else "unavailable", {"present": ok}, val))
     if not telemetry_at: blockers.append("telemetry_missing")
 
+    slo_compliance = runtime.get("slo_compliance")
+    if isinstance(slo_compliance, dict):
+        objectives = slo_compliance.get("objectives") if isinstance(slo_compliance.get("objectives"), dict) else {}
+        measurements = slo_compliance.get("checks") if isinstance(slo_compliance.get("checks"), dict) else {}
+        slo_ok = bool(slo_compliance.get("compliant"))
+        checks["Runtime"].append(_check(
+            "monitoring_slo_compliance",
+            "Monitoring SLO compliance",
+            "pass" if slo_ok else "fail",
+            "All monitoring SLOs are within objective." if slo_ok else "One or more monitoring SLOs are outside objective or unavailable.",
+            "monitoring_runtime",
+            {"compliant": slo_ok, "failed": list(slo_compliance.get("failed") or []), "objectives": objectives, "measurements": measurements},
+        ))
+        if not slo_ok:
+            blockers.append("monitoring_slo_noncompliant")
+
     for key in ["reporting_systems_count", "protected_assets_count", "enabled_monitoring_configs_count"]:
         count = int(runtime.get(key) or 0)
         status = "pass" if count > 0 else "warn"
