@@ -81,6 +81,25 @@ from services.api.app.pilot import (
     mfa_confirm_enrollment,
     mfa_complete_signin,
     mfa_disable,
+    mfa_regenerate_recovery_codes,
+    reauthenticate_user,
+    get_workspace_access_control,
+    update_workspace_auth_policy,
+    get_workspace_oidc_config,
+    upsert_workspace_oidc_config,
+    delete_workspace_oidc_config,
+    list_workspace_scim_tokens,
+    create_workspace_scim_token,
+    revoke_workspace_scim_token,
+    scim_list_users,
+    scim_create_user,
+    scim_replace_user,
+    scim_patch_user,
+    scim_delete_user,
+    scim_list_groups,
+    scim_create_group,
+    scim_replace_group,
+    scim_delete_group,
     run_background_jobs,
     reconcile_monitored_systems_for_enabled_targets,
     reconcile_workspace_monitored_systems,
@@ -2521,6 +2540,18 @@ def auth_mfa_disable(payload: dict[str, Any], request: Request) -> dict[str, Any
     return with_auth_schema_json(lambda: mfa_disable(payload, request))
 
 
+@app.post('/auth/mfa/recovery-codes/regenerate', summary='Regenerate one-time MFA recovery codes')
+def auth_mfa_recovery_codes_regenerate(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    enforce_auth_rate_limit(request, 'mfa_recovery_codes')
+    return with_auth_schema_json(lambda: mfa_regenerate_recovery_codes(payload, request))
+
+
+@app.post('/auth/reauthenticate', summary='Reauthenticate the current session for sensitive actions')
+def auth_reauthenticate(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    enforce_auth_rate_limit(request, 'reauthenticate')
+    return with_auth_schema_json(lambda: reauthenticate_user(payload, request))
+
+
 @app.post('/ops/jobs/run', summary='Run queued background jobs (operator)')
 def ops_run_jobs(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     enforce_auth_rate_limit(request, 'ops_jobs_run')
@@ -3219,6 +3250,96 @@ def auth_select_workspace(payload: dict[str, Any], request: Request) -> dict[str
     if not workspace_id:
         raise HTTPException(status_code=400, detail='workspace_id is required')
     return with_auth_schema_json(lambda: {'user': select_workspace_for_user(workspace_id, request)})
+
+
+@app.get('/workspace/access-control', summary='Get explicit role permissions and workspace MFA policy')
+def workspace_access_control(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_workspace_access_control(request))
+
+
+@app.put('/workspace/auth-policy', summary='Update workspace MFA and reauthentication policy')
+def workspace_auth_policy_update(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: update_workspace_auth_policy(payload, request))
+
+
+@app.get('/workspace/sso/oidc', summary='Get workspace OIDC configuration')
+def workspace_oidc_get(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_workspace_oidc_config(request))
+
+
+@app.put('/workspace/sso/oidc', summary='Create or update workspace OIDC configuration')
+def workspace_oidc_put(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: upsert_workspace_oidc_config(payload, request))
+
+
+@app.delete('/workspace/sso/oidc', summary='Delete workspace OIDC configuration')
+def workspace_oidc_delete(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: delete_workspace_oidc_config(request))
+
+
+@app.get('/workspace/scim/tokens', summary='List workspace SCIM bearer tokens')
+def workspace_scim_tokens_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_workspace_scim_tokens(request))
+
+
+@app.post('/workspace/scim/tokens', summary='Create a workspace SCIM bearer token')
+def workspace_scim_tokens_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_workspace_scim_token(payload, request))
+
+
+@app.delete('/workspace/scim/tokens/{token_id}', summary='Revoke a workspace SCIM bearer token')
+def workspace_scim_tokens_revoke(token_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: revoke_workspace_scim_token(token_id, request))
+
+
+@app.get('/scim/v2/Users', summary='SCIM 2.0 list users')
+def scim_users_list(request: Request, startIndex: int = 1, count: int = 100) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: scim_list_users(request, start_index=startIndex, count=count))
+
+
+@app.post('/scim/v2/Users', summary='SCIM 2.0 provision user', status_code=201)
+def scim_users_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: scim_create_user(payload, request))
+
+
+@app.put('/scim/v2/Users/{user_id}', summary='SCIM 2.0 replace user')
+def scim_users_replace(user_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: scim_replace_user(user_id, payload, request))
+
+
+@app.patch('/scim/v2/Users/{user_id}', summary='SCIM 2.0 update user')
+def scim_users_patch(user_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: scim_patch_user(user_id, payload, request))
+
+
+@app.delete('/scim/v2/Users/{user_id}', summary='SCIM 2.0 deprovision user')
+def scim_users_delete(user_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: scim_delete_user(user_id, request))
+
+
+@app.get('/scim/v2/Groups', summary='SCIM 2.0 list groups')
+def scim_groups_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: scim_list_groups(request))
+
+
+@app.post('/scim/v2/Groups', summary='SCIM 2.0 provision group', status_code=201)
+def scim_groups_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: scim_create_group(payload, request))
+
+
+@app.put('/scim/v2/Groups/{group_id}', summary='SCIM 2.0 replace group')
+def scim_groups_replace(group_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: scim_replace_group(group_id, payload, request))
+
+
+@app.patch('/scim/v2/Groups/{group_id}', summary='SCIM 2.0 update group')
+def scim_groups_patch(group_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: scim_replace_group(group_id, payload, request))
+
+
+@app.delete('/scim/v2/Groups/{group_id}', summary='SCIM 2.0 delete group')
+def scim_groups_delete(group_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: scim_delete_group(group_id, request))
 
 
 @app.get('/workspace/members', summary='List members for current workspace')

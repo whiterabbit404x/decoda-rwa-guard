@@ -97,7 +97,26 @@ DEFAULT_DEMO_EMAIL = 'demo@decoda.app'
 EMAIL_VERIFICATION_TTL_MINUTES = 60 * 24
 PASSWORD_RESET_TTL_MINUTES = 30
 SESSION_TTL_HOURS = 24
-MFA_RECOVERY_CODE_COUNT = 8
+MFA_RECOVERY_CODE_COUNT = 10
+REAUTHENTICATION_DEFAULT_MINUTES = 15
+WORKSPACE_PERMISSIONS = {
+    'monitoring.configure',
+    'evidence.export',
+    'members.manage',
+    'webhooks.manage',
+    'incidents.decide',
+    'response.propose',
+    'response.approve',
+    'response.execute',
+    'identity.manage',
+    'security.manage',
+}
+DEFAULT_ROLE_PERMISSIONS = {
+    'owner': frozenset(WORKSPACE_PERMISSIONS),
+    'admin': frozenset(WORKSPACE_PERMISSIONS),
+    'analyst': frozenset({'monitoring.configure', 'evidence.export', 'incidents.decide', 'response.propose'}),
+    'viewer': frozenset(),
+}
 SLACK_OAUTH_STATE_TTL_MINUTES = 10
 logger = logging.getLogger(__name__)
 
@@ -3181,6 +3200,9 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 logger.warning('signin_user rejected credentials', extra={'event': 'auth.signin.invalid_credentials', 'email': email})
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid email or password.')
             user_id = str(user['id'])
+            suspension = connection.execute('SELECT suspended_at FROM users WHERE id = %s', (user_id,)).fetchone()
+            if suspension and suspension.get('suspended_at'):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='This account is suspended.')
             if not user['email_verified_at']:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Verify your email before signing in.')
             if user['mfa_enabled_at']:
@@ -3256,7 +3278,7 @@ def mfa_complete_signin(payload: dict[str, Any], request: Request) -> dict[str, 
         user = connection.execute('SELECT id, session_version, mfa_totp_secret FROM users WHERE id = %s', (token_row['user_id'],)).fetchone()
         if user is None:
             raise HTTPException(status_code=401, detail='Unknown user.')
-        secret = str(user['mfa_totp_secret'] or '')
+        secret = _decrypt_mfa_secret(str(user['id']), user['mfa_totp_secret'])
         if not secret or not _verify_totp(secret, code):
             recovery = connection.execute(
                 'SELECT id FROM mfa_recovery_codes WHERE user_id = %s AND code_hash = %s AND consumed_at IS NULL',
@@ -3269,6 +3291,10 @@ def mfa_complete_signin(payload: dict[str, Any], request: Request) -> dict[str, 
         hydrated_user = build_user_response(connection, str(user['id']))
         access_token = create_access_token(str(user['id']), int(user.get('session_version') or 1))
         _store_session(connection, str(user['id']), access_token, hydrated_user.get('current_workspace_id'), request=request)
+        connection.execute(
+            "UPDATE auth_sessions SET mfa_verified_at = NOW(), authentication_methods = '[\"password\",\"totp\"]'::jsonb WHERE session_token_hash = %s",
+            (_auth_token_hash(access_token),),
+        )
         connection.commit()
         return {'access_token': access_token, 'token_type': 'bearer', 'user': hydrated_user}
 
@@ -3373,10 +3399,16 @@ def revoke_session(request: Request, session_id: str) -> dict[str, Any]:
     return {'revoked': revoked}
 
 
+def _totp_secret_bytes(secret: str) -> bytes:
+    normalized = re.sub(r'[^A-Z2-7]', '', secret.upper())
+    padding = '=' * (-len(normalized) % 8)
+    return base64.b32decode(normalized + padding, casefold=True)
+
+
 def _totp_code(secret: str, at_time: datetime | None = None, digits: int = 6, period: int = 30) -> str:
     current_time = at_time or utc_now()
     counter = int(current_time.timestamp()) // period
-    digest = hmac.new(_b64url_decode(secret), counter.to_bytes(8, 'big'), hashlib.sha1).digest()
+    digest = hmac.new(_totp_secret_bytes(secret), counter.to_bytes(8, 'big'), hashlib.sha1).digest()
     offset = digest[-1] & 0x0F
     binary = ((digest[offset] & 0x7F) << 24) | ((digest[offset + 1] & 0xFF) << 16) | ((digest[offset + 2] & 0xFF) << 8) | (digest[offset + 3] & 0xFF)
     return str(binary % (10 ** digits)).zfill(digits)
@@ -3384,11 +3416,46 @@ def _totp_code(secret: str, at_time: datetime | None = None, digits: int = 6, pe
 
 def _verify_totp(secret: str, code: str) -> bool:
     candidate = re.sub(r'\s+', '', code or '')
+    if not re.fullmatch(r'\d{6}', candidate):
+        return False
     now = utc_now()
     for drift in (-30, 0, 30):
-        if hmac.compare_digest(_totp_code(secret, now + timedelta(seconds=drift)), candidate):
+        candidate_time = now + timedelta(seconds=drift)
+        if candidate_time.timestamp() < 0:
+            continue
+        if hmac.compare_digest(_totp_code(secret, candidate_time), candidate):
             return True
     return False
+
+
+def _encrypt_mfa_secret(user_id: str, secret: str) -> str:
+    return encrypt_secret(secret, aad=f'user:{user_id}:totp')
+
+
+def _decrypt_mfa_secret(user_id: str, stored_secret: str | None) -> str:
+    value = str(stored_secret or '')
+    if not value:
+        return ''
+    if value.startswith(('aes256gcm:v1:', 'legacy_b64:')):
+        return decrypt_secret(value, aad=f'user:{user_id}:totp')
+    # Compatibility for pre-0092 unencrypted enrollment values.
+    return value
+
+
+def _generate_recovery_codes() -> list[str]:
+    return [f'{secrets.token_hex(3)}-{secrets.token_hex(3)}' for _ in range(MFA_RECOVERY_CODE_COUNT)]
+
+
+def _replace_recovery_codes(connection: Any, user_id: str) -> list[str]:
+    recovery_codes = _generate_recovery_codes()
+    connection.execute('DELETE FROM mfa_recovery_codes WHERE user_id = %s', (user_id,))
+    for recovery_code in recovery_codes:
+        connection.execute(
+            'INSERT INTO mfa_recovery_codes (id, user_id, code_hash, created_at) VALUES (%s, %s, %s, NOW())',
+            (str(uuid.uuid4()), user_id, _auth_token_hash(recovery_code)),
+        )
+    connection.execute('UPDATE users SET mfa_recovery_codes_generated_at = NOW(), updated_at = NOW() WHERE id = %s', (user_id,))
+    return recovery_codes
 
 
 def mfa_begin_enrollment(request: Request) -> dict[str, Any]:
@@ -3396,15 +3463,17 @@ def mfa_begin_enrollment(request: Request) -> dict[str, Any]:
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
-        secret = _b64url(secrets.token_bytes(20))
+        secret = base64.b32encode(secrets.token_bytes(20)).decode('ascii').rstrip('=')
         connection.execute(
-            'UPDATE users SET mfa_totp_secret = %s, updated_at = NOW() WHERE id = %s',
-            (secret, user['id']),
+            'UPDATE users SET mfa_pending_secret = %s, updated_at = NOW() WHERE id = %s',
+            (_encrypt_mfa_secret(user['id'], secret), user['id']),
         )
-        issuer = os.getenv('MFA_ISSUER', 'Decoda RWA Guard')
-        uri = f'otpauth://totp/{issuer}:{user["email"]}?secret={secret}&issuer={issuer}&digits=6&period=30'
+        issuer = os.getenv('MFA_ISSUER', 'Decoda RWA Guard').strip() or 'Decoda RWA Guard'
+        label = f'{issuer}:{user["email"]}'
+        uri = f'otpauth://totp/{urlencode({"label": label})[6:]}?{urlencode({"secret": secret, "issuer": issuer, "algorithm": "SHA1", "digits": 6, "period": 30})}'
+        log_audit(connection, action='auth.mfa_enrollment_started', entity_type='user', entity_id=user['id'], request=request, user_id=user['id'], workspace_id=user.get('current_workspace_id'), metadata={})
         connection.commit()
-        return {'secret': None, 'otpauth_uri': uri}  # tokens never exposed in API responses
+        return {'secret': secret, 'otpauth_uri': uri, 'algorithm': 'SHA1', 'digits': 6, 'period': 30}
 
 
 def mfa_confirm_enrollment(payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -3415,25 +3484,37 @@ def mfa_confirm_enrollment(payload: dict[str, Any], request: Request) -> dict[st
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
-        row = connection.execute('SELECT mfa_totp_secret FROM users WHERE id = %s', (user['id'],)).fetchone()
-        secret = str(row['mfa_totp_secret'] or '') if row else ''
+        row = connection.execute('SELECT mfa_pending_secret FROM users WHERE id = %s', (user['id'],)).fetchone()
+        secret = _decrypt_mfa_secret(user['id'], row['mfa_pending_secret'] if row else None)
         if not secret or not _verify_totp(secret, code):
             raise HTTPException(status_code=400, detail='Invalid MFA code.')
-        recovery_codes = [secrets.token_hex(4) for _ in range(MFA_RECOVERY_CODE_COUNT)]
-        connection.execute('DELETE FROM mfa_recovery_codes WHERE user_id = %s', (user['id'],))
-        for recovery_code in recovery_codes:
-            connection.execute(
-                'INSERT INTO mfa_recovery_codes (id, user_id, code_hash, created_at) VALUES (%s, %s, %s, NOW())',
-                (str(uuid.uuid4()), user['id'], _auth_token_hash(recovery_code)),
-            )
+        recovery_codes = _replace_recovery_codes(connection, user['id'])
         connection.execute(
-            'UPDATE users SET mfa_enabled_at = NOW(), session_version = session_version + 1, updated_at = NOW() WHERE id = %s',
-            (user['id'],),
+            'UPDATE users SET mfa_totp_secret = %s, mfa_pending_secret = NULL, mfa_enabled_at = NOW(), updated_at = NOW() WHERE id = %s',
+            (_encrypt_mfa_secret(user['id'], secret), user['id']),
         )
-        connection.execute('UPDATE auth_sessions SET revoked_at = NOW(), updated_at = NOW() WHERE user_id = %s AND revoked_at IS NULL', (user['id'],))
-        log_audit(connection, action='auth.mfa_enabled', entity_type='user', entity_id=user['id'], request=request, user_id=user['id'], workspace_id=user['current_workspace_id'], metadata={})
+        connection.execute(
+            "UPDATE auth_sessions SET mfa_verified_at = NOW(), authentication_methods = '[\"password\",\"totp\"]'::jsonb, updated_at = NOW() WHERE session_token_hash = %s",
+            (_current_session_hash(request),),
+        )
+        log_audit(connection, action='auth.mfa_enabled', entity_type='user', entity_id=user['id'], request=request, user_id=user['id'], workspace_id=user.get('current_workspace_id'), metadata={})
         connection.commit()
         return {'mfa_enabled': True, 'recovery_codes': recovery_codes}
+
+
+def mfa_regenerate_recovery_codes(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    code = str(payload.get('code', '')).strip()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        row = connection.execute('SELECT mfa_totp_secret, mfa_enabled_at FROM users WHERE id = %s', (user['id'],)).fetchone()
+        secret = _decrypt_mfa_secret(user['id'], row['mfa_totp_secret'] if row else None)
+        if not row or not row['mfa_enabled_at'] or not _verify_totp(secret, code):
+            raise HTTPException(status_code=400, detail='Valid MFA code is required.')
+        recovery_codes = _replace_recovery_codes(connection, user['id'])
+        log_audit(connection, action='auth.mfa_recovery_codes_regenerated', entity_type='user', entity_id=user['id'], request=request, user_id=user['id'], workspace_id=user.get('current_workspace_id'), metadata={})
+        connection.commit()
+        return {'recovery_codes': recovery_codes}
 
 
 def mfa_disable(payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -3443,18 +3524,48 @@ def mfa_disable(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
         row = connection.execute('SELECT mfa_totp_secret, mfa_enabled_at FROM users WHERE id = %s', (user['id'],)).fetchone()
-        secret = str(row['mfa_totp_secret'] or '') if row else ''
+        secret = _decrypt_mfa_secret(user['id'], row['mfa_totp_secret'] if row else None)
         if not row or not row['mfa_enabled_at'] or not secret or not _verify_totp(secret, code):
             raise HTTPException(status_code=400, detail='Valid MFA code is required to disable MFA.')
+        if user.get('current_workspace_id'):
+            workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+            policy = _workspace_auth_policy(connection, workspace_context['workspace_id'])
+            role = _normalize_workspace_role(str(workspace_context['role']))
+            if policy['mfa_enforcement'] == 'all_members' or (policy['mfa_enforcement'] == 'administrators' and role in {'owner', 'admin'}):
+                raise HTTPException(status_code=409, detail={'code': 'MFA_REQUIRED_BY_WORKSPACE', 'message': 'Workspace policy requires MFA for this account.'})
         connection.execute(
-            'UPDATE users SET mfa_totp_secret = NULL, mfa_enabled_at = NULL, session_version = session_version + 1, updated_at = NOW() WHERE id = %s',
+            'UPDATE users SET mfa_totp_secret = NULL, mfa_pending_secret = NULL, mfa_enabled_at = NULL, session_version = session_version + 1, updated_at = NOW() WHERE id = %s',
             (user['id'],),
         )
         connection.execute('DELETE FROM mfa_recovery_codes WHERE user_id = %s', (user['id'],))
         connection.execute('UPDATE auth_sessions SET revoked_at = NOW(), updated_at = NOW() WHERE user_id = %s AND revoked_at IS NULL', (user['id'],))
-        log_audit(connection, action='auth.mfa_disabled', entity_type='user', entity_id=user['id'], request=request, user_id=user['id'], workspace_id=user['current_workspace_id'], metadata={})
+        log_audit(connection, action='auth.mfa_disabled', entity_type='user', entity_id=user['id'], request=request, user_id=user['id'], workspace_id=user.get('current_workspace_id'), metadata={})
         connection.commit()
         return {'mfa_enabled': False}
+
+
+def reauthenticate_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    password = str(payload.get('password', ''))
+    code = str(payload.get('code', '')).strip()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        row = connection.execute('SELECT password_hash, mfa_totp_secret, mfa_enabled_at FROM users WHERE id = %s', (user['id'],)).fetchone()
+        if row is None or not verify_password(password, str(row['password_hash'] or '')):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid password.')
+        methods = ['password']
+        if row['mfa_enabled_at']:
+            secret = _decrypt_mfa_secret(user['id'], row['mfa_totp_secret'])
+            if not _verify_totp(secret, code):
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Valid MFA code is required.')
+            methods.append('totp')
+        connection.execute(
+            'UPDATE auth_sessions SET reauthenticated_at = NOW(), authentication_methods = %s::jsonb, updated_at = NOW() WHERE session_token_hash = %s AND revoked_at IS NULL',
+            (_json_dumps(methods), _current_session_hash(request)),
+        )
+        log_audit(connection, action='auth.reauthenticated', entity_type='user', entity_id=user['id'], request=request, user_id=user['id'], workspace_id=user.get('current_workspace_id'), metadata={'methods': methods})
+        connection.commit()
+        return {'reauthenticated': True, 'valid_for_minutes': REAUTHENTICATION_DEFAULT_MINUTES, 'methods': methods}
 
 
 def request_email_verification(payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -3615,23 +3726,88 @@ def list_user_workspaces(request: Request) -> dict[str, Any]:
 
 
 def _workspace_role_can_manage_members(role: str) -> bool:
-    return _normalize_workspace_role(role) in {'owner', 'admin'}
+    return 'members.manage' in DEFAULT_ROLE_PERMISSIONS[_normalize_workspace_role(role)]
+
+
+def _current_session_hash(request: Request) -> str:
+    authorization = request.headers.get('authorization', '')
+    if not authorization.startswith('Bearer '):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Missing bearer token.')
+    return _auth_token_hash(authorization.split(' ', 1)[1].strip())
+
+
+def _workspace_permission_granted(connection: Any, workspace_id: str, role: str, permission: str) -> bool:
+    if permission not in WORKSPACE_PERMISSIONS:
+        raise ValueError(f'Unknown workspace permission: {permission}')
+    canonical_role = _normalize_workspace_role(role)
+    row = connection.execute(
+        'SELECT granted FROM workspace_role_permissions WHERE workspace_id = %s AND role = %s AND permission = %s',
+        (workspace_id, canonical_role, permission),
+    ).fetchone()
+    if row is not None:
+        return bool(row['granted'])
+    return permission in DEFAULT_ROLE_PERMISSIONS[canonical_role]
+
+
+def _workspace_auth_policy(connection: Any, workspace_id: str) -> dict[str, Any]:
+    row = connection.execute(
+        'SELECT mfa_enforcement, reauthentication_minutes FROM workspace_auth_policies WHERE workspace_id = %s',
+        (workspace_id,),
+    ).fetchone()
+    return {
+        'mfa_enforcement': str(row['mfa_enforcement']) if row else 'optional',
+        'reauthentication_minutes': int(row['reauthentication_minutes']) if row else REAUTHENTICATION_DEFAULT_MINUTES,
+    }
+
+
+def _require_recent_reauthentication(connection: Any, request: Request, minutes: int) -> None:
+    row = connection.execute(
+        'SELECT reauthenticated_at FROM auth_sessions WHERE session_token_hash = %s AND revoked_at IS NULL',
+        (_current_session_hash(request),),
+    ).fetchone()
+    cutoff = utc_now() - timedelta(minutes=max(1, minutes))
+    if row is None or row['reauthenticated_at'] is None or row['reauthenticated_at'] < cutoff:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={'code': 'REAUTHENTICATION_REQUIRED', 'message': 'Reauthenticate before performing this sensitive action.'},
+        )
+
+
+def _require_workspace_permission(
+    connection: Any,
+    request: Request,
+    permission: str,
+    *,
+    require_reauthentication: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    user = authenticate_with_connection(connection, request)
+    workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+    role = _normalize_workspace_role(str(workspace_context['role']))
+    if not _workspace_permission_granted(connection, workspace_context['workspace_id'], role, permission):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={'code': 'PERMISSION_DENIED', 'permission': permission, 'message': f'Permission {permission} is required.'},
+        )
+    policy = _workspace_auth_policy(connection, workspace_context['workspace_id'])
+    mfa_required = policy['mfa_enforcement'] == 'all_members' or (
+        policy['mfa_enforcement'] == 'administrators' and role in {'owner', 'admin'}
+    )
+    if mfa_required and not user.get('mfa_enabled'):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={'code': 'MFA_ENROLLMENT_REQUIRED', 'message': 'Workspace policy requires MFA for this account.'},
+        )
+    if require_reauthentication:
+        _require_recent_reauthentication(connection, request, policy['reauthentication_minutes'])
+    return user, workspace_context
 
 
 def _require_workspace_admin(connection: Any, request: Request) -> tuple[dict[str, Any], dict[str, Any]]:
-    user = authenticate_with_connection(connection, request)
-    workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
-    if not _workspace_role_can_manage_members(str(workspace_context['role'])):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Owner or admin role is required for this action.')
-    return user, workspace_context
+    return _require_workspace_permission(connection, request, 'members.manage')
 
 
 def require_ops_rbac_guard(connection: Any, request: Request) -> tuple[dict[str, Any], dict[str, Any]]:
-    user, workspace_context = _require_workspace_admin(connection, request)
-    role = str(workspace_context.get('role') or '')
-    if _normalize_workspace_role(role) not in {'owner', 'admin'}:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Owner or admin role is required for ops monitoring actions.')
-    return user, workspace_context
+    return _require_workspace_permission(connection, request, 'monitoring.configure')
 
 
 def list_workspace_members(request: Request) -> dict[str, Any]:
@@ -3824,6 +4000,388 @@ def remove_workspace_member(member_id: str, request: Request) -> dict[str, Any]:
         log_audit(connection, action='member.remove', entity_type='workspace_member', entity_id=member_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
         connection.commit()
         return {'removed': True, 'id': member_id}
+
+
+def get_workspace_access_control(request: Request) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        role = _normalize_workspace_role(str(workspace_context['role']))
+        rows = connection.execute(
+            'SELECT role, permission, granted FROM workspace_role_permissions WHERE workspace_id = %s ORDER BY role, permission',
+            (workspace_context['workspace_id'],),
+        ).fetchall()
+        overrides = {(str(row['role']), str(row['permission'])): bool(row['granted']) for row in rows}
+        matrix = {
+            candidate_role: {
+                permission: overrides.get((candidate_role, permission), permission in DEFAULT_ROLE_PERMISSIONS[candidate_role])
+                for permission in sorted(WORKSPACE_PERMISSIONS)
+            }
+            for candidate_role in ('owner', 'admin', 'analyst', 'viewer')
+        }
+        return {
+            'role': role,
+            'permissions': [permission for permission, granted in matrix[role].items() if granted],
+            'matrix': matrix,
+            'policy': _workspace_auth_policy(connection, workspace_context['workspace_id']),
+        }
+
+
+def update_workspace_auth_policy(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    enforcement = str(payload.get('mfa_enforcement', '')).strip().lower()
+    if enforcement not in {'optional', 'administrators', 'all_members'}:
+        raise HTTPException(status_code=400, detail='mfa_enforcement must be optional, administrators, or all_members.')
+    reauth_minutes = int(payload.get('reauthentication_minutes', REAUTHENTICATION_DEFAULT_MINUTES))
+    if not 1 <= reauth_minutes <= 120:
+        raise HTTPException(status_code=400, detail='reauthentication_minutes must be between 1 and 120.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(
+            connection, request, 'security.manage', require_reauthentication=True
+        )
+        connection.execute(
+            """
+            INSERT INTO workspace_auth_policies (workspace_id, mfa_enforcement, reauthentication_minutes, updated_by_user_id)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (workspace_id) DO UPDATE SET
+                mfa_enforcement = EXCLUDED.mfa_enforcement,
+                reauthentication_minutes = EXCLUDED.reauthentication_minutes,
+                updated_by_user_id = EXCLUDED.updated_by_user_id,
+                updated_at = NOW()
+            """,
+            (workspace_context['workspace_id'], enforcement, reauth_minutes, user['id']),
+        )
+        log_audit(connection, action='workspace.auth_policy_updated', entity_type='workspace', entity_id=workspace_context['workspace_id'], request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'mfa_enforcement': enforcement, 'reauthentication_minutes': reauth_minutes})
+        connection.commit()
+        return {'mfa_enforcement': enforcement, 'reauthentication_minutes': reauth_minutes}
+
+
+def get_workspace_oidc_config(request: Request) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        _, workspace_context = _require_workspace_permission(connection, request, 'identity.manage')
+        row = connection.execute(
+            """SELECT id, issuer_url, client_id, scopes, email_domain, auto_provision, default_role, enabled, created_at, updated_at
+               FROM workspace_oidc_configs WHERE workspace_id = %s""",
+            (workspace_context['workspace_id'],),
+        ).fetchone()
+        return {'configured': row is not None, 'configuration': _json_safe_value(dict(row)) if row else None}
+
+
+def upsert_workspace_oidc_config(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    issuer_url = str(payload.get('issuer_url', '')).strip().rstrip('/')
+    client_id = str(payload.get('client_id', '')).strip()
+    client_secret = str(payload.get('client_secret', '')).strip()
+    if not issuer_url.startswith('https://') or not client_id:
+        raise HTTPException(status_code=400, detail='A HTTPS issuer_url and client_id are required.')
+    default_role = _normalize_workspace_role(str(payload.get('default_role', 'viewer')))
+    if default_role == 'owner':
+        raise HTTPException(status_code=400, detail='OIDC auto-provisioning cannot grant the owner role.')
+    scopes = payload.get('scopes') or ['openid', 'profile', 'email']
+    if not isinstance(scopes, list) or 'openid' not in scopes:
+        raise HTTPException(status_code=400, detail='OIDC scopes must include openid.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(connection, request, 'identity.manage', require_reauthentication=True)
+        existing = connection.execute('SELECT id, client_secret_encrypted FROM workspace_oidc_configs WHERE workspace_id = %s', (workspace_context['workspace_id'],)).fetchone()
+        if not client_secret and existing is None:
+            raise HTTPException(status_code=400, detail='client_secret is required when creating an OIDC configuration.')
+        encrypted_secret = encrypt_secret(client_secret, aad=f'workspace:{workspace_context["workspace_id"]}:oidc') if client_secret else existing['client_secret_encrypted']
+        config_id = str(existing['id']) if existing else str(uuid.uuid4())
+        connection.execute(
+            """
+            INSERT INTO workspace_oidc_configs
+                (id, workspace_id, issuer_url, client_id, client_secret_encrypted, scopes, email_domain, auto_provision, default_role, enabled, created_by_user_id, updated_by_user_id)
+            VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (workspace_id) DO UPDATE SET
+                issuer_url=EXCLUDED.issuer_url, client_id=EXCLUDED.client_id,
+                client_secret_encrypted=EXCLUDED.client_secret_encrypted, scopes=EXCLUDED.scopes,
+                email_domain=EXCLUDED.email_domain, auto_provision=EXCLUDED.auto_provision,
+                default_role=EXCLUDED.default_role, enabled=EXCLUDED.enabled,
+                updated_by_user_id=EXCLUDED.updated_by_user_id, updated_at=NOW()
+            """,
+            (config_id, workspace_context['workspace_id'], issuer_url, client_id, encrypted_secret, _json_dumps(scopes), str(payload.get('email_domain') or '').strip().lower() or None, bool(payload.get('auto_provision', True)), default_role, bool(payload.get('enabled', False)), user['id'], user['id']),
+        )
+        log_audit(connection, action='workspace.oidc_configured', entity_type='workspace_oidc_config', entity_id=config_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'issuer_url': issuer_url, 'enabled': bool(payload.get('enabled', False))})
+        connection.commit()
+        return {'configured': True, 'configuration': {'id': config_id, 'issuer_url': issuer_url, 'client_id': client_id, 'scopes': scopes, 'email_domain': str(payload.get('email_domain') or '').strip().lower() or None, 'auto_provision': bool(payload.get('auto_provision', True)), 'default_role': default_role, 'enabled': bool(payload.get('enabled', False))}}
+
+
+def delete_workspace_oidc_config(request: Request) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(connection, request, 'identity.manage', require_reauthentication=True)
+        result = connection.execute('DELETE FROM workspace_oidc_configs WHERE workspace_id = %s', (workspace_context['workspace_id'],))
+        log_audit(connection, action='workspace.oidc_deleted', entity_type='workspace', entity_id=workspace_context['workspace_id'], request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
+        connection.commit()
+        return {'deleted': bool(getattr(result, 'rowcount', 0))}
+
+
+def list_workspace_scim_tokens(request: Request) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        _, workspace_context = _require_workspace_permission(connection, request, 'identity.manage')
+        rows = connection.execute(
+            """SELECT id, label, token_prefix, created_at, last_used_at, expires_at, revoked_at
+               FROM workspace_scim_tokens WHERE workspace_id = %s ORDER BY created_at DESC""",
+            (workspace_context['workspace_id'],),
+        ).fetchall()
+        return {'items': _json_safe_value([dict(row) for row in rows])}
+
+
+def create_workspace_scim_token(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    label = str(payload.get('label', '')).strip()
+    if len(label) < 2:
+        raise HTTPException(status_code=400, detail='A token label is required.')
+    raw_token = f'scim_{secrets.token_urlsafe(32)}'
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(connection, request, 'identity.manage', require_reauthentication=True)
+        token_id = str(uuid.uuid4())
+        connection.execute(
+            """INSERT INTO workspace_scim_tokens
+               (id, workspace_id, label, token_hash, token_prefix, created_by_user_id, expires_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (token_id, workspace_context['workspace_id'], label, _auth_token_hash(raw_token), raw_token[:12], user['id'], payload.get('expires_at')),
+        )
+        log_audit(connection, action='workspace.scim_token_created', entity_type='workspace_scim_token', entity_id=token_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'label': label})
+        connection.commit()
+        return {'id': token_id, 'label': label, 'token': raw_token, 'token_prefix': raw_token[:12]}
+
+
+def revoke_workspace_scim_token(token_id: str, request: Request) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(connection, request, 'identity.manage', require_reauthentication=True)
+        result = connection.execute(
+            'UPDATE workspace_scim_tokens SET revoked_at = NOW() WHERE id = %s AND workspace_id = %s AND revoked_at IS NULL',
+            (token_id, workspace_context['workspace_id']),
+        )
+        if not getattr(result, 'rowcount', 0):
+            raise HTTPException(status_code=404, detail='SCIM token not found.')
+        log_audit(connection, action='workspace.scim_token_revoked', entity_type='workspace_scim_token', entity_id=token_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
+        connection.commit()
+        return {'revoked': True, 'id': token_id}
+
+
+def _authenticate_scim(connection: Any, request: Request) -> str:
+    authorization = request.headers.get('authorization', '')
+    if not authorization.startswith('Bearer '):
+        raise HTTPException(status_code=401, detail='SCIM bearer token is required.')
+    row = connection.execute(
+        """SELECT id, workspace_id FROM workspace_scim_tokens
+           WHERE token_hash = %s AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > NOW())""",
+        (_auth_token_hash(authorization.split(' ', 1)[1].strip()),),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=401, detail='Invalid or expired SCIM token.')
+    connection.execute('UPDATE workspace_scim_tokens SET last_used_at = NOW() WHERE id = %s', (row['id'],))
+    return str(row['workspace_id'])
+
+
+def _scim_user_resource(row: Any) -> dict[str, Any]:
+    return {
+        'schemas': ['urn:ietf:params:scim:schemas:core:2.0:User'],
+        'id': str(row['id']), 'externalId': row.get('external_subject'),
+        'userName': row['email'], 'displayName': row['full_name'], 'active': row.get('suspended_at') is None,
+        'emails': [{'value': row['email'], 'primary': True}],
+    }
+
+
+def scim_list_users(request: Request, start_index: int = 1, count: int = 100) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        workspace_id = _authenticate_scim(connection, request)
+        rows = connection.execute(
+            """SELECT u.id, u.email, u.full_name, u.external_subject, u.suspended_at
+               FROM workspace_members wm JOIN users u ON u.id = wm.user_id
+               WHERE wm.workspace_id = %s ORDER BY u.email LIMIT %s OFFSET %s""",
+            (workspace_id, min(max(count, 1), 200), max(start_index - 1, 0)),
+        ).fetchall()
+        total = connection.execute('SELECT COUNT(*) AS count FROM workspace_members WHERE workspace_id = %s', (workspace_id,)).fetchone()
+        connection.commit()
+        return {'schemas': ['urn:ietf:params:scim:api:messages:2.0:ListResponse'], 'totalResults': int(total['count']), 'startIndex': start_index, 'itemsPerPage': len(rows), 'Resources': [_scim_user_resource(row) for row in rows]}
+
+
+def scim_create_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    email = _normalize_email(str(payload.get('userName', '')))
+    full_name = str(payload.get('displayName') or ((payload.get('name') or {}).get('formatted')) or email.split('@', 1)[0]).strip()
+    external_id = str(payload.get('externalId') or '').strip() or None
+    active = bool(payload.get('active', True))
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        workspace_id = _authenticate_scim(connection, request)
+        user = connection.execute('SELECT id FROM users WHERE email = %s', (email,)).fetchone()
+        user_id = str(user['id']) if user else str(uuid.uuid4())
+        if user is None:
+            connection.execute(
+                """INSERT INTO users (id, email, password_hash, full_name, current_workspace_id, email_verified_at, auth_provider, external_subject, suspended_at, session_version, created_at, updated_at)
+                   VALUES (%s, %s, %s, %s, %s, NOW(), 'scim', %s, %s, 1, NOW(), NOW())""",
+                (user_id, email, hash_password(secrets.token_urlsafe(32)), full_name, workspace_id, external_id, None if active else utc_now()),
+            )
+        else:
+            connection.execute('UPDATE users SET full_name=%s, external_subject=COALESCE(%s, external_subject), suspended_at=%s, updated_at=NOW() WHERE id=%s', (full_name, external_id, None if active else utc_now(), user_id))
+        connection.execute(
+            """INSERT INTO workspace_members (id, workspace_id, user_id, role, created_at)
+               VALUES (%s, %s, %s, 'viewer', NOW()) ON CONFLICT (workspace_id, user_id) DO NOTHING""",
+            (str(uuid.uuid4()), workspace_id, user_id),
+        )
+        row = connection.execute('SELECT id, email, full_name, external_subject, suspended_at FROM users WHERE id=%s', (user_id,)).fetchone()
+        connection.commit()
+        return _scim_user_resource(row)
+
+
+def scim_replace_user(user_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        workspace_id = _authenticate_scim(connection, request)
+        member = connection.execute('SELECT 1 FROM workspace_members WHERE workspace_id=%s AND user_id=%s', (workspace_id, user_id)).fetchone()
+        if member is None:
+            raise HTTPException(status_code=404, detail='SCIM user not found.')
+        email = _normalize_email(str(payload.get('userName', '')))
+        full_name = str(payload.get('displayName') or email.split('@', 1)[0]).strip()
+        active = bool(payload.get('active', True))
+        connection.execute('UPDATE users SET email=%s, full_name=%s, external_subject=%s, suspended_at=%s, session_version=session_version + CASE WHEN %s THEN 0 ELSE 1 END, updated_at=NOW() WHERE id=%s', (email, full_name, str(payload.get('externalId') or '').strip() or None, None if active else utc_now(), active, user_id))
+        if not active:
+            connection.execute('UPDATE auth_sessions SET revoked_at=NOW() WHERE user_id=%s AND revoked_at IS NULL', (user_id,))
+        row = connection.execute('SELECT id, email, full_name, external_subject, suspended_at FROM users WHERE id=%s', (user_id,)).fetchone()
+        connection.commit()
+        return _scim_user_resource(row)
+
+
+def scim_patch_user(user_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    operations = payload.get('Operations') if isinstance(payload.get('Operations'), list) else []
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        workspace_id = _authenticate_scim(connection, request)
+        member = connection.execute(
+            """SELECT u.id, u.email, u.full_name, u.external_subject, u.suspended_at
+               FROM workspace_members wm JOIN users u ON u.id=wm.user_id
+               WHERE wm.workspace_id=%s AND u.id=%s""",
+            (workspace_id, user_id),
+        ).fetchone()
+        if member is None:
+            raise HTTPException(status_code=404, detail='SCIM user not found.')
+        active = member.get('suspended_at') is None
+        email = str(member['email'])
+        full_name = str(member['full_name'])
+        external_id = member.get('external_subject')
+        for operation in operations:
+            if not isinstance(operation, dict):
+                continue
+            path = str(operation.get('path') or '').lower()
+            value = operation.get('value')
+            if path == 'active':
+                active = bool(value)
+            elif path in {'username', 'emails[type eq "work"].value'}:
+                email = _normalize_email(str(value))
+            elif path in {'displayname', 'name.formatted'}:
+                full_name = str(value).strip() or full_name
+            elif path == 'externalid':
+                external_id = str(value or '').strip() or None
+            elif not path and isinstance(value, dict):
+                if 'active' in value:
+                    active = bool(value['active'])
+                if value.get('userName'):
+                    email = _normalize_email(str(value['userName']))
+                if value.get('displayName'):
+                    full_name = str(value['displayName']).strip()
+        connection.execute(
+            'UPDATE users SET email=%s, full_name=%s, external_subject=%s, suspended_at=%s, session_version=session_version + CASE WHEN %s THEN 0 ELSE 1 END, updated_at=NOW() WHERE id=%s',
+            (email, full_name, external_id, None if active else utc_now(), active, user_id),
+        )
+        if not active:
+            connection.execute('UPDATE auth_sessions SET revoked_at=NOW() WHERE user_id=%s AND revoked_at IS NULL', (user_id,))
+        row = connection.execute('SELECT id, email, full_name, external_subject, suspended_at FROM users WHERE id=%s', (user_id,)).fetchone()
+        connection.commit()
+        return _scim_user_resource(row)
+
+
+def scim_delete_user(user_id: str, request: Request) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        workspace_id = _authenticate_scim(connection, request)
+        result = connection.execute('DELETE FROM workspace_members WHERE workspace_id=%s AND user_id=%s', (workspace_id, user_id))
+        if not getattr(result, 'rowcount', 0):
+            raise HTTPException(status_code=404, detail='SCIM user not found.')
+        connection.execute('UPDATE users SET suspended_at=NOW(), session_version=session_version+1, updated_at=NOW() WHERE id=%s', (user_id,))
+        connection.execute('UPDATE auth_sessions SET revoked_at=NOW() WHERE user_id=%s AND revoked_at IS NULL', (user_id,))
+        connection.commit()
+        return {'deleted': True}
+
+
+def scim_list_groups(request: Request) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        workspace_id = _authenticate_scim(connection, request)
+        rows = connection.execute('SELECT id, external_id, display_name, role FROM workspace_scim_groups WHERE workspace_id=%s ORDER BY display_name', (workspace_id,)).fetchall()
+        connection.commit()
+        resources = [{'schemas': ['urn:ietf:params:scim:schemas:core:2.0:Group'], 'id': str(row['id']), 'externalId': row['external_id'], 'displayName': row['display_name'], 'role': row['role']} for row in rows]
+        return {'schemas': ['urn:ietf:params:scim:api:messages:2.0:ListResponse'], 'totalResults': len(resources), 'startIndex': 1, 'itemsPerPage': len(resources), 'Resources': resources}
+
+
+def scim_create_group(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    display_name = str(payload.get('displayName', '')).strip()
+    if not display_name:
+        raise HTTPException(status_code=400, detail='displayName is required.')
+    role = _normalize_workspace_role(str(payload.get('role', 'viewer')))
+    if role == 'owner':
+        raise HTTPException(status_code=400, detail='SCIM groups cannot grant owner.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        workspace_id = _authenticate_scim(connection, request)
+        group_id = str(uuid.uuid4())
+        connection.execute('INSERT INTO workspace_scim_groups (id, workspace_id, external_id, display_name, role) VALUES (%s,%s,%s,%s,%s)', (group_id, workspace_id, str(payload.get('externalId') or '').strip() or None, display_name, role))
+        members = payload.get('members') if isinstance(payload.get('members'), list) else []
+        for member in members:
+            user_id = str(member.get('value') or '').strip() if isinstance(member, dict) else ''
+            if not user_id:
+                continue
+            workspace_member = connection.execute('SELECT 1 FROM workspace_members WHERE workspace_id=%s AND user_id=%s', (workspace_id, user_id)).fetchone()
+            if workspace_member is None:
+                raise HTTPException(status_code=400, detail='Group member must already belong to this workspace.')
+            connection.execute('INSERT INTO workspace_scim_group_members (group_id, user_id) VALUES (%s,%s) ON CONFLICT DO NOTHING', (group_id, user_id))
+            connection.execute("UPDATE workspace_members SET role=%s WHERE workspace_id=%s AND user_id=%s AND role <> 'owner'", (role, workspace_id, user_id))
+        connection.commit()
+        return {'schemas': ['urn:ietf:params:scim:schemas:core:2.0:Group'], 'id': group_id, 'externalId': payload.get('externalId'), 'displayName': display_name, 'role': role, 'members': members}
+
+
+def scim_replace_group(group_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    display_name = str(payload.get('displayName', '')).strip()
+    role = _normalize_workspace_role(str(payload.get('role', 'viewer')))
+    if not display_name or role == 'owner':
+        raise HTTPException(status_code=400, detail='displayName is required and group role cannot be owner.')
+    members = payload.get('members') if isinstance(payload.get('members'), list) else []
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        workspace_id = _authenticate_scim(connection, request)
+        result = connection.execute('UPDATE workspace_scim_groups SET display_name=%s, external_id=%s, role=%s, updated_at=NOW() WHERE id=%s AND workspace_id=%s', (display_name, str(payload.get('externalId') or '').strip() or None, role, group_id, workspace_id))
+        if not getattr(result, 'rowcount', 0):
+            raise HTTPException(status_code=404, detail='SCIM group not found.')
+        connection.execute('DELETE FROM workspace_scim_group_members WHERE group_id=%s', (group_id,))
+        for member in members:
+            user_id = str(member.get('value') or '').strip() if isinstance(member, dict) else ''
+            if not user_id:
+                continue
+            workspace_member = connection.execute('SELECT 1 FROM workspace_members WHERE workspace_id=%s AND user_id=%s', (workspace_id, user_id)).fetchone()
+            if workspace_member is None:
+                raise HTTPException(status_code=400, detail='Group member must already belong to this workspace.')
+            connection.execute('INSERT INTO workspace_scim_group_members (group_id, user_id) VALUES (%s,%s)', (group_id, user_id))
+            connection.execute("UPDATE workspace_members SET role=%s WHERE workspace_id=%s AND user_id=%s AND role <> 'owner'", (role, workspace_id, user_id))
+        connection.commit()
+        return {'schemas': ['urn:ietf:params:scim:schemas:core:2.0:Group'], 'id': group_id, 'externalId': payload.get('externalId'), 'displayName': display_name, 'role': role, 'members': members}
+
+
+def scim_delete_group(group_id: str, request: Request) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        workspace_id = _authenticate_scim(connection, request)
+        result = connection.execute('DELETE FROM workspace_scim_groups WHERE id=%s AND workspace_id=%s', (group_id, workspace_id))
+        if not getattr(result, 'rowcount', 0):
+            raise HTTPException(status_code=404, detail='SCIM group not found.')
+        connection.commit()
+        return {'deleted': True}
 
 
 def get_team_seats(request: Request) -> dict[str, Any]:
@@ -6993,8 +7551,7 @@ def list_webhooks(request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user = authenticate_with_connection(connection, request)
-        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        user, workspace_context = _require_workspace_permission(connection, request, 'webhooks.manage')
         rows = connection.execute(
             '''
             SELECT id, target_url, description, event_types, enabled, secret_last4, created_at, updated_at
@@ -7015,7 +7572,7 @@ def create_webhook(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     event_types = payload.get('event_types') if isinstance(payload.get('event_types'), list) else ['analysis.completed']
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_admin(connection, request)
+        user, workspace_context = _require_workspace_permission(connection, request, 'webhooks.manage')
         secret = secrets.token_urlsafe(32)
         webhook_id = str(uuid.uuid4())
         connection.execute(
@@ -7044,7 +7601,7 @@ def update_webhook(webhook_id: str, payload: dict[str, Any], request: Request) -
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        _, workspace_context = _require_workspace_admin(connection, request)
+        _, workspace_context = _require_workspace_permission(connection, request, 'webhooks.manage')
         webhook = connection.execute('SELECT id FROM workspace_webhooks WHERE id = %s AND workspace_id = %s', (webhook_id, workspace_context['workspace_id'])).fetchone()
         if webhook is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Webhook not found.')
@@ -7062,7 +7619,7 @@ def rotate_webhook_secret(webhook_id: str, request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_admin(connection, request)
+        user, workspace_context = _require_workspace_permission(connection, request, 'webhooks.manage')
         webhook = connection.execute('SELECT id FROM workspace_webhooks WHERE id = %s AND workspace_id = %s', (webhook_id, workspace_context['workspace_id'])).fetchone()
         if webhook is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Webhook not found.')
@@ -7080,8 +7637,7 @@ def list_webhook_deliveries(webhook_id: str, request: Request) -> dict[str, Any]
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user = authenticate_with_connection(connection, request)
-        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        user, workspace_context = _require_workspace_permission(connection, request, 'webhooks.manage')
         rows = connection.execute(
             '''
             SELECT id, event_type, status, response_status, error_message, attempt, created_at
@@ -9167,7 +9723,7 @@ def create_monitored_system(payload: dict[str, Any], request: Request) -> dict[s
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='asset_id and target_id are required.')
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_admin(connection, request)
+        user, workspace_context = _require_workspace_permission(connection, request, 'monitoring.configure')
         workspace_id = workspace_context['workspace_id']
         asset = connection.execute(
             'SELECT id, chain_network FROM assets WHERE id = %s::uuid AND workspace_id = %s AND deleted_at IS NULL',
@@ -9210,7 +9766,7 @@ def patch_monitored_system(system_id: str, payload: dict[str, Any], request: Req
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Provide runtime_status or enabled.')
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_admin(connection, request)
+        user, workspace_context = _require_workspace_permission(connection, request, 'monitoring.configure')
         row = connection.execute(
             'SELECT id, is_enabled, runtime_status, freshness_status, confidence_status FROM monitored_systems WHERE id = %s::uuid AND workspace_id = %s',
             (system_id, workspace_context['workspace_id']),
@@ -9275,7 +9831,7 @@ def delete_monitored_system(system_id: str, request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_admin(connection, request)
+        user, workspace_context = _require_workspace_permission(connection, request, 'monitoring.configure')
         row = connection.execute(
             'SELECT id, target_id FROM monitored_systems WHERE id = %s::uuid AND workspace_id = %s',
             (system_id, workspace_context['workspace_id']),
@@ -10380,7 +10936,7 @@ def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     validated = _validate_target_payload(payload)
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_admin(connection, request)
+        user, workspace_context = _require_workspace_permission(connection, request, 'monitoring.configure')
         workspace_id = workspace_context['workspace_id']
         entitlements = _workspace_plan(connection, workspace_id)
         count_row = connection.execute('SELECT COUNT(*) AS count FROM targets WHERE workspace_id = %s AND deleted_at IS NULL', (workspace_id,)).fetchone()
@@ -10516,7 +11072,7 @@ def update_target(target_id: str, payload: dict[str, Any], request: Request) -> 
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_admin(connection, request)
+        user, workspace_context = _require_workspace_permission(connection, request, 'monitoring.configure')
         workspace_id = workspace_context['workspace_id']
         found = connection.execute(
             '''
@@ -10844,7 +11400,7 @@ def set_target_enabled(target_id: str, enabled: bool, request: Request) -> dict[
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_admin(connection, request)
+        user, workspace_context = _require_workspace_permission(connection, request, 'monitoring.configure')
         row = connection.execute(
             'SELECT id, asset_id, chain_network FROM targets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL',
             (target_id, workspace_context['workspace_id']),
@@ -11026,7 +11582,7 @@ def delete_target(target_id: str, request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_admin(connection, request)
+        user, workspace_context = _require_workspace_permission(connection, request, 'monitoring.configure')
         row = connection.execute('SELECT id FROM targets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL', (target_id, workspace_context['workspace_id'])).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Target not found.')
@@ -11059,7 +11615,7 @@ def put_module_config(module_key: str, payload: dict[str, Any], request: Request
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='config must be an object.')
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_admin(connection, request)
+        user, workspace_context = _require_workspace_permission(connection, request, 'monitoring.configure')
         normalized_config = normalize_module_config(module_key, config)
         entitlements = _workspace_plan(connection, workspace_context['workspace_id'])
         if module_key in {'threat', 'resilience'} and entitlements['plan_key'] == 'free_trial' and len(normalized_config.keys()) > 4:
@@ -11994,7 +12550,7 @@ def patch_incident(incident_id: str, payload: dict[str, Any], request: Request) 
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='workflow_status must be open/investigating/contained/resolved/reopened.')
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_admin(connection, request)
+        user, workspace_context = _require_workspace_permission(connection, request, 'incidents.decide')
         found = connection.execute(
             'SELECT id, timeline, workflow_status, assignee_user_id, resolution_note FROM incidents WHERE id = %s AND workspace_id = %s',
             (incident_id, workspace_context['workspace_id']),
@@ -12755,7 +13311,7 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
     params = payload.get('params') if isinstance(payload.get('params'), dict) else {}
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_admin(connection, request)
+        user, workspace_context = _require_workspace_permission(connection, request, 'response.propose')
         action_id = str(uuid.uuid4())
         incident_id = payload.get('incident_id')
         alert_id = payload.get('alert_id')
@@ -12957,7 +13513,7 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_admin(connection, request)
+        user, workspace_context = _require_workspace_permission(connection, request, 'response.approve')
         row = connection.execute(
             'SELECT id, status, incident_id, alert_id, action_type, mode, execution_state, execution_artifacts, provider_receipts, safe_tx_hash, approved_at, failed_at FROM response_actions WHERE id = %s AND workspace_id = %s',
             (action_id, workspace_context['workspace_id']),
@@ -13044,7 +13600,7 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_admin(connection, request)
+        user, workspace_context = _require_workspace_permission(connection, request, 'response.execute')
         row = connection.execute('SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s', (action_id, workspace_context['workspace_id'])).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Enforcement action not found.')
@@ -13493,7 +14049,7 @@ def rollback_enforcement_action(action_id: str, request: Request) -> dict[str, A
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_admin(connection, request)
+        user, workspace_context = _require_workspace_permission(connection, request, 'response.execute')
         row = connection.execute('SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s', (action_id, workspace_context['workspace_id'])).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Enforcement action not found.')
@@ -13686,7 +14242,7 @@ def create_finding_decision(finding_id: str, payload: dict[str, Any], request: R
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid decision_type.')
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_admin(connection, request)
+        user, workspace_context = _require_workspace_permission(connection, request, 'incidents.decide')
         exists = connection.execute('SELECT id FROM alerts WHERE id = %s AND workspace_id = %s', (finding_id, workspace_context['workspace_id'])).fetchone()
         if exists is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Finding not found.')
@@ -13706,7 +14262,7 @@ def create_finding_decision(finding_id: str, payload: dict[str, Any], request: R
 def create_finding_action(finding_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_admin(connection, request)
+        user, workspace_context = _require_workspace_permission(connection, request, 'response.propose')
         exists = connection.execute('SELECT id FROM alerts WHERE id = %s AND workspace_id = %s', (finding_id, workspace_context['workspace_id'])).fetchone()
         if exists is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Finding not found.')
@@ -13737,7 +14293,7 @@ def create_finding_action(finding_id: str, payload: dict[str, Any], request: Req
 def patch_finding_action(action_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_admin(connection, request)
+        user, workspace_context = _require_workspace_permission(connection, request, 'response.propose')
         found = connection.execute('SELECT id FROM finding_actions WHERE id = %s AND workspace_id = %s', (action_id, workspace_context['workspace_id'])).fetchone()
         if found is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Action item not found.')
@@ -13820,7 +14376,7 @@ def create_export_job(export_type: str, payload: dict[str, Any], request: Reques
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported export format.')
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_admin(connection, request)
+        user, workspace_context = _require_workspace_permission(connection, request, 'evidence.export')
         entitlements = _workspace_plan(connection, workspace_context['workspace_id'])
         if not bool(entitlements.get('exports_enabled')):
             raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail='Exports are not available on this plan.')

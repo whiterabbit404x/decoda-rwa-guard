@@ -36,7 +36,7 @@ from services.api.app.workspace_monitoring_summary import (
 from services.api.app.pilot import (
     _json_dumps,
     _json_safe_value,
-    _require_workspace_admin,
+    _require_workspace_permission,
     _severity_meets_threshold,
     authenticate_with_connection,
     ensure_pilot_schema,
@@ -4416,7 +4416,7 @@ def list_monitoring_targets(request: Request) -> dict[str, Any]:
 def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_admin(connection, request)
+        user, workspace_context = _require_workspace_permission(connection, request, 'monitoring.configure')
         row = connection.execute(
             '''
             SELECT id, asset_id, enabled, monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold,
