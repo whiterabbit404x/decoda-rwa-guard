@@ -1,0 +1,26 @@
+# Gitleaks configuration for Decoda RWA Guard
+# Scans for: API keys, JWT secrets, DB URLs, webhook secrets, private keys
+
+title = "Decoda RWA Guard Secret Scanner"
+
+[allowlist]
+description = "Known false positives — test/example values only"
+regexes = [
+  # Test/example env files with placeholder values
+  '''EXPORT_SIGNING_SECRET=your-signing-secret-here''',
+  '''AUTH_TOKEN_SECRET=replace-with-long-random-secret''',
+  '''DATABASE_URL=postgresql://localhost''',
+  '''REDIS_URL=redis://localhost''',
+  # Dev fallback signing secret (known non-secret, deliberately published)
+  '''decoda-dev-signing-secret-NOT-FOR-PRODUCTION''',
+  # Paddle test webhook secret placeholder
+  '''pdl_whsec_local''',
+  # Test fixture base64 encryption key used in tests
+  '''MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=''',
+]
+paths = [
+  # Allow known-safe pattern strings in test files and example configs
+  '''.env.example''',
+  '''.env.staging.example''',
+  '''requirements-local.txt''',
+]

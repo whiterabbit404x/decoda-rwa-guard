@@ -25,6 +25,19 @@ from typing import Any
 _log = logging.getLogger(__name__)
 
 _DEV_FALLBACK_SECRET = b'decoda-dev-signing-secret-NOT-FOR-PRODUCTION'
+_DEV_FALLBACK_SECRET_STR = 'decoda-dev-signing-secret-NOT-FOR-PRODUCTION'
+
+
+def _is_production_like() -> bool:
+    app_mode = os.getenv('APP_MODE', '').strip().lower()
+    app_env = os.getenv('APP_ENV', '').strip().lower()
+    return app_mode in {'production', 'staging'} or app_env in {'production', 'staging', 'prod'}
+
+
+def _is_dev_mode() -> bool:
+    app_mode = os.getenv('APP_MODE', '').strip().lower()
+    app_env = os.getenv('APP_ENV', '').strip().lower()
+    return app_mode in {'local', 'dev', 'test', 'development', ''} or app_env in {'local', 'dev', 'test', 'development', ''}
 
 
 def _get_signing_secret() -> bytes | None:
@@ -41,24 +54,72 @@ def signing_available() -> bool:
     return _get_signing_secret() is not None
 
 
+def validate_signing_secret_at_startup() -> None:
+    """
+    Call at application startup. Raises RuntimeError in production/staging if:
+    - No signing secret is configured
+    - The configured secret equals the known dev fallback value
+    Logs the signing mode without revealing key material.
+    """
+    secret = _get_signing_secret()
+    prod = _is_production_like()
+
+    if prod:
+        if secret is None:
+            raise RuntimeError(
+                'EXPORT_SIGNING_SECRET (or EVIDENCE_SIGNING_SECRET) is required in '
+                'production/staging. Export bundle signing is mandatory.'
+            )
+        if secret == _DEV_FALLBACK_SECRET or secret.decode('utf-8', errors='replace').lower() == _DEV_FALLBACK_SECRET_STR.lower():
+            raise RuntimeError(
+                'EXPORT_SIGNING_SECRET is set to the known dev fallback value. '
+                'This key must not be used in production/staging. '
+                'Set a strong random secret in EXPORT_SIGNING_SECRET.'
+            )
+        _log.info('evidence_signing_mode=production_key key_id=%s', _signing_key_id())
+    else:
+        allow_dev = os.getenv('EXPORT_ALLOW_DEV_SIGNING_SECRET', '').strip().lower() == 'true'
+        if secret is None and not allow_dev:
+            _log.info('evidence_signing_mode=dev_test_key (no secret configured; dev fallback active)')
+        elif secret is not None:
+            _log.info('evidence_signing_mode=production_key key_id=%s', _signing_key_id())
+        else:
+            _log.info('evidence_signing_mode=dev_test_key (EXPORT_ALLOW_DEV_SIGNING_SECRET=true)')
+
+
 def _require_signing_secret() -> tuple[bytes, bool]:
     """
     Return (secret_bytes, is_production_secret).
-    Raises RuntimeError in production/staging when secret is absent.
+    Raises RuntimeError in production/staging when secret is absent or is the dev value.
+    In local/dev, the dev fallback is only used when EXPORT_ALLOW_DEV_SIGNING_SECRET=true
+    or no secret is configured (legacy behavior).
     """
     secret = _get_signing_secret()
+    prod = _is_production_like()
+
     if secret is not None:
+        if prod and (secret == _DEV_FALLBACK_SECRET or secret.decode('utf-8', errors='replace').lower() == _DEV_FALLBACK_SECRET_STR.lower()):
+            raise RuntimeError(
+                'EXPORT_SIGNING_SECRET is the known dev fallback value. '
+                'This key must not be used in production/staging.'
+            )
         return secret, True
-    app_mode = os.getenv('APP_MODE', '').strip().lower()
-    app_env = os.getenv('APP_ENV', '').strip().lower()
-    is_production = app_mode in {'production', 'staging'} or app_env in {'production', 'staging', 'prod'}
-    if is_production:
+
+    if prod:
         raise RuntimeError(
             'EXPORT_SIGNING_SECRET (or EVIDENCE_SIGNING_SECRET) is required in '
             'production/staging. Export bundle signing is mandatory. '
             'Set this env var to enable tamper-evident exports.'
         )
-    # Local/dev fallback — always labelled as non-production in the seal
+
+    # Local/dev: allow dev fallback only when explicitly permitted or no secret at all
+    allow_dev = os.getenv('EXPORT_ALLOW_DEV_SIGNING_SECRET', '').strip().lower() == 'true'
+    if not allow_dev and not _is_dev_mode():
+        _log.warning(
+            'evidence_signing: using dev fallback secret in non-production environment. '
+            'Set EXPORT_ALLOW_DEV_SIGNING_SECRET=true to suppress this warning, '
+            'or configure EXPORT_SIGNING_SECRET.'
+        )
     return _DEV_FALLBACK_SECRET, False
 
 

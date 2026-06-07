@@ -98,9 +98,19 @@ class S3ExportStorage:
             return {'object_lock_enabled': None, 'retention_mode': None, 'retention_until': None, 'worm': None}
 
 
+def _is_break_glass_local_allowed() -> bool:
+    """Return True if the unmistakably-named break-glass override is set."""
+    new_flag = os.getenv('EXPORT_DANGEROUS_ALLOW_LOCAL_NON_WORM_STORAGE', '').strip().lower() == 'true'
+    # Accept legacy flag for backward compatibility, but prefer the new name
+    legacy_flag = os.getenv('EXPORT_ALLOW_LOCAL_IN_PRODUCTION', '').strip().lower() == 'true'
+    return new_flag or legacy_flag
+
+
 def load_export_storage() -> ExportStorage:
     backend = os.getenv('EXPORT_STORAGE_BACKEND', 'local').strip().lower()
     app_mode = os.getenv('APP_MODE', 'local').strip().lower()
+    app_env = os.getenv('APP_ENV', app_mode).strip().lower()
+    is_production_like = app_mode in {'production', 'staging'} or app_env in {'production', 'staging', 'prod'}
 
     if backend == 's3':
         bucket = os.getenv('EXPORT_S3_BUCKET', '').strip()
@@ -111,21 +121,43 @@ def load_export_storage() -> ExportStorage:
             raise RuntimeError('EXPORT_S3_BUCKET is required when EXPORT_STORAGE_BACKEND=s3.')
         return S3ExportStorage(bucket=bucket, region=region, prefix=prefix, endpoint=endpoint)
 
-    if app_mode in {'production', 'staging'}:
-        allow_local = os.getenv('EXPORT_ALLOW_LOCAL_IN_PRODUCTION', '').strip().lower() == 'true'
-        if not allow_local:
+    if is_production_like:
+        if not _is_break_glass_local_allowed():
             raise RuntimeError(
                 'Local export storage backend is disabled in staging/production. '
                 'Set EXPORT_STORAGE_BACKEND=s3 and configure EXPORT_S3_BUCKET. '
-                'To override (unsafe), set EXPORT_ALLOW_LOCAL_IN_PRODUCTION=true.'
+                'To override (NOT WORM, NOT durable — break-glass only), set '
+                'EXPORT_DANGEROUS_ALLOW_LOCAL_NON_WORM_STORAGE=true. '
+                'enterprise_ready will be false when this override is active.'
             )
         _log.warning(
             'export_storage_local_in_production app_mode=%s '
-            'EXPORT_ALLOW_LOCAL_IN_PRODUCTION=true: '
+            'EXPORT_DANGEROUS_ALLOW_LOCAL_NON_WORM_STORAGE=true: '
             'Using non-WORM ephemeral local storage. '
-            'Evidence is NOT durable and NOT tamper-proof.',
+            'Evidence is NOT durable and NOT tamper-proof. '
+            'enterprise_ready=false.',
             app_mode,
         )
 
     export_root = Path(os.getenv('EXPORTS_DIR', '/tmp/decoda-exports')).resolve()
     return LocalExportStorage(root_dir=export_root)
+
+
+def export_storage_enterprise_ready(storage: ExportStorage) -> bool:
+    """Return True only when the storage backend is WORM-capable (S3 with object lock)."""
+    lock = storage.object_lock_status()
+    return bool(lock.get('worm'))
+
+
+def export_storage_warning(storage: ExportStorage) -> str | None:
+    """Return a warning string if storage is not enterprise-grade, else None."""
+    if storage.backend_name == 'local':
+        return (
+            'Non-WORM local storage active. '
+            'Export evidence is NOT durable and NOT tamper-proof. '
+            'Configure EXPORT_STORAGE_BACKEND=s3 with Object Lock for production compliance.'
+        )
+    lock = storage.object_lock_status()
+    if not lock.get('worm'):
+        return 'S3 Object Lock is not enabled on this bucket. Export evidence may not be tamper-proof.'
+    return None

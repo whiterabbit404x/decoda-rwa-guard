@@ -2091,12 +2091,17 @@ def health_readiness() -> dict[str, Any]:
     else:
         status_value = 'healthy'
 
+    rate_limit_backend = checks.get('rate_limit_backend', 'redis' if checks.get('distributed_rate_limiter', {}).get('ok') else 'memory')
+    rate_limit_enterprise_ready = checks.get('rate_limit_enterprise_ready', checks.get('distributed_rate_limiter', {}).get('ok', False))
     return {
         'status': status_value,
         'service': SERVICE_NAME,
         'app_mode': os.getenv('APP_MODE', 'local'),
         'app_env': app_env,
         'production_live_mode_drift': production_live_mode_drift,
+        'rate_limit_backend': rate_limit_backend,
+        'rate_limit_enterprise_ready': bool(rate_limit_enterprise_ready),
+        'enterprise_ready': bool(rate_limit_enterprise_ready) and not errors,
         'errors': errors,
         'warnings': warnings,
         'checks': checks,

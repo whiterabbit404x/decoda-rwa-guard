@@ -336,14 +336,17 @@ def test_enforce_auth_rate_limit_redis_failure_logs_are_throttled_per_window(
     class _RedisModule:
         Redis = _RedisFactory
 
+    from services.api.app.domains import rate_limit as _rl
+
     monkeypatch.setenv('REDIS_URL', 'redis://redis.invalid:6379/0')
-    monkeypatch.setattr(pilot_module.importlib, 'import_module', lambda _: _RedisModule())
-    monkeypatch.setattr(pilot_module, '_redis_rate_limiter', None)
-    monkeypatch.setattr(pilot_module, '_rate_limit_state', {})
-    monkeypatch.setattr(pilot_module, '_rate_limit_fallback_last_emitted', {})
+    # Rate limiting state and logic now live in the domain module; patch there.
+    monkeypatch.setattr(_rl.importlib, 'import_module', lambda _: _RedisModule())
+    monkeypatch.setattr(_rl, '_redis_rate_limiter', None)
+    monkeypatch.setattr(_rl, '_rate_limit_state', {})
+    monkeypatch.setattr(_rl, '_rate_limit_fallback_last_emitted', {})
 
     now = {'value': 1_000.0}
-    monkeypatch.setattr(pilot_module, 'monotonic', lambda: now['value'])
+    monkeypatch.setattr(_rl, 'monotonic', lambda: now['value'])
 
     with caplog.at_level('WARNING'):
         for current in (1_000.0, 1_010.0, 1_020.0, 1_030.0, 1_301.0):
