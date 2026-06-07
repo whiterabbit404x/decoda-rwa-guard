@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import socket
 import time
 
 from services.api.app.activity_providers import validate_monitoring_config_or_raise
@@ -10,9 +11,14 @@ from services.api.app.monitoring_runner import run_monitoring_cycle
 from services.api.app.pilot import runtime_environment_identity, startup_schema_init_plan
 
 
+def _default_worker_name() -> str:
+    instance = (os.getenv('RAILWAY_REPLICA_ID') or os.getenv('HOSTNAME') or socket.gethostname() or 'local').strip()
+    return f'monitoring-worker-{instance[:80]}'
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Run Decoda monitoring worker loop.')
-    parser.add_argument('--worker-name', default=os.getenv('MONITORING_WORKER_NAME', 'monitoring-worker'))
+    parser.add_argument('--worker-name', default=os.getenv('MONITORING_WORKER_NAME') or _default_worker_name())
     parser.add_argument('--interval-seconds', type=float, default=float(os.getenv('MONITORING_WORKER_INTERVAL_SECONDS', '15')))
     parser.add_argument('--limit', type=int, default=int(os.getenv('MONITORING_WORKER_LIMIT', '50')))
     parser.add_argument('--once', action='store_true')

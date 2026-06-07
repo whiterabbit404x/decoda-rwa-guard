@@ -1420,8 +1420,14 @@ def get_admin_readiness(request: Request) -> dict[str, Any]:
         workflow["linkage_status"] = "pass" if all(workflow[k] > 0 for k in ("detections", "alerts", "incidents", "response_actions")) else "warn"
         workflow["linkage_reason"] = "Linked workflow records are present." if workflow["linkage_status"] == "pass" else "Workflow chain is partial or unavailable."
 
+        try:
+            from services.api.app.monitoring_reliability import monitoring_slo_snapshot
+            monitoring_slos = monitoring_slo_snapshot(connection)
+        except Exception:
+            monitoring_slos = None
         runtime_for_readiness = {
             **runtime,
+            "slo_compliance": monitoring_slos,
             "workspace_evaluated": True,
             "workspace_scoped": True,
             "latest_poll_at": runtime.get("last_poll_at") or summary_v2.get("latest_poll_at"),

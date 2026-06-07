@@ -22,6 +22,7 @@ from services.api.app.activity_providers import (
 )
 from services.api.app.evm_activity_provider import JsonRpcClient
 from services.api.app.monitoring_truth import ui_evidence_state, ui_truthfulness_state
+from services.api.app.monitoring_reliability import MonitoringSLOs, evaluate_monitoring_slos, monitoring_slo_snapshot
 from services.api.app.monitorable_target_types import (
     is_monitorable_target_type,
     monitorable_target_types_sql_clause,
@@ -3049,6 +3050,10 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             recent_confidence_basis = %s,
             monitoring_claimed_by = NULL,
             monitoring_claimed_at = NULL,
+            monitoring_lease_token = NULL,
+            monitoring_lease_expires_at = NULL,
+            monitoring_delivery_attempts = 0,
+            monitoring_dead_lettered_at = NULL,
             updated_at = NOW()
         WHERE id = %s
           AND workspace_id = %s
@@ -3961,21 +3966,43 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                     ''',
                     (run_id, workspace_id, trigger_type, f'worker_name={worker_name}'),
                 )
+            lease_token = str(uuid.uuid4())
+            lease_seconds = max(30, int(os.getenv('MONITORING_TARGET_LEASE_SECONDS', '300')))
+            # The lease is persisted before this transaction releases row locks. A second
+            # deployment therefore cannot claim the same target, while a terminated worker's
+            # target becomes recoverable automatically after lease_expires_at.
             due_targets = connection.execute(
                 '''
-                SELECT id, workspace_id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type, owner_notes, severity_preference, enabled,
-                       asset_id, chain_id, target_metadata, monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold, auto_create_alerts,
-                       auto_create_incidents, notification_channels, last_checked_at, last_run_status, last_run_id, last_alert_at, monitored_by_workspace_id, is_active,
-                       monitoring_checkpoint_at, monitoring_checkpoint_cursor, watcher_last_observed_block, watcher_checkpoint_lag_blocks, watcher_source_status,
-                       watcher_degraded_reason, recent_evidence_state, recent_truthfulness_state, recent_real_event_count, updated_by_user_id, created_by_user_id, created_at
-                FROM targets
-                WHERE id = ANY(%s)
-                ORDER BY COALESCE(last_checked_at, '1970-01-01'::timestamptz) ASC, created_at ASC
-                FOR UPDATE SKIP LOCKED
+                WITH candidates AS (
+                    SELECT id
+                    FROM targets
+                    WHERE id = ANY(%s)
+                      AND (monitoring_lease_expires_at IS NULL OR monitoring_lease_expires_at <= NOW())
+                      AND monitoring_dead_lettered_at IS NULL
+                      AND monitoring_delivery_attempts < %s
+                    ORDER BY COALESCE(last_checked_at, '1970-01-01'::timestamptz) ASC, created_at ASC
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE targets t
+                SET monitoring_claimed_by = %s,
+                    monitoring_claimed_at = NOW(),
+                    monitoring_lease_token = %s::uuid,
+                    monitoring_lease_expires_at = NOW() + (%s * INTERVAL '1 second')
+                FROM candidates c
+                WHERE t.id = c.id
+                RETURNING t.id, t.workspace_id, t.name, t.target_type, t.chain_network, t.contract_identifier, t.wallet_address, t.asset_type, t.owner_notes, t.severity_preference, t.enabled,
+                       t.asset_id, t.chain_id, t.target_metadata, t.monitoring_enabled, t.monitoring_mode, t.monitoring_interval_seconds, t.severity_threshold, t.auto_create_alerts,
+                       t.auto_create_incidents, t.notification_channels, t.last_checked_at, t.last_run_status, t.last_run_id, t.last_alert_at, t.monitored_by_workspace_id, t.is_active,
+                       t.monitoring_checkpoint_at, t.monitoring_checkpoint_cursor, t.watcher_last_observed_block, t.watcher_checkpoint_lag_blocks, t.watcher_source_status,
+                       t.watcher_degraded_reason, t.recent_evidence_state, t.recent_truthfulness_state, t.recent_real_event_count, t.updated_by_user_id, t.created_by_user_id, t.created_at,
+                       t.monitoring_lease_token, t.monitoring_lease_expires_at
                 ''',
-                (due_target_ids,),
+                (due_target_ids, max(1, int(os.getenv('MONITORING_TARGET_MAX_ATTEMPTS', '5'))), worker_name, lease_token, lease_seconds),
             ).fetchall()
-            due_targets = [dict(row) for row in due_targets]
+            due_targets = sorted(
+                (dict(row) for row in due_targets),
+                key=lambda item: (item.get('last_checked_at') or datetime(1970, 1, 1, tzinfo=timezone.utc), item.get('created_at')),
+            )
         else:
             due_targets = []
         due_count = len(due_targets)
@@ -4141,9 +4168,21 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 # savepoint (InFailedSqlTransaction) cannot prevent last_run_status recording.
                 try:
                     with connection.transaction():
+                        max_target_attempts = max(1, int(os.getenv('MONITORING_TARGET_MAX_ATTEMPTS', '5')))
                         connection.execute(
-                            'UPDATE targets SET last_checked_at = NOW(), last_run_status = %s, monitoring_claimed_by = NULL, monitoring_claimed_at = NULL WHERE id = %s AND workspace_id = %s',
-                            ('error', target['id'], target['workspace_id']),
+                            '''
+                            UPDATE targets SET
+                                last_checked_at = NOW(),
+                                monitoring_delivery_attempts = monitoring_delivery_attempts + 1,
+                                last_run_status = CASE WHEN monitoring_delivery_attempts + 1 >= %s THEN 'dead_letter' ELSE 'error' END,
+                                monitoring_dead_lettered_at = CASE WHEN monitoring_delivery_attempts + 1 >= %s THEN NOW() ELSE NULL END,
+                                monitoring_claimed_by = NULL,
+                                monitoring_claimed_at = NULL,
+                                monitoring_lease_token = NULL,
+                                monitoring_lease_expires_at = NULL
+                            WHERE id = %s AND workspace_id = %s
+                            ''',
+                            (max_target_attempts, max_target_attempts, target['id'], target['workspace_id']),
                         )
                         monitored_system_id = due_system_ids.get(str(target['id']))
                         if monitored_system_id and not isinstance(exc, psycopg_errors.DeadlockDetected):
@@ -4666,6 +4705,7 @@ def get_monitoring_health() -> dict[str, Any]:
             'degraded': runtime.get('degraded'),
             'degraded_reason': degraded_reason,
             'background_loop_health': background_loop_health,
+            'slo_compliance': evaluate_monitoring_slos({}, MonitoringSLOs.from_env()),
         }
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
@@ -4798,6 +4838,14 @@ def get_monitoring_health() -> dict[str, Any]:
             degraded_reason=normalized.get('degraded_reason'),
         )
         normalized['background_loop_health'] = get_background_loop_health()
+        try:
+            normalized['slo_compliance'] = monitoring_slo_snapshot(connection)
+        except Exception as exc:
+            logger.warning('monitoring_slo_snapshot_unavailable error_type=%s', type(exc).__name__)
+            normalized['slo_compliance'] = {
+                **evaluate_monitoring_slos({}, MonitoringSLOs.from_env()),
+                'unavailable_reason': 'monitoring_reliability_schema_or_database_unavailable',
+            }
         return {**normalized, 'live_mode': True}
 
 
