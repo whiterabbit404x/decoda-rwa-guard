@@ -8,7 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import Response
 
 try:
     from phase1_local.dev_support import load_env_file
@@ -16,6 +17,8 @@ except Exception:  # pragma: no cover
     def load_env_file() -> None:
         return None
 from services.api.app.activity_providers import monitoring_ingestion_runtime
+from services.api.app.structured_logging import configure_logging
+from services.api.app.observability import bind_trace, reset_trace, current_trace_id, increment, gauge, prometheus_metrics, send_external_oncall_alert
 APP_DIR = Path(__file__).resolve().parent
 if str(APP_DIR) not in sys.path:
     sys.path.append(str(APP_DIR))
@@ -27,6 +30,7 @@ except Exception:  # pragma: no cover
 
 load_env_file()
 
+configure_logging(service='event-watcher')
 logger = logging.getLogger(__name__)
 SERVICE_NAME = 'event-watcher'
 PORT = int(os.getenv('PORT', 8005))
@@ -35,6 +39,18 @@ CHAIN_NETWORK = os.getenv('EVM_CHAIN_NETWORK', 'ethereum')
 HEARTBEAT_SECONDS = max(5, int(os.getenv('EVENT_WATCHER_HEARTBEAT_SECONDS', '10')))
 
 app = FastAPI(title=f'{SERVICE_NAME} service')
+
+@app.middleware('http')
+async def correlation_middleware(request: Request, call_next):
+    trace_id = request.headers.get('X-Trace-ID') or request.headers.get('X-Correlation-ID')
+    tokens = bind_trace(trace_id)
+    resolved_trace_id = current_trace_id()
+    try:
+        response = await call_next(request)
+    finally:
+        reset_trace(tokens)
+    response.headers['X-Trace-ID'] = resolved_trace_id
+    return response
 
 STATE: dict[str, Any] = {
     'running': False,
@@ -71,6 +87,8 @@ def _sync_state_from_ingestor() -> None:
     STATE['degraded_reason'] = _INGESTOR.state.get('degraded_reason')
     STATE['checkpoints']['last_block'] = _INGESTOR.state.get('last_processed_block')
     STATE['metrics'] = dict(_INGESTOR.state.get('metrics') or {})
+    gauge('decoda_ingestion_lag_blocks', float(STATE['metrics'].get('lag_blocks') or 0), chain=CHAIN_NETWORK)
+    gauge('decoda_event_watcher_healthy', 0 if STATE['degraded'] else 1, watcher=WATCHER_NAME)
 
 
 def startup() -> None:
@@ -103,6 +121,8 @@ async def _run_loop() -> None:
         try:
             await _INGESTOR.run_forever()
         except Exception as exc:
+            increment('decoda_provider_failures_total', provider='evm_rpc', error_type=type(exc).__name__)
+            send_external_oncall_alert('stale_telemetry', 'Event watcher provider loop failed and telemetry may become stale.', watcher=WATCHER_NAME, error_type=type(exc).__name__)
             STATE['last_error'] = str(exc)
             STATE['degraded'] = True
             STATE['degraded_reason'] = 'ws_rpc_down'
@@ -163,3 +183,8 @@ def update_checkpoint(payload: dict[str, Any]) -> dict[str, Any]:
         if key in payload:
             STATE['checkpoints'][key] = payload[key]
     return {'ok': True, 'checkpoints': STATE['checkpoints']}
+
+
+@app.get('/metrics', include_in_schema=False)
+def metrics() -> Response:
+    return Response(prometheus_metrics(), media_type='text/plain; version=0.0.4')

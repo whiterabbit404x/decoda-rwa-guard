@@ -24,8 +24,12 @@ Production gating:
 from __future__ import annotations
 
 import abc
+import functools
+import time
 import os
 from typing import Any
+
+from services.api.app.observability import increment, observe, report_error, span
 
 LIVE_ACTION_EXECUTION_ENABLED_ENV = 'LIVE_ACTION_EXECUTION_ENABLED'
 RESPONSE_ACTION_EXECUTOR_ENV = 'RESPONSE_ACTION_EXECUTOR'
@@ -366,8 +370,26 @@ def get_executor(executor_name: str | None = None) -> ResponseActionExecutor:
     This ensures no live execution occurs without explicit configuration.
     """
     if not is_live_execution_enabled():
-        return SimulationExecutor()
-    name = (executor_name or get_configured_executor_name()).lower().strip()
-    if name in ('safe', 'safe_proposal', 'gnosis_safe'):
-        return SafeProposalExecutor()
-    return SimulationExecutor()
+        executor: ResponseActionExecutor = SimulationExecutor()
+    else:
+        name = (executor_name or get_configured_executor_name()).lower().strip()
+        executor = SafeProposalExecutor() if name in ('safe', 'safe_proposal', 'gnosis_safe') else SimulationExecutor()
+    for method_name in ('validate_action', 'simulate_action', 'create_proposal', 'check_status'):
+        original = getattr(executor, method_name)
+        @functools.wraps(original)
+        def instrumented(*args: Any, __method=method_name, __original=original, **kwargs: Any):
+            started = time.perf_counter()
+            try:
+                with span(f'response_action.{__method}', executor=type(executor).__name__):
+                    result = __original(*args, **kwargs)
+                outcome = getattr(result, 'execution_state', 'valid') if result is not None else 'valid'
+                increment('decoda_response_action_outcomes_total', executor=type(executor).__name__, operation=__method, outcome=outcome)
+                return result
+            except Exception as exc:
+                increment('decoda_response_action_outcomes_total', executor=type(executor).__name__, operation=__method, outcome='error')
+                report_error(exc, operation=f'response_action.{__method}', executor=type(executor).__name__)
+                raise
+            finally:
+                observe('decoda_response_action_duration_seconds', time.perf_counter() - started, executor=type(executor).__name__, operation=__method)
+        setattr(executor, method_name, instrumented)
+    return executor

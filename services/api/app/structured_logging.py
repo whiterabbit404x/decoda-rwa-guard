@@ -6,6 +6,8 @@ import logging
 import os
 from typing import Any
 
+from services.api.app.observability import current_span_id, current_trace_id
+
 _SECRET_FIELDS = frozenset({
     'password', 'secret', 'token', 'key', 'authorization', 'auth',
     'credential', 'api_key', 'access_token', 'refresh_token',
@@ -39,8 +41,10 @@ class JsonFormatter(logging.Formatter):
             'service': self._service,
             'logger': record.name,
             'message': record.message,
+            'trace_id': getattr(record, 'trace_id', None) or current_trace_id() or None,
+            'span_id': getattr(record, 'span_id', None) or current_span_id() or None,
         }
-        for extra_key in ('trace_id', 'workspace_id', 'duration_ms', 'status', 'route'):
+        for extra_key in ('workspace_id', 'duration_ms', 'status', 'route', 'operation', 'error_type', 'error_message', 'severity', 'runbook_url', 'parent_span_id', 'attributes', 'context', 'correlation_id'):
             if hasattr(record, extra_key):
                 payload[extra_key] = getattr(record, extra_key)
         if record.exc_info:
