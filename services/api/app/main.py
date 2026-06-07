@@ -219,6 +219,7 @@ from services.api.app.db_failure import (
     normalize_db_error_snippet,
 )
 from services.api.app.secret_crypto import validate_secret_encryption_key_at_startup
+from services.api.app.evidence_signing import validate_signing_secret_at_startup
 from services.api.app.structured_logging import configure_logging
 
 
@@ -1617,6 +1618,7 @@ def bootstrap_live_pilot() -> dict[str, Any]:
 async def lifespan(_: FastAPI):
     global MONITORING_BACKGROUND_TASK, MONITORING_LOOP_RUNTIME_STATE
     validate_secret_encryption_key_at_startup()
+    validate_signing_secret_at_startup()
     if _is_local_dev_mode():
         seed_service(SERVICE_NAME, PORT, DETAIL, DEFAULT_METRICS)
         seed_embedded_dependency_registry()
