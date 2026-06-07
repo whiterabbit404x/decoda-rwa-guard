@@ -42,7 +42,7 @@ def test_create_response_action_translates_legacy_payload_and_writes_history(mon
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
-    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
     monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
 
     request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
@@ -118,7 +118,7 @@ def test_execute_response_action_returns_back_compat_dry_run_flag(monkeypatch):
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
-    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
     monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
 
     request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
@@ -155,7 +155,7 @@ def test_create_live_unsupported_action_returns_structured_422_and_does_not_inse
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
-    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
 
     request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
     payload = {'action_type': 'block_transaction', 'mode': 'live', 'status': 'pending'}
@@ -200,7 +200,7 @@ def test_create_live_action_denied_for_non_approver_role(monkeypatch):
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
     monkeypatch.setattr(
         pilot,
-        '_require_workspace_admin',
+        '_require_workspace_permission',
         lambda *_: (
             {'id': 'analyst-1', 'mfa_enabled': False},
             {'workspace_id': 'ws-1', 'role': 'analyst'},
@@ -243,7 +243,7 @@ def test_create_live_action_rejects_non_pending_status(monkeypatch):
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
     monkeypatch.setattr(
         pilot,
-        '_require_workspace_admin',
+        '_require_workspace_permission',
         lambda *_: (
             {'id': 'admin-1', 'mfa_enabled': False},
             {'workspace_id': 'ws-1', 'role': 'admin'},
@@ -342,7 +342,7 @@ def test_execute_live_unsupported_action_returns_structured_error_without_execut
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
-    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
 
     request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
     try:
@@ -410,7 +410,7 @@ def test_execute_live_revoke_approval_returns_proposed_state_with_safe_tx_hash_a
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
-    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
     monkeypatch.setattr(
         pilot,
         '_propose_safe_transaction',
@@ -497,7 +497,7 @@ def test_execute_live_freeze_wallet_writes_governance_metadata_and_timeline(monk
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
-    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
     monkeypatch.setattr(
         pilot,
         '_submit_freeze_wallet_governance_action',
@@ -569,7 +569,7 @@ def test_execute_live_manual_only_action_returns_manual_required_state(monkeypat
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
-    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
     monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
 
     request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
@@ -624,7 +624,7 @@ def test_execute_live_action_denies_same_user_as_approver(monkeypatch):
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
-    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
 
     request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
     try:
@@ -676,7 +676,7 @@ def test_execute_live_action_success_includes_execution_evidence_fields(monkeypa
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
-    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
     monkeypatch.setattr(
         pilot,
         '_propose_safe_transaction',
@@ -786,7 +786,7 @@ def test_execute_live_action_requires_explicit_approval(monkeypatch):
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
     monkeypatch.setattr(
         pilot,
-        '_require_workspace_admin',
+        '_require_workspace_permission',
         lambda *_: (
             {'id': 'admin-1', 'mfa_enabled': True},
             {'workspace_id': 'ws-1', 'role': 'admin'},
@@ -844,7 +844,7 @@ def test_execute_live_action_denied_for_unauthorized_workspace_role(monkeypatch)
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
     monkeypatch.setattr(
         pilot,
-        '_require_workspace_admin',
+        '_require_workspace_permission',
         lambda *_: (
             {'id': 'analyst-1', 'mfa_enabled': False},
             {'workspace_id': 'ws-1', 'role': 'analyst'},
@@ -898,7 +898,7 @@ def test_execute_live_action_requires_step_up_when_available(monkeypatch):
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
     monkeypatch.setattr(
         pilot,
-        '_require_workspace_admin',
+        '_require_workspace_permission',
         lambda *_: (
             {'id': 'admin-1', 'mfa_enabled': True},
             {'workspace_id': 'ws-1', 'role': 'admin'},
@@ -960,7 +960,7 @@ def test_execute_live_action_success_writes_audit_trail_and_provenance(monkeypat
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
     monkeypatch.setattr(
         pilot,
-        '_require_workspace_admin',
+        '_require_workspace_permission',
         lambda *_: (
             {'id': 'admin-1', 'mfa_enabled': False},
             {'workspace_id': 'ws-1', 'role': 'admin'},
@@ -1049,7 +1049,7 @@ def test_execute_live_action_persists_execution_evidence_for_approved_path(monke
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
     monkeypatch.setattr(
         pilot,
-        '_require_workspace_admin',
+        '_require_workspace_permission',
         lambda *_: (
             {'id': 'admin-1', 'mfa_enabled': False},
             {'workspace_id': 'ws-1', 'role': 'admin'},
@@ -1114,7 +1114,7 @@ def test_create_response_action_rejects_cross_workspace_incident_id(monkeypatch)
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
-    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1'}, {'workspace_id': 'ws-1', 'role': 'admin'}))
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_: ({'id': 'admin-1'}, {'workspace_id': 'ws-1', 'role': 'admin'}))
 
     request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
     try:
@@ -1149,7 +1149,7 @@ def test_create_response_action_rejects_cross_workspace_alert_id(monkeypatch):
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
-    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1'}, {'workspace_id': 'ws-1', 'role': 'admin'}))
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_: ({'id': 'admin-1'}, {'workspace_id': 'ws-1', 'role': 'admin'}))
 
     request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
     try:

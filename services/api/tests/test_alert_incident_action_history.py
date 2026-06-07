@@ -43,7 +43,7 @@ def test_escalate_alert_to_incident_updates_bidirectional_links_and_history(monk
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
-    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1'}, {'workspace_id': 'ws-1'}))
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_: ({'id': 'admin-1'}, {'workspace_id': 'ws-1'}))
 
     request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
     response = pilot.escalate_alert_to_incident('alert-1', {'title': 'Escalated'}, request)
@@ -92,7 +92,7 @@ def test_patch_handlers_write_action_history(monkeypatch):
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
-    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1'}, {'workspace_id': 'ws-1'}))
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_: ({'id': 'admin-1'}, {'workspace_id': 'ws-1'}))
     monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
 
     request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})

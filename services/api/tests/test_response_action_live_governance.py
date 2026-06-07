@@ -70,7 +70,7 @@ def test_live_execute_with_approval_returns_execution_artifacts_and_audit_metada
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
-    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'owner-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'owner'}))
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_: ({'id': 'owner-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'owner'}))
     monkeypatch.setattr(pilot, 'log_audit', lambda *_args, **kwargs: audits.append(kwargs))
 
     request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})

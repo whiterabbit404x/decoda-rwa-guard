@@ -16,7 +16,7 @@ const JSON_HEADERS = {
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-export type AuthProxyMethod = 'GET' | 'POST';
+export type AuthProxyMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 type AuthCookieAction = 'set-session' | 'clear-session' | 'none';
 
