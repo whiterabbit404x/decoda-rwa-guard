@@ -36,6 +36,7 @@ from services.api.app.db_failure import (
     normalize_db_error_snippet,
 )
 from services.api.app.secret_crypto import decrypt_secret, encrypt_secret, read_encrypted_env, validate_encryption_bootstrap
+from services.api.app.managed_keys import load_managed_key, managed_key_provider, managed_keys_ready
 from services.api.app.export_storage import load_export_storage
 from services.api.app.production_readiness import build_production_readiness
 from services.api.app.paid_launch_readiness import check_billing_readiness
@@ -768,14 +769,18 @@ def validate_runtime_configuration() -> dict[str, Any]:
             required=mode_summary['live_mode_requested'],
             detail='Postgres required when LIVE_MODE_ENABLED=true in production.',
         )
-        _record_check('auth_token_secret', auth_token_secret_configured(), required=True, detail='AUTH_TOKEN_SECRET must be configured in production.')
+        _record_check('managed_key_provider', managed_key_provider() != 'env', required=True, detail='Production authentication, encryption, and evidence signing keys must use a managed key provider.')
+        _record_check('auth_token_secret', auth_token_secret_configured(), required=True, detail='Managed authentication key must be configured in production.')
         _KNOWN_WEAK_SECRETS = {
             'changeme', 'local', 'test', 'secret', 'password',
             'decoda-dev-signing-secret-not-for-production',
             'proofpass123!', 'pdl_whsec_local',
             'replace-with-long-random-secret',
         }
-        auth_secret_raw = os.getenv('AUTH_TOKEN_SECRET', os.getenv('JWT_SECRET', '')).strip()
+        try:
+            auth_secret_raw = token_secret()
+        except HTTPException:
+            auth_secret_raw = ''
         if auth_secret_raw and auth_secret_raw.lower() in _KNOWN_WEAK_SECRETS:
             _record_check(
                 'auth_token_secret_not_default',
@@ -784,18 +789,21 @@ def validate_runtime_configuration() -> dict[str, Any]:
                 detail='AUTH_TOKEN_SECRET is a known weak or default value. Set a strong random secret in production.',
             )
 
-        export_signing_secret = os.getenv('EXPORT_SIGNING_SECRET', os.getenv('EVIDENCE_SIGNING_SECRET', '')).strip()
+        try:
+            export_signing_secret = load_managed_key('EVIDENCE_SIGNING').material.decode('utf-8')
+        except (RuntimeError, UnicodeDecodeError):
+            export_signing_secret = ''
         export_secret_weak = export_signing_secret.lower() in _KNOWN_WEAK_SECRETS if export_signing_secret else False
         _record_check(
             'export_signing_secret',
-            bool(export_signing_secret) and not export_secret_weak,
+            bool(export_signing_secret) and not export_secret_weak and managed_key_provider() != 'env',
             required=True,
-            detail='EXPORT_SIGNING_SECRET (or EVIDENCE_SIGNING_SECRET) must be configured in production with a strong value.',
+            detail='A strong managed evidence-signing key must be configured in production.',
         )
 
         try:
             validate_encryption_bootstrap()
-            _record_check('secret_encryption_key', True, required=True, detail='SECRET_ENCRYPTION_KEY is configured.')
+            _record_check('secret_encryption_key', managed_keys_ready(), required=True, detail='Managed encryption key is configured.')
         except Exception as exc:
             _record_check('secret_encryption_key', False, required=True, detail=str(exc))
 
@@ -1764,14 +1772,17 @@ def _is_session_blacklisted(token_hash: str) -> bool:
 
 
 def auth_token_secret_configured() -> bool:
-    return bool(os.getenv('AUTH_TOKEN_SECRET', '').strip() or os.getenv('JWT_SECRET', '').strip())
+    try:
+        return bool(load_managed_key('AUTH').material)
+    except RuntimeError:
+        return False
 
 
 def token_secret() -> str:
-    value = os.getenv('AUTH_TOKEN_SECRET', '').strip() or os.getenv('JWT_SECRET', '').strip()
-    if not value:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='AUTH_TOKEN_SECRET is not configured.')
-    return value
+    try:
+        return load_managed_key('AUTH').material.decode('utf-8')
+    except (RuntimeError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='Managed authentication key is not configured.') from exc
 
 
 def _auth_token_hash(value: str) -> str:
@@ -15866,8 +15877,8 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             content = buffer.getvalue().encode('utf-8')
         object_key = storage.write_bytes(object_key=f"{workspace_id}/{export_id}.{job['format']}", content=content)
         connection.execute(
-            "UPDATE export_jobs SET status = 'completed', error_message = NULL, storage_backend = %s, storage_object_key = %s, updated_at = NOW() WHERE id = %s",
-            (storage.backend_name, object_key, export_id),
+            "UPDATE export_jobs SET status = 'completed', error_message = NULL, storage_backend = %s, storage_object_key = %s, signing_key_id = %s, signing_key_version = %s, updated_at = NOW() WHERE id = %s",
+            (storage.backend_name, object_key, _signing_meta.get('key_id'), _signing_meta.get('key_version'), export_id),
         )
     except Exception as exc:
         connection.execute("UPDATE export_jobs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s", (str(exc), export_id))
@@ -16028,3 +16039,284 @@ def delete_account(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         log_audit(connection, action='account.deleted', entity_type='user', entity_id=user_id, request=request, user_id=None, workspace_id=None, metadata={'reason': 'gdpr_delete'})
         connection.commit()
     return {'deleted': True}
+
+# ---------------------------------------------------------------------------
+# Workspace data lifecycle governance
+# ---------------------------------------------------------------------------
+_RETENTION_DATA_CLASSES = ('telemetry', 'detections', 'incidents', 'audit_logs', 'exports', 'user_data')
+_RETENTION_DEFAULT_DAYS = {
+    'telemetry': 90,
+    'detections': 365,
+    'incidents': 730,
+    'audit_logs': 2555,
+    'exports': 365,
+    'user_data': 30,
+}
+
+
+def _validate_data_classes(values: Any) -> list[str]:
+    if not isinstance(values, list) or not values:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='data_classes must be a non-empty list.')
+    normalized = sorted({str(item).strip().lower() for item in values})
+    invalid = [item for item in normalized if item not in _RETENTION_DATA_CLASSES]
+    if invalid:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={'invalid_data_classes': invalid})
+    return normalized
+
+
+def get_workspace_retention_policies(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        _user, workspace = _require_workspace_permission(connection, request, 'security.manage')
+        rows = connection.execute(
+            'SELECT data_class, retention_days, deletion_mode, enabled, updated_at FROM workspace_retention_policies WHERE workspace_id = %s',
+            (workspace['workspace_id'],),
+        ).fetchall()
+        configured = {str(row['data_class']): row for row in rows}
+        policies = []
+        for data_class in _RETENTION_DATA_CLASSES:
+            row = configured.get(data_class)
+            policies.append({
+                'data_class': data_class,
+                'retention_days': int(row['retention_days']) if row else _RETENTION_DEFAULT_DAYS[data_class],
+                'deletion_mode': str(row['deletion_mode']) if row else ('anonymize' if data_class == 'user_data' else 'hard_delete'),
+                'enabled': bool(row['enabled']) if row else True,
+                'source': 'workspace' if row else 'default',
+                'updated_at': _json_safe_value(row['updated_at']) if row else None,
+            })
+        return {'workspace_id': workspace['workspace_id'], 'policies': policies}
+
+
+def update_workspace_retention_policies(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    policies = payload.get('policies')
+    if not isinstance(policies, list) or not policies:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='policies must be a non-empty list.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace = _require_workspace_permission(connection, request, 'security.manage', require_reauthentication=True)
+        for item in policies:
+            data_class = str(item.get('data_class') or '').strip().lower()
+            if data_class not in _RETENTION_DATA_CLASSES:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f'Unsupported data_class: {data_class}')
+            retention_days = int(item.get('retention_days') or 0)
+            if retention_days < 1 or retention_days > 3650:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='retention_days must be between 1 and 3650.')
+            deletion_mode = str(item.get('deletion_mode') or ('anonymize' if data_class == 'user_data' else 'hard_delete'))
+            if deletion_mode not in {'hard_delete', 'anonymize'}:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='deletion_mode must be hard_delete or anonymize.')
+            if data_class == 'user_data' and deletion_mode != 'anonymize':
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='user_data must use anonymize mode.')
+            connection.execute(
+                '''
+                INSERT INTO workspace_retention_policies (workspace_id, data_class, retention_days, deletion_mode, enabled, updated_by_user_id)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (workspace_id, data_class) DO UPDATE SET
+                    retention_days = EXCLUDED.retention_days,
+                    deletion_mode = EXCLUDED.deletion_mode,
+                    enabled = EXCLUDED.enabled,
+                    updated_by_user_id = EXCLUDED.updated_by_user_id,
+                    updated_at = NOW()
+                ''',
+                (workspace['workspace_id'], data_class, retention_days, deletion_mode, bool(item.get('enabled', True)), user['id']),
+            )
+        log_audit(connection, action='retention.policy.update', entity_type='workspace', entity_id=workspace['workspace_id'], request=request, user_id=user['id'], workspace_id=workspace['workspace_id'], metadata={'policies': policies})
+    return get_workspace_retention_policies(request)
+
+
+def list_workspace_legal_holds(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        _user, workspace = _require_workspace_permission(connection, request, 'security.manage')
+        rows = connection.execute('SELECT * FROM workspace_legal_holds WHERE workspace_id = %s ORDER BY created_at DESC', (workspace['workspace_id'],)).fetchall()
+        return {'workspace_id': workspace['workspace_id'], 'legal_holds': [_json_safe_value(dict(row)) for row in rows]}
+
+
+def create_workspace_legal_hold(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    data_classes = _validate_data_classes(payload.get('data_classes'))
+    name = str(payload.get('name') or '').strip()
+    reason = str(payload.get('reason') or '').strip()
+    if not name or not reason:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='name and reason are required.')
+    hold_id = str(uuid.uuid4())
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace = _require_workspace_permission(connection, request, 'security.manage', require_reauthentication=True)
+        subject_user_id = str(payload.get('subject_user_id') or '').strip() or None
+        connection.execute(
+            '''INSERT INTO workspace_legal_holds
+               (id, workspace_id, name, reason, data_classes, subject_user_id, created_by_user_id)
+               VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)''',
+            (hold_id, workspace['workspace_id'], name, reason, _json_dumps(data_classes), subject_user_id, user['id']),
+        )
+        log_audit(connection, action='legal_hold.create', entity_type='legal_hold', entity_id=hold_id, request=request, user_id=user['id'], workspace_id=workspace['workspace_id'], metadata={'data_classes': data_classes, 'subject_user_id': subject_user_id, 'reason': reason})
+    return {'id': hold_id, 'status': 'active', 'data_classes': data_classes}
+
+
+def release_workspace_legal_hold(hold_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    reason = str(payload.get('reason') or '').strip()
+    if not reason:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='release reason is required.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace = _require_workspace_permission(connection, request, 'security.manage', require_reauthentication=True)
+        row = connection.execute(
+            '''UPDATE workspace_legal_holds SET status = 'released', released_by_user_id = %s, released_at = NOW(), updated_at = NOW()
+               WHERE id = %s AND workspace_id = %s AND status = 'active' RETURNING id''',
+            (user['id'], hold_id, workspace['workspace_id']),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Active legal hold not found.')
+        log_audit(connection, action='legal_hold.release', entity_type='legal_hold', entity_id=hold_id, request=request, user_id=user['id'], workspace_id=workspace['workspace_id'], metadata={'reason': reason})
+    return {'id': hold_id, 'status': 'released'}
+
+
+def create_data_deletion_request(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    data_classes = _validate_data_classes(payload.get('data_classes'))
+    request_type = str(payload.get('request_type') or 'workspace_data').strip()
+    if request_type not in {'retention_sweep', 'workspace_data', 'user_data'}:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='Unsupported request_type.')
+    reason = str(payload.get('reason') or '').strip()
+    if not reason:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='reason is required.')
+    request_id = str(uuid.uuid4())
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace = _require_workspace_permission(connection, request, 'security.manage', require_reauthentication=True)
+        subject_user_id = str(payload.get('subject_user_id') or '').strip() or None
+        if request_type == 'user_data' and not subject_user_id:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='subject_user_id is required for user_data requests.')
+        holds = connection.execute(
+            '''SELECT id, data_classes FROM workspace_legal_holds
+               WHERE workspace_id = %s AND status = 'active'
+                 AND (subject_user_id IS NULL OR subject_user_id = %s)''',
+            (workspace['workspace_id'], subject_user_id),
+        ).fetchall()
+        blocking = [str(row['id']) for row in holds if set(row['data_classes'] or []) & set(data_classes)]
+        request_status = 'blocked_by_legal_hold' if blocking else 'pending'
+        cutoff_at = payload.get('cutoff_at')
+        connection.execute(
+            '''INSERT INTO data_deletion_requests
+               (id, workspace_id, request_type, data_classes, subject_user_id, cutoff_at, status, reason, requested_by_user_id, result)
+               VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s::jsonb)''',
+            (request_id, workspace['workspace_id'], request_type, _json_dumps(data_classes), subject_user_id, cutoff_at, request_status, reason, user['id'], _json_dumps({'blocking_legal_hold_ids': blocking})),
+        )
+        log_audit(connection, action='data_deletion.request', entity_type='data_deletion_request', entity_id=request_id, request=request, user_id=user['id'], workspace_id=workspace['workspace_id'], metadata={'data_classes': data_classes, 'status': request_status, 'blocking_legal_hold_ids': blocking})
+    return {'id': request_id, 'status': request_status, 'data_classes': data_classes, 'blocking_legal_hold_ids': blocking}
+
+
+def list_data_deletion_requests(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        _user, workspace = _require_workspace_permission(connection, request, 'security.manage')
+        rows = connection.execute('SELECT * FROM data_deletion_requests WHERE workspace_id = %s ORDER BY requested_at DESC LIMIT 200', (workspace['workspace_id'],)).fetchall()
+        return {'workspace_id': workspace['workspace_id'], 'deletion_requests': [_json_safe_value(dict(row)) for row in rows]}
+
+_RETENTION_DELETE_TARGETS = {
+    'telemetry': ('telemetry_events', 'observed_at'),
+    'detections': ('detections', 'detected_at'),
+    'incidents': ('incidents', 'created_at'),
+    'audit_logs': ('audit_logs', 'created_at'),
+}
+
+
+def approve_and_execute_data_deletion_request(request_id: str, request: Request) -> dict[str, Any]:
+    """Approve and execute a bounded deletion transaction after a fresh legal-hold check."""
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace = _require_workspace_permission(connection, request, 'security.manage', require_reauthentication=True)
+        deletion = connection.execute(
+            'SELECT * FROM data_deletion_requests WHERE id = %s AND workspace_id = %s FOR UPDATE',
+            (request_id, workspace['workspace_id']),
+        ).fetchone()
+        if not deletion:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Deletion request not found.')
+        if deletion['status'] not in {'pending', 'approved'}:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Deletion request is {deletion['status']}.")
+        data_classes = [str(item) for item in (deletion['data_classes'] or [])]
+        holds = connection.execute(
+            '''SELECT id, data_classes FROM workspace_legal_holds
+               WHERE workspace_id = %s AND status = 'active'
+                 AND (subject_user_id IS NULL OR subject_user_id = %s)''',
+            (workspace['workspace_id'], deletion['subject_user_id']),
+        ).fetchall()
+        blocking = [str(row['id']) for row in holds if set(row['data_classes'] or []) & set(data_classes)]
+        if blocking:
+            connection.execute(
+                "UPDATE data_deletion_requests SET status = 'blocked_by_legal_hold', result = %s::jsonb, updated_at = NOW() WHERE id = %s",
+                (_json_dumps({'blocking_legal_hold_ids': blocking}), request_id),
+            )
+            log_audit(connection, action='data_deletion.blocked', entity_type='data_deletion_request', entity_id=request_id, request=request, user_id=user['id'], workspace_id=workspace['workspace_id'], metadata={'blocking_legal_hold_ids': blocking})
+            return {'id': request_id, 'status': 'blocked_by_legal_hold', 'blocking_legal_hold_ids': blocking}
+
+        cutoff = deletion['cutoff_at'] or utc_now()
+        connection.execute(
+            "UPDATE data_deletion_requests SET status = 'running', approved_by_user_id = %s, approved_at = NOW(), started_at = NOW(), updated_at = NOW() WHERE id = %s",
+            (user['id'], request_id),
+        )
+        results: dict[str, int] = {}
+        for data_class in data_classes:
+            affected = 0
+            anchor_before = None
+            if data_class in _RETENTION_DELETE_TARGETS:
+                table, timestamp_column = _RETENTION_DELETE_TARGETS[data_class]
+                _validate_sql_identifier(table, 'retention table')
+                _validate_sql_identifier(timestamp_column, 'retention timestamp column')
+                if data_class == 'audit_logs':
+                    anchor = connection.execute(
+                        'SELECT row_hash FROM audit_logs WHERE workspace_id = %s AND created_at < %s AND row_hash IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT 1',
+                        (workspace['workspace_id'], cutoff),
+                    ).fetchone()
+                    anchor_before = str(anchor['row_hash']) if anchor and anchor.get('row_hash') else None
+                cursor = connection.execute(
+                    f'DELETE FROM {table} WHERE workspace_id = %s AND {timestamp_column} < %s',
+                    (workspace['workspace_id'], cutoff),
+                )
+                affected = max(int(cursor.rowcount or 0), 0)
+            elif data_class == 'exports':
+                export_rows = connection.execute(
+                    'SELECT id, storage_object_key FROM export_jobs WHERE workspace_id = %s AND created_at < %s AND deleted_at IS NULL',
+                    (workspace['workspace_id'], cutoff),
+                ).fetchall()
+                storage = load_export_storage()
+                for export_row in export_rows:
+                    object_key = str(export_row.get('storage_object_key') or '').strip()
+                    if object_key:
+                        storage.delete_bytes(object_key=object_key)
+                cursor = connection.execute(
+                    '''UPDATE export_jobs SET deleted_at = NOW(), output_path = NULL, storage_object_key = NULL, updated_at = NOW()
+                       WHERE workspace_id = %s AND created_at < %s AND deleted_at IS NULL''',
+                    (workspace['workspace_id'], cutoff),
+                )
+                affected = max(int(cursor.rowcount or 0), 0)
+            elif data_class == 'user_data':
+                subject_user_id = deletion['subject_user_id']
+                if not subject_user_id:
+                    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='user_data deletion requires subject_user_id.')
+                connection.execute('DELETE FROM auth_sessions WHERE user_id = %s', (subject_user_id,))
+                cursor = connection.execute(
+                    '''UPDATE users SET email = %s, full_name = 'Deleted user', password_hash = %s, current_workspace_id = NULL, updated_at = NOW()
+                       WHERE id = %s''',
+                    (f'deleted+{subject_user_id}@invalid.local', hash_password(secrets.token_urlsafe(48)), subject_user_id),
+                )
+                affected = max(int(cursor.rowcount or 0), 0)
+            results[data_class] = affected
+            connection.execute(
+                '''INSERT INTO data_deletion_events
+                   (id, request_id, workspace_id, data_class, operation, records_affected, chain_anchor_before, details)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)''',
+                (str(uuid.uuid4()), request_id, workspace['workspace_id'], data_class, 'anonymize' if data_class == 'user_data' else ('storage_delete' if data_class == 'exports' else 'hard_delete'), affected, anchor_before, _json_dumps({'cutoff_at': _json_safe_value(cutoff)})),
+            )
+        connection.execute(
+            "UPDATE data_deletion_requests SET status = 'completed', result = %s::jsonb, completed_at = NOW(), updated_at = NOW() WHERE id = %s",
+            (_json_dumps({'records_affected': results}), request_id),
+        )
+        log_audit(connection, action='data_deletion.complete', entity_type='data_deletion_request', entity_id=request_id, request=request, user_id=user['id'], workspace_id=workspace['workspace_id'], metadata={'records_affected': results, 'cutoff_at': _json_safe_value(cutoff)})
+        return {'id': request_id, 'status': 'completed', 'records_affected': results}

@@ -65,3 +65,7 @@ Rotate on a fixed cadence (90 days recommended) and immediately after incidents:
   1. Restart worker process.
   2. Run one cycle manually via `/ops/monitoring/run`.
   3. Validate new alerts and worker heartbeat timestamp.
+
+## Disaster recovery and data governance
+
+The authoritative RPO/RTO targets, PostgreSQL/Redis/checkpoint/export/webhook recovery procedures, retention and legal-hold workflow, managed-key rotation, isolated restore validation, and regional/provider game-day procedure are maintained in [Disaster Recovery, Data Governance, and Key Rotation](./DISASTER_RECOVERY_AND_DATA_GOVERNANCE.md).

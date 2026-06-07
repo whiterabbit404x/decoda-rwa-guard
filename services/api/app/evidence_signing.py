@@ -5,12 +5,9 @@ Every evidence export (proof_bundle, incident_report) receives:
   - manifest.json  — SHA-256 hash of each file + canonical manifest hash
   - seal.json      — HMAC-SHA256 over the canonical manifest JSON
 
-Secrets:
-  EXPORT_SIGNING_SECRET or EVIDENCE_SIGNING_SECRET  (required in production)
-  EXPORT_SIGNING_KEY_ID                              (label for key rotation)
-
-In production the export creation fails closed if the signing secret is absent.
-In local/dev mode a non-production test secret is used; seal.json carries a warning.
+Production keys are loaded from the configured managed secret provider. Each seal
+records the provider key identifier and immutable version so historical evidence remains
+verifiable after rotation. Local/dev may use environment keys or a test fallback.
 The raw secret is never logged or included in any export artifact.
 """
 from __future__ import annotations
@@ -22,11 +19,11 @@ import logging
 import os
 from typing import Any
 
+from services.api.app.managed_keys import load_managed_key, managed_key_provider
+
 _log = logging.getLogger(__name__)
 
 _DEV_FALLBACK_SECRET = b'decoda-dev-signing-secret-NOT-FOR-PRODUCTION'
-_DEV_FALLBACK_SECRET_STR = 'decoda-dev-signing-secret-NOT-FOR-PRODUCTION'
-
 
 def _is_production_like() -> bool:
     app_mode = os.getenv('APP_MODE', '').strip().lower()
@@ -34,19 +31,12 @@ def _is_production_like() -> bool:
     return app_mode in {'production', 'staging'} or app_env in {'production', 'staging', 'prod'}
 
 
-def _is_dev_mode() -> bool:
-    app_mode = os.getenv('APP_MODE', '').strip().lower()
-    app_env = os.getenv('APP_ENV', '').strip().lower()
-    return app_mode in {'local', 'dev', 'test', 'development', ''} or app_env in {'local', 'dev', 'test', 'development', ''}
-
-
-def _get_signing_secret() -> bytes | None:
-    """Return the configured signing secret bytes, or None if not set."""
-    for var in ('EXPORT_SIGNING_SECRET', 'EVIDENCE_SIGNING_SECRET'):
-        raw = os.getenv(var, '').strip()
-        if raw:
-            return raw.encode('utf-8')
-    return None
+def _get_signing_secret(*, version: str | None = None) -> bytes | None:
+    """Return signing material from the configured managed provider or local fallback."""
+    try:
+        return load_managed_key('EVIDENCE_SIGNING', version=version).material
+    except RuntimeError:
+        return None
 
 
 def signing_available() -> bool:
@@ -55,76 +45,47 @@ def signing_available() -> bool:
 
 
 def validate_signing_secret_at_startup() -> None:
-    """
-    Call at application startup. Raises RuntimeError in production/staging if:
-    - No signing secret is configured
-    - The configured secret equals the known dev fallback value
-    Logs the signing mode without revealing key material.
-    """
+    """Fail closed unless production/staging signing material is managed and loadable."""
     secret = _get_signing_secret()
     prod = _is_production_like()
-
-    if prod:
-        if secret is None:
-            raise RuntimeError(
-                'EXPORT_SIGNING_SECRET (or EVIDENCE_SIGNING_SECRET) is required in '
-                'production/staging. Export bundle signing is mandatory.'
-            )
-        if secret == _DEV_FALLBACK_SECRET or secret.decode('utf-8', errors='replace').lower() == _DEV_FALLBACK_SECRET_STR.lower():
-            raise RuntimeError(
-                'EXPORT_SIGNING_SECRET is set to the known dev fallback value. '
-                'This key must not be used in production/staging. '
-                'Set a strong random secret in EXPORT_SIGNING_SECRET.'
-            )
-        _log.info('evidence_signing_mode=production_key key_id=%s', _signing_key_id())
+    if prod and managed_key_provider() == 'env':
+        raise RuntimeError('Production evidence signing requires MANAGED_KEY_PROVIDER; static environment signing secrets are forbidden.')
+    if prod and secret is None:
+        raise RuntimeError('Managed evidence signing key is required in production/staging.')
+    if prod and secret == _DEV_FALLBACK_SECRET:
+        raise RuntimeError('The development evidence signing key is forbidden in production/staging.')
+    if secret is None:
+        _log.info('evidence_signing_mode=dev_test_key')
     else:
-        allow_dev = os.getenv('EXPORT_ALLOW_DEV_SIGNING_SECRET', '').strip().lower() == 'true'
-        if secret is None and not allow_dev:
-            _log.info('evidence_signing_mode=dev_test_key (no secret configured; dev fallback active)')
-        elif secret is not None:
-            _log.info('evidence_signing_mode=production_key key_id=%s', _signing_key_id())
-        else:
-            _log.info('evidence_signing_mode=dev_test_key (EXPORT_ALLOW_DEV_SIGNING_SECRET=true)')
+        _log.info('evidence_signing_mode=%s key_id=%s', managed_key_provider(), _signing_key_id())
 
 
 def _require_signing_secret() -> tuple[bytes, bool]:
-    """
-    Return (secret_bytes, is_production_secret).
-    Raises RuntimeError in production/staging when secret is absent or is the dev value.
-    In local/dev, the dev fallback is only used when EXPORT_ALLOW_DEV_SIGNING_SECRET=true
-    or no secret is configured (legacy behavior).
-    """
     secret = _get_signing_secret()
     prod = _is_production_like()
-
+    if prod and managed_key_provider() == 'env':
+        raise RuntimeError('EXPORT_SIGNING_SECRET environment operation is forbidden in production; configure a managed evidence signing key provider.')
     if secret is not None:
-        if prod and (secret == _DEV_FALLBACK_SECRET or secret.decode('utf-8', errors='replace').lower() == _DEV_FALLBACK_SECRET_STR.lower()):
-            raise RuntimeError(
-                'EXPORT_SIGNING_SECRET is the known dev fallback value. '
-                'This key must not be used in production/staging.'
-            )
+        if prod and secret == _DEV_FALLBACK_SECRET:
+            raise RuntimeError('The development evidence signing key is forbidden in production/staging.')
         return secret, True
-
     if prod:
-        raise RuntimeError(
-            'EXPORT_SIGNING_SECRET (or EVIDENCE_SIGNING_SECRET) is required in '
-            'production/staging. Export bundle signing is mandatory. '
-            'Set this env var to enable tamper-evident exports.'
-        )
-
-    # Local/dev: allow dev fallback only when explicitly permitted or no secret at all
-    allow_dev = os.getenv('EXPORT_ALLOW_DEV_SIGNING_SECRET', '').strip().lower() == 'true'
-    if not allow_dev and not _is_dev_mode():
-        _log.warning(
-            'evidence_signing: using dev fallback secret in non-production environment. '
-            'Set EXPORT_ALLOW_DEV_SIGNING_SECRET=true to suppress this warning, '
-            'or configure EXPORT_SIGNING_SECRET.'
-        )
+        raise RuntimeError('Managed evidence signing key is required in production/staging.')
     return _DEV_FALLBACK_SECRET, False
 
 
 def _signing_key_id() -> str:
-    return os.getenv('EXPORT_SIGNING_KEY_ID', 'env-default').strip() or 'env-default'
+    try:
+        return load_managed_key('EVIDENCE_SIGNING').key_id
+    except RuntimeError:
+        return os.getenv('EXPORT_SIGNING_KEY_ID', 'env-default').strip() or 'env-default'
+
+
+def _signing_key_version() -> str:
+    try:
+        return load_managed_key('EVIDENCE_SIGNING').version
+    except RuntimeError:
+        return 'dev-fallback'
 
 
 def _sha256_hex(data: bytes) -> str:
@@ -203,6 +164,8 @@ def seal_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     seal: dict[str, Any] = {
         'signature_algorithm': 'HMAC-SHA256',
         'key_id': key_id,
+        'key_version': _signing_key_version(),
+        'key_provider': managed_key_provider(),
         'signed_manifest_sha256': manifest.get('manifest_sha256', ''),
         'signature': sig,
         'signed_at': manifest.get('generated_at', ''),
@@ -222,6 +185,8 @@ def signing_metadata(manifest: dict[str, Any], seal: dict[str, Any]) -> dict[str
         'manifest_sha256': manifest.get('manifest_sha256', ''),
         'signature_algorithm': seal.get('signature_algorithm', ''),
         'key_id': seal.get('key_id', ''),
+        'key_version': seal.get('key_version', ''),
+        'key_provider': seal.get('key_provider', ''),
         'signed_at': seal.get('signed_at', ''),
         'production_secret': 'warning' not in seal,
         'warning': seal.get('warning'),
@@ -274,7 +239,7 @@ def verify_bundle(
     # 4: HMAC signature
     secret = signing_secret
     if secret is None:
-        secret = _get_signing_secret()
+        secret = _get_signing_secret(version=str(seal.get('key_version') or '') or None)
     if secret is None:
         errors.append('signing_secret_not_available')
     else:
@@ -314,7 +279,7 @@ def compute_audit_row_hash(
     return _sha256_hex(canonical_json(payload))
 
 
-def verify_audit_chain(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def verify_audit_chain(rows: list[dict[str, Any]], *, initial_previous_hash: str | None = None) -> dict[str, Any]:
     """
     Verify the hash chain integrity for a list of audit rows.
 
@@ -322,7 +287,7 @@ def verify_audit_chain(rows: list[dict[str, Any]]) -> dict[str, Any]:
     Returns {'valid': bool, 'errors': list[str], 'chain_length': int}.
     """
     errors: list[str] = []
-    previous_hash: str | None = None
+    previous_hash: str | None = initial_previous_hash
 
     for i, row in enumerate(rows):
         row_id = str(row.get('id', ''))

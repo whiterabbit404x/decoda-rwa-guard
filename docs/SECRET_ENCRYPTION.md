@@ -12,3 +12,7 @@
 ## Safety
 - Production/staging startup fails when `SECRET_ENCRYPTION_KEY` is missing or malformed.
 - API responses expose only masked/last4 metadata, never decrypted secrets.
+
+## Production managed-key requirement
+
+The static `SECRET_ENCRYPTION_KEY`, `AUTH_TOKEN_SECRET`, and `EXPORT_SIGNING_SECRET` variables are retained only for local development and tests. Staging and production must use the version-aware managed provider settings documented in `DISASTER_RECOVERY_AND_DATA_GOVERNANCE.md`. New ciphertext uses `aes256gcm:v2` and embeds a non-secret provider key/version reference so old values remain decryptable after rotation. Evidence seals likewise store `key_id`, `key_version`, and `key_provider`; historical verification resolves the recorded version rather than the current version.
