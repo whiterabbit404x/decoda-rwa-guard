@@ -434,3 +434,20 @@ from contextlib import contextmanager
 @contextmanager
 def _fake_pg_context():
     yield None
+
+
+# ---------------------------------------------------------------------------
+# P2-6: validate_signing_secret_at_startup is wired into main.py lifespan
+# ---------------------------------------------------------------------------
+
+def test_validate_signing_secret_at_startup_is_called_from_lifespan(monkeypatch):
+    """main.py lifespan must call validate_signing_secret_at_startup so that the
+    dev fallback secret cannot silently be used in production."""
+    import importlib
+    import inspect
+
+    # Load main.py source and verify the call is present
+    main_src = inspect.getsource(importlib.import_module('services.api.app.main'))
+    assert 'validate_signing_secret_at_startup' in main_src, (
+        'validate_signing_secret_at_startup must be called from main.py startup/lifespan'
+    )

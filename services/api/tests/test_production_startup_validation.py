@@ -102,7 +102,8 @@ def test_health_diagnostics_exposes_machine_readable_checks(api_main, monkeypatc
     assert payload['checks']['database_url']['ok'] is False
     assert payload['checks']['email_provider_not_console']['ok'] is False
     assert payload['checks']['distributed_rate_limiter']['ok'] is False
-    assert payload['checks']['distributed_rate_limiter']['required'] is False
+    # Redis is now required in production; missing Redis is a blocking error
+    assert payload['checks']['distributed_rate_limiter']['required'] is True
 
 
 def test_health_diagnostics_flags_production_live_mode_drift(api_main, monkeypatch: pytest.MonkeyPatch) -> None:

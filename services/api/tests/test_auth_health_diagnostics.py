@@ -312,8 +312,8 @@ def test_health_readiness_reports_not_ready_when_production_dependencies_missing
     assert response.status_code == 200
     assert payload['status'] == 'not_ready'
     assert any('EMAIL_PROVIDER=console is not allowed in production' in error for error in payload['errors'])
-    assert not any('REDIS' in error.upper() or 'UPSTASH' in error.upper() for error in payload['errors'])
-    assert payload['checks']['distributed_rate_limiter']['required'] is False
+    # Redis is now required in production — missing Redis IS a blocking error
+    assert payload['checks']['distributed_rate_limiter']['required'] is True
 
 
 def test_health_details_route_reports_readiness_flags_and_missing_tables(api_main, monkeypatch: pytest.MonkeyPatch) -> None:

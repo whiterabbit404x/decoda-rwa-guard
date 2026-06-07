@@ -98,15 +98,26 @@ PASSWORD_RESET_TTL_MINUTES = 30
 SESSION_TTL_HOURS = 24
 MFA_RECOVERY_CODE_COUNT = 8
 SLACK_OAUTH_STATE_TTL_MINUTES = 10
-_rate_limit_lock = threading.Lock()
-_rate_limit_state: dict[str, list[float]] = {}
-_rate_limit_fallback_warning_lock = threading.Lock()
-_rate_limit_fallback_last_emitted: dict[str, float] = {}
-RATE_LIMIT_FALLBACK_WARNING_WINDOW_SECONDS = 300
-RATE_LIMIT_FALLBACK_REDIS_UNAVAILABLE_KEY = 'rate_limit.fallback.redis_unavailable'
 logger = logging.getLogger(__name__)
-_redis_rate_limiter: Any | None = None
-_redis_rate_limiter_lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# P0-1: Rate limiting extracted to domains/rate_limit (canonical home).
+# Backward-compat aliases kept here so existing imports/monkeypatches work.
+# ---------------------------------------------------------------------------
+from services.api.app.domains.rate_limit import (  # noqa: E402
+    enforce_auth_rate_limit as _rl_enforce_auth_rate_limit,
+    _rate_limit_lock,
+    _rate_limit_state,
+    _rate_limit_fallback_warning_lock,
+    _rate_limit_fallback_last_emitted,
+    _redis_rate_limiter_lock,
+    RATE_LIMIT_FALLBACK_WARNING_WINDOW_SECONDS,
+    RATE_LIMIT_FALLBACK_REDIS_UNAVAILABLE_KEY,
+)
+import services.api.app.domains.rate_limit as _rl_domain
+
+# _redis_rate_limiter is a mutable singleton; access via _rl_domain._redis_rate_limiter
+_redis_rate_limiter: Any | None = None  # kept for backward compat; domain module owns the real state
 _session_blacklist_redis: Any | None = None
 _session_blacklist_redis_lock = threading.Lock()
 CSRF_TOKEN_WINDOW_SECONDS = 3600
@@ -771,13 +782,35 @@ def validate_runtime_configuration() -> dict[str, Any]:
         upstash_url = os.getenv('UPSTASH_REDIS_REST_URL', '').strip()
         upstash_token = os.getenv('UPSTASH_REDIS_REST_TOKEN', '').strip()
         distributed_rate_limiter_configured = bool(redis_url or (upstash_url and upstash_token))
-        _record_check(
-            'distributed_rate_limiter',
-            distributed_rate_limiter_configured,
-            required=False,
-            detail='Redis/Upstash is optional; auth rate limiting will use an in-memory per-process fallback when unavailable.',
-            severity='warning',
-        )
+        allow_memory_override = env_flag('ALLOW_IN_MEMORY_RATE_LIMIT_IN_PRODUCTION')
+        if distributed_rate_limiter_configured:
+            _record_check(
+                'distributed_rate_limiter',
+                True,
+                required=True,
+                detail='Redis/Upstash distributed rate limiter is configured. Multi-process rate limiting is active.',
+            )
+            checks['rate_limit_backend'] = 'redis'
+            checks['rate_limit_enterprise_ready'] = True
+        elif allow_memory_override:
+            _record_check(
+                'distributed_rate_limiter',
+                False,
+                required=False,
+                detail='ALLOW_IN_MEMORY_RATE_LIMIT_IN_PRODUCTION=true: In-memory per-process rate limiter active. Not enterprise-safe in horizontally scaled deployments.',
+                severity='warning',
+            )
+            checks['rate_limit_backend'] = 'memory'
+            checks['rate_limit_enterprise_ready'] = False
+        else:
+            _record_check(
+                'distributed_rate_limiter',
+                False,
+                required=True,
+                detail='REDIS_URL is required for production rate limiting. Per-process in-memory fallback is not safe in horizontally scaled production. Set REDIS_URL or UPSTASH_REDIS_REST_URL+TOKEN, or set ALLOW_IN_MEMORY_RATE_LIMIT_IN_PRODUCTION=true to override (enterprise_ready will be false).',
+            )
+            checks['rate_limit_backend'] = 'memory'
+            checks['rate_limit_enterprise_ready'] = False
 
         billing_status = billing_runtime_status()
         strict_billing = env_flag('STRICT_PRODUCTION_BILLING')
@@ -1967,119 +2000,34 @@ def _validate_session(connection: Any, token: str, payload: dict[str, Any]) -> N
     )
 
 
+# ---------------------------------------------------------------------------
+# P0-1: Rate limiting delegated to services.api.app.domains.rate_limit
+# These thin wrappers preserve backward compat for callers that import from pilot.
+# The canonical implementation (state + logic) lives in the domain module.
+# ---------------------------------------------------------------------------
+
 def _rate_limit_subject(identifier: str | None) -> str:
-    normalized = str(identifier or '').strip().lower()
-    if not normalized:
-        return 'unknown'
-    return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
+    return _rl_domain._rate_limit_subject(identifier)
 
 
 def _emit_rate_limit_fallback_warning(reason: str) -> None:
-    should_emit = False
-    now = monotonic()
-    with _rate_limit_fallback_warning_lock:
-        last_emitted = _rate_limit_fallback_last_emitted.get(RATE_LIMIT_FALLBACK_REDIS_UNAVAILABLE_KEY)
-        if last_emitted is None or now - last_emitted >= RATE_LIMIT_FALLBACK_WARNING_WINDOW_SECONDS:
-            _rate_limit_fallback_last_emitted[RATE_LIMIT_FALLBACK_REDIS_UNAVAILABLE_KEY] = now
-            should_emit = True
-    if should_emit:
-        logger.warning(
-            'Rate limiter fallback active: Redis unavailable. reason=%s',
-            reason,
-            extra={'event': 'rate_limit.fallback', 'fallback_key': RATE_LIMIT_FALLBACK_REDIS_UNAVAILABLE_KEY},
-        )
+    return _rl_domain._emit_rate_limit_fallback_warning(reason)
 
 
 def _upstash_command(base_url: str, token: str, command: list[Any]) -> Any:
-    request = UrlRequest(
-        f"{base_url.rstrip('/')}",
-        data=json.dumps(command).encode('utf-8'),
-        headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
-        method='POST',
-    )
-    with urlopen(request, timeout=2) as response:
-        payload = json.loads(response.read().decode('utf-8'))
-    if payload.get('error'):
-        raise RuntimeError(str(payload['error']))
-    return payload.get('result')
+    return _rl_domain._upstash_command(base_url, token, command)
 
 
 def _distributed_rate_limit_attempts(key: str) -> int | None:
-    redis_url = os.getenv('REDIS_URL', '').strip()
-    upstash_url = os.getenv('UPSTASH_REDIS_REST_URL', '').strip()
-    upstash_token = os.getenv('UPSTASH_REDIS_REST_TOKEN', '').strip()
-
-    if redis_url:
-        global _redis_rate_limiter
-        with _redis_rate_limiter_lock:
-            if _redis_rate_limiter is None:
-                redis_module = importlib.import_module('redis')
-                _redis_rate_limiter = redis_module.Redis.from_url(
-                    redis_url,
-                    decode_responses=True,
-                    socket_connect_timeout=2,
-                    socket_timeout=2,
-                )
-        attempts = int(_redis_rate_limiter.incr(key))
-        if attempts == 1:
-            _redis_rate_limiter.expire(key, AUTH_WINDOW_SECONDS)
-        return attempts
-
-    if upstash_url and upstash_token:
-        attempts = int(_upstash_command(upstash_url, upstash_token, ['INCR', key]))
-        if attempts == 1:
-            _upstash_command(upstash_url, upstash_token, ['EXPIRE', key, AUTH_WINDOW_SECONDS])
-        return attempts
-
-    return None
+    return _rl_domain._distributed_rate_limit_attempts(key)
 
 
 def _enforce_in_memory_rate_limit(key: str) -> None:
-    now = monotonic()
-    cutoff = now - AUTH_WINDOW_SECONDS
-    with _rate_limit_lock:
-        expired_keys: list[str] = []
-        for existing_key, stamps in _rate_limit_state.items():
-            active_stamps = [stamp for stamp in stamps if stamp >= cutoff]
-            if active_stamps:
-                _rate_limit_state[existing_key] = active_stamps
-            else:
-                expired_keys.append(existing_key)
-        for expired_key in expired_keys:
-            _rate_limit_state.pop(expired_key, None)
-
-        attempts = _rate_limit_state.get(key, [])
-        if len(attempts) >= AUTH_MAX_ATTEMPTS:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail='Too many authentication attempts. Please retry shortly.',
-            )
-        attempts.append(now)
-        _rate_limit_state[key] = attempts
+    return _rl_domain._enforce_in_memory_rate_limit(key)
 
 
 def enforce_auth_rate_limit(request: Request, action: str, identifier: str | None = None) -> None:
-    client_host = request.client.host if request.client else 'unknown'
-    subject = _rate_limit_subject(identifier)
-    key = f'pilot:rate:{action}:{client_host}:{subject}'
-
-    try:
-        attempts = _distributed_rate_limit_attempts(key)
-        if attempts is not None:
-            if attempts > AUTH_MAX_ATTEMPTS:
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail='Too many authentication attempts. Please retry shortly.',
-                )
-            return
-        _emit_rate_limit_fallback_warning('not configured')
-    except HTTPException:
-        raise
-    except Exception as exc:
-        condensed_error = str(exc).strip().splitlines()[0] if str(exc).strip() else 'unknown_error'
-        _emit_rate_limit_fallback_warning(condensed_error)
-
-    _enforce_in_memory_rate_limit(key)
+    return _rl_domain.enforce_auth_rate_limit(request, action, identifier)
 
 
 def _normalize_email(email: str) -> str:

@@ -219,6 +219,7 @@ from services.api.app.db_failure import (
     normalize_db_error_snippet,
 )
 from services.api.app.secret_crypto import validate_secret_encryption_key_at_startup
+from services.api.app.evidence_signing import validate_signing_secret_at_startup
 from services.api.app.structured_logging import configure_logging
 
 
@@ -1617,6 +1618,7 @@ def bootstrap_live_pilot() -> dict[str, Any]:
 async def lifespan(_: FastAPI):
     global MONITORING_BACKGROUND_TASK, MONITORING_LOOP_RUNTIME_STATE
     validate_secret_encryption_key_at_startup()
+    validate_signing_secret_at_startup()
     if _is_local_dev_mode():
         seed_service(SERVICE_NAME, PORT, DETAIL, DEFAULT_METRICS)
         seed_embedded_dependency_registry()
@@ -2091,12 +2093,17 @@ def health_readiness() -> dict[str, Any]:
     else:
         status_value = 'healthy'
 
+    rate_limit_backend = checks.get('rate_limit_backend', 'redis' if checks.get('distributed_rate_limiter', {}).get('ok') else 'memory')
+    rate_limit_enterprise_ready = checks.get('rate_limit_enterprise_ready', checks.get('distributed_rate_limiter', {}).get('ok', False))
     return {
         'status': status_value,
         'service': SERVICE_NAME,
         'app_mode': os.getenv('APP_MODE', 'local'),
         'app_env': app_env,
         'production_live_mode_drift': production_live_mode_drift,
+        'rate_limit_backend': rate_limit_backend,
+        'rate_limit_enterprise_ready': bool(rate_limit_enterprise_ready),
+        'enterprise_ready': bool(rate_limit_enterprise_ready) and not errors,
         'errors': errors,
         'warnings': warnings,
         'checks': checks,
