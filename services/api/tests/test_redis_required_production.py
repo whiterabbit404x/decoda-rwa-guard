@@ -116,6 +116,7 @@ def test_production_missing_redis_is_now_a_startup_validation_error(monkeypatch)
     monkeypatch.delenv('UPSTASH_REDIS_REST_URL', raising=False)
     monkeypatch.delenv('UPSTASH_REDIS_REST_TOKEN', raising=False)
     monkeypatch.delenv('ALLOW_IN_MEMORY_RATE_LIMIT_IN_PRODUCTION', raising=False)
+    monkeypatch.delenv('REDIS_TEMPORARILY_DISABLED', raising=False)
 
     validation = pilot.validate_runtime_configuration()
 
@@ -131,6 +132,7 @@ def test_production_with_redis_passes_config_validation(monkeypatch) -> None:
     monkeypatch.setenv('APP_ENV', 'production')
     monkeypatch.setenv('REDIS_URL', 'redis://localhost:6379/0')
     monkeypatch.delenv('ALLOW_IN_MEMORY_RATE_LIMIT_IN_PRODUCTION', raising=False)
+    monkeypatch.delenv('REDIS_TEMPORARILY_DISABLED', raising=False)
 
     validation = pilot.validate_runtime_configuration()
 
@@ -140,15 +142,15 @@ def test_production_with_redis_passes_config_validation(monkeypatch) -> None:
     assert validation['checks'].get('rate_limit_enterprise_ready') is True
 
 
-def test_production_with_dangerous_override_starts_but_not_enterprise_ready(monkeypatch) -> None:
-    """With ALLOW_IN_MEMORY_RATE_LIMIT_IN_PRODUCTION=true, startup is not blocked but enterprise_ready is false."""
+def test_production_with_temporary_redis_disable_starts_but_not_enterprise_ready(monkeypatch) -> None:
+    """With REDIS_TEMPORARILY_DISABLED=true, startup is not blocked but enterprise_ready is false."""
     from services.api.app import pilot
 
     monkeypatch.setenv('APP_ENV', 'production')
     monkeypatch.delenv('REDIS_URL', raising=False)
     monkeypatch.delenv('UPSTASH_REDIS_REST_URL', raising=False)
     monkeypatch.delenv('UPSTASH_REDIS_REST_TOKEN', raising=False)
-    monkeypatch.setenv('ALLOW_IN_MEMORY_RATE_LIMIT_IN_PRODUCTION', 'true')
+    monkeypatch.setenv('REDIS_TEMPORARILY_DISABLED', 'true')
 
     validation = pilot.validate_runtime_configuration()
 
@@ -158,6 +160,9 @@ def test_production_with_dangerous_override_starts_but_not_enterprise_ready(monk
     # But enterprise_ready is false
     assert validation['checks'].get('rate_limit_enterprise_ready') is False
     assert validation['checks'].get('rate_limit_backend') == 'memory'
+    assert validation['checks'].get('redis_configured') is False
+    assert validation['checks'].get('redis_status') == 'disabled_temporary'
+    assert any('not horizontally scalable' in warning for warning in validation['warnings'])
     # Should appear in warnings, not errors
     assert not any('REDIS_URL' in error for error in validation['errors'])
 
@@ -171,6 +176,7 @@ def test_local_test_memory_limiter_still_works(monkeypatch) -> None:
     monkeypatch.delenv('UPSTASH_REDIS_REST_URL', raising=False)
     monkeypatch.delenv('UPSTASH_REDIS_REST_TOKEN', raising=False)
     monkeypatch.delenv('ALLOW_IN_MEMORY_RATE_LIMIT_IN_PRODUCTION', raising=False)
+    monkeypatch.delenv('REDIS_TEMPORARILY_DISABLED', raising=False)
 
     validation = pilot.validate_runtime_configuration()
 
@@ -193,3 +199,28 @@ def test_multi_process_warning_appears_without_redis(monkeypatch, caplog) -> Non
         pilot.enforce_auth_rate_limit(_make_request(), 'signin', 'user@example.com')
 
     assert any('fallback' in record.message.lower() or 'redis' in record.message.lower() for record in caplog.records)
+
+
+def test_health_readiness_reports_degraded_for_temporary_redis_disable(monkeypatch: pytest.MonkeyPatch) -> None:
+    from services.api.app import main as api_main
+
+    monkeypatch.setattr(api_main, 'validate_runtime_configuration', lambda: {
+        'errors': [],
+        'warnings': ['Redis disabled temporarily; in-memory rate limiting is not horizontally scalable'],
+        'checks': {
+            'redis_configured': False,
+            'redis_status': 'disabled_temporary',
+            'rate_limit_backend': 'memory',
+            'rate_limit_enterprise_ready': False,
+        },
+    })
+    monkeypatch.setattr(api_main, 'billing_runtime_status', lambda: {'provider': 'paddle', 'available': True})
+
+    payload = api_main.health_readiness()
+
+    assert payload['status'] == 'degraded'
+    assert payload['redis_configured'] is False
+    assert payload['rate_limit_backend'] == 'memory'
+    assert payload['rate_limit_enterprise_ready'] is False
+    assert payload['enterprise_ready'] is False
+    assert payload['warning'] == 'Redis disabled temporarily; in-memory rate limiting is not horizontally scalable'

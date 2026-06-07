@@ -62,6 +62,7 @@ def _paddle_headers(secret: str, payload: dict[str, object]) -> tuple[str, str, 
 
 def test_paddle_signature_validation_rejects_invalid_signature(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_ENVIRONMENT', 'sandbox')
     monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_123')
     monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_secret')
     monkeypatch.setenv('PADDLE_PRICE_ID_PRO', 'pri_123')
@@ -76,6 +77,7 @@ def test_paddle_webhook_replay_is_idempotent(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda conn: None)
     monkeypatch.setattr(pilot, 'pg_connection', lambda: fake_pg_connection(connection))
     monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_ENVIRONMENT', 'sandbox')
     monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_123')
     monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_secret')
     monkeypatch.setenv('PADDLE_PRICE_ID_PRO', 'pri_123')
@@ -94,6 +96,7 @@ def test_paddle_webhook_reconciliation_upserts_subscription_customer_and_transac
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda conn: None)
     monkeypatch.setattr(pilot, 'pg_connection', lambda: fake_pg_connection(connection))
     monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_ENVIRONMENT', 'sandbox')
     monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_123')
     monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_secret')
     monkeypatch.setenv('PADDLE_PRICE_ID_PRO', 'pri_123')
@@ -123,6 +126,7 @@ def test_checkout_session_returns_paddle_url(monkeypatch: pytest.MonkeyPatch) ->
     connection = FakeConnection(event_exists=False)
     _patch_auth(monkeypatch)
     monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_ENVIRONMENT', 'sandbox')
     monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_123')
     monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_whsec_123')
     monkeypatch.setenv('PADDLE_PRICE_ID_PRO', 'pri_123')
@@ -170,6 +174,7 @@ def test_checkout_session_fails_with_structured_error_when_billing_provider_none
 def test_checkout_session_fails_with_structured_error_when_paddle_missing_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_auth(monkeypatch)
     monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_ENVIRONMENT', 'sandbox')
     monkeypatch.delenv('PADDLE_API_KEY', raising=False)
     monkeypatch.delenv('PADDLE_WEBHOOK_SECRET', raising=False)
     monkeypatch.setenv('PADDLE_PRICE_ID_PRO', 'pri_123')

@@ -1383,10 +1383,10 @@ You can also inspect `/health/details` to confirm dependency diagnostics, build/
 ### New environment variables
 
 - `ENABLE_DEMO_FALLBACKS=true|false` (non-production only; enables sample dashboard payloads)
-- `BILLING_PROVIDER=none|paddle|stripe` (defaults to `paddle`; use `none` for pre-launch no-billing mode)
+- `BILLING_PROVIDER=none|paddle|stripe` (must be explicit; use `none` for pre-launch no-billing mode)
 - `PADDLE_API_KEY=...` (required only when Paddle billing is enabled)
 - `PADDLE_WEBHOOK_SECRET=...` (required only when Paddle billing is enabled)
-- `PADDLE_ENVIRONMENT=sandbox|live`
+- `PADDLE_ENVIRONMENT=sandbox|production`
 - `PADDLE_PRICE_ID_PRO=...`, `PADDLE_PRICE_ID_TEAM=...` (and any other public plan keys)
 - Optional for frontend overlay checkout: `PADDLE_CLIENT_TOKEN=...`
 - `APP_URL=https://your-product-domain` (recommended for Slack alert deep links back into `/alerts`)
@@ -1509,21 +1509,19 @@ New admin-only diagnostics endpoints:
 - `POST /system/integrations/test-email`
 - `POST /system/integrations/test-slack`
 
-These surface actionable readiness checks for Stripe, email, and Slack without exposing secret values.
+These surface actionable readiness checks for the selected billing provider (Paddle or Stripe), email, and Slack without exposing secret values.
 
 ### New/updated env vars
 
 - `BILLING_PROVIDER=none|paddle|stripe` (`none` disables billing cleanly for pre-launch)
 - `STRICT_PRODUCTION_BILLING=true` (optional strict fail-fast mode; when enabled, missing provider credentials make readiness `not_ready`)
-- Existing Stripe vars remain required in production billing flows:
-  - `STRIPE_SECRET_KEY`
-  - `STRIPE_WEBHOOK_SECRET`
+- Provider-specific billing vars are required only for the selected provider. Paddle requires `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`, `PADDLE_PRICE_ID` (or plan variants), and `PADDLE_ENVIRONMENT=sandbox|production`; Stripe requires its own secret, webhook secret, and price ID only when selected.
 
 ### “System ready” criteria for production
 
 Before declaring production fully ready:
 
-1. Stripe health checks pass (secret + webhook secret + configured plan price IDs).
+1. Selected billing-provider health checks pass (Paddle or Stripe credentials + webhook secret + configured plan price IDs).
 2. Email provider is configured with valid sender/from address and test-send succeeds.
 3. At least one Slack integration is configured and test-send succeeds.
 4. Startup validation reports no production errors.

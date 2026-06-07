@@ -68,6 +68,33 @@ assert sum(_CATEGORY_WEIGHTS.values()) == 100
 LIVE_EVIDENCE_FRESHNESS_WINDOW_DAYS = 30
 
 
+
+def _rate_limit_readiness(staging_proof: dict[str, Any] | None = None) -> dict[str, Any]:
+    if isinstance(staging_proof, dict) and isinstance(staging_proof.get('rate_limit_validation'), dict):
+        return dict(staging_proof['rate_limit_validation'])
+    redis_configured = bool(
+        (os.getenv('REDIS_URL') or '').strip()
+        or (
+            (os.getenv('UPSTASH_REDIS_REST_URL') or '').strip()
+            and (os.getenv('UPSTASH_REDIS_REST_TOKEN') or '').strip()
+        )
+    )
+    temporarily_disabled = (os.getenv('REDIS_TEMPORARILY_DISABLED') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+    status = 'configured' if redis_configured else ('disabled_temporary' if temporarily_disabled else 'missing')
+    warning = (
+        'Redis disabled temporarily; in-memory rate limiting is not horizontally scalable'
+        if temporarily_disabled and not redis_configured
+        else None
+    )
+    return {
+        'redis_configured': redis_configured,
+        'redis_status': status,
+        'rate_limit_backend': 'redis' if redis_configured else 'memory',
+        'rate_limit_enterprise_ready': redis_configured,
+        'enterprise_ready': redis_configured,
+        'warning': warning,
+    }
+
 def _load_json(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
@@ -693,9 +720,14 @@ def build_final_readiness(
         and mode in ('staging', 'production')
     )
 
+    rate_limit_readiness = _rate_limit_readiness(staging_proof)
+    if rate_limit_readiness.get('warning'):
+        warnings.append(str(rate_limit_readiness['warning']))
+
     enterprise_procurement_ready = (
         broad_paid_saas_ready
         and categories.get('enterprise_readiness', {}).get('status') == 'pass'
+        and bool(rate_limit_readiness.get('rate_limit_enterprise_ready'))
     )
 
     production_100_percent_ready = (
@@ -703,6 +735,7 @@ def build_final_readiness(
         and live_ok
         and staging_ok
         and not blockers
+        and bool(rate_limit_readiness.get('rate_limit_enterprise_ready'))
     )
 
     # safe_to_sell_broadly_today: only staging/production strict with all gates
@@ -751,6 +784,12 @@ def build_final_readiness(
         'controlled_pilot_ready': controlled_pilot_ready,
         'broad_paid_saas_ready': broad_paid_saas_ready,
         'enterprise_procurement_ready': enterprise_procurement_ready,
+        'redis_configured': bool(rate_limit_readiness.get('redis_configured')),
+        'redis_status': rate_limit_readiness.get('redis_status', 'missing'),
+        'rate_limit_backend': rate_limit_readiness.get('rate_limit_backend', 'memory'),
+        'rate_limit_enterprise_ready': bool(rate_limit_readiness.get('rate_limit_enterprise_ready')),
+        'enterprise_ready': enterprise_procurement_ready,
+        'warning': rate_limit_readiness.get('warning'),
         'production_100_percent_ready': production_100_percent_ready,
         'categories': categories,
         'required_gates': required_gates,
@@ -801,6 +840,8 @@ def main(mode: str = 'local', strict: bool = False) -> int:
     print(f'[validate-100-percent-readiness] controlled_pilot_ready={pilot}')
     print(f'[validate-100-percent-readiness] broad_paid_saas_ready={broad}')
     print(f'[validate-100-percent-readiness] production_100_percent_ready={prod}')
+    print(f"[validate-100-percent-readiness] redis_status={summary.get('redis_status', 'unknown')}")
+    print(f"[validate-100-percent-readiness] enterprise_ready={summary.get('enterprise_ready', False)}")
     print(f'[validate-100-percent-readiness] safe_to_sell_broadly_today={safe}')
 
     if summary['blockers']:

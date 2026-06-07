@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 
 import { usePilotAuth } from 'app/pilot-auth-context';
-import { BillingRuntime, billingDisabledMessage, billingEnabled } from './billing-capability';
+import { BillingRuntime, billingDisabledMessage, billingEnabled, billingProviderLabel } from './billing-capability';
 
 type TabKey = 'general' | 'team' | 'security' | 'billing' | 'notifications';
 
@@ -608,7 +608,7 @@ export default function SettingsPageClient() {
             {/* Self-serve launch gate: billing and workspace readiness block broad access until all checks pass */}
             <SectionCard title="Billing Readiness">
               <FieldRow label="Billing Enabled" value={<StatusPill status={billingAvailable ? 'Enabled' : 'Not Configured'} />} />
-              <FieldRow label="Payment Provider" value={<span style={{ color: '#8b949e' }}>{billingRuntime.provider && billingRuntime.provider !== 'none' ? billingRuntime.provider : 'Not configured'}</span>} />
+              <FieldRow label="Payment Provider" value={<span style={{ color: '#8b949e' }}>{billingProviderLabel(billingRuntime)}</span>} />
               <FieldRow label="Customer ID" value={<span style={{ color: '#8b949e' }}>{subscription?.customer_id ? maskId(subscription.customer_id) : 'Not configured'}</span>} note="Masked for security" />
               <FieldRow label="Subscription Status" value={<StatusPill status={billingAvailable ? billingStatusDisplay : 'Not Configured'} />} />
               <FieldRow label="Invoice Status" value={<StatusPill status={subscription?.invoice_status ? String(subscription.invoice_status) : 'Not Configured'} />} />

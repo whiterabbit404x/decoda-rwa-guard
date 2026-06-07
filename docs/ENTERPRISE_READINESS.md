@@ -139,13 +139,15 @@ API_BASE_URL
 
 ### Billing (required for broad paid launch)
 ```
-BILLING_PROVIDER=stripe|paddle
-STRIPE_SECRET_KEY=sk_live_...
-STRIPE_WEBHOOK_SECRET=whsec_...
-STRIPE_PRICE_ID=price_...
-# or for Paddle:
+BILLING_PROVIDER=paddle
+PADDLE_ENVIRONMENT=production
 PADDLE_API_KEY=...
 PADDLE_WEBHOOK_SECRET=...
+PADDLE_PRICE_ID=pri_...
+# Stripe is an alternative only when BILLING_PROVIDER=stripe:
+# STRIPE_SECRET_KEY=sk_live_...
+# STRIPE_WEBHOOK_SECRET=whsec_...
+# STRIPE_PRICE_ID=price_...
 ```
 
 ### Email (required for broad paid launch)
@@ -174,7 +176,7 @@ LIVE_PROVIDER_PROOF_PRESENT=true
 Before marking `safe_to_sell_broadly_today=true`, complete all of the following:
 
 - [ ] Deploy to a real staging environment with live credentials
-- [ ] Confirm `BILLING_PROVIDER`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and `STRIPE_PRICE_ID` are set with live (not test) values
+- [ ] Confirm the selected billing provider has its provider-specific credentials, webhook secret, price ID, and environment configured (Paddle does not require Stripe variables)
 - [ ] Confirm `EMAIL_PROVIDER` and corresponding API key are set with live values
 - [ ] Confirm `EVM_RPC_URL` points to a live (non-placeholder) RPC endpoint
 - [ ] Confirm `LIVE_PROVIDER_PROOF_PRESENT=true`

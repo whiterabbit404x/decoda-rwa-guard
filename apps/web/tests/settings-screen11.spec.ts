@@ -143,3 +143,11 @@ test('empty/not-configured states exist for all five tabs', () => {
   // Not Configured pills appear throughout
   expect(settings).toContain('status="Not Configured"');
 });
+
+test('billing readiness labels Paddle honestly from runtime configuration', () => {
+  expect(settings).toContain('billingProviderLabel(billingRuntime)');
+  const capability = read('app/billing-capability.ts');
+  expect(capability).toContain("provider === 'paddle'");
+  expect(capability).toContain("'Paddle configured'");
+  expect(capability).toContain("'Paddle not configured'");
+});

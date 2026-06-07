@@ -48,6 +48,7 @@ def test_paddle_webhook_post_route_exists(monkeypatch: pytest.MonkeyPatch):
 # 3. Missing signature rejected → 400 (tested via verify function directly)
 def test_paddle_webhook_missing_signature_rejected(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_ENVIRONMENT', 'sandbox')
     monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_123')
     monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_secret')
     monkeypatch.setenv('PADDLE_PRICE_ID_PRO', 'pri_123')
@@ -63,6 +64,7 @@ def test_paddle_webhook_missing_signature_rejected(monkeypatch: pytest.MonkeyPat
 # 4. Invalid signature rejected → 400
 def test_paddle_webhook_invalid_signature_rejected(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_ENVIRONMENT', 'sandbox')
     monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_123')
     monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'correct_secret')
     monkeypatch.setenv('PADDLE_PRICE_ID_PRO', 'pri_123')
@@ -79,10 +81,11 @@ def test_paddle_webhook_invalid_signature_rejected(monkeypatch: pytest.MonkeyPat
 # 5. Proof accepts Paddle instead of Stripe — all required vars present
 def test_proof_accepts_paddle_billing_provider(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
-    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_testkey_xyz')
-    monkeypatch.setenv('PADDLE_CLIENT_TOKEN', 'pdl_client_testkey_xyz')
+    monkeypatch.setenv('PADDLE_ENVIRONMENT', 'sandbox')
+    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_validkey_xyz')
+    monkeypatch.setenv('PADDLE_CLIENT_TOKEN', 'pdl_client_validkey_xyz')
     monkeypatch.setenv('PADDLE_PRICE_ID', 'pri_prod_monthly_xyz')
-    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_whsec_testkey_xyz')
+    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_whsec_validkey_xyz')
     monkeypatch.setenv('PADDLE_ENVIRONMENT', 'production')
 
     result = check_billing_readiness()
@@ -98,10 +101,11 @@ def test_proof_accepts_paddle_billing_provider(monkeypatch: pytest.MonkeyPatch):
 # 6. Proof blocks when Stripe vars absent but Paddle vars present (no cross-contamination)
 def test_paddle_proof_does_not_require_stripe_vars(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
-    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_testkey_xyz')
-    monkeypatch.setenv('PADDLE_CLIENT_TOKEN', 'pdl_client_testkey_xyz')
+    monkeypatch.setenv('PADDLE_ENVIRONMENT', 'sandbox')
+    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_validkey_xyz')
+    monkeypatch.setenv('PADDLE_CLIENT_TOKEN', 'pdl_client_validkey_xyz')
     monkeypatch.setenv('PADDLE_PRICE_ID', 'pri_prod_monthly_xyz')
-    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_whsec_testkey_xyz')
+    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_whsec_validkey_xyz')
     monkeypatch.setenv('PADDLE_ENVIRONMENT', 'production')
     monkeypatch.delenv('STRIPE_SECRET_KEY', raising=False)
     monkeypatch.delenv('STRIPE_WEBHOOK_SECRET', raising=False)

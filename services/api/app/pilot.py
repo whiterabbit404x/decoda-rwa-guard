@@ -38,6 +38,7 @@ from services.api.app.db_failure import (
 from services.api.app.secret_crypto import decrypt_secret, encrypt_secret, read_encrypted_env, validate_encryption_bootstrap
 from services.api.app.export_storage import load_export_storage
 from services.api.app.production_readiness import build_production_readiness
+from services.api.app.paid_launch_readiness import check_billing_readiness
 
 _SAFE_IDENTIFIER_RE = re.compile(r'^[a-z][a-z0-9_]{0,62}$')
 
@@ -782,7 +783,9 @@ def validate_runtime_configuration() -> dict[str, Any]:
         upstash_url = os.getenv('UPSTASH_REDIS_REST_URL', '').strip()
         upstash_token = os.getenv('UPSTASH_REDIS_REST_TOKEN', '').strip()
         distributed_rate_limiter_configured = bool(redis_url or (upstash_url and upstash_token))
-        allow_memory_override = env_flag('ALLOW_IN_MEMORY_RATE_LIMIT_IN_PRODUCTION')
+        redis_temporarily_disabled = env_flag('REDIS_TEMPORARILY_DISABLED')
+        legacy_memory_override = env_flag('ALLOW_IN_MEMORY_RATE_LIMIT_IN_PRODUCTION')
+        allow_memory_override = redis_temporarily_disabled or legacy_memory_override
         if distributed_rate_limiter_configured:
             _record_check(
                 'distributed_rate_limiter',
@@ -790,6 +793,8 @@ def validate_runtime_configuration() -> dict[str, Any]:
                 required=True,
                 detail='Redis/Upstash distributed rate limiter is configured. Multi-process rate limiting is active.',
             )
+            checks['redis_configured'] = True
+            checks['redis_status'] = 'configured'
             checks['rate_limit_backend'] = 'redis'
             checks['rate_limit_enterprise_ready'] = True
         elif allow_memory_override:
@@ -797,9 +802,17 @@ def validate_runtime_configuration() -> dict[str, Any]:
                 'distributed_rate_limiter',
                 False,
                 required=False,
-                detail='ALLOW_IN_MEMORY_RATE_LIMIT_IN_PRODUCTION=true: In-memory per-process rate limiter active. Not enterprise-safe in horizontally scaled deployments.',
+                detail=(
+                    'Redis disabled temporarily; in-memory rate limiting is not horizontally scalable'
+                    if redis_temporarily_disabled
+                    else 'Legacy in-memory production override active; in-memory rate limiting is not horizontally scalable'
+                ),
                 severity='warning',
             )
+            if redis_temporarily_disabled:
+                warnings.append('Redis disabled temporarily; in-memory rate limiting is not horizontally scalable')
+            checks['redis_configured'] = False
+            checks['redis_status'] = 'disabled_temporary' if redis_temporarily_disabled else 'legacy_override'
             checks['rate_limit_backend'] = 'memory'
             checks['rate_limit_enterprise_ready'] = False
         else:
@@ -807,8 +820,10 @@ def validate_runtime_configuration() -> dict[str, Any]:
                 'distributed_rate_limiter',
                 False,
                 required=True,
-                detail='REDIS_URL is required for production rate limiting. Per-process in-memory fallback is not safe in horizontally scaled production. Set REDIS_URL or UPSTASH_REDIS_REST_URL+TOKEN, or set ALLOW_IN_MEMORY_RATE_LIMIT_IN_PRODUCTION=true to override (enterprise_ready will be false).',
+                detail='REDIS_URL is required for production rate limiting. Per-process in-memory fallback is not safe in horizontally scaled production. Set REDIS_URL or UPSTASH_REDIS_REST_URL+TOKEN, or explicitly set REDIS_TEMPORARILY_DISABLED=true for temporary degraded single-instance use (enterprise_ready will be false).',
             )
+            checks['redis_configured'] = False
+            checks['redis_status'] = 'missing'
             checks['rate_limit_backend'] = 'memory'
             checks['rate_limit_enterprise_ready'] = False
 
@@ -8077,49 +8092,51 @@ def _detect_token_standard(rpc_url: str, token_address: str) -> str:
 
 
 def billing_provider() -> str:
-    value = os.getenv('BILLING_PROVIDER', 'paddle').strip().lower()
-    if value in {'none', 'stripe', 'paddle'}:
-        return value
-    return 'paddle'
+    return os.getenv('BILLING_PROVIDER', '').strip().lower()
 
 
 def billing_runtime_status() -> dict[str, Any]:
     provider = billing_provider()
     strict_billing = env_flag('STRICT_PRODUCTION_BILLING')
-    if provider == 'none':
+    readiness = check_billing_readiness()
+    if provider == 'none' or not provider:
         return {
-            'provider': 'none',
+            'provider': provider or 'none',
             'status': 'not_configured',
             'available': False,
-            'checks': {'provider_selected': True, 'credentials_present': False},
-            'message': 'Billing is not configured yet because BILLING_PROVIDER=none.',
+            'checks': {'provider_selected': bool(provider), 'credentials_present': False},
+            'message': readiness['billing_reason'],
             'strict_required': strict_billing,
         }
-    if provider == 'paddle':
-        paddle_config = paddle_runtime_config()
-        status_value = 'healthy' if paddle_config['configured'] else 'degraded'
-        message = 'Paddle configuration looks healthy.' if paddle_config['configured'] else 'Paddle billing is unavailable because required PADDLE_* variables are missing.'
+    if provider not in {'paddle', 'stripe'}:
         return {
             'provider': provider,
-            'status': status_value,
-            'available': paddle_config['configured'],
-            'checks': {
-                'paddle_api_key_present': paddle_config['api_key_present'],
-                'paddle_webhook_secret_present': paddle_config['webhook_secret_present'],
-                'paddle_price_ids_configured': paddle_config['price_ids_configured'],
-            },
-            'message': message,
+            'status': 'misconfigured',
+            'available': False,
+            'checks': {'provider_supported': False},
+            'message': readiness['billing_reason'],
             'strict_required': strict_billing,
         }
-    stripe_key = bool(os.getenv('STRIPE_SECRET_KEY', '').strip())
-    stripe_hook = bool(os.getenv('STRIPE_WEBHOOK_SECRET', '').strip())
-    available = stripe_key and stripe_hook
+
+    available = bool(readiness['billing_ready'] and readiness['billing_webhook_ready'])
+    checks = {
+        'provider_supported': True,
+        'billing_configuration_ready': bool(readiness['billing_ready']),
+        'webhook_ready': bool(readiness['billing_webhook_ready']),
+        'missing_env': list(readiness['billing_missing_env']),
+    }
+    if provider == 'paddle':
+        checks['paddle_environment_valid'] = (os.getenv('PADDLE_ENVIRONMENT') or '').strip().lower() in {'sandbox', 'production'}
     return {
         'provider': provider,
         'status': 'healthy' if available else 'degraded',
         'available': available,
-        'checks': {'stripe_secret_key_present': stripe_key, 'stripe_webhook_secret_present': stripe_hook},
-        'message': 'Stripe configuration looks healthy.' if available else 'Stripe billing is unavailable because STRIPE_SECRET_KEY or STRIPE_WEBHOOK_SECRET is missing.',
+        'checks': checks,
+        'message': (
+            f'{provider.title()} configuration looks healthy.'
+            if available
+            else readiness['billing_reason']
+        ),
         'strict_required': strict_billing,
     }
 
@@ -8154,16 +8171,19 @@ def ensure_billing_available(*, operation: str, expected_provider: str | None = 
 
 
 def paddle_runtime_config() -> dict[str, Any]:
-    api_key_present = bool(os.getenv('PADDLE_API_KEY', '').strip())
-    webhook_secret_present = bool(os.getenv('PADDLE_WEBHOOK_SECRET', '').strip())
-    environment = os.getenv('PADDLE_ENVIRONMENT', 'sandbox').strip().lower()
-    price_id_names = [key for key, _ in os.environ.items() if key.startswith('PADDLE_PRICE_ID_')]
+    readiness = check_billing_readiness()
+    environment = (os.getenv('PADDLE_ENVIRONMENT') or '').strip().lower()
+    price_id_names = [
+        key for key, value in os.environ.items()
+        if key.startswith('PADDLE_PRICE_ID_') and value.strip()
+    ]
     return {
-        'api_key_present': api_key_present,
-        'webhook_secret_present': webhook_secret_present,
-        'environment': environment if environment in {'sandbox', 'live'} else 'sandbox',
-        'price_ids_configured': bool(price_id_names),
-        'configured': api_key_present and webhook_secret_present and bool(price_id_names),
+        'api_key_present': bool(os.getenv('PADDLE_API_KEY', '').strip()),
+        'webhook_secret_present': bool(os.getenv('PADDLE_WEBHOOK_SECRET', '').strip()),
+        'environment': environment,
+        'environment_valid': environment in {'sandbox', 'production'},
+        'price_ids_configured': bool(os.getenv('PADDLE_PRICE_ID', '').strip()) or bool(price_id_names),
+        'configured': bool(readiness['billing_ready'] and readiness['billing_webhook_ready']),
         'client_token_present': bool(os.getenv('PADDLE_CLIENT_TOKEN', '').strip()),
     }
 
