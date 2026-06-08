@@ -27,6 +27,9 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
+from services.api.app.domains import alert_stream
+from services.api.app.domains.rate_limit import rate_limit_connectivity
+
 from services.api.app.pilot import (
     accept_workspace_invitation,
     auth_token_secret_configured,
@@ -601,82 +604,8 @@ CORS_ALLOWED_HEADERS = [
 ]
 
 # ---------------------------------------------------------------------------
-# SSE connection registry (in-memory, per-instance)
+# Redis Streams alert transport (workspace-scoped, bounded, multi-replica)
 # ---------------------------------------------------------------------------
-_SSE_CONNECTIONS: dict[str, list[asyncio.Queue]] = {}  # workspace_id -> queues
-
-# ---------------------------------------------------------------------------
-# Redis pub/sub for SSE fanout (optional; falls back to in-memory)
-# ---------------------------------------------------------------------------
-try:
-    import redis.asyncio as aioredis  # type: ignore[import]
-    _REDIS_AVAILABLE = True
-except ImportError:
-    _REDIS_AVAILABLE = False
-
-_redis_client: Any = None
-_redis_pubsub_connected: bool = False
-_REDIS_SSE_CHANNEL_PREFIX = 'workspace:'
-_REDIS_SSE_CHANNEL_ALERTS_SUFFIX = ':alerts'
-_REDIS_SSE_CHANNEL_ACTIONS_SUFFIX = ':response-actions'
-
-
-def _redis_url() -> str | None:
-    return os.getenv('REDIS_URL', '').strip() or None
-
-
-def _sse_redis_channel(workspace_id: str, suffix: str = _REDIS_SSE_CHANNEL_ALERTS_SUFFIX) -> str:
-    """Returns workspace-scoped Redis channel name. Never uses a global channel."""
-    return f'{_REDIS_SSE_CHANNEL_PREFIX}{workspace_id}{suffix}'
-
-
-async def _get_redis() -> Any:
-    """Return a Redis client, or None if Redis is unavailable."""
-    global _redis_client, _redis_pubsub_connected
-    if not _REDIS_AVAILABLE:
-        return None
-    url = _redis_url()
-    if not url:
-        return None
-    if _redis_client is None:
-        try:
-            _redis_client = aioredis.from_url(url, decode_responses=False, socket_connect_timeout=2)
-            await _redis_client.ping()
-            _redis_pubsub_connected = True
-        except Exception:
-            _redis_client = None
-            _redis_pubsub_connected = False
-    return _redis_client
-
-
-async def _publish_to_redis(workspace_id: str, alert_data: dict) -> bool:
-    """Publish to Redis workspace channel. Returns True if published."""
-    try:
-        client = await _get_redis()
-        if client is None:
-            return False
-        channel = _sse_redis_channel(workspace_id)
-        payload = json.dumps(alert_data, separators=(',', ':'))
-        await client.publish(channel, payload)
-        return True
-    except Exception:
-        return False
-
-
-async def _subscribe_workspace_redis(workspace_id: str, queue: asyncio.Queue) -> Any | None:
-    """Subscribe to workspace Redis channel. Returns pubsub handle or None."""
-    try:
-        client = await _get_redis()
-        if client is None:
-            return None
-        channel = _sse_redis_channel(workspace_id)
-        pubsub = client.pubsub()
-        await pubsub.subscribe(channel)
-        return pubsub
-    except Exception:
-        return None
-
-
 # ---------------------------------------------------------------------------
 # Prometheus-style in-memory counters (no external library required)
 # ---------------------------------------------------------------------------
@@ -688,42 +617,21 @@ _SSE_EVENTS_PUBLISHED: int = 0
 _SSE_EVENTS_DELIVERED: int = 0
 
 
-def publish_alert_to_workspace(workspace_id: str, alert_data: dict) -> None:
-    """
-    Publish alert to all SSE queues for a workspace (in-memory fanout).
-
-    When Redis is configured, callers should use publish_alert_to_workspace_async
-    so the event is also forwarded to other API instances via pub/sub.
-    This synchronous version handles the local instance only.
-    """
+def publish_alert_to_workspace(workspace_id: str, alert_data: dict[str, Any]) -> None:
+    """Persist an alert to the bounded workspace Redis Stream."""
     global _ALERTS_PUBLISHED_COUNT, _SSE_EVENTS_PUBLISHED
-    queues = _SSE_CONNECTIONS.get(workspace_id)
-    if not queues:
+    try:
+        alert_stream.publish(workspace_id, alert_data)
+    except Exception:
+        logger.exception('alert_stream_publish_failed', extra={'workspace_id': workspace_id})
         return
     _ALERTS_PUBLISHED_COUNT += 1
     _SSE_EVENTS_PUBLISHED += 1
-    for q in list(queues):
-        try:
-            q.put_nowait(alert_data)
-            global _SSE_EVENTS_DELIVERED
-            _SSE_EVENTS_DELIVERED += 1
-        except asyncio.QueueFull:
-            pass
 
 
-async def publish_alert_to_workspace_async(workspace_id: str, alert_data: dict) -> None:
-    """
-    Publish alert via Redis pub/sub (cross-instance) with in-memory fallback.
-
-    - When Redis is configured: publishes to workspace-scoped channel so all
-      API instances receive the event and forward it to their local SSE clients.
-    - When Redis is unavailable: falls back to local in-memory fanout and marks
-      the stream mode as degraded (not horizontally scalable).
-    """
-    published_redis = await _publish_to_redis(workspace_id, alert_data)
-    if not published_redis:
-        # Fallback: local instance only (not horizontally scalable)
-        publish_alert_to_workspace(workspace_id, alert_data)
+async def publish_alert_to_workspace_async(workspace_id: str, alert_data: dict[str, Any]) -> None:
+    """Compatibility wrapper around the Redis Streams publisher."""
+    await asyncio.to_thread(publish_alert_to_workspace, workspace_id, alert_data)
 
 
 def database_url() -> str | None:
@@ -1895,6 +1803,13 @@ async def api_key_enforcement_middleware(request: Request, call_next):
             {'detail': 'X-API-Key required', 'code': 'API_KEY_MISSING'},
             status_code=401,
         )
+    try:
+        enforce_auth_rate_limit(request, 'api_key', api_key_header)
+    except HTTPException as exc:
+        return JSONResponse(
+            {'detail': exc.detail, 'code': 'RATE_LIMIT_BACKEND_UNAVAILABLE' if exc.status_code == 503 else 'RATE_LIMITED'},
+            status_code=exc.status_code,
+        )
     # Query DB for matching key by prefix
     secret_prefix = api_key_header[:12]
     from services.api.app.pilot import _hash_workspace_api_key_secret as _hash_key
@@ -2096,6 +2011,11 @@ def health() -> dict[str, object]:
         'database_url_configured': resolved_database_url() is not None,
         'database_backend': runtime_environment_identity()['database_backend'],
         'redis_enabled': os.getenv('REDIS_ENABLED', 'false').lower() == 'true',
+        'shared_backends': {
+            'rate_limit': rate_limit_connectivity(),
+            'alert_stream': alert_stream.connectivity_sync(),
+        },
+        'alert_subscribers': alert_stream.subscriber_health(),
         'risk_engine_url': RISK_ENGINE_URL,
         'threat_engine_url': THREAT_ENGINE_URL,
         'compliance_service_url': COMPLIANCE_SERVICE_URL,
@@ -2148,6 +2068,11 @@ def health_readiness() -> dict[str, Any]:
 
     rate_limit_backend = checks.get('rate_limit_backend', 'redis' if checks.get('distributed_rate_limiter', {}).get('ok') else 'memory')
     rate_limit_enterprise_ready = checks.get('rate_limit_enterprise_ready', checks.get('distributed_rate_limiter', {}).get('ok', False))
+    rate_limit_health = rate_limit_connectivity()
+    alert_stream_health = alert_stream.connectivity_sync()
+    shared_backends_ready = bool(rate_limit_health.get('connected') and alert_stream_health.get('connected'))
+    if is_production_like and not shared_backends_ready:
+        status_value = 'not_ready'
     return {
         'status': status_value,
         'service': SERVICE_NAME,
@@ -2158,12 +2083,13 @@ def health_readiness() -> dict[str, Any]:
         'redis_status': checks.get('redis_status', 'configured' if rate_limit_backend == 'redis' else 'not_configured'),
         'rate_limit_backend': rate_limit_backend,
         'rate_limit_enterprise_ready': bool(rate_limit_enterprise_ready),
-        'enterprise_ready': bool(rate_limit_enterprise_ready) and not errors,
-        'warning': (
-            'Redis disabled temporarily; in-memory rate limiting is not horizontally scalable'
-            if checks.get('redis_status') == 'disabled_temporary'
-            else None
-        ),
+        'enterprise_ready': bool(rate_limit_enterprise_ready) and shared_backends_ready and not errors,
+        'shared_backends': {
+            'rate_limit': rate_limit_health,
+            'alert_stream': alert_stream_health,
+        },
+        'alert_subscribers': alert_stream.subscriber_health(),
+        'warning': None,
         'errors': errors,
         'warnings': warnings,
         'checks': checks,
@@ -2183,6 +2109,8 @@ def health_diagnostics() -> dict[str, Any]:
         'production_live_mode_drift': readiness['production_live_mode_drift'],
         'checked_at': readiness['checked_at'],
         'checks': readiness['checks'],
+        'shared_backends': readiness['shared_backends'],
+        'alert_subscribers': readiness['alert_subscribers'],
         'billing': readiness['billing'],
     }
 
@@ -4232,7 +4160,15 @@ def exports_download(export_id: str, request: Request) -> Response:
 
 @app.get('/metrics', include_in_schema=False)
 def metrics() -> Response:
-    return Response(prometheus_metrics(), media_type='text/plain; version=0.0.4')
+    subscriber_snapshot = alert_stream.subscriber_health()
+    supplemental = [
+        f'decoda_stream_connections_active {_SSE_CONNECTION_COUNT}',
+        f'decoda_auth_failures_total {_AUTH_FAILURE_COUNT}',
+        f'decoda_alerts_published_total {_ALERTS_PUBLISHED_COUNT}',
+        f"decoda_alert_stream_subscribers_connected {subscriber_snapshot['connected_subscribers']}",
+        f"decoda_alert_stream_reconnects_total {subscriber_snapshot['reconnects_total']}",
+    ]
+    return Response(prometheus_metrics() + '\n'.join(supplemental) + '\n', media_type='text/plain; version=0.0.4')
 
 
 @app.get('/integrations/notifications', summary='List workspace notification destinations and policies')
@@ -5753,75 +5689,33 @@ class CanonicalRiskResponse(TypedDict):
 # ---------------------------------------------------------------------------
 # Task 1: SSE streaming endpoint
 # ---------------------------------------------------------------------------
-async def _sse_redis_forwarder(workspace_id: str, pubsub: Any) -> None:
-    """Background task: forward Redis pub/sub messages to local SSE queues."""
-    try:
-        async for message in pubsub.listen():
-            if message and message.get('type') == 'message':
-                raw = message.get('data', b'')
-                try:
-                    data = json.loads(raw if isinstance(raw, str) else raw.decode())
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    continue
-                # Deliver to all local SSE queues for this workspace
-                for q in list(_SSE_CONNECTIONS.get(workspace_id, [])):
-                    try:
-                        q.put_nowait(data)
-                        global _SSE_EVENTS_DELIVERED
-                        _SSE_EVENTS_DELIVERED += 1
-                    except asyncio.QueueFull:
-                        pass
-    except asyncio.CancelledError:
-        pass
-    except Exception:
-        pass
-    finally:
-        with suppress(Exception):
-            await pubsub.unsubscribe()
-            await pubsub.aclose()
-
-
-async def _sse_heartbeat_generator(workspace_id: str, queue: asyncio.Queue, request: Request):
-    """
-    Yield SSE events; heartbeat every 30s, exit on client disconnect.
-
-    When Redis is configured, a background forwarder subscribes to the
-    workspace-scoped channel and puts cross-instance messages into local queues.
-    When Redis is unavailable, falls back to in-memory fanout (single-instance only).
-    """
-    global _SSE_CONNECTION_COUNT
-    _SSE_CONNECTIONS.setdefault(workspace_id, []).append(queue)
+async def _sse_heartbeat_generator(
+    workspace_id: str, last_event_id: str, request: Request
+):
+    """Yield resumable Redis Stream events and heartbeats."""
+    global _SSE_CONNECTION_COUNT, _SSE_EVENTS_DELIVERED
     _SSE_CONNECTION_COUNT += 1
-
-    # Attempt Redis subscription for cross-instance fanout
-    redis_pubsub = await _subscribe_workspace_redis(workspace_id, queue)
-    redis_task: asyncio.Task | None = None
-    if redis_pubsub is not None:
-        redis_task = asyncio.create_task(_sse_redis_forwarder(workspace_id, redis_pubsub))
-
+    iterator = alert_stream.subscribe(workspace_id, last_event_id=last_event_id).__aiter__()
     try:
         while True:
             try:
-                data = await asyncio.wait_for(queue.get(), timeout=30.0)
-                payload = json.dumps(data, separators=(',', ':'))
-                yield f'data: {payload}\n\n'
-            except asyncio.TimeoutError:
+                event_id, data = await iterator.__anext__()
+            except StopAsyncIteration:
+                break
+            if event_id is None or data is None:
                 yield ': heartbeat\n\n'
+            else:
+                payload = json.dumps(data, separators=(',', ':'))
+                _SSE_EVENTS_DELIVERED += 1
+                yield f'id: {event_id}\ndata: {payload}\n\n'
             if await request.is_disconnected():
                 break
     except asyncio.CancelledError:
         pass
     finally:
-        queues = _SSE_CONNECTIONS.get(workspace_id, [])
-        if queue in queues:
-            queues.remove(queue)
-        if not queues and workspace_id in _SSE_CONNECTIONS:
-            del _SSE_CONNECTIONS[workspace_id]
         _SSE_CONNECTION_COUNT = max(0, _SSE_CONNECTION_COUNT - 1)
-        if redis_task is not None:
-            redis_task.cancel()
-            with suppress(Exception):
-                await redis_task
+        with suppress(Exception):
+            await iterator.aclose()
 
 
 @app.get('/stream/alerts', summary='SSE stream of real-time alerts for a workspace')
@@ -5831,65 +5725,30 @@ async def stream_alerts(request: Request):
         user = authenticate_request(request)
     except HTTPException as exc:
         return JSONResponse({'detail': exc.detail, 'code': 'UNAUTHENTICATED'}, status_code=401)
-    workspace_id = request.headers.get('x-workspace-id', '').strip()
-    if not workspace_id:
-        # Fall back to user's current workspace
-        workspace_id = str(user.get('current_workspace_id') or user.get('id') or 'default')
-    queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+    requested_workspace_id = request.headers.get('x-workspace-id', '').strip()
+    try:
+        with pg_connection() as connection:
+            ensure_pilot_schema(connection)
+            workspace_context = resolve_workspace(connection, str(user['id']), requested_workspace_id)
+        workspace_id = str(workspace_context['workspace_id'])
+    except HTTPException as exc:
+        return JSONResponse({'detail': exc.detail, 'code': 'WORKSPACE_ACCESS_DENIED'}, status_code=exc.status_code)
+    backend = await alert_stream.connectivity()
+    if not backend['connected']:
+        return JSONResponse(
+            {'detail': 'Shared alert stream backend unavailable', 'code': 'ALERT_STREAM_UNAVAILABLE'},
+            status_code=503,
+        )
+    last_event_id = request.headers.get('last-event-id', '').strip() or '$'
     headers: dict[str, str] = {'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
     trace_id = getattr(request.state, 'trace_id', None)
     if trace_id:
         headers['X-Trace-ID'] = trace_id
     return StreamingResponse(
-        _sse_heartbeat_generator(workspace_id, queue, request),
+        _sse_heartbeat_generator(workspace_id, last_event_id, request),
         media_type='text/event-stream',
         headers=headers,
     )
-
-
-# ---------------------------------------------------------------------------
-# Task 5: /metrics endpoint (raw Prometheus text format)
-# ---------------------------------------------------------------------------
-@app.get('/metrics', summary='Prometheus-format metrics scrape endpoint', include_in_schema=False)
-def metrics_endpoint() -> Response:
-    lines: list[str] = []
-    # HTTP request totals
-    lines.append('# HELP decoda_http_requests_total Total HTTP requests by method, path, and status')
-    lines.append('# TYPE decoda_http_requests_total counter')
-    for key, count in _REQUEST_METRICS.items():
-        parts = key.split(':', 2)
-        if len(parts) == 3:
-            method, path_val, status_code = parts
-        else:
-            method, path_val, status_code = key, 'unknown', 'unknown'
-        path_val = path_val.replace('"', '\\"')
-        lines.append(f'decoda_http_requests_total{{method="{method}",path="{path_val}",status="{status_code}"}} {count}')
-    # Active SSE connections gauge
-    lines.append('# HELP decoda_stream_connections_active Current active SSE stream connections')
-    lines.append('# TYPE decoda_stream_connections_active gauge')
-    lines.append(f'decoda_stream_connections_active {_SSE_CONNECTION_COUNT}')
-    # Auth failures counter
-    lines.append('# HELP decoda_auth_failures_total Total authentication failures')
-    lines.append('# TYPE decoda_auth_failures_total counter')
-    lines.append(f'decoda_auth_failures_total {_AUTH_FAILURE_COUNT}')
-    # Alerts published counter
-    lines.append('# HELP decoda_alerts_published_total Total alerts published to SSE connections')
-    lines.append('# TYPE decoda_alerts_published_total counter')
-    lines.append(f'decoda_alerts_published_total {_ALERTS_PUBLISHED_COUNT}')
-    # Redis pub/sub connected gauge
-    lines.append('# HELP decoda_redis_pubsub_connected Whether Redis pub/sub is currently connected (1=yes, 0=no)')
-    lines.append('# TYPE decoda_redis_pubsub_connected gauge')
-    lines.append(f'decoda_redis_pubsub_connected {1 if _redis_pubsub_connected else 0}')
-    # SSE events published counter
-    lines.append('# HELP decoda_sse_events_published_total Total SSE events published (local + Redis)')
-    lines.append('# TYPE decoda_sse_events_published_total counter')
-    lines.append(f'decoda_sse_events_published_total {_SSE_EVENTS_PUBLISHED}')
-    # SSE events delivered counter
-    lines.append('# HELP decoda_sse_events_delivered_total Total SSE events delivered to client queues')
-    lines.append('# TYPE decoda_sse_events_delivered_total counter')
-    lines.append(f'decoda_sse_events_delivered_total {_SSE_EVENTS_DELIVERED}')
-    body = '\n'.join(lines) + '\n'
-    return Response(content=body, media_type='text/plain; version=0.0.4; charset=utf-8')
 
 
 # ---------------------------------------------------------------------------

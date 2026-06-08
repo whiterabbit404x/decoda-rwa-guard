@@ -26,8 +26,8 @@ def _reset_limiter(pilot, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pilot, '_redis_rate_limiter', None)
 
 
-def test_production_without_redis_uses_memory_fallback(monkeypatch, caplog) -> None:
-    """enforce_auth_rate_limit still falls back to memory at runtime (fails open) when Redis unavailable."""
+def test_production_without_redis_fails_closed(monkeypatch) -> None:
+    """Production auth limiting rejects requests when no shared backend exists."""
     from services.api.app import pilot
 
     monkeypatch.setenv('APP_ENV', 'production')
@@ -36,13 +36,12 @@ def test_production_without_redis_uses_memory_fallback(monkeypatch, caplog) -> N
     monkeypatch.delenv('UPSTASH_REDIS_REST_TOKEN', raising=False)
     _reset_limiter(pilot, monkeypatch)
 
-    with caplog.at_level('WARNING'):
+    with pytest.raises(HTTPException) as exc_info:
         pilot.enforce_auth_rate_limit(_make_request(), 'signin', 'team@example.com')
+    assert exc_info.value.status_code == 503
 
-    assert 'Rate limiter fallback active: Redis unavailable.' in caplog.text
 
-
-def test_production_redis_connection_failure_uses_memory_fallback(monkeypatch) -> None:
+def test_production_redis_connection_failure_fails_closed(monkeypatch) -> None:
     from services.api.app import pilot
     from services.api.app.domains import rate_limit as _rl
 
@@ -57,7 +56,9 @@ def test_production_redis_connection_failure_uses_memory_fallback(monkeypatch) -
     _reset_limiter(pilot, monkeypatch)
     monkeypatch.setattr(_rl, '_redis_rate_limiter', _BrokenRedis())
 
-    pilot.enforce_auth_rate_limit(_make_request(), 'signin', 'team@example.com')
+    with pytest.raises(HTTPException) as exc_info:
+        pilot.enforce_auth_rate_limit(_make_request(), 'signin', 'team@example.com')
+    assert exc_info.value.status_code == 503
 
 
 def test_production_with_redis_url_set_uses_redis(monkeypatch) -> None:
@@ -142,8 +143,8 @@ def test_production_with_redis_passes_config_validation(monkeypatch) -> None:
     assert validation['checks'].get('rate_limit_enterprise_ready') is True
 
 
-def test_production_with_temporary_redis_disable_starts_but_not_enterprise_ready(monkeypatch) -> None:
-    """With REDIS_TEMPORARILY_DISABLED=true, startup is not blocked but enterprise_ready is false."""
+def test_production_memory_override_is_rejected(monkeypatch) -> None:
+    """Break-glass memory flags cannot make a production deployment ready."""
     from services.api.app import pilot
 
     monkeypatch.setenv('APP_ENV', 'production')
@@ -154,18 +155,28 @@ def test_production_with_temporary_redis_disable_starts_but_not_enterprise_ready
 
     validation = pilot.validate_runtime_configuration()
 
-    # Not a blocking error — override is set
-    assert validation['checks']['distributed_rate_limiter']['required'] is False
+    assert validation['checks']['distributed_rate_limiter']['required'] is True
     assert validation['checks']['distributed_rate_limiter']['ok'] is False
-    # But enterprise_ready is false
     assert validation['checks'].get('rate_limit_enterprise_ready') is False
     assert validation['checks'].get('rate_limit_backend') == 'memory'
-    assert validation['checks'].get('redis_configured') is False
-    assert validation['checks'].get('redis_status') == 'disabled_temporary'
-    assert any('not horizontally scalable' in warning for warning in validation['warnings'])
-    # Should appear in warnings, not errors
-    assert not any('REDIS_URL' in error for error in validation['errors'])
+    assert validation['checks'].get('redis_status') == 'memory_rejected'
+    assert any('Memory-backed production rate limiting is rejected' in error for error in validation['errors'])
 
+
+
+def test_production_upstash_only_rejects_missing_alert_stream_redis(monkeypatch) -> None:
+    from services.api.app import pilot
+
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.delenv('REDIS_URL', raising=False)
+    monkeypatch.setenv('UPSTASH_REDIS_REST_URL', 'https://example.upstash.io')
+    monkeypatch.setenv('UPSTASH_REDIS_REST_TOKEN', 'token')
+
+    validation = pilot.validate_runtime_configuration()
+
+    assert validation['checks']['distributed_rate_limiter']['ok'] is True
+    assert validation['checks']['shared_alert_stream']['ok'] is False
+    assert any('Redis Streams alert delivery' in error or 'alert streaming' in error for error in validation['errors'])
 
 def test_local_test_memory_limiter_still_works(monkeypatch) -> None:
     """In local/test mode, missing Redis is fine — in-memory limiter is expected."""
@@ -185,8 +196,7 @@ def test_local_test_memory_limiter_still_works(monkeypatch) -> None:
     assert not any('REDIS_URL' in error for error in validation['errors'])
 
 
-def test_multi_process_warning_appears_without_redis(monkeypatch, caplog) -> None:
-    """Without Redis, a warning is emitted about unsafe in-process rate limiting."""
+def test_production_rate_limit_failure_is_503(monkeypatch) -> None:
     from services.api.app import pilot
 
     monkeypatch.setenv('APP_ENV', 'production')
@@ -195,32 +205,35 @@ def test_multi_process_warning_appears_without_redis(monkeypatch, caplog) -> Non
     monkeypatch.delenv('UPSTASH_REDIS_REST_TOKEN', raising=False)
     _reset_limiter(pilot, monkeypatch)
 
-    with caplog.at_level('WARNING'):
+    with pytest.raises(HTTPException) as exc_info:
         pilot.enforce_auth_rate_limit(_make_request(), 'signin', 'user@example.com')
+    assert exc_info.value.status_code == 503
 
-    assert any('fallback' in record.message.lower() or 'redis' in record.message.lower() for record in caplog.records)
 
-
-def test_health_readiness_reports_degraded_for_temporary_redis_disable(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_health_readiness_reports_not_ready_for_memory_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     from services.api.app import main as api_main
+
+    monkeypatch.setenv('APP_ENV', 'production')
 
     monkeypatch.setattr(api_main, 'validate_runtime_configuration', lambda: {
         'errors': [],
-        'warnings': ['Redis disabled temporarily; in-memory rate limiting is not horizontally scalable'],
+        'warnings': [],
         'checks': {
             'redis_configured': False,
-            'redis_status': 'disabled_temporary',
+            'redis_status': 'memory_rejected',
             'rate_limit_backend': 'memory',
             'rate_limit_enterprise_ready': False,
         },
     })
     monkeypatch.setattr(api_main, 'billing_runtime_status', lambda: {'provider': 'paddle', 'available': True})
+    monkeypatch.setattr(api_main, 'rate_limit_connectivity', lambda: {'connected': False, 'status': 'not_configured'})
+    monkeypatch.setattr(api_main.alert_stream, 'connectivity_sync', lambda: {'connected': False, 'status': 'not_configured'})
 
     payload = api_main.health_readiness()
 
-    assert payload['status'] == 'degraded'
+    assert payload['status'] == 'not_ready'
     assert payload['redis_configured'] is False
     assert payload['rate_limit_backend'] == 'memory'
     assert payload['rate_limit_enterprise_ready'] is False
     assert payload['enterprise_ready'] is False
-    assert payload['warning'] == 'Redis disabled temporarily; in-memory rate limiting is not horizontally scalable'
+    assert payload['warning'] is None

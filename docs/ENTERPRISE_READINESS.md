@@ -1,6 +1,6 @@
 # Enterprise Readiness
 
-Last updated: **2026-05-22**
+Last updated: **2026-06-08**
 
 This document describes the current enterprise readiness posture of **Decoda RWA Guard**.
 
@@ -26,11 +26,20 @@ This document describes the current enterprise readiness posture of **Decoda RWA
 - Secrets are never included in proof artifacts or admin readiness endpoints (only boolean presence flags and env var names are returned).
 - Secret scanning is performed on all proof artifacts by `scripts/validate_release_proof.py`.
 
+### Shared Rate Limiting and Alert Delivery
+- Production and staging authentication limits use Redis or Upstash counters shared by every API replica. API-key requests use the same distributed limiter and keying rules as interactive authentication.
+- A missing or unreachable shared rate-limit backend fails closed with HTTP `503`; it never falls back to a per-process counter in a production-like runtime. `REDIS_TEMPORARILY_DISABLED` and `ALLOW_IN_MEMORY_RATE_LIMIT_IN_PRODUCTION` are rejected by production-readiness validation rather than accepted as degraded enterprise paths.
+- `GET /stream/alerts` is backed by bounded, workspace-scoped Redis Streams (`decoda:workspace:<workspace_id>:alerts`) rather than an API-process queue registry. `ALERT_STREAM_MAX_LENGTH` controls retained entries and defaults to 1,000.
+- SSE event IDs are Redis Stream IDs. Clients reconnect with `Last-Event-ID`; the API resumes after that ID, while a new connection starts at `$` and receives newly appended alerts. Subscribers reconnect with bounded exponential backoff after transient Redis errors.
+- `/health`, `/health/readiness`, and `/health/diagnostics` expose safe connectivity state for the rate-limit and alert-stream backends plus subscriber counts, reconnects, and last-error metadata. `/metrics` exposes connected subscriber and reconnect gauges/counters.
+- Multi-replica stream delivery, reconnect cursor behavior, bounded retention, shared auth/API-key limits, and fail-closed backend outages are covered by `services/api/tests/test_alert_stream_redis.py` and `services/api/tests/test_redis_required_production.py`.
+
 ### Known Security Limitations
 - No formal penetration test has been performed on this codebase.
 - OWASP ASVS compliance has not been formally verified.
 - No WAF, DDoS protection, or advanced threat detection is configured in this repository.
 - TLS termination, network segmentation, and cloud security controls are deployment-environment responsibilities.
+- Redis durability, availability, access control, TLS, eviction policy, and monitoring are deployment-environment responsibilities; production readiness is false while connectivity is unavailable.
 
 ---
 

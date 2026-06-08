@@ -845,9 +845,9 @@ def validate_runtime_configuration() -> dict[str, Any]:
         upstash_url = os.getenv('UPSTASH_REDIS_REST_URL', '').strip()
         upstash_token = os.getenv('UPSTASH_REDIS_REST_TOKEN', '').strip()
         distributed_rate_limiter_configured = bool(redis_url or (upstash_url and upstash_token))
-        redis_temporarily_disabled = env_flag('REDIS_TEMPORARILY_DISABLED')
-        legacy_memory_override = env_flag('ALLOW_IN_MEMORY_RATE_LIMIT_IN_PRODUCTION')
-        allow_memory_override = redis_temporarily_disabled or legacy_memory_override
+        memory_override_requested = env_flag('REDIS_TEMPORARILY_DISABLED') or env_flag(
+            'ALLOW_IN_MEMORY_RATE_LIMIT_IN_PRODUCTION'
+        )
         if distributed_rate_limiter_configured:
             _record_check(
                 'distributed_rate_limiter',
@@ -857,37 +857,33 @@ def validate_runtime_configuration() -> dict[str, Any]:
             )
             checks['redis_configured'] = True
             checks['redis_status'] = 'configured'
-            checks['rate_limit_backend'] = 'redis'
+            checks['rate_limit_backend'] = 'redis' if redis_url else 'upstash'
             checks['rate_limit_enterprise_ready'] = True
-        elif allow_memory_override:
-            _record_check(
-                'distributed_rate_limiter',
-                False,
-                required=False,
-                detail=(
-                    'Redis disabled temporarily; in-memory rate limiting is not horizontally scalable'
-                    if redis_temporarily_disabled
-                    else 'Legacy in-memory production override active; in-memory rate limiting is not horizontally scalable'
-                ),
-                severity='warning',
-            )
-            if redis_temporarily_disabled:
-                warnings.append('Redis disabled temporarily; in-memory rate limiting is not horizontally scalable')
-            checks['redis_configured'] = False
-            checks['redis_status'] = 'disabled_temporary' if redis_temporarily_disabled else 'legacy_override'
-            checks['rate_limit_backend'] = 'memory'
-            checks['rate_limit_enterprise_ready'] = False
         else:
-            _record_check(
-                'distributed_rate_limiter',
-                False,
-                required=True,
-                detail='REDIS_URL is required for production rate limiting. Per-process in-memory fallback is not safe in horizontally scaled production. Set REDIS_URL or UPSTASH_REDIS_REST_URL+TOKEN, or explicitly set REDIS_TEMPORARILY_DISABLED=true for temporary degraded single-instance use (enterprise_ready will be false).',
+            detail = (
+                'Memory-backed production rate limiting is rejected. Remove the memory override and configure '
+                'REDIS_URL or UPSTASH_REDIS_REST_URL+UPSTASH_REDIS_REST_TOKEN.'
+                if memory_override_requested
+                else 'REDIS_URL or UPSTASH_REDIS_REST_URL+UPSTASH_REDIS_REST_TOKEN is required for '
+                'production rate limiting. Per-process memory limiting is not a deployment path.'
             )
+            _record_check('distributed_rate_limiter', False, required=True, detail=detail)
             checks['redis_configured'] = False
-            checks['redis_status'] = 'missing'
+            checks['redis_status'] = 'memory_rejected' if memory_override_requested else 'missing'
             checks['rate_limit_backend'] = 'memory'
             checks['rate_limit_enterprise_ready'] = False
+
+        _record_check(
+            'shared_alert_stream',
+            bool(redis_url),
+            required=True,
+            detail=(
+                'REDIS_URL is configured for workspace-scoped Redis Streams alert delivery.'
+                if redis_url
+                else 'REDIS_URL is required for bounded, resumable, multi-replica alert streaming.'
+            ),
+        )
+        checks['alert_stream_backend'] = 'redis_streams' if redis_url else 'unavailable'
 
         billing_status = billing_runtime_status()
         strict_billing = env_flag('STRICT_PRODUCTION_BILLING')
