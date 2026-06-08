@@ -4,36 +4,14 @@ runBuildEnvironmentValidation(process.env);
 
 const isProd = process.env.NODE_ENV === 'production' || process.env.APP_MODE === 'production';
 
-// Content-Security-Policy for Next.js
-// unsafe-inline in script-src/style-src: required for Next.js runtime-injected inline
-//   scripts and styles. A nonce-based approach requires custom Next.js middleware and
-//   is deferred to a future hardening pass.
-// unsafe-eval in script-src: required ONLY in development for hot-reload (HMR) and
-//   webpack dev-server. Production Next.js builds do NOT use eval(); it is excluded
-//   from the production CSP.
-const scriptSrcDev  = "'self' 'unsafe-inline' 'unsafe-eval'";
-const scriptSrcProd = "'self' 'unsafe-inline'";
-
-const CSP = [
-  "default-src 'self'",
-  `script-src ${isProd ? scriptSrcProd : scriptSrcDev}`,
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob: https:",
-  "font-src 'self'",
-  "connect-src 'self' https://*.paddle.com https://*.stripe.com wss: ws:",
-  "frame-src 'self' https://js.stripe.com https://hooks.stripe.com https://checkout.paddle.com https://buy.paddle.com",
-  "frame-ancestors 'none'",
-  "base-uri 'self'",
-  "form-action 'self'",
-].join('; ');
-
+// Per-request Content-Security-Policy headers are generated in proxy.ts so
+// Next.js can apply a unique nonce to framework and application scripts.
 const securityHeaders = [
   { key: 'X-Content-Type-Options', value: 'nosniff' },
   // X-Frame-Options is kept for defense-in-depth alongside CSP frame-ancestors 'none'.
   { key: 'X-Frame-Options', value: 'DENY' },
   { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
   { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
-  { key: 'Content-Security-Policy', value: CSP },
 ];
 
 if (isProd) {
