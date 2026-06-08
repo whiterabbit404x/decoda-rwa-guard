@@ -15,8 +15,8 @@ Config env vars:
   REDIS_URL                              — primary Redis backend
   UPSTASH_REDIS_REST_URL                 — Upstash HTTP Redis
   UPSTASH_REDIS_REST_TOKEN               — Upstash token
-  REDIS_TEMPORARILY_DISABLED              — explicit temporary degraded mode; enterprise_ready=false
-  ALLOW_IN_MEMORY_RATE_LIMIT_IN_PRODUCTION — legacy break-glass alias; enterprise_ready=false
+  REDIS_TEMPORARILY_DISABLED              — rejected in production-like runtimes
+  ALLOW_IN_MEMORY_RATE_LIMIT_IN_PRODUCTION — rejected legacy alias
 """
 from __future__ import annotations
 
@@ -159,12 +159,16 @@ def enforce_auth_rate_limit(request: Request, action: str, identifier: str | Non
     """
     Guard an auth endpoint against brute force.
 
-    Uses Redis (or Upstash) when configured.  Falls back to per-process in-memory
-    tracking when distributed backend is unavailable; emits a warning in that case.
+    Uses Redis (or Upstash) when configured. Production-like runtimes fail closed
+    when the shared backend is missing or unavailable; local/test may use memory.
     """
     client_host = request.client.host if request.client else 'unknown'
     subject = _rate_limit_subject(identifier)
     key = f'pilot:rate:{action}:{client_host}:{subject}'
+
+    production_like = os.getenv('APP_ENV', os.getenv('APP_MODE', 'development')).strip().lower() in {
+        'production', 'prod', 'staging'
+    }
 
     try:
         attempts = _distributed_rate_limit_attempts(key)
@@ -175,10 +179,20 @@ def enforce_auth_rate_limit(request: Request, action: str, identifier: str | Non
                     detail='Too many authentication attempts. Please retry shortly.',
                 )
             return
+        if production_like:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail='Shared rate-limit backend unavailable.',
+            )
         _emit_rate_limit_fallback_warning('not configured')
     except HTTPException:
         raise
     except Exception as exc:
+        if production_like:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail='Shared rate-limit backend unavailable.',
+            ) from exc
         condensed_error = str(exc).strip().splitlines()[0] if str(exc).strip() else 'unknown_error'
         _emit_rate_limit_fallback_warning(condensed_error)
 
@@ -201,3 +215,32 @@ def rate_limit_enterprise_ready() -> bool:
         return True
     # Memory-only is not enterprise-ready in any mode
     return False
+
+
+def rate_limit_connectivity() -> dict[str, Any]:
+    """Probe the configured shared limiter without exposing connection details."""
+    backend = rate_limit_backend_name()
+    if backend == 'memory':
+        return {'backend': backend, 'configured': False, 'connected': False, 'status': 'not_configured'}
+    try:
+        if backend == 'redis':
+            global _redis_rate_limiter
+            with _redis_rate_limiter_lock:
+                if _redis_rate_limiter is None:
+                    redis_module = importlib.import_module('redis')
+                    _redis_rate_limiter = redis_module.Redis.from_url(
+                        os.environ['REDIS_URL'], decode_responses=True, socket_connect_timeout=2, socket_timeout=2
+                    )
+            _redis_rate_limiter.ping()
+        else:
+            _upstash_command(
+                os.environ['UPSTASH_REDIS_REST_URL'],
+                os.environ['UPSTASH_REDIS_REST_TOKEN'],
+                ['PING'],
+            )
+        return {'backend': backend, 'configured': True, 'connected': True, 'status': 'healthy'}
+    except Exception as exc:
+        return {
+            'backend': backend, 'configured': True, 'connected': False,
+            'status': 'unavailable', 'error': type(exc).__name__,
+        }

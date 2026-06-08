@@ -131,6 +131,8 @@ def test_health_diagnostics_flags_production_live_mode_drift(api_main, monkeypat
 
 
 def test_health_readiness_reports_healthy_when_production_requirements_are_met(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(api_main, 'rate_limit_connectivity', lambda: {'backend': 'redis', 'configured': True, 'connected': True, 'status': 'healthy'})
+    monkeypatch.setattr(api_main.alert_stream, 'connectivity_sync', lambda: {'configured': True, 'connected': True, 'status': 'healthy'})
     monkeypatch.setenv('APP_ENV', 'production')
     monkeypatch.setenv('APP_MODE', 'production')
     monkeypatch.setenv('MONITORING_INGESTION_MODE', 'demo')
@@ -159,6 +161,8 @@ def test_health_readiness_reports_healthy_when_production_requirements_are_met(a
 
 
 def test_health_readiness_stays_healthy_when_billing_provider_none(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(api_main, 'rate_limit_connectivity', lambda: {'backend': 'redis', 'configured': True, 'connected': True, 'status': 'healthy'})
+    monkeypatch.setattr(api_main.alert_stream, 'connectivity_sync', lambda: {'configured': True, 'connected': True, 'status': 'healthy'})
     monkeypatch.setenv('APP_ENV', 'production')
     monkeypatch.setenv('APP_MODE', 'production')
     monkeypatch.setenv('MONITORING_INGESTION_MODE', 'demo')
