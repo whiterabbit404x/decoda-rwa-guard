@@ -37,21 +37,17 @@ _PROVIDER_ENV_VARS = [
 
 
 def _real_live_chain(telemetry_id: str = 'tel-live-001') -> dict[str, Any]:
-    """Canonical real live-event chain (source_type=rpc_polling, evidence_source=live)."""
-    return {
-        'telemetry_event_id': telemetry_id,
-        'detection_id': 'det-live-001',
-        'alert_id': 'alert-live-001',
-        'incident_id': 'inc-live-001',
-        'response_action_id': 'ra-live-001',
-        'evidence_package_id': 'pkg-live-001',
-        'evidence_source': 'live',
-        'source_type': 'rpc_polling',
-        'observed_at': '2026-05-22T12:00:00+00:00',
-    }
+    """Canonical configured-target detector chain."""
+    fixture = REPO_ROOT / 'services' / 'api' / 'tests' / 'fixtures' / 'live_target_detector_chain.json'
+    chain = json.loads(fixture.read_text())
+    chain['telemetry_event_id'] = telemetry_id
+    chain['persisted_linkage']['telemetry_event_id'] = telemetry_id
+    return chain
+
 
 _ALL_CHAIN_IDS = {
     'telemetry_event_id': 'tel-live-001',
+    'detection_event_id': '44444444-4444-4444-8444-444444444444',
     'detection_id': 'det-live-001',
     'alert_id': 'alert-live-001',
     'incident_id': 'inc-live-001',
@@ -174,6 +170,40 @@ def test_check_live_evidence_accepts_complete_live_artifact(tmp_path: Path) -> N
         'missing': [],
         'contradiction_flags': [],
         'latest_live_telemetry_at': '2026-06-05T00:00:00+00:00',
+        'telemetry_record': {
+            'workspace_id': '11111111-1111-4111-8111-111111111111',
+            'target_id': '22222222-2222-4222-8222-222222222222',
+            'target_identifier': '0x1234567890abcdef1234567890abcdef12345678',
+            'target_configured': True,
+            'source_type': 'rpc_polling',
+            'provider_receipt': {'request_id': 'req-1'},
+            'on_chain_activity': {
+                'matched': True,
+                'transaction_hash': '0xabc',
+                'target_identifier': '0x1234567890abcdef1234567890abcdef12345678',
+            },
+        },
+        'detection_record': {
+            'detection_event_id': '44444444-4444-4444-8444-444444444444',
+            'detection_name': 'large_transfer_threshold_exceeded',
+            'severity': 'high',
+            'detector_result': {'triggered': True, 'status': 'anomaly_detected'},
+        },
+        'evidence_package_record': {
+            'provider_receipt': {'request_id': 'req-1'},
+            'on_chain_activity': {
+                'matched': True,
+                'transaction_hash': '0xabc',
+                'target_identifier': '0x1234567890abcdef1234567890abcdef12345678',
+            },
+            'persisted_linkage': {
+                'persisted': True,
+                'telemetry_event_id': 'tel-live-001',
+                'detection_event_id': '44444444-4444-4444-8444-444444444444',
+                'detection_id': 'det-live-001',
+                'alert_id': 'alert-live-001',
+            },
+        },
     }
     artifact_dir = _write_artifact(tmp_path, lpe)
 

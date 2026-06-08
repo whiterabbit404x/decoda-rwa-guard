@@ -10,6 +10,8 @@ scripts/generate_live_evidence_proof.py, covering all combinations of:
 """
 from __future__ import annotations
 
+import json
+
 import importlib
 import sys
 from pathlib import Path
@@ -61,19 +63,9 @@ _PROVIDER_ENV_VARS = [
 
 
 def _real_live_chain(**overrides) -> dict:
-    """Canonical real live-event chain for the script proof tests."""
-    chain = {
-        'telemetry_event_id': 'tel-live-001',
-        'detection_id': 'det-live-001',
-        'alert_id': 'alert-live-001',
-        'incident_id': 'inc-live-001',
-        'response_action_id': 'ra-live-001',
-        'evidence_package_id': 'pkg-live-001',
-        'evidence_source': 'live',
-        'source_type': 'rpc_polling',
-        'observed_at': '2026-05-22T12:00:00+00:00',
-        'detection_name': 'live_rpc_event_observed',
-    }
+    """Canonical configured-target detector chain for proof tests."""
+    fixture = Path(__file__).parent / 'fixtures' / 'live_target_detector_chain.json'
+    chain = json.loads(fixture.read_text())
     chain.update(overrides)
     return chain
 
@@ -83,12 +75,33 @@ _FULL_CHAIN: dict = {
     'latest_poll_at': '2026-01-01T00:00:30Z',
     'last_telemetry_at': '2026-01-01T00:01:00Z',
     'telemetry_event_id': 'tel-001',
+    'workspace_id': '11111111-1111-4111-8111-111111111111',
+    'target_id': '22222222-2222-4222-8222-222222222222',
+    'target_identifier': '0x1234567890abcdef1234567890abcdef12345678',
+    'target_configured': True,
+    'provider_receipt': {'request_id': 'req-1', 'response_hash': 'sha256:receipt'},
+    'on_chain_activity': {
+        'matched': True,
+        'transaction_hash': '0xabc',
+        'target_identifier': '0x1234567890abcdef1234567890abcdef12345678',
+    },
+    'detection_name': 'large_transfer_threshold_exceeded',
+    'severity': 'high',
+    'detector_result': {'triggered': True, 'status': 'anomaly_detected'},
     'detections_count': 1,
     'detection_telemetry_linked': True,
+    'detection_event_id': 'det-event-001',
     'detection_id': 'det-001',
     'alerts_count': 1,
     'alert_detection_linked': True,
     'alert_id': 'alert-001',
+    'persisted_linkage': {
+        'persisted': True,
+        'telemetry_event_id': 'tel-001',
+        'detection_event_id': 'det-event-001',
+        'detection_id': 'det-001',
+        'alert_id': 'alert-001',
+    },
     'incidents_count': 1,
     'incident_alert_linked': True,
     'incident_id': 'inc-001',
@@ -666,7 +679,8 @@ def test_script_complete_live_chain_mocked_rpc(monkeypatch: pytest.MonkeyPatch) 
     assert chain['telemetry_event_id'] is not None
     assert chain['detection_id'] is not None
     assert chain['alert_id'] is not None
-    assert chain['incident_id'] is not None or chain['response_action_id'] is not None
+    assert chain['incident_id'] is None
+    assert chain['response_action_id'] is None
     assert chain['evidence_package_id'] is not None
 
     # Evidence package must link back through the chain
@@ -712,7 +726,7 @@ def test_script_live_evidence_chain_json_env_var_supplies_real_chain(
 
     lpe = result['live_provider_evidence']
     assert lpe['live_evidence_ready'] is True
-    assert lpe['chain']['telemetry_event_id'] == 'tel-live-001'
+    assert lpe['chain']['telemetry_event_id'] == _real_live_chain()['telemetry_event_id']
 
 
 def test_script_live_evidence_chain_rejects_non_live_source(
@@ -975,10 +989,10 @@ def test_regen_no_rpc_url_gives_unknown_source(monkeypatch: pytest.MonkeyPatch) 
 # Requirement 7b: fail if provider_ready=true but no matching telemetry_event_id
 # ---------------------------------------------------------------------------
 
-def test_regen_successful_rpc_creates_telemetry_event_id(
+def test_regen_successful_rpc_does_not_create_telemetry_event_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Successful RPC must create a telemetry_event_id in the chain."""
+    """RPC health alone cannot manufacture target telemetry or enterprise readiness."""
     _clear_provider_env(monkeypatch)
     monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
     monkeypatch.setenv('EVM_CHAIN_ID', '1')
@@ -989,9 +1003,9 @@ def test_regen_successful_rpc_creates_telemetry_event_id(
     lpe = result['live_provider_evidence']
     assert lpe['provider_ready'] is True
     chain = lpe.get('chain', {})
-    assert chain.get('telemetry_event_id') is not None, (
-        'provider_ready=true must produce a telemetry_event_id'
-    )
+    assert chain.get('telemetry_event_id') is None
+    assert lpe['live_evidence_ready'] is False
+    assert any('no matching live telemetry event' in item.lower() for item in lpe['missing'])
 
 
 def test_regen_chain_id_mismatch_no_telemetry_event(
@@ -1071,7 +1085,7 @@ def test_regen_all_chain_elements_share_run_id(
     monkeypatch.setenv('EVM_CHAIN_ID', '1')
 
     with patch(_REGEN_RPC_PATCH, side_effect=_mock_regen_rpc_success('0x1', '0x181a5c2')):
-        result = regen_proof()
+        result = regen_proof(live_evidence_chain=_real_live_chain())
 
     lpe = result['live_provider_evidence']
     assert lpe['live_evidence_ready'] is True
@@ -1083,6 +1097,8 @@ def test_regen_all_chain_elements_share_run_id(
         'incident_record', 'response_action_record', 'evidence_package_record',
     ):
         record = lpe.get(record_name, {})
+        if not record:
+            continue
         record_run_id = record.get('run_id')
         assert record_run_id == run_id, (
             f'{record_name}.run_id={record_run_id!r} != proof run_id={run_id!r}; '
@@ -1108,7 +1124,7 @@ def test_regen_successful_rpc_produces_live_rpc_source(
     monkeypatch.setenv('EVM_CHAIN_ID', '1')
 
     with patch(_REGEN_RPC_PATCH, side_effect=_mock_regen_rpc_success('0x1', '0x181a5c2')):
-        result = regen_proof()
+        result = regen_proof(live_evidence_chain=_real_live_chain())
 
     lpe = result['live_provider_evidence']
 
@@ -1123,8 +1139,8 @@ def test_regen_successful_rpc_produces_live_rpc_source(
     assert chain['telemetry_event_id'] is not None
     assert chain['detection_id'] is not None
     assert chain['alert_id'] is not None
-    assert chain['incident_id'] is not None
-    assert chain['response_action_id'] is not None
+    assert chain['incident_id'] is None
+    assert chain['response_action_id'] is None
     assert chain['evidence_package_id'] is not None
 
     tel = lpe.get('telemetry_record', {})
@@ -1144,7 +1160,7 @@ def test_regen_includes_run_id_and_github_run_id(
     monkeypatch.setenv('GITHUB_RUN_ID', '9876543210')
 
     with patch(_REGEN_RPC_PATCH, side_effect=_mock_regen_rpc_success('0x1', '0x181a5c2')):
-        result = regen_proof(github_run_id='9876543210')
+        result = regen_proof(github_run_id='9876543210', live_evidence_chain=_real_live_chain())
 
     lpe = result['live_provider_evidence']
     assert lpe.get('run_id') is not None
@@ -1166,7 +1182,7 @@ def test_regen_chain_id_from_rpc_response(
     monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
 
     with patch(_REGEN_RPC_PATCH, side_effect=_mock_regen_rpc_success('0x89', '0x181a5c2')):
-        result = regen_proof()
+        result = regen_proof(live_evidence_chain=_real_live_chain())
 
     lpe = result['live_provider_evidence']
     assert lpe['chain_id_observed'] == '137'  # 0x89 = 137 (Polygon)
@@ -1305,3 +1321,49 @@ def test_validate_proof_fails_when_run_ids_inconsistent(
     assert any('run_id' in e for e in errors), (
         f'Expected run_id mismatch error; got: {errors}'
     )
+
+
+def test_staging_validator_rejects_rpc_health_only(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A healthy RPC/block observation alone must fail enterprise readiness."""
+    from scripts.validate_live_evidence_proof import validate_live_evidence_proof
+
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+    monkeypatch.setenv('EVM_CHAIN_ID', '1')
+    with patch(_REGEN_RPC_PATCH, side_effect=_mock_regen_rpc_success()):
+        proof = regen_proof()
+
+    proof_path = tmp_path / 'rpc-health-only.json'
+    proof_path.write_text(json.dumps(proof))
+    ok, errors = validate_live_evidence_proof(proof_path, require_rpc=True)
+
+    assert ok is False
+    assert proof['live_provider_evidence']['provider_ready'] is True
+    assert proof['live_provider_evidence']['live_evidence_ready'] is False
+    assert any('live_evidence_ready=false' in error for error in errors)
+
+
+def test_staging_validator_accepts_real_target_detector_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A configured-target event with receipt, activity, trigger, and linkage passes."""
+    from scripts.validate_live_evidence_proof import validate_live_evidence_proof
+
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+    monkeypatch.setenv('EVM_CHAIN_ID', '1')
+    with patch(_REGEN_RPC_PATCH, side_effect=_mock_regen_rpc_success()):
+        proof = regen_proof(live_evidence_chain=_real_live_chain())
+
+    proof_path = tmp_path / 'target-detector-proof.json'
+    proof_path.write_text(json.dumps(proof, default=str))
+    ok, errors = validate_live_evidence_proof(proof_path, require_rpc=True)
+
+    assert ok is True, errors
+    assert proof['live_provider_evidence']['live_evidence_ready'] is True
+    assert proof['live_provider_evidence']['chain']['incident_id'] is None
+    assert proof['live_provider_evidence']['chain']['response_action_id'] is None

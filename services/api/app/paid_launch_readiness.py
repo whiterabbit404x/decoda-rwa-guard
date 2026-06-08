@@ -728,15 +728,58 @@ def build_live_evidence_proof(
     ):
         missing.append('alert linked to detection by ID or lineage')
 
-    if incidents_count < 1 and response_actions_count < 1 and not chain_incident_id:
-        missing.append('incident or response_action linked to alert')
-    elif (
+    # Incident/response records are policy outcomes, not proof prerequisites.
+    # Validate their linkage only when an actual detector policy created them.
+    if (
         incidents_count + response_actions_count > 0
         and not incident_linked
         and 'incident_alert_linked' in ce
         and not chain_incident_id
     ):
-        missing.append('incident or response_action linked to alert by ID or lineage')
+        missing.append('policy-created incident or response_action linked to alert by ID or lineage')
+
+    target_identifier = str(ce.get('target_identifier') or '').strip()
+    if not ce.get('workspace_id') or not ce.get('target_id') or not target_identifier:
+        missing.append('configured workspace monitoring target identity')
+    elif ce.get('target_configured') is not True:
+        missing.append('monitoring target is not confirmed configured and enabled')
+
+    provider_receipt = ce.get('provider_receipt') or ce.get('provider_receipt_data')
+    if not isinstance(provider_receipt, dict) or not provider_receipt:
+        missing.append('provider receipt data from target telemetry')
+
+    on_chain_activity = ce.get('on_chain_activity') or {}
+    if (
+        not isinstance(on_chain_activity, dict)
+        or on_chain_activity.get('matched') is not True
+        or not (on_chain_activity.get('transaction_hash') or on_chain_activity.get('tx_hash'))
+        or str(on_chain_activity.get('target_identifier') or '').strip() != target_identifier
+    ):
+        missing.append('matching on-chain activity for configured target')
+
+    detection_name = str(ce.get('detection_name') or ce.get('detection_type') or '').strip().lower()
+    detection_severity = str(ce.get('severity') or ce.get('detection_severity') or '').strip().lower()
+    detector_result = ce.get('detector_result') or {}
+    if (
+        detection_name in {
+            '', 'live_rpc_block_observed', 'live_rpc_event_observed',
+            'live_rpc_telemetry_proof', 'monitoring_proof', 'monitoring_proof_chain',
+        }
+        or detection_severity in ('', 'info', 'informational', 'none')
+        or not isinstance(detector_result, dict)
+        or detector_result.get('triggered') is not True
+    ):
+        missing.append('non-informational detector result triggered by target activity')
+
+    persisted_linkage = ce.get('persisted_linkage') or {}
+    if (
+        not isinstance(persisted_linkage, dict)
+        or persisted_linkage.get('persisted') is not True
+        or str(persisted_linkage.get('telemetry_event_id') or '') != str(chain_telemetry_id or '')
+        or str(persisted_linkage.get('detection_id') or '') != str(chain_detection_id or '')
+        or str(persisted_linkage.get('alert_id') or '') != str(chain_alert_id or '')
+    ):
+        missing.append('persisted telemetry-to-detection-to-alert linkage')
 
     export_capability = str(ce.get('export_capability') or '').strip().lower()
     export_source_label = str(ce.get('export_source_label') or '').strip().lower()

@@ -1,43 +1,15 @@
 #!/usr/bin/env python3
+"""Refresh live provider proof without manufacturing workflow records.
+
+The script verifies current RPC connectivity, then accepts only an existing
+persisted evidence chain from a configured workspace monitoring target. The
+chain must include provider receipt data, matching on-chain activity, a
+non-informational detector trigger, and telemetry-to-detection-to-alert
+linkage. RPC health and block observations remain informational and cannot set
+``live_evidence_ready``. Incident and response-action records are optional and
+are preserved only when actual detector policy created them.
 """
-Regenerate live evidence proof by creating a current-run telemetry event
-directly from a live RPC provider call.
 
-Unlike generate_live_evidence_proof.py (which requires a pre-existing service
-summary with live_evidence_ready=true), this script creates the full evidence
-chain from the current RPC response:
-
-  eth_blockNumber → telemetry_event → detection → alert → incident →
-  response_action → evidence_package
-
-All chain elements share a run_id for correlation:
-  - run_id:            uuid5 from (chain_id, block_number, github_run_id, timestamp window)
-  - github_run_id:     GITHUB_RUN_ID env var (when running in CI)
-  - generated_at:      proof generation timestamp
-  - provider_checked_at: RPC call timestamp
-  - telemetry_event_id: uuid5 from (run_id, "telemetry", block_number, chain_id)
-  - source:            "live_rpc"
-  - chain_id:          actual value from eth_chainId
-  - block_number / latest_block_number: actual value from eth_blockNumber
-
-live_evidence_source is set to:
-  "live_rpc"  — chain successfully created for this run_id
-  "unknown"   — RPC unavailable, failed, or chain derivation failed
-
-Outputs (default):
-  artifacts/live-evidence-proof/latest/summary.json
-  artifacts/live-evidence-proof/latest/live_evidence_chain.json
-
-With --no-secrets-test (or --output-dir):
-  artifacts/live-evidence-proof/no-secrets-test/latest/summary.json
-  (never overwrites the provider-secrets proof path)
-
-Usage:
-  python scripts/regenerate_live_evidence_proof.py
-  python scripts/regenerate_live_evidence_proof.py --strict
-  python scripts/regenerate_live_evidence_proof.py --no-secrets-test
-  python scripts/regenerate_live_evidence_proof.py --output-dir path/to/dir
-"""
 from __future__ import annotations
 
 import argparse
@@ -51,6 +23,12 @@ import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from scripts.generate_live_evidence_proof import (
+    NO_LIVE_EVENT_REASON,
+    _load_live_evidence_chain_from_env,
+    _validated_live_evidence_chain,
+)
 
 _PROOF_NAMESPACE = uuid.UUID('a1b2c3d4-e5f6-4789-abcd-dec0da00aaaa')
 
@@ -184,17 +162,16 @@ def regenerate_live_evidence_proof(
     *,
     rpc_url_override: str | None = None,
     github_run_id: str | None = None,
+    live_evidence_chain: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
-    Create a current-run live evidence proof from a live RPC call.
+    Refresh provider health while preserving a persisted detector proof chain.
 
-    Unlike generate_live_evidence_proof(), this function synthesises the full
-    evidence chain (telemetry → detection → alert → incident → response_action
-    → evidence_package) from the live RPC response.  All chain elements share a
-    content-addressable run_id so they can be correlated.
-
-    Returns a proof dict with live_evidence_source="live_rpc" on success or
-    live_evidence_source="unknown" on any failure.
+    The RPC observation is connectivity evidence only. It never creates IDs,
+    incidents, response actions, detections, or alerts. Readiness is true only
+    when ``live_evidence_chain`` (or the configured chain env input) passes the
+    same target-origin, receipt, on-chain-match, detector, and linkage checks as
+    generate_live_evidence_proof().
     """
     now = datetime.now(timezone.utc).isoformat()
 
@@ -310,36 +287,34 @@ def regenerate_live_evidence_proof(
         }).encode()
     ).hexdigest()[:32]
 
-    tx_hash: str | None = None
-    if block_number_hex:
-        try:
-            block_detail = _rpc_call(
-                effective_rpc, 'eth_getBlockByNumber', [block_number_hex, False]
-            )
-            if 'result' in block_detail and isinstance(block_detail['result'], dict):
-                txs = block_detail['result'].get('transactions') or []
-                if txs and isinstance(txs[0], str) and txs[0].startswith('0x'):
-                    tx_hash = txs[0]
-        except Exception:
-            pass
+    actual_chain = live_evidence_chain
+    if actual_chain is None:
+        actual_chain = _load_live_evidence_chain_from_env()
+    real_chain = _validated_live_evidence_chain(actual_chain)
+    if real_chain is None:
+        return _build_fail_closed(
+            now=now,
+            provider_ready=True,
+            provider_mode='live',
+            provider_health_checked=True,
+            provider_checked_at=check_time,
+            provider_url_masked=provider_url_masked,
+            chain_id_configured=chain_id_configured,
+            chain_id_observed=chain_id_observed,
+            block_number_observed=block_number_observed,
+            missing=[NO_LIVE_EVENT_REASON],
+            contradiction_flags=[],
+        )
 
-    # Build content-addressable run_id from current RPC observation.
-    # Using check_time[:16] (minute-level window) so multiple proof runs in
-    # the same CI minute produce the same IDs, but different minutes differ.
-    run_id = _content_id(
-        'run',
-        chain_id_observed,
-        block_number_observed or '',
-        github_run_id,
-        check_time[:16],
-    )
-
-    telemetry_id = _content_id('telemetry', run_id, chain_id_observed, block_number_observed or '')
-    detection_id = _content_id('detection', run_id, telemetry_id)
-    alert_id = _content_id('alert', run_id, detection_id)
-    incident_id = _content_id('incident', run_id, alert_id)
-    response_action_id = _content_id('response_action', run_id, alert_id)
-    evidence_package_id = _content_id('evidence_package', run_id, alert_id)
+    run_id = str(real_chain.get('run_id') or real_chain.get('monitoring_run_id') or '') or None
+    telemetry_id = str(real_chain['telemetry_event_id'])
+    detection_event_id = str(real_chain['detection_event_id'])
+    detection_id = str(real_chain['detection_id'])
+    alert_id = str(real_chain['alert_id'])
+    incident_id = str(real_chain.get('incident_id') or '') or None
+    response_action_id = str(real_chain.get('response_action_id') or '') or None
+    evidence_package_id = str(real_chain['evidence_package_id'])
+    observed_at = str(real_chain.get('observed_at') or check_time)
 
     return {
         'schema_version': 1,
@@ -359,16 +334,17 @@ def regenerate_live_evidence_proof(
             'live_telemetry_ready': True,
             'live_detection_ready': True,
             'live_alert_ready': True,
-            'live_incident_ready': True,
+            'live_incident_ready': bool(incident_id),
             'evidence_source': 'live',
             'live_evidence_source': 'live_rpc',
-            'latest_live_telemetry_at': check_time,
+            'latest_live_telemetry_at': observed_at,
             'live_evidence_ready': True,
             'run_id': run_id,
             'github_run_id': github_run_id or None,
             'chain': {
                 'run_id': run_id,
                 'telemetry_event_id': telemetry_id,
+                'detection_event_id': detection_event_id,
                 'detection_id': detection_id,
                 'alert_id': alert_id,
                 'incident_id': incident_id,
@@ -377,70 +353,61 @@ def regenerate_live_evidence_proof(
             },
             'telemetry_record': {
                 'run_id': run_id,
-                'github_run_id': github_run_id or None,
                 'telemetry_event_id': telemetry_id,
-                'observed_at': check_time,
+                'observed_at': observed_at,
                 'generated_at': now,
                 'provider_checked_at': check_time,
+                'github_run_id': github_run_id or None,
                 'evidence_source': 'live',
                 'live_evidence_source': 'live_rpc',
-                'provider_mode': 'live',
-                'source_type': 'rpc_polling',
                 'source': 'live_rpc',
+                'source_type': real_chain.get('source_type'),
+                'workspace_id': real_chain.get('workspace_id'),
+                'target_id': real_chain.get('target_id'),
+                'target_identifier': real_chain.get('target_identifier'),
+                'target_configured': True,
+                'provider_receipt': real_chain.get('provider_receipt'),
+                'on_chain_activity': real_chain.get('on_chain_activity'),
                 'chain_id': chain_id_observed,
-                'latest_block_number': block_number_observed,
                 'block_number': block_number_observed,
+                'latest_block_number': block_number_observed,
                 'raw_rpc_response_hash': raw_rpc_response_hash,
-                'transaction_hash': tx_hash,
             },
             'detection_record': {
                 'run_id': run_id,
+                'detection_event_id': detection_event_id,
                 'detection_id': detection_id,
-                'detection_name': 'live_rpc_block_observed',
+                'detection_name': real_chain.get('detection_name'),
                 'telemetry_event_id': telemetry_id,
-                'observed_at': check_time,
-                'evidence_source': 'live',
-                'source_type': 'rpc_polling',
-                'severity': 'informational',
-                'confidence': 'high',
+                'severity': real_chain.get('severity'),
+                'detector_result': real_chain.get('detector_result'),
             },
             'alert_record': {
                 'run_id': run_id,
                 'alert_id': alert_id,
+                'detection_event_id': detection_event_id,
                 'detection_id': detection_id,
-                'observed_at': check_time,
-                'evidence_source': 'live',
             },
-            'incident_record': {
-                'run_id': run_id,
-                'incident_id': incident_id,
-                'alert_id': alert_id,
-                'observed_at': check_time,
-                'evidence_source': 'live',
-            },
-            'response_action_record': {
-                'run_id': run_id,
-                'response_action_id': response_action_id,
-                'alert_id': alert_id,
-                'observed_at': check_time,
-                'evidence_source': 'live',
-            },
+            'incident_record': (
+                {'run_id': run_id, 'incident_id': incident_id, 'alert_id': alert_id}
+                if incident_id else {}
+            ),
+            'response_action_record': (
+                {'run_id': run_id, 'response_action_id': response_action_id, 'alert_id': alert_id}
+                if response_action_id else {}
+            ),
             'evidence_package_record': {
                 'run_id': run_id,
                 'evidence_package_id': evidence_package_id,
                 'telemetry_event_id': telemetry_id,
+                'detection_event_id': detection_event_id,
                 'detection_id': detection_id,
                 'alert_id': alert_id,
                 'incident_id': incident_id,
                 'response_action_id': response_action_id,
-                'evidence_source': 'live',
-                'provider_mode': 'live',
-                'source_type': 'rpc_polling',
-                'provider_url_masked': provider_url_masked,
-                'chain_id': chain_id_observed,
-                'block_number': block_number_observed,
-                'raw_rpc_response_hash': raw_rpc_response_hash,
-                'exported_at': check_time,
+                'provider_receipt': real_chain.get('provider_receipt'),
+                'on_chain_activity': real_chain.get('on_chain_activity'),
+                'persisted_linkage': real_chain.get('persisted_linkage'),
             },
             'missing': [],
             'contradiction_flags': [],
@@ -481,7 +448,12 @@ def main(strict: bool = False, out_dir: Path | None = None) -> int:
             'github_run_id': lpe.get('github_run_id'),
             'generated_at': result.get('generated_at'),
             'provider_checked_at': lpe.get('provider_checked_at'),
+            'workspace_id': (lpe.get('telemetry_record') or {}).get('workspace_id'),
+            'target_id': (lpe.get('telemetry_record') or {}).get('target_id'),
+            'target_identifier': (lpe.get('telemetry_record') or {}).get('target_identifier'),
+            'target_configured': True,
             'telemetry_event_id': chain.get('telemetry_event_id'),
+            'detection_event_id': chain.get('detection_event_id'),
             'detection_id': chain.get('detection_id'),
             'alert_id': chain.get('alert_id'),
             'incident_id': chain.get('incident_id'),
@@ -491,6 +463,12 @@ def main(strict: bool = False, out_dir: Path | None = None) -> int:
             'latest_live_telemetry_at': lpe.get('latest_live_telemetry_at'),
             'chain_id': lpe.get('chain_id_observed'),
             'block_number': lpe.get('block_number_observed'),
+            'detection_name': (lpe.get('detection_record') or {}).get('detection_name'),
+            'severity': (lpe.get('detection_record') or {}).get('severity'),
+            'detector_result': (lpe.get('detection_record') or {}).get('detector_result'),
+            'provider_receipt': (lpe.get('telemetry_record') or {}).get('provider_receipt'),
+            'on_chain_activity': (lpe.get('telemetry_record') or {}).get('on_chain_activity'),
+            'persisted_linkage': (lpe.get('evidence_package_record') or {}).get('persisted_linkage'),
         }
         with open(chain_path, 'w') as f:
             json.dump(chain_data, f, indent=2)

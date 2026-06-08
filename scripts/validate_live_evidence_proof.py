@@ -33,6 +33,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from scripts.generate_live_evidence_proof import _validated_live_evidence_chain
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 _DEFAULT_PROOF_PATH = REPO_ROOT / 'artifacts' / 'live-evidence-proof' / 'latest' / 'summary.json'
@@ -57,6 +59,45 @@ def _rpc_configured() -> bool:
             return True
     return False
 
+
+
+def validate_enterprise_evidence_fields(lpe: dict) -> list[str]:
+    """Return blockers for target-originated, policy-triggered evidence."""
+    chain = lpe.get('chain') or {}
+    telemetry = lpe.get('telemetry_record') or {}
+    detection = lpe.get('detection_record') or {}
+    package = lpe.get('evidence_package_record') or {}
+    activity = telemetry.get('on_chain_activity') or package.get('on_chain_activity')
+    candidate = {
+        'evidence_source': lpe.get('evidence_source'),
+        'source_type': telemetry.get('source_type') or package.get('source_type'),
+        'workspace_id': telemetry.get('workspace_id'),
+        'target_id': telemetry.get('target_id'),
+        'target_identifier': telemetry.get('target_identifier'),
+        'target_configured': telemetry.get('target_configured'),
+        'telemetry_event_id': chain.get('telemetry_event_id'),
+        'detection_event_id': chain.get('detection_event_id') or detection.get('detection_event_id'),
+        'detection_id': chain.get('detection_id'),
+        'alert_id': chain.get('alert_id'),
+        'incident_id': chain.get('incident_id'),
+        'response_action_id': chain.get('response_action_id'),
+        'evidence_package_id': chain.get('evidence_package_id'),
+        'provider_receipt': telemetry.get('provider_receipt') or package.get('provider_receipt'),
+        'on_chain_activity': activity,
+        'transaction_hash': telemetry.get('transaction_hash'),
+        'detection_name': detection.get('detection_name'),
+        'severity': detection.get('severity'),
+        'detector_result': detection.get('detector_result'),
+        'persisted_linkage': package.get('persisted_linkage'),
+    }
+    if _validated_live_evidence_chain(candidate) is None:
+        return [
+            'live_evidence_ready=true without qualifying enterprise evidence: require a '
+            'configured workspace monitoring target, provider receipt data, matching '
+            'on-chain activity, a non-informational detector trigger, and persisted '
+            'telemetry-to-detection-to-alert linkage'
+        ]
+    return []
 
 def validate_live_evidence_proof(
     proof_path: Path | None = None,
@@ -127,6 +168,9 @@ def validate_live_evidence_proof(
         print(f'- run_id={run_id}')
 
     rpc_is_configured = require_rpc if require_rpc is not None else _rpc_configured()
+
+    if le:
+        errors.extend(validate_enterprise_evidence_fields(lpe))
 
     if rpc_is_configured:
         if not pr:
