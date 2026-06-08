@@ -42,6 +42,7 @@ from services.api.app.managed_keys import (
     managed_key_provider,
 )
 from services.api.app.export_storage import load_export_storage
+from services.api.app.evidence_signing import signing_key_status
 from services.api.app.production_readiness import build_production_readiness
 from services.api.app.paid_launch_readiness import check_billing_readiness
 from services.api.app.observability import current_trace_id, increment, gauge, observe, report_error, span, send_external_oncall_alert
@@ -804,16 +805,12 @@ def validate_runtime_configuration() -> dict[str, Any]:
                 detail='AUTH_TOKEN_SECRET is a known weak or default value. Set a strong random secret in production.',
             )
 
-        try:
-            export_signing_secret = load_managed_key('EVIDENCE_SIGNING').material.decode('utf-8')
-        except (RuntimeError, UnicodeDecodeError):
-            export_signing_secret = ''
-        export_secret_weak = export_signing_secret.lower() in _KNOWN_WEAK_SECRETS if export_signing_secret else False
+        evidence_key = signing_key_status()
         _record_check(
             'export_signing_secret',
-            bool(export_signing_secret) and not export_secret_weak and managed_key_provider() != 'env',
+            bool(evidence_key['configured']) and bool(evidence_key['strong']),
             required=True,
-            detail='A strong evidence-signing key must be configured in production.',
+            detail=str(evidence_key.get('error') or 'A strong evidence-signing key must be configured in production.'),
         )
 
         try:

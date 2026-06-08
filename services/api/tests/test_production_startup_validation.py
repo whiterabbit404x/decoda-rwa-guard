@@ -347,3 +347,44 @@ def test_compatibility_mode_exposes_non_blocking_managed_provider_check(monkeypa
     assert payload['checks']['managed_key_provider']['ok'] is False
     assert payload['checks']['managed_key_provider']['required'] is False
     assert all('legacy environment-backed cryptographic keys' not in error for error in payload['errors'])
+
+
+def test_bootstrap_accepts_binary_evidence_signing_key_in_compatibility_mode(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bootstrap must use the same byte-safe signing check as lifespan validation."""
+    import base64
+
+    from services.api.app.managed_keys import clear_managed_key_cache
+
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.setenv('APP_MODE', 'production')
+    monkeypatch.setenv('MANAGED_KEY_PROVIDER', 'env')
+    monkeypatch.setenv('MANAGED_KEY_ENFORCEMENT', 'compatibility')
+    monkeypatch.setenv('LIVE_MODE_ENABLED', 'true')
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://example')
+    monkeypatch.setenv('AUTH_TOKEN_SECRET', 'strong-production-auth-secret')
+    monkeypatch.setenv('SECRET_ENCRYPTION_KEY', 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=')
+    monkeypatch.setenv('EXPORT_SIGNING_SECRET', base64.b64encode(b'\xff' * 32).decode('ascii'))
+    monkeypatch.setenv('EVIDENCE_SIGNING_KEY_ENCODING', 'base64')
+    monkeypatch.setenv('EMAIL_PROVIDER', 'resend')
+    monkeypatch.setenv('EMAIL_FROM', 'ops@decoda.app')
+    monkeypatch.setenv('EMAIL_RESEND_API_KEY', 're_123')
+    monkeypatch.setenv('REDIS_URL', 'redis://localhost:6379/0')
+    monkeypatch.setenv('BILLING_PROVIDER', 'none')
+    monkeypatch.setenv('MONITORING_INGESTION_MODE', 'demo')
+    clear_managed_key_cache()
+
+    monkeypatch.setattr(
+        api_main,
+        'run_startup_migrations_if_enabled',
+        lambda **_kwargs: {'ran': False, 'process_role': 'api', 'reason': 'test'},
+    )
+    monkeypatch.setattr(
+        api_main,
+        'reconcile_monitored_systems_for_enabled_targets',
+        lambda: {'enabled_targets_scanned': 0, 'created_or_updated': 0, 'invalid_targets': []},
+    )
+
+    result = api_main.bootstrap_live_pilot()
+
+    assert result['ran'] is False
+    assert result['monitored_systems_reconcile']['created_or_updated'] == 0

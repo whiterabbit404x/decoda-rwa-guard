@@ -44,22 +44,66 @@ def _get_signing_secret(*, version: str | None = None) -> bytes | None:
         return None
 
 
+_KNOWN_WEAK_SIGNING_SECRETS = {
+    b'changeme',
+    b'local',
+    b'test',
+    b'secret',
+    b'password',
+    b'proofpass123!',
+    b'pdl_whsec_local',
+    b'replace-with-long-random-secret',
+    _DEV_FALLBACK_SECRET.lower(),
+}
+
+
+def signing_key_status() -> dict[str, Any]:
+    """Return non-secret signing-key readiness metadata for startup and health checks."""
+    prod = _is_production_like()
+    provider = managed_key_provider()
+    enforcement = managed_key_enforcement_mode()
+    if prod and provider == 'env' and enforcement == 'strict':
+        return {
+            'configured': False,
+            'strong': False,
+            'provider': provider,
+            'enforcement': enforcement,
+            'error': 'MANAGED_KEY_ENFORCEMENT=strict forbids EXPORT_SIGNING_SECRET environment operation.',
+        }
+    secret = _get_signing_secret()
+    if secret is None:
+        return {
+            'configured': False,
+            'strong': False,
+            'provider': provider,
+            'enforcement': enforcement,
+            'error': 'EXPORT_SIGNING_SECRET or a managed evidence signing key is required in production/staging.',
+        }
+    normalized = secret.strip().lower()
+    weak = normalized in _KNOWN_WEAK_SIGNING_SECRETS
+    return {
+        'configured': True,
+        'strong': not weak,
+        'provider': provider,
+        'enforcement': enforcement,
+        'key_id': _signing_key_id(),
+        'key_version': _signing_key_version(),
+        'error': 'The development dev fallback or a known weak evidence signing key is forbidden in production/staging.' if weak else None,
+    }
+
+
 def signing_available() -> bool:
     """True if a real signing secret is configured."""
     return _get_signing_secret() is not None
 
 
 def validate_signing_secret_at_startup() -> None:
-    """Fail closed unless production/staging signing material is managed and loadable."""
+    """Fail closed on missing/weak keys and on an invalid strict-provider cutover."""
+    key_status = signing_key_status()
     prod = _is_production_like()
-    if prod and managed_key_provider() == 'env' and managed_key_enforcement_mode() == 'strict':
-        raise RuntimeError('MANAGED_KEY_ENFORCEMENT=strict forbids EXPORT_SIGNING_SECRET environment operation.')
-    secret = _get_signing_secret()
-    if prod and secret is None:
-        raise RuntimeError('EXPORT_SIGNING_SECRET or a managed evidence signing key is required in production/staging.')
-    if prod and secret == _DEV_FALLBACK_SECRET:
-        raise RuntimeError('The development evidence signing dev fallback is forbidden in production/staging.')
-    if secret is None:
+    if prod and (not key_status['configured'] or not key_status['strong']):
+        raise RuntimeError(str(key_status['error']))
+    if not key_status['configured']:
         _log.info('evidence_signing_mode=dev_test_key')
     elif using_legacy_environment_keys():
         _log.warning(
@@ -67,7 +111,7 @@ def validate_signing_secret_at_startup() -> None:
             managed_key_enforcement_mode(),
         )
     else:
-        _log.info('evidence_signing_mode=%s key_id=%s', managed_key_provider(), _signing_key_id())
+        _log.info('evidence_signing_mode=%s key_id=%s', managed_key_provider(), key_status['key_id'])
 
 
 def _require_signing_secret() -> tuple[bytes, bool]:
