@@ -34,6 +34,10 @@ jobs:
   structural-fail-closed-validation:
     name: Blocker 3 structural / fail-closed validation (no secrets)
     runs-on: ubuntu-latest
+    env:
+      CI_RUN_ID: ${{ github.run_id }}
+      RELEASE_DEPLOYMENT_ID: staging-${{ github.run_id }}-${{ github.run_attempt }}
+      RELEASE_ENVIRONMENT: staging
     timeout-minutes: 10
 
     steps:
@@ -137,6 +141,10 @@ jobs:
     name: Blocker 3 real live provider proof (uses STAGING_* secrets)
     if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
+    env:
+      CI_RUN_ID: ${{ github.run_id }}
+      RELEASE_DEPLOYMENT_ID: staging-${{ github.run_id }}-${{ github.run_attempt }}
+      RELEASE_ENVIRONMENT: staging
     timeout-minutes: 20
 
     steps:
@@ -213,7 +221,7 @@ jobs:
         run: make run-staging-live-proof
 
       - name: Upload live evidence proof artifacts
-        if: steps.secrets.outputs.present == 'true' && always()
+        if: steps.secrets.outputs.present == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: staging-live-evidence-proof-${{ github.run_id }}

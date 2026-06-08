@@ -13,6 +13,7 @@ Key rules:
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
 import subprocess
 import sys
 from pathlib import Path
@@ -989,3 +990,200 @@ def test_no_regen_launch_proof_flag_preserves_existing_launch_proof() -> None:
         'validate_release_proof.py failed after --no-regen-launch-proof run:\n'
         f'{val.stdout}\n{val.stderr}'
     )
+
+# Release attestation bundle consistency tests.
+def _write_enterprise_release_bundle(tmp_path: Path, now: datetime) -> tuple[Path, Path]:
+    from scripts.generate_release_proof import _compute_sha256
+
+    root = tmp_path
+    release_dir = root / 'artifacts' / 'release-proof' / 'latest'
+    launch_dir = root / 'artifacts' / 'launch-proof' / 'latest'
+    release_dir.mkdir(parents=True)
+    launch_dir.mkdir(parents=True)
+    completed = now.isoformat().replace('+00:00', 'Z')
+    started = (now - timedelta(minutes=5)).isoformat().replace('+00:00', 'Z')
+    identity = {
+        'commit_sha': 'a' * 40,
+        'deployment_id': 'deploy-123',
+        'ci_run_id': 'run-456',
+        'environment': 'staging',
+        'evidence_started_at': started,
+        'evidence_completed_at': completed,
+        'generated_at': completed,
+    }
+    required_gates = {
+        name: {'status': 'pass', 'summary': 'passed'}
+        for name in (
+            'backend_tests', 'saas_workflow_validation', 'readiness_validation',
+            'paid_launch_readiness', 'live_evidence', 'frontend_build',
+        )
+    }
+    gates = {
+        'schema_version': 1, **identity, 'branch': 'main', 'release_channel': 'staging',
+        'overall_status': 'pass', 'broad_paid_launch_ready': True,
+        'required_gates': required_gates, 'blockers': [], 'warnings': [],
+    }
+    release = {
+        'schema_version': 1, **identity, 'branch': 'main', 'release_channel': 'staging',
+        'release_status': 'pass', 'ci_required_gates_ready': True,
+        'launch_proof_ready': True, 'manifest_ready': True, 'test_report_ready': True,
+        'paid_launch_ready': True, 'blockers': [], 'warnings': [], 'evidence_files': [],
+    }
+    launch = {
+        'schema_version': 1, **identity, 'proof_mode': 'staging', 'launch_mode': 'paid_ga',
+        'pilot_ready': True, 'paid_launch_ready': True, 'controlled_pilot_ready': True,
+        'broad_paid_saas_ready': True,
+        'readiness': {key: True for key in (
+            'billing_ready', 'billing_webhook_ready', 'email_ready', 'provider_ready',
+            'live_evidence_ready', 'ci_required_gates_ready',
+        )},
+        'blockers': [], 'warnings': [],
+    }
+    report = {
+        'schema_version': 1, **identity, 'branch': 'main', 'release_channel': 'staging',
+        'test_suites': {'required': {
+            'name': 'required', 'status': 'pass', 'tests_run': 10,
+            'tests_passed': 10, 'tests_failed': 0, 'summary': '10 passed',
+        }},
+        'overall_status': 'pass', 'blockers': [], 'warnings': [],
+    }
+    files = {
+        release_dir / 'summary.json': release,
+        release_dir / 'ci-required-gates.json': gates,
+        release_dir / 'test-report-summary.json': report,
+        launch_dir / 'summary.json': launch,
+    }
+    for path, data in files.items():
+        path.write_text(json.dumps(data))
+    manifest_entries = []
+    for path in files:
+        manifest_entries.append({
+            'path': str(path.relative_to(root)), 'sha256': _compute_sha256(path),
+            'size_bytes': path.stat().st_size, 'required': True, 'status': 'present',
+        })
+    manifest = {
+        'schema_version': 1, **identity, 'branch': 'main', 'release_channel': 'staging',
+        'files': manifest_entries, 'overall_status': 'pass', 'blockers': [], 'warnings': [],
+    }
+    (release_dir / 'manifest.json').write_text(json.dumps(manifest))
+    return release_dir, launch_dir
+
+
+def _refresh_bundle_manifest(release_dir: Path, launch_dir: Path) -> None:
+    from scripts.generate_release_proof import _compute_sha256
+
+    root = release_dir.parents[2]
+    manifest_path = release_dir / 'manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    for entry in manifest['files']:
+        path = root / entry['path']
+        entry['sha256'] = _compute_sha256(path)
+        entry['size_bytes'] = path.stat().st_size
+    manifest_path.write_text(json.dumps(manifest))
+
+
+def test_release_bundle_rejects_stale_evidence(tmp_path: Path) -> None:
+    from datetime import datetime, timedelta, timezone
+    from scripts.validate_release_proof import validate_release_bundle
+
+    now = datetime.now(timezone.utc)
+    release_dir, launch_dir = _write_enterprise_release_bundle(tmp_path, now - timedelta(days=2))
+    ok, issues, _ = validate_release_bundle(release_dir, launch_dir, now=now)
+    assert not ok
+    assert any('stale evidence' in issue for issue in issues)
+
+
+def test_release_bundle_rejects_mismatched_commit_sha(tmp_path: Path) -> None:
+    from datetime import datetime, timezone
+    from scripts.validate_release_proof import validate_release_bundle
+
+    now = datetime.now(timezone.utc)
+    release_dir, launch_dir = _write_enterprise_release_bundle(tmp_path, now)
+    launch_path = launch_dir / 'summary.json'
+    launch = json.loads(launch_path.read_text())
+    launch['commit_sha'] = 'b' * 40
+    launch_path.write_text(json.dumps(launch))
+    _refresh_bundle_manifest(release_dir, launch_dir)
+    ok, issues, _ = validate_release_bundle(release_dir, launch_dir, now=now)
+    assert not ok
+    assert any('commit_sha mismatch' in issue for issue in issues)
+
+
+def test_release_bundle_rejects_failed_test_report(tmp_path: Path) -> None:
+    from datetime import datetime, timezone
+    from scripts.validate_release_proof import validate_release_bundle
+
+    now = datetime.now(timezone.utc)
+    release_dir, launch_dir = _write_enterprise_release_bundle(tmp_path, now)
+    report_path = release_dir / 'test-report-summary.json'
+    report = json.loads(report_path.read_text())
+    report['overall_status'] = 'fail'
+    report['test_suites']['required']['status'] = 'fail'
+    report['test_suites']['required']['tests_failed'] = 1
+    report_path.write_text(json.dumps(report))
+    _refresh_bundle_manifest(release_dir, launch_dir)
+    ok, issues, _ = validate_release_bundle(release_dir, launch_dir, now=now)
+    assert not ok
+    assert any('test-report-summary' in issue for issue in issues)
+
+
+def test_release_bundle_rejects_missing_required_ci_gate(tmp_path: Path) -> None:
+    from datetime import datetime, timezone
+    from scripts.validate_release_proof import validate_release_bundle
+
+    now = datetime.now(timezone.utc)
+    release_dir, launch_dir = _write_enterprise_release_bundle(tmp_path, now)
+    gates_path = release_dir / 'ci-required-gates.json'
+    gates = json.loads(gates_path.read_text())
+    gates['required_gates'].pop('frontend_build')
+    gates_path.write_text(json.dumps(gates))
+    _refresh_bundle_manifest(release_dir, launch_dir)
+    ok, issues, _ = validate_release_bundle(release_dir, launch_dir, now=now)
+    assert not ok
+    assert any('missing required CI gates' in issue for issue in issues)
+
+
+def test_release_bundle_rejects_contradictory_launch_artifacts(tmp_path: Path) -> None:
+    from datetime import datetime, timezone
+    from scripts.validate_release_proof import validate_release_bundle
+
+    now = datetime.now(timezone.utc)
+    release_dir, launch_dir = _write_enterprise_release_bundle(tmp_path, now)
+    gates_path = release_dir / 'ci-required-gates.json'
+    gates = json.loads(gates_path.read_text())
+    gates['broad_paid_launch_ready'] = False
+    gates_path.write_text(json.dumps(gates))
+    _refresh_bundle_manifest(release_dir, launch_dir)
+    ok, issues, _ = validate_release_bundle(release_dir, launch_dir, now=now)
+    assert not ok
+    assert any('broad readiness contradicts' in issue for issue in issues)
+
+
+def test_ci_release_attestation_runs_only_after_required_jobs_pass() -> None:
+    workflow = (REPO_ROOT / '.github/workflows/ci-release-gates.yml').read_text()
+    final_job = workflow.split('  final-readiness-gate:', 1)[1]
+    assert 'needs: [paid-launch-readiness-gates, required-gates]' in final_job
+    assert "needs.paid-launch-readiness-gates.result == 'success'" in final_job
+    assert "needs.required-gates.result == 'success'" in final_job
+    generation = final_job.split('- name: Generate local fail-closed launch proof and release proof', 1)[1]
+    generation = generation.split('- name: Validate release proof', 1)[0]
+    assert 'if: always()' not in generation
+    assert 'RELEASE_DEPLOYMENT_ID:' in generation
+    assert 'RELEASE_ENVIRONMENT: ci' in generation
+
+
+def test_staging_attestations_are_not_uploaded_after_failed_steps() -> None:
+    for workflow_name in (
+        'staging-live-evidence-proof.yml',
+        'staging-production-proof.yml',
+        'save-proof-to-repo.yml',
+    ):
+        workflow = (REPO_ROOT / '.github/workflows' / workflow_name).read_text()
+        assert 'RELEASE_DEPLOYMENT_ID:' in workflow
+        assert 'RELEASE_ENVIRONMENT: staging' in workflow
+    live_workflow = (REPO_ROOT / '.github/workflows/staging-live-evidence-proof.yml').read_text()
+    assert "steps.secrets.outputs.present == 'true' && always()" not in live_workflow
+    save_workflow = (REPO_ROOT / '.github/workflows/save-proof-to-repo.yml').read_text()
+    generation = save_workflow.split('- name: Generate release proof', 1)[1]
+    generation = generation.split('- name: Validate release proof', 1)[0]
+    assert 'if: always()' not in generation

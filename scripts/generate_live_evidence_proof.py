@@ -70,6 +70,8 @@ _PROOF_NAMESPACE = uuid.UUID('a1b2c3d4-e5f6-4789-abcd-dec0da00aaaa')
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from scripts.release_proof_context import build_attestation_context
+
 # Canonical service live evidence summary path (patchable in tests).
 _SERVICE_LIVE_SUMMARY_PATH = (
     REPO_ROOT / 'services' / 'api' / 'artifacts' / 'live_evidence' / 'latest' / 'summary.json'
@@ -565,6 +567,7 @@ def generate_live_evidence_proof(
     return {
         'schema_version': 1,
         'generated_at': now,
+        **build_attestation_context(REPO_ROOT, os.getenv('RELEASE_ENVIRONMENT', 'staging')),
         'live_provider_evidence': {
             'provider_ready': True,
             'provider_mode': 'live',
@@ -677,6 +680,7 @@ def _build_fail_result(
     return {
         'schema_version': 1,
         'generated_at': now,
+        **build_attestation_context(REPO_ROOT, os.getenv('RELEASE_ENVIRONMENT', 'staging')),
         'live_provider_evidence': {
             'provider_ready': provider_ready,
             'provider_mode': provider_mode,
@@ -758,6 +762,7 @@ def _build_proof_from_service_summary(service_summary: dict[str, Any], now: str)
     return {
         'schema_version': 1,
         'generated_at': now,
+        **build_attestation_context(REPO_ROOT, os.getenv('RELEASE_ENVIRONMENT', 'staging')),
         'live_provider_evidence': {
             'provider_ready': True,
             'provider_mode': 'live',

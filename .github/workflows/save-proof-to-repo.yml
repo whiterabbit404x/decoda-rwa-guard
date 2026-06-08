@@ -42,6 +42,9 @@ jobs:
     environment: staging
 
     env:
+      CI_RUN_ID: ${{ github.run_id }}
+      RELEASE_DEPLOYMENT_ID: staging-${{ github.run_id }}-${{ github.run_attempt }}
+      RELEASE_ENVIRONMENT: staging
       STAGING_API_URL: ${{ secrets.STAGING_API_URL }}
       STAGING_APP_URL: ${{ secrets.STAGING_APP_URL }}
       STAGING_BASE_URL: ${{ secrets.STAGING_BASE_URL }}
@@ -437,9 +440,8 @@ jobs:
       # ── Pre-G: Export gate outcomes as env vars ───────────────────────────────
       # Translates step outcome ("success"/"failure") into FRONTEND_BUILD_STATUS
       # and READINESS_VALIDATION_STATUS env vars consumed by generate_release_proof.py.
-      # Runs with `if: always()` so it executes even when the above steps fail.
+      # Runs only after both required gates pass; failed jobs never produce an attestation.
       - name: Export gate outcomes to GITHUB_ENV
-        if: always()
         run: |
           if [ "${{ steps.frontend_build.outcome }}" = "success" ]; then
             echo "FRONTEND_BUILD_STATUS=pass" >> "$GITHUB_ENV"
@@ -466,7 +468,6 @@ jobs:
       # FRONTEND_BUILD_STATUS and READINESS_VALIDATION_STATUS (set above) are read
       # by generate_release_proof.py so ci-required-gates.json records real results.
       - name: Generate release proof
-        if: always()
         run: python scripts/generate_release_proof.py --mode staging --no-regen-launch-proof
 
       # ── Step K: Validate release proof ───────────────────────────────────────

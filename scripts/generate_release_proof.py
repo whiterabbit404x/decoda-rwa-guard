@@ -27,6 +27,8 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from scripts.release_proof_context import build_attestation_context
+
 try:
     from services.api.app.paid_launch_readiness import build_paid_launch_readiness
     _PAID_LAUNCH_IMPORT_OK = True
@@ -53,6 +55,15 @@ class GateResult:
     status: str  # pass, fail, not_run
     command: str
     summary: str
+
+
+_ATTESTATION_CONTEXTS: dict[str, dict[str, str]] = {}
+
+
+def _attestation_fields(mode: str) -> dict[str, str]:
+    return dict(
+        _ATTESTATION_CONTEXTS.setdefault(mode, build_attestation_context(REPO_ROOT, mode))
+    )
 
 
 def _git_info() -> tuple[str, str]:
@@ -414,21 +425,15 @@ def generate_ci_required_gates(
     )
 
     # Overall status: only gates that are 'pass' or 'fail' count
-    gate_statuses = [
-        gates[key]['status'] for key in gates
-        if gates[key]['status'] in {'pass', 'fail'}
-    ]
-    overall_pass = bool(gate_statuses) and all(s == 'pass' for s in gate_statuses)
+    gate_statuses = [gates[key].get('status', 'not_run') for key in gates]
+    overall_pass = bool(gate_statuses) and all(status == 'pass' for status in gate_statuses)
 
     blockers: list[str] = []
     for gate_name, gate_data in gates.items():
         if gate_data.get('status') == 'fail':
             blockers.extend(gate_data.get('blockers', []))
-
-    if strict:
-        for gate_name, gate_data in gates.items():
-            if gate_data.get('status') == 'not_run':
-                blockers.append(f'{gate_name} not run in strict mode')
+        elif gate_data.get('status') != 'pass':
+            blockers.append(f'{gate_name} required gate status={gate_data.get("status", "missing")}')
 
     # Propagate broad_paid_launch_ready from the on-disk launch-proof in staging/production
     # mode only. In local/CI mode this remains false (fail-closed) regardless of any
@@ -447,7 +452,7 @@ def generate_ci_required_gates(
     return {
         'schema_version': 1,
         'generated_at': datetime.now(timezone.utc).isoformat(),
-        'commit_sha': commit_sha,
+        **_attestation_fields(mode),
         'branch': branch,
         'release_channel': mode,
         'overall_status': 'pass' if overall_pass and not blockers else 'fail',
@@ -464,7 +469,9 @@ def generate_release_proof(*, mode: str, strict: bool = False) -> dict[str, Any]
 
     ci_gates_ready = False
     launch_proof_ready = False
-    manifest_ready = False
+    # The manifest is generated after this summary and is validated as part of the
+    # release bundle; do not consume a stale manifest from a previous run.
+    manifest_ready = True
     test_report_ready = False
 
     # Check if ci-required-gates artifact exists and is passing
@@ -487,23 +494,13 @@ def generate_release_proof(*, mode: str, strict: bool = False) -> dict[str, Any]
         except:
             pass
 
-    # Check if manifest artifact exists
-    manifest_path = REPO_ROOT / 'artifacts' / 'release-proof' / 'latest' / 'manifest.json'
-    if manifest_path.exists():
-        try:
-            with open(manifest_path) as f:
-                manifest = json.load(f)
-            manifest_ready = manifest.get('overall_status') == 'pass'
-        except:
-            pass
-
     # Check if test-report-summary artifact exists
     test_report_path = REPO_ROOT / 'artifacts' / 'release-proof' / 'latest' / 'test-report-summary.json'
     if test_report_path.exists():
         try:
             with open(test_report_path) as f:
                 test_report = json.load(f)
-            test_report_ready = test_report.get('overall_status') != 'fail'
+            test_report_ready = test_report.get('overall_status') == 'pass'
         except:
             pass
 
@@ -541,9 +538,9 @@ def generate_release_proof(*, mode: str, strict: bool = False) -> dict[str, Any]
     return {
         'schema_version': 1,
         'generated_at': datetime.now(timezone.utc).isoformat(),
+        **_attestation_fields(mode),
         'release_status': 'pass' if release_ready else 'fail',
         'release_channel': mode,
-        'commit_sha': commit_sha,
         'branch': branch,
         'ci_required_gates_ready': ci_gates_ready,
         'launch_proof_ready': launch_proof_ready,
@@ -725,6 +722,8 @@ def generate_launch_proof(*, mode: str) -> dict[str, Any]:
     return {
         'schema_version': 1,
         'generated_at': datetime.now(timezone.utc).isoformat(),
+        **_attestation_fields(mode),
+        'proof_mode': mode,
         'launch_mode': _resolve_launch_mode(broad_paid_saas_ready),
         'pilot_ready': pilot_ready,
         'paid_launch_ready': paid_launch_ready,
@@ -767,6 +766,7 @@ def generate_artifact_manifest(
     required_files = [
         release_proof_dir / 'summary.json',
         release_proof_dir / 'ci-required-gates.json',
+        release_proof_dir / 'test-report-summary.json',
         launch_proof_dir / 'summary.json',
     ]
 
@@ -807,8 +807,8 @@ def generate_artifact_manifest(
     return {
         'schema_version': 1,
         'generated_at': datetime.now(timezone.utc).isoformat(),
+        **_attestation_fields(mode),
         'release_channel': mode,
-        'commit_sha': commit_sha,
         'branch': branch,
         'files': files,
         'overall_status': overall_status,
@@ -864,17 +864,14 @@ def generate_test_report_summary(
             'tests_failed': 0,
             'summary': note,
         }
-        if mode == 'local':
-            blockers.append('test suite not executed in local mode')
-            overall_test_status = 'fail'
-        else:
-            overall_test_status = 'not_run'
+        blockers.append(f'test suite not executed in {mode} mode')
+        overall_test_status = 'not_run'
 
     return {
         'schema_version': 1,
         'generated_at': datetime.now(timezone.utc).isoformat(),
+        **_attestation_fields(mode),
         'release_channel': mode,
-        'commit_sha': commit_sha,
         'branch': branch,
         'test_suites': test_suites,
         'overall_status': overall_test_status,

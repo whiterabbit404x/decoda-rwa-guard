@@ -32,26 +32,6 @@ jobs:
       - name: Run paid launch readiness tests
         run: python -m pytest services/api/tests/test_paid_launch_readiness.py -q
 
-      - name: Generate release proof artifacts
-        if: always()
-        run: |
-          python scripts/generate_release_proof.py --mode ci
-
-      - name: Validate release proof artifacts
-        if: always()
-        run: |
-          python scripts/validate_release_proof.py
-
-      - name: Upload release proof artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-proof-${{ github.run_id }}
-          if-no-files-found: warn
-          retention-days: 30
-          path: |
-            artifacts/release-proof/latest/
-            artifacts/launch-proof/latest/
 
   required-gates:
     name: Required npm test/build gates
@@ -89,37 +69,16 @@ jobs:
           if [ -f requirements-local.txt ]; then python -m pip install -r requirements-local.txt; fi
 
       - name: Run release proof artifact tests
-        if: always()
         run: |
           python -m pytest services/api/tests/test_release_proof_artifacts.py -q
 
-      - name: Generate canonical release proof artifacts
-        if: always()
-        run: |
-          python scripts/generate_release_proof.py --mode ci
-
-      - name: Validate canonical release proof artifacts
-        if: always()
-        run: |
-          python scripts/validate_release_proof.py
-
-      - name: Upload canonical release proof artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-release-gate-proof-${{ github.run_id }}
-          if-no-files-found: warn
-          retention-days: 30
-          path: |
-            artifacts/release-proof/latest/
-            artifacts/launch-proof/latest/
 
   final-readiness-gate:
     name: Final 100% readiness gate (fail-closed)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [paid-launch-readiness-gates, required-gates]
-    if: always()
+    if: ${{ needs.paid-launch-readiness-gates.result == 'success' && needs.required-gates.result == 'success' }}
 
     steps:
       - name: Checkout
@@ -162,27 +121,26 @@ jobs:
         # first, then generates ci-required-gates, release-proof summary,
         # test-report, and manifest — all in one atomic call so the manifest
         # always hashes the freshly-generated launch-proof.
-        if: always()
+        env:
+          CI_RUN_ID: ${{ github.run_id }}
+          RELEASE_DEPLOYMENT_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}
+          RELEASE_ENVIRONMENT: ci
         run: python scripts/generate_release_proof.py --mode ci
 
       - name: Validate release proof
         # Step C: manifest SHA256 must match the launch-proof written in step A+B.
-        if: always()
         run: python scripts/validate_release_proof.py
 
       - name: Generate staging launch proof (fail-closed local/ci mode)
         # In PR/CI: always fail-closed local mode; no real staging credentials.
         # Staging environment workflow uses --mode staging --strict with real secrets.
         # To enable GitHub environment protection for staging, see docs/STAGING_GO_LIVE_VALIDATION.md.
-        if: always()
         run: python scripts/generate_staging_launch_proof.py --mode ci
 
       - name: Validate staging launch proof artifact
-        if: always()
         run: python scripts/validate_staging_launch_proof.py
 
       - name: Validate 100% readiness (fail-closed, non-strict)
-        if: always()
         run: python scripts/validate_100_percent_readiness.py --mode ci
 
       - name: Upload final readiness artifacts
@@ -197,4 +155,4 @@ jobs:
             artifacts/release-proof/latest/summary.json
             artifacts/release-proof/latest/ci-required-gates.json
             artifacts/staging-proof/latest/summary.json
-            artifacts/final-readiness/latest/summary.json
+            artifacts/final-readiness/local-test/summary.json

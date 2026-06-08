@@ -32,6 +32,10 @@ jobs:
   structural-fail-closed-validation:
     name: Structural fail-closed validation (no secrets)
     runs-on: ubuntu-latest
+    env:
+      CI_RUN_ID: ${{ github.run_id }}
+      RELEASE_DEPLOYMENT_ID: staging-${{ github.run_id }}-${{ github.run_attempt }}
+      RELEASE_ENVIRONMENT: staging
     timeout-minutes: 15
 
     steps:
@@ -90,7 +94,6 @@ jobs:
 
       - name: Upload structural proof artifact
         uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: staging-production-proof-structural
           retention-days: 30
@@ -103,6 +106,9 @@ jobs:
     timeout-minutes: 20
 
     env:
+      CI_RUN_ID: ${{ github.run_id }}
+      RELEASE_DEPLOYMENT_ID: staging-${{ github.run_id }}-${{ github.run_attempt }}
+      RELEASE_ENVIRONMENT: staging
       STAGING_API_URL: ${{ secrets.STAGING_API_URL }}
       STAGING_APP_URL: ${{ secrets.STAGING_APP_URL }}
       STAGING_AUTH_TOKEN_SECRET: ${{ secrets.STAGING_AUTH_TOKEN_SECRET }}
@@ -272,7 +278,6 @@ jobs:
 
       - name: Upload real staging proof artifact
         uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: staging-production-proof-real
           retention-days: 30
