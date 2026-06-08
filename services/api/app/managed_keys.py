@@ -10,6 +10,8 @@ from __future__ import annotations
 import base64
 import json
 import os
+import secrets
+import uuid
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -151,3 +153,38 @@ def managed_keys_ready() -> bool:
 
 def clear_managed_key_cache() -> None:
     _load_key_cached.cache_clear()
+
+
+def rotate_managed_key(purpose: str) -> ManagedKey:
+    """Create and promote a new AWS Secrets Manager version for a supported key purpose.
+
+    Environment-backed keys cannot be rotated safely because they have no durable
+    historical version address. Callers persist the returned reference and retain the
+    previous version for verification/decryption until its grace or retention period ends.
+    """
+    normalized = purpose.strip().upper()
+    if normalized not in {'AUTH', 'ENCRYPTION', 'EVIDENCE_SIGNING', 'PROVIDER_CREDENTIALS'}:
+        raise RuntimeError(f'Unsupported managed key rotation purpose: {normalized}')
+    provider = managed_key_provider()
+    if provider not in {'aws_secrets_manager', 'aws-secrets-manager'}:
+        raise RuntimeError('Automated managed-key rotation requires AWS Secrets Manager.')
+    prefix = _purpose_env_prefix(normalized)
+    secret_id = os.getenv(f'{prefix}_KEY_SECRET_ID', '').strip()
+    if not secret_id:
+        raise RuntimeError(f'{prefix}_KEY_SECRET_ID is required for managed-key rotation.')
+    encoding = os.getenv(f'{prefix}_KEY_ENCODING', 'utf8').strip().lower()
+    material = secrets.token_bytes(32)
+    stored_value = base64.b64encode(material).decode('ascii') if encoding == 'base64' else secrets.token_urlsafe(48)
+    client_token = str(uuid.uuid4())
+    import boto3
+
+    client = boto3.client('secretsmanager', region_name=os.getenv('AWS_REGION') or None)
+    response = client.put_secret_value(
+        SecretId=secret_id,
+        ClientRequestToken=client_token,
+        SecretString=json.dumps({'value': stored_value}),
+        VersionStages=['AWSCURRENT'],
+    )
+    clear_managed_key_cache()
+    resolved = str(response.get('VersionId') or client_token)
+    return load_managed_key(normalized, version=resolved)

@@ -37,13 +37,17 @@ export function buildContentSecurityPolicy(
     styleSources.push("'unsafe-inline'");
   }
 
+  const connectSources = ["'self'", ...BILLING_CONNECT_ORIGINS];
+  if (development) connectSources.push('ws:', 'wss:');
+
   return [
     "default-src 'self'",
     `script-src ${scriptSources.join(' ')}`,
+    "script-src-attr 'none'",
     `style-src ${styleSources.join(' ')}`,
     "img-src 'self' data: blob: https:",
     "font-src 'self'",
-    `connect-src 'self' ${BILLING_CONNECT_ORIGINS.join(' ')} wss: ws:`,
+    `connect-src ${connectSources.join(' ')}`,
     `frame-src 'self' ${BILLING_FRAME_ORIGINS.join(' ')}`,
     "object-src 'none'",
     "frame-ancestors 'none'",

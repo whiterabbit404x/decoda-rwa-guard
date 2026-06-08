@@ -38,6 +38,7 @@ from services.api.app.db_failure import (
 from services.api.app.secret_crypto import decrypt_secret, encrypt_secret, read_encrypted_env, validate_encryption_bootstrap
 from services.api.app.managed_keys import (
     load_managed_key,
+    rotate_managed_key,
     managed_key_enforcement_mode,
     managed_key_provider,
 )
@@ -47,6 +48,13 @@ from services.api.app.production_readiness import build_production_readiness
 from services.api.app.paid_launch_readiness import check_billing_readiness
 from services.api.app.observability import current_trace_id, increment, gauge, observe, report_error, span, send_external_oncall_alert
 from services.api.app.recovery_drills import RUN_TYPES as RECOVERY_DRILL_RUN_TYPES, recovery_drill_readiness
+from services.api.app.credential_rotation import (
+    SUPPORTED_CREDENTIAL_TYPES,
+    automation_batch_size,
+    credential_fingerprint,
+    event_metadata as rotation_event_metadata,
+    next_rotation_at as calculate_next_rotation_at,
+)
 
 _ACTIVE_DB_CONNECTIONS = 0
 _ACTIVE_DB_CONNECTIONS_LOCK = threading.Lock()
@@ -1835,14 +1843,16 @@ def auth_token_secret_configured() -> bool:
         return False
 
 
-def token_secret() -> str:
+def token_secret(version: str | None = None) -> str:
     try:
-        return load_managed_key('AUTH').material.decode('utf-8')
+        return load_managed_key('AUTH', version=version).material.decode('utf-8')
     except (RuntimeError, UnicodeDecodeError) as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='Managed authentication key is not configured.') from exc
 
 
 def _auth_token_hash(value: str) -> str:
+    # Retain the deployed keyed-hash format so existing sessions and SCIM tokens
+    # remain valid until an intentional signing-key rotation revokes them.
     return hashlib.sha256(f'{token_secret()}::{value}'.encode('utf-8')).hexdigest()
 
 
@@ -2076,30 +2086,48 @@ def verify_password(password: str, encoded_password: str) -> bool:
     return hmac.compare_digest(candidate, expected)
 
 
+def _auth_signing_material(version: str | None = None) -> tuple[bytes, str]:
+    try:
+        key = load_managed_key('AUTH', version=version)
+        return key.material, key.version
+    except RuntimeError:
+        # Preserve the test/local compatibility seam exposed by token_secret while
+        # production still fails closed when neither managed nor local material exists.
+        try:
+            fallback = token_secret(version)
+        except TypeError:
+            fallback = token_secret()
+        return fallback.encode('utf-8'), version or 'env-current'
+
+
 def create_access_token(user_id: str, session_version: int = 1) -> str:
     user_id = str(user_id)
+    signing_material, signing_version = _auth_signing_material()
     payload = {
         'sub': user_id,
         'exp': int((utc_now() + timedelta(hours=24)).timestamp()),
         'iat': int(utc_now().timestamp()),
         'jti': str(uuid.uuid4()),
         'sv': int(session_version),
+        'kv': signing_version,
     }
     payload_bytes = json.dumps(payload, separators=(',', ':'), sort_keys=True).encode('utf-8')
     payload_segment = _b64url(payload_bytes)
-    signature = hmac.new(token_secret().encode('utf-8'), payload_segment.encode('utf-8'), hashlib.sha256).digest()
+    signature = hmac.new(signing_material, payload_segment.encode('utf-8'), hashlib.sha256).digest()
     return f'{payload_segment}.{_b64url(signature)}'
 
 
 def decode_access_token(token: str) -> dict[str, Any]:
     try:
         payload_segment, signature_segment = token.split('.', 1)
-    except ValueError as exc:
+        payload = json.loads(_b64url_decode(payload_segment))
+        key_version = str(payload.get('kv') or '').strip() or None
+        signing_material, _ = _auth_signing_material(key_version)
+    except (ValueError, RuntimeError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid access token.') from exc
-    expected_signature = hmac.new(token_secret().encode('utf-8'), payload_segment.encode('utf-8'), hashlib.sha256).digest()
+    expected_signature = hmac.new(signing_material, payload_segment.encode('utf-8'), hashlib.sha256).digest()
     if not hmac.compare_digest(expected_signature, _b64url_decode(signature_segment)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid access token signature.')
-    payload = json.loads(_b64url_decode(payload_segment))
     if int(payload.get('exp', 0)) < int(utc_now().timestamp()):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Access token expired.')
     return payload
@@ -2378,6 +2406,9 @@ def revoke_workspace_api_key(api_key_id: str, request: Request) -> dict[str, Any
         connection.execute('UPDATE api_keys SET revoked_at = NOW() WHERE id = %s AND workspace_id = %s', (api_key_id, workspace_context['workspace_id']))
         log_audit(connection, action='workspace.api_key.revoke', entity_type='workspace_api_key', entity_id=api_key_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
         write_action_history(connection, workspace_id=workspace_context['workspace_id'], actor_type='user', actor_id=user['id'], object_type='workspace_api_key', object_id=api_key_id, action_type='workspace.api_key.revoke', details={})
+        _record_credential_rotation_event(connection, credential_type='api_key', resource_type='api_key', resource_id=api_key_id,
+            action='revoked', outcome='succeeded', reason='workspace API key revoked', actor_type='user', actor_id=user['id'],
+            workspace_id=workspace_context['workspace_id'])
         connection.commit()
         return {'revoked': True, 'id': api_key_id}
 
@@ -2390,11 +2421,18 @@ def rotate_workspace_api_key(api_key_id: str, request: Request) -> dict[str, Any
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='API key not found.')
         secret = _generate_workspace_api_key_secret()
         connection.execute(
-            'UPDATE api_keys SET secret_hash = %s, secret_prefix = %s, revoked_at = NULL, last_used_at = NULL WHERE id = %s AND workspace_id = %s',
+            "UPDATE api_keys SET secret_hash = %s, secret_prefix = %s, secret_version = secret_version + 1, rotated_at = NOW(), rotation_due_at = NOW() + INTERVAL '90 days', revoked_at = NULL, last_used_at = NULL WHERE id = %s AND workspace_id = %s",
             (_hash_workspace_api_key_secret(secret), _workspace_api_key_secret_prefix(secret), api_key_id, workspace_context['workspace_id']),
         )
         log_audit(connection, action='workspace.api_key.rotate', entity_type='workspace_api_key', entity_id=api_key_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
         write_action_history(connection, workspace_id=workspace_context['workspace_id'], actor_type='user', actor_id=user['id'], object_type='workspace_api_key', object_id=api_key_id, action_type='workspace.api_key.rotate', details={})
+        version_row = connection.execute('SELECT secret_version FROM api_keys WHERE id = %s', (api_key_id,)).fetchone()
+        new_version = int(version_row.get('secret_version') or 2) if version_row else 2
+        _record_credential_version(connection, credential_type='api_key', resource_type='api_key', resource_id=api_key_id,
+            version=str(new_version), workspace_id=workspace_context['workspace_id'], fingerprint=credential_fingerprint(secret), grace_period_hours=0)
+        _record_credential_rotation_event(connection, credential_type='api_key', resource_type='api_key', resource_id=api_key_id,
+            action='rotated', outcome='succeeded', reason='manual API key rotation', actor_type='user', actor_id=user['id'],
+            workspace_id=workspace_context['workspace_id'], from_version=str(new_version - 1), to_version=str(new_version))
         connection.commit()
         return {'api_key': {'id': api_key_id, 'label': str(row['label']), 'secret_prefix': _workspace_api_key_secret_prefix(secret)}, 'secret': secret}
 
@@ -8001,7 +8039,7 @@ def update_webhook(webhook_id: str, payload: dict[str, Any], request: Request) -
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         _, workspace_context = _require_workspace_permission(connection, request, 'webhooks.manage')
-        webhook = connection.execute('SELECT id FROM workspace_webhooks WHERE id = %s AND workspace_id = %s', (webhook_id, workspace_context['workspace_id'])).fetchone()
+        webhook = connection.execute('SELECT id, secret_version FROM workspace_webhooks WHERE id = %s AND workspace_id = %s', (webhook_id, workspace_context['workspace_id'])).fetchone()
         if webhook is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Webhook not found.')
         enabled = bool(payload.get('enabled', True))
@@ -8024,10 +8062,17 @@ def rotate_webhook_secret(webhook_id: str, request: Request) -> dict[str, Any]:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Webhook not found.')
         secret = secrets.token_urlsafe(32)
         connection.execute(
-            'UPDATE workspace_webhooks SET secret_hash = %s, secret_last4 = %s, secret_token = %s, updated_at = NOW() WHERE id = %s',
+            "UPDATE workspace_webhooks SET secret_hash = %s, secret_last4 = %s, secret_token = %s, secret_version = secret_version + 1, secret_rotated_at = NOW(), secret_revoked_at = NULL, rotation_due_at = NOW() + INTERVAL '90 days', updated_at = NOW() WHERE id = %s",
             (hashlib.sha256(secret.encode('utf-8')).hexdigest(), secret[-4:], secret, webhook_id),
         )
-        log_audit(connection, action='webhook.rotate_secret', entity_type='workspace_webhook', entity_id=webhook_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
+        version_row = connection.execute('SELECT secret_version FROM workspace_webhooks WHERE id = %s', (webhook_id,)).fetchone()
+        new_version = int(version_row.get('secret_version') or 2) if version_row else 2
+        _record_credential_version(connection, credential_type='webhook_secret', resource_type='workspace_webhook', resource_id=webhook_id,
+            version=str(new_version), workspace_id=workspace_context['workspace_id'], fingerprint=credential_fingerprint(secret), grace_period_hours=0)
+        event_id = _record_credential_rotation_event(connection, credential_type='webhook_secret', resource_type='workspace_webhook', resource_id=webhook_id,
+            action='rotated', outcome='succeeded', reason='manual webhook secret rotation', actor_type='user', actor_id=user['id'],
+            workspace_id=workspace_context['workspace_id'], from_version=str(new_version - 1), to_version=str(new_version))
+        log_audit(connection, action='webhook.rotate_secret', entity_type='workspace_webhook', entity_id=webhook_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'rotation_event_id': event_id, 'secret_version': new_version})
         connection.commit()
         return {'id': webhook_id, 'secret': secret}
 
@@ -16392,3 +16437,404 @@ def record_retention_worker_failure(*, worker_name: str, error: Exception) -> No
 def get_retention_worker_health(*, stale_after_seconds: int | None = None) -> dict[str, Any]:
     from services.api.app.data_retention import worker_health
     return worker_health(stale_after_seconds=stale_after_seconds)
+
+# ---------------------------------------------------------------------------
+# Versioned credential rotation and revocation automation
+# ---------------------------------------------------------------------------
+
+def _record_credential_rotation_event(
+    connection: Any,
+    *,
+    credential_type: str,
+    resource_type: str,
+    resource_id: str,
+    action: str,
+    outcome: str,
+    reason: str,
+    actor_type: str,
+    workspace_id: str | None = None,
+    actor_id: str | None = None,
+    policy_id: str | None = None,
+    from_version: str | None = None,
+    to_version: str | None = None,
+    correlation_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> str:
+    event_id = str(uuid.uuid4())
+    connection.execute(
+        '''
+        INSERT INTO credential_rotation_events
+            (id, policy_id, workspace_id, credential_type, resource_type, resource_id, action,
+             from_version, to_version, outcome, reason, actor_type, actor_id, correlation_id, metadata)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+        ''',
+        (event_id, policy_id, workspace_id, credential_type, resource_type, resource_id, action,
+         from_version, to_version, outcome, reason, actor_type, actor_id,
+         correlation_id or str(uuid.uuid4()), _json_dumps(metadata or {})),
+    )
+    return event_id
+
+
+def _record_credential_version(
+    connection: Any,
+    *,
+    credential_type: str,
+    resource_type: str,
+    resource_id: str,
+    version: str,
+    workspace_id: str | None,
+    fingerprint: str | None,
+    pending_secret: str | None = None,
+    provider: str | None = None,
+    provider_key_id: str | None = None,
+    grace_period_hours: int = 0,
+    metadata: dict[str, Any] | None = None,
+) -> str:
+    connection.execute(
+        '''
+        UPDATE credential_versions
+        SET status = CASE WHEN %s > 0 THEN 'grace' ELSE 'revoked' END,
+            grace_expires_at = CASE WHEN %s > 0 THEN NOW() + (%s || ' hours')::interval ELSE grace_expires_at END,
+            revoked_at = CASE WHEN %s > 0 THEN revoked_at ELSE NOW() END,
+            revocation_reason = CASE WHEN %s > 0 THEN revocation_reason ELSE 'superseded by rotation' END
+        WHERE credential_type = %s AND resource_type = %s AND resource_id = %s AND status = 'active'
+        ''',
+        (grace_period_hours, grace_period_hours, grace_period_hours, grace_period_hours, grace_period_hours,
+         credential_type, resource_type, resource_id),
+    )
+    version_id = str(uuid.uuid4())
+    encrypted_pending = encrypt_secret(
+        pending_secret, aad=f'credential-version:{credential_type}:{resource_type}:{resource_id}:{version}'
+    ) if pending_secret else None
+    connection.execute(
+        '''
+        INSERT INTO credential_versions
+            (id, workspace_id, credential_type, resource_type, resource_id, version, status, provider,
+             provider_key_id, fingerprint, pending_secret_encrypted, metadata)
+        VALUES (%s, %s, %s, %s, %s, %s, 'active', %s, %s, %s, %s, %s::jsonb)
+        ON CONFLICT (credential_type, resource_type, resource_id, version) DO NOTHING
+        ''',
+        (version_id, workspace_id, credential_type, resource_type, resource_id, version,
+         provider, provider_key_id, fingerprint, encrypted_pending, _json_dumps(metadata or {})),
+    )
+    return version_id
+
+
+def list_credential_rotation_policies(request: Request) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        _, workspace_context = _require_workspace_permission(connection, request, 'security.manage')
+        rows = connection.execute(
+            '''SELECT id, credential_type, resource_id, rotation_interval_days, grace_period_hours,
+                      enabled, next_rotation_at, last_rotation_at, last_outcome, created_at, updated_at
+               FROM credential_rotation_policies
+               WHERE workspace_id = %s OR workspace_id IS NULL
+               ORDER BY credential_type, resource_id NULLS FIRST''',
+            (workspace_context['workspace_id'],),
+        ).fetchall()
+        return {'items': [_json_safe_value(dict(row)) for row in rows]}
+
+
+def upsert_credential_rotation_policy(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    credential_type = str(payload.get('credential_type') or '').strip().lower()
+    if credential_type not in SUPPORTED_CREDENTIAL_TYPES:
+        raise HTTPException(status_code=400, detail='Unsupported credential_type.')
+    if credential_type in {'jwt_signing', 'encryption_key', 'evidence_signing'}:
+        raise HTTPException(status_code=400, detail='Managed-key policies are system-scoped and must be configured by operations.')
+    interval_days = int(payload.get('rotation_interval_days') or 90)
+    grace_period_hours = int(payload.get('grace_period_hours') or 0)
+    try:
+        next_due = calculate_next_rotation_at(credential_type, interval_days=interval_days)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not 0 <= grace_period_hours <= 8760:
+        raise HTTPException(status_code=400, detail='grace_period_hours must be between 0 and 8760.')
+    resource_id = str(payload.get('resource_id') or '').strip() or None
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(
+            connection, request, 'security.manage', require_reauthentication=True
+        )
+        policy_id = str(uuid.uuid4())
+        row = connection.execute(
+            '''
+            INSERT INTO credential_rotation_policies
+                (id, workspace_id, credential_type, resource_id, rotation_interval_days, grace_period_hours,
+                 enabled, next_rotation_at, created_by_user_id, updated_by_user_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (workspace_id, credential_type, resource_id) DO UPDATE SET
+                rotation_interval_days = EXCLUDED.rotation_interval_days,
+                grace_period_hours = EXCLUDED.grace_period_hours,
+                enabled = EXCLUDED.enabled,
+                next_rotation_at = EXCLUDED.next_rotation_at,
+                updated_by_user_id = EXCLUDED.updated_by_user_id,
+                updated_at = NOW()
+            RETURNING id, credential_type, resource_id, rotation_interval_days, grace_period_hours, enabled, next_rotation_at
+            ''',
+            (policy_id, workspace_context['workspace_id'], credential_type, resource_id, interval_days,
+             grace_period_hours, bool(payload.get('enabled', True)), next_due, user['id'], user['id']),
+        ).fetchone()
+        log_audit(connection, action='credential.rotation_policy.upsert', entity_type='credential_rotation_policy',
+                  entity_id=str(row['id']), request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'],
+                  metadata={'credential_type': credential_type, 'resource_id': resource_id, 'rotation_interval_days': interval_days})
+        connection.commit()
+        return _json_safe_value(dict(row))
+
+
+def list_credential_rotation_history(request: Request, limit: int = 200) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        _, workspace_context = _require_workspace_permission(connection, request, 'security.manage')
+        rows = connection.execute(
+            '''SELECT id, policy_id, credential_type, resource_type, resource_id, action, from_version,
+                      to_version, outcome, reason, actor_type, actor_id, correlation_id, metadata, occurred_at
+               FROM credential_rotation_events
+               WHERE workspace_id = %s OR workspace_id IS NULL
+               ORDER BY occurred_at DESC LIMIT %s''',
+            (workspace_context['workspace_id'], max(1, min(limit, 500))),
+        ).fetchall()
+        return {'items': [_json_safe_value(dict(row)) for row in rows]}
+
+
+def _rotate_workspace_credential(
+    connection: Any,
+    *,
+    credential_type: str,
+    resource_id: str,
+    workspace_id: str,
+    grace_period_hours: int,
+    replacement_secret: str | None = None,
+) -> dict[str, Any]:
+    if credential_type == 'api_key':
+        row = connection.execute('SELECT id, secret_version FROM api_keys WHERE id = %s AND workspace_id = %s', (resource_id, workspace_id)).fetchone()
+        if row is None:
+            raise RuntimeError('API key not found.')
+        secret = replacement_secret or _generate_workspace_api_key_secret()
+        old_version, new_version = int(row.get('secret_version') or 1), int(row.get('secret_version') or 1) + 1
+        connection.execute('''UPDATE api_keys SET secret_hash=%s, secret_prefix=%s, secret_version=%s, rotated_at=NOW(),
+                              rotation_due_at=NOW() + INTERVAL '90 days', revoked_at=NULL, last_used_at=NULL WHERE id=%s''',
+                           (_hash_workspace_api_key_secret(secret), _workspace_api_key_secret_prefix(secret), new_version, resource_id))
+        version_id = _record_credential_version(connection, credential_type=credential_type, resource_type='api_key', resource_id=resource_id,
+                                   version=str(new_version), workspace_id=workspace_id, fingerprint=credential_fingerprint(secret),
+                                   pending_secret=secret, grace_period_hours=0)
+        return {'from_version': str(old_version), 'to_version': str(new_version), 'pending_secret': True, 'credential_version_id': version_id}
+    if credential_type == 'webhook_secret':
+        row = connection.execute('SELECT id, secret_version FROM workspace_webhooks WHERE id=%s AND workspace_id=%s', (resource_id, workspace_id)).fetchone()
+        if row is None:
+            raise RuntimeError('Webhook not found.')
+        secret = replacement_secret or secrets.token_urlsafe(32)
+        old_version, new_version = int(row.get('secret_version') or 1), int(row.get('secret_version') or 1) + 1
+        connection.execute('''UPDATE workspace_webhooks SET secret_hash=%s, secret_last4=%s, secret_token=%s,
+                              secret_version=%s, secret_rotated_at=NOW(), secret_revoked_at=NULL,
+                              rotation_due_at=NOW() + INTERVAL '90 days', updated_at=NOW() WHERE id=%s''',
+                           (hashlib.sha256(secret.encode()).hexdigest(), secret[-4:], secret, new_version, resource_id))
+        version_id = _record_credential_version(connection, credential_type=credential_type, resource_type='workspace_webhook', resource_id=resource_id,
+                                   version=str(new_version), workspace_id=workspace_id, fingerprint=credential_fingerprint(secret),
+                                   pending_secret=secret, grace_period_hours=0)
+        return {'from_version': str(old_version), 'to_version': str(new_version), 'pending_secret': True, 'credential_version_id': version_id}
+    if credential_type == 'scim_token':
+        row = connection.execute('SELECT id, label, token_version FROM workspace_scim_tokens WHERE id=%s AND workspace_id=%s', (resource_id, workspace_id)).fetchone()
+        if row is None:
+            raise RuntimeError('SCIM token not found.')
+        secret = replacement_secret or f'decoda_scim_{secrets.token_urlsafe(32)}'
+        new_id, old_version, new_version = str(uuid.uuid4()), int(row.get('token_version') or 1), int(row.get('token_version') or 1) + 1
+        connection.execute('UPDATE workspace_scim_tokens SET revoked_at=NOW(), rotated_at=NOW() WHERE id=%s', (resource_id,))
+        connection.execute('''INSERT INTO workspace_scim_tokens
+            (id, workspace_id, label, token_hash, token_prefix, created_by_user_id, token_version, rotated_from_token_id, rotation_due_at)
+            SELECT %s, workspace_id, label, %s, %s, created_by_user_id, %s, id, NOW() + INTERVAL '90 days'
+            FROM workspace_scim_tokens WHERE id=%s''',
+            (new_id, _auth_token_hash(secret), secret[:12], new_version, resource_id))
+        version_id = _record_credential_version(connection, credential_type=credential_type, resource_type='workspace_scim_token', resource_id=new_id,
+                                   version=str(new_version), workspace_id=workspace_id, fingerprint=credential_fingerprint(secret),
+                                   pending_secret=secret, grace_period_hours=0, metadata={'rotated_from_token_id': resource_id})
+        return {'from_version': str(old_version), 'to_version': str(new_version), 'resource_id': new_id, 'pending_secret': True, 'credential_version_id': version_id}
+    if credential_type == 'oidc_client_secret':
+        if not replacement_secret:
+            revoked = connection.execute('UPDATE workspace_oidc_configs SET enabled=FALSE, credential_revoked_at=NOW(), updated_at=NOW() WHERE id=%s AND workspace_id=%s', (resource_id, workspace_id))
+            if not getattr(revoked, 'rowcount', 0):
+                raise RuntimeError('OIDC configuration not found.')
+            return {'from_version': None, 'to_version': None, 'revoked': True, 'replacement_required': True}
+        row = connection.execute('SELECT credential_version FROM workspace_oidc_configs WHERE id=%s AND workspace_id=%s', (resource_id, workspace_id)).fetchone()
+        if row is None:
+            raise RuntimeError('OIDC configuration not found.')
+        old_version, new_version = int(row.get('credential_version') or 1), int(row.get('credential_version') or 1) + 1
+        connection.execute('''UPDATE workspace_oidc_configs SET client_secret_encrypted=%s, credential_version=%s,
+                              credential_rotated_at=NOW(), credential_revoked_at=NULL, rotation_due_at=NOW()+INTERVAL '90 days', updated_at=NOW() WHERE id=%s''',
+                           (encrypt_secret(replacement_secret, aad=f'workspace:{workspace_id}:oidc'), new_version, resource_id))
+        _record_credential_version(connection, credential_type=credential_type, resource_type='workspace_oidc_config', resource_id=resource_id,
+                                   version=str(new_version), workspace_id=workspace_id, fingerprint=credential_fingerprint(replacement_secret), grace_period_hours=grace_period_hours)
+        return {'from_version': str(old_version), 'to_version': str(new_version)}
+    if credential_type == 'slack_credential':
+        if not replacement_secret:
+            revoked = connection.execute('UPDATE workspace_slack_integrations SET enabled=FALSE, credential_revoked_at=NOW(), updated_at=NOW() WHERE id=%s AND workspace_id=%s', (resource_id, workspace_id))
+            if not getattr(revoked, 'rowcount', 0):
+                raise RuntimeError('Slack integration not found.')
+            return {'from_version': None, 'to_version': None, 'revoked': True, 'replacement_required': True}
+        row = connection.execute('SELECT slack_mode, credential_version FROM workspace_slack_integrations WHERE id=%s AND workspace_id=%s', (resource_id, workspace_id)).fetchone()
+        if row is None:
+            raise RuntimeError('Slack integration not found.')
+        old_version, new_version = int(row.get('credential_version') or 1), int(row.get('credential_version') or 1) + 1
+        if str(row['slack_mode']) == 'bot':
+            connection.execute('''UPDATE workspace_slack_integrations SET bot_token_encrypted=%s, bot_token_last4=%s, credential_version=%s,
+                                  credential_rotated_at=NOW(), credential_revoked_at=NULL, rotation_due_at=NOW()+INTERVAL '90 days', updated_at=NOW() WHERE id=%s''',
+                               (encrypt_secret(replacement_secret, aad=f'slack:{workspace_id}:bot'), replacement_secret[-4:], new_version, resource_id))
+        else:
+            connection.execute('''UPDATE workspace_slack_integrations SET webhook_url_encrypted=%s, webhook_last4=%s, credential_version=%s,
+                                  credential_rotated_at=NOW(), credential_revoked_at=NULL, rotation_due_at=NOW()+INTERVAL '90 days', updated_at=NOW() WHERE id=%s''',
+                               (encrypt_secret(replacement_secret, aad=f'slack:{workspace_id}:webhook'), replacement_secret[-4:], new_version, resource_id))
+        _record_credential_version(connection, credential_type=credential_type, resource_type='workspace_slack_integration', resource_id=resource_id,
+                                   version=str(new_version), workspace_id=workspace_id, fingerprint=credential_fingerprint(replacement_secret), grace_period_hours=grace_period_hours)
+        return {'from_version': str(old_version), 'to_version': str(new_version)}
+    raise RuntimeError(f'Automated workspace rotation is not supported for {credential_type}.')
+
+
+def rotate_workspace_credential(credential_type: str, resource_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    normalized = credential_type.strip().lower()
+    if normalized not in SUPPORTED_CREDENTIAL_TYPES:
+        raise HTTPException(status_code=400, detail='Unsupported credential type.')
+    if normalized in {'jwt_signing', 'encryption_key', 'evidence_signing'}:
+        raise HTTPException(status_code=400, detail='Managed keys rotate through system-scoped scheduler policies.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(connection, request, 'security.manage', require_reauthentication=True)
+        result = _rotate_workspace_credential(connection, credential_type=normalized, resource_id=resource_id,
+                                              workspace_id=workspace_context['workspace_id'], grace_period_hours=int(payload.get('grace_period_hours') or 0),
+                                              replacement_secret=str(payload.get('replacement_secret') or '').strip() or None)
+        _record_credential_rotation_event(connection, credential_type=normalized, resource_type=normalized, resource_id=str(result.get('resource_id') or resource_id),
+                                          action='rotated' if not result.get('revoked') else 'revoked', outcome='succeeded', reason=str(payload.get('reason') or 'manual rotation'),
+                                          actor_type='user', actor_id=user['id'], workspace_id=workspace_context['workspace_id'],
+                                          from_version=result.get('from_version'), to_version=result.get('to_version'), metadata={'replacement_required': result.get('replacement_required', False), 'credential_version_id': result.get('credential_version_id')})
+        log_audit(connection, action='credential.rotate', entity_type=normalized, entity_id=resource_id, request=request, user_id=user['id'],
+                  workspace_id=workspace_context['workspace_id'], metadata={'from_version': result.get('from_version'), 'to_version': result.get('to_version')})
+        connection.commit()
+        return result
+
+
+def claim_rotated_credential_secret(version_id: str, request: Request) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(connection, request, 'security.manage', require_reauthentication=True)
+        row = connection.execute('''SELECT id, credential_type, resource_type, resource_id, version, pending_secret_encrypted, claimed_at
+                                    FROM credential_versions WHERE id=%s AND workspace_id=%s FOR UPDATE''',
+                                 (version_id, workspace_context['workspace_id'])).fetchone()
+        if row is None or not row.get('pending_secret_encrypted'):
+            raise HTTPException(status_code=404, detail='Pending rotated credential was not found.')
+        if row.get('claimed_at') is not None:
+            raise HTTPException(status_code=409, detail='Rotated credential secret has already been claimed.')
+        secret = decrypt_secret(str(row['pending_secret_encrypted']), aad=f'credential-version:{row["credential_type"]}:{row["resource_type"]}:{row["resource_id"]}:{row["version"]}')
+        connection.execute('UPDATE credential_versions SET claimed_at=NOW(), pending_secret_encrypted=NULL WHERE id=%s', (version_id,))
+        log_audit(connection, action='credential.rotated_secret.claim', entity_type=str(row['resource_type']), entity_id=str(row['resource_id']),
+                  request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'version': str(row['version'])})
+        connection.commit()
+        return {'credential_type': row['credential_type'], 'resource_id': str(row['resource_id']), 'version': str(row['version']), 'secret': secret}
+
+
+def revoke_workspace_credential(credential_type: str, resource_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    normalized = credential_type.strip().lower()
+    statements = {
+        'api_key': ("UPDATE api_keys SET revoked_at=NOW() WHERE id=%s AND workspace_id=%s", 'api_key'),
+        'webhook_secret': ("UPDATE workspace_webhooks SET enabled=FALSE, secret_revoked_at=NOW(), updated_at=NOW() WHERE id=%s AND workspace_id=%s", 'workspace_webhook'),
+        'scim_token': ("UPDATE workspace_scim_tokens SET revoked_at=NOW() WHERE id=%s AND workspace_id=%s", 'workspace_scim_token'),
+        'oidc_client_secret': ("UPDATE workspace_oidc_configs SET enabled=FALSE, credential_revoked_at=NOW(), updated_at=NOW() WHERE id=%s AND workspace_id=%s", 'workspace_oidc_config'),
+        'slack_credential': ("UPDATE workspace_slack_integrations SET enabled=FALSE, credential_revoked_at=NOW(), updated_at=NOW() WHERE id=%s AND workspace_id=%s", 'workspace_slack_integration'),
+    }
+    if normalized not in statements:
+        raise HTTPException(status_code=400, detail='This credential type cannot be revoked through a workspace endpoint.')
+    reason = str(payload.get('reason') or '').strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail='A revocation reason is required.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(connection, request, 'security.manage', require_reauthentication=True)
+        statement, resource_type = statements[normalized]
+        result = connection.execute(statement, (resource_id, workspace_context['workspace_id']))
+        if not getattr(result, 'rowcount', 0):
+            raise HTTPException(status_code=404, detail='Credential not found.')
+        connection.execute(
+            """UPDATE credential_versions SET status='revoked', revoked_at=NOW(), revocation_reason=%s
+               WHERE credential_type=%s AND resource_type=%s AND resource_id=%s AND status IN ('active','grace')""",
+            (reason, normalized, resource_type, resource_id),
+        )
+        event_id = _record_credential_rotation_event(
+            connection, credential_type=normalized, resource_type=resource_type, resource_id=resource_id,
+            action='revoked', outcome='succeeded', reason=reason, actor_type='user', actor_id=user['id'],
+            workspace_id=workspace_context['workspace_id'],
+        )
+        log_audit(connection, action='credential.revoke', entity_type=resource_type, entity_id=resource_id,
+                  request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'],
+                  metadata={'reason': reason, 'rotation_event_id': event_id})
+        connection.commit()
+        return {'revoked': True, 'credential_type': normalized, 'resource_id': resource_id, 'rotation_event_id': event_id}
+
+
+def run_due_credential_rotations(*, workspace_id: str | None = None) -> dict[str, Any]:
+    """Rotate due credentials under row locks; intended for a scheduled one-shot worker."""
+    summary: dict[str, Any] = {'processed': 0, 'succeeded': 0, 'failed': 0, 'skipped': 0, 'event_ids': []}
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        policies = connection.execute(
+            '''SELECT * FROM credential_rotation_policies WHERE enabled=TRUE AND next_rotation_at <= NOW()
+                 AND (%s IS NULL OR workspace_id = %s)
+               ORDER BY next_rotation_at FOR UPDATE SKIP LOCKED LIMIT %s''', (workspace_id, workspace_id, automation_batch_size())
+        ).fetchall()
+        for policy in policies:
+            summary['processed'] += 1
+            policy_outcome = 'failed'
+            credential_type = str(policy['credential_type'])
+            resource_id = str(policy.get('resource_id') or credential_type)
+            correlation_id = str(uuid.uuid4())
+            try:
+                if credential_type in {'jwt_signing', 'encryption_key', 'evidence_signing'}:
+                    purpose = {'jwt_signing': 'AUTH', 'encryption_key': 'ENCRYPTION', 'evidence_signing': 'EVIDENCE_SIGNING'}[credential_type]
+                    previous = load_managed_key(purpose)
+                    rotated = rotate_managed_key(purpose)
+                    managed_purpose = {'jwt_signing': 'authentication', 'encryption_key': 'encryption', 'evidence_signing': 'evidence_signing'}[credential_type]
+                    connection.execute("UPDATE managed_key_versions SET status='verify_only', verify_until=NOW() + (%s || ' hours')::interval, retired_at=NULL WHERE purpose=%s AND status='active'",
+                                       (int(policy['grace_period_hours']), managed_purpose))
+                    connection.execute("INSERT INTO managed_key_versions (id, purpose, provider, provider_key_id, provider_version, status, activated_at, rotated_from_version, metadata) VALUES (%s, %s, %s, %s, %s, 'active', NOW(), %s, %s::jsonb) ON CONFLICT (purpose, provider, provider_key_id, provider_version) DO UPDATE SET status='active', activated_at=NOW()",
+                        (str(uuid.uuid4()), managed_purpose, rotated.provider, rotated.key_id, rotated.version, previous.version,
+                         _json_dumps({'automated': True, 'policy_id': str(policy['id'])})))
+                    _record_credential_version(connection, credential_type=credential_type, resource_type='managed_key', resource_id=rotated.key_id,
+                                               version=rotated.version, workspace_id=None, fingerprint=credential_fingerprint(rotated.material),
+                                               provider=rotated.provider, provider_key_id=rotated.key_id, grace_period_hours=int(policy['grace_period_hours']))
+                    result = {'from_version': previous.version, 'to_version': rotated.version}
+                elif not policy.get('workspace_id') or not policy.get('resource_id'):
+                    raise RuntimeError('Workspace credential policies require workspace_id and resource_id.')
+                else:
+                    result = _rotate_workspace_credential(connection, credential_type=credential_type, resource_id=str(policy['resource_id']),
+                                                          workspace_id=str(policy['workspace_id']), grace_period_hours=int(policy['grace_period_hours']))
+                event_id = _record_credential_rotation_event(connection, policy_id=str(policy['id']), workspace_id=str(policy['workspace_id']) if policy.get('workspace_id') else None,
+                    credential_type=credential_type, resource_type='managed_key' if credential_type in {'jwt_signing','encryption_key','evidence_signing'} else credential_type,
+                    resource_id=str(result.get('resource_id') or resource_id), action='revoked' if result.get('revoked') else 'rotated', outcome='succeeded',
+                    reason='scheduled rotation policy', actor_type='scheduler', correlation_id=correlation_id,
+                    from_version=result.get('from_version'), to_version=result.get('to_version'),
+                    metadata=rotation_event_metadata(automated=True, grace_period_hours=int(policy['grace_period_hours']), extra={'replacement_required': result.get('replacement_required', False), 'credential_version_id': result.get('credential_version_id')}))
+                summary['succeeded'] += 1
+                policy_outcome = 'succeeded'
+            except Exception as exc:  # noqa: BLE001 -- each policy must be independently auditable
+                event_id = _record_credential_rotation_event(connection, policy_id=str(policy['id']), workspace_id=str(policy['workspace_id']) if policy.get('workspace_id') else None,
+                    credential_type=credential_type, resource_type=credential_type, resource_id=resource_id, action='rotation_failed', outcome='failed',
+                    reason='scheduled rotation failed', actor_type='scheduler', correlation_id=correlation_id,
+                    metadata={'error_type': type(exc).__name__, 'error': str(exc)[:500]})
+                summary['failed'] += 1
+            summary['event_ids'].append(event_id)
+            connection.execute('''UPDATE credential_rotation_policies SET last_rotation_at=NOW(), last_outcome=%s,
+                                  next_rotation_at=NOW() + (rotation_interval_days || ' days')::interval, updated_at=NOW() WHERE id=%s''',
+                               (policy_outcome, policy['id']))
+            if 'result' in locals():
+                del result
+        connection.commit()
+    return summary
+
+
+def trigger_due_credential_rotations(request: Request) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(
+            connection, request, 'security.manage', require_reauthentication=True
+        )
+        log_audit(connection, action='credential.rotation_run.requested', entity_type='workspace',
+                  entity_id=workspace_context['workspace_id'], request=request, user_id=user['id'],
+                  workspace_id=workspace_context['workspace_id'], metadata={})
+        connection.commit()
+    return run_due_credential_rotations(workspace_id=workspace_context['workspace_id'])

@@ -11,9 +11,20 @@ on:
         description: GitHub production-like environment containing the probe URL and signing key
         required: true
         type: environment
+      image_ref:
+        description: Immutable production image reference including sha256 digest
+        required: true
+        type: string
+      penetration_test_evidence:
+        description: Approved evidence URI or ticket for independent penetration testing/retest scope
+        required: true
+        type: string
 
 permissions:
   contents: read
+  id-token: write
+  packages: read
+  attestations: write
 
 concurrency:
   group: release-attestation-${{ github.event.inputs.deployment_id }}
@@ -24,11 +35,13 @@ jobs:
     name: Strict production-like release attestation
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       EXPECTED_COMMIT_SHA: ${{ github.sha }}
       RELEASE_DEPLOYMENT_ID: ${{ inputs.deployment_id }}
       CI_RUN_ID: ${{ github.run_id }}
+      RELEASE_IMAGE_REF: ${{ inputs.image_ref }}
+      PENTEST_EVIDENCE: ${{ inputs.penetration_test_evidence }}
       RELEASE_PROBE_URL: ${{ secrets.RELEASE_PROBE_URL }}
       RELEASE_PROBE_TOKEN: ${{ secrets.RELEASE_PROBE_TOKEN }}
       RELEASE_ATTESTATION_SIGNING_KEY: ${{ secrets.RELEASE_ATTESTATION_SIGNING_KEY }}
@@ -43,8 +56,10 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install attestation dependency
-        run: python -m pip install cryptography==46.0.5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
 
       - name: Reject missing release authority inputs
         shell: bash
@@ -53,7 +68,62 @@ jobs:
           test -n "$RELEASE_PROBE_URL" || { echo 'RELEASE_PROBE_URL is required'; exit 1; }
           test -n "$RELEASE_PROBE_TOKEN" || { echo 'RELEASE_PROBE_TOKEN is required'; exit 1; }
           test -n "$RELEASE_ATTESTATION_SIGNING_KEY" || { echo 'RELEASE_ATTESTATION_SIGNING_KEY is required'; exit 1; }
+          test -n "$PENTEST_EVIDENCE" || { echo 'independent penetration-test evidence is required'; exit 1; }
+          [[ "$RELEASE_IMAGE_REF" == *@sha256:* ]] || { echo 'image_ref must be immutable'; exit 1; }
           test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT_SHA"
+          mkdir -p artifacts/release-security
+          printf '%s\n' "$PENTEST_EVIDENCE" > artifacts/release-security/penetration-test-evidence.txt
+          printf '%s\n' "$EXPECTED_COMMIT_SHA" > artifacts/release-security/commit-sha.txt
+          printf '%s\n' "$RELEASE_IMAGE_REF" > artifacts/release-security/image-ref.txt
+
+      - name: Dependency scanning
+        run: |
+          python -m pip install pip-audit==2.9.0
+          pip-audit -r requirements-local.txt --format json --output artifacts/release-security/pip-audit.json
+          npm audit --omit=dev --json > artifacts/release-security/npm-audit.json
+
+      - name: Generate source dependency SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: artifacts/release-security/source-sbom.cdx.json
+
+      - name: Scan immutable final container
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: ${{ inputs.image_ref }}
+          format: sarif
+          output: artifacts/release-security/container-scan.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: false
+          exit-code: "1"
+
+      - name: Generate image SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ inputs.image_ref }}
+          format: spdx-json
+          output-file: artifacts/release-security/image-sbom.spdx.json
+
+      - name: Install signature verifier
+        uses: sigstore/cosign-installer@v3.10.0
+
+      - name: Verify keyless image signature and SLSA provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          cosign verify "$RELEASE_IMAGE_REF" \
+            --certificate-identity-regexp 'https://github.com/.+/.github/workflows/.+' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            > artifacts/release-security/cosign-verification.json
+          cosign verify-attestation "$RELEASE_IMAGE_REF" --type slsaprovenance \
+            --certificate-identity-regexp 'https://github.com/.+/.github/workflows/.+' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            > artifacts/release-security/provenance-verification.json
+
+      - name: Install attestation dependency
+        run: python -m pip install cryptography==46.0.5
 
       - name: Collect all runtime probes and security gates from one deployment
         shell: bash
@@ -82,11 +152,22 @@ jobs:
             --directory "artifacts/release-attestations/$EXPECTED_COMMIT_SHA/$RELEASE_DEPLOYMENT_ID" \
             --commit-sha "$EXPECTED_COMMIT_SHA"
 
+      - name: Build SOC 2 control evidence index
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum artifacts/release-security/* > artifacts/release-security/SHA256SUMS
+          cat > artifacts/release-security/soc2-control-index.json <<EOF
+          {"commit_sha":"${EXPECTED_COMMIT_SHA}","workflow_run_id":"${CI_RUN_ID}","controls":{"CC6":["cosign-verification.json"],"CC7":["pip-audit.json","npm-audit.json","container-scan.sarif"],"CC8":["commit-sha.txt","SHA256SUMS","provenance-verification.json"],"A1":["release-attestation"],"C1":["source-sbom.cdx.json","image-sbom.spdx.json"]}}
+          EOF
+
       - name: Upload immutable release attestation
         uses: actions/upload-artifact@v4
         with:
           name: release-attestation-${{ github.sha }}-${{ inputs.deployment_id }}
-          path: artifacts/release-attestations/${{ github.sha }}/${{ inputs.deployment_id }}/
+          path: |
+            artifacts/release-attestations/${{ github.sha }}/${{ inputs.deployment_id }}/
+            artifacts/release-security/
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 365
           overwrite: false

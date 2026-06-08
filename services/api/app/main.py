@@ -118,6 +118,13 @@ from services.api.app.pilot import (
     create_workspace_api_key,
     revoke_workspace_api_key,
     rotate_workspace_api_key,
+    list_credential_rotation_policies,
+    upsert_credential_rotation_policy,
+    list_credential_rotation_history,
+    rotate_workspace_credential,
+    revoke_workspace_credential,
+    claim_rotated_credential_secret,
+    trigger_due_credential_rotations,
     list_webhook_deliveries,
     list_slack_integrations,
     list_slack_deliveries,
@@ -3411,6 +3418,41 @@ def workspace_api_keys_rotate(api_key_id: str, request: Request) -> dict[str, An
 @app.post('/api-keys/{api_key_id}/rotate', summary='Rotate workspace API key')
 def api_keys_rotate(api_key_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: rotate_workspace_api_key(api_key_id, request))
+
+
+@app.get('/workspace/security/credential-rotation/policies', summary='List credential rotation policies')
+def credential_rotation_policies_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_credential_rotation_policies(request))
+
+
+@app.put('/workspace/security/credential-rotation/policies', summary='Create or update a credential rotation policy')
+def credential_rotation_policies_put(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: upsert_credential_rotation_policy(payload, request))
+
+
+@app.get('/workspace/security/credential-rotation/history', summary='List auditable credential rotation history')
+def credential_rotation_history_list(request: Request, limit: int = 200) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_credential_rotation_history(request, limit=limit))
+
+
+@app.post('/workspace/security/credentials/{credential_type}/{resource_id}/rotate', summary='Rotate or replace a versioned credential')
+def credential_version_rotate(credential_type: str, resource_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: rotate_workspace_credential(credential_type, resource_id, payload, request))
+
+
+@app.post('/workspace/security/credentials/{credential_type}/{resource_id}/revoke', summary='Revoke a credential version')
+def credential_version_revoke(credential_type: str, resource_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: revoke_workspace_credential(credential_type, resource_id, payload, request))
+
+
+@app.post('/workspace/security/credential-versions/{version_id}/claim', summary='Claim an automatically rotated credential once')
+def credential_version_claim(version_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: claim_rotated_credential_secret(version_id, request))
+
+
+@app.post('/workspace/security/credential-rotation/run', summary='Run due credential rotations')
+def credential_rotation_run(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: trigger_due_credential_rotations(request))
 
 
 @app.delete('/workspace/api-keys/{api_key_id}', summary='Revoke workspace API key')
