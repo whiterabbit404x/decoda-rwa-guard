@@ -18,6 +18,8 @@ Key invariants:
 """
 from __future__ import annotations
 
+import json
+
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -63,24 +65,9 @@ def _mock_rpc_success(chain_id_hex: str = '0x1', block_hex: str = '0x12c4cca'):
 
 
 def _real_live_chain(**overrides) -> dict:
-    """A canonical real live-event chain (telemetry -> ... -> evidence package).
-
-    Represents evidence captured by the monitoring worker (source_type=rpc_polling,
-    evidence_source=live). Tests use this to satisfy live_evidence_ready=True
-    without faking IDs from eth_chainId or eth_blockNumber alone.
-    """
-    chain = {
-        'telemetry_event_id': 'tel-live-001',
-        'detection_id': 'det-live-001',
-        'alert_id': 'alert-live-001',
-        'incident_id': 'inc-live-001',
-        'response_action_id': 'ra-live-001',
-        'evidence_package_id': 'pkg-live-001',
-        'evidence_source': 'live',
-        'source_type': 'rpc_polling',
-        'observed_at': '2026-05-22T12:00:00+00:00',
-        'detection_name': 'live_rpc_event_observed',
-    }
+    """Canonical configured-target detector chain for proof tests."""
+    fixture = Path(__file__).parent / 'fixtures' / 'live_target_detector_chain.json'
+    chain = json.loads(fixture.read_text())
     chain.update(overrides)
     return chain
 
@@ -321,12 +308,33 @@ def test_evidence_export_includes_all_live_ids(
         'last_telemetry_at': '2026-01-01T00:01:00Z',
         'source_type': 'rpc_polling',
         'telemetry_event_id': 'tel-001',
+        'workspace_id': '11111111-1111-4111-8111-111111111111',
+        'target_id': '22222222-2222-4222-8222-222222222222',
+        'target_identifier': '0x1234567890abcdef1234567890abcdef12345678',
+        'target_configured': True,
+        'provider_receipt': {'request_id': 'req-1'},
+        'on_chain_activity': {
+            'matched': True,
+            'transaction_hash': '0xabc',
+            'target_identifier': '0x1234567890abcdef1234567890abcdef12345678',
+        },
+        'detection_name': 'large_transfer_threshold_exceeded',
+        'severity': 'high',
+        'detector_result': {'triggered': True, 'status': 'anomaly_detected'},
         'detections_count': 1,
         'detection_telemetry_linked': True,
+        'detection_event_id': 'det-event-001',
         'detection_id': 'det-001',
         'alerts_count': 1,
         'alert_detection_linked': True,
         'alert_id': 'alert-001',
+        'persisted_linkage': {
+            'persisted': True,
+            'telemetry_event_id': 'tel-001',
+            'detection_event_id': 'det-event-001',
+            'detection_id': 'det-001',
+            'alert_id': 'alert-001',
+        },
         'incidents_count': 1,
         'incident_alert_linked': True,
         'incident_id': 'inc-001',
@@ -474,9 +482,9 @@ def test_script_real_evidence_satisfies_full_chain(
     assert lpe['live_telemetry_ready'] is True
     assert lpe['live_detection_ready'] is True
     assert lpe['live_alert_ready'] is True
-    assert lpe['live_incident_ready'] is True
+    assert lpe['live_incident_ready'] is False
     assert lpe['live_evidence_ready'] is True
-    assert lpe['chain']['telemetry_event_id'] == 'tel-live-001'
+    assert lpe['chain']['telemetry_event_id'] == _real_live_chain()['telemetry_event_id']
 
 
 def test_script_telemetry_record_has_rpc_polling_source_type(
@@ -525,10 +533,10 @@ def test_script_evidence_package_has_evidence_source_live(
     assert pkg.get('raw_rpc_response_hash') is not None
 
 
-def test_script_detection_name_is_live_rpc_event_observed(
+def test_script_detection_name_is_real_policy_trigger(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Detection record must use name 'live_rpc_event_observed' and source_type='rpc_polling'."""
+    """Detection record must preserve the non-informational policy trigger."""
     _clear_provider_env(monkeypatch)
     monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
     monkeypatch.setenv('EVM_CHAIN_ID', '1')
@@ -538,7 +546,9 @@ def test_script_detection_name_is_live_rpc_event_observed(
         result = generate_live_evidence_proof(live_evidence_chain=_real_live_chain())
 
     det = result['live_provider_evidence'].get('detection_record', {})
-    assert det.get('detection_name') == 'live_rpc_event_observed'
+    assert det.get('detection_name') == 'large_transfer_threshold_exceeded'
+    assert det.get('severity') == 'high'
+    assert det.get('detector_result', {}).get('triggered') is True
     assert det.get('source_type') == 'rpc_polling'
     assert det.get('evidence_source') == 'live'
 

@@ -23,10 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
 
 import scripts.generate_live_evidence_proof as _glep_mod
-from scripts.generate_live_evidence_proof import (
-    _build_proof_from_service_summary,
-    _content_id,
-)
+from scripts.generate_live_evidence_proof import _build_proof_from_service_summary
 
 _PROVIDER_ENV_VARS = [
     'EVM_RPC_URL', 'STAGING_EVM_RPC_URL',
@@ -64,49 +61,17 @@ def _live_service_summary(
 # _build_proof_from_service_summary
 # ---------------------------------------------------------------------------
 
-def test_build_proof_from_service_summary_sets_live_evidence_ready() -> None:
-    """_build_proof_from_service_summary must produce live_evidence_ready=true."""
-    summary = _live_service_summary()
-    result = _build_proof_from_service_summary(summary, '2026-05-27T00:00:00+00:00')
+def test_build_proof_from_service_summary_fails_closed() -> None:
+    """Aggregate booleans cannot substitute for persisted target evidence."""
+    result = _build_proof_from_service_summary(
+        _live_service_summary(), '2026-05-27T00:00:00+00:00'
+    )
     lpe = result['live_provider_evidence']
 
-    assert lpe['live_evidence_ready'] is True
-    assert lpe['provider_ready'] is True
-    assert lpe['evidence_source'] == 'live'
-
-
-def test_build_proof_from_service_summary_chain_ids_are_non_null() -> None:
-    """Chain IDs must be non-null content-addressable UUIDs, not synthesised from RPC alone."""
-    summary = _live_service_summary()
-    result = _build_proof_from_service_summary(summary, '2026-05-27T00:00:00+00:00')
-    chain = result['live_provider_evidence']['chain']
-
-    assert chain['telemetry_event_id'] is not None
-    assert chain['detection_id'] is not None
-    assert chain['alert_id'] is not None
-    assert chain['evidence_package_id'] is not None
-
-
-def test_build_proof_from_service_summary_ids_are_deterministic() -> None:
-    """Same service summary → same chain IDs (content-addressable, not random)."""
-    summary = _live_service_summary()
-    now = '2026-05-27T00:00:00+00:00'
-    r1 = _build_proof_from_service_summary(summary, now)
-    r2 = _build_proof_from_service_summary(summary, now)
-
-    assert r1['live_provider_evidence']['chain'] == r2['live_provider_evidence']['chain']
-
-
-def test_build_proof_from_service_summary_workflow_flags_propagated() -> None:
-    """Workflow flags from service summary must propagate to proof."""
-    summary = _live_service_summary()
-    result = _build_proof_from_service_summary(summary, '2026-05-27T00:00:00+00:00')
-    lpe = result['live_provider_evidence']
-
-    assert lpe['live_telemetry_ready'] is True
-    assert lpe['live_detection_ready'] is True
-    assert lpe['live_alert_ready'] is True
-    assert lpe['live_incident_ready'] is True
+    assert lpe['live_evidence_ready'] is False
+    assert all(value is None for value in lpe['chain'].values())
+    assert 'service_summary_cannot_satisfy_live_evidence' in lpe['contradiction_flags']
+    assert any('configured-target detector evidence' in item for item in lpe['missing'])
 
 
 # ---------------------------------------------------------------------------
@@ -266,7 +231,7 @@ def _mock_rpc_success_side_effect(
     return _side
 
 
-def test_workflow_live_chain_file_with_require_current_env_and_rpc(
+def test_workflow_summary_derived_chain_file_fails_enterprise_evidence(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -322,16 +287,10 @@ def test_workflow_live_chain_file_with_require_current_env_and_rpc(
         f'Expected provider_ready=True; got {lpe["provider_ready"]!r}. '
         f'Missing: {lpe.get("missing")}'
     )
-    assert lpe['live_evidence_ready'] is True, (
-        f'Expected live_evidence_ready=True; got {lpe["live_evidence_ready"]!r}. '
-        f'Missing: {lpe.get("missing")}'
-    )
-    assert lpe['evidence_source'] == 'live', (
-        f'Expected evidence_source="live"; got {lpe["evidence_source"]!r}'
-    )
-    assert not lpe.get('contradiction_flags'), (
-        f'Expected no contradiction_flags; got {lpe["contradiction_flags"]}'
-    )
+    assert lpe['live_evidence_ready'] is False
+    assert lpe['evidence_source'] == 'unknown'
+    assert any('no matching live telemetry event' in item.lower() for item in lpe['missing'])
+
 
 
 def test_workflow_no_secrets_remains_fail_closed(

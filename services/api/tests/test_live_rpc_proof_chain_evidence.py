@@ -112,135 +112,16 @@ def _build_conn(*, no_existing_detection: bool = True) -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# A. Proof chain creates a main evidence row
+# A-C. Proof-chain worker is intentionally read-only
 # ---------------------------------------------------------------------------
 
-def test_A_proof_chain_inserts_into_evidence_table() -> None:
-    conn = _build_conn()
-    result = monitoring_runner._ensure_workspace_live_rpc_proof_chain(conn, workspace_id=_WS_ID)
-
-    assert result['created'] is True
-    assert 'evidence_id' in result
-    assert result['evidence_id']
-
-    # Verify an INSERT INTO evidence was executed
-    evidence_calls = [
-        args for args, _ in conn.execute.call_args_list
-        if 'insert into evidence' in ' '.join(args[0].split()).lower()
-    ]
-    assert len(evidence_calls) >= 1, 'Expected at least one INSERT INTO evidence call'
-
-
-def test_A_proof_chain_returns_evidence_id() -> None:
-    conn = _build_conn()
-    result = monitoring_runner._ensure_workspace_live_rpc_proof_chain(conn, workspace_id=_WS_ID)
-
-    assert result['created'] is True
-    evidence_id = result.get('evidence_id')
-    assert evidence_id, f'evidence_id must be set in return dict; got: {result}'
-
-
-def test_A_deduplication_skips_creation() -> None:
-    conn = _build_conn(no_existing_detection=False)
-    result = monitoring_runner._ensure_workspace_live_rpc_proof_chain(conn, workspace_id=_WS_ID)
-
-    assert result['created'] is False
-    assert result['reason'] == 'deduplicated'
-
-    # No INSERT INTO evidence should have run
-    evidence_calls = [
-        args for args, _ in conn.execute.call_args_list
-        if 'insert into evidence' in ' '.join(args[0].split()).lower()
-    ]
-    assert len(evidence_calls) == 0, 'Deduplicated path must not insert evidence'
-
-
-# ---------------------------------------------------------------------------
-# B. Evidence row alert_id links to the proof alert
-# ---------------------------------------------------------------------------
-
-def test_B_evidence_row_links_to_proof_alert() -> None:
-    conn = _build_conn()
-    result = monitoring_runner._ensure_workspace_live_rpc_proof_chain(conn, workspace_id=_WS_ID)
-
-    assert result['created'] is True
-    alert_id = result['alert_id']
-
-    # Find the evidence INSERT call and check alert_id parameter
-    for call_args in conn.execute.call_args_list:
-        args, _ = call_args
-        sql = args[0] if args else ''
-        params = args[1] if len(args) > 1 else ()
-        if 'insert into evidence' in ' '.join(sql.split()).lower():
-            # alert_id is the 5th positional param (0-indexed: id, workspace_id, asset_id, target_id, alert_id)
-            assert alert_id in params, (
-                f'evidence INSERT must include alert_id={alert_id}; params={params}'
-            )
-            return
-
-    pytest.fail('INSERT INTO evidence call not found')
-
-
-# ---------------------------------------------------------------------------
-# C. Evidence raw_payload_json contains all required chain IDs
-# ---------------------------------------------------------------------------
-
-def test_C_evidence_raw_payload_contains_all_chain_ids() -> None:
-    conn = _build_conn()
-    result = monitoring_runner._ensure_workspace_live_rpc_proof_chain(conn, workspace_id=_WS_ID)
-
-    assert result['created'] is True
-
-    # Find the evidence INSERT and extract the raw_payload_json parameter
-    payload_json_str: str | None = None
-    for call_args in conn.execute.call_args_list:
-        args, _ = call_args
-        sql = args[0] if args else ''
-        params = args[1] if len(args) > 1 else ()
-        if 'insert into evidence' in ' '.join(sql.split()).lower():
-            # raw_payload_json is passed as a JSON string with ::jsonb cast
-            for param in params:
-                if isinstance(param, str) and 'proof_type' in param:
-                    payload_json_str = param
-                    break
-            break
-
-    assert payload_json_str is not None, 'Could not find raw_payload_json in evidence INSERT'
-
-    payload = json.loads(payload_json_str)
-
-    assert payload.get('telemetry_event_id') == result['telemetry_event_id']
-    assert payload.get('detection_id') == result['detection_id']
-    assert payload.get('alert_id') == result['alert_id']
-    assert payload.get('incident_id') == result['incident_id']
-    assert payload.get('response_action_id') == result['response_action_id']
-    assert payload.get('block_number') == _BLOCK_NUMBER
-    assert payload.get('chain_id') == _CHAIN_ID
-    assert payload.get('evidence_source') == 'live_rpc_polling'
-    assert payload.get('controlled_proof') is True
-    assert payload.get('attack_claim') is False
-    assert payload.get('workspace_id') == _WS_ID
-    assert payload.get('target_id') == _TARGET_ID
-
-
-def test_C_evidence_raw_payload_proof_type_is_live_rpc() -> None:
-    conn = _build_conn()
-    result = monitoring_runner._ensure_workspace_live_rpc_proof_chain(conn, workspace_id=_WS_ID)
-
-    for call_args in conn.execute.call_args_list:
-        args, _ = call_args
-        sql = args[0] if args else ''
-        params = args[1] if len(args) > 1 else ()
-        if 'insert into evidence' in ' '.join(sql.split()).lower():
-            for param in params:
-                if isinstance(param, str) and 'proof_type' in param:
-                    payload = json.loads(param)
-                    assert payload['proof_type'] == 'live_rpc_telemetry_proof'
-                    assert payload['provider_type'] == 'evm_rpc'
-                    assert payload['source_type'] == 'rpc_polling'
-                    return
-
-    pytest.fail('raw_payload_json not found in evidence INSERT')
+def test_worker_source_contains_no_record_manufacturing() -> None:
+    source = (REPO_ROOT / 'services' / 'api' / 'app' / '_proof_chain_worker.py').read_text()
+    function_source = source[source.index('def _ensure_workspace_live_rpc_proof_chain'):]
+    assert 'INSERT INTO incidents' not in function_source
+    assert 'INSERT INTO response_actions' not in function_source
+    assert 'INSERT INTO detections' not in function_source
+    assert 'INSERT INTO alerts' not in function_source
 
 
 # ---------------------------------------------------------------------------

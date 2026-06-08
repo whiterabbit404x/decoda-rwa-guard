@@ -3493,15 +3493,10 @@ def _ensure_workspace_live_rpc_proof_chain(
     *,
     workspace_id: str,
 ) -> dict[str, Any]:
-    """Delegate to the extracted proof-chain builder (no fastapi dependency).
+    """Select existing policy-created target evidence without writing workflow rows.
 
-    Creates a complete canonical + legacy proof chain: detection_events → detection →
-    detection_evidence → alert (with detection_event_id) → incident → incident_timeline →
-    response_action → evidence.
-
-    Idempotent: returns deduplicated only when the FULL canonical chain already exists
-    within LIVE_RPC_PROOF_CHAIN_DEDUPE_WINDOW_HOURS.  An incomplete legacy-only chain
-    causes orphan archival + fresh full chain creation.
+    RPC coverage heartbeats call this helper, but connectivity alone is not promoted
+    into a detection, alert, incident, response action, or enterprise proof chain.
     """
     from services.api.app._proof_chain_worker import (
         _ensure_workspace_live_rpc_proof_chain as _worker,

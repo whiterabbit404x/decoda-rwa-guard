@@ -26,11 +26,13 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from scripts.validate_live_evidence_proof import validate_enterprise_evidence_fields
 from scripts.validate_release_proof import validate_release_bundle
 
 _SECRET_PATTERNS = re.compile(
@@ -239,8 +241,8 @@ def _check_live_evidence(
                     # Verify all required chain IDs exist (no UUID-only proof).
                     chain = lpe.get('chain', {})
                     _required_chain_ids = (
-                        'telemetry_event_id', 'detection_id', 'alert_id',
-                        'incident_id', 'evidence_package_id',
+                        'telemetry_event_id', 'detection_event_id', 'detection_id',
+                        'alert_id', 'evidence_package_id',
                     )
                     missing_ids = [fld for fld in _required_chain_ids if not chain.get(fld)]
                     if missing_ids:
@@ -248,6 +250,10 @@ def _check_live_evidence(
                             'live_evidence_ready=true but required chain IDs missing: '
                             + ', '.join(missing_ids)
                         )
+                        return False, blockers
+                    enterprise_blockers = validate_enterprise_evidence_fields(lpe)
+                    if enterprise_blockers:
+                        blockers.extend(enterprise_blockers)
                         return False, blockers
                     # Freshness gate: telemetry must be within the configured window
                     telemetry_at = (

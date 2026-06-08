@@ -12,12 +12,14 @@ Steps:
    - Verify observed chain ID matches configured chain ID (if set)
    - Set live_provider_ready=True (RPC poll proves the provider is reachable)
    - Set live_provider_receipt_ready=True (block_number observation proves receipt)
-4. Load real live-event evidence (telemetry_event_id, detection_id, alert_id,
-   incident_id/response_action_id, evidence_package_id) from:
+4. Load persisted target-event evidence (workspace/target identifiers, provider
+   receipt, matching on-chain activity, detector result, telemetry/detection/alert
+   linkage, and evidence package ID) from:
    - the `live_evidence_chain` parameter, or
    - env var LIVE_EVIDENCE_CHAIN_JSON (a JSON string), or
    - env var LIVE_EVIDENCE_CHAIN_FILE (path to a JSON file).
-   The chain MUST carry evidence_source='live' and source_type='rpc_polling'.
+   The chain MUST originate from a configured workspace monitoring target and
+   contain a non-informational detector trigger. Incident/action IDs are optional.
 5. If no real live-event evidence is found:
    - live_provider_ready stays True (RPC works), but
    - live_telemetry_ready / live_detection_ready / live_alert_ready /
@@ -28,8 +30,8 @@ Steps:
      eth_blockNumber alone.
 6. If real live-event evidence is found:
    - Build the full chain using the real IDs (never synthesise from RPC alone).
-   - live_evidence_ready=True only when all required IDs are present and
-     evidence_source='live'/source_type='rpc_polling'.
+   - live_evidence_ready=True only for persisted, linked target activity with
+     provider receipt data and a substantive detector result.
 
 Fail-closed semantics:
 - provider_ready=false when no RPC URL configured
@@ -221,57 +223,125 @@ class _UnsetSentinel:
 _UNSET: Any = _UnsetSentinel()
 
 
+def _normalized_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+_INFORMATIONAL_DETECTION_NAMES = frozenset({
+    'live_rpc_block_observed',
+    'live_rpc_event_observed',
+    'live_rpc_telemetry_proof',
+    'monitoring_proof',
+    'monitoring_proof_chain',
+})
+_INFORMATIONAL_SEVERITIES = frozenset({'', 'info', 'informational', 'none'})
+
+
 def _validated_live_evidence_chain(chain: Any) -> dict[str, Any] | None:
-    """
-    Validate that ``chain`` carries a complete live-event proof.
+    """Validate persisted, target-originated detector evidence.
 
-    Requires one of:
-      - evidence_source in ('live', 'live_rpc')
-      - source == 'live_rpc'
-      - source_type == 'rpc_polling'
+    RPC reachability, block observations, monitoring proofs, and other
+    informational connectivity events are intentionally insufficient. The
+    supplied chain must identify a configured workspace target, retain provider
+    receipt data and matching transaction/log activity, contain a
+    non-informational detector trigger, and prove persisted
+    telemetry -> detection_event/detection -> alert linkage.
 
-    When evidence_source is explicitly set it must be a recognized live source
-    (fixture/demo/synthetic/static/historical/unknown/simulator are rejected).
-
-    source_type must not be a known non-live type (fixture, simulator, demo, etc.)
-    even when evidence_source claims 'live'.
-
-    Also requires: telemetry_event_id, detection_id, alert_id, evidence_package_id
-    all truthy; and incident_id or response_action_id truthy.
-
-    Returns the normalized chain on success, None otherwise. No IDs are
-    invented; missing fields cause rejection rather than substitution.
+    Incident and response-action IDs are optional: they are accepted only when
+    the actual detector policy created them and are never required to make the
+    live-evidence gate pass.
     """
     if not isinstance(chain, dict):
         return None
+
     evidence_source = str(chain.get('evidence_source') or '').strip().lower()
     source_type = str(chain.get('source_type') or '').strip().lower()
     source = str(chain.get('source') or '').strip().lower()
-
-    # When evidence_source is set it must explicitly name a live source.
     if evidence_source and evidence_source not in _LIVE_EVIDENCE_SOURCES:
         return None
-
-    # Reject non-live source_types even when evidence_source claims 'live'.
     if source_type and source_type in _NON_LIVE_SOURCE_TYPES:
         return None
-
-    # At least one live indicator must be present.
-    is_live = (
+    if not (
         evidence_source in _LIVE_EVIDENCE_SOURCES
         or source == 'live_rpc'
         or source_type == 'rpc_polling'
+    ):
+        return None
+
+    required_ids = (
+        'workspace_id', 'target_id', 'target_identifier', 'telemetry_event_id',
+        'detection_event_id', 'detection_id', 'alert_id', 'evidence_package_id',
     )
-    if not is_live:
+    if not all(str(chain.get(key) or '').strip() for key in required_ids):
         return None
-    required = ('telemetry_event_id', 'detection_id', 'alert_id', 'evidence_package_id')
-    if not all(str(chain.get(k) or '').strip() for k in required):
+    if chain.get('target_configured') is not True:
         return None
-    incident = str(chain.get('incident_id') or '').strip()
-    response_action = str(chain.get('response_action_id') or '').strip()
-    if not incident and not response_action:
+
+    provider_receipt = _normalized_mapping(
+        chain.get('provider_receipt') or chain.get('provider_receipt_data')
+    )
+    if not provider_receipt:
         return None
-    return chain
+    if not any(provider_receipt.get(key) for key in (
+        'receipt_id', 'request_id', 'response_id', 'response_hash', 'block_hash',
+    )):
+        return None
+
+    activity = _normalized_mapping(chain.get('on_chain_activity'))
+    transaction_hash = str(
+        activity.get('transaction_hash') or activity.get('tx_hash')
+        or chain.get('transaction_hash') or chain.get('tx_hash') or ''
+    ).strip()
+    if activity.get('matched') is not True or not transaction_hash:
+        return None
+    activity_target = str(activity.get('target_identifier') or '').strip().lower()
+    target_identifier = str(chain.get('target_identifier') or '').strip().lower()
+    if activity_target != target_identifier:
+        return None
+
+    detection_name = str(
+        chain.get('detection_name') or chain.get('detection_type') or ''
+    ).strip().lower()
+    severity = str(chain.get('severity') or '').strip().lower()
+    detector_result = _normalized_mapping(chain.get('detector_result'))
+    detector_status = str(
+        detector_result.get('status') or detector_result.get('detector_status') or ''
+    ).strip().lower()
+    if (
+        not detection_name
+        or detection_name in _INFORMATIONAL_DETECTION_NAMES
+        or severity in _INFORMATIONAL_SEVERITIES
+        or detector_result.get('triggered') is not True
+        or detector_status in ('', 'informational', 'no_match', 'healthy', 'ok')
+    ):
+        return None
+
+    linkage = _normalized_mapping(chain.get('persisted_linkage'))
+    expected_linkage = {
+        'telemetry_event_id': str(chain['telemetry_event_id']),
+        'detection_event_id': str(chain['detection_event_id']),
+        'detection_id': str(chain['detection_id']),
+        'alert_id': str(chain['alert_id']),
+    }
+    if linkage.get('persisted') is not True:
+        return None
+    if any(str(linkage.get(key) or '') != value for key, value in expected_linkage.items()):
+        return None
+
+    normalized = dict(chain)
+    normalized['provider_receipt'] = provider_receipt
+    normalized['on_chain_activity'] = {**activity, 'transaction_hash': transaction_hash}
+    normalized['detector_result'] = detector_result
+    normalized['persisted_linkage'] = linkage
+    return normalized
 
 
 def generate_live_evidence_proof(
@@ -296,9 +366,9 @@ def generate_live_evidence_proof(
     Args:
         rpc_url_override: inject a URL for unit tests only.
         live_evidence_chain: real telemetry chain captured by the monitoring
-            worker (telemetry_event_id, detection_id, alert_id,
-            incident_id/response_action_id, evidence_package_id; evidence_source
-            must be 'live' and source_type 'rpc_polling').
+            worker, including configured target identity, provider receipt, matching
+            on-chain activity, non-informational detector result, and persisted
+            telemetry-to-detection-to-alert linkage. Incident/action IDs are optional.
             - When omitted (_UNSET): env vars LIVE_EVIDENCE_CHAIN_JSON /
               LIVE_EVIDENCE_CHAIN_FILE are consulted as fallback.
             - When explicitly None: no fallback; treated as "no chain available".
@@ -553,6 +623,7 @@ def generate_live_evidence_proof(
 
     # --- Real live-event evidence: build chain from the supplied real IDs ---
     telemetry_id = str(real_chain['telemetry_event_id'])
+    detection_event_id = str(real_chain['detection_event_id'])
     detection_id = str(real_chain['detection_id'])
     alert_id = str(real_chain['alert_id'])
     incident_id = str(real_chain.get('incident_id') or '') or None
@@ -583,12 +654,13 @@ def generate_live_evidence_proof(
             'live_telemetry_ready': True,
             'live_detection_ready': True,
             'live_alert_ready': True,
-            'live_incident_ready': bool(incident_id or response_action_id),
+            'live_incident_ready': bool(incident_id),
             'evidence_source': 'live',
             'latest_live_telemetry_at': telemetry_ts,
             'live_evidence_ready': True,
             'chain': {
                 'telemetry_event_id': telemetry_id,
+                'detection_event_id': detection_event_id,
                 'detection_id': detection_id,
                 'alert_id': alert_id,
                 'incident_id': incident_id,
@@ -607,17 +679,23 @@ def generate_live_evidence_proof(
                 'transaction_hash': real_chain.get('transaction_hash') or tx_hash,
                 'workspace_id': real_chain.get('workspace_id'),
                 'target_id': real_chain.get('target_id'),
+                'target_identifier': real_chain.get('target_identifier'),
+                'target_configured': True,
+                'provider_receipt': real_chain.get('provider_receipt'),
+                'on_chain_activity': real_chain.get('on_chain_activity'),
                 'asset_id': real_chain.get('asset_id'),
             },
             'detection_record': {
                 'detection_id': detection_id,
-                'detection_name': real_chain.get('detection_name') or 'live_rpc_event_observed',
+                'detection_name': real_chain.get('detection_name'),
+                'detection_event_id': detection_event_id,
                 'telemetry_event_id': telemetry_id,
                 'observed_at': telemetry_ts,
                 'evidence_source': 'live',
                 'source_type': 'rpc_polling',
-                'severity': real_chain.get('severity') or 'informational',
+                'severity': real_chain.get('severity'),
                 'confidence': real_chain.get('confidence') or 'high',
+                'detector_result': real_chain.get('detector_result'),
             },
             'alert_record': {
                 'alert_id': alert_id,
@@ -651,6 +729,9 @@ def generate_live_evidence_proof(
                 'chain_id': chain_id_observed,
                 'block_number': block_number_observed,
                 'raw_rpc_response_hash': raw_rpc_response_hash,
+                'provider_receipt': real_chain.get('provider_receipt'),
+                'on_chain_activity': real_chain.get('on_chain_activity'),
+                'persisted_linkage': real_chain.get('persisted_linkage'),
                 'exported_at': telemetry_ts,
             },
             'missing': [],
@@ -736,70 +817,30 @@ def _load_service_live_summary() -> dict[str, Any] | None:
 
 
 def _build_proof_from_service_summary(service_summary: dict[str, Any], now: str) -> dict[str, Any]:
+    """Reject aggregate service summaries as enterprise evidence.
+
+    Boolean workflow flags cannot establish target identity, provider receipts,
+    matching on-chain activity, a substantive detector trigger, or persisted
+    row linkage. Kept as a compatibility helper, but it always fails closed and
+    never synthesizes proof-chain IDs.
     """
-    Build a canonical live evidence proof from the service live summary.
-
-    Used by main() when no EVM RPC URL is configured in the current environment
-    but the canonical service summary proves the backend made real live RPC polling
-    calls.  Chain IDs are content-addressable (uuid5) from the summary timestamp
-    and workflow flags so the same service state always produces the same IDs.
-    """
-    ts = str(service_summary.get('latest_live_telemetry_at') or now)
-
-    telemetry_id = _content_id('telemetry', ts, 'live', 'rpc_polling', 'service_summary')
-    detection_id = _content_id('detection', ts, telemetry_id)
-    alert_id = _content_id('alert', ts, detection_id)
-    incident_id = (
-        _content_id('incident', ts, alert_id)
-        if service_summary.get('incident_opened_from_alert') else None
+    return _build_fail_result(
+        now=now,
+        provider_ready=bool(service_summary.get('provider_ready')),
+        provider_mode='live' if service_summary.get('provider_ready') else 'disabled',
+        provider_health_checked=bool(service_summary.get('provider_ready')),
+        provider_checked_at=service_summary.get('latest_live_telemetry_at'),
+        provider_url_masked='',
+        chain_id_configured=False,
+        chain_id_observed=None,
+        block_number_observed=None,
+        worker_enabled=False,
+        missing=[
+            'aggregate service summary is informational only; persisted configured-target '
+            'detector evidence is required'
+        ],
+        contradiction_flags=['service_summary_cannot_satisfy_live_evidence'],
     )
-    response_action_id = (
-        _content_id('response_action', ts, alert_id)
-        if service_summary.get('response_action_recommended_or_executed') else None
-    )
-    evidence_package_id = _content_id('evidence_package', ts, alert_id)
-
-    return {
-        'schema_version': 1,
-        'generated_at': now,
-        **build_attestation_context(REPO_ROOT, os.getenv('RELEASE_ENVIRONMENT', 'staging')),
-        'live_provider_evidence': {
-            'provider_ready': True,
-            'provider_mode': 'live',
-            'provider_health_checked': True,
-            'provider_checked_at': ts,
-            'provider_url_masked': '',
-            'chain_id_configured': False,
-            'chain_id_observed': None,
-            'block_number_observed': None,
-            'worker_enabled': True,
-            'live_provider_ready': True,
-            'live_provider_receipt_ready': True,
-            'live_telemetry_ready': bool(service_summary.get('telemetry_event_present')),
-            'live_detection_ready': bool(service_summary.get('detection_generated_from_telemetry')),
-            'live_alert_ready': bool(service_summary.get('alert_generated_from_detection')),
-            'live_incident_ready': bool(service_summary.get('incident_opened_from_alert')),
-            'evidence_source': 'live',
-            'latest_live_telemetry_at': ts,
-            'live_evidence_ready': True,
-            'chain': {
-                'telemetry_event_id': telemetry_id,
-                'detection_id': detection_id,
-                'alert_id': alert_id,
-                'incident_id': incident_id,
-                'response_action_id': response_action_id,
-                'evidence_package_id': evidence_package_id,
-            },
-            'source': 'service_summary',
-            'source_path': str(
-                _SERVICE_LIVE_SUMMARY_PATH.relative_to(REPO_ROOT)
-                if _SERVICE_LIVE_SUMMARY_PATH.is_relative_to(REPO_ROOT)
-                else _SERVICE_LIVE_SUMMARY_PATH
-            ),
-            'missing': [],
-            'contradiction_flags': [],
-        },
-    }
 
 
 def main(strict: bool = False) -> int:
@@ -814,7 +855,6 @@ def main(strict: bool = False) -> int:
             'strict current-env mode; committed artifacts will not be trusted.'
         )
 
-    now = datetime.now(timezone.utc).isoformat()
     result = generate_live_evidence_proof(require_current_env=require_current_env)
 
     out_dir = REPO_ROOT / 'artifacts' / 'live-evidence-proof' / 'latest'

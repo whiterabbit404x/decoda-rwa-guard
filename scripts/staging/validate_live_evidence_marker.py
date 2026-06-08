@@ -16,6 +16,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.validate_live_evidence_proof import validate_enterprise_evidence_fields
 _LIVE_EVIDENCE_PROOF = (
     REPO_ROOT / 'artifacts' / 'live-evidence-proof' / 'latest' / 'summary.json'
 )
@@ -43,12 +46,15 @@ def main() -> int:
     live_evidence_ready = bool(lpe.get('live_evidence_ready'))
     evidence_source = str(lpe.get('evidence_source') or '').strip().lower()
 
-    if not (provider_ready and live_evidence_ready and evidence_source == 'live'):
+    enterprise_blockers = validate_enterprise_evidence_fields(lpe) if live_evidence_ready else []
+
+    if not (provider_ready and live_evidence_ready and evidence_source == 'live') or enterprise_blockers:
         print(
             '[validate-live-evidence-marker] conditions not met — marker not written\n'
             f'  provider_ready={provider_ready}\n'
             f'  live_evidence_ready={live_evidence_ready}\n'
-            f'  evidence_source={evidence_source!r}'
+            f'  evidence_source={evidence_source!r}\n'
+            f'  enterprise_blockers={enterprise_blockers}'
         )
         return 0
 
