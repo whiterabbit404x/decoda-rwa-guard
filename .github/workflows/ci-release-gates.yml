@@ -9,6 +9,9 @@ on:
       - 'release/**'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   paid-launch-readiness-gates:
     name: Paid launch billing/email/provider readiness gates
@@ -73,12 +76,40 @@ jobs:
           python -m pytest services/api/tests/test_release_proof_artifacts.py -q
 
 
+  mandatory-security-supply-chain-gates:
+    name: Mandatory security and supply-chain gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # setup-trivy tags before v0.2.6 were deleted after the March 2026
+      # supply-chain incident. Pin the verified v0.2.6 commit and a known-safe,
+      # immutable Trivy release instead of relying on a mutable/deleted tag.
+      - name: Setup Trivy
+        uses: aquasecurity/setup-trivy@3fb12ec12f41e471780db15c232d5dd185dcb514 # v0.2.6
+        with:
+          version: v0.69.3
+          cache: true
+
+      - name: Scan repository for vulnerabilities and exposed secrets
+        run: >-
+          trivy fs
+          --scanners vuln,secret,misconfig
+          --severity HIGH,CRITICAL
+          --ignore-unfixed
+          --exit-code 1
+          .
+
+
   final-readiness-gate:
     name: Final 100% readiness gate (fail-closed)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [paid-launch-readiness-gates, required-gates]
-    if: ${{ needs.paid-launch-readiness-gates.result == 'success' && needs.required-gates.result == 'success' }}
+    needs: [paid-launch-readiness-gates, required-gates, mandatory-security-supply-chain-gates]
+    if: ${{ needs.paid-launch-readiness-gates.result == 'success' && needs.required-gates.result == 'success' && needs.mandatory-security-supply-chain-gates.result == 'success' }}
 
     steps:
       - name: Checkout

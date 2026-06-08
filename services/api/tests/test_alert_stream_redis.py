@@ -14,6 +14,7 @@ class SharedRedis:
         self.values: dict[str, int] = {}
         self.streams: dict[str, list[tuple[str, dict[str, str]]]] = {}
         self.fail = False
+        self.xadd_options: list[tuple[int, bool]] = []
 
     def ping(self):
         if self.fail:
@@ -30,6 +31,7 @@ class SharedRedis:
         return True
 
     def xadd(self, key, fields, maxlen, approximate):
+        self.xadd_options.append((maxlen, approximate))
         messages = self.streams.setdefault(key, [])
         event_id = f'{len(messages) + 1}-0'
         messages.append((event_id, fields))
@@ -71,6 +73,7 @@ def test_workspace_stream_is_scoped_and_bounded(monkeypatch):
     assert alert_stream.stream_key('workspace-a') != alert_stream.stream_key('workspace-b')
     assert len(shared.streams[alert_stream.stream_key('workspace-a')]) == 10
     assert len(shared.streams[alert_stream.stream_key('workspace-b')]) == 1
+    assert all(options == (10, False) for options in shared.xadd_options)
 
 
 def test_multi_replica_subscribers_receive_same_workspace_event(monkeypatch):
