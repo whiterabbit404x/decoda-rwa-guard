@@ -19,3 +19,8 @@ build
 coverage
 playwright-report
 test-results
+
+artifacts
+evidence
+.env
+.env.*

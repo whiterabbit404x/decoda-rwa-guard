@@ -84,7 +84,44 @@ def _write_release_proof(tmp_path: Path, **overrides: Any) -> Path:
     return d
 
 
+
+
+def _write_security_proof(tmp_path: Path) -> Path:
+    root = tmp_path / 'security' / 'latest'
+    artifacts = {}
+    for component, digest_char in (('api', 'a'), ('web', 'b')):
+        records = {}
+        contents = {
+            'sbom': (f'sbom/{component}.spdx.json', '{}'),
+            'digest': (f'images/{component}.digest', 'sha256:' + digest_char * 64),
+            'signature': (f'signatures/{component}.bundle.json', '{}'),
+            'sbom_attestation': (f'attestations/{component}-sbom.bundle.json', '{}'),
+            'provenance': (f'attestations/{component}-provenance.bundle.json', '{}'),
+        }
+        import hashlib
+        for record, (relative, content) in contents.items():
+            target = root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content)
+            entry = {'path': relative, 'status': 'present', 'sha256': hashlib.sha256(content.encode()).hexdigest()}
+            if record == 'digest':
+                entry['image_digest'] = content
+            records[record] = entry
+        artifacts[component] = records
+    gates = {name: {'status': 'pass', 'summary': 'passed'} for name in (
+        'sast', 'python_dependency_audit', 'javascript_dependency_audit', 'secret_scan',
+        'infrastructure_config_scan', 'api_container_scan', 'web_container_scan',
+    )}
+    proof = {
+        'schema_version': 1, 'generated_at': '2026-01-01T00:00:00+00:00',
+        'mandatory_gates': gates, 'artifacts': artifacts, 'overall_status': 'pass', 'blockers': [],
+    }
+    (root / 'summary.json').write_text(json.dumps(proof))
+    return root
+
+
 def _write_ci_gates(tmp_path: Path, **overrides: Any) -> None:
+    _write_security_proof(tmp_path)
     d = tmp_path / 'release-proof' / 'latest'
     d.mkdir(parents=True, exist_ok=True)
     gates: dict[str, Any] = {
@@ -735,3 +772,15 @@ def test_w_billing_ready_true_passes_launch_readiness(tmp_path: Path) -> None:
     assert gate.get('status') == 'pass', (
         f'Expected paid_launch_readiness gate=pass, got {gate.get("status")!r}'
     )
+
+
+def test_x_missing_security_supply_chain_proof_blocks_enterprise_release(tmp_path: Path) -> None:
+    lp_dir = _write_launch_proof(tmp_path)
+    rp_dir = _write_release_proof(tmp_path)
+    _write_ci_gates(tmp_path)
+    import shutil
+    shutil.rmtree(tmp_path / 'security')
+    result = build_final_readiness(mode='staging', strict=True, launch_proof_dir=lp_dir, release_proof_dir=rp_dir)
+    assert result['production_100_percent_ready'] is False
+    assert result['required_gates']['security_release_proof']['status'] == 'fail'
+    assert any('security release proof' in blocker for blocker in result['blockers'])

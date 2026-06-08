@@ -32,6 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.validate_release_proof import validate_release_bundle
+from scripts.security.release_security import validate_security_proof
 
 _SECRET_PATTERNS = re.compile(
     r'(sk_live_|sk_test_|whsec_|SG\.[A-Za-z0-9_-]{20,}|rk_live_|pk_live_|AKIA[A-Z0-9]{16})',
@@ -627,6 +628,13 @@ def build_final_readiness(
     if not release_attestation_valid:
         blockers.extend(f'release attestation: {issue}' for issue in release_attestation_issues)
 
+    security_proof_path = release_proof_dir.parents[1] / 'security' / 'latest' / 'summary.json'
+    security_valid, security_issues = validate_security_proof(
+        security_proof_path, artifact_root=security_proof_path.parent
+    )
+    if not security_valid:
+        blockers.extend(f'security release proof: {issue}' for issue in security_issues)
+
     blockers.extend(lp_blockers)
     blockers.extend(rp_blockers)
     blockers.extend(cg_blockers)
@@ -696,6 +704,11 @@ def build_final_readiness(
         launch_proof, release_proof, ci_gates, mode, strict, staging_proof,
         live_evidence_ok=live_ok,
     )
+    required_gates['security_release_proof'] = {
+        'status': 'pass' if security_valid else 'fail',
+        'source': 'artifacts/security/latest/summary.json',
+        'detail': '' if security_valid else '; '.join(security_issues),
+    }
 
     controlled_pilot_ready = (
         release_attestation_valid
@@ -720,6 +733,7 @@ def build_final_readiness(
 
     broad_paid_saas_ready = (
         release_attestation_valid
+        and security_valid
         and live_ok
         and staging_ok
         and _lp_paid_ready
@@ -742,6 +756,7 @@ def build_final_readiness(
 
     production_100_percent_ready = (
         release_attestation_valid
+        and security_valid
         and all_cats_pass
         and live_ok
         and staging_ok
