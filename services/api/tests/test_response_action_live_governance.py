@@ -70,7 +70,7 @@ def test_live_execute_with_approval_returns_execution_artifacts_and_audit_metada
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
-    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_: ({'id': 'owner-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'owner'}))
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_, **__: ({'id': 'owner-1', 'mfa_enabled': True}, {'workspace_id': 'ws-1', 'role': 'owner'}))
     monkeypatch.setattr(pilot, 'log_audit', lambda *_args, **kwargs: audits.append(kwargs))
 
     request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
@@ -112,3 +112,29 @@ def test_response_action_payload_keeps_chain_linked_audit_fields() -> None:
     assert payload['execution_provenance']['provider_response_id'] == 'provider-resp-1'
     assert payload['execution_provenance']['tx_hash'] == '0xabc123'
     assert payload['execution_provenance']['execution_artifacts']['audit_snapshot']['mode'] == 'live'
+
+
+def test_response_action_approval_rejects_proposer_even_for_owner(monkeypatch):
+    class _Result:
+        def __init__(self, row=None): self.row = row
+        def fetchone(self): return self.row
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            if 'FROM response_actions' in str(statement):
+                return _Result({'id': 'action-1', 'mode': 'live', 'status': 'pending', 'created_by_user_id': 'owner-1'})
+            return _Result()
+
+    @contextmanager
+    def _fake_pg():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_, **__: ({'id': 'owner-1'}, {'workspace_id': 'ws-1'}))
+
+    with pytest.raises(HTTPException) as exc_info:
+        pilot.approve_enforcement_action('action-1', SimpleNamespace(headers={}))
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail['code'] == 'SEPARATION_OF_DUTIES_REQUIRED'

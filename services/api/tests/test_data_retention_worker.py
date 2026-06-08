@@ -64,6 +64,8 @@ def test_hard_deletion_is_bounded_to_workspace_and_writes_detailed_event():
     result = data_retention.execute_request(connection, request_row(), worker_name='worker-1')
 
     assert result['status'] == 'completed'
+    assert len(result['deletion_report_sha256']) == 64
+    assert result['deletion_report']['worker_name'] == 'worker-1'
     assert result['operations']['telemetry']['records_affected'] == 4
     event = next(call for call in connection.calls if 'INSERT INTO data_deletion_events' in call[0])
     assert event[1][1:5] == ('request-1', 'workspace-a', 'telemetry', 'hard_delete')

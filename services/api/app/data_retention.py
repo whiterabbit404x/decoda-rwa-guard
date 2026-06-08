@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import secrets
 import uuid
@@ -127,6 +129,8 @@ def execute_request(connection: Any, deletion: Any, *, worker_name: str) -> dict
         before = after = None
         if data_class in DATA_TARGETS:
             table, timestamp = DATA_TARGETS[data_class]
+            if data_class == 'audit_logs':
+                connection.execute("SELECT set_config('app.retention_worker', 'on', true)")
             _validate_sql_identifier(table, 'retention table')
             _validate_sql_identifier(timestamp, 'retention timestamp column')
             if data_class == 'audit_logs':
@@ -191,13 +195,22 @@ def execute_request(connection: Any, deletion: Any, *, worker_name: str) -> dict
                     anchor_before=before, anchor_after=after,
                     details={'cutoff_at': _safe(cutoff), 'worker_name': worker_name,
                              'external_artifacts_deleted': external, 'subject_user_id': subject})
+    report = {
+        'request_id': request_id,
+        'workspace_id': workspace_id,
+        'cutoff_at': _safe(cutoff),
+        'operations': operations,
+        'worker_name': worker_name,
+    }
+    report_sha256 = hashlib.sha256(json.dumps(report, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
+    result = {'operations': operations, 'deletion_report': report, 'deletion_report_sha256': report_sha256}
     connection.execute(
         """UPDATE data_deletion_requests SET status = 'completed', result = %s::jsonb, error_message = NULL,
            completed_at = NOW(), lease_owner = NULL, lease_expires_at = NULL, updated_at = NOW()
            WHERE id = %s AND workspace_id = %s""",
-        (_json({'operations': operations}), request_id, workspace_id),
+        (_json(result), request_id, workspace_id),
     )
-    return {'id': request_id, 'status': 'completed', 'operations': operations}
+    return {'id': request_id, 'status': 'completed', **result}
 
 
 def schedule_requests(connection: Any) -> int:

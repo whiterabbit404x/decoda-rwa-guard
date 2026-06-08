@@ -153,3 +153,72 @@ def test_scim_routes_delegate_without_workspace_session_auth(monkeypatch):
     response = client.get('/scim/v2/Users?startIndex=3', headers={'Authorization': 'Bearer scim-token'})
     assert response.status_code == 200
     assert response.json() == {'totalResults': 0, 'startIndex': 3}
+
+
+def test_session_mfa_requires_server_record_not_step_up_headers(monkeypatch):
+    class Connection:
+        def execute(self, statement, params=None):
+            assert 'mfa_verified_at' in statement
+            return Result({'authenticated_at': None, 'reauthenticated_at': None, 'mfa_verified_at': None, 'authentication_methods': []})
+
+    monkeypatch.setattr(pilot, '_auth_token_hash', lambda value: f'hash:{value}')
+    forged = SimpleNamespace(headers={
+        'authorization': 'Bearer session-token',
+        'x-step-up-verified': 'true',
+        'x-step-up-authenticated-at': pilot.utc_now().isoformat(),
+    })
+    with pytest.raises(HTTPException) as exc_info:
+        pilot._require_session_mfa(Connection(), forged)
+    assert exc_info.value.detail['code'] == 'MFA_CHALLENGE_REQUIRED'
+
+
+def test_oidc_claim_validation_rejects_unsupported_algorithm(monkeypatch):
+    import base64
+    import json
+
+    def encoded(value):
+        return base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip('=')
+
+    token = f"{encoded({'alg': 'none', 'kid': 'key'})}.{encoded({'nonce': 'expected'})}.signature"
+    with pytest.raises(HTTPException) as exc_info:
+        pilot._verify_oidc_id_token(token, discovery={'issuer': 'https://idp.example', 'jwks_uri': 'https://idp.example/keys'}, client_id='client', nonce='expected')
+    assert exc_info.value.status_code == 401
+
+
+def test_identity_migration_enforces_append_only_audit_and_oidc_state():
+    from pathlib import Path
+
+    migration = Path('services/api/migrations/0100_identity_sod_and_append_only_audit.sql').read_text()
+    assert 'oidc_login_states' in migration
+    assert 'BEFORE UPDATE OR DELETE ON audit_logs' in migration
+    assert "current_setting('app.retention_worker', true)" in migration
+
+
+def test_oidc_claim_validation_verifies_signature_issuer_audience_expiry_and_nonce(monkeypatch):
+    import base64
+    import json
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import padding, rsa
+
+    def b64(value: bytes) -> str:
+        return base64.urlsafe_b64encode(value).decode().rstrip('=')
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    numbers = key.public_key().public_numbers()
+    jwk = {
+        'kid': 'key-1', 'alg': 'RS256', 'kty': 'RSA',
+        'n': b64(numbers.n.to_bytes((numbers.n.bit_length() + 7) // 8, 'big')),
+        'e': b64(numbers.e.to_bytes((numbers.e.bit_length() + 7) // 8, 'big')),
+    }
+    now = int(pilot.utc_now().timestamp())
+    header = b64(json.dumps({'alg': 'RS256', 'kid': 'key-1'}).encode())
+    payload = b64(json.dumps({'iss': 'https://idp.example', 'aud': 'client-1', 'sub': 'subject-1', 'nonce': 'nonce-1', 'iat': now, 'exp': now + 300}).encode())
+    signature = key.sign(f'{header}.{payload}'.encode(), padding.PKCS1v15(), hashes.SHA256())
+    monkeypatch.setattr(pilot, '_oidc_fetch_json', lambda *_args, **_kwargs: {'keys': [jwk]})
+
+    claims = pilot._verify_oidc_id_token(
+        f'{header}.{payload}.{b64(signature)}',
+        discovery={'issuer': 'https://idp.example', 'jwks_uri': 'https://idp.example/keys'},
+        client_id='client-1', nonce='nonce-1',
+    )
+    assert claims['sub'] == 'subject-1'
