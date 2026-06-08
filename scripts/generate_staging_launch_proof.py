@@ -543,34 +543,42 @@ def build_billing_production_validation(mode: str) -> dict[str, Any]:
 
 
 def build_rate_limit_validation(mode: str) -> dict[str, Any]:
+    redis_stream_configured = bool((os.getenv('REDIS_URL') or '').strip())
     redis_configured = bool(
-        (os.getenv('REDIS_URL') or '').strip()
+        redis_stream_configured
         or (
             (os.getenv('UPSTASH_REDIS_REST_URL') or '').strip()
             and (os.getenv('UPSTASH_REDIS_REST_TOKEN') or '').strip()
         )
     )
-    temporarily_disabled = (os.getenv('REDIS_TEMPORARILY_DISABLED') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+    memory_override_requested = any(
+        (os.getenv(name) or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+        for name in ('REDIS_TEMPORARILY_DISABLED', 'ALLOW_IN_MEMORY_RATE_LIMIT_IN_PRODUCTION')
+    )
     production_like = mode in {'staging', 'production'}
     warning = None
     blockers: list[str] = []
     if redis_configured:
         status = 'configured'
-    elif production_like and temporarily_disabled:
-        status = 'disabled_temporary'
-        warning = 'Redis disabled temporarily; in-memory rate limiting is not horizontally scalable'
+        if production_like and not redis_stream_configured:
+            blockers.append('REDIS_URL is required for bounded, multi-replica Redis Streams alert delivery')
     elif production_like:
-        status = 'missing'
-        blockers.append('Redis is required for enterprise-ready distributed rate limiting')
+        status = 'memory_rejected' if memory_override_requested else 'missing'
+        blockers.append(
+            'Memory-backed rate limiting is rejected; Redis/Upstash is required for production-like deployments'
+            if memory_override_requested
+            else 'Redis/Upstash is required for enterprise-ready distributed rate limiting'
+        )
     else:
         status = 'memory_local'
 
     return {
         'redis_configured': redis_configured,
         'redis_status': status,
-        'rate_limit_backend': 'redis' if redis_configured else 'memory',
+        'rate_limit_backend': ('redis' if redis_stream_configured else 'upstash') if redis_configured else 'memory',
         'rate_limit_enterprise_ready': redis_configured,
-        'enterprise_ready': redis_configured and not blockers,
+        'alert_stream_backend': 'redis_streams' if redis_stream_configured else 'unavailable',
+        'enterprise_ready': redis_configured and redis_stream_configured and not blockers,
         'warning': warning,
         'blockers': blockers,
         'warnings': [warning] if warning else [],
