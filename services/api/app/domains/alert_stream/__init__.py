@@ -81,7 +81,7 @@ def publish(workspace_id: str, alert_data: dict[str, Any]) -> str:
             stream_key(workspace_id),
             {'payload': json.dumps(alert_data, separators=(',', ':'))},
             maxlen=stream_max_length(),
-            approximate=True,
+            approximate=False,
         )
     )
 
