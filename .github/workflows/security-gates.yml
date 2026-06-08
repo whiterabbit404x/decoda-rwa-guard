@@ -109,7 +109,9 @@ jobs:
     env:
       DATABASE_URL: postgresql://decoda:decoda-ci-only@127.0.0.1:5432/decoda
       MIGRATION_FAIL_OPEN: 'false'
-      ENVIRONMENT: test
+      APP_ENV: test
+      APP_MODE: live
+      LIVE_MODE_ENABLED: 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -145,7 +147,7 @@ jobs:
         run: docker build --tag decoda-api:${{ github.sha }} --file services/api/Dockerfile .
 
       - name: Scan production image for high and critical vulnerabilities
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: decoda-api:${{ github.sha }}
           format: sarif
@@ -162,7 +164,7 @@ jobs:
 
       - name: Generate CycloneDX software bill of materials
         if: always()
-        uses: anchore/sbom-action@v0.17.2
+        uses: anchore/sbom-action@v0.20.9
         with:
           image: decoda-api:${{ github.sha }}
           format: cyclonedx-json

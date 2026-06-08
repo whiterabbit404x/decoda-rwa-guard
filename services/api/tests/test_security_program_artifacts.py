@@ -60,3 +60,29 @@ def test_migration_baseline_is_explicitly_non_extensible() -> None:
     baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
     assert "New anomalies fail validation" in baseline["description"]
     assert baseline["missing_versions"] == [13]
+
+
+def test_security_workflow_enables_live_postgres_migrations() -> None:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "security-gates.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "LIVE_MODE_ENABLED: 'true'" in workflow
+    assert "APP_MODE: live" in workflow
+    assert "MIGRATION_FAIL_OPEN: 'false'" in workflow
+    assert "aquasecurity/trivy-action@v0.36.0" in workflow
+    assert "anchore/sbom-action@v0.20.9" in workflow
+
+
+def test_pytest_pin_is_consistent_across_requirement_entrypoints() -> None:
+    requirement_paths = (
+        REPO_ROOT / "services" / "api" / "requirements.txt",
+        REPO_ROOT / "services" / "api" / "requirements-dev.txt",
+        REPO_ROOT / "requirements-local.txt",
+    )
+    pins = {
+        line.strip()
+        for path in requirement_paths
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip().startswith("pytest==")
+    }
+    assert pins == {"pytest==8.4.2"}
