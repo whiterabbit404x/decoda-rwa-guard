@@ -85,4 +85,22 @@ def test_pytest_pin_is_consistent_across_requirement_entrypoints() -> None:
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip().startswith("pytest==")
     }
-    assert pins == {"pytest==8.4.2"}
+    assert pins == {"pytest==9.0.3"}
+
+
+def test_vulnerability_remediation_pins_are_applied() -> None:
+    api_requirements = (
+        REPO_ROOT / "services" / "api" / "requirements.txt"
+    ).read_text(encoding="utf-8").splitlines()
+    assert "fastapi==0.136.0" in api_requirements
+    assert "starlette==1.0.1" in api_requirements
+    assert "cryptography==46.0.6" in api_requirements
+    assert "pytest==9.0.3" in api_requirements
+
+    service_fastapi_pins = {
+        line.strip()
+        for path in (REPO_ROOT / "services").glob("*/requirements.txt")
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip().startswith("fastapi==")
+    }
+    assert service_fastapi_pins == {"fastapi==0.136.0"}
