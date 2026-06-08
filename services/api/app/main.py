@@ -228,6 +228,7 @@ from services.api.app.pilot import (
     create_data_deletion_request,
     list_data_deletion_requests,
     approve_and_execute_data_deletion_request,
+    get_retention_worker_health,
     require_ops_rbac_guard,
 )
 from services.api.app.monitoring_runner import (
@@ -2004,6 +2005,7 @@ def auth_csrf_token_endpoint() -> dict[str, Any]:
 def health() -> dict[str, object]:
     from services.api.app.activity_providers import monitoring_ingestion_runtime
     ingestion_runtime = monitoring_ingestion_runtime()
+    retention_worker = get_retention_worker_health()
     return {
         'status': 'ok',
         'service': SERVICE_NAME,
@@ -2031,6 +2033,7 @@ def health() -> dict[str, object]:
         'monitoring_ingestion_degraded': ingestion_runtime.get('degraded'),
         'monitoring_ingestion_reason': ingestion_runtime.get('reason'),
         'billing': billing_runtime_status(),
+        'retention_worker': retention_worker,
     }
 
 
@@ -2075,6 +2078,7 @@ def health_readiness() -> dict[str, Any]:
     shared_backends_ready = bool(rate_limit_health.get('connected') and alert_stream_health.get('connected'))
     if is_production_like and not shared_backends_ready:
         status_value = 'not_ready'
+    retention_worker = get_retention_worker_health()
     return {
         'status': status_value,
         'service': SERVICE_NAME,
@@ -2096,6 +2100,7 @@ def health_readiness() -> dict[str, Any]:
         'warnings': warnings,
         'checks': checks,
         'billing': billing_runtime_status(),
+        'retention_worker': retention_worker,
         'checked_at': datetime.now(timezone.utc).isoformat(),
     }
 
@@ -2114,6 +2119,7 @@ def health_diagnostics() -> dict[str, Any]:
         'shared_backends': readiness['shared_backends'],
         'alert_subscribers': readiness['alert_subscribers'],
         'billing': readiness['billing'],
+        'retention_worker': readiness['retention_worker'],
     }
 
 

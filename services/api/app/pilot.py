@@ -16274,16 +16274,10 @@ def list_data_deletion_requests(request: Request) -> dict[str, Any]:
         rows = connection.execute('SELECT * FROM data_deletion_requests WHERE workspace_id = %s ORDER BY requested_at DESC LIMIT 200', (workspace['workspace_id'],)).fetchall()
         return {'workspace_id': workspace['workspace_id'], 'deletion_requests': [_json_safe_value(dict(row)) for row in rows]}
 
-_RETENTION_DELETE_TARGETS = {
-    'telemetry': ('telemetry_events', 'observed_at'),
-    'detections': ('detections', 'detected_at'),
-    'incidents': ('incidents', 'created_at'),
-    'audit_logs': ('audit_logs', 'created_at'),
-}
-
-
 def approve_and_execute_data_deletion_request(request_id: str, request: Request) -> dict[str, Any]:
-    """Approve and execute a bounded deletion transaction after a fresh legal-hold check."""
+    """Approve and execute via the worker's retry-safe, idempotent operation path."""
+    from services.api.app.data_retention import execute_request
+
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
@@ -16294,85 +16288,82 @@ def approve_and_execute_data_deletion_request(request_id: str, request: Request)
         ).fetchone()
         if not deletion:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Deletion request not found.')
-        if deletion['status'] not in {'pending', 'approved'}:
+        if deletion['status'] == 'completed':
+            return {'id': request_id, 'status': 'completed', 'result': _json_safe_value(deletion.get('result') or {})}
+        if deletion['status'] not in {'pending', 'approved', 'failed'}:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Deletion request is {deletion['status']}.")
-        data_classes = [str(item) for item in (deletion['data_classes'] or [])]
-        holds = connection.execute(
-            '''SELECT id, data_classes FROM workspace_legal_holds
-               WHERE workspace_id = %s AND status = 'active'
-                 AND (subject_user_id IS NULL OR subject_user_id = %s)''',
-            (workspace['workspace_id'], deletion['subject_user_id']),
-        ).fetchall()
-        blocking = [str(row['id']) for row in holds if set(row['data_classes'] or []) & set(data_classes)]
-        if blocking:
-            connection.execute(
-                "UPDATE data_deletion_requests SET status = 'blocked_by_legal_hold', result = %s::jsonb, updated_at = NOW() WHERE id = %s",
-                (_json_dumps({'blocking_legal_hold_ids': blocking}), request_id),
-            )
-            log_audit(connection, action='data_deletion.blocked', entity_type='data_deletion_request', entity_id=request_id, request=request, user_id=user['id'], workspace_id=workspace['workspace_id'], metadata={'blocking_legal_hold_ids': blocking})
-            return {'id': request_id, 'status': 'blocked_by_legal_hold', 'blocking_legal_hold_ids': blocking}
-
-        cutoff = deletion['cutoff_at'] or utc_now()
         connection.execute(
-            "UPDATE data_deletion_requests SET status = 'running', approved_by_user_id = %s, approved_at = NOW(), started_at = NOW(), updated_at = NOW() WHERE id = %s",
+            """UPDATE data_deletion_requests SET status = 'running', approved_by_user_id = %s,
+               approved_at = COALESCE(approved_at, NOW()), started_at = COALESCE(started_at, NOW()),
+               attempt_count = attempt_count + 1, last_attempt_at = NOW(), lease_owner = 'api',
+               lease_expires_at = NOW() + INTERVAL '15 minutes', updated_at = NOW() WHERE id = %s""",
             (user['id'], request_id),
         )
-        results: dict[str, int] = {}
-        for data_class in data_classes:
-            affected = 0
-            anchor_before = None
-            if data_class in _RETENTION_DELETE_TARGETS:
-                table, timestamp_column = _RETENTION_DELETE_TARGETS[data_class]
-                _validate_sql_identifier(table, 'retention table')
-                _validate_sql_identifier(timestamp_column, 'retention timestamp column')
-                if data_class == 'audit_logs':
-                    anchor = connection.execute(
-                        'SELECT row_hash FROM audit_logs WHERE workspace_id = %s AND created_at < %s AND row_hash IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT 1',
-                        (workspace['workspace_id'], cutoff),
-                    ).fetchone()
-                    anchor_before = str(anchor['row_hash']) if anchor and anchor.get('row_hash') else None
-                cursor = connection.execute(
-                    f'DELETE FROM {table} WHERE workspace_id = %s AND {timestamp_column} < %s',
-                    (workspace['workspace_id'], cutoff),
-                )
-                affected = max(int(cursor.rowcount or 0), 0)
-            elif data_class == 'exports':
-                export_rows = connection.execute(
-                    'SELECT id, storage_object_key FROM export_jobs WHERE workspace_id = %s AND created_at < %s AND deleted_at IS NULL',
-                    (workspace['workspace_id'], cutoff),
-                ).fetchall()
-                storage = load_export_storage()
-                for export_row in export_rows:
-                    object_key = str(export_row.get('storage_object_key') or '').strip()
-                    if object_key:
-                        storage.delete_bytes(object_key=object_key)
-                cursor = connection.execute(
-                    '''UPDATE export_jobs SET deleted_at = NOW(), output_path = NULL, storage_object_key = NULL, updated_at = NOW()
-                       WHERE workspace_id = %s AND created_at < %s AND deleted_at IS NULL''',
-                    (workspace['workspace_id'], cutoff),
-                )
-                affected = max(int(cursor.rowcount or 0), 0)
-            elif data_class == 'user_data':
-                subject_user_id = deletion['subject_user_id']
-                if not subject_user_id:
-                    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='user_data deletion requires subject_user_id.')
-                connection.execute('DELETE FROM auth_sessions WHERE user_id = %s', (subject_user_id,))
-                cursor = connection.execute(
-                    '''UPDATE users SET email = %s, full_name = 'Deleted user', password_hash = %s, current_workspace_id = NULL, updated_at = NOW()
-                       WHERE id = %s''',
-                    (f'deleted+{subject_user_id}@invalid.local', hash_password(secrets.token_urlsafe(48)), subject_user_id),
-                )
-                affected = max(int(cursor.rowcount or 0), 0)
-            results[data_class] = affected
-            connection.execute(
-                '''INSERT INTO data_deletion_events
-                   (id, request_id, workspace_id, data_class, operation, records_affected, chain_anchor_before, details)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)''',
-                (str(uuid.uuid4()), request_id, workspace['workspace_id'], data_class, 'anonymize' if data_class == 'user_data' else ('storage_delete' if data_class == 'exports' else 'hard_delete'), affected, anchor_before, _json_dumps({'cutoff_at': _json_safe_value(cutoff)})),
-            )
+        result = execute_request(connection, deletion, worker_name='api')
+        log_audit(connection, action=f"data_deletion.{result['status']}", entity_type='data_deletion_request',
+                  entity_id=request_id, request=request, user_id=user['id'], workspace_id=workspace['workspace_id'], metadata=result)
+        return result
+
+
+def run_retention_worker_cycle(*, worker_name: str = 'retention-worker', batch_size: int = 25) -> dict[str, Any]:
+    from services.api.app.data_retention import claim_request, execute_request, record_failure, schedule_requests
+
+    summary = {'scheduled': 0, 'claimed': 0, 'completed': 0, 'blocked': 0, 'retried': 0, 'failed': 0}
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
         connection.execute(
-            "UPDATE data_deletion_requests SET status = 'completed', result = %s::jsonb, completed_at = NOW(), updated_at = NOW() WHERE id = %s",
-            (_json_dumps({'records_affected': results}), request_id),
-        )
-        log_audit(connection, action='data_deletion.complete', entity_type='data_deletion_request', entity_id=request_id, request=request, user_id=user['id'], workspace_id=workspace['workspace_id'], metadata={'records_affected': results, 'cutoff_at': _json_safe_value(cutoff)})
-        return {'id': request_id, 'status': 'completed', 'records_affected': results}
+            """INSERT INTO retention_worker_state (worker_name, heartbeat_at, sweep_started_at, updated_at)
+               VALUES (%s, NOW(), NOW(), NOW()) ON CONFLICT (worker_name) DO UPDATE SET
+               heartbeat_at = NOW(), sweep_started_at = NOW(), updated_at = NOW()""", (worker_name,))
+        summary['scheduled'] = schedule_requests(connection)
+    for _ in range(max(1, batch_size)):
+        with pg_connection() as connection:
+            deletion = claim_request(connection, worker_name=worker_name)
+        if not deletion:
+            break
+        summary['claimed'] += 1
+        try:
+            with pg_connection() as connection:
+                locked = connection.execute(
+                    'SELECT * FROM data_deletion_requests WHERE id = %s AND lease_owner = %s FOR UPDATE',
+                    (deletion['id'], worker_name),
+                ).fetchone()
+                if not locked:
+                    continue
+                result = execute_request(connection, locked, worker_name=worker_name)
+                summary['blocked' if result['status'] == 'blocked_by_legal_hold' else 'completed'] += 1
+        except Exception as exc:
+            terminal = record_failure(str(deletion['id']), worker_name=worker_name, error=exc)
+            summary['failed' if terminal else 'retried'] += 1
+            logger.exception('retention request failed request_id=%s worker=%s', deletion['id'], worker_name)
+    with pg_connection() as connection:
+        cycle_failures = int(summary['retried']) + int(summary['failed'])
+        connection.execute(
+            """UPDATE retention_worker_state SET heartbeat_at = NOW(), last_completed_sweep_at = NOW(),
+               consecutive_failures = %s,
+               last_failure_at = CASE WHEN %s > 0 THEN NOW() ELSE last_failure_at END,
+               last_error = CASE WHEN %s > 0 THEN 'One or more retention jobs failed during the sweep' ELSE NULL END,
+               last_summary = %s::jsonb, updated_at = NOW() WHERE worker_name = %s""",
+            (cycle_failures, cycle_failures, cycle_failures, _json_dumps(summary), worker_name))
+    return summary
+
+
+def record_retention_worker_failure(*, worker_name: str, error: Exception) -> None:
+    try:
+        with pg_connection() as connection:
+            connection.execute(
+                """INSERT INTO retention_worker_state
+                   (worker_name, heartbeat_at, last_failure_at, consecutive_failures, last_error, updated_at)
+                   VALUES (%s, NOW(), NOW(), 1, %s, NOW())
+                   ON CONFLICT (worker_name) DO UPDATE SET heartbeat_at = NOW(), last_failure_at = NOW(),
+                   consecutive_failures = retention_worker_state.consecutive_failures + 1,
+                   last_error = EXCLUDED.last_error, updated_at = NOW()""",
+                (worker_name, f'{type(error).__name__}: {str(error)[:1500]}'),
+            )
+    except Exception:
+        logger.exception('failed to persist retention worker failure worker=%s', worker_name)
+
+
+def get_retention_worker_health(*, stale_after_seconds: int | None = None) -> dict[str, Any]:
+    from services.api.app.data_retention import worker_health
+    return worker_health(stale_after_seconds=stale_after_seconds)
