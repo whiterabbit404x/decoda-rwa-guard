@@ -14,6 +14,15 @@ jobs:
     name: Paid launch billing/email/provider readiness gates
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      EVM_RPC_URL: ${{ secrets.EVM_RPC_URL }}
+      EVM_CHAIN_ID: ${{ secrets.EVM_CHAIN_ID }}
+      STAGING_EVM_RPC_URL: ${{ secrets.STAGING_EVM_RPC_URL }}
+      STAGING_EVM_CHAIN_ID: ${{ secrets.STAGING_EVM_CHAIN_ID }}
+      STAGING_WORKER_ENABLED: ${{ secrets.STAGING_WORKER_ENABLED }}
+      WORKER_ENABLED: ${{ secrets.STAGING_WORKER_ENABLED }}
+      LIVE_MONITORING_ENABLED: ${{ secrets.LIVE_MONITORING_ENABLED }}
+      MONITORING_INGESTION_MODE: ${{ secrets.MONITORING_INGESTION_MODE }}
 
     steps:
       - name: Checkout
@@ -29,7 +38,77 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r services/api/requirements.txt
 
-      - name: Run paid launch readiness tests
+      - name: Check live provider secrets are present
+        run: |
+          test -n "$EVM_RPC_URL"
+          test -n "$EVM_CHAIN_ID"
+          test -n "$STAGING_EVM_RPC_URL"
+          test -n "$STAGING_EVM_CHAIN_ID"
+          test -n "$STAGING_WORKER_ENABLED"
+          test -n "$LIVE_MONITORING_ENABLED"
+          test -n "$MONITORING_INGESTION_MODE"
+
+      - name: Check paid launch billing/email secrets are present
+        run: |
+          missing=()
+
+          if [ -z "${BILLING_PROVIDER:-}" ]; then
+            missing+=("BILLING_PROVIDER")
+          fi
+
+          if [ -z "${EMAIL_PROVIDER:-}" ]; then
+            missing+=("EMAIL_PROVIDER")
+          fi
+          if [ -z "${EMAIL_FROM:-}" ]; then
+            missing+=("EMAIL_FROM")
+          fi
+          if [ -z "${EMAIL_DOMAIN:-}" ]; then
+            missing+=("EMAIL_DOMAIN")
+          fi
+
+          case "${EMAIL_PROVIDER:-}" in
+            sendgrid)
+              [ -n "${SENDGRID_API_KEY:-}" ] || missing+=("SENDGRID_API_KEY")
+              ;;
+            resend)
+              if [ -z "${RESEND_API_KEY:-}" ] && [ -z "${EMAIL_RESEND_API_KEY:-}" ]; then
+                missing+=("RESEND_API_KEY (or EMAIL_RESEND_API_KEY)")
+              fi
+              ;;
+            smtp)
+              [ -n "${SMTP_HOST:-}" ] || missing+=("SMTP_HOST")
+              [ -n "${SMTP_USER:-}" ] || missing+=("SMTP_USER")
+              [ -n "${SMTP_PASSWORD:-}" ] || missing+=("SMTP_PASSWORD")
+              ;;
+          esac
+
+          case "${BILLING_PROVIDER:-}" in
+            stripe)
+              [ -n "${STRIPE_SECRET_KEY:-}" ] || missing+=("STRIPE_SECRET_KEY")
+              [ -n "${STRIPE_WEBHOOK_SECRET:-}" ] || missing+=("STRIPE_WEBHOOK_SECRET")
+              [ -n "${STRIPE_PRICE_ID:-}" ] || missing+=("STRIPE_PRICE_ID")
+              ;;
+            paddle)
+              [ -n "${PADDLE_API_KEY:-}" ] || missing+=("PADDLE_API_KEY")
+              [ -n "${PADDLE_WEBHOOK_SECRET:-}" ] || missing+=("PADDLE_WEBHOOK_SECRET")
+              if ! env | grep -q '^PADDLE_PRICE_ID_'; then
+                missing+=("PADDLE_PRICE_ID_*")
+              fi
+              ;;
+            ""|none)
+              ;;
+            *)
+              missing+=("BILLING_PROVIDER must be one of: stripe, paddle")
+              ;;
+          esac
+
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "Missing or misconfigured paid launch secrets/env vars:"
+            printf ' - %s\n' "${missing[@]}"
+            exit 1
+          fi
+
+      - name: Run paid launch reads
         run: python -m pytest services/api/tests/test_paid_launch_readiness.py -q
 
       - name: Generate release proof artifacts
