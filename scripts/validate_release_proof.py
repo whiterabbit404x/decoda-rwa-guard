@@ -26,6 +26,8 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from scripts.security.release_security import validate_security_proof
+
 from scripts.release_proof_context import (
     DEFAULT_MAX_EVIDENCE_AGE_SECONDS,
     SHA_RE,
@@ -130,7 +132,7 @@ def validate_release_proof(path: Path) -> tuple[bool, list[str]]:
         issues.append('release-proof: invalid schema_version')
 
     # Check required fields
-    required_fields = ['generated_at', 'release_status', 'release_channel', 'commit_sha', 'branch', 'ci_required_gates_ready', 'launch_proof_ready', 'paid_launch_ready', 'blockers', 'warnings']
+    required_fields = ['generated_at', 'release_status', 'release_channel', 'commit_sha', 'branch', 'ci_required_gates_ready', 'launch_proof_ready', 'security_proof_ready', 'paid_launch_ready', 'blockers', 'warnings']
     for field in required_fields:
         if field not in proof:
             issues.append(f'release-proof: missing required field {field}')
@@ -139,9 +141,15 @@ def validate_release_proof(path: Path) -> tuple[bool, list[str]]:
     release_status = proof.get('release_status')
     ci_gates_ready = proof.get('ci_required_gates_ready')
     launch_proof_ready = proof.get('launch_proof_ready')
+    security_proof_ready = proof.get('security_proof_ready')
 
-    if release_status == 'pass' and (not ci_gates_ready or not launch_proof_ready):
-        issues.append(f'release-proof: release_status=pass but gates not ready (ci={ci_gates_ready}, launch={launch_proof_ready})')
+    if release_status == 'pass' and (
+        not ci_gates_ready or not launch_proof_ready or not security_proof_ready
+    ):
+        issues.append(
+            'release-proof: release_status=pass but gates not ready '
+            f'(ci={ci_gates_ready}, launch={launch_proof_ready}, security={security_proof_ready})'
+        )
 
     # paid_launch_ready is only valid in staging/production mode
     if proof.get('paid_launch_ready') is True:
@@ -343,6 +351,7 @@ REQUIRED_CI_GATES = {
     'paid_launch_readiness',
     'live_evidence',
     'frontend_build',
+    'security_release_gates',
 }
 
 
@@ -482,6 +491,13 @@ def validate_release_bundle(
         launch.get('paid_launch_ready') is True,
         launch.get('broad_paid_saas_ready') is True,
     ))
+    security_path = artifact_root / 'artifacts' / 'security' / 'latest' / 'summary.json'
+    security_ok, security_issues = validate_security_proof(
+        security_path, artifact_root=security_path.parent
+    )
+    if enterprise_claim and not security_ok:
+        issues.extend(f'security release proof: {issue}' for issue in security_issues)
+
     if enterprise_claim:
         if test_report.get('overall_status') != 'pass':
             issues.append(
@@ -499,7 +515,7 @@ def validate_release_bundle(
             issues.append('ci-required-gates: overall_status must be pass for enterprise readiness')
         if release.get('release_status') != 'pass':
             issues.append('release-proof: launch artifact claims readiness while release_status is not pass')
-        if not release.get('ci_required_gates_ready') or not release.get('test_report_ready'):
+        if not release.get('ci_required_gates_ready') or not release.get('test_report_ready') or not release.get('security_proof_ready'):
             issues.append('release-proof: enterprise-ready result contradicts validated CI/test readiness')
         if not launch.get('paid_launch_ready'):
             issues.append('launch-proof: release claims pass but paid_launch_ready is false')

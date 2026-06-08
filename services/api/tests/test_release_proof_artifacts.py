@@ -1162,9 +1162,18 @@ def test_release_bundle_rejects_contradictory_launch_artifacts(tmp_path: Path) -
 def test_ci_release_attestation_runs_only_after_required_jobs_pass() -> None:
     workflow = (REPO_ROOT / '.github/workflows/ci-release-gates.yml').read_text()
     final_job = workflow.split('  final-readiness-gate:', 1)[1]
-    assert 'needs: [paid-launch-readiness-gates, required-gates]' in final_job
+    assert 'needs: [paid-launch-readiness-gates, required-gates, security-release-gates]' in final_job
     assert "needs.paid-launch-readiness-gates.result == 'success'" in final_job
     assert "needs.required-gates.result == 'success'" in final_job
+    assert "needs.security-release-gates.result == 'success'" in final_job
+    security_job = workflow.split('  security-release-gates:', 1)[1].split('  final-readiness-gate:', 1)[0]
+    for required_step in (
+        'Run SAST', 'Audit Python dependencies', 'Audit JavaScript dependencies',
+        'Run secret scanning', 'Scan infrastructure and configuration',
+        'Scan API image', 'Scan web image', 'Generate API and web SPDX SBOMs',
+        'Sign and attest published release images',
+    ):
+        assert required_step in security_job
     generation = final_job.split('- name: Generate local fail-closed launch proof and release proof', 1)[1]
     generation = generation.split('- name: Validate release proof', 1)[0]
     assert 'if: always()' not in generation

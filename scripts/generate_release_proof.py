@@ -365,6 +365,12 @@ def generate_ci_required_gates(
                 else _not_run_note
             ),
         },
+        'security_release_gates': {
+            'status': 'not_run',
+            'command': 'python scripts/security/release_security.py validate',
+            'summary': _not_run_note,
+            'blockers': [],
+        },
     }
 
     # Update backend_tests / saas_workflow_validation from pre-run test results
@@ -424,6 +430,31 @@ def generate_ci_required_gates(
         else f"Live evidence not available: {'; '.join(live_blockers)}"
     )
 
+    # Mandatory security/supply-chain proof is produced by the dedicated CI job.
+    security_path = REPO_ROOT / 'artifacts' / 'security' / 'latest' / 'summary.json'
+    try:
+        security_proof = json.loads(security_path.read_text())
+        security_ok = (
+            security_proof.get('overall_status') == 'pass'
+            and not security_proof.get('blockers')
+        )
+        gates['security_release_gates'] = {
+            'status': 'pass' if security_ok else 'fail',
+            'command': 'python scripts/security/release_security.py validate',
+            'summary': (
+                'Mandatory security and supply-chain evidence validated'
+                if security_ok else 'Security release proof failed'
+            ),
+            'blockers': security_proof.get('blockers', []),
+        }
+    except (OSError, json.JSONDecodeError):
+        gates['security_release_gates'] = {
+            'status': 'fail',
+            'command': 'python scripts/security/release_security.py validate',
+            'summary': 'Mandatory security release proof missing',
+            'blockers': ['artifacts/security/latest/summary.json missing or unreadable'],
+        }
+
     # Overall status: only gates that are 'pass' or 'fail' count
     gate_statuses = [gates[key].get('status', 'not_run') for key in gates]
     overall_pass = bool(gate_statuses) and all(status == 'pass' for status in gate_statuses)
@@ -473,6 +504,8 @@ def generate_release_proof(*, mode: str, strict: bool = False) -> dict[str, Any]
     # release bundle; do not consume a stale manifest from a previous run.
     manifest_ready = True
     test_report_ready = False
+    security_proof_ready = False
+    security_artifacts: dict[str, Any] = {}
 
     # Check if ci-required-gates artifact exists and is passing
     ci_gates_path = REPO_ROOT / 'artifacts' / 'release-proof' / 'latest' / 'ci-required-gates.json'
@@ -504,6 +537,18 @@ def generate_release_proof(*, mode: str, strict: bool = False) -> dict[str, Any]
         except:
             pass
 
+    security_path = REPO_ROOT / 'artifacts' / 'security' / 'latest' / 'summary.json'
+    if security_path.exists():
+        try:
+            security_proof = json.loads(security_path.read_text())
+            security_proof_ready = (
+                security_proof.get('overall_status') == 'pass'
+                and not security_proof.get('blockers')
+            )
+            security_artifacts = security_proof.get('artifacts') or {}
+        except (OSError, json.JSONDecodeError):
+            pass
+
     blockers: list[str] = []
     if not ci_gates_ready:
         blockers.append('ci-required-gates not ready')
@@ -513,9 +558,11 @@ def generate_release_proof(*, mode: str, strict: bool = False) -> dict[str, Any]
         blockers.append('manifest not ready')
     if not test_report_ready:
         blockers.append('test-report-summary not ready')
+    if not security_proof_ready:
+        blockers.append('mandatory security proof not ready')
 
     release_ready = (
-        ci_gates_ready and launch_proof_ready and manifest_ready and test_report_ready
+        ci_gates_ready and launch_proof_ready and manifest_ready and test_report_ready and security_proof_ready
         and not blockers
     )
 
@@ -546,6 +593,16 @@ def generate_release_proof(*, mode: str, strict: bool = False) -> dict[str, Any]
         'launch_proof_ready': launch_proof_ready,
         'manifest_ready': manifest_ready,
         'test_report_ready': test_report_ready,
+        'security_proof_ready': security_proof_ready,
+        'release_artifact_digests': {
+            component: {
+                'image_digest': (records.get('digest') or {}).get('image_digest'),
+                'record_sha256': {
+                    record: data.get('sha256') for record, data in records.items()
+                },
+            }
+            for component, records in security_artifacts.items()
+        },
         'paid_launch_ready': _paid_launch_ready,  # propagated from on-disk launch-proof
         'blockers': sorted(set(blockers)),
         'warnings': [],
@@ -553,7 +610,8 @@ def generate_release_proof(*, mode: str, strict: bool = False) -> dict[str, Any]
             'artifacts/release-proof/latest/ci-required-gates.json',
             'artifacts/release-proof/latest/manifest.json',
             'artifacts/release-proof/latest/test-report-summary.json',
-            'artifacts/launch-proof/latest/summary.json'
+            'artifacts/launch-proof/latest/summary.json',
+            'artifacts/security/latest/summary.json'
         ]
     }
 
@@ -769,6 +827,15 @@ def generate_artifact_manifest(
         release_proof_dir / 'test-report-summary.json',
         launch_proof_dir / 'summary.json',
     ]
+    security_dir = release_proof_dir.parents[1] / 'security' / 'latest'
+    security_summary = security_dir / 'summary.json'
+    if security_summary.exists():
+        required_files.extend(
+            path for path in security_dir.rglob('*')
+            if path.is_file()
+            and '/reports/' not in path.as_posix()
+            and '/exceptions/' not in path.as_posix()
+        )
 
     files: list[dict[str, Any]] = []
     blockers: list[str] = []

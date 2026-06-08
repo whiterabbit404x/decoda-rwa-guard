@@ -73,16 +73,199 @@ jobs:
           python -m pytest services/api/tests/test_release_proof_artifacts.py -q
 
 
+  security-release-gates:
+    name: Mandatory security and supply-chain gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      security-events: write
+
+    env:
+      SECURITY_DIR: artifacts/security/latest
+      API_IMAGE: ghcr.io/${{ github.repository }}/api
+      WEB_IMAGE: ghcr.io/${{ github.repository }}/web
+
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Validate expiring vulnerability exceptions
+        run: |
+          python scripts/security/release_security.py validate-exceptions
+          python scripts/security/release_security.py write-exception-config
+
+      - name: Install security scanners
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pip-audit semgrep
+          npm install --global audit-ci@^7
+
+      - name: Run SAST (blocking findings)
+        run: |
+          mkdir -p "$SECURITY_DIR/gates" "$SECURITY_DIR/reports"
+          semgrep scan --config auto --error --severity ERROR --json-output "$SECURITY_DIR/reports/semgrep.json"
+          printf '%s\n' '{"status":"pass","summary":"No blocking Semgrep ERROR findings"}' > "$SECURITY_DIR/gates/sast.json"
+
+      - name: Audit Python dependencies (high/critical, fixed findings block)
+        shell: bash
+        run: |
+          args=$(cat "$SECURITY_DIR/exceptions/pip-audit-args.txt")
+          # shellcheck disable=SC2086
+          pip-audit -r services/api/requirements.txt --format json --output "$SECURITY_DIR/reports/pip-audit.json" $args
+          printf '%s\n' '{"status":"pass","summary":"No unexcepted Python dependency vulnerabilities"}' > "$SECURITY_DIR/gates/python_dependency_audit.json"
+
+      - name: Audit JavaScript dependencies (high/critical block)
+        run: |
+          npm ci
+          audit-ci --config "$SECURITY_DIR/exceptions/audit-ci.json" --report-type full | tee "$SECURITY_DIR/reports/npm-audit.txt"
+          printf '%s\n' '{"status":"pass","summary":"No unexcepted high/critical JavaScript dependency vulnerabilities"}' > "$SECURITY_DIR/gates/javascript_dependency_audit.json"
+
+      - name: Run secret scanning
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
+        with:
+          args: --config .gitleaks.toml --redact --exit-code 1 --report-format json --report-path artifacts/security/latest/reports/gitleaks.json
+
+      - name: Record secret scan gate
+        run: printf '%s\n' '{"status":"pass","summary":"No secrets detected by Gitleaks"}' > "$SECURITY_DIR/gates/secret_scan.json"
+
+      - name: Setup Trivy
+        uses: aquasecurity/setup-trivy@v0.2.4
+        with:
+          version: v0.59.1
+          cache: true
+
+      - name: Scan infrastructure and configuration
+        run: |
+          trivy config --exit-code 1 --severity HIGH,CRITICAL --format json --output "$SECURITY_DIR/reports/trivy-config.json" .
+          printf '%s\n' '{"status":"pass","summary":"No high/critical infrastructure or configuration findings"}' > "$SECURITY_DIR/gates/infrastructure_config_scan.json"
+
+      - name: Build API and web release images
+        run: |
+          docker build --file services/api/Dockerfile --tag decoda-api:${{ github.sha }} .
+          docker build --file apps/web/Dockerfile --tag decoda-web:${{ github.sha }} .
+          mkdir -p "$SECURITY_DIR/images"
+          docker image inspect --format '{{.Id}}' decoda-api:${{ github.sha }} > "$SECURITY_DIR/images/api.digest"
+          docker image inspect --format '{{.Id}}' decoda-web:${{ github.sha }} > "$SECURITY_DIR/images/web.digest"
+
+      - name: Scan API image (fixed high/critical findings block)
+        run: |
+          trivy image --exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL --ignorefile "$SECURITY_DIR/exceptions/trivy-api.ignore" --format json --output "$SECURITY_DIR/reports/trivy-api.json" decoda-api:${{ github.sha }}
+          printf '%s\n' '{"status":"pass","summary":"No unexcepted fixed high/critical API image vulnerabilities"}' > "$SECURITY_DIR/gates/api_container_scan.json"
+
+      - name: Scan web image (fixed high/critical findings block)
+        run: |
+          trivy image --exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL --ignorefile "$SECURITY_DIR/exceptions/trivy-web.ignore" --format json --output "$SECURITY_DIR/reports/trivy-web.json" decoda-web:${{ github.sha }}
+          printf '%s\n' '{"status":"pass","summary":"No unexcepted fixed high/critical web image vulnerabilities"}' > "$SECURITY_DIR/gates/web_container_scan.json"
+
+      - name: Setup Syft
+        uses: anchore/sbom-action/download-syft@v0.17.2
+
+      - name: Generate API and web SPDX SBOMs
+        run: |
+          mkdir -p "$SECURITY_DIR/sbom"
+          syft decoda-api:${{ github.sha }} -o spdx-json="$SECURITY_DIR/sbom/api.spdx.json"
+          syft decoda-web:${{ github.sha }} -o spdx-json="$SECURITY_DIR/sbom/web.spdx.json"
+
+      - name: Login to GHCR for release image publication
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish immutable release images
+        if: github.event_name != 'pull_request'
+        run: |
+          docker tag decoda-api:${{ github.sha }} "$API_IMAGE:${{ github.sha }}"
+          docker tag decoda-web:${{ github.sha }} "$WEB_IMAGE:${{ github.sha }}"
+          docker push "$API_IMAGE:${{ github.sha }}"
+          docker push "$WEB_IMAGE:${{ github.sha }}"
+          docker image inspect --format='{{index .RepoDigests 0}}' "$API_IMAGE:${{ github.sha }}" | cut -d@ -f2 > "$SECURITY_DIR/images/api.digest"
+          docker image inspect --format='{{index .RepoDigests 0}}' "$WEB_IMAGE:${{ github.sha }}" | cut -d@ -f2 > "$SECURITY_DIR/images/web.digest"
+
+      - name: Setup Cosign
+        uses: sigstore/cosign-installer@v3.8.1
+
+      - name: Create provenance predicates and keyless blob attestations
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          mkdir -p "$SECURITY_DIR/signatures" "$SECURITY_DIR/attestations"
+          for component in api web; do
+            digest=$(cat "$SECURITY_DIR/images/$component.digest")
+            printf '{"_type":"https://in-toto.io/Statement/v1","subject":[{"name":"%s","digest":{"sha256":"%s"}}],"predicateType":"https://slsa.dev/provenance/v1","predicate":{"buildDefinition":{"buildType":"https://github.com/Attestations/GitHubActionsWorkflow@v1","externalParameters":{"workflow":"%s","run_id":"%s"}},"runDetails":{"builder":{"id":"%s"}}}}\n' "$component" "${digest#sha256:}" "$GITHUB_WORKFLOW" "$GITHUB_RUN_ID" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > "$SECURITY_DIR/attestations/$component-provenance.json"
+            cosign sign-blob --yes --bundle "$SECURITY_DIR/signatures/$component.bundle.json" "$SECURITY_DIR/images/$component.digest"
+            cosign attest-blob --yes --type spdxjson --predicate "$SECURITY_DIR/sbom/$component.spdx.json" --bundle "$SECURITY_DIR/attestations/$component-sbom.bundle.json" "$SECURITY_DIR/images/$component.digest"
+            cosign attest-blob --yes --type slsaprovenance --predicate "$SECURITY_DIR/attestations/$component-provenance.json" --bundle "$SECURITY_DIR/attestations/$component-provenance.bundle.json" "$SECURITY_DIR/images/$component.digest"
+          done
+
+      - name: Sign and attest published release images
+        if: github.event_name != 'pull_request'
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          for component in api web; do
+            image_var="${component^^}_IMAGE"
+            image="${!image_var}"
+            digest=$(cat "$SECURITY_DIR/images/$component.digest")
+            cosign sign --yes "$image@$digest"
+            cosign attest --yes --type spdxjson --predicate "$SECURITY_DIR/sbom/$component.spdx.json" "$image@$digest"
+            cosign attest --yes --type slsaprovenance --predicate "$SECURITY_DIR/attestations/$component-provenance.json" "$image@$digest"
+          done
+
+      - name: Generate and validate security release proof
+        env:
+          RELEASE_ENVIRONMENT: ${{ github.ref_name }}
+        run: |
+          python scripts/security/release_security.py generate
+          python scripts/security/release_security.py validate
+
+      - name: Upload security reports and supply-chain proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-release-proof-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 90
+          path: artifacts/security/latest
+
+
   final-readiness-gate:
     name: Final 100% readiness gate (fail-closed)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [paid-launch-readiness-gates, required-gates]
-    if: ${{ needs.paid-launch-readiness-gates.result == 'success' && needs.required-gates.result == 'success' }}
+    needs: [paid-launch-readiness-gates, required-gates, security-release-gates]
+    if: ${{ needs.paid-launch-readiness-gates.result == 'success' && needs.required-gates.result == 'success' && needs.security-release-gates.result == 'success' }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Download mandatory security release proof
+        uses: actions/download-artifact@v4
+        with:
+          name: security-release-proof-${{ github.run_id }}
+          path: artifacts/security/latest
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -156,3 +339,4 @@ jobs:
             artifacts/release-proof/latest/ci-required-gates.json
             artifacts/staging-proof/latest/summary.json
             artifacts/final-readiness/local-test/summary.json
+            artifacts/security/latest
