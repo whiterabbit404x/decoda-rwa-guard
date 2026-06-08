@@ -406,7 +406,7 @@ python -m services.api.app.run_monitoring_worker --once --worker-name railway-mo
 
 - Frontend MFA enrollment/challenge UX is not fully wired end-to-end yet.
 - Core customer-operable flows are now live in product UI: workspace team admin (member role changes/removal/invites/revoke/resend), seat visibility, no-billing pilot billing-state UX, webhook management (create/edit/enable/rotate/deliveries), and findings decisions/actions workflow.
-- Formal SOC 2 control evidence, key rotation automation, and full incident-response runbooks are still required for enterprise procurement.
+- Security controls and operating procedures are documented in `docs/security/`; operating evidence, key-rotation exercises, penetration testing, and independent SOC 2 Type II (or equivalent) assurance are still required before those outcomes can be claimed.
 
 ## Self-serve onboarding wizard (this pass)
 
@@ -1400,13 +1400,17 @@ You can also inspect `/health/details` to confirm dependency diagnostics, build/
 5. Optional: keep Stripe as a secondary provider by setting `BILLING_PROVIDER=stripe` and configuring Stripe keys/webhook endpoint.
 5. Provision a dedicated worker process for queued jobs on Railway.
 
+### Enterprise security package
+
+The customer-shareable security package is indexed at [`docs/security/README.md`](docs/security/README.md). It includes the control matrix, named control owners, incident/breach/recovery/access/key/vulnerability procedures, architecture and data-flow threat model, subprocessor and residency register, SLA/RPO/RTO terms, and the independent assurance roadmap. The package explicitly distinguishes implemented controls from evidence still requiring production operation or independent assessment.
+
 ### Honest external follow-up still required
 
 - Independent penetration testing.
 - SOC 2 evidence collection and audit execution.
 - Legal/privacy policy and DPA reviews.
-- Incident-response tabletop exercises and documented runbooks.
-- Key-rotation and backup/restore drill operations.
+- Incident-response tabletop exercises and retained operating evidence (the runbooks are documented in `docs/security/SECURITY_OPERATING_PROCEDURES.md`).
+- Key-rotation and backup/restore drill operations with retained evidence.
 
 ## Customer-usable SaaS workflow modules (March 2026)
 
