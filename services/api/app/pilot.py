@@ -3414,6 +3414,7 @@ def mfa_complete_signin(payload: dict[str, Any], request: Request) -> dict[str, 
         if user is None:
             raise HTTPException(status_code=401, detail='Unknown user.')
         secret = _decrypt_mfa_secret(str(user['id']), user['mfa_totp_secret'])
+        used_recovery_code = False
         if not secret or not _verify_totp(secret, code):
             recovery = connection.execute(
                 'SELECT id FROM mfa_recovery_codes WHERE user_id = %s AND code_hash = %s AND consumed_at IS NULL',
@@ -3422,13 +3423,14 @@ def mfa_complete_signin(payload: dict[str, Any], request: Request) -> dict[str, 
             if recovery is None:
                 raise HTTPException(status_code=401, detail='Invalid MFA code.')
             connection.execute('UPDATE mfa_recovery_codes SET consumed_at = NOW() WHERE id = %s', (recovery['id'],))
+            used_recovery_code = True
         connection.execute('UPDATE auth_tokens SET used_at = NOW() WHERE id = %s', (token_row['id'],))
         hydrated_user = build_user_response(connection, str(user['id']))
         access_token = create_access_token(str(user['id']), int(user.get('session_version') or 1))
         _store_session(connection, str(user['id']), access_token, hydrated_user.get('current_workspace_id'), request=request)
         connection.execute(
-            "UPDATE auth_sessions SET mfa_verified_at = NOW(), authentication_methods = '[\"password\",\"totp\"]'::jsonb WHERE session_token_hash = %s",
-            (_auth_token_hash(access_token),),
+            "UPDATE auth_sessions SET mfa_verified_at = NOW(), authentication_methods = %s::jsonb WHERE session_token_hash = %s",
+            (_json_dumps(['password', 'recovery_code' if used_recovery_code else 'totp']), _auth_token_hash(access_token)),
         )
         connection.commit()
         return {'access_token': access_token, 'token_type': 'bearer', 'user': hydrated_user}
@@ -3895,25 +3897,45 @@ def _workspace_auth_policy(connection: Any, workspace_id: str) -> dict[str, Any]
     }
 
 
-def _require_recent_reauthentication(connection: Any, request: Request, minutes: int) -> None:
+def _current_session_security(connection: Any, request: Request) -> dict[str, Any]:
     row = connection.execute(
-        'SELECT reauthenticated_at FROM auth_sessions WHERE session_token_hash = %s AND revoked_at IS NULL',
+        '''SELECT reauthenticated_at, authenticated_at, mfa_verified_at, authentication_methods
+           FROM auth_sessions WHERE session_token_hash = %s AND revoked_at IS NULL''',
         (_current_session_hash(request),),
     ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Session is no longer active.')
+    return dict(row)
+
+
+def _require_recent_reauthentication(connection: Any, request: Request, minutes: int) -> None:
+    row = _current_session_security(connection, request)
+    reauthenticated_at = row.get('reauthenticated_at') or row.get('authenticated_at')
     cutoff = utc_now() - timedelta(minutes=max(1, minutes))
-    if row is None or row['reauthenticated_at'] is None or row['reauthenticated_at'] < cutoff:
+    if reauthenticated_at is None or reauthenticated_at < cutoff:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={'code': 'REAUTHENTICATION_REQUIRED', 'message': 'Reauthenticate before performing this sensitive action.'},
         )
 
 
+def _require_session_mfa(connection: Any, request: Request) -> None:
+    row = _current_session_security(connection, request)
+    methods = row.get('authentication_methods') if isinstance(row.get('authentication_methods'), list) else []
+    if row.get('mfa_verified_at') is None or not ({'totp', 'recovery_code'} & set(map(str, methods))):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={'code': 'MFA_CHALLENGE_REQUIRED', 'message': 'Complete MFA in this session before performing this destructive action.'},
+        )
+
+
+
 def _require_workspace_permission(
     connection: Any,
     request: Request,
     permission: str,
-    *,
     require_reauthentication: bool = False,
+    require_session_mfa: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     user = authenticate_with_connection(connection, request)
     workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
@@ -3927,11 +3949,30 @@ def _require_workspace_permission(
     mfa_required = policy['mfa_enforcement'] == 'all_members' or (
         policy['mfa_enforcement'] == 'administrators' and role in {'owner', 'admin'}
     )
-    if mfa_required and not user.get('mfa_enabled'):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={'code': 'MFA_ENROLLMENT_REQUIRED', 'message': 'Workspace policy requires MFA for this account.'},
-        )
+    if mfa_required:
+        if user.get('mfa_enabled'):
+            # Password sign-in cannot issue a session for an enrolled account until
+            # its TOTP/recovery challenge succeeds.
+            pass
+        elif str(user.get('auth_provider') or 'password') == 'oidc':
+            # Federated identities satisfy workspace MFA only when the signed ID
+            # token's AMR was persisted on this exact server-side session.
+            try:
+                _require_session_mfa(connection, request)
+            except HTTPException as exc:
+                if isinstance(exc.detail, dict) and exc.detail.get('code') == 'MFA_CHALLENGE_REQUIRED':
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail={'code': 'MFA_ENROLLMENT_REQUIRED', 'message': 'Workspace policy requires MFA for this account.'},
+                    ) from exc
+                raise
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={'code': 'MFA_ENROLLMENT_REQUIRED', 'message': 'Workspace policy requires MFA for this account.'},
+            )
+    if require_session_mfa:
+        _require_session_mfa(connection, request)
     if require_reauthentication:
         _require_recent_reauthentication(connection, request, policy['reauthentication_minutes'])
     return user, workspace_context
@@ -13662,19 +13703,10 @@ def _parse_iso_datetime(value: str | None) -> datetime | None:
 
 
 def _require_live_action_step_up_auth(request: Request, *, user: dict[str, Any]) -> dict[str, Any]:
-    mfa_enabled = bool(user.get('mfa_enabled'))
-    if not mfa_enabled:
-        return {'required': False, 'verified': False, 'reason': 'mfa_not_enabled'}
-    verified_header = str(request.headers.get('x-step-up-verified') or '').strip().lower()
-    step_up_at = _parse_iso_datetime(request.headers.get('x-step-up-authenticated-at'))
-    if verified_header in {'1', 'true', 'yes'} and step_up_at is not None:
-        age_seconds = max(0, int((utc_now() - step_up_at).total_seconds()))
-        if age_seconds <= LIVE_ACTION_STEP_UP_MAX_AGE_SECONDS:
-            return {'required': True, 'verified': True, 'age_seconds': age_seconds}
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail='Step-up authentication is required for live action execution. Provide x-step-up-verified=true and a recent x-step-up-authenticated-at timestamp.',
-    )
+    # Session-backed MFA and recent reauthentication are enforced by
+    # _require_workspace_permission before destructive action execution.
+    # Never trust caller-supplied step-up headers as proof of authentication.
+    return {'required': True, 'verified': True, 'source': 'server_session'}
 
 def _verify_live_action_approver_role(connection: Any, *, workspace_id: str, approver_user_id: str | None) -> None:
     if not approver_user_id:
@@ -13684,7 +13716,7 @@ def _verify_live_action_approver_role(connection: Any, *, workspace_id: str, app
         (workspace_id, approver_user_id),
     ).fetchone()
     if approver_role_row is None:
-        return
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Response action approver is no longer a workspace member.')
     try:
         approver_role = _normalize_workspace_role(str((approver_role_row or {}).get('role') or ''))
     except HTTPException as exc:
@@ -13987,9 +14019,11 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_permission(connection, request, 'response.approve')
+        user, workspace_context = _require_workspace_permission(
+            connection, request, 'response.approve', True, True
+        )
         row = connection.execute(
-            'SELECT id, status, incident_id, alert_id, action_type, mode, execution_state, execution_artifacts, provider_receipts, safe_tx_hash, approved_at, failed_at FROM response_actions WHERE id = %s AND workspace_id = %s',
+            'SELECT id, status, incident_id, alert_id, action_type, mode, execution_state, execution_artifacts, provider_receipts, safe_tx_hash, approved_at, failed_at, created_by_user_id FROM response_actions WHERE id = %s AND workspace_id = %s',
             (action_id, workspace_context['workspace_id']),
         ).fetchone()
         if row is None:
@@ -13997,6 +14031,11 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
         mode = str(row.get('mode') or 'simulated')
         if mode not in {'recommended', 'live'}:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Only recommended/live actions require explicit approval.')
+        if str(row.get('created_by_user_id') or '') == str(user['id']):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={'code': 'SEPARATION_OF_DUTIES_REQUIRED', 'message': 'The response action proposer cannot approve the same action.'},
+            )
         _enforce_action_policy_per_mode(
             mode=mode,
             operation='approve',
@@ -14074,7 +14113,9 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_permission(connection, request, 'response.execute')
+        user, workspace_context = _require_workspace_permission(
+            connection, request, 'response.execute', True, True
+        )
         row = connection.execute('SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s', (action_id, workspace_context['workspace_id'])).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Enforcement action not found.')
@@ -14099,7 +14140,7 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         _is_safe_execution = _live_execution_path == 'safe'
         _is_delegated_execution = _live_execution_path in {'governance', 'unsupported', 'manual_only'}
         approver_user_id = str(action.get('approved_by_user_id') or '') or None
-        if mode in {'recommended', 'live'} and not approver_user_id and not _is_delegated_execution and not _is_safe_execution:
+        if mode == 'live' and not approver_user_id:
             logger.warning('execute_blocked_missing_approval action_id=%s mode=%s', action_id, mode)
             blocked_marker = 'execute_blocked_missing_approval'
             guardrails_artifact = artifacts.get('guardrails') if isinstance(artifacts.get('guardrails'), dict) else {}
@@ -14131,7 +14172,7 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
                 ),
             )
             connection.commit()
-        _effective_approver = approver_user_id if (not _is_safe_execution and not _is_delegated_execution) else (approver_user_id or _live_execution_path or 'delegated')
+        _effective_approver = approver_user_id if mode == 'live' else (approver_user_id or _live_execution_path or 'delegated')
         _enforce_action_policy_per_mode(
             mode=mode,
             operation='execute',
@@ -14139,8 +14180,10 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             workspace_context=workspace_context,
             approver_user_id=_effective_approver,
         )
-        if mode == 'live' and (not (_is_safe_execution or _is_delegated_execution) or approver_user_id):
+        if mode == 'live':
             _verify_live_action_approver_role(connection, workspace_id=workspace_context['workspace_id'], approver_user_id=approver_user_id)
+            if str(action.get('created_by_user_id') or '') == str(approver_user_id or ''):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Live action proposer and approver must be different identities.')
             if str(action.get('approved_by_user_id')) == str(user.get('id')):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Live action execution requires a separate approver and executor.')
             metadata['step_up'] = _require_live_action_step_up_auth(request, user=user)
@@ -14523,7 +14566,9 @@ def rollback_enforcement_action(action_id: str, request: Request) -> dict[str, A
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_permission(connection, request, 'response.execute')
+        user, workspace_context = _require_workspace_permission(
+            connection, request, 'response.execute', True, True
+        )
         row = connection.execute('SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s', (action_id, workspace_context['workspace_id'])).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Enforcement action not found.')
@@ -15506,7 +15551,15 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             rows = [_json_safe_value(dict(row)) for row in connection.execute('SELECT id, analysis_type, status, title, summary, created_at FROM analysis_runs WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 1000', (workspace_id,)).fetchall()]
         case 'report':
             report_template = _normalize_report_template(filters.get('report_template'))
-            report_rows = [_json_safe_value(dict(row)) for row in connection.execute('SELECT id, analysis_type, status, title, summary, created_at FROM analysis_runs WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 1000', (workspace_id,)).fetchall()]
+            if report_template == 'compliance_audit_export':
+                report_rows = [_json_safe_value(dict(row)) for row in connection.execute(
+                    '''SELECT id, user_id, action, entity_type, entity_id, ip_address, metadata, created_at,
+                              row_hash, previous_row_hash, hash_algorithm, sealed_at
+                       FROM audit_logs WHERE workspace_id = %s ORDER BY created_at, id LIMIT 10000''',
+                    (workspace_id,),
+                ).fetchall()]
+            else:
+                report_rows = [_json_safe_value(dict(row)) for row in connection.execute('SELECT id, analysis_type, status, title, summary, created_at FROM analysis_runs WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 1000', (workspace_id,)).fetchall()]
             rows = [{
                 'metadata.json': _report_provenance_metadata(workspace_id=workspace_id, export_id=str(export_id), report_template=report_template, filters=filters),
                 'report.json': report_rows,
@@ -16157,11 +16210,8 @@ def delete_account(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             "UPDATE auth_tokens SET revoked_at = NOW() WHERE user_id = %s AND revoked_at IS NULL",
             (user_id,),
         )
-        # Anonymize personal references in audit logs but retain security evidence
-        connection.execute(
-            "UPDATE audit_logs SET user_id = NULL, metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{_deleted}', 'true') WHERE user_id = %s",
-            (user_id,),
-        )
+        # Audit rows are immutable. The referenced user row is pseudonymized above,
+        # while the audit chain remains byte-for-byte verifiable until retention expiry.
         log_audit(connection, action='account.deleted', entity_type='user', entity_id=user_id, request=request, user_id=None, workspace_id=None, metadata={'reason': 'gdpr_delete'})
         connection.commit()
     return {'deleted': True}
@@ -16838,3 +16888,187 @@ def trigger_due_credential_rotations(request: Request) -> dict[str, Any]:
                   workspace_id=workspace_context['workspace_id'], metadata={})
         connection.commit()
     return run_due_credential_rotations(workspace_id=workspace_context['workspace_id'])
+
+# ---------------------------------------------------------------------------
+# Verified workspace OIDC sign-in
+# ---------------------------------------------------------------------------
+def _oidc_b64decode(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + '=' * (-len(value) % 4))
+
+
+def _oidc_fetch_json(url: str, *, data: dict[str, str] | None = None, headers: dict[str, str] | None = None) -> dict[str, Any]:
+    parsed = urlsplit(url)
+    if parsed.scheme != 'https' or not parsed.netloc:
+        raise HTTPException(status_code=400, detail='OIDC endpoints must use HTTPS.')
+    encoded = urlencode(data).encode('utf-8') if data is not None else None
+    request = UrlRequest(url, data=encoded, headers=headers or {}, method='POST' if data is not None else 'GET')
+    try:
+        with urlopen(request, timeout=10) as response:
+            payload = json.loads(response.read().decode('utf-8'))
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=502, detail='OIDC provider request failed.') from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail='OIDC provider returned an invalid response.')
+    return payload
+
+
+def _oidc_discovery(issuer_url: str) -> dict[str, Any]:
+    issuer = issuer_url.rstrip('/')
+    document = _oidc_fetch_json(f'{issuer}/.well-known/openid-configuration')
+    if str(document.get('issuer') or '').rstrip('/') != issuer:
+        raise HTTPException(status_code=400, detail='OIDC discovery issuer does not match configured issuer.')
+    for field in ('authorization_endpoint', 'token_endpoint', 'jwks_uri'):
+        value = str(document.get(field) or '')
+        if urlsplit(value).scheme != 'https':
+            raise HTTPException(status_code=400, detail=f'OIDC discovery {field} must use HTTPS.')
+    return document
+
+
+def _verify_oidc_id_token(id_token: str, *, discovery: dict[str, Any], client_id: str, nonce: str) -> dict[str, Any]:
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+
+    parts = id_token.split('.')
+    if len(parts) != 3:
+        raise HTTPException(status_code=401, detail='Invalid OIDC ID token.')
+    try:
+        header = json.loads(_oidc_b64decode(parts[0]))
+        claims = json.loads(_oidc_b64decode(parts[1]))
+        signature = _oidc_b64decode(parts[2])
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=401, detail='Invalid OIDC ID token encoding.') from exc
+    algorithm = str(header.get('alg') or '')
+    if algorithm not in {'RS256', 'ES256'}:
+        raise HTTPException(status_code=401, detail='Unsupported OIDC signing algorithm.')
+    keys = _oidc_fetch_json(str(discovery['jwks_uri'])).get('keys') or []
+    jwk = next((item for item in keys if isinstance(item, dict) and str(item.get('kid')) == str(header.get('kid')) and str(item.get('alg') or algorithm) == algorithm), None)
+    if jwk is None:
+        raise HTTPException(status_code=401, detail='OIDC signing key was not found.')
+    signed = f'{parts[0]}.{parts[1]}'.encode('ascii')
+    try:
+        if algorithm == 'RS256':
+            key = rsa.RSAPublicNumbers(int.from_bytes(_oidc_b64decode(str(jwk['e'])), 'big'), int.from_bytes(_oidc_b64decode(str(jwk['n'])), 'big')).public_key()
+            key.verify(signature, signed, padding.PKCS1v15(), hashes.SHA256())
+        else:
+            key = ec.EllipticCurvePublicNumbers(int.from_bytes(_oidc_b64decode(str(jwk['x'])), 'big'), int.from_bytes(_oidc_b64decode(str(jwk['y'])), 'big'), ec.SECP256R1()).public_key()
+            if len(signature) != 64:
+                raise ValueError('invalid ES256 signature length')
+            from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+            key.verify(encode_dss_signature(int.from_bytes(signature[:32], 'big'), int.from_bytes(signature[32:], 'big')), signed, ec.ECDSA(hashes.SHA256()))
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail='OIDC ID token signature validation failed.') from exc
+    now = int(utc_now().timestamp())
+    audience = claims.get('aud')
+    audiences = audience if isinstance(audience, list) else [audience]
+    if str(claims.get('iss') or '').rstrip('/') != str(discovery['issuer']).rstrip('/') or client_id not in audiences:
+        raise HTTPException(status_code=401, detail='OIDC issuer or audience validation failed.')
+    if int(claims.get('exp') or 0) <= now - 60 or int(claims.get('iat') or 0) > now + 60:
+        raise HTTPException(status_code=401, detail='OIDC ID token is expired or issued in the future.')
+    if not hmac.compare_digest(str(claims.get('nonce') or ''), nonce):
+        raise HTTPException(status_code=401, detail='OIDC nonce validation failed.')
+    if not str(claims.get('sub') or ''):
+        raise HTTPException(status_code=401, detail='OIDC subject claim is required.')
+    return claims
+
+
+def oidc_begin_signin(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    workspace = str(payload.get('workspace') or '').strip()
+    redirect_uri = str(payload.get('redirect_uri') or '').strip()
+    if not workspace or not redirect_uri:
+        raise HTTPException(status_code=400, detail='workspace and redirect_uri are required.')
+    redirect = urlsplit(redirect_uri)
+    if redirect.scheme != 'https' and not (redirect.scheme == 'http' and redirect.hostname in {'localhost', '127.0.0.1'}):
+        raise HTTPException(status_code=400, detail='OIDC redirect_uri must use HTTPS (localhost HTTP is allowed for development).')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        config = connection.execute(
+            """SELECT c.*, w.slug FROM workspace_oidc_configs c JOIN workspaces w ON w.id=c.workspace_id
+               WHERE c.enabled=TRUE AND (c.workspace_id::text=%s OR w.slug=%s)""", (workspace, workspace),
+        ).fetchone()
+        if config is None:
+            raise HTTPException(status_code=404, detail='Enabled workspace OIDC configuration not found.')
+        discovery = _oidc_discovery(str(config['issuer_url']))
+        state = secrets.token_urlsafe(32)
+        nonce = secrets.token_urlsafe(32)
+        verifier = secrets.token_urlsafe(64)
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('=')
+        state_id = str(uuid.uuid4())
+        connection.execute(
+            """INSERT INTO oidc_login_states (id, workspace_id, state_hash, nonce_hash, redirect_uri, code_verifier_encrypted, expires_at)
+               VALUES (%s,%s,%s,%s,%s,%s,NOW()+INTERVAL '10 minutes')""",
+            (state_id, config['workspace_id'], _auth_token_hash(state), _auth_token_hash(nonce), redirect_uri,
+             encrypt_secret(f'{nonce}:{verifier}', aad=f'oidc-state:{state_id}')),
+        )
+        connection.commit()
+    query = urlencode({'client_id': config['client_id'], 'response_type': 'code', 'redirect_uri': redirect_uri,
+                       'scope': ' '.join(config.get('scopes') or ['openid', 'profile', 'email']), 'state': state,
+                       'nonce': nonce, 'code_challenge': challenge, 'code_challenge_method': 'S256'})
+    return {'authorization_url': f"{discovery['authorization_endpoint']}?{query}", 'state': state}
+
+
+def oidc_complete_signin(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    state = str(payload.get('state') or '').strip()
+    code = str(payload.get('code') or '').strip()
+    if not state or not code:
+        raise HTTPException(status_code=400, detail='OIDC state and code are required.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        row = connection.execute(
+            """SELECT s.*, c.issuer_url, c.client_id, c.client_secret_encrypted, c.email_domain,
+                      c.auto_provision, c.default_role
+               FROM oidc_login_states s JOIN workspace_oidc_configs c ON c.workspace_id=s.workspace_id
+               WHERE s.state_hash=%s AND s.used_at IS NULL AND s.expires_at>NOW() AND c.enabled=TRUE FOR UPDATE""",
+            (_auth_token_hash(state),),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=400, detail='Invalid or expired OIDC state.')
+        secret_pair = decrypt_secret(str(row['code_verifier_encrypted']), aad=f"oidc-state:{row['id']}")
+        nonce, verifier = secret_pair.split(':', 1)
+        if not hmac.compare_digest(_auth_token_hash(nonce), str(row['nonce_hash'])):
+            raise HTTPException(status_code=400, detail='OIDC state integrity validation failed.')
+        discovery = _oidc_discovery(str(row['issuer_url']))
+        token_response = _oidc_fetch_json(str(discovery['token_endpoint']), data={
+            'grant_type': 'authorization_code', 'code': code, 'redirect_uri': str(row['redirect_uri']),
+            'client_id': str(row['client_id']),
+            'client_secret': decrypt_secret(str(row['client_secret_encrypted']), aad=f"workspace:{row['workspace_id']}:oidc"),
+            'code_verifier': verifier,
+        }, headers={'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json'})
+        claims = _verify_oidc_id_token(str(token_response.get('id_token') or ''), discovery=discovery, client_id=str(row['client_id']), nonce=nonce)
+        email = str(claims.get('email') or '').strip().lower()
+        if not email or claims.get('email_verified') is not True:
+            raise HTTPException(status_code=403, detail='OIDC requires a verified email claim.')
+        domain = str(row.get('email_domain') or '').lower()
+        if domain and not email.endswith(f'@{domain}'):
+            raise HTTPException(status_code=403, detail='OIDC email domain is not allowed for this workspace.')
+        external_subject = f"{str(row['issuer_url']).rstrip('/')}|{claims['sub']}"
+        user = connection.execute("SELECT id, session_version, suspended_at FROM users WHERE auth_provider='oidc' AND external_subject=%s", (external_subject,)).fetchone()
+        if user is None:
+            if not row['auto_provision']:
+                raise HTTPException(status_code=403, detail='OIDC auto-provisioning is disabled.')
+            existing = connection.execute('SELECT id FROM users WHERE lower(email)=lower(%s)', (email,)).fetchone()
+            if existing is not None:
+                raise HTTPException(status_code=409, detail='An account with this email already exists; an administrator must link it explicitly.')
+            user_id = str(uuid.uuid4())
+            connection.execute("""INSERT INTO users (id,email,password_hash,full_name,current_workspace_id,email_verified_at,auth_provider,external_subject,session_version,created_at,updated_at)
+                                  VALUES (%s,%s,%s,%s,%s,NOW(),'oidc',%s,1,NOW(),NOW())""",
+                               (user_id, email, hash_password(secrets.token_urlsafe(48)), str(claims.get('name') or email), row['workspace_id'], external_subject))
+            connection.execute('INSERT INTO workspace_members (id,workspace_id,user_id,role,created_at) VALUES (%s,%s,%s,%s,NOW())',
+                               (str(uuid.uuid4()), row['workspace_id'], user_id, _normalize_workspace_role(str(row['default_role']))))
+            user = {'id': user_id, 'session_version': 1, 'suspended_at': None}
+        if user.get('suspended_at') is not None:
+            raise HTTPException(status_code=403, detail='This account is suspended.')
+        connection.execute('UPDATE oidc_login_states SET used_at=NOW() WHERE id=%s', (row['id'],))
+        access_token = create_access_token(str(user['id']), int(user.get('session_version') or 1))
+        _store_session(connection, str(user['id']), access_token, str(row['workspace_id']), request=request)
+        amr = [str(value).lower() for value in (claims.get('amr') or [])]
+        mfa_verified = bool({'mfa', 'otp', 'totp'} & set(amr))
+        connection.execute("""UPDATE auth_sessions SET authentication_methods=%s::jsonb,
+                              mfa_verified_at=CASE WHEN %s THEN NOW() ELSE NULL END
+                              WHERE session_token_hash=%s""", (_json_dumps(['oidc', *amr]), mfa_verified, _auth_token_hash(access_token)))
+        log_audit(connection, action='auth.oidc_signin', entity_type='user', entity_id=str(user['id']), request=request,
+                  user_id=str(user['id']), workspace_id=str(row['workspace_id']), metadata={'issuer': row['issuer_url'], 'amr': amr})
+        hydrated = build_user_response(connection, str(user['id']))
+        connection.commit()
+        return {'access_token': access_token, 'token_type': 'bearer', 'user': hydrated}

@@ -83,6 +83,8 @@ from services.api.app.pilot import (
     mfa_begin_enrollment,
     mfa_confirm_enrollment,
     mfa_complete_signin,
+    oidc_begin_signin,
+    oidc_complete_signin,
     mfa_disable,
     mfa_regenerate_recovery_codes,
     reauthenticate_user,
@@ -2463,6 +2465,18 @@ def auth_signin(payload: dict[str, Any], request: Request) -> dict[str, Any]:
 def auth_mfa_complete_signin(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     enforce_auth_rate_limit(request, 'mfa_complete_signin')
     return with_auth_schema_json(lambda: mfa_complete_signin(payload, request))
+
+
+@app.post('/auth/oidc/start', summary='Start a workspace OIDC authorization-code flow')
+def auth_oidc_start(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    enforce_auth_rate_limit(request, 'oidc_start')
+    return with_auth_schema_json(lambda: oidc_begin_signin(payload, request))
+
+
+@app.post('/auth/oidc/callback', summary='Complete a workspace OIDC authorization-code flow')
+def auth_oidc_callback(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    enforce_auth_rate_limit(request, 'oidc_callback')
+    return with_auth_schema_json(lambda: oidc_complete_signin(payload, request))
 
 
 @app.post('/auth/signout', summary='Sign out a live-mode pilot user')
