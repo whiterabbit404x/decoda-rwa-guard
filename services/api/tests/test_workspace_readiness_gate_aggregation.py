@@ -50,6 +50,7 @@ def _patch_readiness_dependencies(monkeypatch, *, counts: dict[str, int], billin
         },
     )
     monkeypatch.setattr(pilot.Path, 'exists', lambda _self: True)
+    monkeypatch.setattr(pilot, 'recovery_drill_readiness', lambda _c: {'pass': True, 'reason_code': None, 'drills': {}})
     monkeypatch.setenv('REDIS_URL', redis_url)
 
 
@@ -187,3 +188,41 @@ def test_workspace_readiness_proof_bundle_incomplete_when_alerts_incidents_or_ru
     assert 'production_validation_proof_bundle_incomplete' in payload['blocking_failure_reason_codes']
     assert payload['details']['counts']['alerts'] == 0
     assert payload['details']['counts']['incidents'] == 0
+
+
+def test_workspace_readiness_blocks_enterprise_when_recovery_drills_are_stale(monkeypatch) -> None:
+    _patch_readiness_dependencies(
+        monkeypatch,
+        counts={
+            'assets': 1,
+            'monitoring_configs': 1,
+            'telemetry_events': 1,
+            'detections': 1,
+            'detection_events': 0,
+            'alerts': 1,
+            'incidents': 1,
+            'response_actions': 1,
+            'evidence': 1,
+            'detection_evidence': 0,
+        },
+        billing_available=True,
+        email_verified=True,
+    )
+    monkeypatch.setattr(
+        pilot,
+        'recovery_drill_readiness',
+        lambda _c: {
+            'pass': False,
+            'reason_code': 'recovery_drills_not_current',
+            'drills': {'backup_restore': {'pass': False, 'reason_code': 'recovery_drill_stale'}},
+        },
+    )
+
+    payload = pilot.get_workspace_readiness(request=object())
+
+    assert payload['controlled_pilot_ready'] is True
+    assert payload['broad_self_serve_ready'] is True
+    assert payload['enterprise_procurement_ready'] is False
+    assert payload['hard_gates_pass'] is False
+    assert 'recovery_drills_not_current' in payload['enterprise_procurement_blocking_reason_codes']
+    assert payload['details']['gate_aggregation']['recovery_drills']['pass'] is False

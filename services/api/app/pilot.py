@@ -46,6 +46,7 @@ from services.api.app.evidence_signing import signing_key_status
 from services.api.app.production_readiness import build_production_readiness
 from services.api.app.paid_launch_readiness import check_billing_readiness
 from services.api.app.observability import current_trace_id, increment, gauge, observe, report_error, span, send_external_oncall_alert
+from services.api.app.recovery_drills import RUN_TYPES as RECOVERY_DRILL_RUN_TYPES, recovery_drill_readiness
 
 _ACTIVE_DB_CONNECTIONS = 0
 _ACTIVE_DB_CONNECTIONS_LOCK = threading.Lock()
@@ -962,6 +963,7 @@ def get_workspace_readiness(request: Request) -> dict[str, Any]:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
         workspace_id = workspace_context['workspace']['id']
+        recovery_readiness = recovery_drill_readiness(connection)
 
         def _workspace_count(table: str) -> int:
             _validate_sql_identifier(table, 'table')
@@ -999,6 +1001,7 @@ def get_workspace_readiness(request: Request) -> dict[str, Any]:
             'email': {'pass': email_verified, 'reason_code': None if email_verified else 'email_not_verified'},
             'provider': {'pass': redis_provider_ready and provider_healthy, 'reason_code': None if redis_provider_ready and provider_healthy else 'provider_dependencies_unhealthy'},
             'staging': {'pass': staging_artifacts_exist, 'reason_code': None if staging_artifacts_exist else 'staging_evidence_artifacts_incomplete'},
+            'recovery_drills': {'pass': recovery_readiness['pass'], 'reason_code': recovery_readiness['reason_code']},
         }
         gate_failure_reason_codes = [gate['reason_code'] for gate in gate_aggregation.values() if gate['reason_code']]
         if not production_validation_proof_bundle_complete:
@@ -1021,6 +1024,7 @@ def get_workspace_readiness(request: Request) -> dict[str, Any]:
             {'key': 'staging_evidence_artifacts_exist', 'label': 'Staging evidence artifacts exist', 'pass': staging_artifacts_exist, 'blocking': True, 'pass_reason': 'All expected staging evidence artifacts are present.', 'fail_reason': 'Staging evidence artifacts are incomplete. Regenerate artifacts under artifacts/live_evidence/latest.'},
             {'key': 'billing_email_provider_checks_passing', 'label': 'Billing/email/provider checks passing', 'pass': billing_email_provider_checks_passing, 'blocking': True, 'pass_reason': 'Billing, email, provider, and staging gates all pass.', 'fail_reason': 'One or more required billing/email/provider/staging gates failed.', 'reason_code': 'billing_email_provider_checks_failed'},
             {'key': 'production_validation_proof_bundle_complete', 'label': 'Production validation proof bundle complete', 'pass': production_validation_proof_bundle_complete, 'blocking': True, 'pass_reason': 'Alerts, incidents, runs, and linked evidence artifacts are complete.', 'fail_reason': 'Production validation proof bundle is incomplete. Ensure alerts/incidents/runs artifacts and required links are present.', 'reason_code': 'production_validation_proof_bundle_incomplete'},
+            {'key': 'recovery_drills_current', 'label': 'Recovery drills current', 'pass': recovery_readiness['pass'], 'blocking': True, 'pass_reason': 'Database restore, regional failover, and provider failover drills all have recent validated successes within RTO/RPO targets.', 'fail_reason': 'One or more required recovery drills are missing, stale, invalid, or outside RTO/RPO targets.', 'reason_code': recovery_readiness['reason_code'] or 'recovery_drills_not_current'},
         ]
         checks = [
             {
@@ -1068,6 +1072,7 @@ def get_workspace_readiness(request: Request) -> dict[str, Any]:
         enterprise_procurement_required = (
             'staging_evidence_artifacts_exist',
             'production_validation_proof_bundle_complete',
+            'recovery_drills_current',
             'alert_exists',
             'incident_exists',
             'response_action_exists',
@@ -1171,9 +1176,52 @@ def get_workspace_readiness(request: Request) -> dict[str, Any]:
                 'gate_aggregation': gate_aggregation,
                 'billing_email_provider_checks_passing': billing_email_provider_checks_passing,
                 'production_validation_proof_bundle_complete': production_validation_proof_bundle_complete,
+                'recovery_drills': recovery_readiness,
                 'staging_evidence_artifacts': artifact_status,
             },
         }
+
+
+
+def get_recovery_drill_status(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        readiness = recovery_drill_readiness(connection)
+        schedules = connection.execute(
+            "SELECT * FROM recovery_drill_schedules ORDER BY run_type"
+        ).fetchall()
+        recent_runs = connection.execute(
+            "SELECT * FROM recovery_validation_runs ORDER BY started_at DESC LIMIT 50"
+        ).fetchall()
+        return {
+            'workspace': workspace_context['workspace'],
+            'checked_by': user['id'],
+            'checked_at': utc_now_iso(),
+            'readiness': readiness,
+            'schedules': [_json_safe_value(dict(row)) for row in schedules],
+            'recent_runs': [_json_safe_value(dict(row)) for row in recent_runs],
+        }
+
+
+def schedule_recovery_drill(run_type: str, request: Request) -> dict[str, Any]:
+    if run_type not in RECOVERY_DRILL_RUN_TYPES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported recovery drill type.')
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        row = connection.execute(
+            "UPDATE recovery_drill_schedules SET next_run_at=NOW(),updated_at=NOW() WHERE run_type=%s AND enabled=TRUE RETURNING *",
+            (run_type,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Recovery drill schedule is disabled or unavailable.')
+        log_audit(connection, action='recovery_drill.schedule', entity_type='recovery_drill_schedule', entity_id=run_type,
+                  request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'run_type': run_type})
+        connection.commit()
+        return {'scheduled': True, 'schedule': _json_safe_value(dict(row))}
 
 
 def test_integration_email(request: Request) -> dict[str, Any]:
