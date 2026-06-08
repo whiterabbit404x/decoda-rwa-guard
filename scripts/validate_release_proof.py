@@ -17,11 +17,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.release_proof_context import (
+    DEFAULT_MAX_EVIDENCE_AGE_SECONDS,
+    SHA_RE,
+    git_sha,
+    parse_timestamp,
+)
 
 SECRET_MARKERS = {
     'secret', 'key', 'password', 'token', 'credential', 'api_key',
@@ -322,6 +332,187 @@ def validate_test_report_summary(path: Path) -> tuple[bool, list[str]]:
     return len(issues) == 0, issues
 
 
+
+IDENTITY_FIELDS = ('commit_sha', 'deployment_id', 'ci_run_id', 'environment')
+EVIDENCE_IDENTITY_FIELDS = ('evidence_started_at', 'evidence_completed_at')
+TIMESTAMP_FIELDS = ('generated_at',) + EVIDENCE_IDENTITY_FIELDS
+REQUIRED_CI_GATES = {
+    'backend_tests',
+    'saas_workflow_validation',
+    'readiness_validation',
+    'paid_launch_readiness',
+    'live_evidence',
+    'frontend_build',
+}
+
+
+
+def _validate_identity_and_freshness(
+    artifact: dict[str, Any],
+    label: str,
+    *,
+    now: datetime,
+    max_age_seconds: int,
+) -> list[str]:
+    issues: list[str] = []
+    for field in IDENTITY_FIELDS + TIMESTAMP_FIELDS:
+        if not artifact.get(field):
+            issues.append(f'{label}: missing required attestation field {field}')
+    sha = str(artifact.get('commit_sha') or '').lower()
+    if sha and not SHA_RE.fullmatch(sha):
+        issues.append(f'{label}: commit_sha must be the exact 40-character Git SHA')
+    try:
+        generated_at = parse_timestamp(artifact.get('generated_at'))
+        started_at = parse_timestamp(artifact.get('evidence_started_at'))
+        completed_at = parse_timestamp(artifact.get('evidence_completed_at'))
+        if started_at > completed_at:
+            issues.append(f'{label}: evidence_started_at is after evidence_completed_at')
+        if completed_at > now:
+            issues.append(f'{label}: evidence timestamp is in the future')
+        age = (now - completed_at).total_seconds()
+        if age > max_age_seconds:
+            issues.append(f'{label}: stale evidence ({int(age)}s old; max {max_age_seconds}s)')
+        if generated_at < started_at or generated_at > now:
+            issues.append(f'{label}: generated_at is outside the evidence collection window')
+    except ValueError as exc:
+        issues.append(f'{label}: invalid evidence timestamp: {exc}')
+    return issues
+
+
+def validate_release_bundle(
+    release_proof_dir: Path,
+    launch_proof_dir: Path,
+    *,
+    now: datetime | None = None,
+    max_age_seconds: int | None = None,
+) -> tuple[bool, list[str], dict[str, Any] | None]:
+    """Validate one coherent, fresh release attestation across all proof files."""
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    max_age_seconds = max_age_seconds or int(
+        os.getenv('RELEASE_PROOF_MAX_AGE_SECONDS', str(DEFAULT_MAX_EVIDENCE_AGE_SECONDS))
+    )
+    paths = {
+        'ci-required-gates': release_proof_dir / 'ci-required-gates.json',
+        'release-proof': release_proof_dir / 'summary.json',
+        'manifest': release_proof_dir / 'manifest.json',
+        'test-report-summary': release_proof_dir / 'test-report-summary.json',
+        'launch-proof': launch_proof_dir / 'summary.json',
+    }
+    artifacts: dict[str, dict[str, Any]] = {}
+    issues: list[str] = []
+    for label, path in paths.items():
+        data = _load_json(path)
+        if data is None:
+            issues.append(f'{label}: required release proof artifact missing')
+            continue
+        artifacts[label] = data
+        issues.extend(
+            _validate_identity_and_freshness(
+                data, label, now=now, max_age_seconds=max_age_seconds
+            )
+        )
+
+    if not artifacts:
+        return False, issues, None
+
+    reference = artifacts.get('release-proof') or next(iter(artifacts.values()))
+    if release_proof_dir.is_relative_to(REPO_ROOT):
+        expected_commit = git_sha(REPO_ROOT)
+        if expected_commit != 'unknown' and reference.get('commit_sha') != expected_commit:
+            issues.append(
+                f'release-proof: commit_sha does not match checked-out Git commit '
+                f'(expected {expected_commit}, got {reference.get("commit_sha")})'
+            )
+    identity = {
+        field: reference.get(field)
+        for field in IDENTITY_FIELDS + EVIDENCE_IDENTITY_FIELDS
+    }
+    for label, artifact in artifacts.items():
+        for field in IDENTITY_FIELDS:
+            expected = identity[field]
+            if artifact.get(field) != expected:
+                issues.append(
+                    f'{label}: {field} mismatch (expected {expected!r}, got {artifact.get(field)!r})'
+                )
+
+    gates = artifacts.get('ci-required-gates', {})
+    required_gates = gates.get('required_gates', {})
+    missing_gates = sorted(REQUIRED_CI_GATES - set(required_gates))
+    if missing_gates:
+        issues.append('ci-required-gates: missing required CI gates: ' + ', '.join(missing_gates))
+    manifest = artifacts.get('manifest', {})
+    if manifest.get('overall_status') != 'pass' or manifest.get('blockers'):
+        issues.append('manifest: overall_status must be pass without blockers')
+    artifact_root = release_proof_dir.parents[2] if len(release_proof_dir.parents) >= 3 else REPO_ROOT
+    manifested_paths: set[str] = set()
+    for entry in manifest.get('files') or []:
+        rel_path = entry.get('path')
+        if not isinstance(rel_path, str) or not rel_path.startswith('artifacts/'):
+            issues.append(f'manifest: invalid artifact path {rel_path!r}')
+            continue
+        manifested_paths.add(rel_path)
+        full_path = artifact_root / rel_path
+        if not full_path.exists():
+            issues.append(f'manifest: required file not found: {rel_path}')
+            continue
+        if entry.get('sha256') != _compute_sha256(full_path):
+            issues.append(f'manifest: SHA256 mismatch for {rel_path}')
+    required_manifest_paths = {
+        str((release_proof_dir / 'summary.json').relative_to(artifact_root)),
+        str((release_proof_dir / 'ci-required-gates.json').relative_to(artifact_root)),
+        str((release_proof_dir / 'test-report-summary.json').relative_to(artifact_root)),
+        str((launch_proof_dir / 'summary.json').relative_to(artifact_root)),
+    }
+    missing_manifest_paths = sorted(required_manifest_paths - manifested_paths)
+    if missing_manifest_paths:
+        issues.append('manifest: missing required artifacts: ' + ', '.join(missing_manifest_paths))
+
+    test_report = artifacts.get('test-report-summary', {})
+    if test_report.get('overall_status') == 'fail':
+        issues.append('test-report-summary: failed test report cannot be attested')
+    for suite_name, suite in (test_report.get('test_suites') or {}).items():
+        if suite.get('status') == 'fail' or suite.get('tests_failed', 0):
+            issues.append(f'test-report-summary: suite {suite_name} failed')
+
+    release = artifacts.get('release-proof', {})
+    launch = artifacts.get('launch-proof', {})
+    enterprise_claim = any((
+        release.get('release_status') == 'pass',
+        release.get('paid_launch_ready') is True,
+        launch.get('paid_launch_ready') is True,
+        launch.get('broad_paid_saas_ready') is True,
+    ))
+    if enterprise_claim:
+        if test_report.get('overall_status') != 'pass':
+            issues.append(
+                f'test-report-summary: enterprise readiness requires pass, got '
+                f'{test_report.get("overall_status", "missing")}'
+            )
+        for suite_name, suite in (test_report.get('test_suites') or {}).items():
+            if suite.get('status') != 'pass':
+                issues.append(f'test-report-summary: enterprise suite {suite_name} status={suite.get("status")}')
+        for gate_name in sorted(REQUIRED_CI_GATES):
+            status = (required_gates.get(gate_name) or {}).get('status', 'missing')
+            if status != 'pass':
+                issues.append(f'ci-required-gates: required gate {gate_name} status={status}')
+        if gates.get('overall_status') != 'pass':
+            issues.append('ci-required-gates: overall_status must be pass for enterprise readiness')
+        if release.get('release_status') != 'pass':
+            issues.append('release-proof: launch artifact claims readiness while release_status is not pass')
+        if not release.get('ci_required_gates_ready') or not release.get('test_report_ready'):
+            issues.append('release-proof: enterprise-ready result contradicts validated CI/test readiness')
+        if not launch.get('paid_launch_ready'):
+            issues.append('launch-proof: release claims pass but paid_launch_ready is false')
+        if launch.get('broad_paid_saas_ready') and not gates.get('broad_paid_launch_ready'):
+            issues.append('launch-proof: broad readiness contradicts ci-required-gates')
+
+    if release.get('release_channel') != identity.get('environment'):
+        issues.append('release-proof: release_channel does not match attested environment')
+    if gates.get('release_channel') != identity.get('environment'):
+        issues.append('ci-required-gates: release_channel does not match attested environment')
+
+    return not issues, sorted(set(issues)), identity
+
 def main() -> int:
     """Validate all five proof artifacts."""
     repo_root = Path(__file__).resolve().parents[1]
@@ -379,6 +570,15 @@ def main() -> int:
         print('[validate-release-proof] [OK] launch-proof summary.json valid')
     else:
         print('[validate-release-proof] [FAIL] launch-proof summary.json invalid')
+        all_ok = False
+    all_issues.extend(issues)
+
+    print('[validate-release-proof] Validating cross-artifact release attestation...')
+    ok, issues, identity = validate_release_bundle(release_proof_dir, launch_proof_dir)
+    if ok:
+        print(f'[validate-release-proof] [OK] coherent attestation {identity}')
+    else:
+        print('[validate-release-proof] [FAIL] release attestation is not coherent')
         all_ok = False
     all_issues.extend(issues)
 

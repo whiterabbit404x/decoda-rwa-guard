@@ -31,6 +31,8 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from scripts.validate_release_proof import validate_release_bundle
+
 _SECRET_PATTERNS = re.compile(
     r'(sk_live_|sk_test_|whsec_|SG\.[A-Za-z0-9_-]{20,}|rk_live_|pk_live_|AKIA[A-Z0-9]{16})',
     re.IGNORECASE,
@@ -619,6 +621,12 @@ def build_final_readiness(
     ci_gates, cg_blockers = _load_ci_gates(release_proof_dir)
     staging_proof, _sp_blockers = _load_staging_proof(staging_proof_dir)
 
+    release_attestation_valid, release_attestation_issues, release_identity = (
+        validate_release_bundle(release_proof_dir, launch_proof_dir)
+    )
+    if not release_attestation_valid:
+        blockers.extend(f'release attestation: {issue}' for issue in release_attestation_issues)
+
     blockers.extend(lp_blockers)
     blockers.extend(rp_blockers)
     blockers.extend(cg_blockers)
@@ -690,7 +698,8 @@ def build_final_readiness(
     )
 
     controlled_pilot_ready = (
-        categories.get('saas_workflow', {}).get('status') in ('pass', 'warn')
+        release_attestation_valid
+        and categories.get('saas_workflow', {}).get('status') in ('pass', 'warn')
         and categories.get('runtime_truthfulness', {}).get('status') == 'pass'
         and categories.get('auth_workspace_model', {}).get('status') in ('pass', 'warn')
         and not any('launch-proof missing' in b for b in blockers)
@@ -710,7 +719,8 @@ def build_final_readiness(
         _readiness_validation_ok = False
 
     broad_paid_saas_ready = (
-        live_ok
+        release_attestation_valid
+        and live_ok
         and staging_ok
         and _lp_paid_ready
         and _frontend_build_ok
@@ -731,7 +741,8 @@ def build_final_readiness(
     )
 
     production_100_percent_ready = (
-        all_cats_pass
+        release_attestation_valid
+        and all_cats_pass
         and live_ok
         and staging_ok
         and not blockers
@@ -780,6 +791,9 @@ def build_final_readiness(
         'generated_at': datetime.now(timezone.utc).isoformat(),
         'mode': mode,
         'strict': strict,
+        'release_attestation_valid': release_attestation_valid,
+        'release_attestation': release_identity,
+        'result_source': 'validated_release_proof',
         'overall_score': overall_score,
         'controlled_pilot_ready': controlled_pilot_ready,
         'broad_paid_saas_ready': broad_paid_saas_ready,

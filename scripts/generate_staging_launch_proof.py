@@ -42,6 +42,8 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from scripts.release_proof_context import build_attestation_context
+
 from services.api.app.paid_launch_readiness import check_billing_readiness
 
 _SECRET_PATTERNS = re.compile(
@@ -950,6 +952,7 @@ def generate_staging_proof(
     summary: dict[str, Any] = {
         'schema_version': 1,
         'generated_at': now,
+        **build_attestation_context(REPO_ROOT, mode),
         'mode': mode,
         'strict': strict,
         'release_channel': 'staging' if mode in ('staging', 'production') else 'local',
