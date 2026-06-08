@@ -150,17 +150,3 @@ def test_delete_account_route_exists():
     assert '/auth/delete-account' in routes, (
         f'Route /auth/delete-account not found; routes: {sorted(r for r in routes if "auth" in r)}'
     )
-
-
-# ---------------------------------------------------------------------------
-# Internal: publishing uses the shared Redis Stream
-# ---------------------------------------------------------------------------
-def test_publish_alert_uses_shared_stream(monkeypatch):
-    published = []
-    monkeypatch.setattr(_api_main.alert_stream, 'publish', lambda workspace_id, payload: published.append((workspace_id, payload)) or '1-0')
-    before = _api_main._ALERTS_PUBLISHED_COUNT
-
-    _api_main.publish_alert_to_workspace('test-ws-counter', {'type': 'alert'})
-
-    assert published == [('test-ws-counter', {'type': 'alert'})]
-    assert _api_main._ALERTS_PUBLISHED_COUNT == before + 1

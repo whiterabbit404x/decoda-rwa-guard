@@ -27,7 +27,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from services.api.app.domains import alert_stream
+from services.api.app.domains import alert_stream, alert_delivery
 from services.api.app.domains.rate_limit import rate_limit_connectivity
 
 from services.api.app.pilot import (
@@ -335,6 +335,7 @@ RECONCILIATION_DATA_DIR = Path(__file__).resolve().parents[2] / 'reconciliation-
 OPTIONAL_FIXTURE_WARNINGS_EMITTED: set[tuple[str, str]] = set()
 STARTUP_BOOTSTRAP_STATUS: dict[str, Any] = {'enabled': False, 'ran': False, 'applied_versions': []}
 MONITORING_BACKGROUND_TASK: asyncio.Task[Any] | None = None
+ALERT_EVENT_BACKGROUND_TASK: asyncio.Task[Any] | None = None
 HAS_EMITTED_INITIAL_MONITORING_DB_DEGRADED_EVENT = False
 HAS_EMITTED_INITIAL_STARTUP_RECONCILE_DB_DEGRADED_EVENT = False
 MONITORING_LOOP_RUNTIME_STATE: dict[str, Any] = {
@@ -616,25 +617,17 @@ _REQUEST_METRICS: dict[str, int] = {}   # "method:path_pattern:status"
 _AUTH_FAILURE_COUNT: int = 0
 _ALERTS_PUBLISHED_COUNT: int = 0
 _SSE_CONNECTION_COUNT: int = 0
-_SSE_EVENTS_PUBLISHED: int = 0
 _SSE_EVENTS_DELIVERED: int = 0
 
 
-def publish_alert_to_workspace(workspace_id: str, alert_data: dict[str, Any]) -> None:
-    """Persist an alert to the bounded workspace Redis Stream."""
-    global _ALERTS_PUBLISHED_COUNT, _SSE_EVENTS_PUBLISHED
+def alert_delivery_health() -> dict[str, Any]:
     try:
-        alert_stream.publish(workspace_id, alert_data)
-    except Exception:
-        logger.exception('alert_stream_publish_failed', extra={'workspace_id': workspace_id})
-        return
-    _ALERTS_PUBLISHED_COUNT += 1
-    _SSE_EVENTS_PUBLISHED += 1
-
-
-async def publish_alert_to_workspace_async(workspace_id: str, alert_data: dict[str, Any]) -> None:
-    """Compatibility wrapper around the Redis Streams publisher."""
-    await asyncio.to_thread(publish_alert_to_workspace, workspace_id, alert_data)
+        with pg_connection() as connection:
+            return alert_delivery.health_snapshot(connection)
+    except Exception as exc:
+        snapshot = alert_delivery.health_snapshot()
+        snapshot['error'] = type(exc).__name__
+        return snapshot
 
 
 def database_url() -> str | None:
@@ -1560,7 +1553,7 @@ def bootstrap_live_pilot() -> dict[str, Any]:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global MONITORING_BACKGROUND_TASK, MONITORING_LOOP_RUNTIME_STATE
+    global MONITORING_BACKGROUND_TASK, MONITORING_LOOP_RUNTIME_STATE, ALERT_EVENT_BACKGROUND_TASK
     validate_secret_encryption_key_at_startup()
     validate_signing_secret_at_startup()
     if _is_local_dev_mode():
@@ -1709,7 +1702,26 @@ async def lifespan(_: FastAPI):
                     logger.exception('background_monitoring_cycle_failed')
                     await asyncio.sleep(interval)
         MONITORING_BACKGROUND_TASK = asyncio.create_task(_monitoring_loop())
+    if str(os.getenv('ALERT_EVENT_WORKER_ENABLED', 'true')).strip().lower() in {'1', 'true', 'yes', 'on'} and resolved_database_url():
+        async def _alert_event_loop() -> None:
+            interval = max(1, int(os.getenv('ALERT_EVENT_WORKER_INTERVAL_SECONDS', '2')))
+            while True:
+                try:
+                    with pg_connection() as connection:
+                        alert_delivery.publish_outbox_batch(connection)
+                        alert_delivery.consume_bus_batch(connection)
+                        connection.commit()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception('alert_event_worker_cycle_failed')
+                await asyncio.sleep(interval)
+        ALERT_EVENT_BACKGROUND_TASK = asyncio.create_task(_alert_event_loop())
     yield
+    if ALERT_EVENT_BACKGROUND_TASK is not None:
+        ALERT_EVENT_BACKGROUND_TASK.cancel()
+        with suppress(asyncio.CancelledError):
+            await ALERT_EVENT_BACKGROUND_TASK
     if MONITORING_BACKGROUND_TASK is not None:
         MONITORING_BACKGROUND_TASK.cancel()
         with suppress(asyncio.CancelledError):
@@ -2020,6 +2032,7 @@ def health() -> dict[str, object]:
             'alert_stream': alert_stream.connectivity_sync(),
         },
         'alert_subscribers': alert_stream.subscriber_health(),
+        'alert_delivery': alert_delivery_health(),
         'risk_engine_url': RISK_ENGINE_URL,
         'threat_engine_url': THREAT_ENGINE_URL,
         'compliance_service_url': COMPLIANCE_SERVICE_URL,
@@ -2076,7 +2089,9 @@ def health_readiness() -> dict[str, Any]:
     rate_limit_health = rate_limit_connectivity()
     alert_stream_health = alert_stream.connectivity_sync()
     shared_backends_ready = bool(rate_limit_health.get('connected') and alert_stream_health.get('connected'))
-    if is_production_like and not shared_backends_ready:
+    delivery_health = alert_delivery_health()
+    durable_alert_delivery_ready = bool(delivery_health.get('ready'))
+    if is_production_like and (not shared_backends_ready or not durable_alert_delivery_ready):
         status_value = 'not_ready'
     retention_worker = get_retention_worker_health()
     return {
@@ -2089,12 +2104,13 @@ def health_readiness() -> dict[str, Any]:
         'redis_status': checks.get('redis_status', 'configured' if rate_limit_backend == 'redis' else 'not_configured'),
         'rate_limit_backend': rate_limit_backend,
         'rate_limit_enterprise_ready': bool(rate_limit_enterprise_ready),
-        'enterprise_ready': bool(rate_limit_enterprise_ready) and shared_backends_ready and not errors,
+        'enterprise_ready': bool(rate_limit_enterprise_ready) and shared_backends_ready and durable_alert_delivery_ready and not errors,
         'shared_backends': {
             'rate_limit': rate_limit_health,
             'alert_stream': alert_stream_health,
         },
         'alert_subscribers': alert_stream.subscriber_health(),
+        'alert_delivery': delivery_health,
         'warning': None,
         'errors': errors,
         'warnings': warnings,
@@ -2569,7 +2585,17 @@ def ops_run_monitoring(payload: dict[str, Any], request: Request) -> Any:
 
 @app.get('/ops/monitoring/health', summary='Monitoring worker health snapshot')
 def ops_monitoring_health() -> dict[str, Any]:
-    return with_auth_schema_json(get_monitoring_health)
+    def _snapshot() -> dict[str, Any]:
+        monitoring = get_monitoring_health()
+        delivery = alert_delivery_health()
+        enterprise_ready = bool(monitoring.get('enterprise_ready', True) and delivery.get('ready'))
+        return {
+            **monitoring,
+            'alert_delivery': delivery,
+            'enterprise_ready': enterprise_ready,
+            'status': monitoring.get('status', 'healthy') if enterprise_ready else 'not_ready',
+        }
+    return with_auth_schema_json(_snapshot)
 
 
 @app.get('/ops/production-claim-validator', summary='Strategic Infrastructure Guard production claim validator')
@@ -4011,11 +4037,7 @@ def alerts_resolve(alert_id: str, request: Request) -> dict[str, Any]:
 
 @app.post('/alerts/{alert_id}/escalate', summary='Escalate alert to incident')
 def alerts_escalate(alert_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    result = with_auth_schema_json(lambda: escalate_alert_to_incident(alert_id, payload, request))
-    workspace_id = request.headers.get('x-workspace-id', '') or ''
-    if workspace_id and isinstance(result, dict):
-        publish_alert_to_workspace(workspace_id, {'type': 'alert', 'alert_type': 'escalation', 'alert_id': alert_id})
-    return result
+    return with_auth_schema_json(lambda: escalate_alert_to_incident(alert_id, payload, request))
 
 
 @app.get('/alerts/{alert_id}/evidence', summary='List alert evidence payload')
@@ -4169,12 +4191,17 @@ def exports_download(export_id: str, request: Request) -> Response:
 @app.get('/metrics', include_in_schema=False)
 def metrics() -> Response:
     subscriber_snapshot = alert_stream.subscriber_health()
+    delivery_snapshot = alert_delivery_health()
+    outbox_depth = delivery_snapshot.get('outbox') or {}
     supplemental = [
         f'decoda_stream_connections_active {_SSE_CONNECTION_COUNT}',
         f'decoda_auth_failures_total {_AUTH_FAILURE_COUNT}',
         f'decoda_alerts_published_total {_ALERTS_PUBLISHED_COUNT}',
         f"decoda_alert_stream_subscribers_connected {subscriber_snapshot['connected_subscribers']}",
         f"decoda_alert_stream_reconnects_total {subscriber_snapshot['reconnects_total']}",
+        f"decoda_alert_outbox_pending {outbox_depth.get('pending') or 0}",
+        f"decoda_alert_bus_pending_delivery {outbox_depth.get('published') or 0}",
+        f"decoda_alert_dead_letter_total {outbox_depth.get('dead_letter') or 0}",
     ]
     return Response(prometheus_metrics() + '\n'.join(supplemental) + '\n', media_type='text/plain; version=0.0.4')
 
@@ -4285,7 +4312,42 @@ def system_integrations_health(request: Request) -> dict[str, Any]:
 
 @app.get('/system/readiness', summary='Workspace readiness diagnostics with gates, reasons, and dependency checks')
 def system_workspace_readiness(request: Request) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: get_workspace_readiness(request))
+    def _workspace_snapshot() -> dict[str, Any]:
+        readiness = get_workspace_readiness(request)
+        delivery = alert_delivery_health()
+        delivery_ready = bool(delivery.get('ready'))
+        checks = list(readiness.get('checks') or [])
+        checks.append({
+            'key': 'durable_alert_delivery',
+            'pass': delivery_ready,
+            'blocking': True,
+            'reason_code': None if delivery_ready else 'durable_alert_delivery_unavailable',
+            'reason': 'Shared event bus, outbox publisher, and stream consumer are healthy.' if delivery_ready else 'Shared event bus, outbox publisher, or stream consumer is unavailable.',
+        })
+        readiness['checks'] = checks
+        readiness.setdefault('dependency_checks', {})['durable_alert_delivery'] = {
+            'pass': delivery_ready,
+            'blocking': True,
+            'reason_code': None if delivery_ready else 'durable_alert_delivery_unavailable',
+        }
+        readiness['alert_delivery'] = delivery
+        if not delivery_ready:
+            readiness['status'] = 'fail'
+            readiness['enterprise_procurement_ready'] = False
+            reasons = list(readiness.get('enterprise_procurement_blocking_reason_codes') or [])
+            if 'durable_alert_delivery_unavailable' not in reasons:
+                reasons.append('durable_alert_delivery_unavailable')
+            readiness['enterprise_procurement_blocking_reason_codes'] = reasons
+            blocking_reasons = list(readiness.get('blocking_failure_reason_codes') or [])
+            if 'durable_alert_delivery_unavailable' not in blocking_reasons:
+                blocking_reasons.append('durable_alert_delivery_unavailable')
+            readiness['blocking_failure_reason_codes'] = blocking_reasons
+            blocking_failures = list(readiness.get('blocking_failures') or [])
+            if 'Shared event bus, durable worker, or outbox consumer is unavailable.' not in blocking_failures:
+                blocking_failures.append('Shared event bus, durable worker, or outbox consumer is unavailable.')
+            readiness['blocking_failures'] = blocking_failures
+        return readiness
+    return with_auth_schema_json(_workspace_snapshot)
 
 @app.get('/admin/readiness', summary='Internal admin production readiness snapshot')
 def admin_readiness(request: Request) -> dict[str, Any]:
@@ -4402,10 +4464,6 @@ def _persist_live_analysis(request: Request, payload: dict[str, Any], response_p
             response_payload=response_payload,
         )
         connection.commit()
-        publish_alert_to_workspace(
-            workspace_context['workspace_id'],
-            {'type': 'alert', 'alert_type': analysis_type, 'title': title, 'analysis_run_id': analysis_run_id},
-        )
         return {
             **response_payload,
             'pilot_saved': True,
@@ -4484,10 +4542,6 @@ def pilot_compliance_governance_action(payload: dict[str, Any], request: Request
         )
         log_audit(connection, action='governance.action', entity_type='governance_action', entity_id=governance_action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'target_id': response.get('target_id') or payload.get('target_id')})
         connection.commit()
-    publish_alert_to_workspace(
-        workspace_context['workspace_id'],
-        {'type': 'alert', 'alert_type': 'governance_action', 'title': str(response.get('action_type') or payload.get('action_type') or 'Governance action'), 'analysis_run_id': analysis_run_id},
-    )
     return {**response, 'pilot_saved': True, 'analysis_run_id': analysis_run_id, 'governance_action_id': governance_action_id, 'workspace': workspace_context['workspace']}
 
 
@@ -4540,10 +4594,6 @@ def pilot_resilience_record_incident(payload: dict[str, Any], request: Request) 
         )
         log_audit(connection, action='incident.record', entity_type='incident', entity_id=incident_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'severity': response.get('severity') or payload.get('severity')})
         connection.commit()
-    publish_alert_to_workspace(
-        workspace_context['workspace_id'],
-        {'type': 'alert', 'alert_type': 'resilience_incident', 'title': str(response.get('event_type') or payload.get('event_type') or 'Resilience incident'), 'analysis_run_id': analysis_run_id},
-    )
     return {**response, 'pilot_saved': True, 'analysis_run_id': analysis_run_id, 'incident_id': incident_id, 'workspace': workspace_context['workspace']}
 
 
