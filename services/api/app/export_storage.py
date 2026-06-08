@@ -18,6 +18,9 @@ class ExportStorage(Protocol):
     def read_bytes(self, *, object_key: str) -> bytes:
         ...
 
+    def delete_bytes(self, *, object_key: str) -> None:
+        ...
+
     def object_lock_status(self) -> dict[str, Any]:
         """Return object-lock/WORM metadata for this backend."""
         ...
@@ -39,6 +42,11 @@ class LocalExportStorage:
         if not target.exists():
             raise FileNotFoundError(f'Export object missing for key {object_key}')
         return target.read_bytes()
+
+    def delete_bytes(self, *, object_key: str) -> None:
+        target = (self.root_dir / object_key).resolve()
+        if target.is_file():
+            target.unlink()
 
     def object_lock_status(self) -> dict[str, Any]:
         return {
@@ -75,6 +83,9 @@ class S3ExportStorage:
     def read_bytes(self, *, object_key: str) -> bytes:
         response = self._client().get_object(Bucket=self.bucket, Key=object_key)
         return response['Body'].read()
+
+    def delete_bytes(self, *, object_key: str) -> None:
+        self._client().delete_object(Bucket=self.bucket, Key=object_key)
 
     def object_lock_status(self) -> dict[str, Any]:
         # Use env override if available (avoids live S3 call in tests)

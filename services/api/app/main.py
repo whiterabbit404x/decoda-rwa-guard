@@ -215,6 +215,14 @@ from services.api.app.pilot import (
     delete_monitored_system,
     run_guided_threat_workflow,
     delete_account,
+    get_workspace_retention_policies,
+    update_workspace_retention_policies,
+    list_workspace_legal_holds,
+    create_workspace_legal_hold,
+    release_workspace_legal_hold,
+    create_data_deletion_request,
+    list_data_deletion_requests,
+    approve_and_execute_data_deletion_request,
     require_ops_rbac_guard,
 )
 from services.api.app.monitoring_runner import (
@@ -3366,6 +3374,46 @@ def scim_groups_patch(group_id: str, payload: dict[str, Any], request: Request) 
 @app.delete('/scim/v2/Groups/{group_id}', summary='SCIM 2.0 delete group')
 def scim_groups_delete(group_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: scim_delete_group(group_id, request))
+
+
+@app.get('/workspace/retention-policies', summary='Get workspace retention policies')
+def workspace_retention_policies_get(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_workspace_retention_policies(request))
+
+
+@app.put('/workspace/retention-policies', summary='Update workspace retention policies')
+def workspace_retention_policies_put(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: update_workspace_retention_policies(payload, request))
+
+
+@app.get('/workspace/legal-holds', summary='List workspace legal holds')
+def workspace_legal_holds_get(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_workspace_legal_holds(request))
+
+
+@app.post('/workspace/legal-holds', summary='Create workspace legal hold')
+def workspace_legal_holds_post(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_workspace_legal_hold(payload, request))
+
+
+@app.post('/workspace/legal-holds/{hold_id}/release', summary='Release workspace legal hold')
+def workspace_legal_hold_release(hold_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: release_workspace_legal_hold(hold_id, payload, request))
+
+
+@app.get('/workspace/deletion-requests', summary='List auditable data deletion requests')
+def workspace_deletion_requests_get(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_data_deletion_requests(request))
+
+
+@app.post('/workspace/deletion-requests', summary='Create auditable data deletion request')
+def workspace_deletion_requests_post(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_data_deletion_request(payload, request))
+
+
+@app.post('/workspace/deletion-requests/{request_id}/approve-and-execute', summary='Approve and execute a data deletion request')
+def workspace_deletion_request_execute(request_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: approve_and_execute_data_deletion_request(request_id, request))
 
 
 @app.get('/workspace/members', summary='List members for current workspace')

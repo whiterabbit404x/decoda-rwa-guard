@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 from dataclasses import dataclass
 from typing import Any
 
+from services.api.app.managed_keys import (
+    load_managed_key,
+    managed_key_enforcement_mode,
+    production_like,
+    using_legacy_environment_keys,
+)
+
 from fastapi import HTTPException, status
 
 SECRET_SCHEME_V1 = 'aes256gcm:v1'
+SECRET_SCHEME_V2 = 'aes256gcm:v2'
 
 
 def _aesgcm_cls():
@@ -29,35 +38,45 @@ class EncryptedSecret:
         return f'{self.scheme}:{self.key_id}:{self.iv_b64}:{self.ciphertext_b64}'
 
 
-def _secret_key_required() -> bytes:
-    raw = os.getenv('SECRET_ENCRYPTION_KEY', '').strip()
-    if not raw:
-        app_mode = os.getenv('APP_MODE', 'local').strip().lower()
-        if app_mode in {'production', 'staging'}:
-            raise RuntimeError('SECRET_ENCRYPTION_KEY is required in staging/production.')
-        return b''
-    key_bytes = base64.b64decode(raw.encode('ascii'))
+def _secret_key_required(*, version: str | None = None) -> tuple[bytes, dict[str, str]]:
+    try:
+        managed = load_managed_key('ENCRYPTION', version=version)
+    except RuntimeError:
+        if production_like():
+            raise
+        return b'', {'provider': 'env', 'key_id': 'local-unconfigured', 'version': 'none'}
+    key_bytes = managed.material
+    # Local compatibility: SECRET_ENCRYPTION_KEY has historically been base64.
+    if managed.provider == 'env' and len(key_bytes) != 32:
+        try:
+            key_bytes = base64.b64decode(key_bytes, validate=True)
+        except Exception:  # noqa: BLE001
+            pass
     if len(key_bytes) != 32:
-        raise RuntimeError('SECRET_ENCRYPTION_KEY must decode to exactly 32 bytes.')
-    return key_bytes
+        raise RuntimeError('Secret encryption key must be exactly 32 bytes.')
+    return key_bytes, managed.reference
 
 
 def encryption_ready() -> bool:
-    return bool(os.getenv('SECRET_ENCRYPTION_KEY', '').strip())
+    try:
+        key, _ = _secret_key_required()
+        return bool(key)
+    except RuntimeError:
+        return False
 
 
 def encrypt_secret(value: str, *, aad: str = '') -> str:
-    key = _secret_key_required()
+    key, key_ref = _secret_key_required()
     if not key:
         # explicit local fallback for developer seeds; never for production/staging
         return f'legacy_b64:{base64.b64encode(value.encode("utf-8")).decode("ascii")}'
     iv = os.urandom(12)
     aesgcm = _aesgcm_cls()(key)
     ciphertext = aesgcm.encrypt(iv, value.encode('utf-8'), aad.encode('utf-8'))
-    key_id = os.getenv('SECRET_ENCRYPTION_KEY_ID', 'env-default').strip() or 'env-default'
+    key_ref_b64 = base64.urlsafe_b64encode(json.dumps(key_ref, sort_keys=True, separators=(',', ':')).encode('utf-8')).decode('ascii').rstrip('=')
     payload = EncryptedSecret(
-        scheme=SECRET_SCHEME_V1,
-        key_id=key_id,
+        scheme=SECRET_SCHEME_V2,
+        key_id=key_ref_b64,
         iv_b64=base64.urlsafe_b64encode(iv).decode('ascii').rstrip('='),
         ciphertext_b64=base64.urlsafe_b64encode(ciphertext).decode('ascii').rstrip('='),
     )
@@ -75,9 +94,18 @@ def decrypt_secret(value: str, *, aad: str = '') -> str:
     if value.startswith('legacy_b64:'):
         return base64.b64decode(value.split(':', 1)[1].encode('ascii')).decode('utf-8')
     parts = value.split(':', 4)
+    if len(parts) == 5 and ':'.join(parts[:2]) == SECRET_SCHEME_V2:
+        _scheme, _version, key_ref_b64, iv_b64, ciphertext_b64 = parts
+        try:
+            key_ref = json.loads(_b64url_decode(key_ref_b64).decode('utf-8'))
+            key, _ = _secret_key_required(version=str(key_ref.get('version') or '') or None)
+            plaintext = _aesgcm_cls()(key).decrypt(_b64url_decode(iv_b64), _b64url_decode(ciphertext_b64), aad.encode('utf-8'))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='Stored secret could not be decrypted with its managed key version.') from exc
+        return plaintext.decode('utf-8')
     if len(parts) == 5 and ':'.join(parts[:2]) == SECRET_SCHEME_V1:
         _scheme, _version, _key_id, iv_b64, ciphertext_b64 = parts
-        key = _secret_key_required()
+        key, _ = _secret_key_required()
         if not key:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='Secret key is not configured for decryption.')
         aesgcm = _aesgcm_cls()(key)
@@ -104,14 +132,14 @@ def mask_secret(value: str, keep: int = 4) -> str:
 
 def validate_encryption_bootstrap() -> dict[str, Any]:
     _secret_key_required()
-    return {'configured': encryption_ready(), 'scheme': SECRET_SCHEME_V1}
+    return {'configured': encryption_ready(), 'scheme': SECRET_SCHEME_V2}
 
 
 def read_encrypted_env(name: str, *, aad: str = '') -> str:
     raw = os.getenv(name, '').strip()
     if not raw:
         return ''
-    if raw.startswith(f'{SECRET_SCHEME_V1}:') or raw.startswith('legacy_b64:'):
+    if raw.startswith(f'{SECRET_SCHEME_V1}:') or raw.startswith(f'{SECRET_SCHEME_V2}:') or raw.startswith('legacy_b64:'):
         return decrypt_secret(raw, aad=aad)
     return raw
 
@@ -119,10 +147,17 @@ def read_encrypted_env(name: str, *, aad: str = '') -> str:
 def validate_secret_encryption_key_at_startup() -> None:
     import logging
     _log = logging.getLogger(__name__)
-    app_mode = os.getenv('APP_MODE', 'local').strip().lower()
-    if app_mode in {'production', 'staging'}:
-        _secret_key_required()  # raises RuntimeError if missing/invalid
-        _log.info('secret_encryption_key_validated app_mode=%s', app_mode)
+    app_mode = os.getenv('APP_MODE', os.getenv('APP_ENV', 'local')).strip().lower()
+    if production_like():
+        _secret_key_required()  # raises RuntimeError if key material is missing or invalid
+        if using_legacy_environment_keys():
+            _log.warning(
+                'secret_encryption_mode=legacy_environment_key app_mode=%s enforcement=%s; migrate to MANAGED_KEY_PROVIDER before enabling strict enforcement',
+                app_mode,
+                managed_key_enforcement_mode(),
+            )
+        else:
+            _log.info('secret_encryption_key_validated app_mode=%s', app_mode)
     else:
         if not os.getenv('SECRET_ENCRYPTION_KEY', '').strip():
             _log.warning('SECRET_ENCRYPTION_KEY not set; secret encryption disabled in %s mode', app_mode)
