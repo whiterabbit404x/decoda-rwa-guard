@@ -30,12 +30,12 @@
   "devDependencies": {
     "@playwright/test": "1.55.1",
     "playwright": "1.55.1",
-    "postcss": ">=8.5.10"
+    "postcss": "8.5.15"
   },
   "overrides": {
-    "postcss": ">=8.5.10",
+    "postcss": "8.5.15",
     "next": {
-      "postcss": ">=8.5.10"
+      "postcss": "8.5.15"
     }
   }
 }

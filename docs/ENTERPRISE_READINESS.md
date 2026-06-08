@@ -1,10 +1,12 @@
 # Enterprise Readiness
 
-Last updated: **2026-05-22**
+Last updated: **2026-06-07**
 
 This document describes the current enterprise readiness posture of **Decoda RWA Guard**.
 
 > **Honesty notice:** This document describes what is implemented and tested in the codebase today. It does not claim SOC 2, ISO 27001, FedRAMP, PCI DSS, HIPAA, or any other formal audit certification unless the repository contains certified evidence of such. Claims in this document are limited to what is provable from codebase artifacts.
+
+The canonical enterprise security package—including the control matrix, operating procedures, architecture/data-flow threat model, vendor/residency register, SLA/recovery terms, and independent-assurance roadmap—is indexed at [`docs/security/README.md`](./security/README.md).
 
 ---
 
