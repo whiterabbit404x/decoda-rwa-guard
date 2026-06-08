@@ -133,6 +133,7 @@ def test_health_diagnostics_flags_production_live_mode_drift(api_main, monkeypat
 def test_health_readiness_reports_healthy_when_production_requirements_are_met(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(api_main, 'rate_limit_connectivity', lambda: {'backend': 'redis', 'configured': True, 'connected': True, 'status': 'healthy'})
     monkeypatch.setattr(api_main.alert_stream, 'connectivity_sync', lambda: {'configured': True, 'connected': True, 'status': 'healthy'})
+    monkeypatch.setattr(api_main, 'alert_delivery_health', lambda: {'ready': True, 'bus': {'connected': True}, 'workers': {'outbox_publisher': True, 'stream_consumer': True}, 'outbox': {'pending': 0, 'published': 0, 'dead_letter': 0}})
     monkeypatch.setenv('APP_ENV', 'production')
     monkeypatch.setenv('APP_MODE', 'production')
     monkeypatch.setenv('MONITORING_INGESTION_MODE', 'demo')
@@ -163,6 +164,7 @@ def test_health_readiness_reports_healthy_when_production_requirements_are_met(a
 def test_health_readiness_stays_healthy_when_billing_provider_none(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(api_main, 'rate_limit_connectivity', lambda: {'backend': 'redis', 'configured': True, 'connected': True, 'status': 'healthy'})
     monkeypatch.setattr(api_main.alert_stream, 'connectivity_sync', lambda: {'configured': True, 'connected': True, 'status': 'healthy'})
+    monkeypatch.setattr(api_main, 'alert_delivery_health', lambda: {'ready': True, 'bus': {'connected': True}, 'workers': {'outbox_publisher': True, 'stream_consumer': True}, 'outbox': {'pending': 0, 'published': 0, 'dead_letter': 0}})
     monkeypatch.setenv('APP_ENV', 'production')
     monkeypatch.setenv('APP_MODE', 'production')
     monkeypatch.setenv('MONITORING_INGESTION_MODE', 'demo')
@@ -190,6 +192,27 @@ def test_health_readiness_stays_healthy_when_billing_provider_none(api_main, mon
     assert payload['billing']['provider'] == 'none'
     assert payload['billing']['status'] == 'not_configured'
     assert payload['checks']['billing_runtime']['ok'] is False
+
+
+def test_health_readiness_fails_when_durable_alert_delivery_is_unavailable(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(api_main, 'validate_runtime_configuration', lambda: {
+        'errors': [], 'warnings': [],
+        'checks': {'rate_limit_enterprise_ready': True, 'rate_limit_backend': 'redis', 'live_mode_enabled': {'ok': True}},
+    })
+    monkeypatch.setattr(api_main, 'rate_limit_connectivity', lambda: {'connected': True})
+    monkeypatch.setattr(api_main.alert_stream, 'connectivity_sync', lambda: {'connected': True})
+    monkeypatch.setattr(api_main, 'alert_delivery_health', lambda: {
+        'ready': False, 'bus': {'connected': True},
+        'workers': {'outbox_publisher': True, 'stream_consumer': False},
+        'outbox': {'pending': 4, 'published': 2, 'dead_letter': 0},
+    })
+    monkeypatch.setenv('APP_ENV', 'production')
+
+    payload = api_main.health_readiness()
+
+    assert payload['status'] == 'not_ready'
+    assert payload['enterprise_ready'] is False
+    assert payload['alert_delivery']['workers']['stream_consumer'] is False
 
 
 def test_strict_billing_mode_marks_readiness_not_ready_when_billing_missing(api_main, monkeypatch: pytest.MonkeyPatch) -> None:

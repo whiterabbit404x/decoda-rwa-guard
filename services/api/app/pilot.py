@@ -146,6 +146,7 @@ from services.api.app.domains.rate_limit import (  # noqa: E402
     RATE_LIMIT_FALLBACK_REDIS_UNAVAILABLE_KEY,
 )
 import services.api.app.domains.rate_limit as _rl_domain
+from services.api.app.domains.alert_delivery import enqueue_alert_event
 
 # _redis_rate_limiter is a mutable singleton; access via _rl_domain._redis_rate_limiter
 _redis_rate_limiter: Any | None = None  # kept for backward compat; domain module owns the real state
@@ -8548,6 +8549,22 @@ def maybe_insert_alert(
         summary=str(response_payload.get('explanation') or response_payload.get('explainability_summary') or title),
         payload=response_payload,
     )
+    enqueue_alert_event(
+        connection,
+        workspace_id=workspace_id,
+        alert_id=alert_id,
+        event_type='alert.created',
+        payload={
+            'type': 'alert',
+            'event_type': 'alert.created',
+            'alert_id': alert_id,
+            'alert_type': alert_type,
+            'title': title,
+            'severity': severity or 'medium',
+            'analysis_run_id': analysis_run_id,
+        },
+        idempotency_key=f'alert:{alert_id}:created',
+    )
     return alert_id
 
 
@@ -12747,6 +12764,14 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
                     },
                 },
             )
+        enqueue_alert_event(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            alert_id=alert_id,
+            event_type='alert.escalated',
+            payload={'type': 'alert', 'event_type': 'alert.escalated', 'alert_id': alert_id, 'incident_id': incident_id},
+            idempotency_key=f'alert:{alert_id}:escalated:{incident_id}',
+        )
         connection.commit()
         return {'incident_id': incident_id, 'alert_id': alert_id, 'status': 'open'}
 
