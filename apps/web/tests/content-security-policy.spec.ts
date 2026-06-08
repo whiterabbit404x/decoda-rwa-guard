@@ -12,6 +12,9 @@ test('production CSP uses a nonce without inline or eval allowances', () => {
   expect(policy).toContain(`style-src 'self' 'nonce-${NONCE}'`);
   expect(policy).not.toContain("'unsafe-inline'");
   expect(policy).not.toContain("'unsafe-eval'");
+  expect(policy).toContain("script-src-attr 'none'");
+  expect(policy).not.toContain(' ws:');
+  expect(policy).not.toContain(' wss:');
 });
 
 test('development-only CSP allowances stay behind the development option', () => {

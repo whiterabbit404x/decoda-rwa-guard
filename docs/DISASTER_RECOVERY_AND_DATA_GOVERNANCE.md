@@ -119,3 +119,30 @@ Run quarterly and after material architecture changes:
 7. Test failback as a separate change after replication is healthy. Never fail back automatically into a possibly stale primary.
 
 Required evidence: incident timeline, provider backup IDs, DNS/traffic timestamps, validation JSON, audit/evidence integrity results, queue-depth graphs, checkpoint comparison, customer communication, measured RPO/RTO, and assigned remediation owners.
+
+## Security incident recovery and evidence preservation
+
+Security incidents use the severity model and command roles in `docs/OPERATIONS_RUNBOOK.md`. During disaster recovery, availability work must not overwrite forensic evidence or silently weaken tenant isolation. Before restore/failover, preserve database/cloud/identity/application audit logs, affected images and volumes, deployment manifests, SBOMs, artifact signatures, provider key-version metadata, queue/checkpoint state, and relevant network telemetry. Hash exports with SHA-256, write them to access-controlled immutable storage, document chain of custody, and place evidence under legal hold when instructed by legal/privacy.
+
+Recovery authorization requires the incident commander, recovery lead, and security lead to record: chosen restore point; expected/observed data loss; compromised identities and revoked credential versions; validation owner; rollback threshold; and customer-notification status. Restore only signed artifacts whose provenance and SBOM match the approved release. Recreate infrastructure from reviewed definitions rather than repairing a potentially compromised host in place.
+
+### Credential-compromise recovery matrix
+
+| Material | Immediate containment | Recovery validation | Retirement/destruction condition |
+|---|---|---|---|
+| JWT signing material | Promote a new managed-provider version; revoke exposed version and affected sessions; block old-version verification when compromise is confirmed. | New tokens carry the new key version; revoked sessions fail; all regions resolve the intended active version. | Retire after maximum token lifetime and investigation hold; destroy only with security/legal approval. |
+| Encryption keys | Deny new encryption with the exposed version; restrict it to decrypt-only; promote a new version. | Re-encrypt inventory in bounded batches; prove old and new ciphertext decrypt; reconcile failures and backups. | Destroy only after live data, backups, replicas, exports, and legal holds no longer require it. |
+| API keys / SCIM tokens | Revoke the exact version and associated sessions/jobs; create a replacement with least privilege. | Claim replacement once through the authenticated workflow; verify old secret rejection and new use. | Destroy pending-secret ciphertext after claim; retain fingerprint/status history. |
+| Webhook secrets | Disable delivery if needed; rotate secret and coordinate receiver cutover. | Verify signed test delivery, old-secret rejection after grace, retry/dead-letter health. | Revoke at grace expiry; retain only fingerprint and audit metadata. |
+| OIDC/Slack/provider credentials | Disable the integration and revoke at the provider; rotate any reachable credentials. | Reauthorize through the provider; test minimum scopes, issuer/team identity, and audit events. | Remove encrypted old material after provider confirms revocation and evidence is retained. |
+
+Automated policies are persisted in `credential_rotation_policies`; version state is recorded in `credential_versions`; immutable operational events are recorded in `credential_rotation_events`. Run `python -m services.api.app.run_credential_rotation_worker` from a singleton scheduled job. Failed events are not silently retried: page on repeated failures, correct the cause, and rerun under the same incident/change record. Provider-issued credentials that cannot be safely synthesized are automatically disabled at expiry and require self-serve reauthorization with a replacement secret.
+
+### Recovery completion checklist
+
+* Reconcile PostgreSQL, object storage, queues, monitoring checkpoints, and audit-chain anchors against the chosen recovery point.
+* Confirm all exposed credential versions are revoked, all active versions are present in every region, and historical decrypt/verification versions remain available only where required.
+* Validate workspace isolation using at least two tenant test fixtures and verify no demo/fallback data appears in live workspaces.
+* Run application health, authentication, monitoring/detection, response-action, export signing/verification, notification, webhook, SCIM, and billing canaries.
+* Restore alerting and enhanced monitoring before normal traffic. Observe for attempted use of revoked credentials and replayed queue events.
+* Record measured RPO/RTO, missing/duplicated records, validation evidence, customer/regulatory notices, residual risk acceptance, and follow-up owners.
