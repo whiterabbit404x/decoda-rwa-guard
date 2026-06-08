@@ -12,8 +12,8 @@ Tests for scripts/generate_live_evidence_proof.py
 8.  Simulator/demo evidence → fail closed (validated via staging proof path)
 9.  Live telemetry without detection chain → fail closed
 10. Live telemetry + detection without alert → fail closed
-11. Live telemetry + detection + alert without incident/response → fail closed
-12. Live telemetry + detection + alert + incident without evidence package → fail closed
+11. Complete target detector chain without incident/response → pass
+12. Target detector chain without evidence package → fail closed
 13. Complete live chain → all gates pass
 14. Build-time safety: importing module does not require EVM_RPC_URL
 """
@@ -40,19 +40,16 @@ _PROVIDER_ENV_VARS = [
 ]
 
 
-def _real_live_chain() -> dict[str, Any]:
-    """Canonical real live-event chain captured by the monitoring worker."""
-    return {
-        'telemetry_event_id': 'tel-live-001',
-        'detection_id': 'det-live-001',
-        'alert_id': 'alert-live-001',
-        'incident_id': 'inc-live-001',
-        'response_action_id': 'ra-live-001',
-        'evidence_package_id': 'pkg-live-001',
-        'evidence_source': 'live',
-        'source_type': 'rpc_polling',
-        'observed_at': '2026-05-22T12:00:00+00:00',
-    }
+def _real_live_chain(**overrides: Any) -> dict[str, Any]:
+    """Load the canonical configured-target detector event fixture."""
+    fixture_path = Path(__file__).parent / 'fixtures' / 'live_target_detector_chain.json'
+    chain = json.loads(fixture_path.read_text())
+    chain.update(overrides)
+    linkage = chain['persisted_linkage']
+    for key in ('telemetry_event_id', 'detection_event_id', 'detection_id', 'alert_id'):
+        linkage[key] = chain[key]
+    return chain
+
 
 _REAL_RPC = 'https://mainnet.infura.io/v3/test_proj'
 
@@ -372,61 +369,67 @@ def test_case10_telemetry_detection_no_alert(monkeypatch: pytest.MonkeyPatch) ->
 
 
 # ---------------------------------------------------------------------------
-# Case 11: Live telemetry + detection + alert but no incident/response
+# Case 11: Policy detector chain without incident/response
 # ---------------------------------------------------------------------------
 
-def test_case11_telemetry_detection_alert_no_incident(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Alert exists but no incident or response_action → live_evidence_ready=False."""
-    from services.api.app.paid_launch_readiness import build_live_evidence_proof
-
-    _clear_env(monkeypatch)
-    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
-
-    result = build_live_evidence_proof(chain_evidence={
-        'evidence_source': 'live',
-        'last_telemetry_at': '2026-01-01T00:01:00Z',
+def _readiness_chain_from_fixture(**overrides: Any) -> dict[str, Any]:
+    chain = _real_live_chain()
+    readiness = {
+        **chain,
+        'last_telemetry_at': chain['observed_at'],
         'detections_count': 1,
-        'detection_telemetry_linked': True,
-        'detection_id': 'det-001',
         'alerts_count': 1,
-        'alert_detection_linked': True,
-        'alert_id': 'alert-001',
         'incidents_count': 0,
         'response_actions_count': 0,
-    })
+        'detection_telemetry_linked': True,
+        'alert_detection_linked': True,
+        'export_capability': 'pass',
+        'export_source_label': 'live',
+    }
+    readiness.update(overrides)
+    return readiness
 
-    assert result['live_evidence_ready'] is False
-    assert any('incident' in m for m in result['missing'])
 
-
-# ---------------------------------------------------------------------------
-# Case 12: Full chain through incident but no evidence package
-# ---------------------------------------------------------------------------
-
-def test_case12_full_chain_no_evidence_package(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Incident exists but no evidence package → live_evidence_ready=False."""
+def test_case11_policy_chain_without_incident_or_response_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Incident/action records are optional when detector policy did not create them."""
     from services.api.app.paid_launch_readiness import build_live_evidence_proof
 
     _clear_env(monkeypatch)
     monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
 
-    result = build_live_evidence_proof(chain_evidence={
-        'evidence_source': 'live',
-        'last_telemetry_at': '2026-01-01T00:01:00Z',
-        'detections_count': 1,
-        'detection_telemetry_linked': True,
-        'detection_id': 'det-001',
-        'alerts_count': 1,
-        'alert_detection_linked': True,
-        'alert_id': 'alert-001',
-        'incidents_count': 1,
-        'incident_alert_linked': True,
-        'incident_id': 'inc-001',
-        # no evidence_package_id
-    })
+    result = build_live_evidence_proof(
+        chain_evidence=_readiness_chain_from_fixture()
+    )
+
+    assert result['live_evidence_ready'] is True
+    assert result['chain']['incident_id'] is None
+    assert result['missing'] == []
+
+
+# ---------------------------------------------------------------------------
+# Case 12: Target detector chain without evidence package
+# ---------------------------------------------------------------------------
+
+def test_case12_target_detector_chain_no_evidence_package(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real detector trigger still requires a linked evidence package."""
+    from services.api.app.paid_launch_readiness import build_live_evidence_proof
+
+    _clear_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+
+    result = build_live_evidence_proof(
+        chain_evidence=_readiness_chain_from_fixture(
+            evidence_package_id=None,
+            export_capability='',
+        )
+    )
 
     assert result['live_evidence_ready'] is False
-    assert any('evidence package' in m for m in result['missing'])
+    assert any('evidence package' in item for item in result['missing'])
 
 
 # ---------------------------------------------------------------------------
@@ -466,8 +469,8 @@ def test_case13_complete_live_chain_with_real_rpc_mock(
     assert chain['telemetry_event_id'] is not None
     assert chain['detection_id'] is not None
     assert chain['alert_id'] is not None
-    assert chain['incident_id'] is not None
-    assert chain['response_action_id'] is not None
+    assert chain['incident_id'] is None
+    assert chain['response_action_id'] is None
     assert chain['evidence_package_id'] is not None
 
     # Verify evidence package links back through chain
@@ -845,17 +848,13 @@ def test_generate_loads_chain_from_default_file_path(
         tmp_path / 'artifacts' / 'live-evidence-proof' / 'latest' / 'live_evidence_chain.json'
     )
     chain_file.parent.mkdir(parents=True, exist_ok=True)
-    chain_data = {
-        'evidence_source': 'live',
-        'source_type': 'rpc_polling',
-        'telemetry_event_id': 'tel-default-path-001',
-        'detection_id': 'det-default-path-001',
-        'alert_id': 'alert-default-path-001',
-        'incident_id': 'inc-default-path-001',
-        'response_action_id': None,
-        'evidence_package_id': 'pkg-default-path-001',
-        'observed_at': '2026-05-22T12:00:00+00:00',
-    }
+    chain_data = _real_live_chain(
+        telemetry_event_id='tel-default-path-001',
+        detection_event_id='det-event-default-path-001',
+        detection_id='det-default-path-001',
+        alert_id='alert-default-path-001',
+        evidence_package_id='pkg-default-path-001',
+    )
     chain_file.write_text(json.dumps(chain_data))
 
     import scripts.generate_live_evidence_proof as _mod
