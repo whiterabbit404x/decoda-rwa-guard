@@ -202,6 +202,8 @@ from services.api.app.pilot import (
     get_integration_health,
     get_workspace_readiness,
     get_admin_readiness,
+    get_recovery_drill_status,
+    schedule_recovery_drill,
     test_integration_email,
     test_integration_slack,
     get_onboarding_state,
@@ -4282,6 +4284,16 @@ def system_workspace_readiness(request: Request) -> dict[str, Any]:
 @app.get('/admin/readiness', summary='Internal admin production readiness snapshot')
 def admin_readiness(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_admin_readiness(request))
+
+
+@app.get('/system/recovery-drills', summary='Recovery drill schedules, results, and enterprise gate status')
+def system_recovery_drills(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_recovery_drill_status(request))
+
+
+@app.post('/system/recovery-drills/{run_type}/schedule', summary='Schedule a recovery drill for the worker')
+def system_schedule_recovery_drill(run_type: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: schedule_recovery_drill(run_type, request))
 
 
 @app.post('/system/integrations/test-email', summary='Send integration test email')
