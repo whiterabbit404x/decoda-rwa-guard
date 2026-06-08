@@ -1212,7 +1212,7 @@ def test_paddle_plus_resend_staging_billing_and_email_pass(monkeypatch: pytest.M
     assert email['blockers'] == []
 
 
-def test_staging_rate_limit_temporary_disable_is_degraded(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_staging_rate_limit_memory_override_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv('REDIS_URL', raising=False)
     monkeypatch.delenv('UPSTASH_REDIS_REST_URL', raising=False)
     monkeypatch.delenv('UPSTASH_REDIS_REST_TOKEN', raising=False)
@@ -1220,11 +1220,12 @@ def test_staging_rate_limit_temporary_disable_is_degraded(monkeypatch: pytest.Mo
 
     result = build_rate_limit_validation('staging')
 
-    assert result['redis_status'] == 'disabled_temporary'
+    assert result['redis_status'] == 'memory_rejected'
     assert result['rate_limit_backend'] == 'memory'
     assert result['rate_limit_enterprise_ready'] is False
     assert result['enterprise_ready'] is False
-    assert 'not horizontally scalable' in result['warning']
+    assert result['warning'] is None
+    assert any('Memory-backed rate limiting is rejected' in blocker for blocker in result['blockers'])
 
 
 def test_staging_rate_limit_with_redis_is_enterprise_ready(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1238,6 +1239,19 @@ def test_staging_rate_limit_with_redis_is_enterprise_ready(monkeypatch: pytest.M
     assert result['rate_limit_enterprise_ready'] is True
     assert result['enterprise_ready'] is True
 
+
+
+def test_staging_upstash_only_is_not_enterprise_ready_without_redis_streams(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv('REDIS_URL', raising=False)
+    monkeypatch.setenv('UPSTASH_REDIS_REST_URL', 'https://example.upstash.io')
+    monkeypatch.setenv('UPSTASH_REDIS_REST_TOKEN', 'token')
+
+    result = build_rate_limit_validation('staging')
+
+    assert result['rate_limit_enterprise_ready'] is True
+    assert result['alert_stream_backend'] == 'unavailable'
+    assert result['enterprise_ready'] is False
+    assert any('Redis Streams alert delivery' in blocker for blocker in result['blockers'])
 
 def test_strict_staging_proof_fails_when_enterprise_rate_limit_is_degraded(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,

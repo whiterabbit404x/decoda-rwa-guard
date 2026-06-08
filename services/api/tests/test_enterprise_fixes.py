@@ -153,24 +153,14 @@ def test_delete_account_route_exists():
 
 
 # ---------------------------------------------------------------------------
-# Internal: publish_alert_to_workspace is a no-op when no connections exist
+# Internal: publishing uses the shared Redis Stream
 # ---------------------------------------------------------------------------
-def test_publish_alert_no_connections_is_noop():
-    """publish_alert_to_workspace must not raise when no connections are registered."""
-    _api_main._SSE_CONNECTIONS.clear()
-    # Should not raise
-    _api_main.publish_alert_to_workspace('no-such-workspace', {'type': 'alert', 'alert_type': 'test'})
-
-
-def test_publish_alert_increments_counter():
-    """publish_alert_to_workspace increments _ALERTS_PUBLISHED_COUNT when queues exist."""
-    import asyncio
-    workspace_id = 'test-ws-counter'
-    q: asyncio.Queue = asyncio.Queue(maxsize=10)
-    _api_main._SSE_CONNECTIONS[workspace_id] = [q]
+def test_publish_alert_uses_shared_stream(monkeypatch):
+    published = []
+    monkeypatch.setattr(_api_main.alert_stream, 'publish', lambda workspace_id, payload: published.append((workspace_id, payload)) or '1-0')
     before = _api_main._ALERTS_PUBLISHED_COUNT
-    _api_main.publish_alert_to_workspace(workspace_id, {'type': 'alert'})
-    after = _api_main._ALERTS_PUBLISHED_COUNT
-    assert after == before + 1, f'Expected counter to increment by 1, got before={before} after={after}'
-    # Cleanup
-    del _api_main._SSE_CONNECTIONS[workspace_id]
+
+    _api_main.publish_alert_to_workspace('test-ws-counter', {'type': 'alert'})
+
+    assert published == [('test-ws-counter', {'type': 'alert'})]
+    assert _api_main._ALERTS_PUBLISHED_COUNT == before + 1
