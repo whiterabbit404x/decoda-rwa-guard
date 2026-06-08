@@ -1,28 +1,28 @@
 from pathlib import Path
 
 
-WORKFLOW = Path(__file__).resolve().parents[3] / '.github' / 'workflows' / 'ci-release-gates.yml'
-SAFE_SETUP_TRIVY_SHA = '3fb12ec12f41e471780db15c232d5dd185dcb514'
+WORKFLOW_DIR = Path(__file__).resolve().parents[3] / '.github' / 'workflows'
+WORKFLOW = WORKFLOW_DIR / 'release-attestation.yml'
 
 
-def test_security_gate_pins_resolvable_setup_trivy_commit() -> None:
-    workflow = WORKFLOW.read_text(encoding='utf-8')
-
-    assert 'aquasecurity/setup-trivy@v0.2.4' not in workflow
-    assert f'aquasecurity/setup-trivy@{SAFE_SETUP_TRIVY_SHA}' in workflow
-    assert 'version: v0.69.3' in workflow
+def test_only_authoritative_release_workflow_exists() -> None:
+    assert [path.name for path in WORKFLOW_DIR.glob('*.yml')] == ['release-attestation.yml']
 
 
-def test_final_readiness_requires_security_gate() -> None:
-    workflow = WORKFLOW.read_text(encoding='utf-8')
+def test_attestation_requires_all_security_gate_evidence() -> None:
+    script = (Path(__file__).resolve().parents[3] / 'scripts' / 'release_attestation.py').read_text()
+    for gate in ('dependency_scan', 'secret_scan', 'static_analysis', 'infrastructure_policy'):
+        assert f'"{gate}"' in script
+    assert 'missing required security gates' in script
 
-    assert 'mandatory-security-supply-chain-gates:' in workflow
-    assert 'needs: [paid-launch-readiness-gates, required-gates, mandatory-security-supply-chain-gates]' in workflow
-    assert 'needs.mandatory-security-supply-chain-gates.result' in workflow
+
+def test_workflow_does_not_publish_mutable_latest_claims() -> None:
+    workflow = WORKFLOW.read_text()
+    assert '/latest' not in workflow
+    assert 'overwrite: false' in workflow
+    assert 'artifacts/release-attestations/' in workflow
 
 
 def test_api_cryptography_dependency_includes_security_fix() -> None:
-    requirements = (Path(__file__).resolve().parents[1] / 'requirements.txt').read_text(encoding='utf-8')
-
+    requirements = (Path(__file__).resolve().parents[1] / 'requirements.txt').read_text()
     assert 'cryptography==46.0.5' in requirements
-    assert 'cryptography==44.0.1' not in requirements

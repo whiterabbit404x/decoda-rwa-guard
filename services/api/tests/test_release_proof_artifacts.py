@@ -870,81 +870,16 @@ def test_validate_release_proof_fails_when_launch_proof_modified_after_manifest(
         )
 
 
-def test_save_proof_workflow_step_order() -> None:
-    """save-proof-to-repo.yml must have launch-proof before release-proof before sell-now before github-proof."""
-    import yaml
-
-    workflow_path = REPO_ROOT / '.github' / 'workflows' / 'save-proof-to-repo.yml'
-    assert workflow_path.exists(), 'save-proof-to-repo.yml not found'
-
-    with open(workflow_path) as f:
-        workflow = yaml.safe_load(f)
-
-    jobs = workflow.get('jobs', {})
-    save_job = jobs.get('save-proof', {})
-    steps = save_job.get('steps', [])
-    step_names = [s.get('name', '') for s in steps]
-
-    def _index(keyword: str) -> int:
-        """Return the index of the first step whose name contains keyword."""
-        for i, name in enumerate(step_names):
-            if keyword.lower() in name.lower():
-                return i
-        return -1
-
-    launch_idx      = _index('launch proof')
-    release_idx     = _index('generate release proof')
-    validate_idx    = _index('validate release proof')
-    staging_regen_idx = _index('regenerate staging proof after release proof')
-    final_idx       = _index('final-readiness')
-    sell_now_idx    = _index('sell-now proof')
-    consistency_idx = _index('assert proof consistency')
-    github_idx      = _index('github zip proof')
-
-    assert launch_idx != -1,   f'No "launch proof" step found in save-proof job. Steps: {step_names}'
-    assert release_idx != -1,  f'No "generate release proof" step found in save-proof job. Steps: {step_names}'
-    assert validate_idx != -1, f'No "validate release proof" step found in save-proof job. Steps: {step_names}'
-    assert sell_now_idx != -1, f'No "sell-now proof" step found in save-proof job. Steps: {step_names}'
-    assert github_idx != -1,   f'No "github zip proof" step found in save-proof job. Steps: {step_names}'
-
-    assert launch_idx < release_idx, (
-        f'launch-proof step ({launch_idx}) must come before generate-release-proof step ({release_idx}). '
-        f'Steps: {step_names}'
-    )
-    assert release_idx < validate_idx, (
-        f'generate-release-proof step ({release_idx}) must come before validate-release-proof step ({validate_idx}). '
-        f'Steps: {step_names}'
-    )
-    # staging-proof must be regenerated after release-proof so required_dependencies are fresh
-    if staging_regen_idx != -1:
-        assert validate_idx < staging_regen_idx, (
-            f'validate-release-proof step ({validate_idx}) must come before '
-            f'staging-proof-regen step ({staging_regen_idx}). Steps: {step_names}'
-        )
-    # final-readiness must run before sell-now so sell-now reads the current broad_paid_saas_ready
-    if final_idx != -1:
-        assert final_idx < sell_now_idx, (
-            f'final-readiness step ({final_idx}) must come before sell-now-proof step ({sell_now_idx}). '
-            f'sell-now reads final-readiness to detect contradictions. Steps: {step_names}'
-        )
-    assert sell_now_idx < github_idx, (
-        f'sell-now-proof step ({sell_now_idx}) must come before github-zip-proof step ({github_idx}). '
-        f'Steps: {step_names}'
-    )
-    # consistency assertion must run before commit/push
-    if consistency_idx != -1:
-        assert sell_now_idx < consistency_idx, (
-            f'sell-now-proof step ({sell_now_idx}) must come before '
-            f'consistency-assertion step ({consistency_idx}). Steps: {step_names}'
-        )
-        assert consistency_idx < github_idx, (
-            f'consistency-assertion step ({consistency_idx}) must come before '
-            f'github-zip-proof step ({github_idx}). Steps: {step_names}'
-        )
-    if final_idx != -1:
-        assert final_idx < github_idx, (
-            f'final-readiness step ({final_idx}) must come before github-zip-proof step ({github_idx}).'
-        )
+def test_authoritative_release_workflow_is_single_and_immutable() -> None:
+    workflows = sorted((REPO_ROOT / '.github' / 'workflows').glob('*.yml'))
+    assert [path.name for path in workflows] == ['release-attestation.yml']
+    workflow = workflows[0].read_text()
+    assert 'scripts/release_attestation.py create' in workflow
+    assert 'scripts/release_attestation.py verify' in workflow
+    assert 'artifacts/release-attestations/${{ github.sha }}/${{ inputs.deployment_id }}/' in workflow
+    assert 'overwrite: false' in workflow
+    assert '/latest' not in workflow
+    assert 'if: always()' not in workflow
 
 
 def test_no_regen_launch_proof_flag_preserves_existing_launch_proof() -> None:
@@ -1159,37 +1094,13 @@ def test_release_bundle_rejects_contradictory_launch_artifacts(tmp_path: Path) -
     assert any('broad readiness contradicts' in issue for issue in issues)
 
 
-def test_ci_release_attestation_runs_only_after_required_jobs_pass() -> None:
-    workflow = (REPO_ROOT / '.github/workflows/ci-release-gates.yml').read_text()
-    final_job = workflow.split('  final-readiness-gate:', 1)[1]
-    required_jobs = (
-        'paid-launch-readiness-gates',
-        'required-gates',
-        'mandatory-security-supply-chain-gates',
-    )
-    needs_line = next(line.strip() for line in final_job.splitlines() if line.strip().startswith('needs:'))
-    for job in required_jobs:
-        assert job in needs_line
-        assert f"needs.{job}.result == 'success'" in final_job
-    generation = final_job.split('- name: Generate local fail-closed launch proof and release proof', 1)[1]
-    generation = generation.split('- name: Validate release proof', 1)[0]
-    assert 'if: always()' not in generation
-    assert 'RELEASE_DEPLOYMENT_ID:' in generation
-    assert 'RELEASE_ENVIRONMENT: ci' in generation
-
-
-def test_staging_attestations_are_not_uploaded_after_failed_steps() -> None:
-    for workflow_name in (
-        'staging-live-evidence-proof.yml',
-        'staging-production-proof.yml',
-        'save-proof-to-repo.yml',
-    ):
-        workflow = (REPO_ROOT / '.github/workflows' / workflow_name).read_text()
-        assert 'RELEASE_DEPLOYMENT_ID:' in workflow
-        assert 'RELEASE_ENVIRONMENT: staging' in workflow
-    live_workflow = (REPO_ROOT / '.github/workflows/staging-live-evidence-proof.yml').read_text()
-    assert "steps.secrets.outputs.present == 'true' && always()" not in live_workflow
-    save_workflow = (REPO_ROOT / '.github/workflows/save-proof-to-repo.yml').read_text()
-    generation = save_workflow.split('- name: Generate release proof', 1)[1]
-    generation = generation.split('- name: Validate release proof', 1)[0]
-    assert 'if: always()' not in generation
+def test_release_attestation_workflow_requires_one_strict_production_like_evidence_source() -> None:
+    workflow = (REPO_ROOT / '.github/workflows/release-attestation.yml').read_text()
+    assert workflow.count('curl --fail-with-body') == 1
+    assert 'X-Expected-Commit-SHA' in workflow
+    assert 'X-Deployment-ID' in workflow
+    assert 'X-CI-Run-ID' in workflow
+    assert 'RELEASE_ATTESTATION_SIGNING_KEY' in workflow
+    assert 'workflow_dispatch:' in workflow
+    assert 'pull_request:' not in workflow
+    assert 'push:' not in workflow
