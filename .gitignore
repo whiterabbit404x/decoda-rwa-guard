@@ -26,3 +26,7 @@ playwright-report/
 
 # Local-mode proof artifacts (non-staging test outputs — never commit these)
 artifacts/*/local-test/
+
+# Mutable proof aliases are diagnostic only and must never become release claims.
+artifacts/*/latest/
+services/api/artifacts/live_evidence/latest/
