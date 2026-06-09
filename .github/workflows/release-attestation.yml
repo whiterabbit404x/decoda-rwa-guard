@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       environment:
-        description: GitHub production-like environment containing the probe URL and signing key
+        description: Protected GitHub production environment containing the probe URL and signing key
         required: true
         type: environment
       image_ref:
@@ -32,12 +32,13 @@ concurrency:
 
 jobs:
   attest-release:
-    name: Strict production-like release attestation
+    name: Strict production release attestation
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     timeout-minutes: 45
     env:
       EXPECTED_COMMIT_SHA: ${{ github.sha }}
+      RELEASE_ENVIRONMENT: ${{ inputs.environment }}
       RELEASE_DEPLOYMENT_ID: ${{ inputs.deployment_id }}
       CI_RUN_ID: ${{ github.run_id }}
       RELEASE_IMAGE_REF: ${{ inputs.image_ref }}
@@ -65,11 +66,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test "$RELEASE_ENVIRONMENT" = "production" || { echo 'only the protected production environment is release-authoritative'; exit 1; }
           test -n "$RELEASE_PROBE_URL" || { echo 'RELEASE_PROBE_URL is required'; exit 1; }
           test -n "$RELEASE_PROBE_TOKEN" || { echo 'RELEASE_PROBE_TOKEN is required'; exit 1; }
           test -n "$RELEASE_ATTESTATION_SIGNING_KEY" || { echo 'RELEASE_ATTESTATION_SIGNING_KEY is required'; exit 1; }
           test -n "$PENTEST_EVIDENCE" || { echo 'independent penetration-test evidence is required'; exit 1; }
-          [[ "$RELEASE_IMAGE_REF" == *@sha256:* ]] || { echo 'image_ref must be immutable'; exit 1; }
+          [[ "$RELEASE_IMAGE_REF" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]] || { echo 'image_ref must be an immutable sha256 digest reference'; exit 1; }
           test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT_SHA"
           mkdir -p artifacts/release-security
           printf '%s\n' "$PENTEST_EVIDENCE" > artifacts/release-security/penetration-test-evidence.txt
@@ -135,6 +137,7 @@ jobs:
             -H "Authorization: Bearer $RELEASE_PROBE_TOKEN" \
             -H "X-Expected-Commit-SHA: $EXPECTED_COMMIT_SHA" \
             -H "X-Deployment-ID: $RELEASE_DEPLOYMENT_ID" \
+            -H "X-Expected-Image-Ref: $RELEASE_IMAGE_REF" \
             -H "X-CI-Run-ID: $CI_RUN_ID" \
             "$RELEASE_PROBE_URL" > release-evidence.json
 
@@ -144,13 +147,17 @@ jobs:
             --evidence release-evidence.json \
             --commit-sha "$EXPECTED_COMMIT_SHA" \
             --deployment-id "$RELEASE_DEPLOYMENT_ID" \
-            --ci-run-id "$CI_RUN_ID"
+            --ci-run-id "$CI_RUN_ID" \
+            --image-ref "$RELEASE_IMAGE_REF" \
+            --penetration-test-evidence "$PENTEST_EVIDENCE"
 
       - name: Verify signature, commit binding, and immutable path
         run: |
           python scripts/release_attestation.py verify \
             --directory "artifacts/release-attestations/$EXPECTED_COMMIT_SHA/$RELEASE_DEPLOYMENT_ID" \
-            --commit-sha "$EXPECTED_COMMIT_SHA"
+            --commit-sha "$EXPECTED_COMMIT_SHA" \
+            --deployment-id "$RELEASE_DEPLOYMENT_ID" \
+            --image-ref "$RELEASE_IMAGE_REF"
 
       - name: Build SOC 2 control evidence index
         shell: bash
