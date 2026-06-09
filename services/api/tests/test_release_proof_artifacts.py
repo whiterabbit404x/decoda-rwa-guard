@@ -876,6 +876,10 @@ def test_authoritative_release_workflow_is_single_and_immutable() -> None:
     workflow = workflows[0].read_text()
     assert 'scripts/release_attestation.py create' in workflow
     assert 'scripts/release_attestation.py verify' in workflow
+    assert 'X-Expected-Image-Ref: $RELEASE_IMAGE_REF' in workflow
+    assert '--image-ref "$RELEASE_IMAGE_REF"' in workflow
+    assert '--penetration-test-evidence "$PENTEST_EVIDENCE"' in workflow
+    assert 'only the protected production environment is release-authoritative' in workflow
     assert 'artifacts/release-attestations/${{ github.sha }}/${{ inputs.deployment_id }}/' in workflow
     assert 'overwrite: false' in workflow
     assert '/latest' not in workflow
