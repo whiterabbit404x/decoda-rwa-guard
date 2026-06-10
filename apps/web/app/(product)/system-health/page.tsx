@@ -605,6 +605,39 @@ export default async function SystemHealthPage() {
           </table>
         </div>
       </section>
+
+      <section>
+        <h2>API Documentation</h2>
+        <p style={{ marginBottom: '0.5rem', color: 'var(--color-text-muted, #6b7280)', fontSize: '0.875rem' }}>
+          Machine-readable API schema for enterprise integration and review.
+        </p>
+        <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+          <a
+            href={`${process.env.NEXT_PUBLIC_API_URL ?? ''}/openapi.json`}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ fontSize: '0.875rem' }}
+          >
+            OpenAPI Schema (JSON)
+          </a>
+          <a
+            href={`${process.env.NEXT_PUBLIC_API_URL ?? ''}/docs`}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ fontSize: '0.875rem' }}
+          >
+            Interactive API Docs (Swagger UI)
+          </a>
+          <a
+            href={`${process.env.NEXT_PUBLIC_API_URL ?? ''}/redoc`}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ fontSize: '0.875rem' }}
+          >
+            API Reference (ReDoc)
+          </a>
+        </div>
+      </section>
     </main>
   );
 }

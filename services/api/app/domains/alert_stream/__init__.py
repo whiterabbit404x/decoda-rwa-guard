@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import threading
 from datetime import datetime, timezone
@@ -10,6 +11,8 @@ from typing import Any, AsyncIterator
 
 import redis
 import redis.asyncio as aioredis
+
+logger = logging.getLogger(__name__)
 
 STREAM_PREFIX = 'decoda:workspace:'
 STREAM_SUFFIX = ':alerts'
@@ -76,14 +79,26 @@ def _get_async_client() -> Any:
 
 def publish(workspace_id: str, alert_data: dict[str, Any]) -> str:
     """Append an alert to the bounded workspace stream and return its Redis ID."""
-    return str(
-        _get_sync_client().xadd(
-            stream_key(workspace_id),
-            {'payload': json.dumps(alert_data, separators=(',', ':'))},
-            maxlen=stream_max_length(),
-            approximate=False,
+    try:
+        event_id = str(
+            _get_sync_client().xadd(
+                stream_key(workspace_id),
+                {'payload': json.dumps(alert_data, separators=(',', ':'))},
+                maxlen=stream_max_length(),
+                approximate=False,
+            )
         )
-    )
+        logger.info(
+            'event=alert_stream_publish workspace_id=%s stream=%s event_id=%s',
+            workspace_id, stream_key(workspace_id), event_id,
+        )
+        return event_id
+    except Exception as exc:
+        logger.error(
+            'event=alert_stream_publish_failure workspace_id=%s error=%s error_type=%s',
+            workspace_id, str(exc)[:200], type(exc).__name__,
+        )
+        raise
 
 
 def connectivity_sync() -> dict[str, Any]:
@@ -152,6 +167,10 @@ async def subscribe(
     delay = 0.1
     connected = False
     _health_change(active_subscribers_delta=1)
+    logger.info(
+        'event=alert_stream_subscribe workspace_id=%s stream=%s cursor=%s',
+        workspace_id, stream_key(workspace_id), cursor,
+    )
     try:
         while True:
             try:
@@ -160,6 +179,10 @@ async def subscribe(
                     await client.ping()
                     connected = True
                     _health_change(connected_subscribers_delta=1)
+                    logger.info(
+                        'event=alert_stream_connected workspace_id=%s stream=%s',
+                        workspace_id, stream_key(workspace_id),
+                    )
                 rows = await client.xread({stream_key(workspace_id): cursor}, block=block_ms, count=100)
                 delay = 0.1
                 if not rows:
@@ -176,6 +199,10 @@ async def subscribe(
                         except (TypeError, json.JSONDecodeError):
                             continue
                         _health_change(last_message_at=_utc_now())
+                        logger.debug(
+                            'event=alert_stream_delivery workspace_id=%s event_id=%s',
+                            workspace_id, event_id,
+                        )
                         yield cursor, payload
             except asyncio.CancelledError:
                 raise
@@ -188,6 +215,10 @@ async def subscribe(
                     subscriber_errors_total_delta=1,
                     last_subscriber_error={'at': _utc_now(), 'type': type(exc).__name__},
                 )
+                logger.warning(
+                    'event=alert_stream_reconnect workspace_id=%s error=%s error_type=%s delay_seconds=%.1f',
+                    workspace_id, str(exc)[:200], type(exc).__name__, delay,
+                )
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 5.0)
                 yield None, None
@@ -195,3 +226,4 @@ async def subscribe(
         _health_change(active_subscribers_delta=-1)
         if connected:
             _health_change(connected_subscribers_delta=-1)
+        logger.info('event=alert_stream_unsubscribe workspace_id=%s stream=%s', workspace_id, stream_key(workspace_id))

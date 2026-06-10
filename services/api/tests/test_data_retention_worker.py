@@ -220,3 +220,83 @@ def test_worker_health_exposes_freshness_failures_and_latest_completed_sweep(mon
     assert health['failures'] == 2
     assert health['most_recent_completed_sweep_at'] == completed.isoformat()
     assert health['workers'][0]['last_error'] == 'two jobs failed'
+
+
+def test_non_expired_records_are_untouched():
+    """The retention DELETE must use strict '<' on the timestamp so records at or after
+    the cutoff are never touched.  workspace_id must also scope every query."""
+    cutoff = datetime(2025, 6, 1, tzinfo=timezone.utc)
+
+    def handler(sql, params):
+        if 'FROM workspace_legal_holds' in sql or 'FROM retention_external_artifacts' in sql:
+            return Result(rows=[])
+        if 'DELETE FROM telemetry_events' in sql:
+            return Result(rowcount=3)
+        return Result()
+
+    connection = RecordingConnection(handler)
+    result = data_retention.execute_request(
+        connection,
+        request_row(cutoff_at=cutoff),
+        worker_name='worker-1',
+    )
+
+    assert result['status'] == 'completed'
+
+    delete_calls = [(sql, params) for sql, params in connection.calls
+                    if 'DELETE FROM telemetry_events' in sql]
+    assert len(delete_calls) == 1, 'exactly one DELETE statement expected'
+    sql, params = delete_calls[0]
+    assert params[0] == 'workspace-a', 'workspace_id must scope the deletion'
+    assert params[1] == cutoff, 'cutoff_at must match the request cutoff'
+    assert 'observed_at < %s' in sql, 'strict < keeps records at/after cutoff untouched'
+
+
+def test_schedule_requests_is_idempotent_via_idempotency_key():
+    """schedule_requests uses ON CONFLICT on idempotency_key so duplicate calls are no-ops."""
+    inserted: list[tuple] = []
+
+    def handler(sql, params):
+        if 'INSERT INTO data_deletion_requests' in sql:
+            inserted.append(params)
+            return Result(rowcount=1)
+        return Result()
+
+    connection = RecordingConnection(handler)
+    data_retention.schedule_requests(connection)
+    data_retention.schedule_requests(connection)
+
+    insert_sqls = [sql for sql, _ in connection.calls if 'INSERT INTO data_deletion_requests' in sql]
+    for sql in insert_sqls:
+        assert 'ON CONFLICT' in sql and 'idempotency_key' in sql, (
+            'schedule_requests must use ON CONFLICT (idempotency_key) for idempotency'
+        )
+
+
+def test_dry_run_does_not_execute_deletions(monkeypatch):
+    """run_retention_worker_cycle with dry_run=True must not delete or anonymize any records."""
+    executed_deletions: list[str] = []
+
+    @contextmanager
+    def fake_connection():
+        def handler(sql, params):
+            if sql.startswith('DELETE FROM') or ('UPDATE' in sql and 'SET title' in sql):
+                executed_deletions.append(sql[:80])
+            if 'SELECT COUNT(*)' in sql:
+                return Result(row={'count': 3})
+            return Result()
+        yield RecordingConnection(handler)
+
+    monkeypatch.setattr('services.api.app.pilot.pg_connection', fake_connection)
+    monkeypatch.setattr('services.api.app.pilot.ensure_pilot_schema', lambda conn: None)
+
+    from services.api.app.pilot import run_retention_worker_cycle
+    summary = run_retention_worker_cycle(worker_name='dry-run-worker', batch_size=10, dry_run=True)
+
+    assert summary['dry_run'] is True
+    assert summary.get('dry_run_pending') == 3
+    assert executed_deletions == [], (
+        f'dry_run=True must not execute any deletions; got: {executed_deletions}'
+    )
+    assert summary['completed'] == 0
+    assert summary['claimed'] == 0

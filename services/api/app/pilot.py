@@ -16447,17 +16447,29 @@ def approve_and_execute_data_deletion_request(request_id: str, request: Request)
         return result
 
 
-def run_retention_worker_cycle(*, worker_name: str = 'retention-worker', batch_size: int = 25) -> dict[str, Any]:
+def run_retention_worker_cycle(*, worker_name: str = 'retention-worker', batch_size: int = 25, dry_run: bool = False) -> dict[str, Any]:
     from services.api.app.data_retention import claim_request, execute_request, record_failure, schedule_requests
 
-    summary = {'scheduled': 0, 'claimed': 0, 'completed': 0, 'blocked': 0, 'retried': 0, 'failed': 0}
+    summary = {'scheduled': 0, 'claimed': 0, 'completed': 0, 'blocked': 0, 'retried': 0, 'failed': 0, 'dry_run': dry_run}
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        connection.execute(
-            """INSERT INTO retention_worker_state (worker_name, heartbeat_at, sweep_started_at, updated_at)
-               VALUES (%s, NOW(), NOW(), NOW()) ON CONFLICT (worker_name) DO UPDATE SET
-               heartbeat_at = NOW(), sweep_started_at = NOW(), updated_at = NOW()""", (worker_name,))
-        summary['scheduled'] = schedule_requests(connection)
+        if not dry_run:
+            connection.execute(
+                """INSERT INTO retention_worker_state (worker_name, heartbeat_at, sweep_started_at, updated_at)
+                   VALUES (%s, NOW(), NOW(), NOW()) ON CONFLICT (worker_name) DO UPDATE SET
+                   heartbeat_at = NOW(), sweep_started_at = NOW(), updated_at = NOW()""", (worker_name,))
+        summary['scheduled'] = schedule_requests(connection) if not dry_run else 0
+    if dry_run:
+        with pg_connection() as connection:
+            pending = connection.execute(
+                """SELECT COUNT(*) AS count FROM data_deletion_requests
+                   WHERE status IN ('approved', 'running') AND next_attempt_at <= NOW()
+                     AND attempt_count < max_attempts
+                     AND (status <> 'running' OR lease_expires_at IS NULL OR lease_expires_at < NOW())"""
+            ).fetchone()
+            summary['dry_run_pending'] = int((pending or {}).get('count') or 0)
+        logger.info('retention worker dry_run=true would_process=%s worker=%s', summary['dry_run_pending'], worker_name)
+        return summary
     for _ in range(max(1, batch_size)):
         with pg_connection() as connection:
             deletion = claim_request(connection, worker_name=worker_name)
