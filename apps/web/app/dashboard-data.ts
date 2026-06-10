@@ -943,26 +943,10 @@ function containsThreatFallbackCopy(value: unknown) {
 }
 
 function normalizeThreatDashboardPayload(payload: ThreatDashboardResponse): ThreatDashboardResponse {
-  if (payload.source !== 'live' || payload.degraded) {
-    return payload;
-  }
-
-  return {
-    ...payload,
-    message: sanitizeCustomerFacingCopy(containsThreatFallbackCopy(payload.message) ? LIVE_THREAT_MESSAGE : payload.message),
-    cards: payload.cards.map((card) => ({
-      ...card,
-      detail: sanitizeCustomerFacingCopy(containsThreatFallbackCopy(card.detail) ? (LIVE_THREAT_CARD_DETAILS[card.label] ?? card.detail) : card.detail),
-    })),
-    active_alerts: payload.active_alerts.map((alert) => ({
-      ...alert,
-      source: 'live',
-    })),
-    recent_detections: payload.recent_detections.map((detection) => ({
-      ...detection,
-      source: 'live',
-    })),
-  };
+  // Return the payload unchanged so fallback/demo/simulation source labels remain
+  // visible to the customer. Silently replacing these terms or forcing source='live'
+  // on sub-items was a truthfulness violation.
+  return payload;
 }
 
 export type BackendState = 'online' | 'degraded' | 'offline';
@@ -1816,17 +1800,8 @@ export async function fetchDashboardPageData(
       ? fallbackResilienceDashboard
       : { ...fallbackResilienceDashboard, message: isTimeoutMetaError(resilienceResult.meta.error) ? timeoutUnavailableReason('Resilience dashboard') : 'Resilience dashboard is unavailable. Reconnect the API to restore resilience operations data.', cards: [], latest_incidents: [], summary: { ...fallbackResilienceDashboard.summary, mismatch_amount: 0, stale_ledger_count: 0, incident_count: 0 } });
 
-  threatDashboard.message = sanitizeCustomerFacingCopy(threatDashboard.message);
-  threatDashboard.cards = threatDashboard.cards.map((card) => ({ ...card, detail: sanitizeCustomerFacingCopy(card.detail) }));
-  threatDashboard.active_alerts = threatDashboard.active_alerts.map((alert) => ({ ...alert, explanation: sanitizeCustomerFacingCopy(alert.explanation), title: sanitizeCustomerFacingCopy(alert.title) }));
-  threatDashboard.recent_detections = threatDashboard.recent_detections.map((detection) => ({ ...detection, explanation: sanitizeCustomerFacingCopy(detection.explanation), title: sanitizeCustomerFacingCopy(detection.title), patterns: detection.patterns.map((pattern) => sanitizeCustomerFacingCopy(pattern)) }));
-
-  complianceDashboard.message = sanitizeCustomerFacingCopy(complianceDashboard.message);
-  complianceDashboard.cards = complianceDashboard.cards.map((card) => ({ ...card, detail: sanitizeCustomerFacingCopy(card.detail) }));
-
-  resilienceDashboard.message = sanitizeCustomerFacingCopy(resilienceDashboard.message);
-  resilienceDashboard.cards = resilienceDashboard.cards.map((card) => ({ ...card, detail: sanitizeCustomerFacingCopy(card.detail) }));
-  resilienceDashboard.latest_incidents = resilienceDashboard.latest_incidents.map((incident) => ({ ...incident, summary: sanitizeCustomerFacingCopy(incident.summary) }));
+  // Source labels (fallback, demo, simulation, sample scenario) are preserved as-is.
+  // Customers must see the true data source; silent copy-sanitization was a truthfulness violation.
 
   const sampleMode = !apiConfig.apiUrl;
   const endpoints: DashboardDiagnostics['endpoints'] = {

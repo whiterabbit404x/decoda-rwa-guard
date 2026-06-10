@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 import { fallbackThreatDashboard, fetchDashboardPageData } from '../app/dashboard-data';
 
-test('dashboard payloads sanitize internal monitoring provenance terms', async () => {
+test('dashboard payloads preserve source terminology — copy sanitizer must not hide fallback/demo/simulation labels', async () => {
   const originalFetch = global.fetch;
 
   global.fetch = (async (input: string | URL | Request) => {
@@ -31,19 +31,22 @@ test('dashboard payloads sanitize internal monitoring provenance terms', async (
 
   try {
     const data = await fetchDashboardPageData('https://railway.example');
-    const customerCopy = [
-      data.threatDashboard.message,
-      ...data.threatDashboard.cards.map((card) => card.detail),
-      ...data.threatDashboard.active_alerts.map((alert) => `${alert.title} ${alert.explanation}`),
-      data.complianceDashboard.message,
-      ...data.complianceDashboard.cards.map((card) => card.detail),
-      data.resilienceDashboard.message,
-      ...data.resilienceDashboard.cards.map((card) => card.detail),
-    ].join(' ').toLowerCase();
 
-    ['demo', 'synthetic', 'scenario', 'hybrid'].forEach((term) => {
-      expect(customerCopy.includes(term)).toBe(false);
-    });
+    // Fallback source field must be preserved — not replaced with 'live'
+    expect(data.complianceDashboard.source).toBe('fallback');
+    expect(data.resilienceDashboard.source).toBe('fallback');
+
+    // Source terminology (fallback, demo, simulation) must NOT be stripped from copy.
+    // Customers must see the true data source. These assertions verify the sanitizer
+    // no longer hides source provenance from the customer-facing UI.
+    const complianceMsg = data.complianceDashboard.message.toLowerCase();
+    const resilienceMsg = data.resilienceDashboard.message.toLowerCase();
+
+    expect(complianceMsg).toContain('fallback');
+    expect(resilienceMsg).toContain('demo');
+
+    // The threat dashboard's source field must be preserved for fallback payloads
+    expect(data.threatDashboard.source).toBe(fallbackThreatDashboard.source);
   } finally {
     global.fetch = originalFetch;
   }

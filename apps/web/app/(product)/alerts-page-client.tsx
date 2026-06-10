@@ -174,10 +174,12 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
     setMessage(executionResult.text || `${modeLabel} ${label} could not be executed.`);
   }
   const liveLikeMode = evidenceSourceSummary === 'live' || evidenceSourceSummary === 'hybrid';
+  const isSimulatedMode = actionMode === 'simulated' || actionMode === 'recommended';
 
   return (
     <main className="productPage">
       <RuntimeSummaryPanel />
+      {isSimulatedMode ? <p className="statusLine" role="status" aria-label="Simulated mode active">SIMULATED mode active: response actions will not affect live systems. Switch to Live mode for production enforcement.</p> : null}
       <section className="featureSection">
         <div className="sectionHeader"><div><p className="eyebrow">Operator queue</p><h1>Alerts</h1><p className="lede">Deduplicated alert queue with evidence-first triage and escalation actions.</p></div></div>
         <TabStrip tabs={[{ key: "queue", label: "Alert queue" }, { key: "evidence", label: "Evidence review" }]} active="queue" onChange={() => {}} />

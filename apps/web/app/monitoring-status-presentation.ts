@@ -70,13 +70,15 @@ function normalizeStatus(
   }
   // Backend-authoritative live verdict: when the backend explicitly verified live runtime
   // with no database failure and no critical contradictions from the backend itself, trust it.
-  // This path fires before frontend-derived guard checks so that non-critical guards
-  // (e.g. workspace_unconfigured_with_coverage) cannot demote a backend-verified live state.
+  // Requires a live evidence source and fresh telemetry — simulator/replay sources and stale
+  // telemetry must never be promoted to "live" status regardless of status_reason.
   if (
     !truth.db_failure_reason &&
     runtimeStatus === 'live' &&
     truth.status_reason === 'live_runtime_verified' &&
-    !hasCriticalContradiction
+    !hasCriticalContradiction &&
+    truth.evidence_source_summary === 'live' &&
+    truth.telemetry_freshness === 'fresh'
   ) {
     return 'live';
   }
@@ -103,6 +105,9 @@ function normalizeStatus(
   }
   if (runtimeStatus === 'idle') {
     return 'limited coverage';
+  }
+  if (freshness === 'delayed') {
+    return 'stale';
   }
   return evidence === 'unavailable' ? 'degraded' : 'live';
 }
@@ -165,8 +170,11 @@ function detectionSummary(truth: WorkspaceMonitoringTruth): string {
 function confidenceFromEvidence(
   evidence: MonitoringPresentationEvidence,
   status: MonitoringPresentationStatus,
+  evidenceSource: WorkspaceMonitoringTruth['evidence_source_summary'],
 ): MonitoringPresentationConfidence {
-  if (evidence === 'verified' && status === 'live') {
+  // "Verified telemetry" must only appear when the source is truly live.
+  // Fallback, simulated, replay, and unknown sources must never show this label.
+  if (evidence === 'verified' && status === 'live' && evidenceSource === 'live') {
     return 'verified telemetry';
   }
   if (evidence === 'recent' || evidence === 'verified') {
@@ -184,7 +192,7 @@ export function normalizeMonitoringPresentation(
   const evidence = normalizeEvidence(truth);
   const freshness = normalizeFreshness(truth, evidence);
   const presentationStatus = normalizeStatus(truth, evidence, freshness);
-  const confidence = confidenceFromEvidence(evidence, presentationStatus);
+  const confidence = confidenceFromEvidence(evidence, presentationStatus, truth.evidence_source_summary);
 
   const statusReasonSuffix = truth.status_reason ? ` Reason: ${truth.status_reason}.` : '';
   const guardSummaryPrefix = ((truth.guard_flags ?? []).length > 0 || (truth.contradiction_flags ?? []).length > 0)
