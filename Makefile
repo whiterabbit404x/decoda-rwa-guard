@@ -74,6 +74,10 @@ validate-launch:
 	$(MAKE) generate-staging-proof
 	$(MAKE) validate-staging-proof
 	$(MAKE) validate-release-proof
+	$(MAKE) validate-launch-completeness
+
+validate-launch-completeness:
+	python scripts/validate_launch_proof_completeness.py
 
 validate-no-billing-launch:
 	BILLING_PROVIDER=none VALIDATION_MODE=no_billing_pilot python services/api/scripts/validate_staging.py

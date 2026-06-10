@@ -872,8 +872,14 @@ def test_validate_release_proof_fails_when_launch_proof_modified_after_manifest(
 
 def test_authoritative_release_workflow_is_single_and_immutable() -> None:
     workflows = sorted((REPO_ROOT / '.github' / 'workflows').glob('*.yml'))
-    assert [path.name for path in workflows] == ['release-attestation.yml']
-    workflow = workflows[0].read_text()
+    # ci-quality-gates.yml is the CI testing and coverage gate workflow (Phase 7 audit fix).
+    # release-attestation.yml remains the single authoritative release workflow.
+    known_workflows = {'release-attestation.yml', 'ci-quality-gates.yml'}
+    workflow_names = {path.name for path in workflows}
+    unknown = workflow_names - known_workflows
+    assert not unknown, f'Unknown workflow files found: {unknown}. Only {known_workflows} are approved.'
+    assert 'release-attestation.yml' in workflow_names, 'Release attestation workflow must exist.'
+    workflow = next(p for p in workflows if p.name == 'release-attestation.yml').read_text()
     assert 'scripts/release_attestation.py create' in workflow
     assert 'scripts/release_attestation.py verify' in workflow
     assert 'X-Expected-Image-Ref: $RELEASE_IMAGE_REF' in workflow
