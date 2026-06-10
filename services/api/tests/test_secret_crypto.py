@@ -13,7 +13,7 @@ def test_secret_roundtrip(monkeypatch):
     key = base64.b64encode(b'0' * 32).decode('ascii')
     monkeypatch.setenv('SECRET_ENCRYPTION_KEY', key)
     encrypted = encrypt_secret('super-secret', aad='workspace:1')
-    assert encrypted.startswith('aes256gcm:v1:')
+    assert encrypted.startswith('aes256gcm:v2:')
     assert decrypt_secret(encrypted, aad='workspace:1') == 'super-secret'
 
 

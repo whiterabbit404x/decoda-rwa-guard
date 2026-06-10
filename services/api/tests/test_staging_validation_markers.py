@@ -74,6 +74,7 @@ def _write_live_evidence_proof(
     evidence_source: str = 'live',
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    _TARGET_ID = '0xdeadbeef000000000000000000000000deadbeef'
     proof = {
         'schema_version': 1,
         'generated_at': '2026-06-03T12:00:00+00:00',
@@ -81,6 +82,43 @@ def _write_live_evidence_proof(
             'provider_ready': provider_ready,
             'live_evidence_ready': live_evidence_ready,
             'evidence_source': evidence_source,
+            'chain': {
+                'telemetry_event_id': 'tel-test-001',
+                'detection_event_id': 'devet-test-001',
+                'detection_id': 'det-test-001',
+                'alert_id': 'alert-test-001',
+                'incident_id': 'inc-test-001',
+                'response_action_id': 'ra-test-001',
+                'evidence_package_id': 'ep-test-001',
+            },
+            'telemetry_record': {
+                'source_type': 'rpc_polling',
+                'workspace_id': 'ws-test-001',
+                'target_id': 'target-test-001',
+                'target_identifier': _TARGET_ID,
+                'target_configured': True,
+                'provider_receipt': {'receipt_id': 'rpc-receipt-001'},
+                'on_chain_activity': {
+                    'matched': True,
+                    'transaction_hash': '0x' + 'a' * 64,
+                    'target_identifier': _TARGET_ID,
+                },
+            },
+            'detection_record': {
+                'detection_event_id': 'devet-test-001',
+                'detection_name': 'supply_divergence',
+                'severity': 'medium',
+                'detector_result': {'triggered': True, 'status': 'triggered'},
+            },
+            'evidence_package_record': {
+                'persisted_linkage': {
+                    'persisted': True,
+                    'telemetry_event_id': 'tel-test-001',
+                    'detection_event_id': 'devet-test-001',
+                    'detection_id': 'det-test-001',
+                    'alert_id': 'alert-test-001',
+                },
+            },
         },
     }
     path.write_text(json.dumps(proof))

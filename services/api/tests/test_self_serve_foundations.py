@@ -6,7 +6,8 @@ from services.api.app import pilot
 
 
 def test_totp_generation_and_verification_roundtrip() -> None:
-    secret = pilot._b64url(b'01234567890123456789')
+    import base64
+    secret = base64.b32encode(b'01234567890123456789').decode('ascii').rstrip('=')
     code = pilot._totp_code(secret)
     assert len(code) == 6
     assert pilot._verify_totp(secret, code) is True
