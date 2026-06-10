@@ -31,6 +31,8 @@ def test_escalate_alert_to_incident_updates_bidirectional_links_and_history(monk
                 return _Result({'id': 'alert-1', 'workspace_id': 'ws-1', 'status': 'resolved', 'incident_id': None, 'target_id': None, 'analysis_run_id': None, 'title': 'Large transfer', 'severity': 'high', 'summary': 'Escalate me', 'detection_id': 'det-1', 'alert_type': 'aml_velocity', 'findings': None})
             if 'WITH inserted_incident AS' in normalized:
                 return _Result({'incident_id': 'inc-1'})
+            if 'INSERT INTO alert_event_outbox' in normalized:
+                return _Result({'id': 'outbox-event-1'})
             return _Result()
 
         def commit(self):

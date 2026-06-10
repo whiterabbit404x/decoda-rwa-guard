@@ -67,7 +67,7 @@ def test_token_secret_raises_clear_error_when_auth_token_secret_is_missing(pilot
         pilot_module.token_secret()
 
     assert exc_info.value.status_code == 500
-    assert exc_info.value.detail == 'AUTH_TOKEN_SECRET is not configured.'
+    assert exc_info.value.detail == 'Managed authentication key is not configured.'
 
 
 def test_pilot_signin_raises_clear_schema_error_when_users_table_is_missing(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -99,7 +99,9 @@ def test_pilot_signin_raises_clear_schema_error_when_users_table_is_missing(pilo
     assert 'users' in str(exc_info.value.detail)
 
 
-def test_auth_signin_with_missing_redis_continues_to_credential_check(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_auth_signin_with_missing_redis_fails_closed_in_production(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Production mode with no Redis configured must fail closed (503) — never fall through
+    # to credential checking without a functioning distributed rate-limit backend.
     from services.api.app import pilot
 
     client = TestClient(api_main.app)
@@ -120,9 +122,8 @@ def test_auth_signin_with_missing_redis_continues_to_credential_check(api_main, 
 
     response = client.post('/auth/signin', json={'email': 'team@example.com', 'password': 'wrong-password'})
 
-    assert response.status_code == 401
-    assert credential_checks == [{'email': 'team@example.com', 'password': 'wrong-password'}]
-    assert 'rate limiter unreachable' not in response.text.lower()
+    assert response.status_code == 503
+    assert credential_checks == []
 
 
 def test_auth_signin_route_returns_json_schema_error_instead_of_500(api_main, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -187,7 +187,7 @@ def test_create_export_job_viewer_is_forbidden(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
 
-    def deny_non_admin(connection, request):
+    def deny_non_admin(connection, request, permission=None):
         raise HTTPException(status_code=403, detail='Owner or admin role is required for this action.')
 
     @contextmanager
@@ -201,7 +201,7 @@ def test_create_export_job_viewer_is_forbidden(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr(pilot, 'pg_connection', fake_pg)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda c: None)
-    monkeypatch.setattr(pilot, '_require_workspace_admin', deny_non_admin)
+    monkeypatch.setattr(pilot, '_require_workspace_permission', deny_non_admin)
 
     req = Request({'type': 'http', 'headers': []})
     with pytest.raises(HTTPException) as exc_info:
@@ -215,7 +215,7 @@ def test_create_export_job_admin_is_permitted(monkeypatch: pytest.MonkeyPatch) -
     from fastapi import Request
 
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
-    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda c, r: ({'id': 'u1'}, {'workspace_id': 'ws-1', 'role': 'admin'}))
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda c, r, perm: ({'id': 'u1'}, {'workspace_id': 'ws-1', 'role': 'admin'}))
 
     inserted: list[str] = []
 
