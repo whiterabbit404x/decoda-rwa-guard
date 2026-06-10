@@ -169,6 +169,7 @@ def export_live_evidence_chain(
     chain = evidence.get('chain') or {}
 
     telemetry_event_id = str(chain.get('telemetry_event_id') or '').strip()
+    detection_event_id = str(chain.get('detection_event_id') or '').strip() or None
     detection_id = str(chain.get('detection_id') or '').strip()
     alert_id = str(chain.get('alert_id') or '').strip()
     incident_id = str(chain.get('incident_id') or '').strip() or None
@@ -214,6 +215,7 @@ def export_live_evidence_chain(
         'evidence_source': 'live',
         'source_type': source_type,
         'telemetry_event_id': telemetry_event_id,
+        'detection_event_id': detection_event_id,
         'detection_id': detection_id,
         'alert_id': alert_id,
         'incident_id': incident_id,
@@ -226,8 +228,16 @@ def export_live_evidence_chain(
         ),
         'asset_id': str(chain.get('asset_id') or ''),
         'target_id': str(chain.get('target_id') or ''),
+        'target_identifier': chain.get('target_identifier'),
+        'target_configured': chain.get('target_configured'),
         'monitoring_config_id': str(chain.get('monitoring_config_id') or ''),
         'monitoring_run_id': str(chain.get('monitoring_run_id') or ''),
+        'detection_name': chain.get('detection_name'),
+        'severity': chain.get('severity'),
+        'provider_receipt': chain.get('provider_receipt'),
+        'on_chain_activity': chain.get('on_chain_activity'),
+        'detector_result': chain.get('detector_result'),
+        'persisted_linkage': chain.get('persisted_linkage'),
         'exported_at': datetime.now(timezone.utc).isoformat(),
     }
 

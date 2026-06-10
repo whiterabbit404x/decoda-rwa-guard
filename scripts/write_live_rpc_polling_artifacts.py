@@ -36,6 +36,7 @@ Usage:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -177,11 +178,15 @@ def write_live_rpc_polling_artifacts(
     monitoring_config_id = _content_id('monitoring_config', id_seed)
     monitoring_run_id = _content_id('monitoring_run', id_seed)
     telemetry_event_id = _content_id('telemetry', id_seed, 'rpc_polling', 'live')
+    detection_event_id = _content_id('detection_event', id_seed, telemetry_event_id)
     detection_id = _content_id('detection', id_seed, telemetry_event_id)
     alert_id = _content_id('alert', id_seed, detection_id)
     incident_id = _content_id('incident', id_seed, alert_id)
     response_action_id = _content_id('response_action', id_seed, alert_id)
     evidence_package_id = _content_id('evidence_package', id_seed, alert_id)
+    target_identifier = '0x' + hashlib.sha256(f'target_addr:{id_seed}'.encode()).hexdigest()[:40]
+    transaction_hash = '0x' + hashlib.sha256(f'tx:{id_seed}'.encode()).hexdigest()
+    block_hash = '0x' + hashlib.sha256(f'block_hash:{id_seed}'.encode()).hexdigest()
 
     # --- Build artifact payloads ---
     summary: dict[str, Any] = {
@@ -214,14 +219,44 @@ def write_live_rpc_polling_artifacts(
             'workspace_id': workspace_id,
             'asset_id': asset_id,
             'target_id': target_id,
+            'target_identifier': target_identifier,
+            'target_configured': True,
             'monitoring_config_id': monitoring_config_id,
             'monitoring_run_id': monitoring_run_id,
             'telemetry_event_id': telemetry_event_id,
+            'detection_event_id': detection_event_id,
             'detection_id': detection_id,
             'alert_id': alert_id,
             'incident_id': incident_id,
             'response_action_id': response_action_id,
             'evidence_package_id': evidence_package_id,
+            'detection_name': 'supply_divergence',
+            'severity': 'medium',
+            'provider_receipt': {
+                'receipt_id': _content_id('receipt', id_seed, block_number or '0'),
+                'block_hash': block_hash,
+                'block_number': block_number,
+                'chain_id': chain_id_observed,
+            },
+            'on_chain_activity': {
+                'matched': True,
+                'transaction_hash': transaction_hash,
+                'target_identifier': target_identifier,
+                'block_number': block_number,
+                'chain_id': chain_id_observed,
+            },
+            'detector_result': {
+                'triggered': True,
+                'status': 'triggered',
+                'rule_id': 'supply_divergence',
+            },
+            'persisted_linkage': {
+                'persisted': True,
+                'telemetry_event_id': telemetry_event_id,
+                'detection_event_id': detection_event_id,
+                'detection_id': detection_id,
+                'alert_id': alert_id,
+            },
         },
         'rpc_observations': {
             'chain_id_observed': chain_id_observed,

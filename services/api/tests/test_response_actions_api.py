@@ -330,6 +330,8 @@ def test_execute_live_unsupported_action_returns_structured_error_without_execut
                         'approved_by_user_id': 'admin-2',
                     }
                 )
+            if 'SELECT role FROM workspace_members WHERE workspace_id = %s AND user_id = %s' in normalized:
+                return _Result({'role': 'admin'})
             return _Result()
 
         def commit(self):
@@ -398,6 +400,8 @@ def test_execute_live_revoke_approval_returns_proposed_state_with_safe_tx_hash_a
                         'approved_by_user_id': 'admin-2',
                     }
                 )
+            if 'SELECT role FROM workspace_members WHERE workspace_id = %s AND user_id = %s' in normalized:
+                return _Result({'role': 'admin'})
             return _Result()
 
         def commit(self):
@@ -485,6 +489,8 @@ def test_execute_live_freeze_wallet_writes_governance_metadata_and_timeline(monk
                         'approved_by_user_id': 'admin-2',
                     }
                 )
+            if 'SELECT role FROM workspace_members WHERE workspace_id = %s AND user_id = %s' in normalized:
+                return _Result({'role': 'admin'})
             return _Result()
 
         def commit(self):
@@ -557,6 +563,8 @@ def test_execute_live_manual_only_action_returns_manual_required_state(monkeypat
                         'approved_by_user_id': 'admin-2',
                     }
                 )
+            if 'SELECT role FROM workspace_members WHERE workspace_id = %s AND user_id = %s' in normalized:
+                return _Result({'role': 'admin'})
             return _Result()
 
         def commit(self):
@@ -612,6 +620,8 @@ def test_execute_live_action_denies_same_user_as_approver(monkeypatch):
                         'approved_by_user_id': 'admin-1',
                     }
                 )
+            if 'SELECT role FROM workspace_members WHERE workspace_id = %s AND user_id = %s' in normalized:
+                return _Result({'role': 'admin'})
             return _Result()
 
         def commit(self):
@@ -664,6 +674,8 @@ def test_execute_live_action_success_includes_execution_evidence_fields(monkeypa
                         'approved_by_user_id': 'admin-2',
                     }
                 )
+            if 'SELECT role FROM workspace_members WHERE workspace_id = %s AND user_id = %s' in normalized:
+                return _Result({'role': 'admin'})
             return _Result()
 
         def commit(self):
@@ -884,6 +896,8 @@ def test_execute_live_action_requires_step_up_when_available(monkeypatch):
                         'approved_by_user_id': 'admin-2',
                     }
                 )
+            if 'SELECT role FROM workspace_members WHERE workspace_id = %s AND user_id = %s' in normalized:
+                return _Result({'role': 'admin'})
             return _Result()
 
         def commit(self):
@@ -946,6 +960,8 @@ def test_execute_live_action_success_writes_audit_trail_and_provenance(monkeypat
                         'approved_by_user_id': 'admin-2',
                     }
                 )
+            if 'SELECT role FROM workspace_members WHERE workspace_id = %s AND user_id = %s' in normalized:
+                return _Result({'role': 'admin'})
             return _Result()
 
         def commit(self):
@@ -1035,6 +1051,8 @@ def test_execute_live_action_persists_execution_evidence_for_approved_path(monke
                         'approved_by_user_id': 'admin-2',
                     }
                 )
+            if 'SELECT role FROM workspace_members WHERE workspace_id = %s AND user_id = %s' in normalized:
+                return _Result({'role': 'admin'})
             return _Result()
 
         def commit(self):

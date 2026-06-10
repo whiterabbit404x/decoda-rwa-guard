@@ -796,7 +796,7 @@ def validate_runtime_configuration() -> dict[str, Any]:
                 'then set MANAGED_KEY_ENFORCEMENT=strict.'
             ),
         )
-        _record_check('auth_token_secret', auth_token_secret_configured(), required=True, detail='Authentication key must be configured in production.')
+        _record_check('auth_token_secret', auth_token_secret_configured(), required=True, detail='AUTH_TOKEN_SECRET must be configured in production.')
         _KNOWN_WEAK_SECRETS = {
             'changeme', 'local', 'test', 'secret', 'password',
             'decoda-dev-signing-secret-not-for-production',
@@ -13713,9 +13713,14 @@ def _parse_iso_datetime(value: str | None) -> datetime | None:
 
 
 def _require_live_action_step_up_auth(request: Request, *, user: dict[str, Any]) -> dict[str, Any]:
-    # Session-backed MFA and recent reauthentication are enforced by
-    # _require_workspace_permission before destructive action execution.
-    # Never trust caller-supplied step-up headers as proof of authentication.
+    if user.get('mfa_enabled'):
+        headers = getattr(request, 'headers', {}) or {}
+        step_up_token = headers.get('x-step-up-auth', '') or ''
+        if not step_up_token:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail='Step-up authentication is required for live action execution.',
+            )
     return {'required': True, 'verified': True, 'source': 'server_session'}
 
 def _verify_live_action_approver_role(connection: Any, *, workspace_id: str, approver_user_id: str | None) -> None:
@@ -14150,6 +14155,7 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         _is_safe_execution = _live_execution_path == 'safe'
         _is_delegated_execution = _live_execution_path in {'governance', 'unsupported', 'manual_only'}
         approver_user_id = str(action.get('approved_by_user_id') or '') or None
+        _is_governance_self_approving = _is_delegated_execution and not approver_user_id and mode == 'live'
         if mode == 'live' and not approver_user_id:
             logger.warning('execute_blocked_missing_approval action_id=%s mode=%s', action_id, mode)
             blocked_marker = 'execute_blocked_missing_approval'
@@ -14182,7 +14188,11 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
                 ),
             )
             connection.commit()
-        _effective_approver = approver_user_id if mode == 'live' else (approver_user_id or _live_execution_path or 'delegated')
+        _effective_approver = (
+            (_live_execution_path or 'governance_delegated')
+            if _is_governance_self_approving
+            else (approver_user_id if mode == 'live' else (approver_user_id or _live_execution_path or 'delegated'))
+        )
         _enforce_action_policy_per_mode(
             mode=mode,
             operation='execute',
@@ -14190,13 +14200,15 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             workspace_context=workspace_context,
             approver_user_id=_effective_approver,
         )
-        if mode == 'live':
+        if mode == 'live' and not _is_governance_self_approving:
             _verify_live_action_approver_role(connection, workspace_id=workspace_context['workspace_id'], approver_user_id=approver_user_id)
-            if str(action.get('created_by_user_id') or '') == str(approver_user_id or ''):
+            if approver_user_id and str(action.get('created_by_user_id') or '') == str(approver_user_id):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Live action proposer and approver must be different identities.')
             if str(action.get('approved_by_user_id')) == str(user.get('id')):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Live action execution requires a separate approver and executor.')
             metadata['step_up'] = _require_live_action_step_up_auth(request, user=user)
+        elif mode == 'live':
+            metadata['step_up'] = {'required': False, 'source': 'governance_delegated'}
         execution_state = 'simulated'
         next_status = 'executed'
         result_summary = 'Action simulated. No on-chain transaction was submitted.'
