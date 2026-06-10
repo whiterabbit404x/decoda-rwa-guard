@@ -169,10 +169,12 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
     setMessage(executionResult.text || `${modeLabel} ${label} could not be executed.`);
   }
   const liveLikeMode = evidenceSourceSummary === 'live' || evidenceSourceSummary === 'hybrid';
+  const isSimulatedMode = actionMode === 'simulated' || actionMode === 'recommended';
 
   return (
     <main className="productPage">
       <RuntimeSummaryPanel />
+      {isSimulatedMode ? <p className="statusLine" role="status" aria-label="Simulated mode active">SIMULATED mode active: response actions will not affect live systems. Switch to Live mode for production enforcement.</p> : null}
       <section className="featureSection">
         <div className="sectionHeader"><div><p className="eyebrow">Incident lifecycle</p><h1>Incidents</h1><p className="lede">Track open → investigating → contained → resolved → reopened with persistent activity logs.</p></div></div>
         <div className="buttonRow">

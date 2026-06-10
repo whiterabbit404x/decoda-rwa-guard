@@ -125,10 +125,10 @@ function evidenceSourcePill(
     raw === 'guided_simulator' ||
     workspaceSource === 'simulator'
   ) {
-    return { label: 'simulator', variant: 'info' };
+    return { label: 'Simulator/test evidence', variant: 'info' };
   }
   if (raw === 'live' || raw === 'live_provider') {
-    return { label: 'live_provider', variant: 'success' };
+    return { label: 'Live evidence', variant: 'success' };
   }
   return { label: 'Unknown source', variant: 'neutral' };
 }

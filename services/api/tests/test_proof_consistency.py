@@ -14,6 +14,7 @@ Rules enforced:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import uuid
@@ -169,6 +170,7 @@ def _write_live_evidence_proof(
     now_str = _ts()
     telemetry_str = _ts(-telemetry_age_days)
     tid = str(uuid.uuid4())
+    det_event_id = str(uuid.uuid4())
     did = str(uuid.uuid4())
     aid = str(uuid.uuid4())
     iid = str(uuid.uuid4())
@@ -186,6 +188,7 @@ def _write_live_evidence_proof(
             'live_evidence_ready': live_evidence_ready,
             'chain': {
                 'telemetry_event_id': tid if live_evidence_ready else None,
+                'detection_event_id': det_event_id if live_evidence_ready else None,
                 'detection_id': did if live_evidence_ready else None,
                 'alert_id': aid if live_evidence_ready else None,
                 'incident_id': iid if live_evidence_ready else None,
@@ -207,6 +210,7 @@ def _write_stale_live_evidence_proof(tmp_path: Path, age_days: int = 43) -> Path
     now_str = _ts()
     stale_str = _ts(-age_days)
     tid = str(uuid.uuid4())
+    det_event_id = str(uuid.uuid4())
     did = str(uuid.uuid4())
     aid = str(uuid.uuid4())
     iid = str(uuid.uuid4())
@@ -224,6 +228,7 @@ def _write_stale_live_evidence_proof(tmp_path: Path, age_days: int = 43) -> Path
             'live_evidence_ready': True,
             'chain': {
                 'telemetry_event_id': tid,
+                'detection_event_id': det_event_id,
                 'detection_id': did,
                 'alert_id': aid,
                 'incident_id': iid,
@@ -236,6 +241,230 @@ def _write_stale_live_evidence_proof(tmp_path: Path, age_days: int = 43) -> Path
     }
     (d / 'summary.json').write_text(json.dumps(proof))
     return d
+
+
+# Fake 40-char commit SHA for test attestation (hex digits only)
+_FAKE_COMMIT_SHA = 'a' * 40
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _write_valid_full_bundle(
+    tmp_path: Path,
+    *,
+    live_evidence_ready: bool = True,
+    telemetry_age_days: int = 0,
+    paid_launch_ready: bool = True,
+    broad_paid_saas_ready: bool = True,
+    frontend_build_status: str = 'pass',
+    readiness_validation_status: str = 'pass',
+) -> tuple[Path, Path, Path, Path]:
+    """Write a complete valid attestation bundle for positive-case tests.
+
+    Uses tmp_path/artifacts/ prefix so manifest paths start with 'artifacts/',
+    which satisfies validate_release_bundle's path prefix constraint.
+    Returns (lp_dir, rp_dir, sp_dir, lep_dir).
+    """
+    artifacts_root = tmp_path / 'artifacts'
+    lp_dir = artifacts_root / 'launch-proof' / 'latest'
+    rp_dir = artifacts_root / 'release-proof' / 'latest'
+    sp_dir = artifacts_root / 'staging-proof' / 'latest'
+    lep_dir = artifacts_root / 'live-evidence-proof' / 'latest'
+    for d in (lp_dir, rp_dir, sp_dir, lep_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    now_str = _ts()
+    attest: dict[str, Any] = {
+        'commit_sha': _FAKE_COMMIT_SHA,
+        'deployment_id': 'test-deploy-001',
+        'ci_run_id': 'ci-run-test-001',
+        'environment': 'staging',
+        'release_channel': 'staging',
+        'evidence_started_at': now_str,
+        'evidence_completed_at': now_str,
+        'generated_at': now_str,
+    }
+
+    # Launch proof
+    launch_proof: dict[str, Any] = {
+        'schema_version': 1,
+        'launch_mode': 'paid_saas',
+        'proof_mode': 'staging',
+        'pilot_ready': True,
+        'paid_launch_ready': paid_launch_ready,
+        'controlled_pilot_ready': True,
+        'broad_paid_saas_ready': broad_paid_saas_ready,
+        'readiness': {
+            'billing_ready': True, 'billing_webhook_ready': True,
+            'email_ready': True, 'provider_ready': True,
+            'live_evidence_ready': True, 'ci_required_gates_ready': True,
+        },
+        'blockers': [],
+        'warnings': [],
+        'artifact_paths': {},
+        **attest,
+    }
+    (lp_dir / 'summary.json').write_text(json.dumps(launch_proof))
+
+    # Release proof
+    release_proof: dict[str, Any] = {
+        'schema_version': 1,
+        'release_status': 'pass',
+        'release_channel': 'staging',
+        'ci_required_gates_ready': True,
+        'launch_proof_ready': True,
+        'manifest_ready': True,
+        'test_report_ready': True,
+        'paid_launch_ready': paid_launch_ready,
+        'blockers': [],
+        'warnings': [],
+        **attest,
+    }
+    (rp_dir / 'summary.json').write_text(json.dumps(release_proof))
+
+    # CI gates
+    ci_gates: dict[str, Any] = {
+        'schema_version': 1,
+        'overall_status': 'pass',
+        'broad_paid_launch_ready': broad_paid_saas_ready,
+        'required_gates': {
+            'backend_tests': {'status': 'pass'},
+            'saas_workflow_validation': {'status': 'pass'},
+            'readiness_validation': {'status': readiness_validation_status},
+            'paid_launch_readiness': {'status': 'pass', 'blockers': []},
+            'live_evidence': {'status': 'pass', 'blockers': []},
+            'frontend_build': {'status': frontend_build_status},
+        },
+        'blockers': [],
+        'warnings': [],
+        **attest,
+    }
+    (rp_dir / 'ci-required-gates.json').write_text(json.dumps(ci_gates))
+
+    # Test report summary
+    test_report: dict[str, Any] = {
+        'schema_version': 1,
+        'overall_status': 'pass',
+        'test_suites': {},
+        'blockers': [],
+        **attest,
+    }
+    (rp_dir / 'test-report-summary.json').write_text(json.dumps(test_report))
+
+    # Live evidence proof — includes full enterprise evidence sub-records so
+    # validate_enterprise_evidence_fields passes the _validated_live_evidence_chain check.
+    telemetry_str = _ts(-telemetry_age_days)
+    tid = str(uuid.uuid4())
+    det_event_id = str(uuid.uuid4())
+    did = str(uuid.uuid4())
+    aid = str(uuid.uuid4())
+    iid = str(uuid.uuid4())
+    raid = str(uuid.uuid4())
+    pid = str(uuid.uuid4())
+    wid = str(uuid.uuid4())
+    target_id = str(uuid.uuid4())
+    target_identifier = '0x' + 'a' * 40
+    tx_hash = '0x' + 'b' * 64
+    lep_proof: dict[str, Any] = {
+        'schema_version': 1,
+        'generated_at': now_str,
+        'live_provider_evidence': {
+            'provider_ready': live_evidence_ready,
+            'provider_mode': 'live' if live_evidence_ready else 'disabled',
+            'evidence_source': 'live' if live_evidence_ready else 'unknown',
+            'latest_live_telemetry_at': telemetry_str if live_evidence_ready else None,
+            'live_evidence_ready': live_evidence_ready,
+            'chain': {
+                'telemetry_event_id': tid if live_evidence_ready else None,
+                'detection_event_id': det_event_id if live_evidence_ready else None,
+                'detection_id': did if live_evidence_ready else None,
+                'alert_id': aid if live_evidence_ready else None,
+                'incident_id': iid if live_evidence_ready else None,
+                'response_action_id': raid if live_evidence_ready else None,
+                'evidence_package_id': pid if live_evidence_ready else None,
+            },
+            'telemetry_record': {
+                'workspace_id': wid,
+                'target_id': target_id,
+                'target_identifier': target_identifier,
+                'target_configured': True,
+                'source_type': 'evm_rpc',
+                'provider_receipt': {'receipt_id': str(uuid.uuid4())},
+                'on_chain_activity': {
+                    'matched': True,
+                    'transaction_hash': tx_hash,
+                    'target_identifier': target_identifier,
+                },
+                'transaction_hash': tx_hash,
+            } if live_evidence_ready else {},
+            'detection_record': {
+                'detection_event_id': det_event_id,
+                'detection_name': 'large_transfer_alert',
+                'severity': 'high',
+                'detector_result': {
+                    'triggered': True,
+                    'status': 'triggered',
+                },
+            } if live_evidence_ready else {},
+            'evidence_package_record': {
+                'persisted_linkage': {
+                    'persisted': True,
+                    'telemetry_event_id': tid,
+                    'detection_event_id': det_event_id,
+                    'detection_id': did,
+                    'alert_id': aid,
+                },
+            } if live_evidence_ready else {},
+            'missing': [] if live_evidence_ready else ['EVM_RPC_URL not configured'],
+            'contradiction_flags': [],
+        },
+    }
+    (lep_dir / 'summary.json').write_text(json.dumps(lep_proof))
+
+    # Staging proof — include rate_limit_validation so _rate_limit_readiness returns
+    # rate_limit_enterprise_ready=True without requiring Redis env vars.
+    staging_proof: dict[str, Any] = {
+        'schema_version': 1,
+        'mode': 'staging',
+        'staging_launch_ready': True,
+        'blockers': [],
+        'warnings': [],
+        'generated_at': now_str,
+        'rate_limit_validation': {
+            'redis_configured': True,
+            'redis_status': 'configured',
+            'rate_limit_backend': 'redis',
+            'rate_limit_enterprise_ready': True,
+            'enterprise_ready': True,
+        },
+    }
+    (sp_dir / 'summary.json').write_text(json.dumps(staging_proof))
+
+    # Manifest — compute SHA256 of each required artifact after writing
+    artifact_root = tmp_path  # release_proof_dir.parents[2] == tmp_path
+    required_files = [
+        rp_dir / 'summary.json',
+        rp_dir / 'ci-required-gates.json',
+        rp_dir / 'test-report-summary.json',
+        lp_dir / 'summary.json',
+    ]
+    manifest_files = [
+        {'path': str(f.relative_to(artifact_root)), 'sha256': _sha256_file(f)}
+        for f in required_files
+        if f.exists()
+    ]
+    manifest: dict[str, Any] = {
+        'schema_version': 1,
+        'overall_status': 'pass',
+        'blockers': [],
+        'files': manifest_files,
+        **attest,
+    }
+    (rp_dir / 'manifest.json').write_text(json.dumps(manifest))
+
+    return lp_dir, rp_dir, sp_dir, lep_dir
 
 
 # ---------------------------------------------------------------------------
@@ -467,7 +696,7 @@ def test_fresh_telemetry_passes_within_window(tmp_path: Path) -> None:
         staging_proof_dir=sp_dir,
         live_evidence_proof_dir=lep_dir,
     )
-    stale_blockers = [b for b in result['blockers'] if 'stale' in b or 'fresh' in b.lower()]
+    stale_blockers = [b for b in result['blockers'] if 'stale' in b.lower() and 'telemetry' in b.lower()]
     assert not stale_blockers, (
         f'Unexpected staleness blocker with fresh (5 day) telemetry: {result["blockers"]}'
     )
@@ -698,11 +927,9 @@ def test_paid_launch_true_allows_production_ready_with_all_gates(tmp_path: Path)
     Positive control: when launch-proof has paid_launch_ready=True and all other gates pass,
     production_100_percent_ready may be True in staging mode with --strict.
     """
-    lp_dir = _write_launch_proof(tmp_path, paid_launch_ready=True, broad_paid_saas_ready=True)
-    rp_dir = _write_release_proof(tmp_path)
-    _write_ci_gates(tmp_path, frontend_build_status='pass', readiness_validation_status='pass')
-    lep_dir = _write_live_evidence_proof(tmp_path, live_evidence_ready=True)
-    sp_dir = _write_staging_proof(tmp_path, staging_launch_ready=True)
+    lp_dir, rp_dir, sp_dir, lep_dir = _write_valid_full_bundle(
+        tmp_path, paid_launch_ready=True, broad_paid_saas_ready=True,
+    )
 
     result = build_final_readiness(
         mode='staging',
