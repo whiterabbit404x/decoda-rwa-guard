@@ -1506,6 +1506,16 @@ def bootstrap_live_pilot() -> dict[str, Any]:
     errors = runtime_validation.get('errors', [])
     if errors:
         raise RuntimeError('; '.join(errors))
+    _startup_env = os.getenv('APP_ENV', os.getenv('APP_MODE', 'development')).strip().lower()
+    if _startup_env in {'production', 'prod', 'staging'} and os.getenv('REDIS_URL', '').strip():
+        _redis_conn = rate_limit_connectivity()
+        if not _redis_conn.get('connected'):
+            raise RuntimeError(
+                f'Production startup blocked: REDIS_URL is set but Redis is not reachable '
+                f'(status={_redis_conn.get("status", "unknown")}, '
+                f'error={_redis_conn.get("error", "none")}). '
+                f'Verify REDIS_URL and Redis server health before deploying.'
+            )
     STARTUP_BOOTSTRAP_STATUS = run_startup_migrations_if_enabled(process_role='api')
     applied_versions = STARTUP_BOOTSTRAP_STATUS.get('applied_versions', [])
     if STARTUP_BOOTSTRAP_STATUS.get('ran'):
