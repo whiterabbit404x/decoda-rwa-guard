@@ -402,6 +402,11 @@ def test_bootstrap_accepts_binary_evidence_signing_key_in_compatibility_mode(api
 
     monkeypatch.setattr(
         api_main,
+        'rate_limit_connectivity',
+        lambda: {'backend': 'redis', 'configured': True, 'connected': True, 'status': 'healthy'},
+    )
+    monkeypatch.setattr(
+        api_main,
         'run_startup_migrations_if_enabled',
         lambda **_kwargs: {'ran': False, 'process_role': 'api', 'reason': 'test'},
     )
