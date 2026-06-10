@@ -26,6 +26,7 @@ import uuid as _uuid_mod
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from services.api.app.domains import alert_stream, alert_delivery
 from services.api.app.domains.rate_limit import rate_limit_connectivity
@@ -627,6 +628,18 @@ _AUTH_FAILURE_COUNT: int = 0
 _ALERTS_PUBLISHED_COUNT: int = 0
 _SSE_CONNECTION_COUNT: int = 0
 _SSE_EVENTS_DELIVERED: int = 0
+
+# ---------------------------------------------------------------------------
+# Metrics endpoint protection
+# METRICS_BEARER_TOKEN: require Authorization: Bearer <token> when set.
+# METRICS_INTERNAL_ONLY: explicit declaration that network layer enforces access;
+#   set to 'true' to bypass token check (use only with network-isolated Prometheus).
+# In production/staging without either set, /metrics returns 401.
+# ---------------------------------------------------------------------------
+_METRICS_BEARER_TOKEN: str = os.getenv('METRICS_BEARER_TOKEN', '').strip()
+_METRICS_INTERNAL_ONLY: bool = (
+    os.getenv('METRICS_INTERNAL_ONLY', '').strip().lower() in ('1', 'true', 'yes')
+)
 
 
 def alert_delivery_health() -> dict[str, Any]:
@@ -4258,8 +4271,52 @@ def exports_download(export_id: str, request: Request) -> Response:
     return Response(content=content, media_type=media_type, headers={'Content-Disposition': f'attachment; filename={filename}'})
 
 
+def _check_metrics_auth(request: Request) -> Response | None:
+    """Return a 401 Response if the request is not authorized for /metrics, else None."""
+    if _METRICS_BEARER_TOKEN:
+        auth_header = request.headers.get('authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return Response(
+                status_code=401,
+                content='Unauthorized',
+                headers={'WWW-Authenticate': 'Bearer realm="metrics"'},
+            )
+        provided = auth_header[7:]
+        # Constant-time comparison to prevent timing attacks
+        import hmac as _hmac
+        if not _hmac.compare_digest(provided, _METRICS_BEARER_TOKEN):
+            return Response(
+                status_code=401,
+                content='Unauthorized',
+                headers={'WWW-Authenticate': 'Bearer realm="metrics"'},
+            )
+        return None
+
+    if _METRICS_INTERNAL_ONLY:
+        # Operator has declared that network layer enforces access; no token needed
+        return None
+
+    # No token configured and not explicitly internal-only
+    app_env = os.getenv('APP_ENV', os.getenv('APP_MODE', 'development')).strip().lower()
+    if app_env in ('production', 'prod', 'staging'):
+        # In production/staging, require explicit configuration to avoid accidental exposure
+        return Response(
+            status_code=401,
+            content=(
+                'Unauthorized: /metrics requires METRICS_BEARER_TOKEN or METRICS_INTERNAL_ONLY=true. '
+                'See operator docs for Prometheus scraping configuration.'
+            ),
+            headers={'WWW-Authenticate': 'Bearer realm="metrics"'},
+        )
+
+    return None  # Local development: allow unauthenticated
+
+
 @app.get('/metrics', include_in_schema=False)
-def metrics() -> Response:
+def metrics(request: Request) -> Response:
+    auth_error = _check_metrics_auth(request)
+    if auth_error is not None:
+        return auth_error
     subscriber_snapshot = alert_stream.subscriber_health()
     delivery_snapshot = alert_delivery_health()
     outbox_depth = delivery_snapshot.get('outbox') or {}
@@ -5892,12 +5949,13 @@ async def stream_alerts(request: Request):
 # ---------------------------------------------------------------------------
 # Task 6: GDPR delete account endpoint
 # ---------------------------------------------------------------------------
+class DeleteAccountRequest(BaseModel):
+    current_password: str
+
+
 @app.delete('/auth/delete-account', summary='Permanently delete account and all personal data (GDPR)')
-async def delete_account_endpoint(request: Request) -> dict[str, Any]:
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+def delete_account_endpoint(body: DeleteAccountRequest, request: Request) -> dict[str, Any]:
+    payload = body.model_dump()
     return with_auth_schema_json(lambda: delete_account(payload, request))
 
 

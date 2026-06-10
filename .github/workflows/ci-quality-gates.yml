@@ -1,0 +1,82 @@
+name: CI Quality Gates
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-quality-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-tests:
+    name: Backend tests with coverage gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements-local.txt pytest-cov
+
+      - name: Run backend tests with coverage
+        env:
+          APP_ENV: test
+          # Ensure no real external calls in unit tests
+          REDIS_URL: ''
+          EVM_RPC_URL: ''
+          STAGING_EVM_RPC_URL: ''
+          DATABASE_URL: ''
+        run: |
+          python -m pytest \
+            services/api/tests/ \
+            --cov=services/api/app \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-fail-under=65 \
+            -q \
+            --ignore=services/api/tests/fixtures \
+            -m "not integration"
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 14
+
+  paid-launch-readiness:
+    name: Paid launch readiness tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements-local.txt
+
+      - name: Run paid launch readiness tests
+        run: python -m pytest services/api/tests/test_paid_launch_readiness.py -q
+
+      - name: Run Redis production enforcement tests
+        run: python -m pytest services/api/tests/test_redis_required_production.py -q

@@ -8,7 +8,7 @@ This checklist is **fail-closed**: readiness is granted only by passing gates wi
 
 - **Billing provider:** Paddle is a first-class paid-launch provider. Set `BILLING_PROVIDER=paddle`, `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`, `PADDLE_PRICE_ID`, and `PADDLE_ENVIRONMENT=sandbox|production`. `PADDLE_CLIENT_TOKEN` is optional unless a browser flow specifically uses it. Stripe variables are not required when Paddle is selected.
 - **Billing status wording:** readiness reports Paddle as `configured`, `missing`, or `invalid`; it never includes credential values. Missing or unsupported providers fail closed.
-- **Redis status:** `REDIS_TEMPORARILY_DISABLED=true` permits staging/production startup with the in-memory limiter when Redis is intentionally deferred. Readiness must report `status=degraded`, `redis_configured=false`, `rate_limit_backend=memory`, `rate_limit_enterprise_ready=false`, and `enterprise_ready=false`.
+- **Redis status:** `REDIS_TEMPORARILY_DISABLED=true` is **rejected in `APP_ENV=production` and `APP_ENV=staging`** — startup fails immediately if this flag is set in production-like environments. In `APP_ENV=staging` without Redis configured, auth rate limiting fails with HTTP 503 (fail-closed). Local/test environments may use the in-memory fallback. Readiness reports `rate_limit_enterprise_ready=false` when Redis is absent or disabled.
 - **Broad paid self-serve:** depends on Paddle billing, production email, EVM/live-provider evidence, evidence signing, auth/security, and the existing staging gates. A temporary Redis skip does not make enterprise claims true.
 - **Enterprise procurement:** **not ready until Redis-backed distributed rate limiting is enabled**, even if all broad self-serve gates pass.
 
@@ -19,10 +19,31 @@ This checklist is **fail-closed**: readiness is granted only by passing gates wi
 
 ### Primary release gates
 - `make validate-no-billing-launch` → pilot gate orchestration.
-- `make validate-launch` → broad self-serve gate orchestration.
+- `make validate-launch` → broad self-serve gate orchestration (includes launch proof completeness check).
+- `make validate-launch-completeness` → standalone launch proof completeness and live evidence validation.
 - `python services/api/scripts/validate_production_readiness.py` → core API readiness validator consumed by launch checks.
 - `python services/api/scripts/validate_staging.py` → staging/runtime evidence validator.
-- `GitHub Actions: CI Release Gates` (`.github/workflows/ci-release-gates.yml`) → required CI quality gates that run `npm test` + `npm run build` and fail-closed on any gate error.
+- `GitHub Actions: CI Release Gates` (`.github/workflows/ci-release-gates.yml`) → required CI quality gates.
+- `GitHub Actions: CI Quality Gates` (`.github/workflows/ci-quality-gates.yml`) → backend tests with coverage gate (≥65%) and paid-launch readiness tests.
+
+### Live telemetry proof — how to generate real launch proof
+
+A product **cannot claim LIVE monitoring** without a validated launch proof artifact. The following steps produce a real proof using an actual EVM RPC endpoint:
+
+1. Obtain a real EVM RPC provider URL (e.g., Infura, Alchemy, QuickNode).
+2. Set `EVM_RPC_URL` or `STAGING_EVM_RPC_URL` to the provider endpoint.
+3. After the monitoring worker has processed real on-chain events, collect the live evidence chain (workspace_id, target_id, telemetry_event_id, detection_id, alert_id, evidence_package_id, etc.) and export as JSON.
+4. Set `LIVE_EVIDENCE_CHAIN_JSON=<json string>` to the real chain evidence.
+5. Run: `make generate-live-evidence-proof` — writes `artifacts/live-evidence-proof/latest/summary.json`.
+6. Run: `make generate-staging-proof` — writes `artifacts/launch-proof/latest/summary.json`.
+7. Run: `make validate-launch-completeness` — validates the proof is real and complete.
+
+**Fail-closed rules that block the proof gate:**
+- `LIVE_PROVIDER_PROOF_PRESENT=true` does **not** substitute for real evidence — it is rejected by `validate-launch-completeness`.
+- Simulator, demo, guided_simulator, or fixture evidence sources are always rejected.
+- Missing `block_number_observed` means no real RPC call was made.
+- Missing `latest_live_telemetry_at` means no telemetry data arrived from the monitored asset.
+- Missing `artifacts/live-evidence-proof/latest/summary.json` when the proof claims `live_provider_evidence_ready=true` is a hard blocker.
 
 ### Proof / evidence generators
 - `make proof-no-billing-launch` → writes deterministic pilot proof bundle at `artifacts/launch-proof/latest/{summary.json,summary.md}`.
@@ -49,6 +70,29 @@ This checklist is **fail-closed**: readiness is granted only by passing gates wi
 - `artifacts/proof-pack-live-actions-2026-04-22.json`.
 - `services/api/artifacts/live_evidence/latest/{summary.json,report.md,evidence.json,alerts.json,incidents.json,runs.json}`.
 - `services/api/artifacts/live_evidence/latest/live_proof/`.
+
+## /metrics endpoint protection
+
+The `/metrics` endpoint exposes Prometheus-format operational counters. In production and staging it must not be publicly accessible without authorization.
+
+**Configuration options (choose one):**
+- `METRICS_BEARER_TOKEN=<secret>` — require `Authorization: Bearer <secret>` header; unauthorized requests return 401.
+- `METRICS_INTERNAL_ONLY=true` — declare that network layer (VPC, firewall, Prometheus scraper allowlist) enforces access; no token required.
+
+**Behavior by environment:**
+- `APP_ENV=production` or `APP_ENV=staging`: requires `METRICS_BEARER_TOKEN` OR `METRICS_INTERNAL_ONLY=true`; returns 401 otherwise.
+- Local development (no `APP_ENV` set): unauthenticated access allowed.
+
+**Prometheus scraping with bearer token:**
+```yaml
+scrape_configs:
+  - job_name: decoda-api
+    bearer_token: <METRICS_BEARER_TOKEN value>
+    static_configs:
+      - targets: ['api-host:8000']
+```
+
+**Security note:** The token value is never logged or included in error responses.
 
 ## Pilot readiness
 
