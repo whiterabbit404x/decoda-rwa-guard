@@ -9,6 +9,7 @@ import { renderRiskLabel } from '../risk-normalization-labels';
 import RuntimeSummaryPanel from '../runtime-summary-panel';
 
 const WORKFLOW_STATUSES = ['open', 'investigating', 'contained', 'resolved', 'reopened'] as const;
+const PAGE_SIZE = 50;
 
 export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
   const { authHeaders } = usePilotAuth();
@@ -24,17 +25,33 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
   const [actionCapabilities, setActionCapabilities] = useState<Record<string, ResponseActionCapability>>({});
   const [evidenceSourceSummary, setEvidenceSourceSummary] = useState('none');
   const [evidence, setEvidence] = useState<any>(null);
+  const [loadingIncidents, setLoadingIncidents] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [offset, setOffset] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const evidenceSectionRef = useRef<HTMLParagraphElement | null>(null);
 
-  async function load() {
-    const params = new URLSearchParams();
-    if (status) params.set('status_value', status);
-    if (owner) params.set('assignee_user_id', owner);
-    const response = await fetch(`${apiUrl}/incidents?${params.toString()}`, { headers: authHeaders(), cache: 'no-store' });
-    if (!response.ok) return;
-    const rows = (await response.json()).incidents ?? [];
-    setIncidents(rows);
-    if (!selectedId && rows.length) setSelectedId(rows[0].id);
+  async function load(pageOffset = 0) {
+    setLoadingIncidents(true);
+    setLoadError('');
+    try {
+      const params = new URLSearchParams();
+      if (status) params.set('status_value', status);
+      if (owner) params.set('assignee_user_id', owner);
+      params.set('limit', String(PAGE_SIZE));
+      params.set('offset', String(pageOffset));
+      const response = await fetch(`${apiUrl}/incidents?${params.toString()}`, { headers: authHeaders(), cache: 'no-store' });
+      if (!response.ok) { setLoadError('Unable to load incidents. Please retry.'); return; }
+      const payload = await response.json();
+      const rows: any[] = payload.incidents ?? [];
+      const pagination = payload.pagination ?? {};
+      setIncidents(rows);
+      setOffset(pageOffset);
+      setHasMore(Boolean(pagination.has_more));
+      if (!selectedId && rows.length) setSelectedId(rows[0].id);
+    } finally {
+      setLoadingIncidents(false);
+    }
   }
   const selected = useMemo(() => incidents.find((item) => item.id === selectedId), [incidents, selectedId]);
   const responseModeLabel = selected?.response_action_mode && selected.response_action_mode !== 'live'
@@ -43,7 +60,7 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
   const actionExecutionLabel = actionModeLabel(actionMode);
   const linkedEvidenceCount = Number(selected?.linked_evidence_count || 0);
 
-  useEffect(() => { void load(); }, [status, owner]);
+  useEffect(() => { setOffset(0); void load(0); }, [status, owner]);
   useEffect(() => {
     void fetch(`${apiUrl}/response/action-capabilities`, { headers: authHeaders(), cache: 'no-store' })
       .then((response) => response.ok ? response.json() : null)
@@ -165,8 +182,19 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
         <div className="twoColumnSection">
           <article className="dataCard">
             <p className="sectionEyebrow">Incident queue</p>
-            {!incidents.length ? <p className="muted">No incidents available for the current filters.</p> : null}
+            {loadingIncidents ? <p className="muted">Loading incidents…</p> : null}
+            {loadError ? <p className="statusLine" role="alert">{loadError}</p> : null}
+            {!loadingIncidents && !loadError && !incidents.length ? (
+              <p className="muted">No incidents match the current filters. Open incidents are created when alerts are escalated.</p>
+            ) : null}
             {incidents.map((incident) => <button key={incident.id} type="button" className="overviewListItem" onClick={() => setSelectedId(incident.id)}><strong>{incident.title || incident.event_type}</strong> · {incident.workflow_status || incident.status}</button>)}
+            {(offset > 0 || hasMore) && (
+              <div className="buttonRow">
+                <button type="button" disabled={offset === 0 || loadingIncidents} onClick={() => void load(Math.max(0, offset - PAGE_SIZE))}>← Previous</button>
+                <span className="tableMeta">Showing {offset + 1}–{offset + incidents.length}</span>
+                <button type="button" disabled={!hasMore || loadingIncidents} onClick={() => void load(offset + PAGE_SIZE)}>Next →</button>
+              </div>
+            )}
           </article>
           <article className="dataCard">
             {!selected ? <p className="muted">Select an incident.</p> : <>

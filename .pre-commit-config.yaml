@@ -1,0 +1,10 @@
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+        name: gitleaks (secret scan)
+        description: Run gitleaks against staged files before every commit.
+        entry: gitleaks protect --staged --config .gitleaks.toml --redact -v
+        language: golang
+        pass_filenames: false

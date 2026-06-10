@@ -12442,7 +12442,7 @@ def get_detection_evidence(detection_id: str, request: Request) -> dict[str, Any
         }
 
 
-def list_alerts(request: Request, *, severity: str | None = None, module: str | None = None, target_id: str | None = None, status_value: str | None = None, source: str | None = None) -> dict[str, Any]:
+def list_alerts(request: Request, *, severity: str | None = None, module: str | None = None, target_id: str | None = None, status_value: str | None = None, source: str | None = None, limit: int = 50, offset: int = 0) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
@@ -12510,9 +12510,9 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
               AND (%s::text IS NULL OR a.status = %s::text)
               AND (%s::text IS NULL OR a.source = %s::text OR a.source_service = %s::text)
             ORDER BY a.created_at DESC
-            LIMIT 200
+            LIMIT %s OFFSET %s
             ''',
-            (workspace_context['workspace_id'], severity, severity, module, module, target_id, target_id, status_value, status_value, source, source, source),
+            (workspace_context['workspace_id'], severity, severity, module, module, target_id, target_id, status_value, status_value, source, source, source, min(max(1, int(limit)), 200), max(0, int(offset))),
         ).fetchall()
         serialized_alerts: list[dict[str, Any]] = []
         for row in rows:
@@ -12537,7 +12537,12 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
                 'action_id': item.get('linked_action_id'),
             }
             serialized_alerts.append(item)
-        return {'alerts': serialized_alerts}
+        _limit = min(max(1, int(limit)), 200)
+        _offset = max(0, int(offset))
+        return {
+            'alerts': serialized_alerts,
+            'pagination': {'limit': _limit, 'offset': _offset, 'has_more': len(serialized_alerts) == _limit},
+        }
 
 
 def get_alert(alert_id: str, request: Request) -> dict[str, Any]:
@@ -12962,7 +12967,7 @@ def list_alert_evidence(alert_id: str, request: Request) -> dict[str, Any]:
         }
 
 
-def list_incidents(request: Request, *, severity: str | None = None, target_id: str | None = None, status_value: str | None = None, assignee_user_id: str | None = None) -> dict[str, Any]:
+def list_incidents(request: Request, *, severity: str | None = None, target_id: str | None = None, status_value: str | None = None, assignee_user_id: str | None = None, limit: int = 50, offset: int = 0) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
@@ -13029,9 +13034,9 @@ def list_incidents(request: Request, *, severity: str | None = None, target_id: 
               AND (%s::text IS NULL OR i.workflow_status = %s::text OR i.status = %s::text)
               AND (%s::uuid IS NULL OR i.assignee_user_id = %s::uuid)
             ORDER BY i.created_at DESC
-            LIMIT 200
+            LIMIT %s OFFSET %s
             ''',
-            (workspace_context['workspace_id'], severity, severity, target_id, target_id, status_value, status_value, status_value, assignee_user_id, assignee_user_id),
+            (workspace_context['workspace_id'], severity, severity, target_id, target_id, status_value, status_value, status_value, assignee_user_id, assignee_user_id, min(max(1, int(limit)), 200), max(0, int(offset))),
         ).fetchall()
         serialized_incidents: list[dict[str, Any]] = []
         for row in rows:
@@ -13055,7 +13060,12 @@ def list_incidents(request: Request, *, severity: str | None = None, target_id: 
                 'action_id': item.get('linked_action_id'),
             }
             serialized_incidents.append(item)
-        return {'incidents': serialized_incidents}
+        _limit = min(max(1, int(limit)), 200)
+        _offset = max(0, int(offset))
+        return {
+            'incidents': serialized_incidents,
+            'pagination': {'limit': _limit, 'offset': _offset, 'has_more': len(serialized_incidents) == _limit},
+        }
 
 
 def patch_incident(incident_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:

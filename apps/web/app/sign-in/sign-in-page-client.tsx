@@ -193,6 +193,8 @@ export default function SignInPageClient({
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [emailError, setEmailError] = useState('');
+  const [passwordError, setPasswordError] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [mfaCode, setMfaCode] = useState('');
   const [mfaRequired, setMfaRequired] = useState(false);
@@ -201,6 +203,17 @@ export default function SignInPageClient({
   const [showDiag, setShowDiag] = useState(false);
   const [systemStatus, setSystemStatus] = useState<'checking' | 'healthy' | 'unavailable'>('checking');
   const lastRedirectPath = useRef<string | null>(null);
+
+  function validateEmail(value: string): string {
+    if (!value.trim()) return 'Email address is required.';
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim())) return 'Enter a valid email address.';
+    return '';
+  }
+
+  function validatePassword(value: string): string {
+    if (!value) return 'Password is required.';
+    return '';
+  }
 
   const runtimeConfig = useMemo(
     () => ({
@@ -252,6 +265,12 @@ export default function SignInPageClient({
     event.preventDefault();
 
     if (loading) { return; }
+
+    const emailErr = validateEmail(email);
+    const passwordErr = validatePassword(password);
+    setEmailError(emailErr);
+    setPasswordError(passwordErr);
+    if (emailErr || passwordErr) return;
 
     setLoading(true);
     setError(null);
@@ -422,12 +441,16 @@ export default function SignInPageClient({
                         className="siInput siInputWithIcon"
                         type="email"
                         value={email}
-                        onChange={(event) => setEmail(event.target.value)}
+                        onChange={(event) => { setEmail(event.target.value); if (emailError) setEmailError(validateEmail(event.target.value)); }}
+                        onBlur={(event) => setEmailError(validateEmail(event.target.value))}
                         autoComplete="email"
                         placeholder="you@company.com"
+                        aria-describedby={emailError ? 'si-email-error' : undefined}
+                        aria-invalid={!!emailError}
                         required
                       />
                     </div>
+                    {emailError ? <p id="si-email-error" className="siFieldError" role="alert">{emailError}</p> : null}
                   </div>
 
                   <div className="siFormGroup">
@@ -444,9 +467,12 @@ export default function SignInPageClient({
                         className="siInput siInputWithIcon siInputWithToggle"
                         type={showPassword ? 'text' : 'password'}
                         value={password}
-                        onChange={(event) => setPassword(event.target.value)}
+                        onChange={(event) => { setPassword(event.target.value); if (passwordError) setPasswordError(validatePassword(event.target.value)); }}
+                        onBlur={(event) => setPasswordError(validatePassword(event.target.value))}
                         autoComplete="current-password"
- placeholder="************"
+                        placeholder="************"
+                        aria-describedby={passwordError ? 'si-password-error' : undefined}
+                        aria-invalid={!!passwordError}
                       />
                       <button
                         type="button"
@@ -468,6 +494,7 @@ export default function SignInPageClient({
                         )}
                       </button>
                     </div>
+                    {passwordError ? <p id="si-password-error" className="siFieldError" role="alert">{passwordError}</p> : null}
                   </div>
 
                   <div className="siCheckRow">
