@@ -167,3 +167,73 @@ def test_subscriber_reconnects_after_transient_backend_error(monkeypatch):
         assert alert_stream.subscriber_health()['reconnects_total'] == before + 1
 
     asyncio.run(scenario())
+
+
+def test_cross_pod_delivery_instance_a_publish_instance_b_subscribe(monkeypatch):
+    """Alert published by instance A is received by SSE subscriber on instance B.
+
+    Both instances share the same Redis backend (simulating one Redis server).
+    Instance A uses its own sync client to publish; instance B uses its own
+    async client to subscribe.  The two clients are separate objects backed by
+    the same underlying state, mirroring a real multi-pod deployment.
+    """
+    async def scenario():
+        shared = SharedRedis()
+        # Instance A's sync connection (used for publishing)
+        instance_a_sync = shared
+        # Instance B's async connection (used for subscribing) — separate object,
+        # same Redis backend.
+        instance_b_async = AsyncSharedRedis(shared)
+
+        monkeypatch.setenv('REDIS_URL', 'redis://shared')
+        monkeypatch.setattr(alert_stream, '_sync_client', instance_a_sync)
+        monkeypatch.setattr(alert_stream, '_async_client', instance_b_async)
+
+        # Instance A publishes an alert.
+        event_id = alert_stream.publish('workspace-x', {'type': 'suspicious_transfer', 'origin': 'pod-A'})
+
+        # Instance B subscribes from the start of the stream.
+        subscriber = alert_stream.subscribe('workspace-x', last_event_id='0-0', block_ms=1)
+        received_id, received_payload = await anext(subscriber)
+        await subscriber.aclose()
+
+        assert received_id == event_id
+        assert received_payload == {'type': 'suspicious_transfer', 'origin': 'pod-A'}
+
+    asyncio.run(scenario())
+
+
+def test_workspace_isolation_subscriber_never_receives_other_workspace_events(monkeypatch):
+    """An SSE subscriber for workspace A must never receive alerts from workspace B."""
+    async def scenario():
+        shared = SharedRedis()
+        monkeypatch.setenv('REDIS_URL', 'redis://shared')
+        monkeypatch.setattr(alert_stream, '_sync_client', shared)
+        monkeypatch.setattr(alert_stream, '_async_client', AsyncSharedRedis(shared))
+
+        # Publish to workspace B (should NOT reach workspace A subscriber).
+        alert_stream.publish('workspace-b', {'workspace': 'B', 'sensitive': True})
+        # Publish to workspace A (SHOULD reach workspace A subscriber).
+        event_id_a = alert_stream.publish('workspace-a', {'workspace': 'A'})
+
+        subscriber_a = alert_stream.subscribe('workspace-a', last_event_id='0-0', block_ms=1)
+        received_id, received_payload = await anext(subscriber_a)
+        await subscriber_a.aclose()
+
+        # Workspace A subscriber received only the workspace A event.
+        assert received_id == event_id_a
+        assert received_payload.get('workspace') == 'A'
+        assert 'sensitive' not in received_payload
+
+        # Workspace B stream contains its own isolated event; workspace A stream
+        # does not contain workspace B events.
+        key_a = alert_stream.stream_key('workspace-a')
+        key_b = alert_stream.stream_key('workspace-b')
+        assert key_a != key_b
+        assert all(
+            fields.get('workspace') != 'B'
+            for _, fields_raw in shared.streams.get(key_a, [])
+            for fields in [json.loads(fields_raw.get('payload', '{}'))]
+        )
+
+    asyncio.run(scenario())

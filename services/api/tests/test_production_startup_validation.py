@@ -420,3 +420,55 @@ def test_bootstrap_accepts_binary_evidence_signing_key_in_compatibility_mode(api
 
     assert result['ran'] is False
     assert result['monitored_systems_reconcile']['created_or_updated'] == 0
+
+
+def test_production_startup_raises_when_redis_url_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """bootstrap_live_pilot must raise RuntimeError when APP_ENV=production and REDIS_URL is absent."""
+    from services.api.app import main as api_main
+
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.setenv('LIVE_MODE_ENABLED', 'true')
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://example')
+    monkeypatch.setenv('AUTH_TOKEN_SECRET', 'strong-production-auth-secret-for-test')
+    monkeypatch.setenv('SECRET_ENCRYPTION_KEY', 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=')
+    monkeypatch.setenv('EMAIL_PROVIDER', 'resend')
+    monkeypatch.setenv('EMAIL_FROM', 'ops@decoda.app')
+    monkeypatch.setenv('EMAIL_RESEND_API_KEY', 're_123')
+    monkeypatch.delenv('REDIS_URL', raising=False)
+    monkeypatch.delenv('UPSTASH_REDIS_REST_URL', raising=False)
+    monkeypatch.delenv('UPSTASH_REDIS_REST_TOKEN', raising=False)
+    monkeypatch.delenv('REDIS_TEMPORARILY_DISABLED', raising=False)
+    monkeypatch.setenv('BILLING_PROVIDER', 'none')
+
+    with pytest.raises(RuntimeError) as exc_info:
+        api_main.bootstrap_live_pilot()
+
+    error_text = str(exc_info.value)
+    assert 'REDIS_URL' in error_text or 'Redis' in error_text, (
+        f'startup error must mention Redis; got: {error_text}'
+    )
+
+
+def test_production_startup_raises_when_redis_temporarily_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """bootstrap_live_pilot must raise RuntimeError when REDIS_TEMPORARILY_DISABLED=true in production."""
+    from services.api.app import main as api_main
+
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.setenv('LIVE_MODE_ENABLED', 'true')
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://example')
+    monkeypatch.setenv('AUTH_TOKEN_SECRET', 'strong-production-auth-secret-for-test')
+    monkeypatch.setenv('SECRET_ENCRYPTION_KEY', 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=')
+    monkeypatch.setenv('EMAIL_PROVIDER', 'resend')
+    monkeypatch.setenv('EMAIL_FROM', 'ops@decoda.app')
+    monkeypatch.setenv('EMAIL_RESEND_API_KEY', 're_123')
+    monkeypatch.delenv('REDIS_URL', raising=False)
+    monkeypatch.setenv('REDIS_TEMPORARILY_DISABLED', 'true')
+    monkeypatch.setenv('BILLING_PROVIDER', 'none')
+
+    with pytest.raises(RuntimeError) as exc_info:
+        api_main.bootstrap_live_pilot()
+
+    error_text = str(exc_info.value)
+    assert any(kw in error_text for kw in ('Memory-backed', 'REDIS', 'Redis', 'memory override')), (
+        f'startup error must mention memory/Redis rejection; got: {error_text}'
+    )
