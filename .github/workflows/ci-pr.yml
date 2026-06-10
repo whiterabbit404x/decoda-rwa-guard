@@ -39,15 +39,14 @@ jobs:
 
       - name: Run backend unit tests (no integration markers)
         run: |
-          python -m pytest services/api/tests/ \
-            -q \
+          python -m pytest services/api/tests \
             -m "not integration" \
-            --timeout=60 \
+            --maxfail=1 \
+            --disable-warnings \
             --ignore=services/api/tests/test_check_staging_live_env.py \
             --ignore=services/api/tests/test_100_percent_readiness.py \
             --ignore=services/api/tests/test_assert_readiness_artifacts_non_empty.py \
-            --ignore=services/api/tests/test_cross_artifact_consistency.py \
-            2>&1
+            --ignore=services/api/tests/test_cross_artifact_consistency.py
 
       - name: Verify no secrets leaked in structured log output
         # gitleaks is not available in this job; the release-attestation workflow
