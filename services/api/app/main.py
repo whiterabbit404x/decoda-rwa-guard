@@ -2439,12 +2439,15 @@ def resilience_record_incident(payload: dict[str, Any], request: Request) -> dic
     return response or fallback_incident_record(payload)
 
 
-@app.get('/resilience/incidents', summary='Feature 4 resilience incident list', description='Returns resilience incidents from the reconciliation-service or fallback incident ledger rows when unavailable.')
+@app.get('/resilience/incidents', summary='Feature 4 resilience incident list', description='Returns resilience incidents from the reconciliation-service. Returns empty list with unavailable status in production when service is unreachable.')
 def resilience_incidents(request: Request) -> list[dict[str, Any]]:
     authenticate_request(request)
     response = proxy_resilience_get('incidents')
-    incidents = response or fallback_resilience_dashboard()['latest_incidents']
-    return [with_resilience_incident_normalized_risk(incident) for incident in incidents]
+    if response is None:
+        if _is_production_like_runtime():
+            return []
+        return [with_resilience_incident_normalized_risk(i) for i in fallback_resilience_dashboard()['latest_incidents']]
+    return [with_resilience_incident_normalized_risk(incident) for incident in response]
 
 
 @app.get('/resilience/incidents/{event_id}', summary='Feature 4 resilience incident detail', description='Returns one resilience incident from the reconciliation-service or fallback data when unavailable.')
@@ -2453,10 +2456,11 @@ def resilience_incident(event_id: str, request: Request) -> dict[str, Any]:
     response = proxy_resilience_get(f'incidents/{event_id}')
     if response is not None:
         return with_resilience_incident_normalized_risk(response)
-    for incident in fallback_resilience_dashboard()['latest_incidents']:
-        if incident['event_id'] == event_id:
-            return with_resilience_incident_normalized_risk(incident)
-    return {'detail': f'Unknown event_id: {event_id}', 'source': 'fallback', 'degraded': True}
+    if not _is_production_like_runtime():
+        for incident in fallback_resilience_dashboard()['latest_incidents']:
+            if incident['event_id'] == event_id:
+                return with_resilience_incident_normalized_risk(incident)
+    return {'detail': f'Unknown event_id: {event_id}', 'source': 'unavailable', 'degraded': True}
 
 
 @app.post('/auth/signup', summary='Create a live-mode pilot user')
@@ -4032,9 +4036,9 @@ def modules_put_config(module_key: str, payload: dict[str, Any], request: Reques
 
 
 @app.get('/alerts', summary='List alerts')
-def alerts_list(request: Request, severity: str | None = None, module: str | None = None, target_id: str | None = None, status_value: str | None = None, source: str | None = None) -> dict[str, Any]:
+def alerts_list(request: Request, severity: str | None = None, module: str | None = None, target_id: str | None = None, status_value: str | None = None, source: str | None = None, limit: int = 50, offset: int = 0) -> dict[str, Any]:
     try:
-        return with_auth_schema_json(lambda: list_alerts(request, severity=severity, module=module, target_id=target_id, status_value=status_value, source=source))
+        return with_auth_schema_json(lambda: list_alerts(request, severity=severity, module=module, target_id=target_id, status_value=status_value, source=source, limit=limit, offset=offset))
     except HTTPException:
         raise
     except Exception as exc:
@@ -4117,9 +4121,9 @@ def alerts_suppressions_create(payload: dict[str, Any], request: Request) -> dic
 
 
 @app.get('/incidents', summary='List incidents')
-def incidents_list(request: Request, severity: str | None = None, target_id: str | None = None, status_value: str | None = None, assignee_user_id: str | None = None) -> dict[str, Any]:
+def incidents_list(request: Request, severity: str | None = None, target_id: str | None = None, status_value: str | None = None, assignee_user_id: str | None = None, limit: int = 50, offset: int = 0) -> dict[str, Any]:
     try:
-        return with_auth_schema_json(lambda: list_incidents(request, severity=severity, target_id=target_id, status_value=status_value, assignee_user_id=assignee_user_id))
+        return with_auth_schema_json(lambda: list_incidents(request, severity=severity, target_id=target_id, status_value=status_value, assignee_user_id=assignee_user_id, limit=limit, offset=offset))
     except HTTPException:
         raise
     except Exception as exc:

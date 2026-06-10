@@ -8,6 +8,8 @@ import ThreatChainPanel from '../threat-chain-panel';
 import RuntimeSummaryPanel from '../runtime-summary-panel';
 import { SurfaceCard, TabStrip } from '../components/ui-primitives';
 
+const PAGE_SIZE = 50;
+
 export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
   const { authHeaders } = usePilotAuth();
   const [alerts, setAlerts] = useState<any[]>([]);
@@ -23,28 +25,44 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
   const [operatorNotes, setOperatorNotes] = useState('');
   const [actionCapabilities, setActionCapabilities] = useState<Record<string, ResponseActionCapability>>({});
   const [evidenceSourceSummary, setEvidenceSourceSummary] = useState('none');
+  const [loadingAlerts, setLoadingAlerts] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [offset, setOffset] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const evidenceSectionRef = useRef<HTMLParagraphElement | null>(null);
 
-  async function load() {
-    const params = new URLSearchParams();
-    if (status) params.set('status_value', status);
-    if (severity) params.set('severity', severity);
-    if (targetFilter) params.set('target_id', targetFilter);
-    const response = await fetch(`${apiUrl}/alerts?${params.toString()}`, { headers: authHeaders(), cache: 'no-store' });
-    if (!response.ok) return;
-    const rows = (await response.json()).alerts ?? [];
-    const now = Date.now();
-    const filtered = rows.filter((item: any) => {
-      const created = new Date(item.created_at || 0).getTime();
-      const withinRange = (now - created) <= (Number(timeRange) * 3600 * 1000);
-      const assetMatch = !assetFilter || String(item.payload?.asset_label || '').toLowerCase().includes(assetFilter.toLowerCase());
-      return withinRange && assetMatch;
-    });
-    setAlerts(filtered);
-    if (!selectedAlertId && filtered.length) setSelectedAlertId(filtered[0].id);
+  async function load(pageOffset = 0) {
+    setLoadingAlerts(true);
+    setLoadError('');
+    try {
+      const params = new URLSearchParams();
+      if (status) params.set('status_value', status);
+      if (severity) params.set('severity', severity);
+      if (targetFilter) params.set('target_id', targetFilter);
+      params.set('limit', String(PAGE_SIZE));
+      params.set('offset', String(pageOffset));
+      const response = await fetch(`${apiUrl}/alerts?${params.toString()}`, { headers: authHeaders(), cache: 'no-store' });
+      if (!response.ok) { setLoadError('Unable to load alerts. Please retry.'); return; }
+      const payload = await response.json();
+      const rows: any[] = payload.alerts ?? [];
+      const pagination = payload.pagination ?? {};
+      const now = Date.now();
+      const filtered = rows.filter((item: any) => {
+        const created = new Date(item.created_at || 0).getTime();
+        const withinRange = (now - created) <= (Number(timeRange) * 3600 * 1000);
+        const assetMatch = !assetFilter || String(item.payload?.asset_label || '').toLowerCase().includes(assetFilter.toLowerCase());
+        return withinRange && assetMatch;
+      });
+      setAlerts(filtered);
+      setOffset(pageOffset);
+      setHasMore(Boolean(pagination.has_more));
+      if (!selectedAlertId && filtered.length) setSelectedAlertId(filtered[0].id);
+    } finally {
+      setLoadingAlerts(false);
+    }
   }
 
-  useEffect(() => { void load(); }, [status, severity, targetFilter, timeRange, assetFilter]);
+  useEffect(() => { setOffset(0); void load(0); }, [status, severity, targetFilter, timeRange, assetFilter]);
   useEffect(() => {
     void fetch(`${apiUrl}/response/action-capabilities`, { headers: authHeaders(), cache: 'no-store' })
       .then((response) => response.ok ? response.json() : null)
@@ -173,13 +191,24 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
         <div className="twoColumnSection">
           <SurfaceCard>
             <p className="sectionEyebrow">Alert list</p>
-            {!alerts.length ? <p className="muted">No alerts available for the current filters.</p> : null}
+            {loadingAlerts ? <p className="muted">Loading alerts…</p> : null}
+            {loadError ? <p className="statusLine" role="alert">{loadError}</p> : null}
+            {!loadingAlerts && !loadError && !alerts.length ? (
+              <p className="muted">No alerts match the current filters. Adjust your filters or wait for new detections.</p>
+            ) : null}
             {alerts.map((alert) => (
               <button key={alert.id} type="button" className="overviewListItem" onClick={() => setSelectedAlertId(alert.id)}>
                 <strong>{alert.title}</strong> · {alert.severity} · {alert.status}
                 <span className="tableMeta">events {alert.occurrence_count || 1} · group {alert.findings?.dedupe_key || alert.target_id || 'none'}</span>
               </button>
             ))}
+            {(offset > 0 || hasMore) && (
+              <div className="buttonRow">
+                <button type="button" disabled={offset === 0 || loadingAlerts} onClick={() => void load(Math.max(0, offset - PAGE_SIZE))}>← Previous</button>
+                <span className="tableMeta">Showing {offset + 1}–{offset + alerts.length}</span>
+                <button type="button" disabled={!hasMore || loadingAlerts} onClick={() => void load(offset + PAGE_SIZE)}>Next →</button>
+              </div>
+            )}
           </SurfaceCard>
           <SurfaceCard>
             {!selectedAlert ? <p className="muted">Select an alert.</p> : <>

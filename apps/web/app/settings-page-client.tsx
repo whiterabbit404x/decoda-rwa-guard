@@ -150,6 +150,7 @@ export default function SettingsPageClient() {
   const [seatSummary, setSeatSummary] = useState<SeatSummary | null>(null);
   const [readiness, setReadiness] = useState<WorkspaceReadiness | null>(null);
   const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteEmailError, setInviteEmailError] = useState('');
   const [inviteRole, setInviteRole] = useState('viewer');
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -192,8 +193,16 @@ export default function SettingsPageClient() {
   }
 
   useEffect(() => { void loadAll(); }, [apiUrl, resolvedWorkspace?.id]);
+  function validateInviteEmail(value: string): string {
+    if (!value.trim()) return 'Email address is required.';
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim())) return 'Enter a valid email address.';
+    return '';
+  }
+
   async function inviteMember() {
-    if (!apiUrl || !inviteEmail) return;
+    const emailErr = validateInviteEmail(inviteEmail);
+    setInviteEmailError(emailErr);
+    if (!apiUrl || emailErr) return;
     setSubmitting(true);
     const res = await call('/workspace/invitations', {
       method: 'POST',
@@ -405,10 +414,14 @@ export default function SettingsPageClient() {
                   <input
                     type="email"
                     value={inviteEmail}
-                    onChange={(e) => setInviteEmail(e.target.value)}
+                    onChange={(e) => { setInviteEmail(e.target.value); if (inviteEmailError) setInviteEmailError(validateInviteEmail(e.target.value)); }}
+                    onBlur={(e) => setInviteEmailError(validateInviteEmail(e.target.value))}
                     placeholder="teammate@company.com"
-                    style={{ width: '100%', background: '#0d1117', border: '1px solid #30363d', borderRadius: 8, color: '#e6edf3', padding: '0.5rem 0.7rem', fontSize: '0.85rem' }}
+                    aria-describedby={inviteEmailError ? 'invite-email-error' : undefined}
+                    aria-invalid={!!inviteEmailError}
+                    style={{ width: '100%', background: '#0d1117', border: `1px solid ${inviteEmailError ? '#f87171' : '#30363d'}`, borderRadius: 8, color: '#e6edf3', padding: '0.5rem 0.7rem', fontSize: '0.85rem' }}
                   />
+                  {inviteEmailError ? <p id="invite-email-error" style={{ color: '#f87171', fontSize: '0.78rem', margin: '0.2rem 0 0' }} role="alert">{inviteEmailError}</p> : null}
                 </div>
                 <div style={{ flex: '0 1 160px' }}>
                   <label style={{ display: 'block', fontSize: '0.78rem', color: '#8b949e', marginBottom: '0.3rem', fontWeight: 600 }}>Role</label>
