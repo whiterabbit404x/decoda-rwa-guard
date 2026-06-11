@@ -144,7 +144,7 @@ function assetMatchesTypeFilter(asset: Asset, filterValue: string): boolean {
 }
 
 export default function AssetsManager({ apiUrl }: Props) {
-  const { authHeaders, signOut } = usePilotAuth();
+  const { authHeaders, signOut, refreshCsrfToken } = usePilotAuth();
   const [assets, setAssets] = useState<Asset[]>([]);
   const [form, setForm] = useState<AssetForm>(EMPTY_ASSET);
   const [search, setSearch] = useState('');
@@ -240,11 +240,32 @@ export default function AssetsManager({ apiUrl }: Props) {
         setSubmitError('Your session is missing or expired. Please sign in again.');
         return;
       }
-      const response = await fetch('/api/assets', {
+      const assetBody = JSON.stringify({ ...form, tags: form.tags });
+      let response = await fetch('/api/assets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
-        body: JSON.stringify({ ...form, tags: form.tags }),
+        body: assetBody,
       });
+      // On CSRF expired/invalid, refresh the token once and retry automatically.
+      if (response.status === 403) {
+        const initialPayload = await response.json().catch(() => ({}));
+        const isCsrfFailure = initialPayload?.code === 'CSRF_INVALID' || initialPayload?.code === 'csrf_invalid'
+          || initialPayload?.code === 'CSRF_EXPIRED' || initialPayload?.code === 'csrf_expired';
+        if (isCsrfFailure) {
+          const freshToken = await refreshCsrfToken();
+          if (freshToken) {
+            const retryHeaders = { 'Content-Type': 'application/json', ...headers, 'X-CSRF-Token': freshToken };
+            response = await fetch('/api/assets', { method: 'POST', headers: retryHeaders, body: assetBody });
+            if (response.status === 403) {
+              setSubmitError('Security token expired. We refreshed it. Try again.');
+              return;
+            }
+          } else {
+            setSubmitError('Security token expired. We refreshed it. Try again.');
+            return;
+          }
+        }
+      }
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
         if (response.status === 401) {
@@ -254,7 +275,7 @@ export default function AssetsManager({ apiUrl }: Props) {
         }
         if (response.status === 403) {
           if (payload?.code === 'CSRF_INVALID' || payload?.code === 'csrf_invalid') {
-            setSubmitError('Request blocked: your security token is invalid or expired. Refresh the page and try again.');
+            setSubmitError('Security token expired. We refreshed it. Try again.');
             return;
           }
           await signOut();

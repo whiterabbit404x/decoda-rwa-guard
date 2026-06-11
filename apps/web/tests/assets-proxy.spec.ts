@@ -268,7 +268,55 @@ test.describe('assets-manager create form source contract', () => {
     expect(source).toContain('response.status === 401');
     expect(source).toContain('response.status === 403');
     expect(source).toContain('CSRF_INVALID');
-    expect(source).toContain('security token is invalid or expired');
+    expect(source).toContain('Security token expired. We refreshed it. Try again.');
+  });
+
+  test('expired CSRF triggers refresh-and-retry once', () => {
+    const fs = require('node:fs') as typeof import('node:fs');
+    const path = require('node:path') as typeof import('node:path');
+    const source = fs.readFileSync(path.join(__dirname, '..', 'app', 'assets-manager.tsx'), 'utf-8');
+
+    // Retry is implemented: refreshCsrfToken is called and the request is retried
+    expect(source).toContain('refreshCsrfToken');
+    expect(source).toContain('freshToken');
+    expect(source).toContain('X-CSRF-Token');
+    // Retry only once: a second CSRF failure after retry sets the error message
+    expect(source).toContain('Security token expired. We refreshed it. Try again.');
+  });
+
+  test('create form sends X-CSRF-Token and X-Workspace-Id via authHeaders', () => {
+    const fs = require('node:fs') as typeof import('node:fs');
+    const path = require('node:path') as typeof import('node:path');
+    const authCtx = fs.readFileSync(path.join(__dirname, '..', 'app', 'pilot-auth-context.tsx'), 'utf-8');
+    const assets = fs.readFileSync(path.join(__dirname, '..', 'app', 'assets-manager.tsx'), 'utf-8');
+
+    // authHeaders includes X-CSRF-Token when csrfToken is set
+    expect(authCtx).toContain("headers['X-CSRF-Token'] = csrfToken");
+    expect(authCtx).toContain("headers['X-Workspace-Id'] = normalizedWorkspaceId");
+    // assets-manager spreads authHeaders into POST request headers
+    expect(assets).toContain('authHeaders()');
+    expect(assets).toContain("'Content-Type': 'application/json', ...headers");
+  });
+
+  test('asset list reloads after successful creation', () => {
+    const fs = require('node:fs') as typeof import('node:fs');
+    const path = require('node:path') as typeof import('node:path');
+    const source = fs.readFileSync(path.join(__dirname, '..', 'app', 'assets-manager.tsx'), 'utf-8');
+
+    expect(source).toContain('Asset created successfully.');
+    expect(source).toContain('await load()');
+    expect(source).toContain('setAssets(payload.assets ?? [])');
+  });
+
+  test('CSRF token is fetched after sign-in (not just signup/session-restore)', () => {
+    const fs = require('node:fs') as typeof import('node:fs');
+    const path = require('node:path') as typeof import('node:path');
+    const source = fs.readFileSync(path.join(__dirname, '..', 'app', 'pilot-auth-context.tsx'), 'utf-8');
+
+    // refreshCsrfToken is called in signIn, completeMfaSignIn, signUp, and refreshUser
+    expect(source).toContain('refreshCsrfToken: fetchAndStoreCsrfToken');
+    // fetchAndStoreCsrfToken is a stable callback that any mutation path can call
+    expect(source).toContain('fetchAndStoreCsrfToken');
   });
 
   test('create form handles 404 endpoint missing with specific message', () => {

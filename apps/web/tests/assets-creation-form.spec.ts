@@ -21,7 +21,7 @@ test('assets manager includes explicit validation and clear create states', () =
   expect(assets).toContain('response.status === 401');
   expect(assets).toContain('response.status === 403');
   expect(assets).toContain('CSRF_INVALID');
-  expect(assets).toContain('security token is invalid or expired');
+  expect(assets).toContain('Security token expired. We refreshed it. Try again.');
   expect(assets).toContain('response.status === 404');
   expect(assets).toContain('/api/assets');
   expect(assets).toContain('await signOut();');
