@@ -6772,6 +6772,18 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                             continue
                         if str((coverage_row or {}).get('coverage_status') or '').strip().lower() != 'reporting':
                             continue
+                        # Skip disabled or deleted targets — only active targets constitute a contradiction.
+                        # Old coverage records from previously enabled targets (e.g., an old
+                        # ethereum-mainnet target superseded by a new base target) must not
+                        # degrade status when the active target has fresh telemetry.
+                        if target_id not in healthy_enabled_target_ids:
+                            continue
+                        # Skip stale coverage records whose last_telemetry_at is outside the
+                        # freshness window. A target that reported on an old chain (chain_id=1)
+                        # but now has no fresh telemetry is inactive, not a live contradiction.
+                        _cov_last_telem = _parse_ts(coverage_row.get('last_telemetry_at'))
+                        if _cov_last_telem is None or int((now - _cov_last_telem).total_seconds()) > telemetry_window_seconds:
+                            continue
                         target_reporting_without_telemetry_count += 1
                     legacy_row_reporting_systems = sum(
                         1 for row in enabled_rows

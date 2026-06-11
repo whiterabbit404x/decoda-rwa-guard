@@ -9719,6 +9719,47 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
         ('unsupported_target_type_for_live_coverage', workspace_id, workspace_id),
     ).fetchall()
     repaired_unsupported_count = len(unsupported_repairs)
+    # Sync monitored_systems.chain to match the target's current chain_network.
+    # This corrects stale rows (e.g., chain='ethereum-mainnet' on a Base target)
+    # without touching unrelated columns or requiring a separate migration.
+    try:
+        connection.execute(
+            '''
+            UPDATE monitored_systems ms
+            SET chain = t.chain_network
+            FROM targets t
+            WHERE ms.target_id = t.id
+              AND t.deleted_at IS NULL
+              AND COALESCE(t.chain_network, '') <> ''
+              AND COALESCE(ms.chain, '') <> COALESCE(t.chain_network, '')
+              AND (%s::uuid IS NULL OR ms.workspace_id = %s::uuid)
+            ''',
+            (workspace_id, workspace_id),
+        )
+    except Exception:
+        logger.warning('reconcile_chain_sync_failed workspace_id=%s', workspace_id)
+    # Disable monitored_systems whose linked target is disabled or deleted.
+    # This catches stale rows left over from duplicate-target cleanup migrations.
+    try:
+        connection.execute(
+            '''
+            UPDATE monitored_systems ms
+            SET is_enabled = FALSE,
+                runtime_status = 'disabled',
+                status = 'paused',
+                freshness_status = 'unavailable',
+                confidence_status = 'unavailable',
+                coverage_reason = 'target_disabled_or_deleted'
+            FROM targets t
+            WHERE ms.target_id = t.id
+              AND (t.deleted_at IS NOT NULL OR t.enabled = FALSE)
+              AND COALESCE(ms.is_enabled, TRUE) = TRUE
+              AND (%s::uuid IS NULL OR ms.workspace_id = %s::uuid)
+            ''',
+            (workspace_id, workspace_id),
+        )
+    except Exception:
+        logger.warning('reconcile_disable_stale_monitored_systems_failed workspace_id=%s', workspace_id)
     existing_rows = connection.execute(
         '''
         SELECT id, target_id
