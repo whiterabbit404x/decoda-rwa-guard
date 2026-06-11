@@ -2017,16 +2017,23 @@ def _send_email(to_email: str, subject: str, text_body: str, html_body: str | No
                 return
         except HTTPError as exc:
             try:
-                raw = exc.fp.read() if exc.fp else b''
+                raw = exc.read()
             except Exception:
                 raw = b''
-            try:
-                body = json.loads(raw)
-            except Exception:
-                body = raw.decode('utf-8', errors='replace')
+            if not raw:
+                try:
+                    raw = exc.fp.read() if exc.fp else b''
+                except Exception:
+                    raw = b''
+            body = raw.decode('utf-8', errors='replace')
+            from_addr = _email_from()
+            from_domain = from_addr.split('@')[-1] if '@' in from_addr else from_addr
             logger.error(
-                'resend_email_failed',
-                extra={'event': 'resend_email_failed', 'status': exc.code, 'body': body},
+                'resend_email_failed status=%s provider=%s from_domain=%s body=%s',
+                exc.code,
+                provider,
+                from_domain,
+                body,
             )
             raise RuntimeError(f'Failed to deliver email via Resend: status={exc.code}') from exc
         except URLError as exc:
@@ -3291,7 +3298,13 @@ def signup_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             metadata={'email': email, 'workspace_name': workspace_name},
         )
         verification_token = _create_user_token(connection, user_id, 'email_verification', EMAIL_VERIFICATION_TTL_MINUTES, request=request)
-        _dispatch_transactional_email(connection, to_email=email, purpose='email_verification', token=verification_token, request=request)
+        try:
+            _dispatch_transactional_email(connection, to_email=email, purpose='email_verification', token=verification_token, request=request)
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail='Email delivery is temporarily unavailable. Please try again later.',
+            ) from exc
         connection.commit()
         user = build_user_response(connection, user_id)
     return {
