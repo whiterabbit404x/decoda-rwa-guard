@@ -18,7 +18,12 @@ test('assets manager includes explicit validation and clear create states', () =
   expect(assets).toContain('API endpoint is not configured');
   expect(assets).not.toContain('NEXT_PUBLIC_API_URL / API_URL is missing or invalid');
   expect(assets).toContain('Your session is missing or expired. Please sign in again.');
-  expect(assets).toContain('response.status === 401 || response.status === 403');
+  expect(assets).toContain('response.status === 401');
+  expect(assets).toContain('response.status === 403');
+  expect(assets).toContain('CSRF_INVALID');
+  expect(assets).toContain('security token is invalid or expired');
+  expect(assets).toContain('response.status === 404');
+  expect(assets).toContain('/api/assets');
   expect(assets).toContain('await signOut();');
 });
 

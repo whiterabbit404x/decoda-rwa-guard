@@ -172,7 +172,7 @@ export default function AssetsManager({ apiUrl }: Props) {
       setSubmitError('Your session is missing or expired. Please sign in again.');
       return;
     }
-    const response = await fetch(`${apiUrl}/assets`, { headers: { ...headers }, cache: 'no-store' });
+    const response = await fetch('/api/assets', { headers: { ...headers }, cache: 'no-store' });
     if (response.status === 401 || response.status === 403) {
       await signOut();
       setSubmitError('Your session is missing or expired. Please sign in again.');
@@ -240,16 +240,29 @@ export default function AssetsManager({ apiUrl }: Props) {
         setSubmitError('Your session is missing or expired. Please sign in again.');
         return;
       }
-      const response = await fetch(`${apiUrl}/assets`, {
+      const response = await fetch('/api/assets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
         body: JSON.stringify({ ...form, tags: form.tags }),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        if (response.status === 401 || response.status === 403) {
+        if (response.status === 401) {
           await signOut();
           setSubmitError('Your session is missing or expired. Please sign in again.');
+          return;
+        }
+        if (response.status === 403) {
+          if (payload?.code === 'CSRF_INVALID' || payload?.code === 'csrf_invalid') {
+            setSubmitError('Request blocked: your security token is invalid or expired. Refresh the page and try again.');
+            return;
+          }
+          await signOut();
+          setSubmitError('Your session is missing or expired. Please sign in again.');
+          return;
+        }
+        if (response.status === 404) {
+          setSubmitError('Asset creation endpoint not found (HTTP 404). Contact your administrator or check System Health.');
           return;
         }
         const detail = payload?.detail;
