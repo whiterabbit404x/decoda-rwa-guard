@@ -82,8 +82,14 @@ SELECTOR_NAMES = {
 
 CHAIN_MAP = {
     'ethereum': {'chain_id': 1},
+    'ethereum-mainnet': {'chain_id': 1},
+    'mainnet': {'chain_id': 1},
+    'eth': {'chain_id': 1},
+    'eth-mainnet': {'chain_id': 1},
     'base': {'chain_id': 8453},
+    'base-mainnet': {'chain_id': 8453},
     'arbitrum': {'chain_id': 42161},
+    'arbitrum-one': {'chain_id': 42161},
 }
 
 
@@ -328,8 +334,13 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     if not rpc_url:
         return []
     network = str(target.get('chain_network') or 'ethereum').strip().lower()
-    if network not in {item.strip().lower() for item in (os.getenv('LIVE_MONITORING_CHAINS', 'ethereum').split(','))}:
-        return []
+    _allowed_chains = {item.strip().lower() for item in (os.getenv('LIVE_MONITORING_CHAINS', 'ethereum').split(',')) if item.strip()}
+    if network not in _allowed_chains:
+        # Also allow when EVM_CHAIN_ID explicitly matches this network's chain_id
+        _configured_chain_id = int(os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or 0) or None
+        _network_chain_id = CHAIN_MAP.get(network, {}).get('chain_id')
+        if not (_configured_chain_id and _network_chain_id and _configured_chain_id == _network_chain_id):
+            return []
 
     confirmations = max(0, int(os.getenv('EVM_CONFIRMATIONS_REQUIRED', '3')))
     replay_blocks = max(1, int(os.getenv('MONITOR_REPLAY_BLOCKS', os.getenv('EVM_BLOCK_LOOKBACK', '25'))))
@@ -364,7 +375,8 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         return []
 
     events: list[ActivityEvent] = []
-    chain_id = CHAIN_MAP.get(network, {}).get('chain_id', 1)
+    _env_chain_id = int(os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or 0) or 1
+    chain_id = CHAIN_MAP.get(network, {}).get('chain_id') or _env_chain_id
     block_ts_cache: dict[str, datetime] = {}
 
     logs: list[dict[str, Any]] = []

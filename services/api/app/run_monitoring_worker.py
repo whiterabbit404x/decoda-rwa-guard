@@ -63,15 +63,27 @@ def _resolve_worker_enabled_env() -> None:
 def _log_startup_provider_status(logger: logging.Logger) -> None:
     """Emit safe startup log lines for provider configuration. Never prints secrets."""
     from services.api.app.evm_activity_provider import _resolve_evm_rpc_url
+    from urllib.parse import urlparse as _urlparse
     rpc_url = _resolve_evm_rpc_url()
     evm_rpc_configured = bool(rpc_url)
+    try:
+        rpc_host = _urlparse(rpc_url).hostname or 'unconfigured'
+    except Exception:
+        rpc_host = 'unconfigured'
     staging_worker_enabled = (os.getenv('STAGING_WORKER_ENABLED') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
     base_worker_enabled = (os.getenv('WORKER_ENABLED') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
     live_mode_env = (os.getenv('LIVE_MODE_ENABLED') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
     worker_enabled = staging_worker_enabled or base_worker_enabled or live_mode_env
+    worker_enabled_val = (os.getenv('WORKER_ENABLED') or 'not_set').strip()
     chain_id_raw = (os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or '').strip()
     chain_id_configured = int(chain_id_raw) if chain_id_raw.isdigit() else None
     provider_mode = 'live' if (evm_rpc_configured and worker_enabled) else 'disabled'
+    logger.info(
+        'startup service_role=worker WORKER_ENABLED=%s resolved_chain_id=%s rpc_host=%s',
+        worker_enabled_val,
+        chain_id_configured or 'not_set',
+        rpc_host,
+    )
     logger.info(
         'worker_startup_provider_status worker_enabled=%s evm_rpc_configured=%s chain_id_configured=%s provider_mode=%s',
         worker_enabled,

@@ -1097,7 +1097,9 @@ def _persist_live_coverage_telemetry(
     # no blockchain events (transfers, etc.) were observed in this cycle.
     from services.api.app.evm_activity_provider import CHAIN_MAP as _CHAIN_MAP
     _chain_network = str(target.get('chain_network') or 'ethereum').strip().lower()
-    _chain_id_int = (_CHAIN_MAP.get(_chain_network) or {}).get('chain_id') or int(os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or 1)
+    _env_chain_id_str = (os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or '').strip()
+    _env_chain_id = int(_env_chain_id_str) if _env_chain_id_str.isdigit() else 1
+    _chain_id_int = (_CHAIN_MAP.get(_chain_network) or {}).get('chain_id') or _env_chain_id
     _chain_id_hex = hex(_chain_id_int)
     _telem_payload = {
         'telemetry_kind': 'coverage',

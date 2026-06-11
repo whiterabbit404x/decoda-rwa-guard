@@ -243,6 +243,15 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
                         rpc_probe['chain_id_int'],
                         latest_block,
                     )
+                    _expected_chain_id_str = (os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or '').strip()
+                    _expected_chain_id = int(_expected_chain_id_str) if _expected_chain_id_str.isdigit() else None
+                    if _expected_chain_id and rpc_probe['chain_id_int'] and rpc_probe['chain_id_int'] != _expected_chain_id:
+                        logger.warning(
+                            'coverage_rpc_chain_id_mismatch rpc_chain_id=%s expected_chain_id=%s '
+                            'check EVM_RPC_URL points to the correct network',
+                            rpc_probe['chain_id_int'],
+                            _expected_chain_id,
+                        )
                 else:
                     logger.warning('coverage_rpc_probe_failed error=%s', rpc_probe.get('error'))
             return ActivityProviderResult(

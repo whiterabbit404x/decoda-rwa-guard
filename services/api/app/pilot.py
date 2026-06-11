@@ -11752,7 +11752,7 @@ def _try_relink_orphan_target(
 
     target_name = str(full_row.get('name') or '').strip()
     target_type = str(full_row.get('target_type') or '').strip().lower()
-    chain_network = str(full_row.get('chain_network') or '').strip() or 'ethereum-mainnet'
+    chain_network = str(full_row.get('chain_network') or '').strip() or 'unknown'
     contract_identifier = str(full_row.get('contract_identifier') or '').strip() or None
     wallet_address = str(full_row.get('wallet_address') or '').strip() or None
     identifier = contract_identifier or wallet_address
