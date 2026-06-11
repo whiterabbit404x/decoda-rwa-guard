@@ -185,6 +185,120 @@ def derive_runtime_status(
     return raw_runtime_status
 
 
+_SIMULATOR_EVIDENCE_SOURCES = frozenset({
+    'simulator', 'guided_simulator', 'demo', 'replay', 'synthetic',
+    'fixture', 'test_fixture', 'mock', 'sample', 'seeded',
+})
+_FALLBACK_EVIDENCE_SOURCES = frozenset({'fallback', 'degraded'})
+_NON_LIVE_EVIDENCE_SOURCES = _SIMULATOR_EVIDENCE_SOURCES | _FALLBACK_EVIDENCE_SOURCES
+
+_LIVE_EVIDENCE_SOURCES = frozenset({
+    'live', 'live_provider', 'provider', 'rpc', 'indexer', 'compliance_feed',
+})
+
+
+def classify_evidence_state(evidence_source: str | None) -> str:
+    """Return canonical evidence-state label for provenance tracking.
+
+    Returns one of: REAL_EVIDENCE | SIMULATOR_EVIDENCE | FALLBACK_EVIDENCE |
+    FIXTURE_EVIDENCE | UNKNOWN_EVIDENCE.
+    """
+    normalized = str(evidence_source or '').strip().lower()
+    if normalized in _LIVE_EVIDENCE_SOURCES:
+        return 'REAL_EVIDENCE'
+    if normalized in _SIMULATOR_EVIDENCE_SOURCES - {'fixture', 'test_fixture'}:
+        return 'SIMULATOR_EVIDENCE'
+    if normalized in {'fixture', 'test_fixture'}:
+        return 'FIXTURE_EVIDENCE'
+    if normalized in _FALLBACK_EVIDENCE_SOURCES:
+        return 'FALLBACK_EVIDENCE'
+    return 'UNKNOWN_EVIDENCE'
+
+
+def validate_evidence_for_live_proof(
+    *,
+    evidence_source: str | None,
+    app_env: str | None = None,
+    live_mode: str | None = None,
+) -> dict[str, Any]:
+    """Validate that evidence is suitable for a verified live proof bundle.
+
+    In production (APP_ENV=production/prod/staging), any non-live evidence
+    source is rejected.  Simulator and fallback evidence may only be exported
+    as degraded_diagnostic, never as verified live.
+
+    Returns a dict with keys: valid, evidence_state, verified_live,
+    exportable_as_verified, error.
+    """
+    normalized = str(evidence_source or '').strip().lower()
+    env = str(app_env or '').strip().lower()
+    mode = str(live_mode or '').strip().lower()
+
+    evidence_state = classify_evidence_state(normalized)
+    verified_live = evidence_state == 'REAL_EVIDENCE'
+    exportable_as_verified = verified_live
+
+    if normalized in _NON_LIVE_EVIDENCE_SOURCES:
+        if evidence_state == 'FALLBACK_EVIDENCE':
+            msg = (
+                f'Cannot produce verified live proof bundle from fallback evidence '
+                f'(source={normalized!r}). '
+                'Fallback data must never be exported as verified live evidence.'
+            )
+        elif evidence_state == 'SIMULATOR_EVIDENCE':
+            msg = (
+                f'Cannot produce verified live proof bundle from simulator evidence '
+                f'(source={normalized!r}). '
+                'Simulator data must never pass as production live evidence.'
+            )
+        else:
+            msg = (
+                f'Cannot produce verified live proof bundle from non-live evidence '
+                f'(source={normalized!r}).'
+            )
+        return {
+            'valid': False,
+            'evidence_state': evidence_state,
+            'verified_live': False,
+            'exportable_as_verified': False,
+            'error': msg,
+        }
+
+    is_production = env in {'production', 'prod', 'staging'}
+    is_sim_mode = mode in {'false', '0', 'no', 'off', 'simulator', 'demo'}
+    if is_production and is_sim_mode:
+        return {
+            'valid': False,
+            'evidence_state': 'SIMULATOR_EVIDENCE',
+            'verified_live': False,
+            'exportable_as_verified': False,
+            'error': (
+                'Cannot produce verified live proof bundle from simulator or fallback evidence. '
+                'APP_ENV=production requires LIVE_MODE=true and live provider evidence.'
+            ),
+        }
+
+    if not verified_live:
+        return {
+            'valid': False,
+            'evidence_state': evidence_state,
+            'verified_live': False,
+            'exportable_as_verified': False,
+            'error': (
+                f'Evidence source {normalized!r} is not a recognised live provider. '
+                'Cannot export as verified live evidence.'
+            ),
+        }
+
+    return {
+        'valid': True,
+        'evidence_state': 'REAL_EVIDENCE',
+        'verified_live': True,
+        'exportable_as_verified': True,
+        'error': None,
+    }
+
+
 def derive_confidence_status(
     *,
     contradiction_flags: list[str],
