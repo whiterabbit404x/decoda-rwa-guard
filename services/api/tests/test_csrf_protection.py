@@ -144,3 +144,43 @@ def test_csrf_not_enforced_without_auth_token_secret(monkeypatch):
     )
     # Should not be blocked by CSRF (might fail at auth for other reasons)
     assert response.status_code != 403 or response.json().get('code') != 'CSRF_INVALID'
+
+
+# ---------------------------------------------------------------------------
+# POST /assets CSRF enforcement tests
+# ---------------------------------------------------------------------------
+
+def test_post_assets_without_csrf_returns_403(monkeypatch):
+    monkeypatch.setenv('AUTH_TOKEN_SECRET', 'test-secret-for-csrf')
+    response = client.post(
+        '/assets',
+        json={'name': 'test-asset', 'asset_type': 'wallet', 'chain_network': 'ethereum-mainnet', 'identifier': '0x1234'},
+        headers={'Authorization': 'Bearer fake-token'},
+    )
+    assert response.status_code == 403
+    assert response.json()['code'] == 'CSRF_INVALID'
+
+
+def test_post_assets_with_valid_csrf_passes_csrf_gate(monkeypatch):
+    monkeypatch.setenv('AUTH_TOKEN_SECRET', 'test-secret-for-csrf')
+    csrf = issue_csrf_token()
+    # Request will fail at auth (fake token) but NOT at the CSRF gate.
+    response = client.post(
+        '/assets',
+        json={'name': 'test-asset', 'asset_type': 'wallet', 'chain_network': 'ethereum-mainnet', 'identifier': '0x1234'},
+        headers={'Authorization': 'Bearer fake-token', 'X-CSRF-Token': csrf},
+    )
+    # Must not be blocked specifically by CSRF
+    assert response.status_code != 403 or response.json().get('code') != 'CSRF_INVALID'
+
+
+def test_post_assets_with_uuid_csrf_fails_backend_validation(monkeypatch):
+    monkeypatch.setenv('AUTH_TOKEN_SECRET', 'test-secret-for-csrf')
+    uuid_token = 'abc123def456789012345678901234ab'  # UUID-like, not HMAC nonce.sig
+    response = client.post(
+        '/assets',
+        json={'name': 'test-asset', 'asset_type': 'wallet', 'chain_network': 'ethereum-mainnet', 'identifier': '0x1234'},
+        headers={'Authorization': 'Bearer fake-token', 'X-CSRF-Token': uuid_token},
+    )
+    assert response.status_code == 403
+    assert response.json()['code'] == 'CSRF_INVALID'

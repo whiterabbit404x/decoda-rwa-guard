@@ -73,6 +73,7 @@ type PilotAuthContextValue = {
   signUp: (payload: { email: string; password: string; full_name: string; workspace_name: string }) => Promise<{ user: PilotUser | null; verificationRequired: boolean }>;
   signOut: () => Promise<void>;
   refreshUser: () => Promise<PilotUser | null>;
+  refreshCsrfToken: () => Promise<string | null>;
   createWorkspace: (name: string) => Promise<PilotUser>;
   selectWorkspace: (workspaceId: string) => Promise<PilotUser>;
   authHeaders: (workspaceIdOverride?: string | null) => Record<string, string>;
@@ -213,6 +214,23 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     return headers;
   }, [accessToken, csrfToken, user?.current_workspace?.id, user?.current_workspace_id]);
 
+  // Fetches a fresh HMAC-signed CSRF token from the backend (via proxy) and stores
+  // it in both React state and the decoda_csrf cookie so all mutation paths are valid.
+  const fetchAndStoreCsrfToken = useCallback(async (): Promise<string | null> => {
+    try {
+      const csrfResponse = await fetch('/api/auth/csrf', { cache: 'no-store' });
+      if (!csrfResponse.ok) {
+        return null;
+      }
+      const csrfPayload = await csrfResponse.json().catch(() => ({}));
+      const token = typeof csrfPayload.csrfToken === 'string' ? csrfPayload.csrfToken : null;
+      setCsrfToken(token);
+      return token;
+    } catch {
+      return null;
+    }
+  }, []);
+
   const refreshUser = useCallback(async () => {
     if (typeof window === 'undefined') {
       return null;
@@ -263,11 +281,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     if (restoredToken) {
       setAccessToken(restoredToken);
     }
-    const csrfResponse = await fetch('/api/auth/csrf', { cache: 'no-store' });
-    if (csrfResponse.ok) {
-      const csrfPayload = await csrfResponse.json().catch(() => ({}));
-      setCsrfToken(typeof csrfPayload.csrfToken === 'string' ? csrfPayload.csrfToken : null);
-    }
+    await fetchAndStoreCsrfToken();
     setSessionLoading(false);
     console.debug('[dashboard-page-data trace] source=auth-session-restore', {
       phase: 'response-success',
@@ -275,7 +289,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       userId: payload.user.id,
     });
     return payload.user;
-  }, [configLoading]);
+  }, [configLoading, fetchAndStoreCsrfToken]);
 
   useEffect(() => {
     let active = true;
@@ -405,6 +419,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     }
     saveAuthPayload(data.user, data.access_token ?? null);
     setMfaChallengeToken(null);
+    await fetchAndStoreCsrfToken();
     console.debug('[dashboard-page-data trace] source=auth-signin-response', {
       phase: 'success',
       hasUser: Boolean(data.user),
@@ -412,7 +427,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       requiresSessionConfirmation: true,
     });
     return data.user;
-  }, [saveAuthPayload]);
+  }, [saveAuthPayload, fetchAndStoreCsrfToken]);
 
   const completeMfaSignIn = useCallback(async (code: string) => {
     if (!mfaChallengeToken) {
@@ -430,6 +445,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     }
     saveAuthPayload(data.user, data.access_token ?? null);
     setMfaChallengeToken(null);
+    await fetchAndStoreCsrfToken();
     console.debug('[dashboard-page-data trace] source=auth-signin-response', {
       phase: 'mfa-success',
       hasUser: Boolean(data.user),
@@ -437,7 +453,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       requiresSessionConfirmation: true,
     });
     return data.user;
-  }, [mfaChallengeToken, saveAuthPayload]);
+  }, [mfaChallengeToken, saveAuthPayload, fetchAndStoreCsrfToken]);
 
   const enrollMfa = useCallback(async () => {
     const response = await fetch('/api/auth/mfa/enroll', {
@@ -516,13 +532,9 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error(classifyAuthResponseError('create an account', proxyUrl, response.status, data.detail, data));
     }
     saveAuthPayload(data.user, data.access_token ?? null);
-    const csrfResponse = await fetch('/api/auth/csrf', { cache: 'no-store' });
-    if (csrfResponse.ok) {
-      const csrfPayload = await csrfResponse.json().catch(() => ({}));
-      setCsrfToken(typeof csrfPayload.csrfToken === 'string' ? csrfPayload.csrfToken : null);
-    }
+    await fetchAndStoreCsrfToken();
     return { user: data.user, verificationRequired: false };
-  }, [saveAuthPayload]);
+  }, [saveAuthPayload, fetchAndStoreCsrfToken]);
 
   const signOut = useCallback(async () => {
     await fetch('/api/auth/signout', { method: 'POST', headers: authHeaders() }).catch(() => undefined);
@@ -599,11 +611,12 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     signUp,
     signOut,
     refreshUser,
+    refreshCsrfToken: fetchAndStoreCsrfToken,
     createWorkspace,
     selectWorkspace,
     authHeaders,
     setError,
-  }), [authHeaders, completeMfaSignIn, configLoading, confirmMfaEnrollment, createWorkspace, disableMfa, enrollMfa, error, loading, mfaChallengeToken, refreshUser, runtimeConfig, selectWorkspace, signIn, signOut, signUp, user]);
+  }), [authHeaders, completeMfaSignIn, configLoading, confirmMfaEnrollment, createWorkspace, disableMfa, enrollMfa, error, fetchAndStoreCsrfToken, loading, mfaChallengeToken, refreshUser, runtimeConfig, selectWorkspace, signIn, signOut, signUp, user]);
 
   return <PilotAuthContext.Provider value={value}>{children}</PilotAuthContext.Provider>;
 }
