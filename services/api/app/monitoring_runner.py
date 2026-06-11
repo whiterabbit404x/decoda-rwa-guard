@@ -169,26 +169,23 @@ def is_canonical_runtime_truth_enabled() -> bool:
 
 
 def _count_persisted_enabled_monitoring_configs(conn: Any, workspace_id: str) -> int:
+    # Migration 0084 created direct monitoring_configs with target_id = targets.id.
+    # The old JOIN to monitored_targets always fails for these rows because the UUIDs
+    # differ. Use targets directly to mirror the candidate_systems worker query.
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT COUNT(*) AS count
                 FROM monitoring_configs mc
-                JOIN monitored_targets mt
-                  ON mt.id = mc.target_id
-                 AND mt.workspace_id = mc.workspace_id
-                 AND mt.enabled = TRUE
-                 AND (mt.asset_id IS NULL OR mt.asset_id = mc.asset_id)
-                JOIN asset_registry ar
-                  ON ar.id = mc.asset_id
-                 AND ar.workspace_id = mc.workspace_id
+                JOIN targets t
+                  ON t.id = mc.target_id
+                 AND t.workspace_id = mc.workspace_id
+                 AND t.enabled = TRUE
+                 AND t.deleted_at IS NULL
                 WHERE mc.workspace_id = %s
                   AND mc.enabled = TRUE
-                  AND mt.enabled = TRUE
-                  AND mc.asset_id IS NOT NULL
-                  AND (mt.asset_id IS NULL OR mt.asset_id = mc.asset_id)
-                  AND COALESCE(ar.status, 'active') = 'active'
+                  AND mc.provider_type NOT IN ('demo', 'simulator', 'replay', 'unknown', 'target_bridge', 'guided_workflow')
                 """,
                 (workspace_id,),
             )
@@ -1101,16 +1098,21 @@ def _persist_live_coverage_telemetry(
     _env_chain_id = int(_env_chain_id_str) if _env_chain_id_str.isdigit() else 1
     _chain_id_int = (_CHAIN_MAP.get(_chain_network) or {}).get('chain_id') or _env_chain_id
     _chain_id_hex = hex(_chain_id_int)
+    # Use a timestamp-based fallback when the RPC probe did not return a block number
+    # (e.g. probe failure). The fallback value must be non-null so the
+    # canonical_last_telemetry_at query (which filters COALESCE(payload_json->>'block_number','') <> '')
+    # can find this row. The idempotency key already uses the same fallback.
+    _effective_block = provider_result.latest_block or int(observed_at.timestamp())
     _telem_payload = {
         'telemetry_kind': 'coverage',
         'chain_id': _chain_id_int,
-        'block_number': provider_result.latest_block,
+        'block_number': _effective_block,
         'provider_name': provider_result.provider_name,
         'source_type': provider_result.source_type,
         'checkpoint': provider_result.checkpoint,
         'raw_response': {
             'eth_chainId': _chain_id_hex,
-            'eth_blockNumber': hex(int(provider_result.latest_block or 0)),
+            'eth_blockNumber': hex(_effective_block),
         },
         'monitored_system_id': str(target.get('monitored_system_id') or '') or None,
         'target_id': str(target['id']),
@@ -1119,7 +1121,7 @@ def _persist_live_coverage_telemetry(
     _telem_payload_json = _json_dumps(_telem_payload)
     _telem_idempotency = (
         f"{target['workspace_id']}:{target['id']}:coverage_poll:"
-        f"{provider_result.latest_block or int(observed_at.timestamp())}"
+        f"{_effective_block}"
     )
     # Validate that target.asset_id exists in asset_registry before inserting
     # telemetry_events (which has a FK to asset_registry, not to assets).
