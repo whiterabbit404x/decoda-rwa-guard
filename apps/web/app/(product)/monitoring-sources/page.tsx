@@ -177,6 +177,7 @@ export default function MonitoringSourcesPage() {
   const [loadError, setLoadError] = useState('');
   const [loading, setLoading] = useState(true);
   const [enablingTargetId, setEnablingTargetId] = useState<string | null>(null);
+  const [disablingTargetId, setDisablingTargetId] = useState<string | null>(null);
   const [enableError, setEnableError] = useState('');
   const [orphanTargetId, setOrphanTargetId] = useState<string | null>(null);
   const [repairingTargetId, setRepairingTargetId] = useState<string | null>(null);
@@ -258,6 +259,30 @@ export default function MonitoringSourcesPage() {
       setEnableError(`Network error enabling target: ${error instanceof Error ? error.message : 'unknown error'}`);
     } finally {
       setEnablingTargetId(null);
+    }
+  }
+
+  async function handleDisableTarget(targetId: string) {
+    setDisablingTargetId(targetId);
+    setEnableError('');
+    const url = `/api/monitoring/targets/${encodeURIComponent(targetId)}/disable`;
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        cache: 'no-store',
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        const detail = typeof payload?.detail === 'string' ? payload.detail : `HTTP ${response.status}`;
+        setEnableError(`Disable failed: ${detail}`);
+        return;
+      }
+      await loadSources();
+    } catch (error) {
+      setEnableError(`Network error disabling target: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      setDisablingTargetId(null);
     }
   }
 
@@ -472,18 +497,33 @@ export default function MonitoringSourcesPage() {
                           >
                             {enablingTargetId === target.id ? 'Enabling…' : 'Enable target'}
                           </button>
-                        ) : targetNextAction(target) === 'View telemetry' && target.id ? (
-                          <Link
-                            href={`/monitoring-sources/${encodeURIComponent(target.id)}/telemetry`}
-                            prefetch={false}
-                            style={{ color: 'var(--text-accent)', fontSize: '0.82rem', textDecoration: 'none' }}
-                          >
-                            View telemetry
-                          </Link>
                         ) : (
-                          <span style={{ color: 'var(--text-accent)', fontSize: '0.82rem' }}>
-                            {targetNextAction(target)}
-                          </span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                            {targetNextAction(target) === 'View telemetry' && target.id ? (
+                              <Link
+                                href={`/monitoring-sources/${encodeURIComponent(target.id)}/telemetry`}
+                                prefetch={false}
+                                style={{ color: 'var(--text-accent)', fontSize: '0.82rem', textDecoration: 'none' }}
+                              >
+                                View telemetry
+                              </Link>
+                            ) : (
+                              <span style={{ color: 'var(--text-accent)', fontSize: '0.82rem' }}>
+                                {targetNextAction(target)}
+                              </span>
+                            )}
+                            {(target.enabled || target.monitoring_enabled) ? (
+                              <button
+                                type="button"
+                                className="btn btn-secondary"
+                                style={{ fontSize: '0.78rem', padding: '0.2rem 0.65rem' }}
+                                disabled={disablingTargetId === target.id}
+                                onClick={() => void handleDisableTarget(target.id)}
+                              >
+                                {disablingTargetId === target.id ? 'Disabling…' : 'Disable'}
+                              </button>
+                            ) : null}
+                          </div>
                         )}
                       </td>
                     </tr>
