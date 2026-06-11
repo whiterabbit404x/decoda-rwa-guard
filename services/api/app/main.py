@@ -834,14 +834,20 @@ def update_dependency_registry_entry(
     )
     service_name = str(registry_config['service_name'])
     status = 'ok' if selected_mode == 'embedded_local' and not degraded_value else 'degraded' if degraded_value else 'ok'
-    upsert_service(
-        service_name,
-        resolve_service_port(str(configured_url), int(registry_config['default_port'])),
-        status,
-        detail_value,
-    )
-    replace_metrics(service_name, registry_metrics_for_dependency(dependency_name))
-    return load_service(service_name) or {
+    if _is_local_dev_mode():
+        upsert_service(
+            service_name,
+            resolve_service_port(str(configured_url), int(registry_config['default_port'])),
+            status,
+            detail_value,
+        )
+        replace_metrics(service_name, registry_metrics_for_dependency(dependency_name))
+        return load_service(service_name) or {
+            'service_name': service_name,
+            'status': status,
+            'detail': detail_value,
+        }
+    return {
         'service_name': service_name,
         'status': status,
         'detail': detail_value,
@@ -854,7 +860,12 @@ def seed_embedded_dependency_registry() -> None:
 
 
 def dependency_debug_snapshot() -> dict[str, Any]:
-    registry_services = {service['service_name']: service for service in load_all_services()}
+    # SQLite dev registry is only available in local/dev mode; skip in production to avoid
+    # resolve_sqlite_path() raising on a remote DATABASE_URL (railway crash fix).
+    if _is_local_dev_mode():
+        registry_services = {service['service_name']: service for service in load_all_services()}
+    else:
+        registry_services = {}
     snapshot: dict[str, Any] = {}
     for dependency_name in DEPENDENCY_SERVICE_REGISTRY:
         runtime = DEPENDENCY_RUNTIME_STATUS.get(dependency_name, {})
