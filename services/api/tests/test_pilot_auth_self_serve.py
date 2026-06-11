@@ -531,6 +531,109 @@ def test_send_email_resend_403_falls_back_to_fp_when_read_empty(pilot_module, mo
     assert 'from fp fallback' in error_records[0].getMessage()
 
 
+def test_send_email_resend_request_includes_user_agent_and_accept(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('EMAIL_PROVIDER', 'resend')
+    monkeypatch.setenv('EMAIL_RESEND_API_KEY', 'test-key')
+    monkeypatch.setenv('EMAIL_FROM', 'no-reply@send.decodasecurity.com')
+
+    captured: list = []
+
+    def fake_urlopen(req, timeout=None):
+        captured.append(req)
+        class _FakeResponse:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+        return _FakeResponse()
+
+    monkeypatch.setattr(pilot_module, 'urlopen', fake_urlopen)
+    pilot_module._send_email('target@example.com', 'Test Subject', 'body text')
+
+    assert captured, 'urlopen was not called'
+    req = captured[0]
+    assert req.get_header('User-agent') == 'Decoda-RWA-Guard/1.0 (+https://rwa.decodasecurity.com)'
+    assert req.get_header('Accept') == 'application/json'
+
+
+def test_send_email_resend_api_key_not_logged(pilot_module, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    import io
+    from urllib.error import HTTPError
+
+    secret_key = 'secret-resend-key-must-not-appear-in-logs'
+    monkeypatch.setenv('EMAIL_PROVIDER', 'resend')
+    monkeypatch.setenv('EMAIL_RESEND_API_KEY', secret_key)
+    monkeypatch.setenv('EMAIL_FROM', 'no-reply@send.decodasecurity.com')
+
+    error_body = b'{"name":"forbidden","message":"missing user agent","statusCode":403}'
+
+    class _FakeHTTPError(HTTPError):
+        def __init__(self):
+            super().__init__('https://api.resend.com/emails', 403, 'Forbidden', {}, io.BytesIO(error_body))
+        def read(self):
+            return error_body
+
+    monkeypatch.setattr(pilot_module, 'urlopen', lambda req, timeout=None: (_ for _ in ()).throw(_FakeHTTPError()))
+
+    with caplog.at_level('ERROR'):
+        with pytest.raises(RuntimeError):
+            pilot_module._send_email('target@example.com', 'Test', 'body text')
+
+    for record in caplog.records:
+        msg = record.getMessage()
+        assert secret_key not in msg, f'API key leaked into log: {msg}'
+        assert 'Bearer' not in msg, f'Authorization header leaked into log: {msg}'
+
+
+def test_send_email_resend_403_returns_safe_503_via_signup(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+    from contextlib import contextmanager
+    from urllib.error import HTTPError
+    from fastapi import HTTPException
+
+    monkeypatch.setenv('EMAIL_PROVIDER', 'resend')
+    monkeypatch.setenv('EMAIL_RESEND_API_KEY', 'test-key')
+    monkeypatch.setenv('EMAIL_FROM', 'no-reply@send.decodasecurity.com')
+
+    error_body = b'{"name":"forbidden","message":"missing user agent","statusCode":403}'
+
+    class _FakeHTTPError(HTTPError):
+        def __init__(self):
+            super().__init__('https://api.resend.com/emails', 403, 'Forbidden', {}, io.BytesIO(error_body))
+        def read(self):
+            return error_body
+
+    class _Result:
+        def __init__(self, row=None): self._row = row
+        def fetchone(self): return self._row
+
+    class _Connection:
+        def execute(self, statement, params=None): return _Result(None)
+        def commit(self): return None
+
+    @contextmanager
+    def fake_pg():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg)
+    monkeypatch.setattr(pilot_module, 'ensure_pilot_schema', lambda connection: None)
+    monkeypatch.setattr(pilot_module, 'hash_password', lambda password: 'hashed')
+    monkeypatch.setattr(pilot_module, 'log_audit', lambda *a, **kw: None)
+    monkeypatch.setattr(pilot_module, '_create_user_token', lambda *a, **kw: 'tok')
+    monkeypatch.setattr(
+        pilot_module, '_dispatch_transactional_email',
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError('Failed to deliver email via Resend: status=403')),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        pilot_module.signup_user(
+            {'email': 'user@example.com', 'password': 'StrongPass1', 'full_name': 'Test User', 'workspace_name': 'Test Workspace'},
+            _request(),
+        )
+
+    assert exc_info.value.status_code == 503
+    assert 'Email delivery' in exc_info.value.detail
+
+
 def test_build_history_response_returns_json_safe_workspace_records(
     pilot_module, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -2010,7 +2010,12 @@ def _send_email(to_email: str, subject: str, text_body: str, html_body: str | No
             'https://api.resend.com/emails',
             method='POST',
             data=json.dumps(payload).encode('utf-8'),
-            headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'},
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {api_key}',
+                'User-Agent': 'Decoda-RWA-Guard/1.0 (+https://rwa.decodasecurity.com)',
+                'Accept': 'application/json',
+            },
         )
         try:
             with urlopen(request, timeout=8):
