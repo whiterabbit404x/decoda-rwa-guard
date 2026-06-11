@@ -2015,7 +2015,21 @@ def _send_email(to_email: str, subject: str, text_body: str, html_body: str | No
         try:
             with urlopen(request, timeout=8):
                 return
-        except (HTTPError, URLError) as exc:
+        except HTTPError as exc:
+            try:
+                raw = exc.fp.read() if exc.fp else b''
+            except Exception:
+                raw = b''
+            try:
+                body = json.loads(raw)
+            except Exception:
+                body = raw.decode('utf-8', errors='replace')
+            logger.error(
+                'resend_email_failed',
+                extra={'event': 'resend_email_failed', 'status': exc.code, 'body': body},
+            )
+            raise RuntimeError(f'Failed to deliver email via Resend: status={exc.code}') from exc
+        except URLError as exc:
             raise RuntimeError(f'Failed to deliver email via Resend: {exc}') from exc
     raise RuntimeError('EMAIL_PROVIDER must be one of: console, resend')
 
