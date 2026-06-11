@@ -29,6 +29,7 @@ export default function TargetsManager({ apiUrl: _apiUrl }: Props) {
   const [form, setForm] = useState<any>(EMPTY_TARGET);
   const [search, setSearch] = useState('');
   const [message, setMessage] = useState('');
+  const [creating, setCreating] = useState(false);
   const [assetLoadError, setAssetLoadError] = useState<string | null>(null);
 
   async function load() {
@@ -51,20 +52,31 @@ export default function TargetsManager({ apiUrl: _apiUrl }: Props) {
   }
 
   async function createTarget() {
+    if (creating) return;
     if (!form.asset_id) {
       setMessage('Select an asset first. Targets define behavior monitored for a specific asset.');
       return;
     }
-    const response = await fetch('/api/targets', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify(form),
-    });
-    const payload = await response.json().catch(() => ({}));
-    setMessage(response.ok ? 'Target created. Monitoring system created automatically.' : (payload.detail ?? 'Unable to create target.'));
-    if (!response.ok) return;
-    setForm(EMPTY_TARGET);
-    void load();
+    setCreating(true);
+    setMessage('');
+    try {
+      const response = await fetch('/api/targets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify(form),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (response.status === 409) {
+        setMessage(payload.detail ?? 'A target with this name and type already exists for this asset.');
+        return;
+      }
+      setMessage(response.ok ? 'Target created. Monitoring system created automatically.' : (payload.detail ?? 'Unable to create target.'));
+      if (!response.ok) return;
+      setForm(EMPTY_TARGET);
+      void load();
+    } finally {
+      setCreating(false);
+    }
   }
 
   async function toggleTarget(target: Target) {
@@ -133,7 +145,7 @@ export default function TargetsManager({ apiUrl: _apiUrl }: Props) {
           <label><input type="checkbox" checked={form.auto_create_alerts} onChange={(event) => setForm({ ...form, auto_create_alerts: event.target.checked })} /> Auto-alert channels</label>
           <label><input type="checkbox" checked={form.auto_create_incidents} onChange={(event) => setForm({ ...form, auto_create_incidents: event.target.checked })} /> Auto-open incidents</label>
         </div>
-        <button type="button" onClick={() => void createTarget()}>Create target</button>
+        <button type="button" onClick={() => void createTarget()} disabled={creating}>{creating ? 'Creating...' : 'Create target'}</button>
         {message ? <p className="statusLine">{message}</p> : null}
       </section>
     </div>

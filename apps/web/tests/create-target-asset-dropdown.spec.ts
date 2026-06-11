@@ -91,3 +91,26 @@ test('/api/monitoring/targets/[targetId]/disable proxy route exists', () => {
   expect(routeSrc).toContain('/disable');
   expect(routeSrc).toContain("headers.set('X-Workspace-Id'");
 });
+
+test('createTarget button is disabled while request is pending (creating state)', () => {
+  expect(targetsSrc).toContain('creating');
+  expect(targetsSrc).toContain('disabled={creating}');
+});
+
+test('createTarget button shows "Creating..." while request is pending', () => {
+  expect(targetsSrc).toContain("'Creating...'");
+});
+
+test('createTarget ignores second click while first request is in flight', () => {
+  expect(targetsSrc).toContain('if (creating) return;');
+});
+
+test('createTarget shows clear message when backend returns 409 duplicate', () => {
+  expect(targetsSrc).toContain('response.status === 409');
+  expect(targetsSrc).toContain('already exists');
+});
+
+test('createTarget resets creating state even when request fails (finally block)', () => {
+  expect(targetsSrc).toContain('} finally {');
+  expect(targetsSrc).toContain('setCreating(false)');
+});

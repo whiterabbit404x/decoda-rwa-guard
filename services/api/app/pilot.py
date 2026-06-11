@@ -11510,6 +11510,19 @@ def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             ).fetchone()
             if asset_row is None:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='asset_id must reference an asset in this workspace.')
+        duplicate_row = connection.execute(
+            '''
+            SELECT id FROM targets
+            WHERE workspace_id = %s AND asset_id = %s AND name = %s AND target_type = %s AND deleted_at IS NULL
+            LIMIT 1
+            ''',
+            (workspace_id, validated['asset_id'], validated['name'], validated['target_type']),
+        ).fetchone()
+        if duplicate_row is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f'A target named "{validated["name"]}" with type "{validated["target_type"]}" already exists for this asset.',
+            )
         target_id = str(uuid.uuid4())
         connection.execute(
             '''
