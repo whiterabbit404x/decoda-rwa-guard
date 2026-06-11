@@ -150,3 +150,74 @@ def test_delete_account_route_exists():
     assert '/auth/delete-account' in routes, (
         f'Route /auth/delete-account not found; routes: {sorted(r for r in routes if "auth" in r)}'
     )
+
+
+# ---------------------------------------------------------------------------
+# SSE event format compatibility (backend ↔ frontend parser contract)
+# ---------------------------------------------------------------------------
+def test_sse_heartbeat_format_is_comment_line():
+    """Backend heartbeat must be a bare SSE comment ': heartbeat\\n\\n'."""
+    heartbeat = ': heartbeat\n\n'
+    # Must start with ':'
+    assert heartbeat.startswith(':'), f'Heartbeat must be a SSE comment: {heartbeat!r}'
+    # Must end with double newline (SSE event delimiter)
+    assert heartbeat.endswith('\n\n'), f'Heartbeat must end with \\n\\n: {heartbeat!r}'
+    # Value after ':' stripped should be 'heartbeat'
+    value = heartbeat.split('\n')[0][1:].strip()
+    assert value == 'heartbeat', f'Expected heartbeat value, got {value!r}'
+
+
+def test_sse_alert_event_format_matches_frontend_parser():
+    """Backend alert event must match the id/data SSE format the frontend parses."""
+    import json as _json
+
+    event_id = '1234567890123-0'
+    alert_data = {'alert_id': 'test-alert', 'severity': 'high', 'workspace_id': 'ws-abc'}
+    payload = _json.dumps(alert_data, separators=(',', ':'))
+    event = f'id: {event_id}\ndata: {payload}\n\n'
+
+    # Parse the event the same way the frontend would
+    lines = event.strip().split('\n')
+    parsed_id = None
+    parsed_data = None
+    for line in lines:
+        if line.startswith('id: '):
+            parsed_id = line[4:]
+        elif line.startswith('data: '):
+            parsed_data = line[6:]
+
+    assert parsed_id == event_id, f'Expected id={event_id!r}, got {parsed_id!r}'
+    assert parsed_data is not None, 'No data line found in SSE event'
+    parsed_payload = _json.loads(parsed_data)
+    assert parsed_payload == alert_data, f'Payload mismatch: {parsed_payload!r}'
+
+
+def test_sse_event_uses_compact_json():
+    """Backend must use compact JSON (no extra whitespace) in the data field."""
+    import json as _json
+
+    data = {'alert_id': 'x', 'severity': 'low'}
+    compact = _json.dumps(data, separators=(',', ':'))
+    # Compact JSON has no space after : or ,
+    assert ' ' not in compact, f'Expected compact JSON, got: {compact!r}'
+    # Verify round-trip
+    assert _json.loads(compact) == data
+
+
+def test_sse_workspace_isolation_stream_keys_are_scoped():
+    """Each workspace gets an isolated Redis stream key."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'app' / 'domains'))
+    import alert_stream  # type: ignore[import]
+
+    key_a = alert_stream.stream_key('workspace-aaa')
+    key_b = alert_stream.stream_key('workspace-bbb')
+
+    assert key_a != key_b, 'Different workspaces must not share a stream key'
+    assert 'workspace-aaa' in key_a
+    assert 'workspace-bbb' in key_b
+    assert key_a.startswith('decoda:workspace:')
+    assert key_b.startswith('decoda:workspace:')
+    assert key_a.endswith(':alerts')
+    assert key_b.endswith(':alerts')

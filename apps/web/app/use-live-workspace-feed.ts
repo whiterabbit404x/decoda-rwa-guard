@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { connectAlertStream, type AlertStreamStatus } from './alert-stream-client';
 import { normalizeMonitoringMode, runtimeStatusModeFromMonitoringStatus, type MonitoringRuntimeStatus } from './monitoring-status-contract';
 import { normalizeMonitoringPresentation, type MonitoringPresentation } from './monitoring-status-presentation';
 import { usePilotAuth } from './pilot-auth-context';
@@ -25,6 +26,7 @@ type LiveWorkspaceFeed = {
   runtimeFetchDegraded: boolean;
   runtimeStatus: MonitoringRuntimeStatus | null;
   counts: LiveWorkspaceCounts;
+  streamStatus: AlertStreamStatus;
   monitoring: {
     truth: WorkspaceMonitoringTruth;
     presentation: MonitoringPresentation;
@@ -50,6 +52,9 @@ type WorkspaceFeedSnapshot = {
 };
 const inflightFeedSnapshotByWorkspace = new Map<string, Promise<WorkspaceFeedSnapshot>>();
 const recentFeedSnapshotByWorkspace = new Map<string, WorkspaceFeedSnapshot>();
+
+// Maximum event IDs tracked for SSE deduplication
+const MAX_SEEN_EVENT_IDS = 500;
 
 export function shouldLogLiveWorkspaceFeedDebug(): boolean {
   return process.env.NODE_ENV === 'development';
@@ -98,9 +103,11 @@ export function resolveRuntimeStatus(
   }
   const runtimeMode = runtimeStatusModeFromMonitoringStatus(statusPayload.monitoring_status);
   const nextRuntime = { ...statusPayload, mode: normalizeMonitoringMode(runtimeMode) };
-  const explicitlyOffline = nextRuntime.monitoring_status === 'offline';
+  // Cast to string so runtime values beyond the typed union (e.g. 'error') are handled safely.
+  const statusStr = nextRuntime.monitoring_status as string;
+  const explicitlyOffline = statusStr === 'offline' || statusStr === 'error';
   const offline = explicitlyOffline;
-  const degraded = nextRuntime.monitoring_status === 'limited';
+  const degraded = statusStr === 'limited';
   return { nextRuntime, offline, degraded, fetchWarning: false, failureStreak: 0 };
 }
 
@@ -113,10 +120,16 @@ export function useLiveWorkspaceFeed(intervalMs = 30000): LiveWorkspaceFeed {
   const [runtimeFetchDegraded, setRuntimeFetchDegraded] = useState(false);
   const [runtimeStatus, setRuntimeStatus] = useState<MonitoringRuntimeStatus | null>(null);
   const [counts, setCounts] = useState<LiveWorkspaceCounts>(DEFAULT_COUNTS);
+  const [streamStatus, setStreamStatus] = useState<AlertStreamStatus>('disconnected');
   const startedRef = useRef(false);
   const lastKnownRuntimeRef = useRef<MonitoringRuntimeStatus | null>(null);
   const runtimeFailureStreakRef = useRef(0);
   const workspaceIdRef = useRef<string | null>(null);
+  // SSE state refs
+  const sseConnectedRef = useRef(false);
+  const seenEventIdsRef = useRef(new Set<string>());
+  // Shared refresh fn so SSE effect can trigger a refresh without circular deps
+  const refreshFnRef = useRef<((forceRefresh?: boolean) => Promise<void>) | null>(null);
 
   useEffect(() => {
     workspaceIdRef.current = user?.current_workspace?.id ?? null;
@@ -133,9 +146,11 @@ export function useLiveWorkspaceFeed(intervalMs = 30000): LiveWorkspaceFeed {
       evidence_source: runtimeStatus?.workspace_monitoring_summary?.evidence_source_summary ?? null,
       appliedCounts: counts,
       lastFetchCompletedAt,
+      streamStatus,
     });
-  }, [counts, lastFetchCompletedAt, runtimeStatus, user?.current_workspace?.id]);
+  }, [counts, lastFetchCompletedAt, runtimeStatus, streamStatus, user?.current_workspace?.id]);
 
+  // Primary data-fetch effect: initial load + fallback polling when SSE is not live.
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -241,10 +256,16 @@ export function useLiveWorkspaceFeed(intervalMs = 30000): LiveWorkspaceFeed {
       }
     }
 
+    // Expose refresh so the SSE effect can trigger immediate fetches.
+    refreshFnRef.current = refresh;
+
     function schedule() {
       if (!active) return;
       timer = setTimeout(async () => {
-        await refresh();
+        // Skip HTTP poll while SSE is delivering live events.
+        if (!sseConnectedRef.current) {
+          await refresh();
+        }
         schedule();
       }, intervalMs);
     }
@@ -263,11 +284,64 @@ export function useLiveWorkspaceFeed(intervalMs = 30000): LiveWorkspaceFeed {
     window.addEventListener('pilot-history-refresh', onManualRefresh as EventListener);
     return () => {
       active = false;
+      refreshFnRef.current = null;
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('pilot-history-refresh', onManualRefresh as EventListener);
       if (timer) clearTimeout(timer);
     };
   }, [apiUrl, authHeaders, intervalMs, isAuthenticated, user?.current_workspace?.id]);
+
+  // SSE connection effect: connects to the backend alert stream and triggers
+  // immediate refreshes on alert events. Falls back to polling when disconnected.
+  useEffect(() => {
+    const workspaceId = user?.current_workspace?.id ?? null;
+
+    // Fail closed: never subscribe without a valid workspace.
+    if (!isAuthenticated || !workspaceId) {
+      sseConnectedRef.current = false;
+      setStreamStatus('disconnected');
+      return;
+    }
+
+    const headers = buildWorkspaceScopedHeaders(authHeaders, workspaceId);
+    // Clear deduplication state on new workspace connection.
+    seenEventIdsRef.current.clear();
+
+    const disconnect = connectAlertStream(headers, {
+      onConnected: () => {
+        sseConnectedRef.current = true;
+      },
+      onEvent: (event) => {
+        // Deduplicate by event ID to avoid reprocessing after reconnect.
+        if (seenEventIdsRef.current.has(event.eventId)) return;
+        seenEventIdsRef.current.add(event.eventId);
+        // Keep the seen-ID set bounded to avoid unbounded memory growth.
+        if (seenEventIdsRef.current.size > MAX_SEEN_EVENT_IDS) {
+          const oldest = seenEventIdsRef.current.values().next().value;
+          if (oldest !== undefined) seenEventIdsRef.current.delete(oldest);
+        }
+        // Trigger an immediate force-refresh so the dashboard reflects the
+        // new alert without waiting for the next polling interval.
+        const fn = refreshFnRef.current;
+        if (fn) void fn(true);
+      },
+      onHeartbeat: () => {
+        // Heartbeat confirms the SSE transport is alive; no UI update needed.
+      },
+      onStatusChange: (status) => {
+        setStreamStatus(status);
+        if (status !== 'live') {
+          sseConnectedRef.current = false;
+        }
+      },
+    });
+
+    return () => {
+      sseConnectedRef.current = false;
+      setStreamStatus('disconnected');
+      disconnect();
+    };
+  }, [isAuthenticated, authHeaders, user?.current_workspace?.id]);
 
   const truth = useMemo(() => resolveWorkspaceMonitoringTruth(runtimeStatus), [runtimeStatus]);
   const presentation = useMemo(() => normalizeMonitoringPresentation(truth), [truth]);
@@ -280,6 +354,7 @@ export function useLiveWorkspaceFeed(intervalMs = 30000): LiveWorkspaceFeed {
     runtimeFetchDegraded,
     runtimeStatus,
     counts,
+    streamStatus,
     monitoring: {
       truth,
       presentation,
