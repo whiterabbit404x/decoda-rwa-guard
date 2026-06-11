@@ -1,16 +1,16 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-10T03:33:50.138864+00:00",
+  "generated_at": "2026-06-11T04:47:15.672229+00:00",
   "launch_mode": "paid_saas",
   "proof_mode": "local",
-  "billing_provider": "paddle",
+  "billing_provider": "stripe",
   "repository": "/home/user/decoda-rwa-guard",
   "readiness_categories": {
     "live_provider_evidence_ready": false,
     "managed_pilot_ready": false,
     "niw_positioning_ready": true,
     "broad_paid_saas_ready": false,
-    "ci_required_gates_ready": true
+    "ci_required_gates_ready": false
   },
   "live_provider_evidence": {
     "artifact_available": false,
@@ -28,12 +28,20 @@
     "validator": "scripts/validate_niw_positioning.py"
   },
   "billing": {
-    "billing_ready": true,
-    "billing_webhook_ready": true,
-    "billing_status": "ready",
-    "billing_reason": "Paddle billing configured with required credentials, environment, and price ID.",
-    "billing_missing_env": [],
-    "billing_webhook_missing_env": []
+    "billing_ready": false,
+    "billing_webhook_ready": false,
+    "billing_status": "missing",
+    "billing_reason": "Stripe billing missing required env vars: ['STRIPE_SECRET_KEY', 'STRIPE_PRICE_ID']",
+    "billing_missing_env": [
+      "STRIPE_SECRET_KEY",
+      "STRIPE_PRICE_ID",
+      "STRIPE_WEBHOOK_SECRET"
+    ],
+    "billing_webhook_missing_env": [
+      "STRIPE_SECRET_KEY",
+      "STRIPE_PRICE_ID",
+      "STRIPE_WEBHOOK_SECRET"
+    ]
   },
   "email": {
     "email_ready": true,
@@ -43,10 +51,10 @@
   },
   "allowed_claims": [
     "NIW Strategic Infrastructure Guard positioning ready",
-    "paid billing configured (paddle)",
     "email provider configured"
   ],
   "prohibited_claims": [
+    "Do NOT claim paid SaaS launch is fully ready while gates are failing",
     "Do NOT claim live EVM monitoring without proven live evidence",
     "Do NOT use this local/CI proof as evidence of paid launch readiness \u2014 requires staging or production runtime"
   ],
@@ -56,14 +64,15 @@
   "broad_paid_saas_ready": false,
   "safe_to_sell_broadly_today": false,
   "readiness": {
-    "billing_ready": true,
-    "billing_webhook_ready": true,
+    "billing_ready": false,
+    "billing_webhook_ready": false,
     "email_ready": true,
     "provider_ready": false,
     "live_evidence_ready": false,
-    "ci_required_gates_ready": true
+    "ci_required_gates_ready": false
   },
   "blockers": [
+    "billing not ready \u2014 missing: ['STRIPE_SECRET_KEY', 'STRIPE_PRICE_ID', 'STRIPE_WEBHOOK_SECRET']",
     "local mode: paid launch readiness cannot be proven without staging/production runtime"
   ],
   "warnings": [],
@@ -72,21 +81,29 @@
       "name": "billing_provider",
       "passed": true,
       "details": {
-        "billing_provider": "paddle",
+        "billing_provider": "stripe",
         "is_paid_provider": true,
-        "note": "BILLING_PROVIDER='paddle' is a supported paid provider."
+        "note": "BILLING_PROVIDER='stripe' is a supported paid provider."
       }
     },
     {
       "name": "billing",
-      "passed": true,
+      "passed": false,
       "details": {
-        "billing_ready": true,
-        "billing_webhook_ready": true,
-        "billing_status": "ready",
-        "billing_reason": "Paddle billing configured with required credentials, environment, and price ID.",
-        "billing_missing_env": [],
-        "billing_webhook_missing_env": []
+        "billing_ready": false,
+        "billing_webhook_ready": false,
+        "billing_status": "missing",
+        "billing_reason": "Stripe billing missing required env vars: ['STRIPE_SECRET_KEY', 'STRIPE_PRICE_ID']",
+        "billing_missing_env": [
+          "STRIPE_SECRET_KEY",
+          "STRIPE_PRICE_ID",
+          "STRIPE_WEBHOOK_SECRET"
+        ],
+        "billing_webhook_missing_env": [
+          "STRIPE_SECRET_KEY",
+          "STRIPE_PRICE_ID",
+          "STRIPE_WEBHOOK_SECRET"
+        ]
       }
     },
     {
