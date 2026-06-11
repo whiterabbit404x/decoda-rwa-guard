@@ -76,3 +76,66 @@ def test_migration_unique_index_exists():
     assert 'name' in content
     assert 'target_type' in content
     assert 'deleted_at IS NULL' in content
+
+
+def _migration_0101_content() -> str:
+    return pathlib.Path('services/api/migrations/0101_targets_unique_name_per_asset.sql').read_text()
+
+
+# ---------------------------------------------------------------------------
+# Migration 0101: duplicate-cleanup phase runs BEFORE index creation
+# ---------------------------------------------------------------------------
+
+def test_migration_0101_soft_deletes_duplicates_not_hard_deletes():
+    content = _migration_0101_content().upper()
+    assert 'UPDATE TARGETS' in content, "0101 must UPDATE (soft-delete) duplicates, not DELETE them"
+    assert 'DELETE FROM TARGETS' not in content, "0101 must not hard-delete target rows"
+
+
+def test_migration_0101_sets_deleted_at_for_duplicates():
+    content = _migration_0101_content()
+    assert 'deleted_at' in content, "0101 must set deleted_at on duplicate rows so they are excluded from the partial index"
+    assert 'NOW()' in content, "0101 must set deleted_at = NOW() (not a constant)"
+
+
+def test_migration_0101_cleanup_uses_row_number():
+    content = _migration_0101_content().upper()
+    assert 'ROW_NUMBER()' in content, "0101 must use ROW_NUMBER() to rank duplicates"
+
+
+def test_migration_0101_cleanup_partitions_by_correct_columns():
+    content = _migration_0101_content().upper()
+    assert 'PARTITION BY WORKSPACE_ID' in content
+    assert 'ASSET_ID' in content
+
+
+def test_migration_0101_cleanup_keeps_oldest_row():
+    content = _migration_0101_content().upper()
+    assert 'ORDER BY CREATED_AT ASC' in content, "0101 must keep the oldest row (ORDER BY created_at ASC, rn=1)"
+
+
+def test_migration_0101_cleanup_targets_rn_greater_than_one():
+    content = _migration_0101_content().upper()
+    assert 'RN > 1' in content, "0101 must UPDATE only duplicate rows where rn > 1"
+
+
+def test_migration_0101_cleanup_runs_before_index_creation():
+    content = _migration_0101_content()
+    update_pos = content.upper().index('UPDATE TARGETS')
+    index_pos = content.upper().index('CREATE UNIQUE INDEX')
+    assert update_pos < index_pos, "Duplicate cleanup UPDATE must appear before CREATE UNIQUE INDEX"
+
+
+def test_migration_0101_idempotent_guard_on_update():
+    content = _migration_0101_content()
+    # The UPDATE must guard against re-processing already-soft-deleted rows
+    update_section = content[content.upper().index('UPDATE TARGETS'):]
+    assert 'deleted_at IS NULL' in update_section, (
+        "UPDATE in 0101 must include AND deleted_at IS NULL so re-running is safe"
+    )
+
+
+def test_migration_0101_has_verification_block():
+    content = _migration_0101_content().upper()
+    assert 'DO $$' in content or 'DO $' in content, "0101 must include a DO $$ verification block"
+    assert 'RAISE EXCEPTION' in content, "0101 verification block must RAISE EXCEPTION if duplicates remain"
