@@ -1598,7 +1598,24 @@ async def lifespan(_: FastAPI):
         next_retry_at=MONITORING_LOOP_RUNTIME_STATE.get('next_retry_at'),
         backoff_seconds=MONITORING_LOOP_RUNTIME_STATE.get('backoff_seconds'),
     )
-    if str(os.getenv('LIVE_MONITORING_ENABLED', 'true')).strip().lower() in {'1', 'true', 'yes', 'on'}:
+    _api_worker_enabled_val = (os.getenv('WORKER_ENABLED') or 'not_set').strip()
+    _api_worker_disabled = _api_worker_enabled_val.lower() in {'0', 'false', 'no', 'off'}
+    _api_chain_id_configured = (os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or 'not_set').strip()
+    _api_rpc_raw = (os.getenv('STAGING_EVM_RPC_URL') or os.getenv('EVM_RPC_URL') or '').strip()
+    try:
+        from urllib.parse import urlparse as _urlparse
+        _api_rpc_host = _urlparse(_api_rpc_raw).hostname or 'unconfigured'
+    except Exception:
+        _api_rpc_host = 'unconfigured'
+    logger.info(
+        'startup service_role=api WORKER_ENABLED=%s resolved_chain_id=%s rpc_host=%s',
+        _api_worker_enabled_val,
+        _api_chain_id_configured,
+        _api_rpc_host,
+    )
+    if _api_worker_disabled:
+        logger.info('startup monitoring_loop_skipped reason=WORKER_ENABLED=%s', _api_worker_enabled_val)
+    if str(os.getenv('LIVE_MONITORING_ENABLED', 'true')).strip().lower() in {'1', 'true', 'yes', 'on'} and not _api_worker_disabled:
         async def _monitoring_loop() -> None:
             global MONITORING_LOOP_RUNTIME_STATE, HAS_EMITTED_INITIAL_MONITORING_DB_DEGRADED_EVENT
             interval = max(10, int(os.getenv('MONITOR_POLL_INTERVAL_SECONDS', '30')))
