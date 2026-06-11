@@ -22,21 +22,32 @@ const EMPTY_TARGET = {
   monitoring_interval_seconds: 300,
 };
 
-export default function TargetsManager({ apiUrl }: Props) {
+export default function TargetsManager({ apiUrl: _apiUrl }: Props) {
   const { authHeaders } = usePilotAuth();
   const [targets, setTargets] = useState<Target[]>([]);
   const [assets, setAssets] = useState<any[]>([]);
   const [form, setForm] = useState<any>(EMPTY_TARGET);
   const [search, setSearch] = useState('');
   const [message, setMessage] = useState('');
+  const [assetLoadError, setAssetLoadError] = useState<string | null>(null);
 
   async function load() {
     const [targetsResponse, assetsResponse] = await Promise.all([
-      fetch(`${apiUrl}/targets`, { headers: { ...authHeaders() }, cache: 'no-store' }),
-      fetch(`${apiUrl}/assets`, { headers: { ...authHeaders() }, cache: 'no-store' }),
+      fetch('/api/targets', { headers: { ...authHeaders() }, cache: 'no-store' }),
+      fetch('/api/assets', { headers: { ...authHeaders() }, cache: 'no-store' }),
     ]);
     if (targetsResponse.ok) setTargets((await targetsResponse.json()).targets ?? []);
-    if (assetsResponse.ok) setAssets((await assetsResponse.json()).assets ?? []);
+    if (assetsResponse.ok) {
+      const payload = await assetsResponse.json();
+      const activeAssets = (payload.assets ?? []).filter(
+        (a: any) => a.enabled !== false && a.verification_status !== 'archived',
+      );
+      setAssets(activeAssets);
+      setAssetLoadError(null);
+    } else {
+      const errorPayload = await assetsResponse.json().catch(() => ({}));
+      setAssetLoadError(errorPayload.detail ?? `Unable to load assets (HTTP ${assetsResponse.status}).`);
+    }
   }
 
   async function createTarget() {
@@ -44,7 +55,7 @@ export default function TargetsManager({ apiUrl }: Props) {
       setMessage('Select an asset first. Targets define behavior monitored for a specific asset.');
       return;
     }
-    const response = await fetch(`${apiUrl}/targets`, {
+    const response = await fetch('/api/targets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(form),
@@ -58,7 +69,8 @@ export default function TargetsManager({ apiUrl }: Props) {
 
   async function toggleTarget(target: Target) {
     const enable = !(target.enabled && target.monitoring_enabled);
-    const response = await fetch(`${apiUrl}/targets/${target.id}/${enable ? 'enable' : 'disable'}`, { method: 'POST', headers: authHeaders() });
+    const action = enable ? 'enable' : 'disable';
+    const response = await fetch(`/api/monitoring/targets/${target.id}/${action}`, { method: 'POST', headers: authHeaders() });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
       setMessage(payload?.detail ?? 'Unable to update target state.');
@@ -96,6 +108,11 @@ export default function TargetsManager({ apiUrl }: Props) {
       <section id="target-create-form" className="dataCard">
         <p className="sectionEyebrow">Create target</p>
         <h2>Define behavior to monitor</h2>
+        {assetLoadError ? (
+          <p className="statusLine statusLine--error" role="alert">{assetLoadError}</p>
+        ) : assets.length === 0 ? (
+          <p className="muted">No active protected assets found. Add an asset before creating a monitoring target.</p>
+        ) : null}
         <select required value={form.asset_id} onChange={(event) => setForm({ ...form, asset_id: event.target.value })}>
           <option value="">Select asset</option>
           {assets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name} ({asset.chain_network})</option>)}
