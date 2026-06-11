@@ -1737,6 +1737,26 @@ def pilot_schema_status() -> dict[str, Any]:
 
 def demo_seed_status(email: str = DEFAULT_DEMO_EMAIL) -> dict[str, Any]:
     normalized_email = email.strip().lower() or DEFAULT_DEMO_EMAIL
+    _app_env = os.getenv('APP_ENV', '').strip().lower()
+    if _app_env in {'production', 'prod'}:
+        logger.warning(
+            'demo_seed_status called in production environment email=%r '
+            'Demo data must not enter production evidence or proof bundles. '
+            'Set ALLOW_DEMO_MODE=true only for explicit non-production use.',
+            normalized_email,
+        )
+        _allow_demo = os.getenv('ALLOW_DEMO_MODE', 'false').strip().lower()
+        if _allow_demo not in {'1', 'true', 'yes', 'on'}:
+            return {
+                'present': False,
+                'status': 'production_demo_disabled',
+                'email': normalized_email,
+                'reason': (
+                    'Demo seed data is disabled in production. '
+                    'Demo data must not flow into production dashboards or evidence exports. '
+                    'Set ALLOW_DEMO_MODE=true to override (not recommended for production).'
+                ),
+            }
     if not live_mode_enabled():
         return {
             'present': False,
@@ -15832,10 +15852,10 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             core_present = bool(alert_rows and detection_rows and action_rows and evidence_rows)
             export_status = 'complete' if core_present else ('partial' if (alert_rows or detection_rows or action_rows) else 'incomplete')
 
-            # Determine source truthfulness status
+            # Determine source truthfulness status — no "verified" prefix for non-live sources
             source_truthfulness_status = 'verified_live' if evidence_source_type == 'live' else (
-                'verified_simulator' if evidence_source_type == 'simulator' else (
-                    'unavailable' if evidence_source_type == 'unavailable' else (
+                'simulator_only' if evidence_source_type == 'simulator' else (
+                    'fallback_degraded' if evidence_source_type == 'unavailable' else (
                         'fixture_only' if evidence_source_type == 'fixture' else 'unknown'
                     )
                 )
@@ -15856,29 +15876,56 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             else:
                 source_truthfulness_reason = 'Evidence source type is unknown.'
 
+            # Compute evidence provenance fields
+            from services.api.app.runtime_truthfulness import classify_evidence_state
+            from services.api.app.evidence_signing import _is_production_like
+            _evidence_state = classify_evidence_state(evidence_source_type)
+            _verified_live = evidence_source_type == 'live'
+            _exportable_as_verified = _verified_live
+
             # Build warnings
-            # Fail-closed package_status — uses canonical evidence_source and source_truthfulness_status
+            # Fail-closed package_status — uses canonical evidence_source and source_truthfulness_status.
+            # Non-live evidence is never 'complete' for verified proof purposes.
             _pkg_has_evidence = bool(alert_rows or detection_rows or action_rows or evidence_rows)
             _pkg_status = (
                 'complete' if (
                     export_status == 'complete'
+                    and evidence_source_type == 'live'
                     and evidence_source not in {'unknown', 'unavailable'}
-                    and source_truthfulness_status not in {'unknown', 'unavailable'}
+                    and source_truthfulness_status == 'verified_live'
                 )
                 else ('partial' if _pkg_has_evidence else 'blocked')
             )
+            # Degrade to 'degraded_diagnostic' when non-live evidence is present
+            if _pkg_status in {'complete', 'partial'} and evidence_source_type != 'live':
+                _pkg_status = 'degraded_diagnostic'
 
             bundle_warnings: list[str] = []
             if evidence_source_type == 'simulator':
                 bundle_warnings.append('Evidence is from simulator/demo source and does not constitute live production proof.')
+                bundle_warnings.append('FALLBACK / NOT LIVE EVIDENCE - NOT SUITABLE FOR VERIFIED COMPLIANCE ATTESTATION')
             elif evidence_source_type == 'fixture':
                 bundle_warnings.append('Evidence is from a test fixture and does not constitute live production proof.')
+                bundle_warnings.append('FALLBACK / NOT LIVE EVIDENCE - NOT SUITABLE FOR VERIFIED COMPLIANCE ATTESTATION')
             elif evidence_source_type == 'unavailable':
                 bundle_warnings.append('Evidence source was unavailable at collection time. Bundle may contain fallback data.')
+                bundle_warnings.append('FALLBACK / NOT LIVE EVIDENCE - NOT SUITABLE FOR VERIFIED COMPLIANCE ATTESTATION')
             elif evidence_source_type == 'missing':
                 bundle_warnings.append('No evidence source records found. Bundle is incomplete.')
             if missing_sections:
                 bundle_warnings.append(f'Missing chain sections: {", ".join(missing_sections)}. Bundle is partial.')
+
+            # Production gate: non-live evidence must never be exported as verified live
+            if _is_production_like() and evidence_source_type != 'live':
+                bundle_warnings.append(
+                    'PRODUCTION ENVIRONMENT: Cannot produce verified live proof bundle from '
+                    'simulator or fallback evidence. '
+                    'Cannot produce verified live proof bundle from simulator or fallback evidence.'
+                )
+                bundle_warnings.append(
+                    'This export is degraded_diagnostic only and cannot be used for '
+                    'regulatory, legal, or verified compliance attestation.'
+                )
 
             incident_dict = _json_safe_value(dict(incident))
 
@@ -15957,6 +16004,9 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 'redactions_applied': False,
                 'chain_complete': export_status == 'complete',
                 'customer_summary': customer_summary,
+                'evidence_state': _evidence_state,
+                'verified_live': _verified_live,
+                'exportable_as_verified': _exportable_as_verified,
             }
             _bundle_data: dict[str, Any] = {
                 'summary.json': summary,

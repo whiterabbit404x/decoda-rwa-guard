@@ -5335,6 +5335,10 @@ def fallback_compliance_dashboard() -> dict[str, Any]:
             'transfer-blocked-because-asset-paused': 'Transfer blocked because the asset is paused.',
         },
         'message': 'Compliance service unavailable or timed out. Returning explicit fallback policy wrappers and governance ledger records so Feature 3 remains demoable.',
+        'evidence_state': 'FALLBACK_EVIDENCE',
+        'verified_live': False,
+        'exportable_as_verified': False,
+        'reason': 'compliance-service unreachable; deterministic gateway wrappers returned as fallback',
     }
 
 
@@ -5382,6 +5386,10 @@ def fallback_transfer_screening(payload: dict[str, Any]) -> dict[str, Any]:
         'policy_snapshot': fallback_compliance_dashboard()['policy_state'],
         'source': 'fallback',
         'degraded': True,
+        'evidence_state': 'FALLBACK_EVIDENCE',
+        'verified_live': False,
+        'exportable_as_verified': False,
+        'reason': 'compliance-service unreachable; deterministic transfer rules applied as fallback',
     }
 
 
@@ -5406,6 +5414,10 @@ def fallback_residency_screening(payload: dict[str, Any]) -> dict[str, Any]:
         'allowed_region_outcome': 'eu-west' if violations else requested,
         'source': 'fallback',
         'degraded': True,
+        'evidence_state': 'FALLBACK_EVIDENCE',
+        'verified_live': False,
+        'exportable_as_verified': False,
+        'reason': 'compliance-service unreachable; deterministic residency rules applied as fallback',
     }
 
 
@@ -5421,6 +5433,10 @@ def fallback_governance_action(payload: dict[str, Any]) -> dict[str, Any]:
         'policy_effects': [effect],
         'source': 'fallback',
         'degraded': True,
+        'evidence_state': 'FALLBACK_EVIDENCE',
+        'verified_live': False,
+        'exportable_as_verified': False,
+        'reason': 'compliance-service unreachable; governance action recorded locally as fallback',
     }
 
 
@@ -5472,6 +5488,10 @@ def fallback_resilience_dashboard() -> dict[str, Any]:
             'recovery-normal-mode-after-alert': 'Recovery scenario returning to normal mode after prior alert.',
         },
         'message': 'Reconciliation-service unavailable or timed out. Returning explicit fallback resilience data so Feature 4 remains demoable.',
+        'evidence_state': 'FALLBACK_EVIDENCE',
+        'verified_live': False,
+        'exportable_as_verified': False,
+        'reason': 'reconciliation-service unreachable; deterministic backstop and reconciliation data returned as fallback',
     }
 
 
@@ -5538,6 +5558,10 @@ def fallback_reconcile_state(payload: dict[str, Any]) -> dict[str, Any]:
         'ledger_assessments': assessments,
         'source': 'fallback',
         'degraded': True,
+        'evidence_state': 'FALLBACK_EVIDENCE',
+        'verified_live': False,
+        'exportable_as_verified': False,
+        'reason': 'reconciliation-service unreachable; gateway normalization applied as fallback',
     }
 
 
@@ -5596,6 +5620,10 @@ def fallback_backstop_evaluate(payload: dict[str, Any]) -> dict[str, Any]:
         'explainability_summary': f"Fallback backstop decision {decision} for {payload.get('asset_id', 'USTB-2026')}.",
         'source': 'fallback',
         'degraded': True,
+        'evidence_state': 'FALLBACK_EVIDENCE',
+        'verified_live': False,
+        'exportable_as_verified': False,
+        'reason': 'reconciliation-service unreachable; deterministic safeguard rules applied as fallback',
     }
 
 
@@ -5617,6 +5645,10 @@ def fallback_incident_record(payload: dict[str, Any]) -> dict[str, Any]:
         'fingerprint': 'fallback-inciden',
         'source': 'fallback',
         'degraded': True,
+        'evidence_state': 'FALLBACK_EVIDENCE',
+        'verified_live': False,
+        'exportable_as_verified': False,
+        'reason': 'reconciliation-service unreachable; incident recorded locally at API gateway as fallback',
     }
 
 

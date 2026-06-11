@@ -293,7 +293,28 @@ def _ensure_workspace_live_rpc_proof_chain(
     metadata, matching on-chain transaction activity, and a non-informational
     detector result. Incidents and response actions are optional and are only
     returned when the detector policy already created them.
+
+    Production gate: if APP_ENV=production/prod/staging and LIVE_MODE is
+    disabled, simulator evidence is explicitly rejected — it can never produce
+    a verified live proof bundle.
     """
+    _app_env = os.getenv('APP_ENV', '').strip().lower()
+    _live_mode = os.getenv('LIVE_MODE', 'true').strip().lower()
+    _is_prod = _app_env in {'production', 'prod', 'staging'}
+    _is_sim_mode = _live_mode in {'false', '0', 'no', 'off', 'simulator', 'demo'}
+
+    if _is_prod and _is_sim_mode:
+        return {
+            'created': False,
+            'reason': 'simulator_rejected_in_production',
+            'error': (
+                'Cannot produce verified live proof bundle from simulator or fallback evidence. '
+                'APP_ENV=production requires LIVE_MODE=true and live provider evidence.'
+            ),
+            'evidence_state': 'SIMULATOR_EVIDENCE',
+            'verified_live': False,
+        }
+
     row = connection.execute(
         r"""
         SELECT
