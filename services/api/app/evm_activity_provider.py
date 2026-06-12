@@ -427,6 +427,9 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
                 )
                 payload['observed_at'] = observed_at.isoformat()
                 payload['event_type'] = 'transaction' if target_type == 'wallet' else 'contract_interaction'
+                payload['source_type'] = 'rpc_polling'
+                if target_type == 'wallet' and target_address in {tx_to, tx_from}:
+                    payload['wallet_transfer_direction'] = 'outbound' if tx_from == target_address else 'inbound'
                 kind = 'transaction' if target_type == 'wallet' else 'contract'
                 events.append(ActivityEvent(event_id=_make_event_id(str(target['id']), cursor_value, kind), kind=kind, observed_at=observed_at, ingestion_source=preferred_source, cursor=cursor_value, payload=payload))
 

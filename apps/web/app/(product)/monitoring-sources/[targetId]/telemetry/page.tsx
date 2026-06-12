@@ -85,13 +85,22 @@ function shortenAddress(addr: string): string {
 
 type EventKind = 'wallet_transfer' | 'block_poll' | 'unknown';
 
-function classifyEvent(payload: Record<string, unknown> | null | undefined): EventKind {
-  if (!payload) return 'unknown';
+function classifyEvent(
+  payload: Record<string, unknown> | null | undefined,
+  sourceType?: string | null,
+): EventKind {
+  if (!payload) return sourceType === 'rpc_polling' ? 'block_poll' : 'unknown';
   const txHash = extractField(payload, 'tx_hash', 'transactionHash', 'hash');
   const fromAddr = extractField(payload, 'from', 'from_address', 'fromAddress');
   const toAddr = extractField(payload, 'to', 'to_address', 'toAddress');
   if (txHash || (fromAddr && toAddr)) return 'wallet_transfer';
-  if ('eth_blockNumber' in payload || typeof payload.result === 'string') return 'block_poll';
+  if (
+    payload.telemetry_kind === 'coverage' ||
+    sourceType === 'rpc_polling' ||
+    'eth_blockNumber' in payload ||
+    typeof payload.result === 'string'
+  )
+    return 'block_poll';
   return 'unknown';
 }
 
@@ -119,7 +128,7 @@ function matchesSearch(row: TelemetryRow, query: string): boolean {
 
 function matchesQuickFilter(row: TelemetryRow, filter: QuickFilter): boolean {
   if (filter === 'all') return true;
-  const kind = classifyEvent(row.payload_json);
+  const kind = classifyEvent(row.payload_json, row.source_type);
   if (filter === 'wallet_transfers') return kind === 'wallet_transfer';
   if (filter === 'rpc_polling') return kind === 'block_poll';
   if (filter === 'alerts_only') return kind === 'wallet_transfer';
@@ -138,7 +147,7 @@ function TelemetryDetailModal({
   onClose: () => void;
 }) {
   const payload = row.payload_json;
-  const kind = classifyEvent(payload);
+  const kind = classifyEvent(payload, row.source_type);
   const jsonString = safeJson(payload);
 
   const txHash = extractField(payload, 'tx_hash', 'transactionHash', 'hash');
@@ -457,6 +466,13 @@ function TelemetryDetailModal({
   );
 }
 
+function buildTelemetryUrl(targetId: string, q: string): string {
+  const base = `/api/monitoring/targets/${encodeURIComponent(targetId)}/telemetry`;
+  const trimmed = q.trim();
+  if (!trimmed) return `${base}?limit=200`;
+  return `${base}?limit=200&q=${encodeURIComponent(trimmed)}`;
+}
+
 export default function TargetTelemetryPage() {
   const params = useParams();
   const targetId = typeof params?.targetId === 'string' ? params.targetId : '';
@@ -467,13 +483,21 @@ export default function TargetTelemetryPage() {
   const [loadError, setLoadError] = useState('');
   const [selectedRow, setSelectedRow] = useState<TelemetryRow | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
   const [quickFilter, setQuickFilter] = useState<QuickFilter>('all');
   const [copiedTxId, setCopiedTxId] = useState<string | null>(null);
 
   const { authHeaders } = usePilotAuth();
 
+  // Debounce the search so backend is called 400ms after the user stops typing
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(searchQuery), 400);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  // Client-side filter applied on top of whatever the backend returned
   const filteredRows = rows.filter(
-    (row) => matchesSearch(row, searchQuery) && matchesQuickFilter(row, quickFilter),
+    (row) => matchesSearch(row, debouncedQuery) && matchesQuickFilter(row, quickFilter),
   );
 
   useEffect(() => {
@@ -482,7 +506,7 @@ export default function TargetTelemetryPage() {
     setLoading(true);
     setLoadError('');
 
-    fetch(`/api/monitoring/targets/${encodeURIComponent(targetId)}/telemetry`, {
+    fetch(buildTelemetryUrl(targetId, debouncedQuery), {
       headers: authHeaders(),
       cache: 'no-store',
       signal: controller.signal,
@@ -510,7 +534,7 @@ export default function TargetTelemetryPage() {
 
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targetId, authHeaders]);
+  }, [targetId, debouncedQuery, authHeaders]);
 
   return (
     <main className="productPage">
@@ -672,7 +696,7 @@ export default function TargetTelemetryPage() {
           ) : (
             filteredRows.map((row) => {
               const payload = row.payload_json;
-              const kind = classifyEvent(payload);
+              const kind = classifyEvent(payload, row.source_type);
               const txHash = extractField(payload, 'tx_hash', 'transactionHash', 'hash');
               const fromAddr = extractField(payload, 'from', 'from_address', 'fromAddress');
               const toAddr = extractField(payload, 'to', 'to_address', 'toAddress');
