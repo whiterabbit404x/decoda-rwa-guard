@@ -1,8 +1,8 @@
 'use client';
 
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { useEffect, useState } from 'react';
 
 import { TableShell } from '../../../../components/ui-primitives';
 import { usePilotAuth } from '../../../../pilot-auth-context';
@@ -48,6 +48,353 @@ function safeJson(value: unknown): string {
   }
 }
 
+function extractField(
+  payload: Record<string, unknown> | null | undefined,
+  ...keys: string[]
+): string | null {
+  if (!payload) return null;
+  for (const key of keys) {
+    const val = payload[key];
+    if (typeof val === 'string' && val.length > 0) return val;
+    if (typeof val === 'number') return String(val);
+  }
+  return null;
+}
+
+type EventKind = 'wallet_transfer' | 'block_poll' | 'unknown';
+
+function classifyEvent(payload: Record<string, unknown> | null | undefined): EventKind {
+  if (!payload) return 'unknown';
+  const txHash = extractField(payload, 'tx_hash', 'transactionHash', 'hash');
+  const fromAddr = extractField(payload, 'from', 'from_address', 'fromAddress');
+  const toAddr = extractField(payload, 'to', 'to_address', 'toAddress');
+  if (txHash || (fromAddr && toAddr)) return 'wallet_transfer';
+  if ('eth_blockNumber' in payload || typeof payload.result === 'string') return 'block_poll';
+  return 'unknown';
+}
+
+const BASE_CHAIN_ID = '8453';
+const BASESCAN_TX_BASE = 'https://basescan.org/tx/';
+
+function TelemetryDetailModal({
+  row,
+  onClose,
+}: {
+  row: TelemetryRow;
+  onClose: () => void;
+}) {
+  const payload = row.payload_json;
+  const kind = classifyEvent(payload);
+  const jsonString = safeJson(payload);
+
+  const txHash = extractField(payload, 'tx_hash', 'transactionHash', 'hash');
+  const fromAddr = extractField(payload, 'from', 'from_address', 'fromAddress');
+  const toAddr = extractField(payload, 'to', 'to_address', 'toAddress');
+  const amount = extractField(payload, 'amount', 'value', 'amount_wei');
+  const blockNum =
+    row.block_number != null
+      ? String(row.block_number)
+      : extractField(payload, 'block_number', 'blockNumber');
+
+  const [copiedJson, setCopiedJson] = useState(false);
+  const [copiedTx, setCopiedTx] = useState(false);
+
+  const copyJson = useCallback(() => {
+    navigator.clipboard.writeText(jsonString).then(() => {
+      setCopiedJson(true);
+      setTimeout(() => setCopiedJson(false), 2000);
+    }).catch(() => {});
+  }, [jsonString]);
+
+  const copyTxHash = useCallback(() => {
+    if (!txHash) return;
+    navigator.clipboard.writeText(txHash).then(() => {
+      setCopiedTx(true);
+      setTimeout(() => setCopiedTx(false), 2000);
+    }).catch(() => {});
+  }, [txHash]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  const isBaseScan = row.chain_id === BASE_CHAIN_ID;
+
+  const summaryFields: Array<[string, string | null]> = [
+    ['Event type', row.source_type ?? null],
+    ['Chain ID', row.chain_id ?? null],
+    ['Block number', blockNum],
+    ['Observed at', row.observed_at ? fmt(row.observed_at) : null],
+    ['Evidence source', row.evidence_source ?? null],
+    ['Provider / source', row.provider_type ?? null],
+    ['From address', fromAddr],
+    ['To address', toAddr],
+    ['Amount', amount],
+  ];
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Telemetry event details"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 1000,
+        display: 'flex',
+        alignItems: 'flex-start',
+        justifyContent: 'center',
+        background: 'rgba(0, 0, 0, 0.72)',
+        padding: '2rem 1rem',
+        overflowY: 'auto',
+      }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        style={{
+          background: 'var(--bg-surface)',
+          border: '1px solid var(--border-accent)',
+          borderRadius: 'var(--radius-lg)',
+          width: '100%',
+          maxWidth: '720px',
+          padding: '1.5rem',
+          marginBottom: '2rem',
+        }}
+      >
+        {/* Modal header */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            marginBottom: '1rem',
+          }}
+        >
+          <div>
+            <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700 }}>
+              Telemetry Event Details
+            </h2>
+            <p
+              className="muted"
+              style={{ margin: '0.2rem 0 0', fontSize: '0.78rem', fontFamily: 'monospace' }}
+            >
+              {row.id}
+            </p>
+          </div>
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={onClose}
+            style={{
+              background: 'none',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-xs)',
+              color: 'var(--text-secondary)',
+              cursor: 'pointer',
+              fontSize: '0.9rem',
+              lineHeight: 1,
+              padding: '0.3rem 0.65rem',
+            }}
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Event classification banner */}
+        {kind === 'wallet_transfer' && (
+          <div
+            style={{
+              background: 'var(--success-bg)',
+              border: '1px solid var(--success-bdr)',
+              borderRadius: 'var(--radius-sm)',
+              color: 'var(--success-fg)',
+              display: 'inline-flex',
+              fontSize: '0.82rem',
+              fontWeight: 600,
+              marginBottom: '1rem',
+              padding: '0.35rem 0.85rem',
+            }}
+          >
+            Wallet transfer detected
+          </div>
+        )}
+        {kind === 'block_poll' && (
+          <div
+            style={{
+              background: 'var(--info-bg)',
+              border: '1px solid var(--info-bdr)',
+              borderRadius: 'var(--radius-sm)',
+              color: 'var(--info-fg)',
+              display: 'inline-flex',
+              fontSize: '0.82rem',
+              fontWeight: 600,
+              marginBottom: '1rem',
+              padding: '0.35rem 0.85rem',
+            }}
+          >
+            RPC polling heartbeat — no wallet transfer detected
+          </div>
+        )}
+
+        {/* Human-readable summary grid */}
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'max-content 1fr',
+            columnGap: '1.25rem',
+            rowGap: '0.45rem',
+            marginBottom: '1.25rem',
+            fontSize: '0.875rem',
+          }}
+        >
+          {summaryFields
+            .filter(([, v]) => v != null && v !== '')
+            .map(([label, value]) => (
+              <Fragment key={label}>
+                <span className="muted" style={{ whiteSpace: 'nowrap', alignSelf: 'center' }}>
+                  {label}:
+                </span>
+                <code
+                  style={{
+                    fontFamily: 'monospace',
+                    fontSize: '0.82rem',
+                    wordBreak: 'break-all',
+                    color: 'var(--text-primary)',
+                  }}
+                >
+                  {value}
+                </code>
+              </Fragment>
+            ))}
+
+          {/* Transaction hash with optional Basescan link */}
+          {txHash && (
+            <Fragment key="tx_hash">
+              <span className="muted" style={{ whiteSpace: 'nowrap', alignSelf: 'center' }}>
+                Transaction hash:
+              </span>
+              <span
+                style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}
+              >
+                <code
+                  style={{
+                    fontFamily: 'monospace',
+                    fontSize: '0.82rem',
+                    wordBreak: 'break-all',
+                    color: 'var(--text-primary)',
+                  }}
+                >
+                  {txHash}
+                </code>
+                {isBaseScan && (
+                  <a
+                    href={`${BASESCAN_TX_BASE}${txHash}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      color: 'var(--text-accent)',
+                      fontSize: '0.78rem',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    View on Basescan ↗
+                  </a>
+                )}
+              </span>
+            </Fragment>
+          )}
+        </div>
+
+        {/* Raw payload toolbar */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            marginBottom: '0.5rem',
+          }}
+        >
+          <span
+            style={{
+              fontSize: '0.75rem',
+              fontWeight: 600,
+              color: 'var(--text-secondary)',
+              textTransform: 'uppercase',
+              letterSpacing: '0.07em',
+            }}
+          >
+            Raw payload
+          </span>
+          <div style={{ display: 'flex', gap: '0.4rem' }}>
+            {txHash && (
+              <button
+                type="button"
+                onClick={copyTxHash}
+                style={{
+                  background: copiedTx ? 'var(--success-bg)' : 'transparent',
+                  border: '1px solid var(--border)',
+                  borderRadius: 'var(--radius-xs)',
+                  color: copiedTx ? 'var(--success-fg)' : 'var(--text-secondary)',
+                  cursor: 'pointer',
+                  fontSize: '0.75rem',
+                  padding: '0.25rem 0.65rem',
+                  transition: 'color 0.15s, background 0.15s',
+                }}
+              >
+                {copiedTx ? 'Copied!' : 'Copy Tx Hash'}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={copyJson}
+              style={{
+                background: copiedJson ? 'var(--success-bg)' : 'transparent',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-xs)',
+                color: copiedJson ? 'var(--success-fg)' : 'var(--text-secondary)',
+                cursor: 'pointer',
+                fontSize: '0.75rem',
+                padding: '0.25rem 0.65rem',
+                transition: 'color 0.15s, background 0.15s',
+              }}
+            >
+              {copiedJson ? 'Copied!' : 'Copy JSON'}
+            </button>
+          </div>
+        </div>
+
+        {/* Dark-mode JSON viewer */}
+        <pre
+          style={{
+            background: 'var(--bg-base)',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-sm)',
+            color: 'var(--text-primary)',
+            fontFamily: '"Cascadia Code", "JetBrains Mono", "Fira Code", Consolas, monospace',
+            fontSize: '0.78rem',
+            lineHeight: 1.65,
+            margin: 0,
+            maxHeight: '360px',
+            overflowX: 'auto',
+            overflowY: 'auto',
+            padding: '1rem',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-all',
+          }}
+        >
+          {jsonString}
+        </pre>
+      </div>
+    </div>
+  );
+}
+
 export default function TargetTelemetryPage() {
   const params = useParams();
   const targetId = typeof params?.targetId === 'string' ? params.targetId : '';
@@ -56,6 +403,7 @@ export default function TargetTelemetryPage() {
   const [workspaceId, setWorkspaceId] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
+  const [selectedRow, setSelectedRow] = useState<TelemetryRow | null>(null);
 
   const { authHeaders } = usePilotAuth();
 
@@ -73,7 +421,8 @@ export default function TargetTelemetryPage() {
       .then(async (res) => {
         const payload = await res.json().catch(() => ({}));
         if (!res.ok) {
-          const detail = typeof payload?.detail === 'string' ? payload.detail : `HTTP ${res.status}`;
+          const detail =
+            typeof payload?.detail === 'string' ? payload.detail : `HTTP ${res.status}`;
           setLoadError(`Unable to load telemetry: ${detail}`);
           return;
         }
@@ -84,7 +433,9 @@ export default function TargetTelemetryPage() {
       })
       .catch((err: unknown) => {
         if ((err as { name?: string }).name === 'AbortError') return;
-        setLoadError(`Network error: ${err instanceof Error ? err.message : 'unknown error'}`);
+        setLoadError(
+          `Network error: ${err instanceof Error ? err.message : 'unknown error'}`,
+        );
       })
       .finally(() => setLoading(false));
 
@@ -94,6 +445,10 @@ export default function TargetTelemetryPage() {
 
   return (
     <main className="productPage">
+      {selectedRow && (
+        <TelemetryDetailModal row={selectedRow} onClose={() => setSelectedRow(null)} />
+      )}
+
       <div style={{ marginBottom: '1.25rem' }}>
         <Link
           href="/monitoring-sources"
@@ -113,9 +468,9 @@ export default function TargetTelemetryPage() {
 
       <div
         style={{
-          background: 'var(--surface-secondary, #f8f9fa)',
-          border: '1px solid var(--border-subtle, #e5e7eb)',
-          borderRadius: '6px',
+          background: 'var(--bg-surface)',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--radius-sm)',
           padding: '0.75rem 1rem',
           marginBottom: '1.25rem',
           fontSize: '0.85rem',
@@ -147,8 +502,8 @@ export default function TargetTelemetryPage() {
           style={{
             padding: '2.5rem 1.5rem',
             textAlign: 'center',
-            border: '1px solid var(--border-subtle, #e5e7eb)',
-            borderRadius: '8px',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-md)',
             color: 'var(--text-muted)',
           }}
         >
@@ -172,7 +527,9 @@ export default function TargetTelemetryPage() {
             rows.map((row) => (
               <tr key={row.id}>
                 <td>
-                  <code style={{ fontFamily: 'monospace', fontSize: '0.78rem' }}>{row.id.slice(0, 8)}…</code>
+                  <code style={{ fontFamily: 'monospace', fontSize: '0.78rem' }}>
+                    {row.id.slice(0, 8)}…
+                  </code>
                 </td>
                 <td>{row.provider_type ?? '-'}</td>
                 <td>{row.source_type ?? '-'}</td>
@@ -182,24 +539,21 @@ export default function TargetTelemetryPage() {
                 <td style={{ whiteSpace: 'nowrap' }}>{fmt(row.observed_at)}</td>
                 <td>
                   {row.payload_json != null ? (
-                    <details>
-                      <summary style={{ cursor: 'pointer', fontSize: '0.78rem', color: 'var(--text-accent)' }}>
-                        View
-                      </summary>
-                      <pre
-                        style={{
-                          fontSize: '0.72rem',
-                          maxWidth: '320px',
-                          overflow: 'auto',
-                          margin: '0.25rem 0 0',
-                          background: 'var(--surface-secondary, #f8f9fa)',
-                          padding: '0.5rem',
-                          borderRadius: '4px',
-                        }}
-                      >
-                        {safeJson(row.payload_json)}
-                      </pre>
-                    </details>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedRow(row)}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: 'var(--text-accent)',
+                        cursor: 'pointer',
+                        fontSize: '0.78rem',
+                        padding: 0,
+                        textDecoration: 'underline',
+                      }}
+                    >
+                      View
+                    </button>
                   ) : (
                     <span className="muted">-</span>
                   )}
