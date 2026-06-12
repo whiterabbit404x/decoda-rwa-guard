@@ -12,10 +12,18 @@ function deriveBannerState(summary: WorkspaceMonitoringTruth): BannerState {
   if (summary.db_failure_reason) return 'OFFLINE';
   // Backend-authoritative live verdict: trust live_runtime_verified or a clean live runtime
   // (no derived guard flags) when the API has not reported an error.
+  const noHardGuards = (summary.guard_flags ?? []).length === 0;
   if (
     summary.status_reason !== 'summary_unavailable' &&
     (summary.status_reason === 'live_runtime_verified' ||
-      (summary.runtime_status === 'live' && (summary.guard_flags ?? []).length === 0))
+      (summary.runtime_status === 'live' && noHardGuards))
+  ) return 'LIVE';
+  // A clean workspace (no threats yet) has runtime_status='healthy' and monitoring_status='live'.
+  // The full detection → alert → incident chain is not required when there are no threats.
+  if (
+    summary.status_reason !== 'summary_unavailable' &&
+    hasLiveTelemetry(summary) &&
+    noHardGuards
   ) return 'LIVE';
   // Only show OFFLINE when the API returned a confirmed offline status — not when the
   // runtime-status call itself failed (status_reason === 'summary_unavailable').
@@ -80,18 +88,21 @@ function buildChecklist(summary: WorkspaceMonitoringTruth, workerHealth: WorkerH
   const hasPoll = liveVerified || Boolean(summary.last_poll_at);
   const hasTelemetry = liveVerified || Boolean(summary.last_telemetry_at);
   // Detection step: done if a detection event exists, OR if monitoring has evaluated fresh live
-  // telemetry with no guards firing (clean evaluation → no threats detected).
+  // telemetry with no hard guards firing (clean evaluation → no threats detected).
+  // Soft contradictions (e.g. workspace_configured_missing_required_links) are metadata
+  // races that do not invalidate live telemetry, so only guard_flags (hard) are checked.
   const cleanLiveEvaluation =
     hasTelemetry &&
     summary.reporting_systems_count > 0 &&
     summary.telemetry_freshness === 'fresh' &&
-    summary.guard_flags.length === 0 &&
-    summary.contradiction_flags.length === 0;
+    summary.guard_flags.length === 0;
   const hasDetection = Boolean(summary.last_detection_at) || cleanLiveEvaluation;
   // Alert step: done when there are active alerts/incidents, OR when detection is done and
   // there is nothing to alert on (clean monitoring with no anomalies).
+  // Soft contradiction flags do not indicate a threat — a clean wallet is legitimately LIVE.
+  const noHardContradictions = summary.guard_flags.length === 0;
   const hasAlert = summary.active_alerts_count > 0 || summary.active_incidents_count > 0
-    || (Boolean(summary.last_detection_at) && summary.contradiction_flags.length === 0)
+    || (Boolean(summary.last_detection_at) && noHardContradictions)
     || liveVerified
     || cleanLiveEvaluation;
   const workerRunning = liveVerified || workerHealth.status === 'running' || hasHeartbeat;

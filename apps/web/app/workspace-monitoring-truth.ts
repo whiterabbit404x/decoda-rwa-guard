@@ -344,8 +344,13 @@ export function resolveWorkspaceMonitoringTruth(status: MonitoringRuntimeStatus 
 
 export function hasLiveTelemetry(truth: WorkspaceMonitoringTruth): boolean {
   const telemetryTimestamp = truth.last_telemetry_at ?? truth.last_coverage_telemetry_at ?? null;
+  // monitoring_status='live' is set by the backend when runtime is healthy/live AND telemetry
+  // is fresh.  For clean workspaces (no threats yet) runtime_status stays 'healthy' rather
+  // than 'live' (live requires the full detection → alert → incident chain).  Accept both so
+  // clean wallets with fresh live telemetry reach LIVE coverage status.
   const monitoringStatus = truth.monitoring_status ?? (truth.runtime_status === 'live' ? 'live' : 'limited');
-  return truth.runtime_status === 'live'
+  const runtimeIsActive = truth.runtime_status === 'live' || truth.runtime_status === 'healthy';
+  return runtimeIsActive
     && truth.workspace_configured
     && monitoringStatus === 'live'
     && truth.evidence_source_summary === 'live'
@@ -354,8 +359,7 @@ export function hasLiveTelemetry(truth: WorkspaceMonitoringTruth): boolean {
     && truth.reporting_systems_count > 0
     && Boolean(telemetryTimestamp)
     && (truth.guard_flags ?? []).length === 0
-    && !truth.db_failure_reason
-    && (truth.contradiction_flags ?? []).length === 0;
+    && !truth.db_failure_reason;
 }
 
 export function hasRealTelemetryBackedChain(truth: WorkspaceMonitoringTruth): boolean {
