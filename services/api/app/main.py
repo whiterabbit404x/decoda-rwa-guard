@@ -1953,6 +1953,22 @@ async def log_monitoring_reconcile_transport(request: Request, call_next):
     return response
 
 
+async def _call_next_safe(request: Request, call_next):
+    """Wrap call_next so that a client disconnect / No-response-returned RuntimeError
+    returns a 503 instead of propagating as an unhandled exception that floods logs."""
+    try:
+        return await call_next(request)
+    except RuntimeError as exc:
+        if 'No response returned' in str(exc):
+            logger.debug(
+                'middleware_client_disconnect_no_response method=%s path=%s',
+                request.method,
+                request.url.path,
+            )
+            return Response(status_code=503)
+        raise
+
+
 @app.middleware('http')
 async def log_disallowed_cors_origin(request: Request, call_next):
     origin = request.headers.get('origin', '').strip()
@@ -1965,7 +1981,7 @@ async def log_disallowed_cors_origin(request: Request, call_next):
                 request.method,
                 request.url.path,
             )
-    return await call_next(request)
+    return await _call_next_safe(request, call_next)
 
 
 _CSRF_SAFE_METHODS = frozenset({'GET', 'HEAD', 'OPTIONS'})
@@ -1990,25 +2006,25 @@ _CSRF_EXEMPT_PREFIXES = (
 @app.middleware('http')
 async def enforce_csrf_on_mutations(request: Request, call_next):
     if request.method in _CSRF_SAFE_METHODS:
-        return await call_next(request)
+        return await _call_next_safe(request, call_next)
     # CSRF enforcement requires AUTH_TOKEN_SECRET to sign/validate tokens.
     # Without it the entire auth system is non-functional, so skip in that case.
     if not auth_token_secret_configured():
-        return await call_next(request)
+        return await _call_next_safe(request, call_next)
     path = request.url.path
     for prefix in _CSRF_EXEMPT_PREFIXES:
         if path == prefix or path.startswith(prefix + '/'):
-            return await call_next(request)
+            return await _call_next_safe(request, call_next)
     authorization = request.headers.get('authorization', '')
     if not authorization.startswith('Bearer '):
-        return await call_next(request)
+        return await _call_next_safe(request, call_next)
     csrf_token = request.headers.get('x-csrf-token', '').strip()
     if not csrf_token or not validate_csrf_token(csrf_token):
         return JSONResponse(
             {'detail': 'CSRF token missing or invalid.', 'code': 'CSRF_INVALID'},
             status_code=403,
         )
-    return await call_next(request)
+    return await _call_next_safe(request, call_next)
 
 
 # ---------------------------------------------------------------------------
@@ -2039,7 +2055,7 @@ async def body_size_limit_middleware(request: Request, call_next):
     path = request.url.path
     for prefix in _BODY_SIZE_EXEMPT_PREFIXES:
         if path == prefix or path.startswith(prefix):
-            return await call_next(request)
+            return await _call_next_safe(request, call_next)
     content_length_header = request.headers.get('content-length', '').strip()
     if content_length_header:
         try:
@@ -2052,7 +2068,7 @@ async def body_size_limit_middleware(request: Request, call_next):
                 {'detail': f'Request body too large. Maximum {limit} bytes allowed.', 'code': 'PAYLOAD_TOO_LARGE'},
                 status_code=413,
             )
-    return await call_next(request)
+    return await _call_next_safe(request, call_next)
 
 
 @app.get('/auth/csrf-token', summary='Issue a CSRF token for state-changing requests')

@@ -3727,6 +3727,12 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                         """,
                         (str(uuid.uuid4()), workspace_id, worker_name, 'healthy', _json_dumps({'trigger_type': trigger_type})),
                     )
+                logger.info(
+                    'worker_heartbeat_written workspace_id=%s worker_name=%s trigger_type=%s',
+                    workspace_id,
+                    worker_name,
+                    trigger_type,
+                )
             except Exception:
                 logger.warning(
                     'monitoring_heartbeat_upsert_failed table=monitoring_heartbeats conflict_target=(workspace_id,worker_name) workspace_id=%s worker_name=%s — apply migration 0080_monitoring_heartbeats_unique_constraint.sql',
@@ -6559,13 +6565,29 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         else:
             monitoring_status = 'active'
         degraded_reason = health.get('degraded_reason')
+        if not runner_alive and stale_heartbeat and enabled_system_count > 0:
+            logger.info(
+                'live_downgrade_reason workspace_id=%s reason=live_worker_not_running runner_alive=%s stale_heartbeat=%s enabled_systems=%s',
+                workspace_id,
+                runner_alive,
+                stale_heartbeat,
+                enabled_system_count,
+            )
         if monitoring_status == 'offline':
             runtime_status = 'Offline'
         elif health.get('last_error'):
             runtime_status = 'Error'
         elif health.get('degraded') or degraded_reason or stale_heartbeat or int((broken_targets or {}).get('c') or 0) > 0:
             runtime_status = 'Degraded'
-            degraded_reason = degraded_reason or ('invalid_enabled_targets' if int((broken_targets or {}).get('c') or 0) > 0 else ('stale_heartbeat' if stale_heartbeat else None))
+            _stale_detail = (
+                'live_worker_not_running'
+                if stale_heartbeat and not runner_alive and enabled_system_count > 0
+                else ('stale_heartbeat' if stale_heartbeat else None)
+            )
+            degraded_reason = degraded_reason or (
+                'invalid_enabled_targets' if int((broken_targets or {}).get('c') or 0) > 0
+                else _stale_detail
+            )
         elif evidence_freshness is None or evidence_freshness > max(900, MONITOR_POLL_INTERVAL_SECONDS * 10):
             runtime_status = 'Idle'
         else:
@@ -7081,6 +7103,14 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 workspace_id,
                 ','.join(downgrade_reason_tokens),
             )
+        logger.info(
+            'evidence_source_selected workspace_id=%s source=%s downgrade_reasons=%s runner_alive=%s stale_heartbeat=%s',
+            workspace_id,
+            evidence_source,
+            ','.join(downgrade_reason_tokens) or 'none',
+            runner_alive,
+            stale_heartbeat,
+        )
         configuration_diagnostics = _workspace_configuration_diagnostics(
             valid_protected_asset_count=valid_protected_asset_count,
             linked_monitored_system_count=linked_monitored_system_count,
