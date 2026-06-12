@@ -116,9 +116,10 @@ HARD_GUARD_FLAGS = {
     'evidence_export_without_source_truthfulness',
     # Canonical graph contradictions
     'target_rows_exist_without_reporting_systems',
-    # Proof chain gating: telemetry present but no persisted proof chain
-    'live_telemetry_without_proof_chain',
     # Proof chain gating: detection exists but alert/incident not yet created
+    # (live_telemetry_without_proof_chain removed: clean monitoring with no threats
+    # detected should reach LIVE status — requiring a detection blocks healthy
+    # zero-threat workspaces permanently)
     'live_proof_chain_incomplete',
 }
 HARD_GUARD_PRIORITY = (
@@ -156,8 +157,7 @@ HARD_GUARD_PRIORITY = (
     'evidence_export_without_source_truthfulness',
     # Canonical graph contradictions
     'target_rows_exist_without_reporting_systems',
-    # Proof chain gating
-    'live_telemetry_without_proof_chain',
+    # Proof chain gating: detection exists but alert/incident not yet created
     'live_proof_chain_incomplete',
 )
 
@@ -650,17 +650,15 @@ def build_workspace_monitoring_summary(
         or int(active_incidents_count) <= 0
     ):
         contradiction_flags.append('evidence_package_without_detection_alert_incident_chain')
-    # Gate LIVE on full proof chain when the caller supplies a detections_count.
-    # Only fires when detections_count is explicitly provided (not the default None)
-    # so that legacy callers that omit the parameter are not affected.
+    # Gate LIVE on proof chain integrity: when detections exist, alerts and incidents
+    # must also exist. Zero detections (clean monitoring) does NOT require alerts/incidents —
+    # a healthy workspace monitoring a zero-threat environment is legitimately LIVE.
     if detections_count is not None:
         _live_gate_applies = (
             normalized_reporting > 0
             and freshness_status == 'fresh'
             and normalized_evidence == 'live_provider'
         )
-        if _live_gate_applies and int(detections_count) == 0:
-            contradiction_flags.append('live_telemetry_without_proof_chain')
         # Detection exists but alert/incident chain is incomplete.
         if (
             _live_gate_applies

@@ -79,10 +79,21 @@ function buildChecklist(summary: WorkspaceMonitoringTruth, workerHealth: WorkerH
   const hasHeartbeat = Boolean(summary.last_heartbeat_at);
   const hasPoll = liveVerified || Boolean(summary.last_poll_at);
   const hasTelemetry = liveVerified || Boolean(summary.last_telemetry_at);
-  const hasDetection = Boolean(summary.last_detection_at);
+  // Detection step: done if a detection event exists, OR if monitoring has evaluated fresh live
+  // telemetry with no guards firing (clean evaluation → no threats detected).
+  const cleanLiveEvaluation =
+    hasTelemetry &&
+    summary.reporting_systems_count > 0 &&
+    summary.telemetry_freshness === 'fresh' &&
+    summary.guard_flags.length === 0 &&
+    summary.contradiction_flags.length === 0;
+  const hasDetection = Boolean(summary.last_detection_at) || cleanLiveEvaluation;
+  // Alert step: done when there are active alerts/incidents, OR when detection is done and
+  // there is nothing to alert on (clean monitoring with no anomalies).
   const hasAlert = summary.active_alerts_count > 0 || summary.active_incidents_count > 0
     || (Boolean(summary.last_detection_at) && summary.contradiction_flags.length === 0)
-    || liveVerified;
+    || liveVerified
+    || cleanLiveEvaluation;
   const workerRunning = liveVerified || workerHealth.status === 'running' || hasHeartbeat;
   const workerFailed = !liveVerified && workerHealth.consecutive_failures > 0 && workerHealth.status === 'stopped';
 
