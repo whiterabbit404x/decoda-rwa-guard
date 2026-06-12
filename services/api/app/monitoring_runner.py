@@ -916,9 +916,21 @@ def _load_checkpoint(connection: Any, *, workspace_id: str, monitored_system_id:
     ).fetchone()
     value = (row or {}).get('last_processed_block')
     try:
-        return max(int(value), fallback_block)
+        block = max(int(value), fallback_block)
     except Exception:
         return fallback_block
+    # Guardrail: Unix timestamps (~1.78B for 2026) are not valid block heights.
+    # Base mainnet is at ~47M blocks; Ethereum at ~20M as of June 2026.
+    # Any stored value above 500_000_000 is a corrupted timestamp, not a real block.
+    # Resetting to fallback causes the scanner to re-scan the replay window safely.
+    if block > 500_000_000:
+        logger.warning(
+            'code=CURSOR_CORRUPTION_DETECTED chain=%s workspace_id=%s corrupt_cursor=%s '
+            'fallback=%s action=reset_to_fallback',
+            chain, workspace_id, block, fallback_block,
+        )
+        return fallback_block
+    return block
 
 
 def _upsert_checkpoint(connection: Any, *, workspace_id: str, monitored_system_id: str | None, chain: str, last_processed_block: int) -> None:
@@ -1098,11 +1110,25 @@ def _persist_live_coverage_telemetry(
     _env_chain_id = int(_env_chain_id_str) if _env_chain_id_str.isdigit() else 1
     _chain_id_int = (_CHAIN_MAP.get(_chain_network) or {}).get('chain_id') or _env_chain_id
     _chain_id_hex = hex(_chain_id_int)
-    # Use a timestamp-based fallback when the RPC probe did not return a block number
-    # (e.g. probe failure). The fallback value must be non-null so the
-    # canonical_last_telemetry_at query (which filters COALESCE(payload_json->>'block_number','') <> '')
-    # can find this row. The idempotency key already uses the same fallback.
-    _effective_block = provider_result.latest_block or int(observed_at.timestamp())
+    # Only persist coverage telemetry with a real chain block number from the RPC probe.
+    # Do NOT fall back to Unix timestamp — timestamps in the block_number field corrupt
+    # the scanner cursor (making from_block > latest_block → empty scan forever).
+    _effective_block = provider_result.latest_block
+    if _effective_block is None:
+        logger.warning(
+            'code=COVERAGE_TELEMETRY_SKIP_NO_BLOCK workspace_id=%s target_id=%s '
+            'chain=%s source=%s reason=latest_block_unavailable',
+            target.get('workspace_id'), target.get('id'),
+            target.get('chain_network'), provider_result.source_type,
+        )
+        return
+    logger.info(
+        'code=COVERAGE_TELEMETRY_BLOCK workspace_id=%s target_id=%s chain=%s '
+        'latest_block_decimal=%s latest_block_hex=%s source=%s',
+        target.get('workspace_id'), target.get('id'),
+        target.get('chain_network'), _effective_block, hex(_effective_block),
+        provider_result.source_type,
+    )
     _telem_payload = {
         'telemetry_kind': 'coverage',
         'chain_id': _chain_id_int,

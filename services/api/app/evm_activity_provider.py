@@ -238,6 +238,7 @@ def _iso_from_block_ts(ts_hex: str | None) -> datetime:
 
 def _build_base_payload(*, target: dict[str, Any], network: str, chain_id: int, block_number: int, block_hash: str | None, tx: dict[str, Any], tx_hash: str, raw_reference: str) -> dict[str, Any]:
     selector = _extract_selector(tx.get('input'))
+    _value_wei = _hex_to_int(tx.get('value')) or 0
     return {
         'chain_id': chain_id,
         'chain_network': network,
@@ -246,7 +247,9 @@ def _build_base_payload(*, target: dict[str, Any], network: str, chain_id: int, 
         'tx_hash': tx_hash,
         'from': str(tx.get('from') or '').lower() or None,
         'to': str(tx.get('to') or '').lower() or None,
-        'amount': str(_hex_to_int(tx.get('value')) or 0),
+        'amount': str(_value_wei),
+        'value_wei': _value_wei,
+        'value_eth': round(_value_wei / 10 ** 18, 18),
         'function_selector': selector,
         'decoded_function_name': SELECTOR_NAMES.get(selector or '', None),
         'decode_status': 'decoded' if SELECTOR_NAMES.get(selector or '') else ('partial' if selector else 'none'),
@@ -376,6 +379,7 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         latest = _hex_to_int(client.call('eth_blockNumber', [])) or 0
     safe_to = max(0, latest - confirmations)
 
+    latest_block_raw_hex = hex(latest) if latest else '0x0'
     cursor = str(target.get('monitoring_checkpoint_cursor') or '').strip()
     last_block = None
     if cursor and ':' in cursor:
@@ -383,7 +387,27 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
             last_block = int(cursor.split(':', 1)[0])
         except ValueError:
             last_block = None
+    # Guardrail: Unix timestamps (~1.78B for 2026) are not valid block heights.
+    # If the cursor contains a timestamp, reset it so the scanner uses the
+    # replay window from latest_block instead of an impossible from_block.
+    if last_block is not None and last_block > 500_000_000:
+        logger.warning(
+            'evm_cursor_corruption_detected target_id=%s chain=%s corrupt_cursor=%s '
+            'latest_block=%s action=reset_cursor_to_replay_window',
+            target.get('id'), network, last_block, latest,
+        )
+        last_block = None
     from_block = max(0, safe_to - replay_blocks if last_block is None else max(last_block - replay_blocks, 0))
+    logger.info(
+        'evm_block_scan_start target_id=%s chain=%s '
+        'latest_block_hex=%s latest_block_decimal=%s previous_cursor=%s '
+        'repaired_cursor=%s from_block=%s to_block=%s blocks_to_scan=%s',
+        target.get('id'), network,
+        latest_block_raw_hex, latest,
+        cursor or 'none',
+        'yes' if (cursor and last_block is None and ':' in cursor) else 'no',
+        from_block, safe_to, max(0, safe_to - from_block + 1),
+    )
     if safe_to < from_block:
         return []
 
@@ -490,7 +514,14 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         payload['liquidity_observations'] = telemetry['liquidity_observations']
         payload['venue_observations'] = telemetry['venue_observations']
         event.payload = payload
-    logger.info('evm activity fetched target=%s from_block=%s to_block=%s events=%s', target.get('id'), from_block, safe_to, len(deduped))
+    logger.info(
+        'evm_block_scan_complete target_id=%s chain=%s from_block=%s to_block=%s '
+        'blocks_scanned=%s matches_found=%s',
+        target.get('id'), network,
+        from_block, safe_to,
+        max(0, safe_to - from_block + 1),
+        len(deduped),
+    )
     return deduped
 
 
