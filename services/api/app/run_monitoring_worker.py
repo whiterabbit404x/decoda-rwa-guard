@@ -117,6 +117,14 @@ def main() -> int:
         args.limit,
         args.once,
     )
+    logger.info(
+        'worker_startup worker_name=%s service_role=worker WORKER_ENABLED=true app_mode=%s live_mode=%s interval_seconds=%s limit=%s',
+        args.worker_name,
+        identity.get('app_mode'),
+        identity.get('live_mode_enabled'),
+        args.interval_seconds,
+        args.limit,
+    )
     validate_monitoring_config_or_raise()
     schema_plan = startup_schema_init_plan(process_role='worker')
     logger.info(
