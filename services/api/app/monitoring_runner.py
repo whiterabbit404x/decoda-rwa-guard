@@ -934,14 +934,39 @@ def _load_checkpoint(connection: Any, *, workspace_id: str, monitored_system_id:
 
 
 def _upsert_checkpoint(connection: Any, *, workspace_id: str, monitored_system_id: str | None, chain: str, last_processed_block: int) -> None:
+    _block = max(0, int(last_processed_block or 0))
+    if _block > 500_000_000:
+        logger.error(
+            'code=UPSERT_CHECKPOINT_REJECT_TIMESTAMP source=_upsert_checkpoint '
+            'workspace_id=%s chain=%s corrupt_block=%s action=reset_corrupt_row',
+            workspace_id, chain, _block,
+        )
+        # Reset any existing corrupt row to 0 so the scanner can recover on the next cycle
+        connection.execute(
+            '''
+            UPDATE monitor_checkpoint
+            SET last_processed_block = 0, updated_at = NOW()
+            WHERE workspace_id = %s
+              AND ((%s::uuid IS NULL AND monitored_system_id IS NULL) OR monitored_system_id = %s::uuid)
+              AND chain = %s
+              AND last_processed_block > 500000000
+            ''',
+            (workspace_id, monitored_system_id, monitored_system_id, chain),
+        )
+        return
     connection.execute(
         '''
         INSERT INTO monitor_checkpoint (id, workspace_id, monitored_system_id, chain, last_processed_block, updated_at)
         VALUES (%s, %s, %s::uuid, %s, %s, NOW())
         ON CONFLICT (workspace_id, monitored_system_id, chain)
-        DO UPDATE SET last_processed_block = GREATEST(monitor_checkpoint.last_processed_block, EXCLUDED.last_processed_block), updated_at = NOW()
+        DO UPDATE SET
+            last_processed_block = CASE
+                WHEN monitor_checkpoint.last_processed_block > 500000000 THEN EXCLUDED.last_processed_block
+                ELSE GREATEST(monitor_checkpoint.last_processed_block, EXCLUDED.last_processed_block)
+            END,
+            updated_at = NOW()
         ''',
-        (str(uuid.uuid4()), workspace_id, monitored_system_id, chain, max(0, int(last_processed_block or 0))),
+        (str(uuid.uuid4()), workspace_id, monitored_system_id, chain, _block),
     )
 
 def mark_receipt_removed(connection: Any, *, target_id: str, event_cursor: str, tx_hash: str | None, log_index: int | None, metadata: dict) -> None:
@@ -1039,6 +1064,50 @@ def _persist_live_coverage_telemetry(
     provider_result: ActivityProviderResult,
     observed_at: datetime,
 ) -> None:
+    from services.api.app.evm_activity_provider import CHAIN_MAP as _CHAIN_MAP
+    _chain_network = str(target.get('chain_network') or 'ethereum').strip().lower()
+    _env_chain_id_str = (os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or '').strip()
+    _env_chain_id = int(_env_chain_id_str) if _env_chain_id_str.isdigit() else 1
+    _chain_id_int = (_CHAIN_MAP.get(_chain_network) or {}).get('chain_id') or _env_chain_id
+    _chain_id_hex = hex(_chain_id_int)
+
+    # Guard: only persist with a real chain block number from the RPC probe.
+    # Do NOT fall back to Unix timestamp — timestamps in block_number corrupt
+    # the scanner cursor (from_block > latest_block → empty scan forever).
+    _effective_block = provider_result.latest_block
+    if _effective_block is None:
+        logger.warning(
+            'code=COVERAGE_TELEMETRY_SKIP_NO_BLOCK workspace_id=%s target_id=%s '
+            'chain=%s source=%s reason=latest_block_unavailable',
+            target.get('workspace_id'), target.get('id'),
+            target.get('chain_network'), provider_result.source_type,
+        )
+        return
+    if _effective_block > 500_000_000:
+        logger.error(
+            'code=COVERAGE_TELEMETRY_BLOCK_CORRUPT_REJECTED source=_persist_live_coverage_telemetry '
+            'workspace_id=%s target_id=%s chain_id=%s chain=%s '
+            'corrupt_block=%s observed_at=%s source_type=%s '
+            'action=skip_telemetry_write',
+            target.get('workspace_id'), target.get('id'),
+            _chain_id_int, target.get('chain_network'),
+            _effective_block, observed_at.isoformat(),
+            provider_result.source_type,
+        )
+        return
+
+    logger.info(
+        'code=COVERAGE_TELEMETRY_POLL_CYCLE '
+        'workspace_id=%s target_id=%s chain=%s chain_id=%s source_type=%s '
+        'eth_blockNumber_hex=%s latest_block_decimal=%s block_number_to_insert=%s '
+        'observed_at=%s',
+        target.get('workspace_id'), target.get('id'),
+        target.get('chain_network'), _chain_id_int,
+        provider_result.source_type,
+        hex(_effective_block), _effective_block, _effective_block,
+        observed_at.isoformat(),
+    )
+
     payload = {
         'telemetry_kind': 'coverage',
         'proof_kind': 'coverage_telemetry',
@@ -1052,7 +1121,7 @@ def _persist_live_coverage_telemetry(
         'target_id': target.get('id'),
     }
     event_id = f"coverage:{provider_result.provider_name}:{observed_at.isoformat()}"
-    event_cursor = provider_result.checkpoint or f"coverage:{provider_result.latest_block or 0}:{int(observed_at.timestamp())}"
+    event_cursor = provider_result.checkpoint or f"coverage:{_effective_block}:{int(observed_at.timestamp())}"
     connection.execute(
         '''
         INSERT INTO monitoring_event_receipts (
@@ -1068,7 +1137,7 @@ def _persist_live_coverage_telemetry(
             target['id'],
             event_id,
             event_cursor,
-            provider_result.latest_block,
+            _effective_block,
             'live_coverage',
             'coverage_telemetry',
             'live',
@@ -1090,7 +1159,7 @@ def _persist_live_coverage_telemetry(
             target.get('asset_id'),
             target['id'],
             target.get('chain_network'),
-            provider_result.latest_block,
+            _effective_block,
             'coverage_telemetry',
             target.get('monitored_system_id'),
             'low',
@@ -1104,24 +1173,6 @@ def _persist_live_coverage_telemetry(
     # Persist a telemetry_events row so the telemetry page and runtime summary
     # canonical_last_telemetry_at reflect successful live RPC polls even when
     # no blockchain events (transfers, etc.) were observed in this cycle.
-    from services.api.app.evm_activity_provider import CHAIN_MAP as _CHAIN_MAP
-    _chain_network = str(target.get('chain_network') or 'ethereum').strip().lower()
-    _env_chain_id_str = (os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or '').strip()
-    _env_chain_id = int(_env_chain_id_str) if _env_chain_id_str.isdigit() else 1
-    _chain_id_int = (_CHAIN_MAP.get(_chain_network) or {}).get('chain_id') or _env_chain_id
-    _chain_id_hex = hex(_chain_id_int)
-    # Only persist coverage telemetry with a real chain block number from the RPC probe.
-    # Do NOT fall back to Unix timestamp — timestamps in the block_number field corrupt
-    # the scanner cursor (making from_block > latest_block → empty scan forever).
-    _effective_block = provider_result.latest_block
-    if _effective_block is None:
-        logger.warning(
-            'code=COVERAGE_TELEMETRY_SKIP_NO_BLOCK workspace_id=%s target_id=%s '
-            'chain=%s source=%s reason=latest_block_unavailable',
-            target.get('workspace_id'), target.get('id'),
-            target.get('chain_network'), provider_result.source_type,
-        )
-        return
     logger.info(
         'code=COVERAGE_TELEMETRY_BLOCK workspace_id=%s target_id=%s chain=%s '
         'latest_block_decimal=%s latest_block_hex=%s source=%s',
@@ -2900,7 +2951,15 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     checkpoint_cursor = target.get('monitoring_checkpoint_cursor')
     checkpoint_at = checkpoint
     last_observed_event_at = provider_result.last_real_event_at
-    latest_processed_block = int(target.get('watcher_last_observed_block') or 0)
+    _raw_watcher_block = int(target.get('watcher_last_observed_block') or 0)
+    if _raw_watcher_block > 500_000_000:
+        logger.error(
+            'code=WATCHER_BLOCK_CORRUPT_RESET source=process_monitoring_target '
+            'target_id=%s chain=%s corrupt_block=%s action=reset_to_zero',
+            target.get('id'), chain, _raw_watcher_block,
+        )
+        _raw_watcher_block = 0
+    latest_processed_block = _raw_watcher_block
     last_protected_asset_coverage_record: dict[str, Any] = {}
     source_status = (
         'active'
@@ -3008,7 +3067,18 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         block_number = event.payload.get('block_number') if isinstance(event.payload, dict) else None
         if block_number is not None:
             try:
-                latest_processed_block = max(latest_processed_block, int(block_number))
+                _bn_int = int(block_number)
+                if _bn_int > 500_000_000:
+                    logger.error(
+                        'code=EVENT_BLOCK_NUMBER_CORRUPT_REJECTED source=process_monitoring_target '
+                        'target_id=%s chain=%s corrupt_block_number=%s observed_at=%s '
+                        'action=skip_update latest_processed_block_unchanged=%s',
+                        target.get('id'), chain, _bn_int,
+                        event.observed_at.isoformat() if hasattr(event.observed_at, 'isoformat') else str(event.observed_at),
+                        latest_processed_block,
+                    )
+                else:
+                    latest_processed_block = max(latest_processed_block, _bn_int)
             except Exception:
                 pass
         alert_id = processed.get('alert_id')
