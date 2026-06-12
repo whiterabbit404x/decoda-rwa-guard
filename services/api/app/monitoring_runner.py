@@ -2217,7 +2217,48 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
         'claim_ineligibility_reasons': coverage_status['claim_ineligibility_reasons'],
         'claim_ineligibility_details': coverage_status.get('claim_ineligibility_details') or [],
     }
-    return [{**base, **item} for item in (counterparty, flow, approval, liquidity, oracle)]
+
+    # Wallet transfer detector: fires for any transaction/transfer where the monitored
+    # wallet address (the asset's identifier) is the sender or recipient.
+    # Only activates for wallet-type assets (no token_contract_address), preventing
+    # false positives on ERC-20 contract assets.
+    _wt_addr = _normalize_addr(model.get('asset_identifier'))
+    _wt_is_evm_wallet = (
+        bool(_wt_addr)
+        and _wt_addr.startswith('0x')
+        and len(_wt_addr) == 42
+        and not model.get('contract_address')  # wallet assets have no contract
+    )
+    _wt_event_type = str(payload.get('event_type') or event.kind or '').lower()
+    _wt_tx_from = _normalize_addr(payload.get('from') or payload.get('owner'))
+    _wt_tx_to = _normalize_addr(payload.get('to'))
+    _wt_involved = _wt_is_evm_wallet and _wt_addr in {_wt_tx_from, _wt_tx_to}
+    detectors: tuple[Any, ...] = (counterparty, flow, approval, liquidity, oracle)
+    if _wt_involved and _wt_event_type in {'transaction', 'transfer'}:
+        _wt_direction = 'outbound' if _wt_addr == _wt_tx_from else 'inbound'
+        wallet_transfer: dict[str, Any] = {
+            'detector_family': 'wallet_transfer',
+            'detector_status': 'anomaly_detected',
+            'anomaly_reason': f'wallet_transfer_{_wt_direction}',
+            'severity': 'high',
+            'confidence': 'high',
+            'recommended_action': 'review_wallet_transfer',
+            'violated_asset_rule': 'wallet_activity_monitoring',
+            'lifecycle_stage': lifecycle_stage,
+            'route_stage': route_stage,
+            'violated_lifecycle_rule': None,
+            'endangered_asset_path': None,
+            'wallet_transfer_direction': _wt_direction,
+            'monitored_wallet': _wt_addr,
+            'tx_hash': payload.get('tx_hash'),
+            'chain_id': payload.get('chain_id'),
+            'block_number': payload.get('block_number'),
+            'value': payload.get('amount'),
+            'event_type': 'wallet_transfer_detected',
+        }
+        # Prepend so wallet_transfer is the first anomalous result picked by _asset_detection_summary
+        detectors = (wallet_transfer,) + detectors
+    return [{**base, **item} for item in detectors]
 
 
 def _signature(target_id: str, payload: dict[str, Any], response: dict[str, Any]) -> str:
@@ -2858,6 +2899,17 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             target_id=target.get('id'),
             event=event,
         )
+        _ev_payload = event.payload if isinstance(event.payload, dict) else {}
+        _ev_from = str(_ev_payload.get('from') or '').lower()
+        _ev_to = str(_ev_payload.get('to') or '').lower()
+        _target_wallet = str(target.get('wallet_address') or '').lower()
+        _is_wallet_tx = (
+            str(target.get('target_type') or '').lower() == 'wallet'
+            and bool(_target_wallet)
+            and _target_wallet in {_ev_from, _ev_to}
+            and str(_ev_payload.get('event_type') or event.kind or '').lower() in {'transaction', 'transfer'}
+        )
+        _telem_event_type = 'wallet_transfer_detected' if _is_wallet_tx else str(event.kind or 'target_event')
         connection.execute(
             """
             INSERT INTO telemetry_events (
@@ -2872,7 +2924,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
                 str(target.get('asset_id')) if target.get('asset_id') else None,
                 str(target['id']),
                 str(provider_result.provider_name or 'monitoring_provider'),
-                str(event.kind or 'target_event'),
+                _telem_event_type,
                 event.observed_at,
                 telemetry_evidence_source,
                 hashlib.sha256(_json_dumps(event.payload if isinstance(event.payload, dict) else {}).encode('utf-8')).hexdigest(),
@@ -3635,7 +3687,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
               AND COALESCE(t.enabled, FALSE) = TRUE
               AND COALESCE(t.monitoring_enabled, FALSE) = TRUE
               AND t.workspace_id IS NOT NULL
-              AND LOWER(COALESCE(t.chain_network, '')) IN ('ethereum', 'ethereum-mainnet', 'mainnet', 'eth-mainnet')
+              AND LOWER(COALESCE(t.chain_network, '')) IN ('ethereum', 'ethereum-mainnet', 'mainnet', 'eth-mainnet', 'base', 'base-mainnet')
               AND LOWER(COALESCE(mc.provider_type, '')) IN ('default', 'unknown')
             ''',
         )
