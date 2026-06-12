@@ -63,6 +63,7 @@ def _resolve_worker_enabled_env() -> None:
 def _log_startup_provider_status(logger: logging.Logger) -> None:
     """Emit safe startup log lines for provider configuration. Never prints secrets."""
     from services.api.app.evm_activity_provider import _resolve_evm_rpc_url
+    from services.api.app.pilot import live_mode_enabled as _live_mode_enabled
     from urllib.parse import urlparse as _urlparse
     rpc_url = _resolve_evm_rpc_url()
     evm_rpc_configured = bool(rpc_url)
@@ -70,27 +71,63 @@ def _log_startup_provider_status(logger: logging.Logger) -> None:
         rpc_host = _urlparse(rpc_url).hostname or 'unconfigured'
     except Exception:
         rpc_host = 'unconfigured'
-    staging_worker_enabled = (os.getenv('STAGING_WORKER_ENABLED') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
-    base_worker_enabled = (os.getenv('WORKER_ENABLED') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
-    live_mode_env = (os.getenv('LIVE_MODE_ENABLED') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+    _truthy = {'1', 'true', 'yes', 'on'}
+    staging_worker_enabled = (os.getenv('STAGING_WORKER_ENABLED') or '').strip().lower() in _truthy
+    base_worker_enabled = (os.getenv('WORKER_ENABLED') or '').strip().lower() in _truthy
+    live_mode_env = (os.getenv('LIVE_MODE_ENABLED') or '').strip().lower() in _truthy
     worker_enabled = staging_worker_enabled or base_worker_enabled or live_mode_env
-    worker_enabled_val = (os.getenv('WORKER_ENABLED') or 'not_set').strip()
+    live_mode_active = _live_mode_enabled()
+
+    # Compute the enabling reason (which env var triggered it)
+    if staging_worker_enabled:
+        enabled_reason = 'STAGING_WORKER_ENABLED=true'
+    elif base_worker_enabled:
+        enabled_reason = 'WORKER_ENABLED=true'
+    elif live_mode_env:
+        enabled_reason = 'LIVE_MODE_ENABLED=true'
+    else:
+        enabled_reason = 'none_set — worker loop WILL NOT run'
+
     chain_id_raw = (os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or '').strip()
     chain_id_configured = int(chain_id_raw) if chain_id_raw.isdigit() else None
-    provider_mode = 'live' if (evm_rpc_configured and worker_enabled) else 'disabled'
-    logger.info(
-        'startup service_role=worker WORKER_ENABLED=%s resolved_chain_id=%s rpc_host=%s',
-        worker_enabled_val,
-        chain_id_configured or 'not_set',
-        rpc_host,
+    chain_id_source = (
+        'STAGING_EVM_CHAIN_ID' if (os.getenv('STAGING_EVM_CHAIN_ID') or '').strip().isdigit()
+        else ('EVM_CHAIN_ID' if (os.getenv('EVM_CHAIN_ID') or '').strip().isdigit() else 'not_set')
     )
+    interval_seconds = float(os.getenv('MONITORING_WORKER_INTERVAL_SECONDS', '15'))
+    provider_mode = 'live' if (evm_rpc_configured and worker_enabled) else 'disabled'
+
     logger.info(
-        'worker_startup_provider_status worker_enabled=%s evm_rpc_configured=%s chain_id_configured=%s provider_mode=%s',
+        'startup service_role=worker live_mode_enabled=%s worker_enabled=%s enabled_reason=%s '
+        'evm_rpc_configured=%s rpc_host=%s chain_id=%s chain_id_source=%s '
+        'polling_interval_seconds=%s provider_mode=%s',
+        live_mode_active,
         worker_enabled,
+        enabled_reason,
         evm_rpc_configured,
-        chain_id_configured,
+        rpc_host,
+        chain_id_configured or 'not_set',
+        chain_id_source,
+        interval_seconds,
         provider_mode,
     )
+    if not worker_enabled:
+        logger.warning(
+            'worker_startup_DISABLED reason=no_enabling_env_var '
+            'set STAGING_WORKER_ENABLED=true or WORKER_ENABLED=true or LIVE_MODE_ENABLED=true '
+            'in the Railway worker service environment'
+        )
+    elif not evm_rpc_configured:
+        logger.warning(
+            'worker_startup_no_rpc_url reason=EVM_RPC_URL_missing '
+            'polling will degrade — set EVM_RPC_URL or STAGING_EVM_RPC_URL '
+            'in the Railway worker service environment'
+        )
+    if chain_id_configured is None:
+        logger.warning(
+            'worker_startup_no_chain_id reason=chain_id_missing '
+            'set EVM_CHAIN_ID=8453 for Base mainnet in the worker service environment'
+        )
 
 
 def main() -> int:

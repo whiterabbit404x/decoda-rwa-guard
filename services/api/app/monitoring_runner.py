@@ -2882,6 +2882,16 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     degraded_reason: str | None = provider_result.degraded_reason
     logger.info('monitoring target fetched target=%s threshold=%s auto_create_alerts=%s', target.get('id'), str(target.get('severity_threshold') or 'medium'), bool(target.get('auto_create_alerts', True)))
 
+    logger.info(
+        'polling_cycle_start target_id=%s wallet_address=%s latest_block=%s events_from_provider=%s source_type=%s',
+        target.get('id'),
+        str(target.get('wallet_address') or 'n/a'),
+        provider_result.latest_block,
+        len(events),
+        source_type or 'unknown',
+    )
+    wallet_transfers_detected = 0
+    inserted_telemetry_ids: list[str] = []
     telemetry_evidence_source = _telemetry_event_evidence_source(provider_result=provider_result, source_type=source_type)
     for event in events:
         if telemetry_evidence_source not in {'live', 'simulator', 'replay'}:
@@ -2910,6 +2920,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             and str(_ev_payload.get('event_type') or event.kind or '').lower() in {'transaction', 'transfer'}
         )
         _telem_event_type = 'wallet_transfer_detected' if _is_wallet_tx else str(event.kind or 'target_event')
+        _telem_id = str(uuid.uuid4())
         connection.execute(
             """
             INSERT INTO telemetry_events (
@@ -2919,7 +2930,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             ON CONFLICT (workspace_id, target_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
             """,
             (
-                str(uuid.uuid4()),
+                _telem_id,
                 str(target['workspace_id']),
                 str(target.get('asset_id')) if target.get('asset_id') else None,
                 str(target['id']),
@@ -2932,6 +2943,19 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
                 telemetry_idempotency_key,
             ),
         )
+        if _is_wallet_tx:
+            wallet_transfers_detected += 1
+            inserted_telemetry_ids.append(_telem_id)
+            logger.info(
+                'wallet_transfer_detected target_id=%s tx_hash=%s from=%s to=%s block=%s telemetry_id=%s evidence_source=%s',
+                target.get('id'),
+                str(_ev_payload.get('tx_hash') or _ev_payload.get('hash') or 'unknown'),
+                str(_ev_from or 'unknown'),
+                str(_ev_to or 'unknown'),
+                _ev_payload.get('block_number'),
+                _telem_id,
+                telemetry_evidence_source,
+            )
         processed = _process_single_event(
             connection,
             target=target,
@@ -2971,6 +2995,17 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         if isinstance(coverage_record, dict) and coverage_record:
             last_protected_asset_coverage_record = coverage_record
 
+    logger.info(
+        'polling_cycle_summary target_id=%s wallet_address=%s latest_block=%s '
+        'events_inspected=%s wallet_transfers_detected=%s telemetry_ids=%s evidence_source=%s',
+        target.get('id'),
+        str(target.get('wallet_address') or 'n/a'),
+        latest_processed_block,
+        len(events),
+        wallet_transfers_detected,
+        inserted_telemetry_ids[:10],
+        telemetry_evidence_source,
+    )
     if not events and provider_result.mode in {'live', 'hybrid'} and is_monitorable_target_type(target.get('target_type')):
         if provider_result.status == 'failed':
             source_status = 'failed'
@@ -6500,6 +6535,30 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         worker_heartbeat = _parse_ts(health.get('last_heartbeat_at') or health.get('last_cycle_at'))
         last_heartbeat = last_system_heartbeat or worker_heartbeat
         heartbeat_age = int((now - last_heartbeat).total_seconds()) if last_heartbeat else None
+        # Also check monitoring_heartbeats (canonical table the worker writes to).
+        # This prevents a stale monitoring_worker_state row from wrongly reporting
+        # "live worker not running" when the worker is actually healthy and has
+        # a different worker_name than the API service's WORKER_STATE default.
+        if workspace_id:
+            try:
+                _canonical_hb_row = connection.execute(
+                    'SELECT MAX(last_heartbeat_at) AS ts FROM monitoring_heartbeats WHERE workspace_id = %s::uuid',
+                    (workspace_id,),
+                ).fetchone()
+                _canonical_hb_at = _parse_ts(
+                    (_canonical_hb_row or {}).get('ts') if isinstance(_canonical_hb_row, dict) else None
+                )
+                if _canonical_hb_at:
+                    _ref = last_heartbeat or datetime(1970, 1, 1, tzinfo=timezone.utc)
+                    if _canonical_hb_at > _ref:
+                        last_heartbeat = _canonical_hb_at
+                        heartbeat_age = int((now - last_heartbeat).total_seconds())
+                        logger.debug(
+                            'heartbeat_resolved_from_monitoring_heartbeats workspace_id=%s age_seconds=%s',
+                            workspace_id, heartbeat_age,
+                        )
+            except Exception:
+                pass
         stale_heartbeat = heartbeat_age is None or heartbeat_age > max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3)
         def _row_tracks_valid_monitorable_target(row: dict[str, Any]) -> bool:
             target_id = str(row.get('target_id') or '')
