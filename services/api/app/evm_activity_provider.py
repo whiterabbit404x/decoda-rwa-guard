@@ -340,7 +340,20 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         _configured_chain_id = int(os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or 0) or None
         _network_chain_id = CHAIN_MAP.get(network, {}).get('chain_id')
         if not (_configured_chain_id and _network_chain_id and _configured_chain_id == _network_chain_id):
-            return []
+            # Probe the actual RPC chain ID to auto-detect networks like Base
+            # without requiring EVM_CHAIN_ID to be explicitly configured.
+            if not _network_chain_id:
+                return []
+            _probe_client = rpc_client or FailoverJsonRpcClient(_resolve_evm_rpc_urls())
+            try:
+                _probed_chain_id = _hex_to_int(_probe_client.call('eth_chainId', []))
+            except Exception:
+                _probed_chain_id = None
+            if _probed_chain_id != _network_chain_id:
+                return []
+            # Reuse the probed client to avoid a second connection
+            if rpc_client is None:
+                rpc_client = _probe_client
 
     confirmations = max(0, int(os.getenv('EVM_CONFIRMATIONS_REQUIRED', '3')))
     replay_blocks = max(1, int(os.getenv('MONITOR_REPLAY_BLOCKS', os.getenv('EVM_BLOCK_LOOKBACK', '25'))))
