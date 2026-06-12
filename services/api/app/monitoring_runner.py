@@ -1083,6 +1083,15 @@ def _persist_live_coverage_telemetry(
             target.get('chain_network'), provider_result.source_type,
         )
         return
+    if _chain_id_int == 8453 and _effective_block > 100_000_000:
+        logger.error(
+            'invalid_base_block_number source=_persist_live_coverage_telemetry '
+            'workspace_id=%s target_id=%s chain_id=%s chain=%s '
+            'block_number=%s action=skip_telemetry_write',
+            target.get('workspace_id'), target.get('id'),
+            _chain_id_int, target.get('chain_network'), _effective_block,
+        )
+        return
     if _effective_block > 500_000_000:
         logger.error(
             'code=COVERAGE_TELEMETRY_BLOCK_CORRUPT_REJECTED source=_persist_live_coverage_telemetry '
@@ -1283,7 +1292,8 @@ def _persist_live_coverage_telemetry(
         ),
     )
     logger.info(
-        'telemetry_event_persisted workspace_id=%s target_id=%s provider_type=evm_rpc event_type=rpc_polling block_number=%s',
+        'telemetry_event_persisted workspace_id=%s target_id=%s provider_type=evm_rpc '
+        'event_type=rpc_polling inserted_telemetry_block_number=%s',
         target.get('workspace_id'),
         target.get('id'),
         provider_result.latest_block,

@@ -57,8 +57,18 @@ def probe_rpc_health(rpc_url: str | None = None) -> dict[str, Any]:
         block_hex = str(client.call('eth_blockNumber', []) or '')
     except Exception as exc:
         return {'ok': False, 'chain_id_hex': None, 'chain_id_int': None, 'block_number_hex': None, 'block_number_int': None, 'error': str(exc)[:200]}
-    chain_int = _hex_to_int(chain_hex)
-    block_int = _hex_to_int(block_hex)
+    try:
+        chain_int = int(chain_hex, 16)
+        block_int = int(block_hex, 16)
+    except (TypeError, ValueError):
+        chain_int = _hex_to_int(chain_hex)
+        block_int = None
+    logger.info(
+        'rpc_eth_blockNumber_result chain_id=%s raw_eth_blockNumber_hex=%s parsed_block_number_decimal=%s',
+        chain_int,
+        block_hex or 'missing',
+        block_int,
+    )
     if chain_int is None or block_int is None:
         return {'ok': False, 'chain_id_hex': chain_hex or None, 'chain_id_int': chain_int, 'block_number_hex': block_hex or None, 'block_number_int': block_int, 'error': 'invalid_rpc_response'}
     return {'ok': True, 'chain_id_hex': chain_hex, 'chain_id_int': chain_int, 'block_number_hex': block_hex, 'block_number_int': block_int, 'error': None}
@@ -378,7 +388,10 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     if latest is None:
         _raw_block_result = client.call('eth_blockNumber', [])
         _raw_block_hex = str(_raw_block_result or '')
-        latest = _hex_to_int(_raw_block_hex) or 0
+        try:
+            latest = int(_raw_block_hex, 16)
+        except (TypeError, ValueError):
+            latest = 0
         logger.info(
             'evm_poll_eth_blockNumber target_id=%s chain=%s source_type=rpc_polling '
             'eth_blockNumber_raw_hex=%s latest_block_decimal=%s observed_at=%s',
@@ -386,7 +399,15 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
             _raw_block_hex or '0x0', latest,
             datetime.now(timezone.utc).isoformat(),
         )
-        if latest > 500_000_000:
+        if network in {'base', 'base-mainnet'} and latest > 100_000_000:
+            logger.error(
+                'invalid_base_block_number source=fetch_evm_activity '
+                'target_id=%s chain=%s chain_id=8453 raw_eth_blockNumber_hex=%s '
+                'parsed_block_number_decimal=%s action=zero_out',
+                target.get('id'), network, _raw_block_hex, latest,
+            )
+            latest = 0
+        elif latest > 500_000_000:
             logger.error(
                 'code=ETH_BLOCK_NUMBER_TIMESTAMP_RANGE source=fetch_evm_activity '
                 'target_id=%s chain=%s eth_blockNumber_raw=%s parsed_block=%s '

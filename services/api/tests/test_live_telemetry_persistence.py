@@ -392,3 +392,38 @@ def test_live_telemetry_ready_does_not_imply_evidence_chain():
         'live_telemetry_ready must not imply live_evidence_ready; '
         'the full chain (detection→alert→incident→response→evidence) is required.'
     )
+
+
+def test_base_timestamp_like_heartbeat_is_rejected_before_any_insert(caplog):
+    """Base chain_id 8453 must reject block heights above 100M before DB writes."""
+    target = _make_target(asset_id=None)
+    target.update({'chain_network': 'base', 'asset_id': None})
+    conn = _CaptureConn()
+
+    with caplog.at_level('ERROR'):
+        monitoring_runner._persist_live_coverage_telemetry(
+            conn,
+            target=target,
+            provider_result=_make_provider_result(latest_block=1_781_267_508),
+            observed_at=_utcnow(),
+        )
+
+    assert conn.inserts == []
+    assert 'invalid_base_block_number' in caplog.text
+    assert 'action=skip_telemetry_write' in caplog.text
+
+
+def test_base_real_block_heartbeat_is_inserted():
+    """A valid Base block around 47M remains eligible for heartbeat persistence."""
+    target = _make_target(asset_id=None)
+    target.update({'chain_network': 'base', 'asset_id': None})
+    conn = _CaptureConn()
+
+    monitoring_runner._persist_live_coverage_telemetry(
+        conn,
+        target=target,
+        provider_result=_make_provider_result(latest_block=47_238_026),
+        observed_at=_utcnow(),
+    )
+
+    assert any(table == 'telemetry_events' for table, _params in conn.inserts)
