@@ -75,7 +75,7 @@ def _resolve_worker_enabled_env() -> None:
 
 def _log_startup_provider_status(logger: logging.Logger) -> None:
     """Emit safe startup log lines for provider configuration. Never prints secrets."""
-    from services.api.app.evm_activity_provider import _resolve_evm_rpc_url
+    from services.api.app.evm_activity_provider import _resolve_evm_rpc_url, probe_rpc_health
     from services.api.app.pilot import live_mode_enabled as _live_mode_enabled
     from urllib.parse import urlparse as _urlparse
     rpc_url = _resolve_evm_rpc_url()
@@ -140,6 +140,44 @@ def _log_startup_provider_status(logger: logging.Logger) -> None:
         logger.warning(
             'worker_startup_no_chain_id reason=chain_id_missing '
             'set EVM_CHAIN_ID=8453 for Base mainnet in the worker service environment'
+        )
+
+    # Always perform an RPC health check at startup to surface connectivity issues
+    # immediately in logs rather than waiting for the first monitoring cycle.
+    if evm_rpc_configured:
+        try:
+            health = probe_rpc_health()
+        except Exception as exc:
+            health = {'ok': False, 'error': str(exc)[:200], 'block_number_hex': None, 'block_number_int': None, 'chain_id_int': None}
+        if health.get('ok'):
+            logger.info(
+                'startup_rpc_health_check status=ok rpc_host=%s '
+                'eth_blockNumber_hex=%s block_number_decimal=%s chain_id=%s',
+                rpc_host,
+                health.get('block_number_hex') or 'missing',
+                health.get('block_number_int'),
+                health.get('chain_id_int'),
+            )
+        else:
+            logger.error(
+                'startup_rpc_health_check status=FAILED rpc_host=%s '
+                'eth_blockNumber_hex=%s block_number_decimal=%s chain_id=%s rpc_error=%s '
+                'action=worker_will_not_produce_live_telemetry',
+                rpc_host,
+                health.get('block_number_hex') or 'missing',
+                health.get('block_number_int'),
+                health.get('chain_id_int'),
+                health.get('error') or 'unknown',
+            )
+            logger.warning(
+                'startup_rpc_connectivity_FAILED '
+                'Fix EVM_RPC_URL connectivity in the Railway worker service environment. '
+                'No live chain telemetry will be inserted until RPC responds successfully.'
+            )
+    else:
+        logger.info(
+            'startup_rpc_health_check status=skipped reason=EVM_RPC_URL_not_configured rpc_host=%s',
+            rpc_host,
         )
 
 

@@ -1644,6 +1644,101 @@ def test_persist_live_coverage_telemetry_no_asset_id_inserts_null() -> None:
     assert row['params'][2] is None, 'telemetry asset_id must be NULL when target has no asset_id'
 
 
+def test_log_startup_provider_status_logs_rpc_health_ok(monkeypatch, caplog) -> None:
+    """_log_startup_provider_status logs RPC health check ok with block number when RPC responds."""
+    import logging
+    monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
+    monkeypatch.setenv('EVM_RPC_URL', 'https://fake-base-rpc.example.com')
+    monkeypatch.setenv('EVM_CHAIN_ID', '8453')
+    monkeypatch.delenv('STAGING_EVM_RPC_URL', raising=False)
+
+    def _fake_probe_ok():
+        return {
+            'ok': True,
+            'chain_id_hex': '0x2105',
+            'chain_id_int': 8453,
+            'block_number_hex': '0x2d12345',
+            'block_number_int': 47251269,
+            'error': None,
+        }
+
+    monkeypatch.setattr('services.api.app.evm_activity_provider.probe_rpc_health', _fake_probe_ok)
+    monkeypatch.setattr('services.api.app.evm_activity_provider._resolve_evm_rpc_url', lambda: 'https://fake-base-rpc.example.com')
+
+    run_monitoring_worker._resolve_worker_enabled_env()
+
+    logger = logging.getLogger('test_startup_rpc_ok')
+    with caplog.at_level(logging.INFO, logger='test_startup_rpc_ok'):
+        run_monitoring_worker._log_startup_provider_status(logger)
+
+    log_text = '\n'.join(r.getMessage() for r in caplog.records)
+    assert 'startup_rpc_health_check' in log_text
+    assert 'status=ok' in log_text
+    assert '47251269' in log_text, 'block_number_decimal must appear in startup log'
+    assert '0x2d12345' in log_text, 'eth_blockNumber_hex must appear in startup log'
+
+
+def test_log_startup_provider_status_logs_rpc_health_failed(monkeypatch, caplog) -> None:
+    """_log_startup_provider_status logs error with exact reason when RPC call fails."""
+    import logging
+    monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
+    monkeypatch.setenv('EVM_RPC_URL', 'https://unreachable-rpc.example.com')
+    monkeypatch.delenv('STAGING_EVM_RPC_URL', raising=False)
+    monkeypatch.delenv('EVM_CHAIN_ID', raising=False)
+
+    def _fake_probe_fail():
+        return {
+            'ok': False,
+            'chain_id_hex': None,
+            'chain_id_int': None,
+            'block_number_hex': None,
+            'block_number_int': None,
+            'error': 'urlopen error [Errno -2] Name or service not known',
+        }
+
+    monkeypatch.setattr('services.api.app.evm_activity_provider.probe_rpc_health', _fake_probe_fail)
+    monkeypatch.setattr('services.api.app.evm_activity_provider._resolve_evm_rpc_url', lambda: 'https://unreachable-rpc.example.com')
+
+    run_monitoring_worker._resolve_worker_enabled_env()
+
+    logger = logging.getLogger('test_startup_rpc_fail')
+    with caplog.at_level(logging.ERROR, logger='test_startup_rpc_fail'):
+        run_monitoring_worker._log_startup_provider_status(logger)
+
+    log_text = '\n'.join(r.getMessage() for r in caplog.records)
+    assert 'startup_rpc_health_check' in log_text
+    assert 'status=FAILED' in log_text
+    assert 'Name or service not known' in log_text, 'exact rpc_error must appear in startup log'
+
+
+def test_log_startup_provider_status_skips_rpc_check_when_url_absent(monkeypatch, caplog) -> None:
+    """_log_startup_provider_status skips RPC check and logs skipped when EVM_RPC_URL not set."""
+    import logging
+    monkeypatch.delenv('EVM_RPC_URL', raising=False)
+    monkeypatch.delenv('STAGING_EVM_RPC_URL', raising=False)
+    monkeypatch.delenv('STAGING_WORKER_ENABLED', raising=False)
+    monkeypatch.delenv('WORKER_ENABLED', raising=False)
+    monkeypatch.delenv('LIVE_MODE_ENABLED', raising=False)
+
+    probe_called = []
+
+    def _should_not_be_called():
+        probe_called.append(True)
+        return {'ok': True}
+
+    monkeypatch.setattr('services.api.app.evm_activity_provider.probe_rpc_health', _should_not_be_called)
+    monkeypatch.setattr('services.api.app.evm_activity_provider._resolve_evm_rpc_url', lambda: '')
+
+    logger = logging.getLogger('test_startup_rpc_skip')
+    with caplog.at_level(logging.INFO, logger='test_startup_rpc_skip'):
+        run_monitoring_worker._log_startup_provider_status(logger)
+
+    assert not probe_called, 'probe_rpc_health must not be called when EVM_RPC_URL is not configured'
+    log_text = '\n'.join(r.getMessage() for r in caplog.records)
+    assert 'startup_rpc_health_check' in log_text
+    assert 'skipped' in log_text
+
+
 def test_live_evidence_ready_false_until_full_chain() -> None:
     """live_evidence_ready stays False for partial chains (telemetry-only, detection-only, etc.)."""
     from services.api.app.paid_launch_readiness import build_live_evidence_proof
