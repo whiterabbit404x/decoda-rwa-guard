@@ -1479,6 +1479,10 @@ def emit_startup_fixture_diagnostics() -> None:
         diagnostics = fixture_diagnostics()
         identity = runtime_environment_identity()
         logger.info(
+            'startup_git_commit_sha service_role=api git_commit_sha=%s',
+            diagnostics['backend_git_commit'] or 'unavailable',
+        )
+        logger.info(
             'startup version=%s risk_dir=%s exists=%s sample_risk_request=%s '
             'reconciliation_dir=%s exists=%s critical_supply_divergence=%s '
             'critical_mismatch_paused_bridge=%s git_commit=%s app_mode=%s pilot_mode=%s live_mode=%s demo_mode=%s',

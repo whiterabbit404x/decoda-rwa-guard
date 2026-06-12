@@ -13,6 +13,19 @@ from services.api.app.observability import increment, gauge, observe, span, send
 from services.api.app.pilot import runtime_environment_identity, startup_schema_init_plan
 
 
+def _resolve_git_commit_sha() -> str | None:
+    for env_var in (
+        'RAILWAY_GIT_COMMIT_SHA',
+        'APP_BUILD_COMMIT',
+        'SOURCE_COMMIT',
+        'COMMIT_SHA',
+    ):
+        value = (os.getenv(env_var) or '').strip()
+        if value:
+            return value
+    return None
+
+
 def _default_worker_name() -> str:
     instance = (os.getenv('RAILWAY_REPLICA_ID') or os.getenv('HOSTNAME') or socket.gethostname() or 'local').strip()
     return f'monitoring-worker-{instance[:80]}'
@@ -136,6 +149,7 @@ def main() -> int:
     _resolve_worker_enabled_env()
     args = parse_args()
     logger.info('monitoring worker starting')
+    logger.info('startup_git_commit_sha service_role=worker git_commit_sha=%s', _resolve_git_commit_sha() or 'unavailable')
     _log_startup_provider_status(logger)
     identity = runtime_environment_identity()
     logger.info(

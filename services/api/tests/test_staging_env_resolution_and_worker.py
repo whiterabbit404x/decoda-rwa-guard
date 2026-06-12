@@ -386,3 +386,19 @@ def test_telemetry_endpoint_returns_live_telemetry_ready_true_when_rows_exist():
 
     assert result['live_telemetry_ready'] is True
     assert len(result['telemetry']) == 1
+
+
+def test_worker_commit_sha_prefers_railway_marker(monkeypatch):
+    from services.api.app import run_monitoring_worker
+
+    monkeypatch.setenv('RAILWAY_GIT_COMMIT_SHA', 'abc123railway')
+    monkeypatch.setenv('APP_BUILD_COMMIT', 'fallback')
+    assert run_monitoring_worker._resolve_git_commit_sha() == 'abc123railway'
+
+
+def test_worker_commit_sha_unavailable_without_marker(monkeypatch):
+    from services.api.app import run_monitoring_worker
+
+    for name in ('RAILWAY_GIT_COMMIT_SHA', 'APP_BUILD_COMMIT', 'SOURCE_COMMIT', 'COMMIT_SHA'):
+        monkeypatch.delenv(name, raising=False)
+    assert run_monitoring_worker._resolve_git_commit_sha() is None

@@ -946,3 +946,40 @@ def test_base_heartbeat_source_guards_in_coverage_telemetry():
     assert 'COVERAGE_TELEMETRY_POLL_CYCLE' in source or 'block_number_to_insert' in source, (
         '_persist_live_coverage_telemetry must log block_number_to_insert for production diagnostics'
     )
+
+
+def test_rpc_probe_logs_raw_hex_and_parsed_decimal(caplog):
+    from services.api.app.evm_activity_provider import probe_rpc_health
+
+    with patch('services.api.app.evm_activity_provider.JsonRpcClient') as mock_cls:
+        instance = MagicMock()
+        instance.call.side_effect = [hex(BASE_CHAIN_ID), BASE_BLOCK_HEX]
+        mock_cls.return_value = instance
+        with caplog.at_level('INFO'):
+            result = probe_rpc_health('http://rpc.test')
+
+    assert result['block_number_int'] == BASE_BLOCK_47238026
+    assert f'raw_eth_blockNumber_hex={BASE_BLOCK_HEX}' in caplog.text
+    assert f'parsed_block_number_decimal={BASE_BLOCK_47238026}' in caplog.text
+
+
+def test_base_guard_uses_100m_threshold_and_required_log_name():
+    source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
+    func_start = source.find('def _persist_live_coverage_telemetry(')
+    func_body = source[func_start:func_start + 5000]
+    assert '_chain_id_int == 8453 and _effective_block > 100_000_000' in func_body
+    assert 'invalid_base_block_number' in func_body
+    assert func_body.find('invalid_base_block_number') < func_body.find('INSERT INTO monitoring_event_receipts')
+
+
+def test_base_cursor_repair_migration_cleans_all_persistence_layers():
+    migration = open(
+        'services/api/migrations/0108_repair_base_timestamp_block_numbers.sql',
+        encoding='utf-8',
+    ).read()
+    assert 'DELETE FROM telemetry_events' in migration
+    assert 'UPDATE monitor_checkpoint' in migration
+    assert 'UPDATE targets' in migration
+    assert 'monitoring_checkpoint_cursor = NULL' in migration
+    assert 'watcher_last_observed_block = NULL' in migration
+    assert '> 100000000' in migration
