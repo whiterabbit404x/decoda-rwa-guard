@@ -376,7 +376,24 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
             preferred_source = 'websocket'
             fallback_source = 'rpc_backfill'
     if latest is None:
-        latest = _hex_to_int(client.call('eth_blockNumber', [])) or 0
+        _raw_block_result = client.call('eth_blockNumber', [])
+        _raw_block_hex = str(_raw_block_result or '')
+        latest = _hex_to_int(_raw_block_hex) or 0
+        logger.info(
+            'evm_poll_eth_blockNumber target_id=%s chain=%s source_type=rpc_polling '
+            'eth_blockNumber_raw_hex=%s latest_block_decimal=%s observed_at=%s',
+            target.get('id'), network,
+            _raw_block_hex or '0x0', latest,
+            datetime.now(timezone.utc).isoformat(),
+        )
+        if latest > 500_000_000:
+            logger.error(
+                'code=ETH_BLOCK_NUMBER_TIMESTAMP_RANGE source=fetch_evm_activity '
+                'target_id=%s chain=%s eth_blockNumber_raw=%s parsed_block=%s '
+                'action=zero_out reason=value_in_timestamp_range',
+                target.get('id'), network, _raw_block_hex, latest,
+            )
+            latest = 0
     safe_to = max(0, latest - confirmations)
 
     latest_block_raw_hex = hex(latest) if latest else '0x0'

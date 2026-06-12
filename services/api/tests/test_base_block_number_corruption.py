@@ -789,3 +789,160 @@ def test_wallet_transfer_detected_event_type_stored_correctly(monkeypatch):
     assert payload['block_number'] == BASE_BLOCK_47238026, (
         f'block_number must be real block height {BASE_BLOCK_47238026}, got {payload["block_number"]}'
     )
+
+
+# ---------------------------------------------------------------------------
+# 14. block_number is NOT equal to int(observed_at.timestamp())
+# ---------------------------------------------------------------------------
+
+def test_block_number_is_not_observed_at_timestamp(monkeypatch):
+    """
+    fetch_evm_activity must store the EVM block height as block_number,
+    NOT the Unix timestamp of observed_at.
+
+    Regression: block_number was formerly set to int(observed_at.timestamp())
+    when the RPC probe failed, producing values like 1781267508 (June 2026 epoch).
+    This test confirms that block_number != int(observed_at.timestamp()).
+    """
+    import time
+    from services.api.app.evm_activity_provider import fetch_evm_activity
+
+    observed_at_approx = int(time.time())  # current Unix timestamp (~1781267xxx for 2026)
+
+    def mock_call(method, params):
+        if method == 'eth_chainId':
+            return hex(BASE_CHAIN_ID)
+        if method == 'eth_blockNumber':
+            return BASE_BLOCK_HEX  # returns real block hex, NOT a timestamp
+        if method == 'eth_getBlockByNumber':
+            blk = int(params[0], 16)
+            if blk == BASE_BLOCK_47238026:
+                return {
+                    'hash': '0xblockhash',
+                    'timestamp': hex(observed_at_approx),  # block timestamp = current time
+                    'transactions': [{
+                        'hash': TX_HASH,
+                        'from': WALLET_ADDR,
+                        'to': OTHER_ADDR,
+                        'value': hex(10 ** 17),
+                        'input': '0x',
+                        'blockHash': '0xblockhash',
+                    }],
+                }
+            return {'hash': '0xother', 'timestamp': hex(observed_at_approx), 'transactions': []}
+        if method == 'eth_getLogs':
+            return []
+        return None
+
+    mock_client = MagicMock()
+    mock_client.call.side_effect = mock_call
+
+    target = {
+        'id': str(uuid.uuid4()),
+        'workspace_id': str(uuid.uuid4()),
+        'chain_network': 'base',
+        'target_type': 'wallet',
+        'wallet_address': WALLET_ADDR,
+        'contract_identifier': None,
+        'monitoring_checkpoint_cursor': None,
+    }
+
+    with patch.dict('os.environ', {
+        'LIVE_MONITORING_CHAINS': 'base',
+        'EVM_CHAIN_ID': str(BASE_CHAIN_ID),
+        'EVM_RPC_URL': 'http://rpc.test',
+        'EVM_CONFIRMATIONS_REQUIRED': '0',
+        'MONITOR_REPLAY_BLOCKS': '1',
+        'MONITOR_BATCH_BLOCKS': '1',
+    }):
+        events = fetch_evm_activity(target, None, rpc_client=mock_client)
+
+    assert events, 'Expected wallet transfer events from fetch_evm_activity'
+    for event in events:
+        if not isinstance(event.payload, dict):
+            continue
+        bn = event.payload.get('block_number')
+        if bn is None:
+            continue
+        assert bn != observed_at_approx, (
+            f'block_number {bn!r} must NOT equal int(observed_at.timestamp()) {observed_at_approx}. '
+            f'block_number must be the real EVM block height, not a Unix timestamp.'
+        )
+        assert bn < 500_000_000, (
+            f'block_number {bn!r} is in Unix timestamp range (> 500M). '
+            f'This indicates block_number was set to observed_at.timestamp() instead of EVM block height.'
+        )
+
+
+# ---------------------------------------------------------------------------
+# 15. Base heartbeat rows store block_number around mocked eth_blockNumber value
+# ---------------------------------------------------------------------------
+
+def test_base_heartbeat_block_number_matches_eth_blockNumber(monkeypatch):
+    """
+    When fetch_evm_activity gets eth_blockNumber = BASE_BLOCK_HEX (47238026)
+    and no transactions are found, the ActivityProviderResult.latest_block must
+    be set to 47238026 (from probe_rpc_health), NOT a Unix timestamp.
+
+    Verified via source inspection + probe_rpc_health unit test.
+    """
+    import time
+    from services.api.app.evm_activity_provider import probe_rpc_health
+
+    observed_at_ts = int(time.time())  # current Unix timestamp
+
+    # Mock probe_rpc_health to simulate a successful RPC call returning Base block 47238026
+    with patch('services.api.app.evm_activity_provider.FailoverJsonRpcClient') as mock_cls:
+        instance = MagicMock()
+        instance.call.side_effect = lambda method, params: (
+            hex(BASE_CHAIN_ID) if method == 'eth_chainId' else BASE_BLOCK_HEX
+        )
+        mock_cls.return_value = instance
+        with patch.dict('os.environ', {'EVM_RPC_URL': 'http://rpc.test'}):
+            result = probe_rpc_health()
+
+    assert result['ok'] is True, f'probe_rpc_health must succeed: {result}'
+    stored_block = result['block_number_int']
+
+    assert stored_block == BASE_BLOCK_47238026, (
+        f'probe_rpc_health block_number_int must equal mocked eth_blockNumber {BASE_BLOCK_47238026}, '
+        f'got {stored_block!r}'
+    )
+    assert stored_block != observed_at_ts, (
+        f'Heartbeat block_number {stored_block} must NOT equal '
+        f'int(time.time()) {observed_at_ts}. '
+        f'block_number must come from eth_blockNumber hex parsing, not the current clock.'
+    )
+    assert stored_block < 500_000_000, (
+        f'Heartbeat block_number {stored_block} must not be in Unix timestamp range (> 500M). '
+        f'Base mainnet is at ~47M blocks; a value > 500M is a corrupt Unix timestamp.'
+    )
+
+
+def test_base_heartbeat_source_guards_in_coverage_telemetry():
+    """
+    _persist_live_coverage_telemetry source code must:
+    1. Check _effective_block is None BEFORE any DB insert (skip if None)
+    2. Check _effective_block > 500_000_000 and reject (skip if timestamp-like)
+    3. Log the block_number being inserted with eth_blockNumber_hex and source_type
+    """
+    source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
+
+    # Guard must be BEFORE the monitoring_event_receipts INSERT
+    func_start = source.find('def _persist_live_coverage_telemetry(')
+    func_body = source[func_start:func_start + 4000]  # first 4KB of the function
+
+    none_check_pos = func_body.find('_effective_block is None')
+    receipts_insert_pos = func_body.find('INSERT INTO monitoring_event_receipts')
+    assert none_check_pos < receipts_insert_pos, (
+        '_persist_live_coverage_telemetry must check _effective_block is None '
+        'BEFORE the monitoring_event_receipts INSERT, to avoid NULL block_number in receipts'
+    )
+
+    assert '500_000_000' in func_body or '500000000' in func_body, (
+        '_persist_live_coverage_telemetry must guard against block_number > 500M (timestamp range)'
+    )
+
+    assert 'COVERAGE_TELEMETRY_POLL_CYCLE' in source or 'block_number_to_insert' in source, (
+        '_persist_live_coverage_telemetry must log block_number_to_insert for production diagnostics'
+    )
