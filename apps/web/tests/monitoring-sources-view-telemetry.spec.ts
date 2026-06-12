@@ -191,3 +191,56 @@ test('proxy route URL uses /telemetry spelling (no typo variant)', () => {
   expect(proxyRouteSource).not.toContain(typo);
   expect(proxyRouteSource).toContain('telemetry');
 });
+
+// --- Telemetry detail modal: event classification ---
+
+test('telemetry page classifies wallet transfer events and shows label', () => {
+  expect(telemetryPageSource).toContain('wallet_transfer');
+  expect(telemetryPageSource).toContain('Wallet transfer detected');
+});
+
+test('telemetry page classifies block polling events and shows heartbeat label', () => {
+  expect(telemetryPageSource).toContain('block_poll');
+  expect(telemetryPageSource).toContain('RPC polling heartbeat — no wallet transfer detected');
+});
+
+test('telemetry page handles missing tx_hash gracefully (falls back to unknown kind)', () => {
+  expect(telemetryPageSource).toContain('classifyEvent');
+  expect(telemetryPageSource).toContain("'unknown'");
+});
+
+test('telemetry page renders Basescan link for chain_id 8453', () => {
+  expect(telemetryPageSource).toContain('8453');
+  expect(telemetryPageSource).toContain('basescan.org');
+  expect(telemetryPageSource).toContain('View on Basescan');
+});
+
+test('telemetry page renders Copy JSON button', () => {
+  expect(telemetryPageSource).toContain('Copy JSON');
+});
+
+test('telemetry page renders Copy Tx Hash button', () => {
+  expect(telemetryPageSource).toContain('Copy Tx Hash');
+});
+
+test('telemetry detail opens as a modal overlay (not inline details element)', () => {
+  // View button sets selected row via setSelectedRow, not <details>
+  expect(telemetryPageSource).toContain('setSelectedRow(row)');
+  expect(telemetryPageSource).toContain('TelemetryDetailModal');
+  // The old inline <details> expand pattern should be gone
+  expect(telemetryPageSource).not.toContain('<details>');
+});
+
+test('telemetry detail modal JSON viewer uses dark background token', () => {
+  expect(telemetryPageSource).toContain('var(--bg-base)');
+  expect(telemetryPageSource).toContain('monospace');
+});
+
+test('telemetry detail modal shows human-readable summary fields', () => {
+  expect(telemetryPageSource).toContain('Event type');
+  expect(telemetryPageSource).toContain('Transaction hash');
+  expect(telemetryPageSource).toContain('From address');
+  expect(telemetryPageSource).toContain('To address');
+  expect(telemetryPageSource).toContain('Observed at');
+  expect(telemetryPageSource).toContain('Evidence source');
+});
