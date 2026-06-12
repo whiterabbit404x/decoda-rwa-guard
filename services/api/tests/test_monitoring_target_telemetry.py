@@ -103,7 +103,7 @@ def test_no_telemetry_returns_200_empty_state(monkeypatch):
     monkeypatch.setattr(
         api_main,
         'list_target_telemetry',
-        lambda request, target_id, limit=50: _make_empty_telemetry_response(target_id),
+        lambda request, target_id, limit=50, q=None: _make_empty_telemetry_response(target_id),
     )
     response = client.get(f'/monitoring/targets/{valid_id}/telemetry')
     assert response.status_code == 200
@@ -121,7 +121,7 @@ def test_with_telemetry_returns_200_with_rows(monkeypatch):
     monkeypatch.setattr(
         api_main,
         'list_target_telemetry',
-        lambda request, target_id, limit=50: _make_telemetry_rows(target_id, ws_id),
+        lambda request, target_id, limit=50, q=None: _make_telemetry_rows(target_id, ws_id),
     )
     response = client.get(f'/monitoring/targets/{valid_id}/telemetry')
     assert response.status_code == 200
