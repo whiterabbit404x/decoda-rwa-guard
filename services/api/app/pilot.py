@@ -9738,6 +9738,25 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
         )
     except Exception:
         logger.warning('reconcile_chain_sync_failed workspace_id=%s', workspace_id)
+    # Sync monitored_systems.asset_id to match targets.asset_id.
+    # _row_has_valid_target_asset_link requires asset_id to match for
+    # valid_target_system_link_count > 0 (needed for workspace_configured = True).
+    try:
+        connection.execute(
+            '''
+            UPDATE monitored_systems ms
+            SET asset_id = t.asset_id
+            FROM targets t
+            WHERE ms.target_id = t.id
+              AND t.deleted_at IS NULL
+              AND t.asset_id IS NOT NULL
+              AND COALESCE(ms.asset_id::text, '') <> t.asset_id::text
+              AND (%s::uuid IS NULL OR ms.workspace_id = %s::uuid)
+            ''',
+            (workspace_id, workspace_id),
+        )
+    except Exception:
+        logger.warning('reconcile_asset_id_sync_failed workspace_id=%s', workspace_id)
     # Disable monitored_systems whose linked target is disabled or deleted.
     # This catches stale rows left over from duplicate-target cleanup migrations.
     try:

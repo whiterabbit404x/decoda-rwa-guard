@@ -208,3 +208,56 @@ def test_monitoring_runner_stale_coverage_skip_logic_present():
         'monitoring_runner.py must check coverage last_telemetry_at freshness'
     )
     assert 'telemetry_window_seconds' in source
+
+
+# ---------------------------------------------------------------------------
+# G. _count_persisted_enabled_monitoring_configs uses targets, not monitored_targets
+# ---------------------------------------------------------------------------
+
+def test_persisted_config_count_joins_targets_not_monitored_targets():
+    """_count_persisted_enabled_monitoring_configs must JOIN with targets (not
+    monitored_targets). Migration 0084 created direct monitoring_configs with
+    target_id = targets.id; the old monitored_targets JOIN always returned 0,
+    causing workspace_configured = False → runtime_status = 'offline'."""
+    import re
+    source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
+    fn_match = re.search(
+        r'def _count_persisted_enabled_monitoring_configs.*?(?=\ndef |\Z)',
+        source,
+        re.DOTALL,
+    )
+    assert fn_match is not None, '_count_persisted_enabled_monitoring_configs not found'
+    fn_body = fn_match.group(0)
+    # The SQL inside the function must join targets, not monitored_targets
+    assert 'JOIN targets t' in fn_body, (
+        '_count_persisted_enabled_monitoring_configs SQL must JOIN targets t'
+    )
+    assert 'JOIN monitored_targets' not in fn_body, (
+        '_count_persisted_enabled_monitoring_configs SQL must not JOIN monitored_targets'
+    )
+
+
+def test_persist_coverage_telemetry_uses_non_null_block_number():
+    """_persist_live_coverage_telemetry must store a non-null block_number in
+    payload_json even when latest_block is None (RPC probe failed).
+    This ensures canonical_last_telemetry_at can find the row."""
+    source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
+    assert '_effective_block' in source, (
+        '_persist_live_coverage_telemetry must use _effective_block fallback for block_number'
+    )
+    # Ensure the payload uses _effective_block, not the raw latest_block
+    assert "'block_number': _effective_block" in source, (
+        "_telem_payload must store '_effective_block' not 'provider_result.latest_block'"
+    )
+
+
+def test_reconcile_contains_asset_id_sync():
+    """reconcile_enabled_targets_monitored_systems must sync monitored_systems.asset_id
+    from targets.asset_id so _row_has_valid_target_asset_link returns True."""
+    source = open('services/api/app/pilot.py', encoding='utf-8').read()
+    assert 'reconcile_asset_id_sync_failed' in source, (
+        'pilot.py must attempt asset_id sync and log failures'
+    )
+    assert 'ms.asset_id' in source and 't.asset_id' in source, (
+        'pilot.py reconcile must UPDATE monitored_systems.asset_id from targets.asset_id'
+    )
