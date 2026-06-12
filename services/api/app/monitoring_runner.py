@@ -5997,7 +5997,15 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 evidence_count = int(
                     (
                         connection.execute(
-                            'SELECT COUNT(*) AS c FROM evidence WHERE workspace_id = %s',
+                            # Exclude clean monitoring health records — they are proofs
+                            # that the monitoring loop ran without finding threats, not
+                            # evidence packages that require a detection-alert-incident chain.
+                            """SELECT COUNT(*) AS c FROM evidence
+                               WHERE workspace_id = %s
+                               AND event_type NOT IN (
+                                   'monitoring_evaluation_no_threat',
+                                   'coverage_telemetry'
+                               )""",
                             (workspace_id,),
                         ).fetchone()
                         or {}

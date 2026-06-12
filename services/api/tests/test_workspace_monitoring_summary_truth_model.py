@@ -198,3 +198,116 @@ def test_heartbeat_only_live_claim_is_hard_guarded() -> None:
     assert 'live_evidence_without_live_telemetry_kind' in summary['guard_flags']
     assert summary['runtime_status'] == 'degraded'
     assert summary['monitoring_status'] == 'limited'
+
+
+# ---------------------------------------------------------------------------
+# evidence_package_without_detection_alert_incident_chain guard — clean vs threat
+# ---------------------------------------------------------------------------
+
+def test_clean_monitoring_zero_evidence_packages_does_not_fire_chain_guard() -> None:
+    """Clean monitoring with no threat evidence at all: guard must not fire."""
+    summary = _build_summary(
+        evidence_packages_count=0,
+        last_detection_at=None,
+        active_alerts_count=0,
+        active_incidents_count=0,
+    )
+    assert 'evidence_package_without_detection_alert_incident_chain' not in summary['contradiction_flags']
+    assert 'evidence_package_without_detection_alert_incident_chain' not in summary['guard_flags']
+
+
+def test_clean_monitoring_health_evidence_excluded_guard_does_not_fire() -> None:
+    """evidence_packages_count=0 (health records excluded) with no detection: guard must not fire.
+
+    This simulates the case where the evidence table has monitoring_evaluation_no_threat
+    and coverage_telemetry rows but evidence_packages_count is 0 (filtered at query time).
+    """
+    now = _now()
+    summary = _build_summary(
+        evidence_packages_count=0,   # health evidence excluded from count
+        last_detection_at=None,
+        active_alerts_count=0,
+        active_incidents_count=0,
+        last_telemetry_at=now - timedelta(seconds=30),
+        last_coverage_telemetry_at=now - timedelta(seconds=30),
+        telemetry_kind='coverage',
+        evidence_source='live',
+        reporting_systems=1,
+    )
+    assert 'evidence_package_without_detection_alert_incident_chain' not in summary['guard_flags']
+
+
+def test_threat_evidence_without_detection_fires_chain_guard() -> None:
+    """Threat-type evidence exists but no detection was created: guard must fire."""
+    summary = _build_summary(
+        evidence_packages_count=1,
+        last_detection_at=None,
+        active_alerts_count=0,
+        active_incidents_count=0,
+    )
+    assert 'evidence_package_without_detection_alert_incident_chain' in summary['contradiction_flags']
+    assert 'evidence_package_without_detection_alert_incident_chain' in summary['guard_flags']
+
+
+def test_threat_evidence_with_detection_no_alert_does_not_fire_chain_guard() -> None:
+    """Threat evidence + detection but no active alerts: chain guard must NOT fire.
+
+    The live_proof_chain_incomplete guard handles the alert-missing case separately.
+    The evidence_package guard only checks detection presence, not alert/incident.
+    """
+    now = _now()
+    summary = _build_summary(
+        evidence_packages_count=1,
+        last_detection_at=now - timedelta(seconds=60),
+        detections_count=1,
+        active_alerts_count=0,
+        active_incidents_count=0,
+    )
+    assert 'evidence_package_without_detection_alert_incident_chain' not in summary['guard_flags']
+
+
+def test_clean_live_monitoring_can_reach_live_status() -> None:
+    """Clean monitoring (no threat evidence, fresh telemetry, live provider) must be LIVE.
+
+    This is the key regression test: before the fix the orphan evidence guard fired and
+    forced runtime_status to 'degraded' and monitoring_status to 'limited'.
+    """
+    now = _now()
+    summary = _build_summary(
+        runtime_status='live',
+        evidence_packages_count=0,
+        last_detection_at=None,
+        active_alerts_count=0,
+        active_incidents_count=0,
+        last_telemetry_at=now - timedelta(seconds=30),
+        last_coverage_telemetry_at=now - timedelta(seconds=30),
+        telemetry_kind='coverage',
+        evidence_source='live',
+        reporting_systems=1,
+    )
+    assert 'evidence_package_without_detection_alert_incident_chain' not in summary['guard_flags']
+    assert summary['runtime_status'] == 'live'
+    assert summary['monitoring_status'] == 'live'
+
+
+def test_replay_demo_evidence_still_blocked_by_simulator_guard() -> None:
+    """Simulator/replay evidence must never count as live provider evidence."""
+    summary = _build_summary(
+        evidence_source='simulator',
+        reporting_systems=1,
+    )
+    # live_mode_with_simulator_evidence fires from the Session-13 canonical truthfulness guards
+    assert 'live_mode_with_simulator_evidence' in summary['contradiction_flags']
+    assert summary['monitoring_status'] != 'live'
+
+
+def test_orphan_alert_incident_evidence_still_fires_guard_when_no_detection() -> None:
+    """Evidence that is NOT a clean health record but has no detection must still fire guard."""
+    summary = _build_summary(
+        evidence_packages_count=3,
+        last_detection_at=None,
+        active_alerts_count=0,
+        active_incidents_count=0,
+    )
+    assert 'evidence_package_without_detection_alert_incident_chain' in summary['guard_flags']
+    assert summary['status_reason'] == 'guard:evidence_package_without_detection_alert_incident_chain'
