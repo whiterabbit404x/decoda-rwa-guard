@@ -5,4 +5,4 @@
 -r services/compliance-service/requirements.txt
 -r services/reconciliation-service/requirements.txt
 -r services/event-watcher/requirements.txt
-pytest==8.4.1
+pytest==8.4.2
