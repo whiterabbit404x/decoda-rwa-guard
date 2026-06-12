@@ -73,13 +73,22 @@ def _resolve_worker_enabled_env() -> None:
         os.environ.setdefault('LIVE_MODE_ENABLED', 'true')
 
 
-def _log_startup_provider_status(logger: logging.Logger) -> None:
-    """Emit safe startup log lines for provider configuration. Never prints secrets."""
+def _log_startup_provider_status(logger: logging.Logger) -> dict[str, object]:
+    """
+    Emit safe startup log lines for provider configuration. Never prints secrets.
+
+    Returns a status dict so main() can fail-closed on worker health:
+      worker_enabled: bool
+      evm_rpc_configured: bool
+      database_url_configured: bool
+      rpc_health_ok: bool | None  (None when RPC URL is not configured)
+    """
     from services.api.app.evm_activity_provider import _resolve_evm_rpc_url, probe_rpc_health
     from services.api.app.pilot import live_mode_enabled as _live_mode_enabled
     from urllib.parse import urlparse as _urlparse
     rpc_url = _resolve_evm_rpc_url()
     evm_rpc_configured = bool(rpc_url)
+    database_url_configured = bool((os.getenv('DATABASE_URL') or '').strip())
     try:
         rpc_host = _urlparse(rpc_url).hostname or 'unconfigured'
     except Exception:
@@ -112,18 +121,25 @@ def _log_startup_provider_status(logger: logging.Logger) -> None:
 
     logger.info(
         'startup service_role=worker live_mode_enabled=%s worker_enabled=%s enabled_reason=%s '
-        'evm_rpc_configured=%s rpc_host=%s chain_id=%s chain_id_source=%s '
+        'evm_rpc_configured=%s database_url_configured=%s rpc_host=%s chain_id=%s chain_id_source=%s '
         'polling_interval_seconds=%s provider_mode=%s',
         live_mode_active,
         worker_enabled,
         enabled_reason,
         evm_rpc_configured,
+        database_url_configured,
         rpc_host,
         chain_id_configured or 'not_set',
         chain_id_source,
         interval_seconds,
         provider_mode,
     )
+    if not database_url_configured:
+        logger.warning(
+            'worker_startup_no_database_url reason=DATABASE_URL_missing '
+            'set DATABASE_URL to the same Postgres instance as the API service '
+            'in the Railway worker service environment'
+        )
     if not worker_enabled:
         logger.warning(
             'worker_startup_DISABLED reason=no_enabling_env_var '
@@ -144,11 +160,13 @@ def _log_startup_provider_status(logger: logging.Logger) -> None:
 
     # Always perform an RPC health check at startup to surface connectivity issues
     # immediately in logs rather than waiting for the first monitoring cycle.
+    rpc_health_ok: bool | None = None
     if evm_rpc_configured:
         try:
             health = probe_rpc_health()
         except Exception as exc:
             health = {'ok': False, 'error': str(exc)[:200], 'block_number_hex': None, 'block_number_int': None, 'chain_id_int': None}
+        rpc_health_ok = bool(health.get('ok'))
         if health.get('ok'):
             logger.info(
                 'startup_rpc_health_check status=ok rpc_host=%s '
@@ -179,6 +197,12 @@ def _log_startup_provider_status(logger: logging.Logger) -> None:
             'startup_rpc_health_check status=skipped reason=EVM_RPC_URL_not_configured rpc_host=%s',
             rpc_host,
         )
+    return {
+        'worker_enabled': worker_enabled,
+        'evm_rpc_configured': evm_rpc_configured,
+        'database_url_configured': database_url_configured,
+        'rpc_health_ok': rpc_health_ok,
+    }
 
 
 def main() -> int:
@@ -188,7 +212,11 @@ def main() -> int:
     args = parse_args()
     logger.info('monitoring worker starting')
     logger.info('startup_git_commit_sha service_role=worker git_commit_sha=%s', _resolve_git_commit_sha() or 'unavailable')
-    _log_startup_provider_status(logger)
+    startup_status = _log_startup_provider_status(logger)
+    # Fail-closed: the worker is only healthy once eth_blockNumber has succeeded.
+    rpc_healthy = startup_status.get('rpc_health_ok') is True
+    if not rpc_healthy:
+        gauge('decoda_monitoring_worker_healthy', 0, worker=args.worker_name)
     identity = runtime_environment_identity()
     logger.info(
         'monitoring worker runtime identity app_mode=%s live_mode=%s railway_environment=%s railway_service=%s database_backend=%s database_fingerprint=%s',
@@ -239,7 +267,26 @@ def main() -> int:
                 soonest_due_in_seconds=soonest_due_in_seconds,
             )
             observe('decoda_monitoring_cycle_duration_seconds', time.monotonic() - cycle_started, worker=args.worker_name)
-            gauge('decoda_monitoring_worker_healthy', 1, worker=args.worker_name)
+            if not rpc_healthy:
+                from services.api.app.evm_activity_provider import probe_rpc_health
+                try:
+                    recheck = probe_rpc_health()
+                except Exception as recheck_exc:
+                    recheck = {'ok': False, 'error': str(recheck_exc)[:200], 'block_number_hex': None, 'block_number_int': None}
+                rpc_healthy = bool(recheck.get('ok'))
+                if rpc_healthy:
+                    logger.info(
+                        'rpc_health_recovered eth_blockNumber_hex=%s block_number_decimal=%s',
+                        recheck.get('block_number_hex') or 'missing',
+                        recheck.get('block_number_int'),
+                    )
+                else:
+                    logger.warning(
+                        'worker_not_marked_healthy reason=eth_blockNumber_not_succeeded rpc_error=%s '
+                        'worker stays unhealthy until the RPC health check passes',
+                        recheck.get('error') or 'unknown',
+                    )
+            gauge('decoda_monitoring_worker_healthy', 1 if rpc_healthy else 0, worker=args.worker_name)
             increment('decoda_monitoring_targets_checked_total', int(summary.get('checked', 0) or 0), worker=args.worker_name)
             increment('decoda_detection_events_total', int(summary.get('alerts_generated', 0) or 0), worker=args.worker_name)
             self_monitoring = evaluate_monitoring_system_alerts(stale_after_seconds=max(60, int(args.interval_seconds) * 4))
