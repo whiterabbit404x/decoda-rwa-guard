@@ -87,7 +87,12 @@ function deriveProviderHealth(payload: import('./monitoring-status-contract').Mo
   const health = payload.provider_health;
   const name = (payload.provider_name as string | null | undefined) ?? 'Ethereum RPC';
   const chain = (payload.provider_kind as string | null | undefined) ?? null;
-  const lastCheck = (payload.refreshed_at as string | null | undefined) ?? null;
+  const providerHealthRecords = Array.isArray(payload.provider_health) ? payload.provider_health as Record<string, unknown>[] : [];
+  const firstHealthRecord = providerHealthRecords.length > 0 ? providerHealthRecords[0] : null;
+  const lastCheck = (payload.refreshed_at as string | null | undefined)
+    ?? (firstHealthRecord?.checked_at as string | null | undefined)
+    ?? (payload.last_poll_at as string | null | undefined)
+    ?? null;
   let status: ProviderHealthInfo['status'] = 'unknown';
   if (reachable === true || health === 'healthy') status = 'connected';
   else if (reachable === false || health === 'degraded') status = 'not_connected';

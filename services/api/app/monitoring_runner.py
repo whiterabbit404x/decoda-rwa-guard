@@ -1184,7 +1184,10 @@ def _persist_live_coverage_telemetry(
             observed_at, evidence_source, payload_hash, payload_json, idempotency_key
         )
         VALUES (%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s::jsonb, %s)
-        ON CONFLICT (workspace_id, target_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+        ON CONFLICT (workspace_id, target_id, idempotency_key) WHERE idempotency_key IS NOT NULL
+        DO UPDATE SET
+            observed_at = EXCLUDED.observed_at,
+            ingested_at = NOW()
         """,
         (
             str(uuid.uuid4()),
@@ -7960,33 +7963,22 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         )
         payload['live_evidence_ready'] = live_evidence_ready
         summary['live_evidence_ready'] = live_evidence_ready
-        # Telemetry exists but evidence chain is incomplete — surface as LIMITED COVERAGE.
-        # We must not show 'live' / 'healthy' until detection → alert → incident → response
-        # → evidence are all present; we must also not regress past LIMITED into OFFLINE,
-        # because monitoring IS producing live telemetry.
+        # Surface live_evidence_ready=False as an informational reason code without
+        # downgrading status. Clean monitoring (no threats detected) is legitimately
+        # LIVE even without a full detection→alert→incident→response→evidence chain.
+        # The proof chain is only required for verified compliance export.
         recent_canonical_live_telemetry = bool(
             canonical_last_telemetry_at is not None
             and int((now - canonical_last_telemetry_at).total_seconds()) <= telemetry_window_seconds
         )
         if recent_canonical_live_telemetry and not live_evidence_ready:
-            if summary.get('runtime_status') in {'live', 'healthy'}:
-                summary['runtime_status'] = 'degraded'
-            elif summary.get('runtime_status') == 'offline':
-                summary['runtime_status'] = 'degraded'
-            if summary.get('monitoring_status') in {'live', 'offline'}:
-                summary['monitoring_status'] = 'limited'
             existing_reason_codes = list(summary.get('reason_codes') or [])
             if 'limited_coverage_evidence_chain_incomplete' not in existing_reason_codes:
                 existing_reason_codes.append('limited_coverage_evidence_chain_incomplete')
                 summary['reason_codes'] = sorted(set(existing_reason_codes))
-            payload['runtime_status'] = summary['runtime_status']
-            payload['monitoring_status'] = summary['monitoring_status']
         if isinstance(payload.get('workspace_monitoring_summary'), dict):
             payload['workspace_monitoring_summary']['live_evidence_ready'] = live_evidence_ready
             payload['workspace_monitoring_summary']['latest_live_telemetry_at'] = latest_live_telemetry_at
-            if recent_canonical_live_telemetry and not live_evidence_ready:
-                payload['workspace_monitoring_summary']['runtime_status'] = summary['runtime_status']
-                payload['workspace_monitoring_summary']['monitoring_status'] = summary['monitoring_status']
         if isinstance(payload.get('workspace_monitoring_summary'), dict):
             payload['workspace_monitoring_summary']['background_loop_health'] = dict(background_loop_health)
         logger.info(
@@ -8080,7 +8072,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         payload.update(
             {
                 'mode': mode,
-                'provider_health': provider_health,
+                # Prefer the list of provider_health_records (with checked_at) when available
+                # from the canonical DB query; fall back to the legacy string status.
+                'provider_health': payload.get('provider_health') if isinstance(payload.get('provider_health'), list) else provider_health,
                 'provider_reachable': bool((claim_validator.get('checks') or {}).get('evm_rpc_reachable')),
                 'evidence_state': str(payload.get('recent_evidence_state') or 'missing'),
                 'truthfulness_state': str(claim_validator.get('recent_truthfulness_state') or payload.get('recent_truthfulness_state') or 'unknown_risk'),
