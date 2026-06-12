@@ -244,3 +244,150 @@ test('telemetry detail modal shows human-readable summary fields', () => {
   expect(telemetryPageSource).toContain('Observed at');
   expect(telemetryPageSource).toContain('Evidence source');
 });
+
+// --- Search bar ---
+
+test('telemetry page has a search bar', () => {
+  expect(telemetryPageSource).toContain('searchQuery');
+  expect(telemetryPageSource).toContain('Search by tx hash');
+});
+
+test('search filters by tx_hash', () => {
+  // matchesSearch must check tx_hash field
+  expect(telemetryPageSource).toContain('matchesSearch');
+  expect(telemetryPageSource).toContain("'tx_hash'");
+  expect(telemetryPageSource).toContain('txHash?.toLowerCase().includes(q)');
+});
+
+test('search filters by wallet address (from and to)', () => {
+  expect(telemetryPageSource).toContain('fromAddr?.toLowerCase().includes(q)');
+  expect(telemetryPageSource).toContain('toAddr?.toLowerCase().includes(q)');
+});
+
+test('search filters by block number', () => {
+  expect(telemetryPageSource).toContain('blockNum?.includes(q)');
+});
+
+test('search filters by telemetry ID', () => {
+  expect(telemetryPageSource).toContain('row.id?.toLowerCase().includes(q)');
+});
+
+test('search filters by event_type / source_type', () => {
+  expect(telemetryPageSource).toContain('eventType?.toLowerCase().includes(q)');
+});
+
+// --- Quick filters ---
+
+test('telemetry page has quick filter buttons', () => {
+  expect(telemetryPageSource).toContain('QUICK_FILTERS');
+  expect(telemetryPageSource).toContain('quickFilter');
+  expect(telemetryPageSource).toContain('Wallet transfers');
+  expect(telemetryPageSource).toContain('RPC polling');
+  expect(telemetryPageSource).toContain('Alerts only');
+  expect(telemetryPageSource).toContain('Live evidence only');
+});
+
+test('quick filter All is the default', () => {
+  expect(telemetryPageSource).toContain("useState<QuickFilter>('all')");
+});
+
+test('matchesQuickFilter routes wallet_transfers to wallet_transfer kind', () => {
+  expect(telemetryPageSource).toContain('matchesQuickFilter');
+  expect(telemetryPageSource).toContain("filter === 'wallet_transfers'");
+  expect(telemetryPageSource).toContain("kind === 'wallet_transfer'");
+});
+
+test('matchesQuickFilter routes rpc_polling to block_poll kind', () => {
+  expect(telemetryPageSource).toContain("filter === 'rpc_polling'");
+  expect(telemetryPageSource).toContain("kind === 'block_poll'");
+});
+
+test('matchesQuickFilter live_evidence_only checks evidence_source', () => {
+  expect(telemetryPageSource).toContain("filter === 'live_evidence_only'");
+  expect(telemetryPageSource).toContain("row.evidence_source === 'live'");
+});
+
+// --- Table column: wallet transfer row rendering ---
+
+test('wallet transfer row shows Wallet transfer detected badge in the table', () => {
+  // The table rows (not just modal) render this label
+  const tableRowSection = telemetryPageSource.slice(
+    telemetryPageSource.indexOf('filteredRows.map'),
+  );
+  expect(tableRowSection).toContain('Wallet transfer detected');
+});
+
+test('rpc polling row shows RPC polling heartbeat badge in the table', () => {
+  const tableRowSection = telemetryPageSource.slice(
+    telemetryPageSource.indexOf('filteredRows.map'),
+  );
+  expect(tableRowSection).toContain('RPC polling heartbeat');
+});
+
+// --- Table column: Tx Hash with copy and Basescan ---
+
+test('table tx hash column shows shortened hash', () => {
+  expect(telemetryPageSource).toContain('shortenHash');
+  expect(telemetryPageSource).toContain('shortenAddress');
+});
+
+test('table tx hash column has inline copy button', () => {
+  const tableRowSection = telemetryPageSource.slice(
+    telemetryPageSource.indexOf('filteredRows.map'),
+  );
+  expect(tableRowSection).toContain('Copy transaction hash');
+  expect(tableRowSection).toContain('copiedTxId');
+});
+
+test('table tx hash column links to Basescan for chain_id 8453', () => {
+  // BASESCAN_TX_BASE constant must resolve to basescan.org
+  expect(telemetryPageSource).toContain('basescan.org');
+  // Table row rendering must reference the constant and the isBaseScan flag
+  const tableRowSection = telemetryPageSource.slice(
+    telemetryPageSource.indexOf('filteredRows.map'),
+  );
+  expect(tableRowSection).toContain('BASESCAN_TX_BASE');
+  expect(tableRowSection).toContain('isBaseScan');
+});
+
+// --- Filtered empty state ---
+
+test('telemetry page shows filtered empty state when search has no results', () => {
+  expect(telemetryPageSource).toContain(
+    'No wallet transfer found yet. Try searching by tx hash or wait for the next polling cycle.',
+  );
+});
+
+test('filtered empty state only shows when rows exist but filter returns none', () => {
+  // Guard: rows.length === 0 triggers the no-data state, not the filtered-empty state
+  expect(telemetryPageSource).toContain('rows.length === 0');
+  expect(telemetryPageSource).toContain('filteredRows.length === 0');
+});
+
+// --- New table columns ---
+
+test('telemetry table has Event Type column', () => {
+  expect(telemetryPageSource).toContain('Event Type');
+});
+
+test('telemetry table has Tx Hash column', () => {
+  expect(telemetryPageSource).toContain('Tx Hash');
+});
+
+test('telemetry table has From and To columns', () => {
+  // Column headers
+  const headersArray = telemetryPageSource.slice(
+    telemetryPageSource.indexOf('const HEADERS'),
+    telemetryPageSource.indexOf('];', telemetryPageSource.indexOf('const HEADERS')),
+  );
+  expect(headersArray).toContain("'From'");
+  expect(headersArray).toContain("'To'");
+});
+
+test('telemetry table has Amount column', () => {
+  const headersArray = telemetryPageSource.slice(
+    telemetryPageSource.indexOf('const HEADERS'),
+    telemetryPageSource.indexOf('];', telemetryPageSource.indexOf('const HEADERS')),
+  );
+  expect(headersArray).toContain("'Amount'");
+});
