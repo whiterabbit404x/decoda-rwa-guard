@@ -1209,6 +1209,28 @@ def _persist_live_coverage_telemetry(
         target.get('id'),
         provider_result.latest_block,
     )
+    # Keep monitored_systems.last_coverage_telemetry_at current so the legacy
+    # reporting-systems path (which reads this column) counts this system as
+    # reporting even when canonical_last_telemetry_at is unavailable (e.g.
+    # monitoring_configs FK not yet repaired by migration 0104).
+    _ms_id = str(target.get('monitored_system_id') or '').strip()
+    if _ms_id:
+        try:
+            connection.execute(
+                '''
+                UPDATE monitored_systems
+                SET last_coverage_telemetry_at = GREATEST(COALESCE(last_coverage_telemetry_at, %s), %s),
+                    last_event_at = GREATEST(COALESCE(last_event_at, %s), %s)
+                WHERE id = %s::uuid
+                  AND workspace_id = %s::uuid
+                ''',
+                (observed_at, observed_at, observed_at, observed_at, _ms_id, str(target['workspace_id'])),
+            )
+        except Exception as _ms_upd_exc:
+            logger.warning(
+                'code=LIVE_TELEMETRY_MS_UPDATE_FAILED monitored_system_id=%s target_id=%s error=%s',
+                _ms_id, target.get('id'), str(_ms_upd_exc)[:200],
+            )
 
 
 def _payload_shape(payload: dict[str, Any]) -> dict[str, Any]:
@@ -6503,16 +6525,34 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 return False
             expected_asset_id = healthy_enabled_target_asset_map.get(target_id)
             if expected_asset_id:
-                return bool(asset_id and asset_id == expected_asset_id)
+                if asset_id and asset_id == expected_asset_id:
+                    return True
+                # monitored_systems.asset_id may be NULL when migration 0104C has not
+                # been applied yet.  The worker uses target.asset_id directly, so the
+                # monitoring link IS valid — only the denormalised column is missing.
+                if not asset_id:
+                    return True
             return bool(asset_id)
-    
+
+        def _effective_asset_id_for_row(row: dict[str, Any]) -> str:
+            """Return the asset_id to count for this monitored_system row.
+
+            Prefers the row's own asset_id but falls back to the target's asset_id
+            when monitored_systems.asset_id is NULL (migration 0104C not yet applied).
+            """
+            asset_id = str(row.get('asset_id') or '')
+            if asset_id:
+                return asset_id
+            target_id = str(row.get('target_id') or '')
+            return healthy_enabled_target_asset_map.get(target_id, '')
+
         valid_target_system_link_count = sum(1 for row in monitored_rows if monitored_system_row_enabled(row) and _row_has_valid_target_asset_link(row))
         valid_protected_asset_count = len(
             {
-                str(row.get('asset_id') or '')
+                _effective_asset_id_for_row(row)
                 for row in monitored_rows
                 if monitored_system_row_enabled(row)
-                if _row_has_valid_target_asset_link(row) and row.get('asset_id')
+                if _row_has_valid_target_asset_link(row) and _effective_asset_id_for_row(row)
             }
         )
         monitorable_enabled_targets = healthy_enabled_targets_count
@@ -6702,9 +6742,14 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     last_telemetry_at = canonical_last_telemetry_at or legacy_last_telemetry_at
                     # 'coverage' is the recognized kind in build_workspace_monitoring_summary;
                     # evm_rpc/rpc_polling polling events are coverage telemetry by definition.
+                    # Fall back to 'coverage' when monitoring_event_receipts has data but canonical
+                    # telemetry_events and monitored_systems.last_coverage_telemetry_at are both None —
+                    # this prevents telemetry_timestamp=None inside build_workspace_monitoring_summary
+                    # when the only signal is from the receipts path.
                     telemetry_kind = (
                         'coverage' if canonical_last_telemetry_at is not None
-                        else (legacy_telemetry_kind if legacy_last_telemetry_at is not None else None)
+                        else (legacy_telemetry_kind if legacy_last_telemetry_at is not None
+                              else ('coverage' if last_coverage_telemetry_at is not None else None))
                     )
                     latest_target_coverage_rows = connection.execute(
                         '''
@@ -7124,6 +7169,30 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         configuration_reason = configuration_diagnostics.get('configuration_reason')
         primary_reason = configuration_reason
         configuration_reason_codes = list(configuration_diagnostics.get('reason_codes') or [])
+        logger.info(
+            'monitoring_runtime_signal_summary workspace_id=%s '
+            'canonical_last_telemetry_at=%s last_coverage_telemetry_at=%s last_telemetry_at=%s '
+            'telemetry_kind=%s coverage_fresh=%s reporting_systems=%s '
+            'canonical_reporting=%s legacy_reporting=%s receipts_reporting=%s '
+            'workspace_configured=%s valid_assets=%s valid_links=%s persisted_configs=%s '
+            'evidence_source=%s runtime_status=%s',
+            workspace_id,
+            canonical_last_telemetry_at.isoformat() if canonical_last_telemetry_at else None,
+            last_coverage_telemetry_at.isoformat() if last_coverage_telemetry_at else None,
+            last_telemetry_at.isoformat() if last_telemetry_at else None,
+            telemetry_kind,
+            coverage_fresh,
+            reporting_systems,
+            canonical_reporting_systems,
+            legacy_row_reporting_systems,
+            receipts_reporting_systems,
+            workspace_configured,
+            valid_protected_asset_count,
+            valid_target_system_link_count,
+            persisted_enabled_config_count,
+            evidence_source,
+            runtime_status_summary,
+        )
         # When canonical telemetry_events has recent live rows but workspace_configured
         # is False (e.g., stale asset linkage in monitored_systems), override to prevent
         # the OFFLINE status. Telemetry being persisted proves monitoring is running;
@@ -7137,6 +7206,27 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 if configuration_reason is None:
                     configuration_reason = 'telemetry_active_configuration_incomplete'
                 primary_reason = configuration_reason
+        # Second-path override: fresh monitoring_event_receipts with valid monitored-system linkage
+        # also prove the worker is actively polling. This covers the case where canonical
+        # telemetry_events is unavailable (missing block_number or FK mismatch) but the
+        # receipts path has fresh data. Without this override workspace_configured stays False
+        # and the workspace_unconfigured_with_reporting_systems hard guard fires, forcing
+        # freshness=stale and confidence=unavailable even when real live polling is running.
+        if not workspace_configured and last_coverage_telemetry_at is not None and receipts_reporting_systems > 0:
+            _cov_age_for_config = int((now - last_coverage_telemetry_at).total_seconds())
+            if _cov_age_for_config <= telemetry_window_seconds:
+                workspace_configured = True
+                if 'coverage_receipts_active_configuration_incomplete' not in configuration_reason_codes:
+                    configuration_reason_codes.append('coverage_receipts_active_configuration_incomplete')
+                if configuration_reason is None:
+                    configuration_reason = 'coverage_receipts_active_configuration_incomplete'
+                primary_reason = configuration_reason
+                logger.info(
+                    'monitoring_workspace_configured_via_receipts workspace_id=%s receipts_reporting_systems=%s coverage_age_s=%s',
+                    workspace_id,
+                    receipts_reporting_systems,
+                    _cov_age_for_config,
+                )
         if not workspace_configured:
             logger.warning(
                 'monitoring_workspace_configuration_diagnostics workspace_id=%s workspace_slug=%s reason_codes=%s diagnostics=%s',
@@ -7287,7 +7377,12 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         )
         summary['runtime_error_code'] = runtime_error_code
         summary['runtime_degraded_reason'] = runtime_degraded_reason
-        if _loose_target_rows_flag:
+        # Only fire the loose-target guard when ALL reporting paths return 0.
+        # When legacy or receipt paths provide reporting_systems > 0 the canonical gap
+        # is a transient metadata race (FK mismatch in monitoring_configs), not a real
+        # contradiction.  Firing the hard guard here would override freshness=stale and
+        # confidence=unavailable even though live monitoring is demonstrably running.
+        if _loose_target_rows_flag and reporting_systems == 0:
             _cf = list(summary.get('contradiction_flags') or [])
             _gf = list(summary.get('guard_flags') or [])
             if 'target_rows_exist_without_reporting_systems' not in _cf:

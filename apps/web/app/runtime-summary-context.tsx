@@ -41,8 +41,13 @@ const REASON_CODE_MESSAGES: Record<string, string> = {
   summary_unavailable: 'Runtime summary is unavailable. Recheck workspace connectivity.',
   workspace_unconfigured: 'Workspace setup is incomplete. Finish onboarding to enable live monitoring.',
   no_reporting_systems: 'No monitored systems are reporting. Enable and verify monitoring sources.',
+  no_fresh_live_coverage_telemetry: 'Live telemetry has not arrived yet. Worker is polling — first telemetry window usually completes within 5 minutes.',
+  telemetry_timestamp_unavailable: 'Telemetry timestamp is unavailable. Worker may still be initialising.',
   stale_telemetry: 'Telemetry is stale. Investigate worker health and source ingestion lag.',
   no_live_evidence: 'No live evidence has been persisted yet. Trigger and validate a real detection path.',
+  telemetry_active_configuration_incomplete: 'Monitoring is active but workspace linkage is still syncing.',
+  coverage_receipts_active_configuration_incomplete: 'Monitoring is active but workspace linkage is still syncing.',
+  workspace_configuration_invalid: 'Workspace configuration is incomplete. Verify asset, target and system links.',
   runtime_contradiction_asset_monitoring_attached_but_no_monitored_systems: 'Assets are registered, but monitoring is not attached to any running systems.',
   runtime_contradiction_asset_count_mismatch_runtime_vs_registry: 'Asset counts are out of sync between registry and runtime.',
   runtime_contradiction_healthy_claim_with_reporting_systems_zero: 'Health cannot be verified because no systems are reporting.',
@@ -79,7 +84,10 @@ function defaultSummary(): WorkspaceMonitoringTruth {
   return resolveWorkspaceMonitoringTruth(null);
 }
 
-function deriveProviderHealth(payload: import('./monitoring-status-contract').MonitoringRuntimeStatus | null): ProviderHealthInfo {
+function deriveProviderHealth(
+  payload: import('./monitoring-status-contract').MonitoringRuntimeStatus | null,
+  summary?: WorkspaceMonitoringTruth,
+): ProviderHealthInfo {
   if (!payload) {
     return { name: 'Ethereum RPC', status: 'unknown', chain: null, last_check: null, error_message: 'Runtime status unavailable' };
   }
@@ -89,9 +97,13 @@ function deriveProviderHealth(payload: import('./monitoring-status-contract').Mo
   const chain = (payload.provider_kind as string | null | undefined) ?? null;
   const providerHealthRecords = Array.isArray(payload.provider_health) ? payload.provider_health as Record<string, unknown>[] : [];
   const firstHealthRecord = providerHealthRecords.length > 0 ? providerHealthRecords[0] : null;
+  // Use the canonical poll timestamp as the last_check to keep Provider Health
+  // aligned with the Telemetry Timeline "Provider poll" row.  The monitoring_polls
+  // table is the source of truth for last_poll_at in the backend summary.
   const lastCheck = (payload.refreshed_at as string | null | undefined)
     ?? (firstHealthRecord?.checked_at as string | null | undefined)
     ?? (payload.last_poll_at as string | null | undefined)
+    ?? summary?.last_poll_at
     ?? null;
   let status: ProviderHealthInfo['status'] = 'unknown';
   if (reachable === true || health === 'healthy') status = 'connected';
@@ -166,7 +178,7 @@ export function RuntimeSummaryProvider({ children }: { children: React.ReactNode
     const fixCtaLabel = nextRequiredAction === 'resolve_runtime_contradictions'
       ? 'Fix monitoring contradictions'
       : 'Review monitoring setup';
-    const providerHealth = deriveProviderHealth(rawPayload);
+    const providerHealth = deriveProviderHealth(rawPayload, summary);
     const workerHealth = deriveWorkerHealth(rawPayload, summary);
     return { summary, runtime, loading, reasonMessageForCode, evidenceLabel, existsLabel, missingLabel, nextActionLabel, fixCtaLabel, providerHealth, workerHealth };
   }, [summary, runtime, rawPayload, loading]);
