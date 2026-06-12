@@ -388,13 +388,21 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         except ValueError:
             last_block = None
     # Guardrail: Unix timestamps (~1.78B for 2026) are not valid block heights.
-    # If the cursor contains a timestamp, reset it so the scanner uses the
-    # replay window from latest_block instead of an impossible from_block.
-    if last_block is not None and last_block > 500_000_000:
+    # Also guard against cursors that are more than 1000 blocks ahead of the chain
+    # head — this catches stale cursors from wrong chains or corrupt writes even
+    # when the value is below the 500M timestamp threshold.
+    _corrupt_cursor_reason: str | None = None
+    if last_block is not None:
+        if last_block > 500_000_000:
+            _corrupt_cursor_reason = 'timestamp_range'
+        elif latest and last_block > latest + 1000:
+            _corrupt_cursor_reason = 'cursor_ahead_of_chain'
+    if _corrupt_cursor_reason is not None:
         logger.warning(
             'evm_cursor_corruption_detected target_id=%s chain=%s corrupt_cursor=%s '
-            'latest_block=%s action=reset_cursor_to_replay_window',
+            'latest_block=%s reason=%s previous_cursor=%s repaired_cursor=reset_to_replay_window',
             target.get('id'), network, last_block, latest,
+            _corrupt_cursor_reason, cursor or 'none',
         )
         last_block = None
     from_block = max(0, safe_to - replay_blocks if last_block is None else max(last_block - replay_blocks, 0))
@@ -422,6 +430,8 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         for chunk_from, chunk_to in _iter_block_ranges(from_block, safe_to, block_scan_chunk):
             logs.extend(_fetch_logs(client, target_address, chunk_from, chunk_to))
 
+    _transactions_inspected = 0
+    _wallet_transfers_detected = 0
     for chunk_from, chunk_to in _iter_block_ranges(from_block, safe_to, block_scan_chunk):
         for block_number in range(chunk_from, chunk_to + 1):
             block = client.call('eth_getBlockByNumber', [hex(block_number), True]) or {}
@@ -430,6 +440,7 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
                 block_ts_cache[block_hash] = _iso_from_block_ts(block.get('timestamp'))
             txs = block.get('transactions') or []
             for tx in txs:
+                _transactions_inspected += 1
                 tx_to = str(tx.get('to') or '').lower()
                 tx_from = str(tx.get('from') or '').lower()
                 if target_type == 'wallet' and target_address not in {tx_to, tx_from}:
@@ -454,6 +465,7 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
                 payload['source_type'] = 'rpc_polling'
                 if target_type == 'wallet' and target_address in {tx_to, tx_from}:
                     payload['wallet_transfer_direction'] = 'outbound' if tx_from == target_address else 'inbound'
+                    _wallet_transfers_detected += 1
                 kind = 'transaction' if target_type == 'wallet' else 'contract'
                 events.append(ActivityEvent(event_id=_make_event_id(str(target['id']), cursor_value, kind), kind=kind, observed_at=observed_at, ingestion_source=preferred_source, cursor=cursor_value, payload=payload))
 
@@ -515,11 +527,15 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         payload['venue_observations'] = telemetry['venue_observations']
         event.payload = payload
     logger.info(
-        'evm_block_scan_complete target_id=%s chain=%s from_block=%s to_block=%s '
-        'blocks_scanned=%s matches_found=%s',
+        'evm_block_scan_complete target_id=%s chain=%s '
+        'eth_blockNumber_raw=%s from_block=%s to_block=%s '
+        'blocks_scanned=%s transactions_inspected=%s wallet_transfers_detected=%s matches_found=%s',
         target.get('id'), network,
+        latest_block_raw_hex,
         from_block, safe_to,
         max(0, safe_to - from_block + 1),
+        _transactions_inspected,
+        _wallet_transfers_detected,
         len(deduped),
     )
     return deduped

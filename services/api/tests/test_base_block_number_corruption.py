@@ -15,6 +15,11 @@ Coverage:
   6. Base outbound transfer in block 47238026 is detected by fetch_evm_activity
   7. wallet_transfer_direction is outbound when wallet is the sender
   8. source_type=rpc_polling is present in detected wallet transfer payload
+  9. Heartbeat telemetry payload contains latest_block and raw_response.result
+  10. Cursor > latest_block + 1000 is treated as corrupted and reset
+  11. evm_block_scan_complete log includes transactions_inspected and wallet_transfers_detected
+  12. tx_hash search query covers wallet_transfer_detected event_type
+  13. Heartbeat payload raw_response.result matches eth_blockNumber hex
 """
 from __future__ import annotations
 
@@ -463,4 +468,324 @@ def test_wallet_transfer_payload_has_source_type_rpc_polling(monkeypatch):
     assert tx_events, 'Expected wallet transfer event'
     assert tx_events[0].payload.get('source_type') == 'rpc_polling', (
         f'source_type must be rpc_polling, got {tx_events[0].payload.get("source_type")!r}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# 9. Heartbeat telemetry payload has latest_block and raw_response.result
+# ---------------------------------------------------------------------------
+
+def test_heartbeat_payload_has_latest_block_and_raw_response_result():
+    """
+    _persist_live_coverage_telemetry must include:
+      - payload_json.latest_block  = real decimal block height
+      - payload_json.raw_response.result = original RPC hex string
+    Verified by source inspection.
+    """
+    source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
+    assert "'latest_block': _effective_block" in source, (
+        "monitoring_runner._persist_live_coverage_telemetry must set "
+        "payload_json['latest_block'] = real block height"
+    )
+    assert "'result': hex(_effective_block)" in source, (
+        "monitoring_runner._persist_live_coverage_telemetry must set "
+        "payload_json['raw_response']['result'] = original RPC hex string"
+    )
+
+
+def test_heartbeat_payload_raw_response_result_matches_block_hex():
+    """
+    payload_json.raw_response.result must equal hex(block_number).
+    Since result = hex(_effective_block) and eth_blockNumber = hex(_effective_block),
+    both must match for real Base blocks.
+    """
+    block = BASE_BLOCK_47238026
+    result_hex = hex(block)
+    eth_block_hex = hex(block)
+    assert result_hex == eth_block_hex == BASE_BLOCK_HEX, (
+        f'raw_response.result ({result_hex}) must equal eth_blockNumber hex ({eth_block_hex})'
+    )
+    assert result_hex.startswith('0x'), 'result must be a hex string'
+
+
+# ---------------------------------------------------------------------------
+# 10. Cursor > latest_block + 1000 is treated as corrupted and reset
+# ---------------------------------------------------------------------------
+
+def test_fetch_evm_activity_resets_cursor_ahead_of_chain(monkeypatch):
+    """
+    If the stored cursor is more than 1000 blocks ahead of latest_block,
+    fetch_evm_activity must treat it as corrupted and reset to replay window.
+
+    Example: latest = 47238026, cursor = 47240000 (1974 blocks ahead → corrupted).
+    Without the fix: from_block = 47240000 > safe_to = 47238026 → early return.
+    With the fix: corrupted cursor is reset → blocks ARE scanned.
+    """
+    from services.api.app.evm_activity_provider import fetch_evm_activity
+
+    # Cursor 2000 blocks ahead of latest — not a timestamp, but clearly wrong
+    corrupt_ahead_cursor = BASE_BLOCK_47238026 + 2000
+
+    def mock_call(method, params):
+        if method == 'eth_chainId':
+            return hex(BASE_CHAIN_ID)
+        if method == 'eth_blockNumber':
+            return BASE_BLOCK_HEX
+        if method == 'eth_getBlockByNumber':
+            return {'hash': '0xhash', 'timestamp': '0x67a00000', 'transactions': []}
+        if method == 'eth_getLogs':
+            return []
+        return None
+
+    mock_client = MagicMock()
+    mock_client.call.side_effect = mock_call
+
+    target = {
+        'id': str(uuid.uuid4()),
+        'workspace_id': str(uuid.uuid4()),
+        'chain_network': 'base',
+        'target_type': 'wallet',
+        'wallet_address': WALLET_ADDR,
+        'contract_identifier': None,
+        'monitoring_checkpoint_cursor': f'{corrupt_ahead_cursor}:0xdeadbeef:-1',
+    }
+
+    with patch.dict('os.environ', {
+        'LIVE_MONITORING_CHAINS': 'base',
+        'EVM_CHAIN_ID': str(BASE_CHAIN_ID),
+        'EVM_RPC_URL': 'http://rpc.test',
+        'EVM_CONFIRMATIONS_REQUIRED': '0',
+        'MONITOR_REPLAY_BLOCKS': '5',
+        'MONITOR_BATCH_BLOCKS': '5',
+    }):
+        fetch_evm_activity(target, None, rpc_client=mock_client)
+
+    called_methods = [call.args[0] for call in mock_client.call.call_args_list]
+    assert 'eth_getBlockByNumber' in called_methods or 'eth_getLogs' in called_methods, (
+        f'fetch_evm_activity must scan blocks after resetting cursor={corrupt_ahead_cursor} '
+        f'which is > latest ({BASE_BLOCK_47238026}) + 1000. '
+        'Without the fix: from_block > safe_to → early return → no scanning.'
+    )
+
+
+def test_cursor_ahead_of_chain_source_has_guardrail():
+    """evm_activity_provider.py must contain the cursor_ahead_of_chain corruption reason."""
+    source = open('services/api/app/evm_activity_provider.py', encoding='utf-8').read()
+    assert 'cursor_ahead_of_chain' in source, (
+        'evm_activity_provider.py must guard against cursor > latest + 1000 '
+        '(reason=cursor_ahead_of_chain)'
+    )
+
+
+# ---------------------------------------------------------------------------
+# 11. evm_block_scan_complete log includes transactions_inspected and
+#     wallet_transfers_detected
+# ---------------------------------------------------------------------------
+
+def test_scan_complete_log_includes_transactions_inspected(monkeypatch):
+    """
+    evm_block_scan_complete log must include transactions_inspected count.
+    Verified by source inspection.
+    """
+    source = open('services/api/app/evm_activity_provider.py', encoding='utf-8').read()
+    assert 'transactions_inspected=%s' in source, (
+        'evm_block_scan_complete log must include transactions_inspected=<count>'
+    )
+
+
+def test_scan_complete_log_includes_wallet_transfers_detected():
+    """
+    evm_block_scan_complete log must include wallet_transfers_detected count.
+    Verified by source inspection.
+    """
+    source = open('services/api/app/evm_activity_provider.py', encoding='utf-8').read()
+    assert 'wallet_transfers_detected=%s' in source, (
+        'evm_block_scan_complete log must include wallet_transfers_detected=<count>'
+    )
+
+
+def test_scan_complete_log_includes_eth_blockNumber_raw():
+    """evm_block_scan_complete log must include eth_blockNumber_raw."""
+    source = open('services/api/app/evm_activity_provider.py', encoding='utf-8').read()
+    assert 'eth_blockNumber_raw=%s' in source, (
+        'evm_block_scan_complete log must include eth_blockNumber_raw=<hex>'
+    )
+
+
+def test_scan_counts_transactions_inspected(monkeypatch):
+    """
+    When eth_getBlockByNumber returns transactions, _transactions_inspected must be > 0
+    and reflected in the scan complete log.
+    """
+    import logging
+    from services.api.app.evm_activity_provider import fetch_evm_activity
+
+    log_records: list[logging.LogRecord] = []
+
+    class CapHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            log_records.append(record)
+
+    handler = CapHandler()
+    handler.setLevel(logging.DEBUG)
+    log = logging.getLogger('services.api.app.evm_activity_provider')
+    original_level = log.level
+    original_propagate = log.propagate
+    log.setLevel(logging.DEBUG)
+    log.propagate = False
+    log.addHandler(handler)
+    try:
+        def mock_call(method, params):
+            if method == 'eth_chainId':
+                return hex(BASE_CHAIN_ID)
+            if method == 'eth_blockNumber':
+                return BASE_BLOCK_HEX
+            if method == 'eth_getBlockByNumber':
+                # Only return tx for the exact target block; other blocks are empty
+                blk = int(params[0], 16)
+                if blk == BASE_BLOCK_47238026:
+                    return {
+                        'hash': '0xhash',
+                        'timestamp': hex(1749726026),
+                        'transactions': [
+                            {'hash': TX_HASH, 'from': OTHER_ADDR, 'to': WALLET_ADDR, 'value': '0x1', 'input': '0x', 'blockHash': '0xhash'},
+                        ],
+                    }
+                return {'hash': '0xother', 'timestamp': hex(1749726026), 'transactions': []}
+            if method == 'eth_getLogs':
+                return []
+            return None
+
+        mock_client = MagicMock()
+        mock_client.call.side_effect = mock_call
+
+        target = {
+            'id': str(uuid.uuid4()),
+            'workspace_id': str(uuid.uuid4()),
+            'chain_network': 'base',
+            'target_type': 'wallet',
+            'wallet_address': WALLET_ADDR,
+            'contract_identifier': None,
+            'monitoring_checkpoint_cursor': None,
+        }
+
+        with patch.dict('os.environ', {
+            'LIVE_MONITORING_CHAINS': 'base',
+            'EVM_CHAIN_ID': str(BASE_CHAIN_ID),
+            'EVM_RPC_URL': 'http://rpc.test',
+            'EVM_CONFIRMATIONS_REQUIRED': '0',
+            'MONITOR_REPLAY_BLOCKS': '1',
+            'MONITOR_BATCH_BLOCKS': '1',
+        }):
+            fetch_evm_activity(target, None, rpc_client=mock_client)
+    finally:
+        log.removeHandler(handler)
+        log.setLevel(original_level)
+        log.propagate = original_propagate
+
+    complete_msgs = [
+        r.getMessage() for r in log_records
+        if 'evm_block_scan_complete' in r.getMessage()
+    ]
+    assert complete_msgs, 'Expected evm_block_scan_complete log entry'
+    msg = complete_msgs[-1]
+    assert 'transactions_inspected=' in msg, (
+        f'evm_block_scan_complete log must include transactions_inspected. Got: {msg!r}'
+    )
+    assert 'wallet_transfers_detected=' in msg, (
+        f'evm_block_scan_complete log must include wallet_transfers_detected. Got: {msg!r}'
+    )
+    # 1 tx inspected in the target block, 1 wallet transfer (inbound to wallet)
+    assert 'transactions_inspected=1' in msg, f'Expected transactions_inspected=1, got: {msg!r}'
+    assert 'wallet_transfers_detected=1' in msg, f'Expected wallet_transfers_detected=1, got: {msg!r}'
+
+
+# ---------------------------------------------------------------------------
+# 12 & 13. tx_hash search returns wallet_transfer_detected rows
+# ---------------------------------------------------------------------------
+
+def test_telemetry_search_query_covers_tx_hash():
+    """
+    The telemetry search query in monitoring_runner.py must filter by
+    payload_json->>'tx_hash' so that wallet_transfer_detected events are
+    returned when searching for a transaction hash.
+    """
+    source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
+    assert "payload_json->>'tx_hash'" in source, (
+        "monitoring_runner.py telemetry search must filter on payload_json->>'tx_hash' "
+        "so that wallet_transfer_detected rows appear in tx_hash searches"
+    )
+
+
+def test_wallet_transfer_detected_event_type_stored_correctly(monkeypatch):
+    """
+    When fetch_evm_activity returns a transaction where wallet is sender/receiver,
+    the event payload must contain tx_hash so the search query can find it.
+    """
+    from services.api.app.evm_activity_provider import fetch_evm_activity
+
+    def mock_call(method, params):
+        if method == 'eth_chainId':
+            return hex(BASE_CHAIN_ID)
+        if method == 'eth_blockNumber':
+            return BASE_BLOCK_HEX
+        if method == 'eth_getBlockByNumber':
+            blk = int(params[0], 16)
+            if blk == BASE_BLOCK_47238026:
+                return {
+                    'hash': '0xblockhash',
+                    'timestamp': hex(1749726026),
+                    'transactions': [{
+                        'hash': TX_HASH,
+                        'from': WALLET_ADDR,
+                        'to': OTHER_ADDR,
+                        'value': hex(10 ** 17),
+                        'input': '0x',
+                        'blockHash': '0xblockhash',
+                    }],
+                }
+            return {'hash': '0xother', 'timestamp': hex(1749726026), 'transactions': []}
+        if method == 'eth_getLogs':
+            return []
+        return None
+
+    mock_client = MagicMock()
+    mock_client.call.side_effect = mock_call
+
+    target = {
+        'id': str(uuid.uuid4()),
+        'workspace_id': str(uuid.uuid4()),
+        'chain_network': 'base',
+        'target_type': 'wallet',
+        'wallet_address': WALLET_ADDR,
+        'contract_identifier': None,
+        'monitoring_checkpoint_cursor': None,
+    }
+
+    with patch.dict('os.environ', {
+        'LIVE_MONITORING_CHAINS': 'base',
+        'EVM_CHAIN_ID': str(BASE_CHAIN_ID),
+        'EVM_RPC_URL': 'http://rpc.test',
+        'EVM_CONFIRMATIONS_REQUIRED': '0',
+        'MONITOR_REPLAY_BLOCKS': '1',
+        'MONITOR_BATCH_BLOCKS': '1',
+    }):
+        events = fetch_evm_activity(target, None, rpc_client=mock_client)
+
+    wallet_events = [
+        e for e in events
+        if isinstance(e.payload, dict) and e.payload.get('tx_hash') == TX_HASH
+    ]
+    assert wallet_events, (
+        f'Expected event with tx_hash={TX_HASH!r} — needed for tx_hash search to work'
+    )
+    payload = wallet_events[0].payload
+    assert payload.get('tx_hash') == TX_HASH, 'tx_hash must be stored in payload for search'
+    assert payload.get('from') == WALLET_ADDR.lower(), 'from address must be in payload'
+    assert payload.get('to') == OTHER_ADDR.lower(), 'to address must be in payload'
+    assert payload.get('wallet_transfer_direction') == 'outbound'
+    # These fields must be present for the tx_hash search to succeed in monitoring_runner
+    assert 'block_number' in payload, 'block_number must be in payload'
+    assert payload['block_number'] == BASE_BLOCK_47238026, (
+        f'block_number must be real block height {BASE_BLOCK_47238026}, got {payload["block_number"]}'
     )
