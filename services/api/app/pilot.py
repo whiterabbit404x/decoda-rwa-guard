@@ -9367,6 +9367,11 @@ def _validate_target_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='contract_identifier exceeds 150 chars.')
     if wallet_address and not re.match(r'^0x[a-fA-F0-9]{40}$', wallet_address):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='wallet_address must be an EVM-style address.')
+    if target_type == 'wallet' and chain_network.strip().lower() in _EVM_CHAIN_NETWORKS and not wallet_address:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='wallet_address is required for wallet type targets on EVM chains.',
+        )
     if token_address and not re.match(r'^0x[a-fA-F0-9]{40}$', token_address):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='token_address must be an EVM-style address.')
     severity_preference = str(payload.get('severity_preference', 'medium')).strip().lower()

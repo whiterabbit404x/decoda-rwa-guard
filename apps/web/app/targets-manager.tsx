@@ -7,11 +7,19 @@ import { usePilotAuth } from './pilot-auth-context';
 type Props = { apiUrl: string };
 type Target = any;
 
+const CHAIN_NETWORKS = [
+  { value: 'base', label: 'Base (chain 8453)' },
+  { value: 'ethereum-mainnet', label: 'Ethereum mainnet (chain 1)' },
+  { value: 'arbitrum-one', label: 'Arbitrum One (chain 42161)' },
+  { value: 'optimism-mainnet', label: 'Optimism (chain 10)' },
+  { value: 'polygon-mainnet', label: 'Polygon (chain 137)' },
+];
+
 const EMPTY_TARGET = {
   name: '',
   asset_id: '',
   target_type: 'wallet',
-  chain_network: 'ethereum-mainnet',
+  chain_network: 'base',
   contract_identifier: '',
   wallet_address: '',
   owner_notes: '',
@@ -131,12 +139,32 @@ export default function TargetsManager({ apiUrl: _apiUrl }: Props) {
         </select>
         <input placeholder="Target name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
         <div className="buttonRow">
-          <select value={form.target_type} onChange={(event) => setForm({ ...form, target_type: event.target.value })}>
-            <option value="wallet">Transactions</option>
+          <select value={form.target_type} onChange={(event) => setForm({ ...form, target_type: event.target.value, wallet_address: '', contract_identifier: '' })}>
+            <option value="wallet">Transactions (wallet)</option>
             <option value="contract">Contract interactions</option>
             <option value="admin-controlled module">Admin role changes</option>
             <option value="oracle">Oracle freshness</option>
           </select>
+          <select value={form.chain_network} onChange={(event) => setForm({ ...form, chain_network: event.target.value })}>
+            {CHAIN_NETWORKS.map((n) => <option key={n.value} value={n.value}>{n.label}</option>)}
+          </select>
+        </div>
+        {form.target_type === 'wallet' ? (
+          <input
+            placeholder="Monitored wallet address (0x...)"
+            value={form.wallet_address}
+            onChange={(event) => setForm({ ...form, wallet_address: event.target.value.trim() })}
+            pattern="^0x[a-fA-F0-9]{40}$"
+            title="Must be a 0x-prefixed EVM address (42 hex chars)"
+          />
+        ) : (
+          <input
+            placeholder="Contract address (0x...)"
+            value={form.contract_identifier}
+            onChange={(event) => setForm({ ...form, contract_identifier: event.target.value.trim() })}
+          />
+        )}
+        <div className="buttonRow">
           <select value={form.severity_threshold} onChange={(event) => setForm({ ...form, severity_threshold: event.target.value })}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="critical">Critical</option></select>
           <input type="number" min={30} step={30} value={form.monitoring_interval_seconds} onChange={(event) => setForm({ ...form, monitoring_interval_seconds: Number(event.target.value) || 300 })} />
         </div>
