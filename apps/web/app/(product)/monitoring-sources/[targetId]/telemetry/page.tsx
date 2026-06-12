@@ -21,15 +21,27 @@ type TelemetryRow = {
   payload_json?: Record<string, unknown> | null;
 };
 
+type QuickFilter = 'all' | 'wallet_transfers' | 'rpc_polling' | 'alerts_only' | 'live_evidence_only';
+
+const QUICK_FILTERS: Array<{ id: QuickFilter; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'wallet_transfers', label: 'Wallet transfers' },
+  { id: 'rpc_polling', label: 'RPC polling' },
+  { id: 'alerts_only', label: 'Alerts only' },
+  { id: 'live_evidence_only', label: 'Live evidence only' },
+];
+
 const HEADERS = [
-  'ID',
-  'Provider Type',
-  'Source Type',
-  'Evidence Source',
+  'Event Type',
+  'Tx Hash',
+  'From',
+  'To',
+  'Amount',
   'Chain ID',
   'Block Number',
   'Observed At',
-  'Raw Response',
+  'Evidence Source',
+  'Details',
 ];
 
 function fmt(value?: string | null): string {
@@ -61,6 +73,16 @@ function extractField(
   return null;
 }
 
+function shortenHash(hash: string): string {
+  if (hash.length <= 12) return hash;
+  return `${hash.slice(0, 8)}...${hash.slice(-4)}`;
+}
+
+function shortenAddress(addr: string): string {
+  if (addr.length <= 12) return addr;
+  return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+}
+
 type EventKind = 'wallet_transfer' | 'block_poll' | 'unknown';
 
 function classifyEvent(payload: Record<string, unknown> | null | undefined): EventKind {
@@ -71,6 +93,38 @@ function classifyEvent(payload: Record<string, unknown> | null | undefined): Eve
   if (txHash || (fromAddr && toAddr)) return 'wallet_transfer';
   if ('eth_blockNumber' in payload || typeof payload.result === 'string') return 'block_poll';
   return 'unknown';
+}
+
+function matchesSearch(row: TelemetryRow, query: string): boolean {
+  if (!query.trim()) return true;
+  const q = query.toLowerCase().trim();
+  const payload = row.payload_json;
+  const txHash = extractField(payload, 'tx_hash', 'transactionHash', 'hash');
+  const fromAddr = extractField(payload, 'from', 'from_address', 'fromAddress');
+  const toAddr = extractField(payload, 'to', 'to_address', 'toAddress');
+  const blockNum =
+    row.block_number != null
+      ? String(row.block_number)
+      : extractField(payload, 'block_number', 'blockNumber');
+  const eventType = row.source_type ?? '';
+  return Boolean(
+    txHash?.toLowerCase().includes(q) ||
+      fromAddr?.toLowerCase().includes(q) ||
+      toAddr?.toLowerCase().includes(q) ||
+      blockNum?.includes(q) ||
+      eventType?.toLowerCase().includes(q) ||
+      row.id?.toLowerCase().includes(q),
+  );
+}
+
+function matchesQuickFilter(row: TelemetryRow, filter: QuickFilter): boolean {
+  if (filter === 'all') return true;
+  const kind = classifyEvent(row.payload_json);
+  if (filter === 'wallet_transfers') return kind === 'wallet_transfer';
+  if (filter === 'rpc_polling') return kind === 'block_poll';
+  if (filter === 'alerts_only') return kind === 'wallet_transfer';
+  if (filter === 'live_evidence_only') return row.evidence_source === 'live';
+  return true;
 }
 
 const BASE_CHAIN_ID = '8453';
@@ -124,13 +178,21 @@ function TelemetryDetailModal({
 
   const isBaseScan = row.chain_id === BASE_CHAIN_ID;
 
+  const eventTypeLabel =
+    kind === 'wallet_transfer'
+      ? 'Wallet transfer detected'
+      : kind === 'block_poll'
+        ? 'RPC polling heartbeat'
+        : row.source_type ?? null;
+
   const summaryFields: Array<[string, string | null]> = [
-    ['Event type', row.source_type ?? null],
+    ['Event type', eventTypeLabel],
+    ['Source Type', row.source_type ?? null],
+    ['Provider Type', row.provider_type ?? null],
     ['Chain ID', row.chain_id ?? null],
     ['Block number', blockNum],
     ['Observed at', row.observed_at ? fmt(row.observed_at) : null],
     ['Evidence source', row.evidence_source ?? null],
-    ['Provider / source', row.provider_type ?? null],
     ['From address', fromAddr],
     ['To address', toAddr],
     ['Amount', amount],
@@ -311,7 +373,7 @@ function TelemetryDetailModal({
           )}
         </div>
 
-        {/* Raw payload toolbar */}
+        {/* Raw Response toolbar */}
         <div
           style={{
             display: 'flex',
@@ -329,7 +391,7 @@ function TelemetryDetailModal({
               letterSpacing: '0.07em',
             }}
           >
-            Raw payload
+            Raw Response
           </span>
           <div style={{ display: 'flex', gap: '0.4rem' }}>
             {txHash && (
@@ -404,8 +466,15 @@ export default function TargetTelemetryPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [selectedRow, setSelectedRow] = useState<TelemetryRow | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [quickFilter, setQuickFilter] = useState<QuickFilter>('all');
+  const [copiedTxId, setCopiedTxId] = useState<string | null>(null);
 
   const { authHeaders } = usePilotAuth();
+
+  const filteredRows = rows.filter(
+    (row) => matchesSearch(row, searchQuery) && matchesQuickFilter(row, quickFilter),
+  );
 
   useEffect(() => {
     if (!targetId) return;
@@ -491,6 +560,68 @@ export default function TargetTelemetryPage() {
         ) : null}
       </div>
 
+      {/* Search bar */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.75rem',
+          marginBottom: '0.75rem',
+          flexWrap: 'wrap',
+        }}
+      >
+        <input
+          type="search"
+          aria-label="Search telemetry"
+          placeholder="Search by tx hash, wallet address, block number, event type, or ID…"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          style={{
+            flex: '1 1 320px',
+            background: 'var(--bg-surface)',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-sm)',
+            color: 'var(--text-primary)',
+            fontSize: '0.875rem',
+            padding: '0.5rem 0.85rem',
+            outline: 'none',
+            minWidth: 0,
+          }}
+        />
+      </div>
+
+      {/* Quick filters */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.4rem',
+          marginBottom: '1rem',
+          flexWrap: 'wrap',
+        }}
+      >
+        {QUICK_FILTERS.map((f) => (
+          <button
+            key={f.id}
+            type="button"
+            onClick={() => setQuickFilter(f.id)}
+            style={{
+              background: quickFilter === f.id ? 'var(--text-accent)' : 'var(--bg-surface)',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-xs)',
+              color: quickFilter === f.id ? '#fff' : 'var(--text-secondary)',
+              cursor: 'pointer',
+              fontSize: '0.8rem',
+              fontWeight: quickFilter === f.id ? 600 : 400,
+              padding: '0.3rem 0.75rem',
+              transition: 'background 0.12s, color 0.12s',
+            }}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+
       {loadError ? (
         <p className="statusLine" style={{ color: 'var(--danger-fg)' }}>
           {loadError}
@@ -512,6 +643,21 @@ export default function TargetTelemetryPage() {
             No live telemetry has been persisted for this target yet.
           </p>
         </div>
+      ) : !loading && !loadError && filteredRows.length === 0 ? (
+        <div
+          style={{
+            padding: '2.5rem 1.5rem',
+            textAlign: 'center',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-md)',
+            color: 'var(--text-muted)',
+          }}
+        >
+          <p style={{ margin: 0, fontWeight: 600, fontSize: '1rem' }}>No results</p>
+          <p style={{ margin: '0.5rem 0 0', fontSize: '0.875rem' }}>
+            No wallet transfer found yet. Try searching by tx hash or wait for the next polling cycle.
+          </p>
+        </div>
       ) : (
         <TableShell headers={HEADERS} compact>
           {loading ? (
@@ -524,42 +670,190 @@ export default function TargetTelemetryPage() {
               </td>
             </tr>
           ) : (
-            rows.map((row) => (
-              <tr key={row.id}>
-                <td>
-                  <code style={{ fontFamily: 'monospace', fontSize: '0.78rem' }}>
-                    {row.id.slice(0, 8)}…
-                  </code>
-                </td>
-                <td>{row.provider_type ?? '-'}</td>
-                <td>{row.source_type ?? '-'}</td>
-                <td>{row.evidence_source ?? '-'}</td>
-                <td>{row.chain_id ?? '-'}</td>
-                <td>{row.block_number != null ? String(row.block_number) : '-'}</td>
-                <td style={{ whiteSpace: 'nowrap' }}>{fmt(row.observed_at)}</td>
-                <td>
-                  {row.payload_json != null ? (
-                    <button
-                      type="button"
-                      onClick={() => setSelectedRow(row)}
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        color: 'var(--text-accent)',
-                        cursor: 'pointer',
-                        fontSize: '0.78rem',
-                        padding: 0,
-                        textDecoration: 'underline',
-                      }}
-                    >
-                      View
-                    </button>
-                  ) : (
-                    <span className="muted">-</span>
-                  )}
-                </td>
-              </tr>
-            ))
+            filteredRows.map((row) => {
+              const payload = row.payload_json;
+              const kind = classifyEvent(payload);
+              const txHash = extractField(payload, 'tx_hash', 'transactionHash', 'hash');
+              const fromAddr = extractField(payload, 'from', 'from_address', 'fromAddress');
+              const toAddr = extractField(payload, 'to', 'to_address', 'toAddress');
+              const amount = extractField(payload, 'amount', 'value', 'amount_wei');
+              const isBaseScan = row.chain_id === BASE_CHAIN_ID;
+              return (
+                <tr key={row.id}>
+                  {/* Event Type */}
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    {kind === 'wallet_transfer' ? (
+                      <span
+                        style={{
+                          background: 'var(--success-bg)',
+                          border: '1px solid var(--success-bdr)',
+                          borderRadius: 'var(--radius-xs)',
+                          color: 'var(--success-fg)',
+                          display: 'inline-block',
+                          fontSize: '0.75rem',
+                          fontWeight: 600,
+                          padding: '0.15rem 0.5rem',
+                        }}
+                      >
+                        Wallet transfer detected
+                      </span>
+                    ) : kind === 'block_poll' ? (
+                      <span
+                        style={{
+                          background: 'var(--info-bg)',
+                          border: '1px solid var(--info-bdr)',
+                          borderRadius: 'var(--radius-xs)',
+                          color: 'var(--info-fg)',
+                          display: 'inline-block',
+                          fontSize: '0.75rem',
+                          padding: '0.15rem 0.5rem',
+                        }}
+                      >
+                        RPC polling heartbeat
+                      </span>
+                    ) : (
+                      <span className="muted" style={{ fontSize: '0.8rem' }}>
+                        {row.source_type ?? '-'}
+                      </span>
+                    )}
+                  </td>
+
+                  {/* Tx Hash */}
+                  <td>
+                    {txHash ? (
+                      <span
+                        style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}
+                      >
+                        {isBaseScan ? (
+                          <a
+                            href={`${BASESCAN_TX_BASE}${txHash}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title={txHash}
+                            style={{
+                              fontFamily: 'monospace',
+                              fontSize: '0.78rem',
+                              color: 'var(--text-accent)',
+                            }}
+                          >
+                            {shortenHash(txHash)} ↗
+                          </a>
+                        ) : (
+                          <code
+                            style={{ fontFamily: 'monospace', fontSize: '0.78rem' }}
+                            title={txHash}
+                          >
+                            {shortenHash(txHash)}
+                          </code>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard
+                              .writeText(txHash)
+                              .then(() => {
+                                setCopiedTxId(row.id);
+                                setTimeout(() => setCopiedTxId(null), 2000);
+                              })
+                              .catch(() => {});
+                          }}
+                          title="Copy transaction hash"
+                          style={{
+                            background: 'none',
+                            border: '1px solid var(--border)',
+                            borderRadius: 'var(--radius-xs)',
+                            color:
+                              copiedTxId === row.id
+                                ? 'var(--success-fg)'
+                                : 'var(--text-secondary)',
+                            cursor: 'pointer',
+                            fontSize: '0.68rem',
+                            lineHeight: 1.4,
+                            padding: '0.1rem 0.35rem',
+                          }}
+                        >
+                          {copiedTxId === row.id ? '✓' : '⧉'}
+                        </button>
+                      </span>
+                    ) : (
+                      <span className="muted">-</span>
+                    )}
+                  </td>
+
+                  {/* From */}
+                  <td>
+                    {fromAddr ? (
+                      <code
+                        style={{ fontFamily: 'monospace', fontSize: '0.78rem' }}
+                        title={fromAddr}
+                      >
+                        {shortenAddress(fromAddr)}
+                      </code>
+                    ) : (
+                      <span className="muted">-</span>
+                    )}
+                  </td>
+
+                  {/* To */}
+                  <td>
+                    {toAddr ? (
+                      <code
+                        style={{ fontFamily: 'monospace', fontSize: '0.78rem' }}
+                        title={toAddr}
+                      >
+                        {shortenAddress(toAddr)}
+                      </code>
+                    ) : (
+                      <span className="muted">-</span>
+                    )}
+                  </td>
+
+                  {/* Amount */}
+                  <td>
+                    {amount ? (
+                      <code style={{ fontFamily: 'monospace', fontSize: '0.78rem' }}>{amount}</code>
+                    ) : (
+                      <span className="muted">-</span>
+                    )}
+                  </td>
+
+                  {/* Chain ID */}
+                  <td>{row.chain_id ?? '-'}</td>
+
+                  {/* Block Number */}
+                  <td>{row.block_number != null ? String(row.block_number) : '-'}</td>
+
+                  {/* Observed At */}
+                  <td style={{ whiteSpace: 'nowrap' }}>{fmt(row.observed_at)}</td>
+
+                  {/* Evidence Source */}
+                  <td>{row.evidence_source ?? '-'}</td>
+
+                  {/* Details */}
+                  <td>
+                    {row.payload_json != null ? (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedRow(row)}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--text-accent)',
+                          cursor: 'pointer',
+                          fontSize: '0.78rem',
+                          padding: 0,
+                          textDecoration: 'underline',
+                        }}
+                      >
+                        View
+                      </button>
+                    ) : (
+                      <span className="muted">-</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })
           )}
         </TableShell>
       )}
