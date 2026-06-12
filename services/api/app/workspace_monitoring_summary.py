@@ -644,11 +644,11 @@ def build_workspace_monitoring_summary(
         contradiction_flags.append('incident_exists_without_alert')
     if int(response_actions_count) > 0 and int(active_incidents_count) <= 0:
         contradiction_flags.append('response_action_exists_without_incident')
-    if int(evidence_packages_count) > 0 and (
-        last_detection_at is None
-        or int(active_alerts_count) <= 0
-        or int(active_incidents_count) <= 0
-    ):
+    # evidence_packages_count only counts threat-related evidence (clean monitoring health
+    # records are excluded at query time). If threat evidence exists without any detection
+    # record, the evidence is orphaned — fire the guard. Alert/incident presence is checked
+    # separately by live_proof_chain_incomplete once detections exist.
+    if int(evidence_packages_count) > 0 and last_detection_at is None:
         contradiction_flags.append('evidence_package_without_detection_alert_incident_chain')
     # Gate LIVE on proof chain integrity: when detections exist, alerts and incidents
     # must also exist. Zero detections (clean monitoring) does NOT require alerts/incidents —

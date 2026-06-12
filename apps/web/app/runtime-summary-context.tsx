@@ -89,9 +89,12 @@ function deriveProviderHealth(payload: import('./monitoring-status-contract').Mo
   const chain = (payload.provider_kind as string | null | undefined) ?? null;
   const providerHealthRecords = Array.isArray(payload.provider_health) ? payload.provider_health as Record<string, unknown>[] : [];
   const firstHealthRecord = providerHealthRecords.length > 0 ? providerHealthRecords[0] : null;
-  const lastCheck = (payload.refreshed_at as string | null | undefined)
+  // last_poll_at is the canonical "Provider poll" timestamp shown in the telemetry timeline.
+  // It must be the primary source for "Last check" so both UI sections show the same value.
+  // Fall back to provider_health_records.checked_at, then refreshed_at.
+  const lastCheck = (payload.last_poll_at as string | null | undefined)
     ?? (firstHealthRecord?.checked_at as string | null | undefined)
-    ?? (payload.last_poll_at as string | null | undefined)
+    ?? (payload.refreshed_at as string | null | undefined)
     ?? null;
   let status: ProviderHealthInfo['status'] = 'unknown';
   if (reachable === true || health === 'healthy') status = 'connected';
