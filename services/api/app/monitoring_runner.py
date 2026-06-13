@@ -3123,6 +3123,26 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         if isinstance(coverage_record, dict) and coverage_record:
             last_protected_asset_coverage_record = coverage_record
 
+    # Advance cursor from scan ceiling even when no events were detected.
+    # Without this, empty scans leave the checkpoint unchanged and every poll
+    # repeats the same replay window instead of scanning forward through new blocks.
+    _scan_top = int(provider_result.latest_block or 0)
+    if 0 < _scan_top <= 500_000_000:
+        latest_processed_block = max(latest_processed_block, _scan_top)
+        _cursor_block = int((checkpoint_cursor or '0').split(':')[0] or '0')
+        if _scan_top > _cursor_block:
+            checkpoint_cursor = f"{_scan_top}:checkpoint:-1"
+    logger.info(
+        'scan_cursor_persist target_id=%s chain=%s previous_cursor=%s '
+        'from_block=%s to_block=%s blocks_scanned=see_evm_block_scan_summary '
+        'latest_processed_block=%s persisted_cursor=%s',
+        target.get('id'), chain,
+        target.get('monitoring_checkpoint_cursor') or 'none',
+        target.get('monitoring_checkpoint_cursor', '').split(':')[0] if target.get('monitoring_checkpoint_cursor') else 'none',
+        _scan_top or 'unavailable',
+        latest_processed_block,
+        checkpoint_cursor or 'none',
+    )
     logger.info(
         'polling_cycle_summary target_id=%s wallet_address=%s latest_block=%s '
         'events_inspected=%s wallet_transfers_detected=%s telemetry_ids=%s evidence_source=%s',
