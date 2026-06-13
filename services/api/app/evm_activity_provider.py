@@ -371,8 +371,36 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     confirmations = max(0, int(os.getenv('EVM_CONFIRMATIONS_REQUIRED', '3')))
     replay_blocks = max(1, int(os.getenv('MONITOR_REPLAY_BLOCKS', os.getenv('EVM_BLOCK_LOOKBACK', '25'))))
     block_scan_chunk = max(1, int(os.getenv('MONITOR_BATCH_BLOCKS', os.getenv('EVM_BLOCK_SCAN_CHUNK_SIZE', '25'))))
-    target_address = str(target.get('wallet_address') or target.get('contract_identifier') or '').lower()
+    _raw_wallet = str(target.get('wallet_address') or '').strip()
+    _raw_contract = str(target.get('contract_identifier') or '').strip()
+    target_address = str(_raw_wallet or _raw_contract).lower()
+    _target_type_str = str(target.get('target_type') or '').lower()
     if not target_address.startswith('0x'):
+        if _target_type_str == 'wallet':
+            logger.error(
+                'evm_wallet_target_missing_address target_id=%s chain=%s '
+                'target_type=wallet wallet_address=%s contract_identifier=%s '
+                'action=skip_scan reason=wallet_address_required_for_wallet_target '
+                'fix=update_target_with_wallet_address_via_api_or_ui',
+                target.get('id'), network,
+                _raw_wallet or 'null',
+                _raw_contract or 'null',
+            )
+        elif _target_type_str == 'contract':
+            logger.error(
+                'evm_contract_target_missing_identifier target_id=%s chain=%s '
+                'contract_identifier=%s wallet_address=%s '
+                'action=skip_scan reason=contract_identifier_required_for_contract_target',
+                target.get('id'), network,
+                _raw_contract or 'null',
+                _raw_wallet or 'null',
+            )
+        else:
+            logger.warning(
+                'evm_target_missing_address target_id=%s chain=%s target_type=%s '
+                'action=skip_scan reason=no_valid_evm_address',
+                target.get('id'), network, _target_type_str or 'unknown',
+            )
         return []
 
     client = rpc_client or FailoverJsonRpcClient(_resolve_evm_rpc_urls())
@@ -446,9 +474,11 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     from_block = max(0, safe_to - replay_blocks if last_block is None else max(last_block - replay_blocks, 0))
     logger.info(
         'evm_block_scan_start target_id=%s chain=%s '
+        'monitored_address=%s target_type=%s '
         'latest_block_hex=%s latest_block_decimal=%s previous_cursor=%s '
         'repaired_cursor=%s from_block=%s to_block=%s blocks_to_scan=%s',
         target.get('id'), network,
+        target_address, _target_type_str,
         latest_block_raw_hex, latest,
         cursor or 'none',
         'yes' if (cursor and last_block is None and ':' in cursor) else 'no',
@@ -564,17 +594,26 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         payload['liquidity_observations'] = telemetry['liquidity_observations']
         payload['venue_observations'] = telemetry['venue_observations']
         event.payload = payload
+    _matching_tx_hashes = [
+        str(e.payload.get('tx_hash') or e.payload.get('hash') or '')
+        for e in deduped
+        if isinstance(e.payload, dict) and str(e.payload.get('event_type') or '').lower() in {'transaction', 'transfer'}
+    ]
     logger.info(
         'evm_block_scan_complete target_id=%s chain=%s '
+        'monitored_address=%s target_type=%s '
         'eth_blockNumber_raw=%s from_block=%s to_block=%s '
-        'blocks_scanned=%s transactions_inspected=%s wallet_transfers_detected=%s matches_found=%s',
+        'blocks_scanned=%s transactions_inspected=%s wallet_transfers_detected=%s '
+        'matches_found=%s matching_tx_hashes=%s',
         target.get('id'), network,
+        target_address, _target_type_str,
         latest_block_raw_hex,
         from_block, safe_to,
         max(0, safe_to - from_block + 1),
         _transactions_inspected,
         _wallet_transfers_detected,
         len(deduped),
+        ','.join(_matching_tx_hashes) or 'none',
     )
     return deduped
 
