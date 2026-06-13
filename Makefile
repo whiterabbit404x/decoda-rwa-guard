@@ -87,6 +87,11 @@ write-live-rpc-polling-artifacts:
 diagnose-live-evidence:
 	python scripts/diagnose_live_evidence.py
 
+# Explain whether a transaction involves a target's monitored wallet.
+# Usage: make debug-wallet-transfer TARGET_ID=<uuid> TX_HASH=0x<hash>
+debug-wallet-transfer:
+	python -m services.api.scripts.debug_wallet_transfer --target-id $(TARGET_ID) --tx-hash $(TX_HASH)
+
 generate-live-evidence-proof:
 	python scripts/generate_live_evidence_proof.py
 

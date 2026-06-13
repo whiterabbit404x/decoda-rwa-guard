@@ -8,7 +8,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 import os
 
-from services.api.app.evm_activity_provider import fetch_evm_activity, probe_rpc_health, _resolve_evm_rpc_url
+from services.api.app.evm_activity_provider import (
+    MonitoredWalletNotConfigured,
+    fetch_evm_activity,
+    probe_rpc_health,
+    _resolve_evm_rpc_url,
+)
 from services.api.app.monitoring_mode import (
     MonitoringModeError,
     resolve_monitoring_mode,
@@ -163,6 +168,38 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
     if mode in {'live', 'hybrid'} and can_use_live:
         try:
             live_events = fetch_evm_activity(target, since_ts)
+        except MonitoredWalletNotConfigured:
+            # Fail closed: a wallet target with no resolvable monitored wallet is a
+            # misconfiguration, not "no activity". Surface a clear, distinct reason
+            # so runtime status shows the target as misconfigured rather than healthy.
+            logger.warning(
+                'monitored_wallet_not_configured target_id=%s target_type=%s — '
+                'set targets.wallet_address to the monitored EVM address',
+                target.get('id'),
+                target_type,
+            )
+            return ActivityProviderResult(
+                mode=mode,
+                status='failed',
+                evidence_state='FAILED_EVIDENCE',
+                truthfulness_state='UNKNOWN_RISK',
+                synthetic=False,
+                provider_name='evm_activity_provider',
+                provider_kind='rpc',
+                evidence_present=False,
+                recent_real_event_count=0,
+                last_real_event_at=None,
+                events=[],
+                latest_block=None,
+                checkpoint=None,
+                checkpoint_age_seconds=None,
+                degraded_reason='monitored_wallet_not_configured',
+                error_code='MonitoredWalletNotConfigured',
+                source_type='unknown',
+                reason_code='MONITORED_WALLET_NOT_CONFIGURED',
+                claim_safe=False,
+                detection_outcome='ANALYSIS_FAILED',
+            )
         except Exception as exc:
             return ActivityProviderResult(
                 mode=mode,
