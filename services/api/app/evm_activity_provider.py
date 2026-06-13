@@ -571,23 +571,41 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     block_ts_cache: dict[str, datetime] = {}
 
     logs: list[dict[str, Any]] = []
+    _logs_fetch_status = 'ok'
     target_type = str(target.get('target_type') or '').lower()
     if target_type == 'wallet':
         for chunk_from, chunk_to in _iter_block_ranges(from_block, safe_to, block_scan_chunk):
-            logs.extend(_fetch_logs(client, target_address, chunk_from, chunk_to))
+            # eth_getLogs is best-effort enrichment for ERC-20 transfer/approval logs.
+            # Many public Base RPC endpoints reject the multi-topic OR filter or large
+            # ranges; a failure here must NOT collapse the whole scan into provider_error.
+            # The block-by-block transaction scan below still detects native wallet
+            # transfers, so we log the failure with detail and continue.
+            try:
+                logs.extend(_fetch_logs(client, target_address, chunk_from, chunk_to))
+            except Exception as logs_exc:
+                _logs_fetch_status = 'failed'
+                logger.exception(
+                    'evm_logs_fetch_failed target_id=%s chain=%s from_block=%s to_block=%s '
+                    'error_type=%s error=%s action=continue_with_block_scan',
+                    target.get('id'), network, chunk_from, chunk_to,
+                    type(logs_exc).__name__, str(logs_exc)[:200],
+                )
 
     _transactions_inspected = 0
     _wallet_transfers_detected = 0
     _detected_tx_hashes: list[str] = []
+    _failed_blocks: list[int] = []
     for chunk_from, chunk_to in _iter_block_ranges(from_block, safe_to, block_scan_chunk):
         for block_number in range(chunk_from, chunk_to + 1):
             try:
                 block = client.call('eth_getBlockByNumber', [hex(block_number), True]) or {}
             except Exception as block_exc:
+                _failed_blocks.append(block_number)
                 logger.exception(
                     'evm_block_fetch_failed target_id=%s chain=%s block_number=%s block_number_hex=%s '
-                    'error_type=%s error=%s',
+                    'from_block=%s to_block=%s error_type=%s error=%s action=continue_remaining_blocks',
                     target.get('id'), network, block_number, hex(block_number),
+                    from_block, safe_to,
                     type(block_exc).__name__, str(block_exc)[:200],
                 )
                 continue
@@ -684,6 +702,7 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         payload['liquidity_observations'] = telemetry['liquidity_observations']
         payload['venue_observations'] = telemetry['venue_observations']
         event.payload = payload
+    _blocks_scanned = max(0, safe_to - from_block + 1) - len(_failed_blocks)
     logger.info(
         'evm_block_scan_complete target_id=%s chain=%s monitored_wallet=%s '
         'eth_blockNumber_raw=%s from_block=%s to_block=%s '
@@ -693,7 +712,27 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         target_address if target_type == 'wallet' else 'n/a',
         latest_block_raw_hex,
         from_block, safe_to,
-        max(0, safe_to - from_block + 1),
+        max(0, _blocks_scanned),
+        _transactions_inspected,
+        _wallet_transfers_detected,
+        _detected_tx_hashes[:25],
+        len(deduped),
+    )
+    # Canonical end-of-scan summary. evm_block_scan_start must always be followed by
+    # this line (never a bare provider_error): it proves the scan loop ran to completion
+    # and reports exactly what was inspected, what failed, and what was detected.
+    logger.info(
+        'evm_block_scan_summary target_id=%s monitored_wallet=%s chain=%s chain_id=%s '
+        'source_type=rpc_polling from_block=%s to_block=%s blocks_scanned=%s failed_blocks=%s '
+        'logs_fetch_status=%s transactions_inspected=%s wallet_transfers_detected=%s '
+        'detected_tx_hashes=%s events_emitted=%s',
+        target.get('id'),
+        target_address if target_type == 'wallet' else 'n/a',
+        network, chain_id,
+        from_block, safe_to,
+        max(0, _blocks_scanned),
+        _failed_blocks[:25],
+        _logs_fetch_status,
         _transactions_inspected,
         _wallet_transfers_detected,
         _detected_tx_hashes[:25],
