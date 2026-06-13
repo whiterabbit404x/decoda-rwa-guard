@@ -20,7 +20,7 @@ from services.api.app.activity_providers import (
     fetch_target_activity_result,
     monitoring_ingestion_runtime,
 )
-from services.api.app.evm_activity_provider import JsonRpcClient
+from services.api.app.evm_activity_provider import JsonRpcClient, resolve_monitored_wallet
 from services.api.app.monitoring_truth import ui_evidence_state, ui_truthfulness_state
 from services.api.app.monitoring_reliability import MonitoringSLOs, evaluate_monitoring_slos, monitoring_slo_snapshot
 from services.api.app.monitorable_target_types import (
@@ -2887,6 +2887,26 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     )
     if checkpoint_block > 0:
         target['monitoring_checkpoint_cursor'] = f"{checkpoint_block}:checkpoint:-1"
+    # For wallet targets whose canonical wallet_address column is empty, try to
+    # resolve the monitored wallet from a fallback location (address typed into
+    # contract_identifier, or the linked asset's identifier). This keeps the
+    # provider scan, downstream detection, and polling-cycle logs consistent
+    # (showing the real wallet instead of n/a). Scoped to the wallet+empty case
+    # to avoid changing behavior for correctly configured or contract targets.
+    if str(target.get('target_type') or '').lower() == 'wallet' and not target.get('wallet_address'):
+        if target.get('asset_context') is None:
+            _wallet_asset_context = _load_target_asset_context(
+                connection, workspace_id=str(target['workspace_id']), target=target
+            )
+            if isinstance(_wallet_asset_context, dict):
+                target['asset_context'] = _wallet_asset_context
+        _resolved_wallet = resolve_monitored_wallet(target)
+        if _resolved_wallet:
+            logger.info(
+                'monitored_wallet_resolved_from_fallback target_id=%s monitored_wallet=%s',
+                target.get('id'), _resolved_wallet,
+            )
+            target['wallet_address'] = _resolved_wallet
     provider_result: ActivityProviderResult = fetch_target_activity_result(target, checkpoint)
     provider_checked_at = utc_now()
     provider_error_message = str(provider_result.degraded_reason or '').strip() or None

@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -22,6 +23,97 @@ class ActivityEvent:
 
 
 logger = logging.getLogger(__name__)
+
+# An EVM address is exactly 20 bytes rendered as 40 lowercase hex chars with a 0x prefix.
+_EVM_ADDRESS_RE = re.compile(r'^0x[0-9a-f]{40}$')
+
+
+class MonitoredWalletNotConfigured(Exception):
+    """Raised when a wallet-type target has no resolvable monitored wallet address.
+
+    Surfaced as a fail-closed misconfiguration signal rather than silently
+    producing coverage-only telemetry that would hide the broken target.
+    """
+
+
+def _normalize_evm_address(value: Any) -> str | None:
+    """Return a lowercase 0x-prefixed EVM address, or None when not a valid address."""
+    text = str(value or '').strip().lower()
+    return text if _EVM_ADDRESS_RE.match(text) else None
+
+
+def resolve_monitored_wallet(target: dict[str, Any]) -> str | None:
+    """Resolve the monitored EVM wallet for a wallet-type target.
+
+    The canonical storage location is ``targets.wallet_address``. Targets created
+    or migrated through alternate paths may instead carry the wallet in
+    ``contract_identifier`` (address typed into the wrong field), in the linked
+    asset's identifier (exposed on the target as ``asset_context``), or in
+    ``target_metadata``. We resolve from the canonical column first, then fall
+    back to those known locations. Returns a lowercase 0x address, or None when
+    no valid wallet address is configured anywhere.
+    """
+    asset_context = target.get('asset_context') if isinstance(target.get('asset_context'), dict) else {}
+    metadata = target.get('target_metadata') if isinstance(target.get('target_metadata'), dict) else {}
+    candidates = (
+        target.get('wallet_address'),
+        target.get('contract_identifier'),
+        asset_context.get('asset_identifier'),
+        asset_context.get('identifier'),
+        metadata.get('wallet_address'),
+        metadata.get('monitored_wallet'),
+    )
+    for candidate in candidates:
+        normalized = _normalize_evm_address(candidate)
+        if normalized:
+            return normalized
+    return None
+
+
+def explain_wallet_transfer_match(monitored_wallet: str | None, tx: dict[str, Any] | None) -> dict[str, Any]:
+    """Explain whether a transaction involves the monitored wallet.
+
+    Pure helper backing the debug command: given a monitored wallet and a raw
+    ``eth_getTransactionByHash`` result, report matched/not matched and why.
+    """
+    wallet = _normalize_evm_address(monitored_wallet)
+    tx = tx if isinstance(tx, dict) else {}
+    tx_from = _normalize_evm_address(tx.get('from'))
+    tx_to = _normalize_evm_address(tx.get('to'))
+    if not wallet:
+        return {
+            'matched': False,
+            'reason': 'monitored_wallet_not_configured',
+            'monitored_wallet': None,
+            'tx_from': tx_from,
+            'tx_to': tx_to,
+        }
+    if not tx:
+        return {
+            'matched': False,
+            'reason': 'transaction_not_found',
+            'monitored_wallet': wallet,
+            'tx_from': None,
+            'tx_to': None,
+        }
+    direction = None
+    if wallet == tx_from:
+        direction = 'outbound'
+    elif wallet == tx_to:
+        direction = 'inbound'
+    matched = direction is not None
+    value_wei = _hex_to_int(tx.get('value')) or 0
+    return {
+        'matched': matched,
+        'reason': f'wallet_transfer_{direction}' if matched else 'wallet_not_in_from_or_to',
+        'monitored_wallet': wallet,
+        'tx_from': tx_from,
+        'tx_to': tx_to,
+        'wallet_transfer_direction': direction,
+        'tx_hash': str(tx.get('hash') or '') or None,
+        'value_wei': value_wei,
+        'value_eth': round(value_wei / 10 ** 18, 18),
+    }
 
 
 def _resolve_evm_rpc_url() -> str:
@@ -371,7 +463,22 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     confirmations = max(0, int(os.getenv('EVM_CONFIRMATIONS_REQUIRED', '3')))
     replay_blocks = max(1, int(os.getenv('MONITOR_REPLAY_BLOCKS', os.getenv('EVM_BLOCK_LOOKBACK', '25'))))
     block_scan_chunk = max(1, int(os.getenv('MONITOR_BATCH_BLOCKS', os.getenv('EVM_BLOCK_SCAN_CHUNK_SIZE', '25'))))
-    target_address = str(target.get('wallet_address') or target.get('contract_identifier') or '').lower()
+    target_type = str(target.get('target_type') or '').lower()
+    if target_type == 'wallet':
+        target_address = resolve_monitored_wallet(target) or ''
+        if not target_address:
+            logger.error(
+                'wallet_address_misconfigured target_id=%s chain=%s '
+                'reason=monitored_wallet_not_configured action=fail_closed',
+                target.get('id'), network,
+            )
+            raise MonitoredWalletNotConfigured(str(target.get('id') or ''))
+        # Normalize the resolved wallet back onto the target so downstream logs
+        # and detection (which read target['wallet_address']) use the real value
+        # instead of n/a when the address lived in a fallback location.
+        target['wallet_address'] = target_address
+    else:
+        target_address = str(target.get('wallet_address') or target.get('contract_identifier') or '').lower()
     if not target_address.startswith('0x'):
         return []
 
@@ -445,10 +552,11 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         last_block = None
     from_block = max(0, safe_to - replay_blocks if last_block is None else max(last_block - replay_blocks, 0))
     logger.info(
-        'evm_block_scan_start target_id=%s chain=%s '
+        'evm_block_scan_start target_id=%s chain=%s monitored_wallet=%s '
         'latest_block_hex=%s latest_block_decimal=%s previous_cursor=%s '
         'repaired_cursor=%s from_block=%s to_block=%s blocks_to_scan=%s',
         target.get('id'), network,
+        target_address if target_type == 'wallet' else 'n/a',
         latest_block_raw_hex, latest,
         cursor or 'none',
         'yes' if (cursor and last_block is None and ':' in cursor) else 'no',
@@ -470,6 +578,7 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
 
     _transactions_inspected = 0
     _wallet_transfers_detected = 0
+    _detected_tx_hashes: list[str] = []
     for chunk_from, chunk_to in _iter_block_ranges(from_block, safe_to, block_scan_chunk):
         for block_number in range(chunk_from, chunk_to + 1):
             block = client.call('eth_getBlockByNumber', [hex(block_number), True]) or {}
@@ -504,6 +613,8 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
                 if target_type == 'wallet' and target_address in {tx_to, tx_from}:
                     payload['wallet_transfer_direction'] = 'outbound' if tx_from == target_address else 'inbound'
                     _wallet_transfers_detected += 1
+                    if tx_hash:
+                        _detected_tx_hashes.append(tx_hash)
                 kind = 'transaction' if target_type == 'wallet' else 'contract'
                 events.append(ActivityEvent(event_id=_make_event_id(str(target['id']), cursor_value, kind), kind=kind, observed_at=observed_at, ingestion_source=preferred_source, cursor=cursor_value, payload=payload))
 
@@ -565,15 +676,18 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         payload['venue_observations'] = telemetry['venue_observations']
         event.payload = payload
     logger.info(
-        'evm_block_scan_complete target_id=%s chain=%s '
+        'evm_block_scan_complete target_id=%s chain=%s monitored_wallet=%s '
         'eth_blockNumber_raw=%s from_block=%s to_block=%s '
-        'blocks_scanned=%s transactions_inspected=%s wallet_transfers_detected=%s matches_found=%s',
+        'blocks_scanned=%s transactions_inspected=%s wallet_transfers_detected=%s '
+        'detected_tx_hashes=%s matches_found=%s',
         target.get('id'), network,
+        target_address if target_type == 'wallet' else 'n/a',
         latest_block_raw_hex,
         from_block, safe_to,
         max(0, safe_to - from_block + 1),
         _transactions_inspected,
         _wallet_transfers_detected,
+        _detected_tx_hashes[:25],
         len(deduped),
     )
     return deduped
