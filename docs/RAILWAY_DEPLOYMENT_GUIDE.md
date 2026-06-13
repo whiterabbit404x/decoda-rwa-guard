@@ -84,14 +84,34 @@ evidence_source_selected source=replay downgrade_reasons=evidence_source_not_liv
 
 ### Fix: deploy worker service
 
-1. Create a new Railway service in the same project.
-2. Set `START_COMMAND` to: `python -m services.api.app.run_monitoring_worker`
+1. Create a new Railway service in the same project, pointing at this repository.
+2. In the worker service settings, set **Config-as-code file path** to `railway-worker.json`
+   (repo root). It builds `services/api/Dockerfile` and starts
+   `python -m services.api.app.run_monitoring_worker`.
+   Alternatively set the **Custom Start Command** to
+   `python -m services.api.app.run_monitoring_worker` directly
    (or use the Procfile entry `monitoring-worker`).
-3. Set all Worker env vars above, especially `WORKER_ENABLED=true` and `DATABASE_URL`.
-4. Deploy. Within 30 seconds you should see:
+3. Set all Worker env vars above, especially `WORKER_ENABLED=true`,
+   `EVM_RPC_URL=<Base RPC URL>`, `EVM_CHAIN_ID=8453`, and `DATABASE_URL`
+   (same Postgres as the API service). `WORKER_ENABLED=true` automatically
+   implies `LIVE_MODE_ENABLED=true`, but setting both explicitly is safest.
+4. Deploy. Within 30 seconds you should see these startup logs:
+   - `startup service_role=worker … worker_enabled=True … evm_rpc_configured=True database_url_configured=True`
+   - `startup_rpc_health_check status=ok … eth_blockNumber_hex=0x… block_number_decimal=472…`
    - `worker_startup … service_role=worker WORKER_ENABLED=true`
    - `worker_heartbeat_written workspace_id=… worker_name=monitoring-worker-…`
    - `evidence_source_selected source=live` (once RPC poll succeeds)
+
+If `startup_rpc_health_check status=FAILED` appears, the worker keeps running
+but reports `decoda_monitoring_worker_healthy=0` and logs
+`worker_not_marked_healthy reason=eth_blockNumber_not_succeeded` each cycle.
+The worker is never marked healthy until `eth_blockNumber` succeeds against
+the configured `EVM_RPC_URL` (fail-closed).
+
+After a successful deploy, Target Telemetry in the UI must show
+**Live monitoring active**, **Freshness: Fresh**, telemetry age in
+seconds/minutes, and a Base mainnet `block_number` (decimal, currently in the
+47,2xx,xxx range). Only then test a new on-chain transaction.
 
 ---
 

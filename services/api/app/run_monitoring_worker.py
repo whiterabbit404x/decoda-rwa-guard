@@ -83,6 +83,7 @@ def _log_startup_provider_status(logger: logging.Logger) -> bool:
     from urllib.parse import urlparse as _urlparse
     rpc_url = _resolve_evm_rpc_url()
     evm_rpc_configured = bool(rpc_url)
+    database_url_configured = bool((os.getenv('DATABASE_URL') or '').strip())
     try:
         rpc_host = _urlparse(rpc_url).hostname or 'unconfigured'
     except Exception:
@@ -122,6 +123,7 @@ def _log_startup_provider_status(logger: logging.Logger) -> bool:
         worker_enabled,
         enabled_reason,
         evm_rpc_configured,
+        database_url_configured,
         rpc_host,
         chain_id_configured or 'not_set',
         chain_id_source,
@@ -154,11 +156,13 @@ def _log_startup_provider_status(logger: logging.Logger) -> bool:
 
     # Always perform an RPC health check at startup to surface connectivity issues
     # immediately in logs rather than waiting for the first monitoring cycle.
+    rpc_health_ok: bool | None = None
     if evm_rpc_configured:
         try:
             health = probe_rpc_health()
         except Exception as exc:
             health = {'ok': False, 'error': str(exc)[:200], 'block_number_hex': None, 'block_number_int': None, 'chain_id_int': None}
+        rpc_health_ok = bool(health.get('ok'))
         if health.get('ok'):
             logger.info(
                 'startup_rpc_health_check status=ok rpc_host=%s '
@@ -258,7 +262,26 @@ def main() -> int:
                 soonest_due_in_seconds=soonest_due_in_seconds,
             )
             observe('decoda_monitoring_cycle_duration_seconds', time.monotonic() - cycle_started, worker=args.worker_name)
-            gauge('decoda_monitoring_worker_healthy', 1, worker=args.worker_name)
+            if not rpc_healthy:
+                from services.api.app.evm_activity_provider import probe_rpc_health
+                try:
+                    recheck = probe_rpc_health()
+                except Exception as recheck_exc:
+                    recheck = {'ok': False, 'error': str(recheck_exc)[:200], 'block_number_hex': None, 'block_number_int': None}
+                rpc_healthy = bool(recheck.get('ok'))
+                if rpc_healthy:
+                    logger.info(
+                        'rpc_health_recovered eth_blockNumber_hex=%s block_number_decimal=%s',
+                        recheck.get('block_number_hex') or 'missing',
+                        recheck.get('block_number_int'),
+                    )
+                else:
+                    logger.warning(
+                        'worker_not_marked_healthy reason=eth_blockNumber_not_succeeded rpc_error=%s '
+                        'worker stays unhealthy until the RPC health check passes',
+                        recheck.get('error') or 'unknown',
+                    )
+            gauge('decoda_monitoring_worker_healthy', 1 if rpc_healthy else 0, worker=args.worker_name)
             increment('decoda_monitoring_targets_checked_total', int(summary.get('checked', 0) or 0), worker=args.worker_name)
             increment('decoda_detection_events_total', int(summary.get('alerts_generated', 0) or 0), worker=args.worker_name)
             self_monitoring = evaluate_monitoring_system_alerts(stale_after_seconds=max(60, int(args.interval_seconds) * 4))

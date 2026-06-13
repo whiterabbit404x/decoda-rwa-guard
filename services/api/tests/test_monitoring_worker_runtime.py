@@ -1739,6 +1739,125 @@ def test_log_startup_provider_status_skips_rpc_check_when_url_absent(monkeypatch
     assert 'skipped' in log_text
 
 
+def test_log_startup_provider_status_reports_database_url_presence(monkeypatch, caplog) -> None:
+    """Startup log states database_url_configured true/false and warns when DATABASE_URL is missing."""
+    import logging
+    monkeypatch.delenv('EVM_RPC_URL', raising=False)
+    monkeypatch.delenv('STAGING_EVM_RPC_URL', raising=False)
+    monkeypatch.setenv('WORKER_ENABLED', 'true')
+    monkeypatch.setattr('services.api.app.evm_activity_provider._resolve_evm_rpc_url', lambda: '')
+
+    logger = logging.getLogger('test_startup_db_present')
+
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://pilot:pilot@localhost:5432/decoda')
+    with caplog.at_level(logging.INFO, logger='test_startup_db_present'):
+        status = run_monitoring_worker._log_startup_provider_status(logger)
+    log_text = '\n'.join(r.getMessage() for r in caplog.records)
+    assert 'database_url_configured=True' in log_text
+    assert 'worker_startup_no_database_url' not in log_text
+    assert status['database_url_configured'] is True
+
+    caplog.clear()
+    monkeypatch.delenv('DATABASE_URL', raising=False)
+    with caplog.at_level(logging.INFO, logger='test_startup_db_present'):
+        status = run_monitoring_worker._log_startup_provider_status(logger)
+    log_text = '\n'.join(r.getMessage() for r in caplog.records)
+    assert 'database_url_configured=False' in log_text
+    assert 'worker_startup_no_database_url' in log_text
+    assert status['database_url_configured'] is False
+
+
+def test_log_startup_provider_status_returns_rpc_health_ok(monkeypatch) -> None:
+    """Return value carries rpc_health_ok: True on success, False on failure, None when skipped."""
+    import logging
+    logger = logging.getLogger('test_startup_rpc_return')
+    monkeypatch.setenv('WORKER_ENABLED', 'true')
+    monkeypatch.setenv('EVM_RPC_URL', 'https://fake-base-rpc.example.com')
+    monkeypatch.delenv('STAGING_EVM_RPC_URL', raising=False)
+    monkeypatch.setattr('services.api.app.evm_activity_provider._resolve_evm_rpc_url', lambda: 'https://fake-base-rpc.example.com')
+
+    monkeypatch.setattr(
+        'services.api.app.evm_activity_provider.probe_rpc_health',
+        lambda: {'ok': True, 'chain_id_hex': '0x2105', 'chain_id_int': 8453, 'block_number_hex': '0x2d0e2a0', 'block_number_int': 47243936, 'error': None},
+    )
+    assert run_monitoring_worker._log_startup_provider_status(logger)['rpc_health_ok'] is True
+
+    monkeypatch.setattr(
+        'services.api.app.evm_activity_provider.probe_rpc_health',
+        lambda: {'ok': False, 'chain_id_hex': None, 'chain_id_int': None, 'block_number_hex': None, 'block_number_int': None, 'error': 'timeout'},
+    )
+    assert run_monitoring_worker._log_startup_provider_status(logger)['rpc_health_ok'] is False
+
+    monkeypatch.setattr('services.api.app.evm_activity_provider._resolve_evm_rpc_url', lambda: '')
+    assert run_monitoring_worker._log_startup_provider_status(logger)['rpc_health_ok'] is None
+
+
+def test_worker_main_does_not_mark_healthy_when_rpc_health_fails(monkeypatch) -> None:
+    """decoda_monitoring_worker_healthy must stay 0 while eth_blockNumber has never succeeded."""
+    monkeypatch.setenv('WORKER_ENABLED', 'true')
+    monkeypatch.setenv('LIVE_MODE_ENABLED', 'true')
+    monkeypatch.setenv('EVM_RPC_URL', 'https://unreachable-rpc.example.com')
+    monkeypatch.delenv('STAGING_EVM_RPC_URL', raising=False)
+    monkeypatch.setattr('services.api.app.evm_activity_provider._resolve_evm_rpc_url', lambda: 'https://unreachable-rpc.example.com')
+    monkeypatch.setattr(run_monitoring_worker, 'validate_monitoring_config_or_raise', lambda: None)
+    monkeypatch.setattr(
+        'services.api.app.evm_activity_provider.probe_rpc_health',
+        lambda: {'ok': False, 'chain_id_hex': None, 'chain_id_int': None, 'block_number_hex': None, 'block_number_int': None, 'error': 'unreachable'},
+    )
+    monkeypatch.setattr(
+        run_monitoring_worker,
+        'parse_args',
+        lambda: SimpleNamespace(worker_name='test-worker', interval_seconds=0.01, limit=5, once=True),
+    )
+    monkeypatch.setattr(
+        run_monitoring_worker,
+        'run_monitoring_cycle',
+        lambda worker_name, limit, trigger_type='scheduler': {'due_targets': 0, 'checked': 0, 'alerts_generated': 0, 'live_mode': True},
+    )
+    monkeypatch.setattr(run_monitoring_worker, 'evaluate_monitoring_system_alerts', lambda stale_after_seconds: {})
+    gauge_calls = []
+    monkeypatch.setattr(run_monitoring_worker, 'gauge', lambda name, value, **labels: gauge_calls.append((name, value)))
+
+    assert run_monitoring_worker.main() == 0
+
+    healthy_values = [value for name, value in gauge_calls if name == 'decoda_monitoring_worker_healthy']
+    assert healthy_values, 'worker must report the healthy gauge'
+    assert 1 not in healthy_values, 'worker must not be marked healthy while eth_blockNumber fails'
+    assert 0 in healthy_values
+
+
+def test_worker_main_marks_healthy_when_rpc_health_ok(monkeypatch) -> None:
+    """decoda_monitoring_worker_healthy is 1 after a cycle when eth_blockNumber succeeded at startup."""
+    monkeypatch.setenv('WORKER_ENABLED', 'true')
+    monkeypatch.setenv('LIVE_MODE_ENABLED', 'true')
+    monkeypatch.setenv('EVM_RPC_URL', 'https://fake-base-rpc.example.com')
+    monkeypatch.delenv('STAGING_EVM_RPC_URL', raising=False)
+    monkeypatch.setattr('services.api.app.evm_activity_provider._resolve_evm_rpc_url', lambda: 'https://fake-base-rpc.example.com')
+    monkeypatch.setattr(run_monitoring_worker, 'validate_monitoring_config_or_raise', lambda: None)
+    monkeypatch.setattr(
+        'services.api.app.evm_activity_provider.probe_rpc_health',
+        lambda: {'ok': True, 'chain_id_hex': '0x2105', 'chain_id_int': 8453, 'block_number_hex': '0x2d0e2a0', 'block_number_int': 47243936, 'error': None},
+    )
+    monkeypatch.setattr(
+        run_monitoring_worker,
+        'parse_args',
+        lambda: SimpleNamespace(worker_name='test-worker', interval_seconds=0.01, limit=5, once=True),
+    )
+    monkeypatch.setattr(
+        run_monitoring_worker,
+        'run_monitoring_cycle',
+        lambda worker_name, limit, trigger_type='scheduler': {'due_targets': 0, 'checked': 0, 'alerts_generated': 0, 'live_mode': True},
+    )
+    monkeypatch.setattr(run_monitoring_worker, 'evaluate_monitoring_system_alerts', lambda stale_after_seconds: {})
+    gauge_calls = []
+    monkeypatch.setattr(run_monitoring_worker, 'gauge', lambda name, value, **labels: gauge_calls.append((name, value)))
+
+    assert run_monitoring_worker.main() == 0
+
+    healthy_values = [value for name, value in gauge_calls if name == 'decoda_monitoring_worker_healthy']
+    assert healthy_values == [1], 'worker with healthy RPC must gauge healthy=1 once per cycle'
+
+
 def test_live_evidence_ready_false_until_full_chain() -> None:
     """live_evidence_ready stays False for partial chains (telemetry-only, detection-only, etc.)."""
     from services.api.app.paid_launch_readiness import build_live_evidence_proof
