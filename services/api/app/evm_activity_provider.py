@@ -552,6 +552,14 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     confirmations = max(0, int(os.getenv('EVM_CONFIRMATIONS_REQUIRED', '3')))
     replay_blocks = max(1, int(os.getenv('MONITOR_REPLAY_BLOCKS', os.getenv('EVM_BLOCK_LOOKBACK', '25'))))
     block_scan_chunk = max(1, int(os.getenv('MONITOR_BATCH_BLOCKS', os.getenv('EVM_BLOCK_SCAN_CHUNK_SIZE', '25'))))
+    # Per-chain initial backfill when no prior cursor exists.  Base runs ~2 s/block so
+    # a 300-second polling interval spans ~150 blocks; use 250 for safety (~8 minutes).
+    # MONITOR_SAFE_BACKFILL overrides this at the environment level.
+    _CHAIN_SAFE_BACKFILL: dict[str, int] = {'base': 250, 'base-mainnet': 250}
+    safe_backfill_window: int = max(
+        replay_blocks,
+        int(os.getenv('MONITOR_SAFE_BACKFILL', str(_CHAIN_SAFE_BACKFILL.get(network, max(150, replay_blocks))))),
+    )
     target_type = str(target.get('target_type') or '').lower()
     if target_type == 'wallet':
         target_address = resolve_monitored_wallet(target) or ''
@@ -647,17 +655,24 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
             _corrupt_cursor_reason, cursor or 'none',
         )
         last_block = None
-    from_block = max(0, safe_to - replay_blocks if last_block is None else max(last_block - replay_blocks, 0))
+    if last_block is None:
+        # No prior cursor: backfill safe_backfill_window blocks to cover at least one polling interval.
+        from_block = max(0, safe_to - safe_backfill_window)
+    else:
+        # Continue from the persisted cursor; replay_blocks of overlap guards against reorgs.
+        from_block = max(0, last_block - replay_blocks)
     logger.info(
         'evm_block_scan_start target_id=%s chain=%s monitored_wallet=%s '
         'latest_block_hex=%s latest_block_decimal=%s previous_cursor=%s '
-        'repaired_cursor=%s from_block=%s to_block=%s blocks_to_scan=%s',
+        'repaired_cursor=%s from_block=%s to_block=%s blocks_to_scan=%s '
+        'safe_backfill_window=%s',
         target.get('id'), network,
         target_address if target_type == 'wallet' else 'n/a',
         latest_block_raw_hex, latest,
         cursor or 'none',
         'yes' if (cursor and last_block is None and ':' in cursor) else 'no',
         from_block, safe_to, max(0, safe_to - from_block + 1),
+        safe_backfill_window if last_block is None else 0,
     )
     if safe_to < from_block:
         return []
@@ -818,11 +833,12 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     # Canonical end-of-scan summary. evm_block_scan_start must always be followed by
     # this line (never a bare provider_error): it proves the scan loop ran to completion
     # and reports exactly what was inspected, what failed, and what was detected.
+    _persisted_cursor = f"{safe_to}:checkpoint:-1"
     logger.info(
         'evm_block_scan_summary target_id=%s monitored_wallet=%s chain=%s chain_id=%s '
         'source_type=rpc_polling from_block=%s to_block=%s blocks_scanned=%s failed_blocks=%s '
         'logs_fetch_status=%s transactions_inspected=%s wallet_transfers_detected=%s '
-        'detected_tx_hashes=%s events_emitted=%s',
+        'detected_tx_hashes=%s events_emitted=%s persisted_cursor=%s',
         target.get('id'),
         target_address if target_type == 'wallet' else 'n/a',
         network, chain_id,
@@ -834,7 +850,11 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         _wallet_transfers_detected,
         _detected_tx_hashes[:25],
         len(deduped),
+        _persisted_cursor,
     )
+    # Expose the exact block we scanned up to so the runner can advance the cursor
+    # even on empty scans (no events), preventing repeated small-window polling.
+    target['_evm_scan_to_block'] = safe_to
     return deduped
 
 

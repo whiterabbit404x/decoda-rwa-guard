@@ -231,7 +231,9 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
             )
         has_evidence = bool(live_events)
         coverage_evidence_present = True
-        latest_block = None
+        # Prefer the exact scan ceiling written by fetch_evm_activity so the runner
+        # can advance the cursor even on empty scans without a second RPC round-trip.
+        latest_block: int | None = target.get('_evm_scan_to_block') if not has_evidence else None
         checkpoint = None
         if has_evidence:
             block_candidates: list[int] = []
