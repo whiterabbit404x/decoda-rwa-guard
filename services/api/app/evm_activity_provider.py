@@ -194,6 +194,63 @@ CHAIN_MAP = {
     'arbitrum-one': {'chain_id': 42161},
 }
 
+# Per-chain RPC endpoint env-var aliases. ``EVM_RPC_URL_<chain_id>`` is always
+# checked first; these named aliases are accepted for operator readability.
+_CHAIN_RPC_ENV_ALIASES = {
+    1: ('ETHEREUM_EVM_RPC_URL', 'ETH_EVM_RPC_URL'),
+    8453: ('BASE_EVM_RPC_URL',),
+    42161: ('ARBITRUM_EVM_RPC_URL', 'ARB_EVM_RPC_URL'),
+}
+
+
+def resolve_chain_rpc(network: str | None) -> dict[str, Any]:
+    """Resolve the RPC endpoint that serves a target's labeled chain.
+
+    Routing precedence (most specific first):
+      1. ``EVM_RPC_URL_<chain_id>``      e.g. ``EVM_RPC_URL_8453`` for Base
+      2. ``<CHAIN>_EVM_RPC_URL`` alias   e.g. ``BASE_EVM_RPC_URL``
+      3. Global ``STAGING_EVM_RPC_URL`` / ``EVM_RPC_URL`` (legacy single-chain)
+
+    The global fallback is intentionally last and is only safe because
+    :func:`fetch_evm_activity` probes ``eth_chainId`` and fails closed when the
+    resolved endpoint does not actually serve ``expected_chain_id``. This is what
+    stops a single global Base RPC from being used for an Ethereum-labeled target.
+
+    Returns a dict with: ``network``, ``expected_chain_id`` (from ``CHAIN_MAP``,
+    ``None`` when the network is unknown), ``rpc_url``, ``rpc_url_env`` (the env
+    var name that supplied the URL — for logs; never the URL/secret itself), and
+    ``rpc_urls`` (primary + per-chain failover, deduplicated).
+    """
+    network = (network or '').strip().lower()
+    expected_chain_id = (CHAIN_MAP.get(network) or {}).get('chain_id')
+    rpc_url = ''
+    rpc_url_env: str | None = None
+    failover_raw = ''
+    if expected_chain_id is not None:
+        for name in (f'EVM_RPC_URL_{expected_chain_id}', *_CHAIN_RPC_ENV_ALIASES.get(expected_chain_id, ())):
+            value = (os.getenv(name) or '').strip()
+            if value:
+                rpc_url, rpc_url_env = value, name
+                failover_raw = (os.getenv(f'EVM_RPC_FAILOVER_URLS_{expected_chain_id}') or '').strip()
+                break
+    if not rpc_url:
+        rpc_url = _resolve_evm_rpc_url()
+        if rpc_url:
+            rpc_url_env = 'STAGING_EVM_RPC_URL' if (os.getenv('STAGING_EVM_RPC_URL') or '').strip() else 'EVM_RPC_URL'
+    if rpc_url_env in ('STAGING_EVM_RPC_URL', 'EVM_RPC_URL'):
+        rpc_urls = _resolve_evm_rpc_urls()
+    else:
+        ordered = [rpc_url] if rpc_url else []
+        ordered.extend(part.strip() for part in failover_raw.split(',') if part.strip())
+        rpc_urls = list(dict.fromkeys(url for url in ordered if url))
+    return {
+        'network': network,
+        'expected_chain_id': expected_chain_id,
+        'rpc_url': rpc_url,
+        'rpc_url_env': rpc_url_env,
+        'rpc_urls': rpc_urls,
+    }
+
 
 class RpcClient(Protocol):
     def call(self, method: str, params: list[Any]) -> Any: ...
@@ -435,30 +492,62 @@ async def _ws_subscribe_new_head(ws_url: str, timeout_seconds: float = 1.0) -> i
 
 
 def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc_client: RpcClient | None = None) -> list[ActivityEvent]:
-    rpc_url = _resolve_evm_rpc_url()
-    if not rpc_url:
-        return []
     network = str(target.get('chain_network') or 'ethereum').strip().lower()
+    # Route to the RPC endpoint that serves this target's labeled chain. A single
+    # global Base RPC must never silently serve an Ethereum-labeled target.
+    _chain_rpc = resolve_chain_rpc(network)
+    rpc_url = _chain_rpc['rpc_url']
+    rpc_url_env_used = _chain_rpc['rpc_url_env']
+    expected_chain_id = _chain_rpc['expected_chain_id']
+    if not rpc_url:
+        logger.warning(
+            'evm_rpc_not_configured target_id=%s configured_chain=%s resolved_chain_id=%s '
+            'rpc_url_env_used=%s reason=no_rpc_url_for_chain action=skip',
+            target.get('id'), network, expected_chain_id, rpc_url_env_used,
+        )
+        return []
+
+    client = rpc_client or FailoverJsonRpcClient(_chain_rpc['rpc_urls'])
+
     _allowed_chains = {item.strip().lower() for item in (os.getenv('LIVE_MONITORING_CHAINS', 'ethereum').split(',')) if item.strip()}
     if network not in _allowed_chains:
-        # Also allow when EVM_CHAIN_ID explicitly matches this network's chain_id
+        # Network is not operator-allow-listed. Allow it only when we can confirm
+        # the RPC serves this network's chain id — either EVM_CHAIN_ID matches it,
+        # or an eth_chainId probe matches (auto-detect for chains like Base).
         _configured_chain_id = int(os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or 0) or None
-        _network_chain_id = CHAIN_MAP.get(network, {}).get('chain_id')
-        if not (_configured_chain_id and _network_chain_id and _configured_chain_id == _network_chain_id):
-            # Probe the actual RPC chain ID to auto-detect networks like Base
-            # without requiring EVM_CHAIN_ID to be explicitly configured.
-            if not _network_chain_id:
+        if not (_configured_chain_id and expected_chain_id and _configured_chain_id == expected_chain_id):
+            if not expected_chain_id:
                 return []
-            _probe_client = rpc_client or FailoverJsonRpcClient(_resolve_evm_rpc_urls())
             try:
-                _probed_chain_id = _hex_to_int(_probe_client.call('eth_chainId', []))
+                _probed_chain_id = _hex_to_int(client.call('eth_chainId', []))
             except Exception:
                 _probed_chain_id = None
-            if _probed_chain_id != _network_chain_id:
+            if _probed_chain_id != expected_chain_id:
+                logger.error(
+                    'evm_chain_rpc_mismatch target_id=%s configured_chain=%s resolved_chain_id=%s '
+                    'rpc_chain_id=%s rpc_url_env_used=%s action=skip_no_telemetry '
+                    'reason=chain_not_allowlisted_and_rpc_chain_mismatch',
+                    target.get('id'), network, expected_chain_id, _probed_chain_id, rpc_url_env_used,
+                )
                 return []
-            # Reuse the probed client to avoid a second connection
-            if rpc_client is None:
-                rpc_client = _probe_client
+    elif expected_chain_id is not None:
+        # Network IS allow-listed (e.g. ethereum). Still verify the RPC actually
+        # serves this chain so an ethereum-labeled target can never be scanned
+        # against a Base RPC and have its Base block height written as chain_id=1.
+        # Fail closed on a definite mismatch; tolerate an indeterminate probe
+        # (None) so injected unit-test clients without eth_chainId still scan.
+        try:
+            _probed_chain_id = _hex_to_int(client.call('eth_chainId', []))
+        except Exception:
+            _probed_chain_id = None
+        if _probed_chain_id is not None and _probed_chain_id != expected_chain_id:
+            logger.error(
+                'evm_chain_rpc_mismatch target_id=%s configured_chain=%s resolved_chain_id=%s '
+                'rpc_chain_id=%s rpc_url_env_used=%s action=skip_no_telemetry '
+                'reason=allowlisted_chain_rpc_serves_different_chain',
+                target.get('id'), network, expected_chain_id, _probed_chain_id, rpc_url_env_used,
+            )
+            return []
 
     confirmations = max(0, int(os.getenv('EVM_CONFIRMATIONS_REQUIRED', '3')))
     replay_blocks = max(1, int(os.getenv('MONITOR_REPLAY_BLOCKS', os.getenv('EVM_BLOCK_LOOKBACK', '25'))))
@@ -482,7 +571,6 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     if not target_address.startswith('0x'):
         return []
 
-    client = rpc_client or FailoverJsonRpcClient(_resolve_evm_rpc_urls())
     ws_configured = bool((os.getenv('EVM_WS_URL') or '').strip())
     preferred_source = 'polling'
     fallback_source = 'polling'
@@ -523,6 +611,15 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
             )
             latest = 0
     safe_to = max(0, latest - confirmations)
+
+    # Canonical per-target chain/RPC routing record: proves which endpoint served
+    # this target and the chain it resolved to. Fields: target_id, configured_chain,
+    # resolved_chain_id, rpc_url_env_used, latest_block.
+    logger.info(
+        'evm_chain_routing target_id=%s configured_chain=%s resolved_chain_id=%s '
+        'rpc_url_env_used=%s latest_block=%s',
+        target.get('id'), network, expected_chain_id, rpc_url_env_used, latest,
+    )
 
     latest_block_raw_hex = hex(latest) if latest else '0x0'
     cursor = str(target.get('monitoring_checkpoint_cursor') or '').strip()

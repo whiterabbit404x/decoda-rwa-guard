@@ -280,21 +280,49 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
             if latest_block is None:
                 rpc_probe = probe_rpc_health()
                 if rpc_probe['ok']:
+                    # Fail closed when the RPC serves a different chain than this
+                    # target is labeled with: a block height from the wrong chain
+                    # (e.g. a Base height written under chain_id=1) must never be
+                    # persisted as coverage telemetry. Mark the target misconfigured.
+                    from services.api.app.evm_activity_provider import CHAIN_MAP as _CHAIN_MAP
+                    _target_network = str(target.get('chain_network') or 'ethereum').strip().lower()
+                    _expected_chain_id = (_CHAIN_MAP.get(_target_network) or {}).get('chain_id')
+                    _probed_chain_id = rpc_probe.get('chain_id_int')
+                    if _expected_chain_id is not None and _probed_chain_id is not None and _probed_chain_id != _expected_chain_id:
+                        logger.error(
+                            'coverage_rpc_chain_mismatch_fail_closed target_id=%s configured_chain=%s '
+                            'resolved_chain_id=%s rpc_chain_id=%s action=skip_no_telemetry',
+                            target.get('id'), _target_network, _expected_chain_id, _probed_chain_id,
+                        )
+                        return ActivityProviderResult(
+                            mode=mode,
+                            status='failed',
+                            evidence_state='FAILED_EVIDENCE',
+                            truthfulness_state='UNKNOWN_RISK',
+                            synthetic=False,
+                            provider_name='evm_activity_provider',
+                            provider_kind='rpc',
+                            evidence_present=False,
+                            recent_real_event_count=0,
+                            last_real_event_at=None,
+                            events=[],
+                            latest_block=None,
+                            checkpoint=None,
+                            checkpoint_age_seconds=None,
+                            degraded_reason='chain_rpc_mismatch',
+                            error_code='ChainRpcMismatch',
+                            source_type='rpc_polling',
+                            reason_code='CHAIN_RPC_MISMATCH',
+                            claim_safe=False,
+                            detection_outcome='MONITORING_DEGRADED',
+                        )
                     latest_block = rpc_probe['block_number_int']
                     logger.info(
-                        'coverage_rpc_probe_ok chain_id=%s block_number=%s',
-                        rpc_probe['chain_id_int'],
-                        latest_block,
+                        'coverage_rpc_probe_ok target_id=%s configured_chain=%s resolved_chain_id=%s '
+                        'rpc_chain_id=%s block_number=%s',
+                        target.get('id'), _target_network, _expected_chain_id,
+                        _probed_chain_id, latest_block,
                     )
-                    _expected_chain_id_str = (os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or '').strip()
-                    _expected_chain_id = int(_expected_chain_id_str) if _expected_chain_id_str.isdigit() else None
-                    if _expected_chain_id and rpc_probe['chain_id_int'] and rpc_probe['chain_id_int'] != _expected_chain_id:
-                        logger.warning(
-                            'coverage_rpc_chain_id_mismatch rpc_chain_id=%s expected_chain_id=%s '
-                            'check EVM_RPC_URL points to the correct network',
-                            rpc_probe['chain_id_int'],
-                            _expected_chain_id,
-                        )
                 else:
                     logger.warning('coverage_rpc_probe_failed error=%s', rpc_probe.get('error'))
             return ActivityProviderResult(
