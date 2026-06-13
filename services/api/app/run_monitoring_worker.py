@@ -73,15 +73,10 @@ def _resolve_worker_enabled_env() -> None:
         os.environ.setdefault('LIVE_MODE_ENABLED', 'true')
 
 
-def _log_startup_provider_status(logger: logging.Logger) -> dict[str, object]:
-    """
-    Emit safe startup log lines for provider configuration. Never prints secrets.
+def _log_startup_provider_status(logger: logging.Logger) -> bool:
+    """Emit safe startup log lines for provider configuration. Never prints secrets.
 
-    Returns a status dict so main() can fail-closed on worker health:
-      worker_enabled: bool
-      evm_rpc_configured: bool
-      database_url_configured: bool
-      rpc_health_ok: bool | None  (None when RPC URL is not configured)
+    Returns True only when EVM_RPC_URL is configured and eth_blockNumber succeeds.
     """
     from services.api.app.evm_activity_provider import _resolve_evm_rpc_url, probe_rpc_health
     from services.api.app.pilot import live_mode_enabled as _live_mode_enabled
@@ -119,10 +114,11 @@ def _log_startup_provider_status(logger: logging.Logger) -> dict[str, object]:
     interval_seconds = float(os.getenv('MONITORING_WORKER_INTERVAL_SECONDS', '15'))
     provider_mode = 'live' if (evm_rpc_configured and worker_enabled) else 'disabled'
 
+    db_url_configured = bool((os.getenv('DATABASE_URL') or '').strip())
     logger.info(
         'startup service_role=worker live_mode_enabled=%s worker_enabled=%s enabled_reason=%s '
-        'evm_rpc_configured=%s database_url_configured=%s rpc_host=%s chain_id=%s chain_id_source=%s '
-        'polling_interval_seconds=%s provider_mode=%s',
+        'evm_rpc_configured=%s rpc_host=%s chain_id=%s chain_id_source=%s '
+        'database_url_present=%s polling_interval_seconds=%s provider_mode=%s',
         live_mode_active,
         worker_enabled,
         enabled_reason,
@@ -131,14 +127,14 @@ def _log_startup_provider_status(logger: logging.Logger) -> dict[str, object]:
         rpc_host,
         chain_id_configured or 'not_set',
         chain_id_source,
+        db_url_configured,
         interval_seconds,
         provider_mode,
     )
-    if not database_url_configured:
+    if not db_url_configured:
         logger.warning(
-            'worker_startup_no_database_url reason=DATABASE_URL_missing '
-            'set DATABASE_URL to the same Postgres instance as the API service '
-            'in the Railway worker service environment'
+            'worker_startup_no_database_url '
+            'set DATABASE_URL in the Railway worker service environment'
         )
     if not worker_enabled:
         logger.warning(
@@ -176,6 +172,7 @@ def _log_startup_provider_status(logger: logging.Logger) -> dict[str, object]:
                 health.get('block_number_int'),
                 health.get('chain_id_int'),
             )
+            return True
         else:
             logger.error(
                 'startup_rpc_health_check status=FAILED rpc_host=%s '
@@ -192,17 +189,13 @@ def _log_startup_provider_status(logger: logging.Logger) -> dict[str, object]:
                 'Fix EVM_RPC_URL connectivity in the Railway worker service environment. '
                 'No live chain telemetry will be inserted until RPC responds successfully.'
             )
+            return False
     else:
         logger.info(
             'startup_rpc_health_check status=skipped reason=EVM_RPC_URL_not_configured rpc_host=%s',
             rpc_host,
         )
-    return {
-        'worker_enabled': worker_enabled,
-        'evm_rpc_configured': evm_rpc_configured,
-        'database_url_configured': database_url_configured,
-        'rpc_health_ok': rpc_health_ok,
-    }
+        return False
 
 
 def main() -> int:
@@ -212,11 +205,7 @@ def main() -> int:
     args = parse_args()
     logger.info('monitoring worker starting')
     logger.info('startup_git_commit_sha service_role=worker git_commit_sha=%s', _resolve_git_commit_sha() or 'unavailable')
-    startup_status = _log_startup_provider_status(logger)
-    # Fail-closed: the worker is only healthy once eth_blockNumber has succeeded.
-    rpc_healthy = startup_status.get('rpc_health_ok') is True
-    if not rpc_healthy:
-        gauge('decoda_monitoring_worker_healthy', 0, worker=args.worker_name)
+    rpc_healthy_at_startup = _log_startup_provider_status(logger)
     identity = runtime_environment_identity()
     logger.info(
         'monitoring worker runtime identity app_mode=%s live_mode=%s railway_environment=%s railway_service=%s database_backend=%s database_fingerprint=%s',
@@ -249,6 +238,12 @@ def main() -> int:
         schema_plan.get('process_role', 'worker'),
         schema_plan.get('reason', 'schema init disabled'),
     )
+    if not rpc_healthy_at_startup:
+        gauge('decoda_monitoring_worker_healthy', 0, worker=args.worker_name)
+        logger.warning(
+            'worker_initial_gauge=unhealthy reason=startup_rpc_health_check_failed '
+            'worker will retry; gauge will be set to 1 after first successful monitoring cycle'
+        )
     while True:
         try:
             cycle_started = time.monotonic()
