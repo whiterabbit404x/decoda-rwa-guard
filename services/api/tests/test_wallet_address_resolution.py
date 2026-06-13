@@ -302,3 +302,71 @@ def test_explain_tx_not_found():
     result = explain_wallet_transfer_match(WALLET, None)
     assert result['matched'] is False
     assert result['reason'] == 'transaction_not_found'
+
+
+def test_resolve_production_wallet_from_fallback():
+    """resolve_monitored_wallet must return the production wallet from a known fallback location."""
+    production_wallet = '0x5f6f35fd8b10c5576089f99c7c8c351deb851d1f'
+    # Canonical column missing; wallet stored in asset_context.asset_identifier (fallback)
+    target = {
+        'target_type': 'wallet',
+        'wallet_address': None,
+        'asset_context': {'asset_identifier': production_wallet.upper()},
+    }
+    resolved = resolve_monitored_wallet(target)
+    assert resolved == production_wallet, (
+        f'expected {production_wallet!r} from asset_context fallback, got {resolved!r}'
+    )
+
+
+def test_outbound_transfer_telemetry_fields(monkeypatch):
+    """Outbound transfer from production wallet must have all required telemetry fields."""
+    import os
+    monkeypatch.setenv('EVM_RPC_URL', 'http://rpc')
+    monkeypatch.setenv('LIVE_MONITORING_CHAINS', 'ethereum')
+
+    wallet = '0x5f6f35fd8b10c5576089f99c7c8c351deb851d1f'
+    counterparty = '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
+    tx_hash = '0xfeedcafe' + '00' * 28
+
+    class _Rpc:
+        def call(self, method: str, params: list) -> object:
+            if method == 'eth_blockNumber':
+                return hex(5000)
+            if method == 'eth_getLogs':
+                return []
+            if method == 'eth_getBlockByNumber':
+                block_num = int(str(params[0]), 16)
+                return {
+                    'hash': f'0xblk{block_num}',
+                    'timestamp': hex(1_700_000_000 + block_num),
+                    'transactions': [
+                        {
+                            'hash': tx_hash,
+                            'from': wallet,
+                            'to': counterparty,
+                            'value': hex(500_000_000_000_000_000),
+                            'input': '0x',
+                            'blockNumber': hex(block_num),
+                            'blockHash': f'0xblk{block_num}',
+                        }
+                    ],
+                }
+            return {}
+
+    target = {
+        'id': str(uuid.uuid4()),
+        'target_type': 'wallet',
+        'chain_network': 'ethereum',
+        'wallet_address': wallet,
+    }
+    events = fetch_evm_activity(target, None, rpc_client=_Rpc())
+    assert events, 'must detect at least one event'
+    tx_events = [e for e in events if str(e.payload.get('tx_hash') or '') == tx_hash]
+    assert tx_events, f'no event with tx_hash={tx_hash!r}'
+    p = tx_events[0].payload
+    assert p.get('tx_hash') == tx_hash, 'tx_hash must be persisted'
+    assert str(p.get('from') or '').lower() == wallet, 'from must be the monitored wallet'
+    assert str(p.get('to') or '').lower() == counterparty, 'to must be the counterparty'
+    assert p.get('block_number') is not None, 'block_number must be persisted'
+    assert p.get('wallet_transfer_direction') == 'outbound', 'direction must be outbound'

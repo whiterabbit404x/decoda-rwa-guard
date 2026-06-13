@@ -201,6 +201,12 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
                 detection_outcome='ANALYSIS_FAILED',
             )
         except Exception as exc:
+            logger.exception(
+                'evm_provider_error target_id=%s error_type=%s error=%s',
+                target.get('id'),
+                type(exc).__name__,
+                str(exc)[:200],
+            )
             return ActivityProviderResult(
                 mode=mode,
                 status='failed',
@@ -218,7 +224,7 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
                 checkpoint_age_seconds=None,
                 degraded_reason='provider_error',
                 error_code=exc.__class__.__name__,
-                source_type='unknown',
+                source_type='rpc_polling',
                 reason_code='PROVIDER_FAILED',
                 claim_safe=False,
                 detection_outcome='ANALYSIS_FAILED',
