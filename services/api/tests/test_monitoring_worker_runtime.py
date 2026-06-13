@@ -1893,3 +1893,93 @@ def test_live_evidence_ready_false_until_full_chain() -> None:
         assert result['live_evidence_ready'] is False, (
             f'live_evidence_ready must be False for partial chain: {state}'
         )
+
+
+def test_worker_rpc_healthy_initialized_no_unbound_error(monkeypatch) -> None:
+    """Worker loop must not crash with UnboundLocalError when rpc_healthy_at_startup is False."""
+    monkeypatch.setenv('WORKER_ENABLED', 'true')
+    monkeypatch.setenv('LIVE_MODE_ENABLED', 'true')
+    monkeypatch.setenv('EVM_RPC_URL', 'https://fake-rpc.example.com')
+    monkeypatch.delenv('STAGING_EVM_RPC_URL', raising=False)
+    monkeypatch.setattr('services.api.app.evm_activity_provider._resolve_evm_rpc_url', lambda: 'https://fake-rpc.example.com')
+    monkeypatch.setattr(run_monitoring_worker, 'validate_monitoring_config_or_raise', lambda: None)
+    monkeypatch.setattr(
+        'services.api.app.evm_activity_provider.probe_rpc_health',
+        lambda: {'ok': False, 'chain_id_hex': None, 'chain_id_int': None,
+                 'block_number_hex': None, 'block_number_int': None, 'error': 'timeout'},
+    )
+    monkeypatch.setattr(
+        run_monitoring_worker,
+        'parse_args',
+        lambda: SimpleNamespace(worker_name='test-worker', interval_seconds=0.01, limit=5, once=True),
+    )
+    monkeypatch.setattr(
+        run_monitoring_worker,
+        'run_monitoring_cycle',
+        lambda worker_name, limit, trigger_type='scheduler': {
+            'due_targets': 0, 'checked': 0, 'alerts_generated': 0, 'live_mode': True,
+        },
+    )
+    monkeypatch.setattr(run_monitoring_worker, 'evaluate_monitoring_system_alerts', lambda stale_after_seconds: {})
+    monkeypatch.setattr(run_monitoring_worker, 'gauge', lambda name, value, **labels: None)
+
+    # Must not raise UnboundLocalError: cannot access local variable 'rpc_healthy'
+    rc = run_monitoring_worker.main()
+    assert rc == 0
+
+
+def test_startup_log_no_format_type_error(monkeypatch, caplog) -> None:
+    """_log_startup_provider_status must not raise TypeError from mismatched %s args."""
+    import logging
+    monkeypatch.setenv('WORKER_ENABLED', 'true')
+    monkeypatch.setenv('EVM_RPC_URL', 'https://fake-rpc.example.com')
+    monkeypatch.delenv('STAGING_EVM_RPC_URL', raising=False)
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://user:pass@localhost/db')
+    monkeypatch.setattr('services.api.app.evm_activity_provider._resolve_evm_rpc_url', lambda: 'https://fake-rpc.example.com')
+    monkeypatch.setattr(
+        'services.api.app.evm_activity_provider.probe_rpc_health',
+        lambda: {'ok': True, 'chain_id_hex': '0x2105', 'chain_id_int': 8453,
+                 'block_number_hex': '0x2d12345', 'block_number_int': 47251269, 'error': None},
+    )
+
+    logger = logging.getLogger('test_format_no_error')
+    # If the format string still has mismatched %s, Python's logging will emit a TypeError
+    # in the log record; we detect this by checking no TypeError appears in the output.
+    with caplog.at_level(logging.DEBUG, logger='test_format_no_error'):
+        result = run_monitoring_worker._log_startup_provider_status(logger)
+
+    for record in caplog.records:
+        # logging does not raise; it catches internally — check getMessage() doesn't raise
+        try:
+            record.getMessage()
+        except TypeError as exc:
+            raise AssertionError(f'Logger format string mismatch caused TypeError: {exc}') from exc
+    assert isinstance(result, dict), 'must return a dict'
+    assert 'rpc_health_ok' in result
+    assert 'database_url_configured' in result
+
+
+def test_startup_log_returns_database_url_configured_flag(monkeypatch, caplog) -> None:
+    """_log_startup_provider_status returns database_url_configured True/False based on env."""
+    import logging
+    monkeypatch.delenv('EVM_RPC_URL', raising=False)
+    monkeypatch.delenv('STAGING_EVM_RPC_URL', raising=False)
+    monkeypatch.setenv('WORKER_ENABLED', 'true')
+    monkeypatch.setattr('services.api.app.evm_activity_provider._resolve_evm_rpc_url', lambda: '')
+
+    logger = logging.getLogger('test_db_flag')
+
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://user:pass@localhost/db')
+    with caplog.at_level(logging.INFO, logger='test_db_flag'):
+        result = run_monitoring_worker._log_startup_provider_status(logger)
+    assert result['database_url_configured'] is True
+    log_text = '\n'.join(r.getMessage() for r in caplog.records)
+    assert 'database_url_configured=True' in log_text
+
+    caplog.clear()
+    monkeypatch.delenv('DATABASE_URL', raising=False)
+    with caplog.at_level(logging.INFO, logger='test_db_flag'):
+        result = run_monitoring_worker._log_startup_provider_status(logger)
+    assert result['database_url_configured'] is False
+    log_text = '\n'.join(r.getMessage() for r in caplog.records)
+    assert 'database_url_configured=False' in log_text

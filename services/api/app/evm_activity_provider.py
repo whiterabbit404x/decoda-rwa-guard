@@ -581,7 +581,16 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     _detected_tx_hashes: list[str] = []
     for chunk_from, chunk_to in _iter_block_ranges(from_block, safe_to, block_scan_chunk):
         for block_number in range(chunk_from, chunk_to + 1):
-            block = client.call('eth_getBlockByNumber', [hex(block_number), True]) or {}
+            try:
+                block = client.call('eth_getBlockByNumber', [hex(block_number), True]) or {}
+            except Exception as block_exc:
+                logger.exception(
+                    'evm_block_fetch_failed target_id=%s chain=%s block_number=%s block_number_hex=%s '
+                    'error_type=%s error=%s',
+                    target.get('id'), network, block_number, hex(block_number),
+                    type(block_exc).__name__, str(block_exc)[:200],
+                )
+                continue
             block_hash = str(block.get('hash') or '')
             if block_hash and block_hash not in block_ts_cache:
                 block_ts_cache[block_hash] = _iso_from_block_ts(block.get('timestamp'))
