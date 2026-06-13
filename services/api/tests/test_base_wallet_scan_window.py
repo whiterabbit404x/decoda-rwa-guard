@@ -113,9 +113,9 @@ class _RpcWithTransfer(_BaseRpc):
 # ---------------------------------------------------------------------------
 
 def test_base_no_cursor_initial_window_covers_300s_polling_interval(monkeypatch):
-    """Without a prior cursor, the first Base scan must cover at least 150 blocks
-    (300 s / 2 s per block) so no transaction sent during the polling interval is missed.
-    The implementation uses a safe_backfill_window of 250 for Base."""
+    """Without a prior cursor, the first Base scan must cover at least 300 blocks
+    (the minimum floor for Base) so no transaction sent during the polling interval
+    is missed even when MONITOR_SAFE_BACKFILL is not set."""
     monkeypatch.setenv('EVM_RPC_URL', 'http://rpc')
     monkeypatch.setenv('LIVE_MONITORING_CHAINS', 'base')
     monkeypatch.setenv('EVM_CONFIRMATIONS_REQUIRED', str(BASE_CONFIRMATIONS))
@@ -134,15 +134,14 @@ def test_base_no_cursor_initial_window_covers_300s_polling_interval(monkeypatch)
     max_block = max(block_calls)
     blocks_scanned = max_block - min_block + 1
 
-    # 300 s / 2 s per block = 150 blocks minimum
-    assert blocks_scanned >= 150, (
-        f'Base initial scan must cover ≥150 blocks for a 300-second polling interval; '
+    assert blocks_scanned >= 300, (
+        f'Base initial scan must cover ≥300 blocks; '
         f'got {blocks_scanned} (min={min_block}, max={max_block})'
     )
 
 
-def test_base_no_cursor_backfill_window_default_is_250(monkeypatch):
-    """Default safe_backfill_window for Base is 250 blocks (covers ~8 minutes of blocks)."""
+def test_base_no_cursor_backfill_window_default_is_300(monkeypatch):
+    """Default safe_backfill_window for Base is 300 blocks (covers one 300-second interval)."""
     monkeypatch.setenv('EVM_RPC_URL', 'http://rpc')
     monkeypatch.setenv('LIVE_MONITORING_CHAINS', 'base')
     monkeypatch.setenv('EVM_CONFIRMATIONS_REQUIRED', str(BASE_CONFIRMATIONS))
@@ -157,11 +156,11 @@ def test_base_no_cursor_backfill_window_default_is_250(monkeypatch):
 
     block_calls = [int(str(p[0]), 16) for m, p in rpc.calls if m == 'eth_getBlockByNumber']
     min_block = min(block_calls)
-    expected_from = BASE_SAFE_TO - 250  # safe_backfill_window=250 for Base
+    expected_from = BASE_SAFE_TO - 300  # safe_backfill_window=300 for Base
 
     assert min_block <= expected_from + 25, (
         f'first block scanned ({min_block}) should be near {expected_from} '
-        f'(safe_to={BASE_SAFE_TO} - 250); may differ by chunk boundary'
+        f'(safe_to={BASE_SAFE_TO} - 300); may differ by chunk boundary'
     )
 
 
@@ -330,4 +329,158 @@ def test_tx_hash_in_scan_range_produces_wallet_transfer_detected(monkeypatch):
     # Verify the cursor encodes the block so the runner can deduplicate
     assert ev.cursor.startswith(str(tx_block)), (
         f'event cursor must start with block_number={tx_block}; got {ev.cursor!r}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# F. Chain-specific minimum floor cannot be overridden by MONITOR_SAFE_BACKFILL
+# ---------------------------------------------------------------------------
+
+def test_base_min_backfill_floor_not_overridable_by_env(monkeypatch):
+    """MONITOR_SAFE_BACKFILL=25 must NOT drop Base below 300 blocks.
+
+    A low env-var value in production was causing 26-block scan windows,
+    missing all transactions in the 300-second polling interval.
+    """
+    monkeypatch.setenv('EVM_RPC_URL', 'http://rpc')
+    monkeypatch.setenv('LIVE_MONITORING_CHAINS', 'base')
+    monkeypatch.setenv('EVM_CONFIRMATIONS_REQUIRED', str(BASE_CONFIRMATIONS))
+    monkeypatch.setenv('MONITOR_REPLAY_BLOCKS', '25')
+    monkeypatch.setenv('MONITOR_SAFE_BACKFILL', '25')  # dangerously low override
+
+    from services.api.app.evm_activity_provider import fetch_evm_activity
+
+    rpc = _BaseRpc(latest=BASE_LATEST_BLOCK)
+    target = _make_target(cursor=None)
+    fetch_evm_activity(target, None, rpc_client=rpc)
+
+    block_calls = [int(str(p[0]), 16) for m, p in rpc.calls if m == 'eth_getBlockByNumber']
+    assert block_calls, 'scan must request blocks'
+    blocks_scanned = max(block_calls) - min(block_calls) + 1
+    assert blocks_scanned >= 300, (
+        f'MONITOR_SAFE_BACKFILL=25 must not drop Base below 300-block floor; '
+        f'got {blocks_scanned}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# G. Scan ceiling (safe_to) is always the latest_block in ActivityProviderResult
+# ---------------------------------------------------------------------------
+
+def test_latest_block_equals_scan_ceiling_on_empty_scan(monkeypatch):
+    """With no wallet transfers, activity_providers must set latest_block = safe_to
+    (the scan ceiling), not None, so the runner can advance the cursor."""
+    monkeypatch.setenv('EVM_RPC_URL', 'http://rpc')
+    monkeypatch.setenv('LIVE_MODE_ENABLED', 'true')
+    monkeypatch.setenv('LIVE_MONITORING_CHAINS', 'base')
+    monkeypatch.setenv('EVM_CONFIRMATIONS_REQUIRED', str(BASE_CONFIRMATIONS))
+    monkeypatch.setenv('MONITOR_SAFE_BACKFILL', '300')
+
+    from services.api.app.activity_providers import fetch_target_activity_result
+
+    rpc = _BaseRpc(latest=BASE_LATEST_BLOCK)
+    target = _make_target(cursor=None)
+    # Patch fetch_evm_activity to use our stub RPC
+    import services.api.app.activity_providers as _ap
+    _orig = _ap.fetch_evm_activity
+
+    def _patched(t, since_ts):
+        from services.api.app.evm_activity_provider import fetch_evm_activity as _real
+        return _real(t, since_ts, rpc_client=rpc)
+
+    monkeypatch.setattr(_ap, 'fetch_evm_activity', _patched)
+    result = fetch_target_activity_result(target, None)
+
+    assert result.latest_block is not None, 'latest_block must not be None after a successful scan'
+    assert result.latest_block == BASE_SAFE_TO, (
+        f'latest_block must equal safe_to={BASE_SAFE_TO}; got {result.latest_block}'
+    )
+
+
+def test_latest_block_equals_scan_ceiling_when_events_found(monkeypatch):
+    """With wallet transfers detected, latest_block must still equal safe_to (not the
+    highest event block).  This ensures the runner cursor advances to the full scan
+    ceiling and does not leave a gap between the last event block and safe_to."""
+    monkeypatch.setenv('EVM_RPC_URL', 'http://rpc')
+    monkeypatch.setenv('LIVE_MODE_ENABLED', 'true')
+    monkeypatch.setenv('LIVE_MONITORING_CHAINS', 'base')
+    monkeypatch.setenv('EVM_CONFIRMATIONS_REQUIRED', str(BASE_CONFIRMATIONS))
+    monkeypatch.setenv('MONITOR_SAFE_BACKFILL', '300')
+
+    from services.api.app.activity_providers import fetch_target_activity_result
+
+    tx_block = BASE_SAFE_TO - 100  # event block is 100 below the scan ceiling
+    rpc = _RpcWithTransfer(tx_block=tx_block, tx_hash='0xcafe01')
+    target = _make_target(cursor=None)
+    import services.api.app.activity_providers as _ap
+
+    def _patched(t, since_ts):
+        from services.api.app.evm_activity_provider import fetch_evm_activity as _real
+        return _real(t, since_ts, rpc_client=rpc)
+
+    monkeypatch.setattr(_ap, 'fetch_evm_activity', _patched)
+    result = fetch_target_activity_result(target, None)
+
+    assert result.events, 'must detect the wallet transfer event'
+    assert result.latest_block == BASE_SAFE_TO, (
+        f'latest_block must equal scan ceiling safe_to={BASE_SAFE_TO}, '
+        f'not event block={tx_block}; got {result.latest_block}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# H. No block gaps between consecutive polls even when events are found
+# ---------------------------------------------------------------------------
+
+def test_no_gap_between_polls_when_events_found(monkeypatch):
+    """When the first poll finds a wallet transfer at block N (below safe_to),
+    the second poll must start at or before N so there is no gap between N and safe_to."""
+    monkeypatch.setenv('EVM_RPC_URL', 'http://rpc')
+    monkeypatch.setenv('LIVE_MODE_ENABLED', 'true')
+    monkeypatch.setenv('LIVE_MONITORING_CHAINS', 'base')
+    monkeypatch.setenv('EVM_CONFIRMATIONS_REQUIRED', str(BASE_CONFIRMATIONS))
+    monkeypatch.setenv('MONITOR_REPLAY_BLOCKS', '25')
+    monkeypatch.setenv('MONITOR_SAFE_BACKFILL', '300')
+
+    from services.api.app.activity_providers import fetch_target_activity_result
+    import services.api.app.activity_providers as _ap
+
+    tx_block = BASE_SAFE_TO - 100
+    rpc1 = _RpcWithTransfer(tx_block=tx_block, tx_hash='0xgap01')
+    target = _make_target(cursor=None)
+
+    def _patched1(t, since_ts):
+        from services.api.app.evm_activity_provider import fetch_evm_activity as _real
+        return _real(t, since_ts, rpc_client=rpc1)
+
+    monkeypatch.setattr(_ap, 'fetch_evm_activity', _patched1)
+    result1 = fetch_target_activity_result(target, None)
+
+    assert result1.latest_block == BASE_SAFE_TO, (
+        f'First poll: latest_block must be scan ceiling {BASE_SAFE_TO}, got {result1.latest_block}'
+    )
+
+    # Simulate what monitoring_runner does: advance cursor to scan ceiling
+    cursor_after_poll1 = f'{result1.latest_block}:checkpoint:-1'
+    target['monitoring_checkpoint_cursor'] = cursor_after_poll1
+
+    # Second poll: chain advanced 150 blocks
+    poll2_latest = BASE_LATEST_BLOCK + 150
+    poll2_safe_to = poll2_latest - BASE_CONFIRMATIONS
+    rpc2 = _BaseRpc(latest=poll2_latest)
+
+    def _patched2(t, since_ts):
+        from services.api.app.evm_activity_provider import fetch_evm_activity as _real
+        return _real(t, since_ts, rpc_client=rpc2)
+
+    monkeypatch.setattr(_ap, 'fetch_evm_activity', _patched2)
+    result2 = fetch_target_activity_result(target, None)
+
+    block_calls_2 = [int(str(p[0]), 16) for m, p in rpc2.calls if m == 'eth_getBlockByNumber']
+    assert block_calls_2, 'second poll must scan blocks'
+    min_block_2 = min(block_calls_2)
+
+    assert min_block_2 <= BASE_SAFE_TO, (
+        f'Second poll must start at or before first scan ceiling ({BASE_SAFE_TO}) '
+        f'so no blocks are missed; got min_block={min_block_2}'
     )

@@ -553,11 +553,14 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     replay_blocks = max(1, int(os.getenv('MONITOR_REPLAY_BLOCKS', os.getenv('EVM_BLOCK_LOOKBACK', '25'))))
     block_scan_chunk = max(1, int(os.getenv('MONITOR_BATCH_BLOCKS', os.getenv('EVM_BLOCK_SCAN_CHUNK_SIZE', '25'))))
     # Per-chain initial backfill when no prior cursor exists.  Base runs ~2 s/block so
-    # a 300-second polling interval spans ~150 blocks; use 250 for safety (~8 minutes).
-    # MONITOR_SAFE_BACKFILL overrides this at the environment level.
-    _CHAIN_SAFE_BACKFILL: dict[str, int] = {'base': 250, 'base-mainnet': 250}
+    # a 300-second polling interval spans ~150 blocks; use 300 for safety (~10 minutes).
+    # MONITOR_SAFE_BACKFILL can raise the window but cannot lower it below the
+    # chain-specific minimum — prevents a misconfigured env var from creating gaps.
+    _CHAIN_SAFE_BACKFILL: dict[str, int] = {'base': 300, 'base-mainnet': 300}
+    _CHAIN_MIN_BACKFILL: dict[str, int] = {'base': 300, 'base-mainnet': 300}
     safe_backfill_window: int = max(
         replay_blocks,
+        _CHAIN_MIN_BACKFILL.get(network, 0),
         int(os.getenv('MONITOR_SAFE_BACKFILL', str(_CHAIN_SAFE_BACKFILL.get(network, max(150, replay_blocks))))),
     )
     target_type = str(target.get('target_type') or '').lower()

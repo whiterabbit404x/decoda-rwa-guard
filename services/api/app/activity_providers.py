@@ -231,16 +231,13 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
             )
         has_evidence = bool(live_events)
         coverage_evidence_present = True
-        # Prefer the exact scan ceiling written by fetch_evm_activity so the runner
-        # can advance the cursor even on empty scans without a second RPC round-trip.
-        latest_block: int | None = target.get('_evm_scan_to_block') if not has_evidence else None
+        # Always use the exact scan ceiling (safe_to) written by fetch_evm_activity
+        # so the runner advances the cursor to where we scanned, not just to the
+        # highest event block. This prevents gaps between consecutive polls.
+        latest_block: int | None = target.get('_evm_scan_to_block')
         checkpoint = None
         if has_evidence:
-            block_candidates: list[int] = []
             for event in live_events:
-                block_number = event.payload.get('block_number') if isinstance(event.payload, dict) else None
-                if isinstance(block_number, int):
-                    block_candidates.append(block_number)
                 if isinstance(event.payload, dict):
                     metadata = event.payload.get('metadata') if isinstance(event.payload.get('metadata'), dict) else {}
                     event.payload['metadata'] = {
@@ -249,7 +246,6 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
                         'provider_name': 'evm_activity_provider',
                         'production_claim_eligible': True,
                     }
-            latest_block = max(block_candidates) if block_candidates else None
             checkpoint = live_events[-1].cursor
             if any(event.ingestion_source == 'demo' for event in live_events):
                 raise MonitoringModeError('synthetic event leaked into live/hybrid provider stream')
