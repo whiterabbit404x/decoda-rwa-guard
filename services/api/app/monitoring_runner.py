@@ -3034,9 +3034,16 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             str(target.get('target_type') or '').lower() == 'wallet'
             and bool(_target_wallet)
             and _target_wallet in {_ev_from, _ev_to}
-            and str(_ev_payload.get('event_type') or event.kind or '').lower() in {'transaction', 'transfer'}
+            and str(_ev_payload.get('event_type') or event.kind or '').lower() in {'transaction', 'transfer', 'native_transfer'}
         )
-        _telem_event_type = 'wallet_transfer_detected' if _is_wallet_tx else str(event.kind or 'target_event')
+        if _is_wallet_tx:
+            _raw_event_type = str(_ev_payload.get('event_type') or event.kind or '').lower()
+            if _raw_event_type == 'transaction' and _ev_payload.get('wallet_transfer_direction'):
+                _telem_event_type = 'native_transfer'
+            else:
+                _telem_event_type = 'wallet_transfer_detected'
+        else:
+            _telem_event_type = str(event.kind or 'target_event')
         _telem_id = str(uuid.uuid4())
         connection.execute(
             """
@@ -3871,9 +3878,26 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
               AND COALESCE(t.monitoring_enabled, FALSE) = TRUE
               AND t.workspace_id IS NOT NULL
               AND LOWER(COALESCE(t.chain_network, '')) IN ('ethereum', 'ethereum-mainnet', 'mainnet', 'eth-mainnet', 'base', 'base-mainnet')
-              AND LOWER(COALESCE(mc.provider_type, '')) IN ('default', 'unknown')
+              AND LOWER(COALESCE(mc.provider_type, '')) IN ('default', 'unknown', '')
             ''',
         )
+        # Auto-recover dead-lettered targets that have been dead-lettered long enough.
+        _dead_letter_recovery_hours = int(os.getenv('MONITORING_DEAD_LETTER_RECOVERY_HOURS', '24'))
+        try:
+            connection.execute(
+                f"""
+                UPDATE targets
+                SET monitoring_dead_lettered_at = NULL,
+                    monitoring_delivery_attempts = 0,
+                    last_run_status = 'recovered',
+                    updated_at = NOW()
+                WHERE monitoring_dead_lettered_at IS NOT NULL
+                  AND monitoring_dead_lettered_at < NOW() - INTERVAL '{_dead_letter_recovery_hours} hours'
+                  AND deleted_at IS NULL
+                """,
+            )
+        except Exception:
+            logger.warning('dead_letter_auto_recovery_failed recovery_hours=%s', _dead_letter_recovery_hours)
         candidate_systems = connection.execute(
             '''
             SELECT ms.id AS monitored_system_id,
@@ -3887,7 +3911,9 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                    t.monitoring_interval_seconds,
                    t.monitoring_enabled,
                    t.enabled,
-                   t.is_active
+                   t.is_active,
+                   t.monitoring_dead_lettered_at,
+                   t.chain_network
             FROM monitored_systems ms
             JOIN targets t ON t.id = ms.target_id
             JOIN assets a ON a.id = t.asset_id AND a.workspace_id = t.workspace_id AND a.deleted_at IS NULL
@@ -3981,6 +4007,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         max_targets = max(1, min(limit, 200))
         skipped_disabled = 0
         skipped_inactive = 0
+        skipped_dead_lettered = 0
         skipped_missing_workspace = 0
         skipped_not_due = 0
         skipped_not_due_target_ids: set[str] = set()
@@ -4009,6 +4036,9 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 continue
             if not bool(system.get('is_active')):
                 skipped_inactive += 1
+                continue
+            if system.get('monitoring_dead_lettered_at') is not None:
+                skipped_dead_lettered += 1
                 continue
             last_checked_at = _parse_ts(system.get('last_checked_at'))
             interval_raw = system.get('monitoring_interval_seconds')
@@ -4065,6 +4095,25 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             if len(due_target_ids) >= max_targets:
                 break
         base_due_count = len(due_target_ids)
+        # Bug 3: Warn about chain-incompatible targets consuming due slots.
+        _rpc_chain_id_str = os.getenv('EVM_CHAIN_ID') or os.getenv('STAGING_EVM_CHAIN_ID') or ''
+        try:
+            _rpc_chain_id = int(_rpc_chain_id_str) if _rpc_chain_id_str else None
+        except (ValueError, TypeError):
+            _rpc_chain_id = None
+        if _rpc_chain_id == 8453:
+            _due_id_set_for_chain_check = {str(t) for t in due_target_ids}
+            for _row in candidate_systems:
+                _sys = dict(_row)
+                _target_id_str = str(_sys.get('target_id') or '').strip()
+                if _target_id_str not in _due_id_set_for_chain_check:
+                    continue
+                _chain = str(_sys.get('chain_network') or '').lower()
+                if _chain in {'ethereum', 'ethereum-mainnet', 'mainnet', 'eth-mainnet'}:
+                    logger.warning(
+                        'monitoring_chain_mismatch_due_slot_warning target_id=%s chain_network=%s rpc_chain_id=%s action=slot_consumed_will_fail_closed',
+                        _target_id_str, _chain, _rpc_chain_id,
+                    )
         for workspace_id, entries in sorted(due_selection_workspace_snapshot.items()):
             soonest_entries = sorted(
                 entries,
@@ -4598,7 +4647,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
     logger.info(
         'monitoring cycle summary worker=%s cycle_state=%s total_candidate_targets=%s base_due_count=%s '
         'effective_due_count=%s due=%s checked=%s '
-        'skipped_disabled=%s skipped_inactive=%s skipped_missing_workspace=%s skipped_not_due=%s '
+        'skipped_disabled=%s skipped_inactive=%s skipped_dead_lettered=%s skipped_missing_workspace=%s skipped_not_due=%s '
         'oldest_not_due_age_seconds=%s skipped_null_handling=%s interval_capped_targets=%s backfill_attempted=%s backfill_evaluated=%s backfill_executed=%s '
         'backfill_blocked_not_yet_due=%s backfill_blocked_by_cooldown=%s backfill_blocked_missing_candidate=%s '
         'soonest_due_in_seconds=%s next_sleep_seconds=%s '
@@ -4612,6 +4661,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         checked,
         skipped_disabled if 'skipped_disabled' in locals() else 0,
         skipped_inactive if 'skipped_inactive' in locals() else 0,
+        skipped_dead_lettered if 'skipped_dead_lettered' in locals() else 0,
         skipped_missing_workspace if 'skipped_missing_workspace' in locals() else 0,
         effective_skipped_not_due if 'effective_skipped_not_due' in locals() else 0,
         oldest_not_due_age_seconds if 'oldest_not_due_age_seconds' in locals() else None,
@@ -6705,6 +6755,24 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                             'heartbeat_resolved_from_monitoring_heartbeats workspace_id=%s age_seconds=%s',
                             workspace_id, heartbeat_age,
                         )
+            except Exception:
+                pass
+        # Bug 5: If still stale/missing after monitoring_heartbeats check, fallback to
+        # MAX(last_heartbeat_at) FROM monitoring_worker_state (any worker name) to handle
+        # Railway auto-named workers that wrote heartbeats under a different worker_name.
+        if last_heartbeat is None or heartbeat_age is None or heartbeat_age > max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3):
+            try:
+                _mws_row = connection.execute(
+                    'SELECT MAX(last_heartbeat_at) AS ts FROM monitoring_worker_state',
+                ).fetchone()
+                _mws_at = _parse_ts((_mws_row or {}).get('ts') if isinstance(_mws_row, dict) else None)
+                if _mws_at and (last_heartbeat is None or _mws_at > last_heartbeat):
+                    last_heartbeat = _mws_at
+                    heartbeat_age = int((now - last_heartbeat).total_seconds())
+                    logger.debug(
+                        'heartbeat_resolved_from_worker_state_fallback workspace_id=%s age_seconds=%s',
+                        workspace_id, heartbeat_age,
+                    )
             except Exception:
                 pass
         stale_heartbeat = heartbeat_age is None or heartbeat_age > max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3)
