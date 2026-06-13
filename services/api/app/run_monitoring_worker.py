@@ -240,7 +240,9 @@ def main() -> int:
         schema_plan.get('process_role', 'worker'),
         schema_plan.get('reason', 'schema init disabled'),
     )
-    rpc_healthy = rpc_healthy_at_startup
+    # Initialize before the loop so `if not rpc_healthy` (re-check below) can never hit
+    # an UnboundLocalError, even on the very first iteration or an early-failing cycle.
+    rpc_healthy = rpc_healthy_at_startup or False
     if not rpc_healthy_at_startup:
         gauge('decoda_monitoring_worker_healthy', 0, worker=args.worker_name)
         logger.warning(
