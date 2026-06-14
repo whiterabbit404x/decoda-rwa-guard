@@ -55,6 +55,7 @@ from services.api.app.pilot import (
     _target_health_payload,
     evaluate_workspace_monitoring_continuity,
     resolve_response_action_capability,
+    normalize_workspace_header_value,
 )
 from services.api.app.threat_payloads import ThreatKind, normalize_threat_payload
 
@@ -2909,8 +2910,22 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             target['wallet_address'] = _resolved_wallet
     provider_result: ActivityProviderResult = fetch_target_activity_result(target, checkpoint)
     provider_checked_at = utc_now()
+    # Detect chain mismatch set by evm_activity_provider — mark target unhealthy and log it
+    # so operators can identify misconfigured ethereum-mainnet targets sharing a Base RPC.
+    # This does not affect correctly configured Base targets.
+    if target.get('_evm_chain_mismatch'):
+        logger.warning(
+            'target_chain_mismatch_detected target_id=%s workspace_id=%s chain=%s mismatch_reason=%s '
+            'action=mark_unhealthy_skip_coverage',
+            target.get('id'), target.get('workspace_id'), chain,
+            target.get('_evm_chain_mismatch_reason', 'unknown'),
+        )
     provider_error_message = str(provider_result.degraded_reason or '').strip() or None
+    if target.get('_evm_chain_mismatch') and not provider_error_message:
+        provider_error_message = str(target.get('_evm_chain_mismatch_reason') or 'chain_mismatch')
     provider_health_status = 'healthy' if provider_result.status == 'live' else ('degraded' if provider_result.status in {'no_evidence', 'degraded'} else 'error')
+    if target.get('_evm_chain_mismatch'):
+        provider_health_status = 'error'
     provider_evidence_source = _telemetry_event_evidence_source(provider_result=provider_result, source_type=str(provider_result.source_type or '').strip().lower())
     if provider_evidence_source not in {'live', 'simulator', 'replay'}:
         provider_evidence_source = 'none'
@@ -9011,3 +9026,205 @@ def list_target_telemetry(request: Request, *, target_id: str, limit: int = 50, 
             else:
                 result['message'] = 'No live telemetry has been persisted for this target yet.'
         return result
+
+
+def backfill_target_block_range(
+    request: Request,
+    target_id: str,
+    from_block: int,
+    to_block: int,
+) -> dict[str, Any]:
+    """Replay a block range for a wallet target and persist matching native transfers.
+
+    Scans every block in [from_block, to_block] via eth_getBlockByNumber and
+    persists wallet_transfer/native_transfer telemetry rows for any transaction
+    whose from/to matches the monitored wallet.  Dedupes by idempotency key
+    (workspace_id:target_id:block:txhash:-1) so repeated calls are safe.
+    """
+    from services.api.app.evm_activity_provider import (
+        resolve_monitored_wallet,
+        resolve_chain_rpc,
+        FailoverJsonRpcClient,
+        CHAIN_MAP,
+        _hex_to_int,
+        _iso_from_block_ts,
+        _build_base_payload,
+        _event_cursor,
+    )
+
+    workspace_id = normalize_workspace_header_value(request.headers.get('x-workspace-id'))
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail='x-workspace-id header required')
+
+    MAX_RANGE = int(os.getenv('BACKFILL_MAX_BLOCK_RANGE', '2000'))
+    if to_block < from_block:
+        raise HTTPException(status_code=400, detail='to_block must be >= from_block')
+    if to_block - from_block + 1 > MAX_RANGE:
+        raise HTTPException(status_code=400, detail=f'block range exceeds maximum of {MAX_RANGE}')
+
+    with pg_connection() as connection:
+        target_row = connection.execute(
+            'SELECT * FROM targets WHERE id = %s::uuid AND workspace_id = %s::uuid AND deleted_at IS NULL',
+            (target_id, workspace_id),
+        ).fetchone()
+        if not target_row:
+            raise HTTPException(status_code=404, detail='target not found')
+        target = _json_safe_value(dict(target_row))
+        if str(target.get('target_type') or '').lower() != 'wallet':
+            raise HTTPException(status_code=400, detail='target must be type=wallet for native transfer backfill')
+
+        # Resolve monitored wallet, trying fallback locations
+        if not target.get('wallet_address'):
+            asset_ctx = _load_target_asset_context(connection, workspace_id=workspace_id, target=target)
+            if isinstance(asset_ctx, dict):
+                target['asset_context'] = asset_ctx
+        monitored_wallet = resolve_monitored_wallet(target)
+        if not monitored_wallet:
+            raise HTTPException(status_code=400, detail='monitored_wallet not configured for target')
+
+        chain_network = str(target.get('chain_network') or 'base').strip().lower()
+        chain_rpc = resolve_chain_rpc(chain_network)
+        if not chain_rpc.get('rpc_url'):
+            raise HTTPException(status_code=503, detail=f'EVM RPC not configured for chain {chain_network}')
+
+        client = FailoverJsonRpcClient(chain_rpc['rpc_urls'])
+        chain_id_from_map = (CHAIN_MAP.get(chain_network) or {}).get('chain_id')
+        env_chain_id = int(os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or 0) or 1
+        chain_id = chain_id_from_map or env_chain_id
+
+        # Verify RPC chain matches target chain — fail closed on mismatch
+        try:
+            rpc_chain_id = _hex_to_int(client.call('eth_chainId', []))
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f'RPC eth_chainId probe failed: {exc!s:.200}')
+        if chain_rpc.get('expected_chain_id') and rpc_chain_id is not None and rpc_chain_id != chain_rpc['expected_chain_id']:
+            raise HTTPException(
+                status_code=400,
+                detail=f'RPC serves chain_id={rpc_chain_id} but target expects chain_id={chain_rpc["expected_chain_id"]} ({chain_network})',
+            )
+
+        asset_id = str(target.get('asset_id')) if target.get('asset_id') else None
+        found_transfers: list[dict[str, Any]] = []
+        persisted_ids: list[str] = []
+        blocks_scanned = 0
+        failed_blocks: list[int] = []
+        skipped_duplicate = 0
+
+        for block_number in range(from_block, to_block + 1):
+            try:
+                block = client.call('eth_getBlockByNumber', [hex(block_number), True]) or {}
+            except Exception as block_exc:
+                failed_blocks.append(block_number)
+                logger.warning(
+                    'backfill_block_fetch_failed target_id=%s block=%s error=%s',
+                    target_id, block_number, str(block_exc)[:200],
+                )
+                continue
+            blocks_scanned += 1
+            block_hash = str(block.get('hash') or '')
+            block_ts = _iso_from_block_ts(block.get('timestamp'))
+            txs = block.get('transactions') or []
+            for tx in txs:
+                tx_from = str(tx.get('from') or '').lower()
+                tx_to = str(tx.get('to') or '').lower()
+                if monitored_wallet not in {tx_from, tx_to}:
+                    continue
+                tx_hash = str(tx.get('hash') or '')
+                direction = 'outbound' if tx_from == monitored_wallet else 'inbound'
+                cursor_value = _event_cursor(block_number, tx_hash, None)
+                # Idempotency key matches what the live worker would write
+                idempotency_key = f'{workspace_id}:{target_id}:{cursor_value}'
+                payload = _build_base_payload(
+                    target=target,
+                    network=chain_network,
+                    chain_id=chain_id,
+                    block_number=block_number,
+                    block_hash=block_hash or str(tx.get('blockHash') or ''),
+                    tx=tx,
+                    tx_hash=tx_hash,
+                    raw_reference=f'{chain_network}:{tx_hash}',
+                )
+                payload['observed_at'] = block_ts.isoformat()
+                payload['event_type'] = 'transaction'
+                payload['source_type'] = 'rpc_polling'
+                payload['wallet_transfer_direction'] = direction
+                payload['backfill'] = True
+                payload['evidence_source'] = 'live'
+                telem_id = str(uuid.uuid4())
+                payload_json = _json_dumps(payload)
+                payload_hash = hashlib.sha256(payload_json.encode('utf-8')).hexdigest()
+                try:
+                    with connection.transaction():
+                        result_cursor = connection.execute(
+                            """
+                            INSERT INTO telemetry_events (
+                                id, workspace_id, asset_id, target_id, provider_type, event_type,
+                                observed_at, evidence_source, payload_hash, payload_json, idempotency_key
+                            )
+                            VALUES (%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s::jsonb, %s)
+                            ON CONFLICT (workspace_id, target_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+                            """,
+                            (
+                                telem_id,
+                                workspace_id,
+                                asset_id,
+                                target_id,
+                                'evm_rpc',
+                                'native_transfer',
+                                block_ts,
+                                'live',
+                                payload_hash,
+                                payload_json,
+                                idempotency_key,
+                            ),
+                        )
+                        inserted = result_cursor.rowcount if hasattr(result_cursor, 'rowcount') else 1
+                except Exception as ins_exc:
+                    logger.exception(
+                        'backfill_insert_failed target_id=%s tx_hash=%s block=%s error=%s',
+                        target_id, tx_hash, block_number, str(ins_exc)[:200],
+                    )
+                    continue
+                if inserted == 0:
+                    skipped_duplicate += 1
+                else:
+                    persisted_ids.append(telem_id)
+                value_wei = _hex_to_int(tx.get('value')) or 0
+                found_transfers.append({
+                    'tx_hash': tx_hash,
+                    'block_number': block_number,
+                    'from': tx_from,
+                    'to': tx_to,
+                    'direction': direction,
+                    'amount_wei': str(value_wei),
+                    'amount_eth': round(value_wei / 10 ** 18, 18),
+                    'chain_id': chain_id,
+                    'observed_at': block_ts.isoformat(),
+                    'persisted': inserted != 0,
+                })
+                logger.info(
+                    'backfill_transfer_found target_id=%s tx_hash=%s from=%s to=%s block=%s direction=%s persisted=%s',
+                    target_id, tx_hash, tx_from, tx_to, block_number, direction, inserted != 0,
+                )
+
+    logger.info(
+        'backfill_complete target_id=%s workspace_id=%s from_block=%s to_block=%s '
+        'blocks_scanned=%s failed_blocks=%s transfers_found=%s persisted=%s duplicates=%s',
+        target_id, workspace_id, from_block, to_block,
+        blocks_scanned, len(failed_blocks), len(found_transfers), len(persisted_ids), skipped_duplicate,
+    )
+    return {
+        'target_id': target_id,
+        'workspace_id': workspace_id,
+        'monitored_wallet': monitored_wallet,
+        'chain_network': chain_network,
+        'chain_id': chain_id,
+        'from_block': from_block,
+        'to_block': to_block,
+        'blocks_scanned': blocks_scanned,
+        'failed_blocks': failed_blocks,
+        'wallet_transfers_found': len(found_transfers),
+        'persisted_telemetry_ids': persisted_ids,
+        'skipped_duplicates': skipped_duplicate,
+        'transfers': found_transfers,
+    }

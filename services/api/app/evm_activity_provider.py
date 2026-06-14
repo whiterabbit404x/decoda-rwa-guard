@@ -547,6 +547,13 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
                 'reason=allowlisted_chain_rpc_serves_different_chain',
                 target.get('id'), network, expected_chain_id, _probed_chain_id, rpc_url_env_used,
             )
+            # Mark target so the runner can reduce poll frequency / flag as unhealthy
+            # without blocking targets on the correct chain.
+            target['_evm_chain_mismatch'] = True
+            target['_evm_chain_mismatch_reason'] = (
+                f'configured_chain={network} expected_chain_id={expected_chain_id} '
+                f'rpc_chain_id={_probed_chain_id}'
+            )
             return []
 
     confirmations = max(0, int(os.getenv('EVM_CONFIRMATIONS_REQUIRED', '3')))
