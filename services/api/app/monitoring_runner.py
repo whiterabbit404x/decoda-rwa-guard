@@ -4116,8 +4116,17 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             _rpc_chain_id = int(_rpc_chain_id_str) if _rpc_chain_id_str else None
         except (ValueError, TypeError):
             _rpc_chain_id = None
-        if _rpc_chain_id == 8453:
-            _base_chain_names: set[str] = {'base', 'base-mainnet'}
+        # Inline chain → chain_id table (avoids circular import from evm_activity_provider).
+        # Any target whose chain_network resolves to a different chain_id is excluded
+        # before consuming a due slot — regardless of which chain the RPC is configured for.
+        _known_chain_ids: dict[str, int] = {
+            'ethereum': 1, 'ethereum-mainnet': 1, 'mainnet': 1,
+            'base': 8453, 'base-mainnet': 8453,
+            'polygon': 137, 'polygon-mainnet': 137,
+            'arbitrum': 42161, 'arbitrum-one': 42161,
+            'optimism': 10, 'optimism-mainnet': 10,
+        }
+        if _rpc_chain_id is not None:
             _chain_by_target: dict[str, str] = {}
             for _row in candidate_systems:
                 _sys = dict(_row)
@@ -4128,10 +4137,12 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             for _tid in due_target_ids:
                 _tid_str = str(_tid).strip()
                 _chain = _chain_by_target.get(_tid_str, '')
-                if _chain and _chain not in _base_chain_names:
+                _target_chain_id = _known_chain_ids.get(_chain) if _chain else None
+                if _target_chain_id is not None and _target_chain_id != _rpc_chain_id:
                     logger.warning(
-                        'monitoring_chain_mismatch_excluded target_id=%s chain_network=%s rpc_chain_id=%s action=excluded_from_due_slots',
-                        _tid_str, _chain, _rpc_chain_id,
+                        'monitoring_chain_mismatch_excluded target_id=%s chain_network=%s '
+                        'target_chain_id=%s rpc_chain_id=%s action=excluded_from_due_slots',
+                        _tid_str, _chain, _target_chain_id, _rpc_chain_id,
                     )
                     _excluded_mismatch += 1
                 else:
@@ -6997,7 +7008,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                         (workspace_id,),
                     ).fetchone()
                     canonical_last_heartbeat_at = _parse_ts((canonical_last_heartbeat_row or {}).get('ts') if isinstance(canonical_last_heartbeat_row, dict) else None)
-                    canonical_last_heartbeat_at = canonical_last_heartbeat_at or last_system_heartbeat or _parse_ts(health.get('last_heartbeat_at'))
+                    # Include `last_heartbeat` (resolved from monitoring_heartbeats in the first
+                    # connection) so the payload never returns null when the worker is alive.
+                    canonical_last_heartbeat_at = canonical_last_heartbeat_at or last_system_heartbeat or last_heartbeat or _parse_ts(health.get('last_heartbeat_at'))
                     canonical_last_telemetry_source = 'telemetry_events.observed_at'
                     # Mirror the Target Telemetry page: same workspace-scoped live evm_rpc/rpc_polling
                     # rows that the customer sees, additionally requiring a block_number so we only
@@ -9227,4 +9240,187 @@ def backfill_target_block_range(
         'persisted_telemetry_ids': persisted_ids,
         'skipped_duplicates': skipped_duplicate,
         'transfers': found_transfers,
+    }
+
+
+def inspect_target_dead_letter_state(
+    request: Request,
+    target_id: str,
+) -> dict[str, Any]:
+    """Return the current dead-letter / skip state for a monitoring target.
+
+    Useful for diagnosing why a target is not being scanned without touching
+    production data.  Workspace-scoped — requires x-workspace-id header.
+    """
+    logger = logging.getLogger(__name__)
+    workspace_id = normalize_workspace_header_value(request.headers.get('x-workspace-id'))
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail='x-workspace-id header required')
+
+    with pg_connection() as connection:
+        target_row = connection.execute(
+            '''
+            SELECT
+                t.id AS target_id,
+                t.workspace_id,
+                t.target_type,
+                t.chain_network,
+                t.wallet_address,
+                t.monitoring_enabled,
+                t.monitoring_dead_lettered_at,
+                t.monitoring_delivery_attempts,
+                t.last_run_status,
+                t.last_checked_at,
+                t.next_due_at,
+                t.deleted_at
+            FROM targets t
+            WHERE t.id = %s::uuid
+              AND t.workspace_id = %s::uuid
+            ''',
+            (target_id, workspace_id),
+        ).fetchone()
+        if not target_row:
+            raise HTTPException(status_code=404, detail='target not found')
+        target = _json_safe_value(dict(target_row))
+
+        # Fetch associated monitored_systems rows
+        systems_rows = connection.execute(
+            '''
+            SELECT
+                ms.id AS system_id,
+                ms.is_active,
+                ms.last_heartbeat_at,
+                ms.created_at
+            FROM monitored_systems ms
+            WHERE ms.target_id = %s::uuid
+              AND ms.workspace_id = %s::uuid
+            ORDER BY ms.created_at DESC
+            LIMIT 5
+            ''',
+            (target_id, workspace_id),
+        ).fetchall()
+        systems = [_json_safe_value(dict(r)) for r in (systems_rows or [])]
+
+        # Fetch workspace-scoped last heartbeat
+        hb_row = connection.execute(
+            'SELECT MAX(last_heartbeat_at) AS ts FROM monitoring_heartbeats WHERE workspace_id = %s::uuid',
+            (workspace_id,),
+        ).fetchone()
+        last_workspace_heartbeat = _json_safe_value((dict(hb_row) if isinstance(hb_row, dict) else {}).get('ts'))
+
+        # Fetch recent telemetry for this target
+        telemetry_rows = connection.execute(
+            '''
+            SELECT event_type, evidence_source, observed_at, idempotency_key
+            FROM telemetry_events
+            WHERE workspace_id = %s::uuid
+              AND target_id = %s::uuid
+            ORDER BY observed_at DESC
+            LIMIT 5
+            ''',
+            (workspace_id, target_id),
+        ).fetchall()
+        recent_telemetry = [_json_safe_value(dict(r)) for r in (telemetry_rows or [])]
+
+    dead_lettered_at = target.get('monitoring_dead_lettered_at')
+    delivery_attempts = target.get('monitoring_delivery_attempts') or 0
+    is_dead_lettered = dead_lettered_at is not None
+    is_deleted = target.get('deleted_at') is not None
+    monitoring_enabled = bool(target.get('monitoring_enabled'))
+
+    skip_reason: str | None = None
+    if is_deleted:
+        skip_reason = 'deleted'
+    elif not monitoring_enabled:
+        skip_reason = 'monitoring_disabled'
+    elif is_dead_lettered:
+        skip_reason = 'dead_lettered'
+
+    _dead_letter_recovery_hours = int(os.getenv('MONITORING_DEAD_LETTER_RECOVERY_HOURS', '24'))
+    auto_recovery_after_hours: int | None = _dead_letter_recovery_hours if is_dead_lettered else None
+
+    logger.info(
+        'inspect_target_dead_letter_state target_id=%s workspace_id=%s '
+        'is_dead_lettered=%s delivery_attempts=%s skip_reason=%s last_run_status=%s',
+        target_id, workspace_id, is_dead_lettered, delivery_attempts, skip_reason,
+        target.get('last_run_status'),
+    )
+    return {
+        'target_id': target_id,
+        'workspace_id': workspace_id,
+        'target_type': target.get('target_type'),
+        'chain_network': target.get('chain_network'),
+        'wallet_address': target.get('wallet_address'),
+        'monitoring_enabled': monitoring_enabled,
+        'is_dead_lettered': is_dead_lettered,
+        'monitoring_dead_lettered_at': str(dead_lettered_at) if dead_lettered_at else None,
+        'monitoring_delivery_attempts': delivery_attempts,
+        'auto_recovery_after_hours': auto_recovery_after_hours,
+        'last_run_status': target.get('last_run_status'),
+        'last_checked_at': str(target.get('last_checked_at') or ''),
+        'next_due_at': str(target.get('next_due_at') or ''),
+        'skip_reason': skip_reason,
+        'monitored_systems': systems,
+        'last_workspace_heartbeat_at': str(last_workspace_heartbeat) if last_workspace_heartbeat else None,
+        'recent_telemetry': recent_telemetry,
+    }
+
+
+def recover_target_dead_letter(
+    request: Request,
+    target_id: str,
+) -> dict[str, Any]:
+    """Clear dead-letter state for a target so it will be picked up on the next cycle.
+
+    Resets monitoring_dead_lettered_at to NULL and monitoring_delivery_attempts to 0.
+    Safe to call multiple times — idempotent if the target is not dead-lettered.
+    Workspace-scoped — requires x-workspace-id header.
+    """
+    logger = logging.getLogger(__name__)
+    workspace_id = normalize_workspace_header_value(request.headers.get('x-workspace-id'))
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail='x-workspace-id header required')
+
+    with pg_connection() as connection:
+        target_row = connection.execute(
+            'SELECT id, workspace_id, monitoring_dead_lettered_at, monitoring_delivery_attempts, last_run_status '
+            'FROM targets WHERE id = %s::uuid AND workspace_id = %s::uuid AND deleted_at IS NULL',
+            (target_id, workspace_id),
+        ).fetchone()
+        if not target_row:
+            raise HTTPException(status_code=404, detail='target not found')
+        target = dict(target_row)
+        was_dead_lettered = target.get('monitoring_dead_lettered_at') is not None
+        prev_attempts = target.get('monitoring_delivery_attempts') or 0
+
+        connection.execute(
+            '''
+            UPDATE targets
+            SET
+                monitoring_dead_lettered_at = NULL,
+                monitoring_delivery_attempts = 0,
+                last_run_status = 'recovered'
+            WHERE id = %s::uuid
+              AND workspace_id = %s::uuid
+            ''',
+            (target_id, workspace_id),
+        )
+        connection.commit()
+
+    logger.info(
+        'recover_target_dead_letter target_id=%s workspace_id=%s '
+        'was_dead_lettered=%s prev_delivery_attempts=%s action=cleared',
+        target_id, workspace_id, was_dead_lettered, prev_attempts,
+    )
+    return {
+        'target_id': target_id,
+        'workspace_id': workspace_id,
+        'was_dead_lettered': was_dead_lettered,
+        'previous_delivery_attempts': prev_attempts,
+        'recovered': True,
+        'message': (
+            'Dead-letter state cleared. Target will be picked up on the next monitoring cycle.'
+            if was_dead_lettered
+            else 'Target was not dead-lettered; no change needed.'
+        ),
     }
