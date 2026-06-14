@@ -556,8 +556,8 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     # a 300-second polling interval spans ~150 blocks; use 300 for safety (~10 minutes).
     # MONITOR_SAFE_BACKFILL can raise the window but cannot lower it below the
     # chain-specific minimum — prevents a misconfigured env var from creating gaps.
-    _CHAIN_SAFE_BACKFILL: dict[str, int] = {'base': 300, 'base-mainnet': 300}
-    _CHAIN_MIN_BACKFILL: dict[str, int] = {'base': 300, 'base-mainnet': 300}
+    _CHAIN_SAFE_BACKFILL: dict[str, int] = {'base': 2000, 'base-mainnet': 2000}
+    _CHAIN_MIN_BACKFILL: dict[str, int] = {'base': 2000, 'base-mainnet': 2000}
     safe_backfill_window: int = max(
         replay_blocks,
         _CHAIN_MIN_BACKFILL.get(network, 0),

@@ -4095,25 +4095,40 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             if len(due_target_ids) >= max_targets:
                 break
         base_due_count = len(due_target_ids)
-        # Bug 3: Warn about chain-incompatible targets consuming due slots.
+        # Exclude chain-incompatible targets from due slots to prevent starving valid targets.
         _rpc_chain_id_str = os.getenv('EVM_CHAIN_ID') or os.getenv('STAGING_EVM_CHAIN_ID') or ''
         try:
             _rpc_chain_id = int(_rpc_chain_id_str) if _rpc_chain_id_str else None
         except (ValueError, TypeError):
             _rpc_chain_id = None
         if _rpc_chain_id == 8453:
-            _due_id_set_for_chain_check = {str(t) for t in due_target_ids}
+            _base_chain_names: set[str] = {'base', 'base-mainnet'}
+            _chain_by_target: dict[str, str] = {}
             for _row in candidate_systems:
                 _sys = dict(_row)
-                _target_id_str = str(_sys.get('target_id') or '').strip()
-                if _target_id_str not in _due_id_set_for_chain_check:
-                    continue
-                _chain = str(_sys.get('chain_network') or '').lower()
-                if _chain in {'ethereum', 'ethereum-mainnet', 'mainnet', 'eth-mainnet'}:
+                _tid_str = str(_sys.get('target_id') or '').strip()
+                _chain_by_target[_tid_str] = str(_sys.get('chain_network') or '').lower()
+            _filtered_due_ids: list[Any] = []
+            _excluded_mismatch = 0
+            for _tid in due_target_ids:
+                _tid_str = str(_tid).strip()
+                _chain = _chain_by_target.get(_tid_str, '')
+                if _chain and _chain not in _base_chain_names:
                     logger.warning(
-                        'monitoring_chain_mismatch_due_slot_warning target_id=%s chain_network=%s rpc_chain_id=%s action=slot_consumed_will_fail_closed',
-                        _target_id_str, _chain, _rpc_chain_id,
+                        'monitoring_chain_mismatch_excluded target_id=%s chain_network=%s rpc_chain_id=%s action=excluded_from_due_slots',
+                        _tid_str, _chain, _rpc_chain_id,
                     )
+                    _excluded_mismatch += 1
+                else:
+                    _filtered_due_ids.append(_tid)
+            if _excluded_mismatch:
+                logger.warning(
+                    'monitoring_chain_mismatch_summary rpc_chain_id=%s excluded=%s remaining_due=%s',
+                    _rpc_chain_id, _excluded_mismatch, len(_filtered_due_ids),
+                )
+                due_target_ids = _filtered_due_ids
+                _filtered_due_str = {str(t) for t in due_target_ids}
+                due_system_ids = {k: v for k, v in due_system_ids.items() if k in _filtered_due_str}
         for workspace_id, entries in sorted(due_selection_workspace_snapshot.items()):
             soonest_entries = sorted(
                 entries,

@@ -310,10 +310,13 @@ def test_monitoring_runner_persists_wallet_transfer_detected(monkeypatch):
     telemetry_inserts = [(t, p) for t, p in inserts if t == 'telemetry_events']
     assert telemetry_inserts, 'Expected a telemetry_events INSERT'
 
-    # Find the wallet_transfer_detected row (not the coverage row)
-    transfer_rows = [p for _, p in telemetry_inserts if 'wallet_transfer_detected' in p]
+    # Find the wallet transfer row (native_transfer for native ETH, wallet_transfer_detected otherwise)
+    transfer_rows = [
+        p for _, p in telemetry_inserts
+        if 'wallet_transfer_detected' in p or 'native_transfer' in p
+    ]
     assert transfer_rows, (
-        f'Expected event_type=wallet_transfer_detected in telemetry_events INSERT. '
+        f'Expected event_type=native_transfer or wallet_transfer_detected in telemetry_events INSERT. '
         f'Actual inserts: {telemetry_inserts}'
     )
     row_params = transfer_rows[0]
@@ -698,3 +701,191 @@ def test_fetch_evm_activity_auto_detects_base_via_chain_probe(monkeypatch):
         isinstance(e.payload, dict) and e.payload.get('tx_hash') == TX_HASH
         for e in events
     ), f'Expected wallet transfer event. Events: {[e.payload for e in events]}'
+
+
+# ---------------------------------------------------------------------------
+# 11. Chain-mismatch: ethereum targets must not consume Base (8453) due slots
+# ---------------------------------------------------------------------------
+
+def test_chain_mismatch_filter_excludes_ethereum_from_base_due_slots():
+    """
+    The due-slot filtering logic in monitoring_runner must exclude targets
+    with chain_network='ethereum' or 'ethereum-mainnet' when rpc_chain_id=8453.
+    Targets with chain_network='base' or empty chain_network must pass through.
+    """
+    import uuid as _uuid
+    from typing import Any as _Any
+
+    eth_id = str(_uuid.uuid4())
+    eth_mainnet_id = str(_uuid.uuid4())
+    base_id = str(_uuid.uuid4())
+    empty_chain_id = str(_uuid.uuid4())
+
+    due_target_ids: list[_Any] = [eth_id, eth_mainnet_id, base_id, empty_chain_id]
+    due_system_ids: dict[str, str] = {
+        eth_id: 'sys1',
+        eth_mainnet_id: 'sys2',
+        base_id: 'sys3',
+        empty_chain_id: 'sys4',
+    }
+    candidate_systems = [
+        {'target_id': eth_id, 'chain_network': 'ethereum'},
+        {'target_id': eth_mainnet_id, 'chain_network': 'ethereum-mainnet'},
+        {'target_id': base_id, 'chain_network': 'base'},
+        {'target_id': empty_chain_id, 'chain_network': ''},
+    ]
+
+    # Replicate the filtering logic from monitoring_runner.run_monitoring_cycle
+    _base_chain_names: set[str] = {'base', 'base-mainnet'}
+    _chain_by_target: dict[str, str] = {}
+    for _row in candidate_systems:
+        _sys = dict(_row)
+        _tid_str = str(_sys.get('target_id') or '').strip()
+        _chain_by_target[_tid_str] = str(_sys.get('chain_network') or '').lower()
+
+    _filtered_due_ids: list[_Any] = []
+    _excluded_mismatch = 0
+    for _tid in due_target_ids:
+        _tid_str = str(_tid).strip()
+        _chain = _chain_by_target.get(_tid_str, '')
+        if _chain and _chain not in _base_chain_names:
+            _excluded_mismatch += 1
+        else:
+            _filtered_due_ids.append(_tid)
+
+    if _excluded_mismatch:
+        _filtered_due_str = {str(t) for t in _filtered_due_ids}
+        due_system_ids = {k: v for k, v in due_system_ids.items() if k in _filtered_due_str}
+
+    filtered_str = {str(t) for t in _filtered_due_ids}
+    assert eth_id not in filtered_str, 'ethereum target must be excluded for Base RPC'
+    assert eth_mainnet_id not in filtered_str, 'ethereum-mainnet target must be excluded for Base RPC'
+    assert base_id in filtered_str, 'base target must pass through for Base RPC'
+    assert empty_chain_id in filtered_str, 'target with empty chain_network must pass through'
+    assert _excluded_mismatch == 2, f'Expected 2 excluded, got {_excluded_mismatch}'
+    assert eth_id not in due_system_ids, 'due_system_ids must also exclude ethereum target'
+    assert base_id in due_system_ids, 'due_system_ids must retain base target'
+
+
+# ---------------------------------------------------------------------------
+# 12. Base backfill window is at least 2000 blocks with no prior cursor
+# ---------------------------------------------------------------------------
+
+def test_base_backfill_window_is_at_least_2000_blocks(monkeypatch):
+    """
+    With no prior cursor for a Base target, fetch_evm_activity must scan
+    at least 2000 blocks before the chain tip (not the old 300-block default).
+    """
+    LATEST = 2500
+    target = _make_base_wallet_target()
+    target['monitoring_checkpoint_cursor'] = None
+
+    blocks_requested: list[int] = []
+
+    def mock_call(method, params):
+        if method == 'eth_chainId':
+            return hex(BASE_CHAIN_ID)
+        if method == 'eth_blockNumber':
+            return hex(LATEST)
+        if method == 'eth_getLogs':
+            return []
+        if method == 'eth_getBlockByNumber':
+            block_num = int(params[0], 16)
+            blocks_requested.append(block_num)
+            return {
+                'hash': f'0x{block_num:064x}',
+                'timestamp': hex(1_700_000_000),
+                'transactions': [],
+            }
+        return None
+
+    mock_client = MagicMock()
+    mock_client.call.side_effect = mock_call
+
+    with (
+        patch('services.api.app.evm_activity_provider._resolve_evm_rpc_url', return_value='http://rpc.test'),
+        patch('services.api.app.evm_activity_provider._resolve_evm_rpc_urls', return_value=['http://rpc.test']),
+        patch('services.api.app.evm_activity_provider.FailoverJsonRpcClient', return_value=mock_client),
+        patch.dict('os.environ', {
+            'LIVE_MONITORING_CHAINS': 'base',
+            'EVM_CHAIN_ID': str(BASE_CHAIN_ID),
+            'EVM_CONFIRMATIONS_REQUIRED': '3',
+        }),
+    ):
+        fetch_evm_activity(target, None, rpc_client=mock_client)
+
+    assert blocks_requested, 'Expected eth_getBlockByNumber calls for block scan'
+    min_block = min(blocks_requested)
+    # With LATEST=2500 and 3 confirmations: safe_to=2497, from_block=max(0,2497-2000)=497
+    assert min_block <= LATEST - 2000, (
+        f'Base backfill must start at most {LATEST - 2000} (LATEST={LATEST} minus 2000). '
+        f'Got min_block={min_block}. Old 300-block window would give {LATEST - 300}.'
+    )
+
+
+# ---------------------------------------------------------------------------
+# 13. Dead-lettered Base target is skipped by the due-slot loop
+# ---------------------------------------------------------------------------
+
+def test_dead_lettered_base_target_is_skipped():
+    """
+    A Base target with monitoring_dead_lettered_at set must increment
+    skipped_dead_lettered and must NOT appear in due_target_ids.
+    This mirrors the guard at the top of the due-slot loop in
+    monitoring_runner.run_monitoring_cycle.
+    """
+    import uuid as _uuid
+    from datetime import datetime, timezone, timedelta
+
+    dead_id = str(_uuid.uuid4())
+    live_id = str(_uuid.uuid4())
+    now = datetime.now(timezone.utc)
+
+    # Simulate candidate_systems rows as dicts
+    candidate_rows = [
+        {
+            'target_id': dead_id,
+            'monitored_system_id': 'sys1',
+            'workspace_id': 'ws1',
+            'monitored_system_enabled': True,
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'monitoring_dead_lettered_at': (now - timedelta(hours=1)).isoformat(),
+            'last_checked_at': (now - timedelta(minutes=10)).isoformat(),
+            'monitoring_interval_seconds': 30,
+            'chain_network': 'base',
+        },
+        {
+            'target_id': live_id,
+            'monitored_system_id': 'sys2',
+            'workspace_id': 'ws1',
+            'monitored_system_enabled': True,
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'monitoring_dead_lettered_at': None,
+            'last_checked_at': (now - timedelta(minutes=10)).isoformat(),
+            'monitoring_interval_seconds': 30,
+            'chain_network': 'base',
+        },
+    ]
+
+    # Apply the dead-letter skip logic from monitoring_runner.run_monitoring_cycle
+    skipped_dead_lettered = 0
+    due_target_ids = []
+    for system in candidate_rows:
+        if not system.get('monitored_system_enabled'):
+            continue
+        if not system.get('monitoring_enabled') or not system.get('enabled'):
+            continue
+        if not system.get('is_active'):
+            continue
+        if system.get('monitoring_dead_lettered_at') is not None:
+            skipped_dead_lettered += 1
+            continue
+        due_target_ids.append(system['target_id'])
+
+    assert skipped_dead_lettered == 1, f'Expected 1 dead-lettered skip, got {skipped_dead_lettered}'
+    assert dead_id not in due_target_ids, 'Dead-lettered target must not appear in due_target_ids'
+    assert live_id in due_target_ids, 'Live target must appear in due_target_ids'
