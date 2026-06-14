@@ -35,7 +35,13 @@ function deriveMonitoringLabel(summary: WorkspaceMonitoringTruth, healthProvable
   if (runtimeApiMissing) return 'Setup required';
   if (summary.runtime_status === 'offline' && summary.protected_assets_count === 0 && !summary.last_heartbeat_at) return 'Offline';
   if (!summary.workspace_configured || summary.protected_assets_count === 0) return 'Setup required';
-  if (summary.reporting_systems_count === 0) return 'Setup required';
+  if (summary.reporting_systems_count === 0) {
+    // Heartbeat present → worker is alive but no transfer events persisted yet.
+    // Show 'Limited coverage' rather than 'Setup required' so the UI does not
+    // falsely claim the worker is not running when heartbeats are arriving.
+    if (summary.last_heartbeat_at) return 'Limited coverage';
+    return 'Setup required';
+  }
   if (summary.runtime_status === 'live' || summary.status_reason === 'live_runtime_verified') return 'Live';
   return 'Limited coverage';
 }

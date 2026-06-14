@@ -241,6 +241,7 @@ from services.api.app.pilot import (
     require_ops_rbac_guard,
 )
 from services.api.app.monitoring_runner import (
+    backfill_target_block_range,
     get_background_loop_health,
     get_monitoring_health,
     list_monitoring_evidence,
@@ -3306,6 +3307,22 @@ def ops_monitoring_heartbeats(request: Request, limit: int = 50) -> dict[str, An
 @app.get('/ops/monitoring/worker-errors', summary='Recent monitoring worker and target errors')
 def ops_monitoring_worker_errors(request: Request, limit: int = 50) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_monitoring_worker_errors(request, limit=limit))
+
+
+@app.post('/ops/monitoring/targets/{target_id}/backfill', summary='Manually backfill a block range for a wallet monitoring target')
+def ops_monitoring_target_backfill(target_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Scan a historic block range and persist any native transfers matching the monitored wallet.
+
+    Body params: from_block (int), to_block (int).
+    Requires x-workspace-id header.
+    Dedupes by idempotency key — safe to call multiple times.
+    """
+    enforce_auth_rate_limit(request, 'ops_monitoring_backfill')
+    from_block = int(payload.get('from_block') or 0)
+    to_block = int(payload.get('to_block') or 0)
+    if from_block <= 0 or to_block <= 0:
+        raise HTTPException(status_code=400, detail='from_block and to_block must be positive integers')
+    return with_auth_schema_json(lambda: backfill_target_block_range(request, target_id, from_block, to_block))
 
 
 @app.get('/ops/metrics/mttd', summary='Detection MTTD metrics')
