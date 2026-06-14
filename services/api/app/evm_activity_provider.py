@@ -9,7 +9,8 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
-from urllib import parse, request
+import time
+from urllib import error as _urllib_error, parse, request
 
 
 @dataclass
@@ -267,11 +268,21 @@ class JsonRpcClient:
     def call(self, method: str, params: list[Any]) -> Any:
         payload = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params}).encode('utf-8')
         req = request.Request(self.rpc_url, data=payload, headers={'Content-Type': 'application/json'})
-        with request.urlopen(req, timeout=10) as resp:  # nosec B310
-            body = json.loads(resp.read().decode('utf-8'))
-        if body.get('error'):
-            raise RuntimeError(f"json-rpc error: {body['error']}")
-        return body.get('result')
+        backoff = 1.0
+        for attempt in range(4):
+            try:
+                with request.urlopen(req, timeout=10) as resp:  # nosec B310
+                    body = json.loads(resp.read().decode('utf-8'))
+                if body.get('error'):
+                    raise RuntimeError(f"json-rpc error: {body['error']}")
+                return body.get('result')
+            except _urllib_error.HTTPError as exc:
+                if exc.code in (429, 500, 502, 503, 504) and attempt < 3:
+                    time.sleep(backoff)
+                    backoff = min(30.0, backoff * 2)
+                    continue
+                raise
+        return None  # unreachable
 
 
 @dataclass
@@ -706,12 +717,16 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
                 logs.extend(_fetch_logs(client, target_address, chunk_from, chunk_to))
             except Exception as logs_exc:
                 _logs_fetch_status = 'failed'
-                logger.exception(
+                _http_code = getattr(logs_exc, 'code', None) if isinstance(logs_exc, _urllib_error.HTTPError) else None
+                _log_fn = logger.warning if isinstance(logs_exc, _urllib_error.HTTPError) else logger.exception
+                _log_fn(
                     'evm_logs_fetch_failed target_id=%s chain=%s from_block=%s to_block=%s '
-                    'error_type=%s error=%s action=continue_with_block_scan',
+                    'error_type=%s http_status=%s error=%s action=continue_with_block_scan',
                     target.get('id'), network, chunk_from, chunk_to,
-                    type(logs_exc).__name__, str(logs_exc)[:200],
+                    type(logs_exc).__name__, _http_code, str(logs_exc)[:200],
                 )
+                if _http_code == 429:
+                    break
 
     _transactions_inspected = 0
     _wallet_transfers_detected = 0
@@ -723,12 +738,14 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
                 block = client.call('eth_getBlockByNumber', [hex(block_number), True]) or {}
             except Exception as block_exc:
                 _failed_blocks.append(block_number)
-                logger.exception(
+                _blk_log_fn = logger.warning if isinstance(block_exc, _urllib_error.HTTPError) else logger.exception
+                _blk_log_fn(
                     'evm_block_fetch_failed target_id=%s chain=%s block_number=%s block_number_hex=%s '
-                    'from_block=%s to_block=%s error_type=%s error=%s action=continue_remaining_blocks',
+                    'from_block=%s to_block=%s error_type=%s http_status=%s error=%s action=continue_remaining_blocks',
                     target.get('id'), network, block_number, hex(block_number),
                     from_block, safe_to,
-                    type(block_exc).__name__, str(block_exc)[:200],
+                    type(block_exc).__name__, getattr(block_exc, 'code', None) if isinstance(block_exc, _urllib_error.HTTPError) else None,
+                    str(block_exc)[:200],
                 )
                 continue
             block_hash = str(block.get('hash') or '')

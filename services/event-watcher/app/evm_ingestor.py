@@ -8,7 +8,8 @@ import random
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib import request
+import time
+from urllib import error as _urllib_error, request
 
 from services.api.app.evm_activity_provider import (
     APPROVAL_TOPIC,
@@ -50,11 +51,21 @@ class EvmIngestor:
     def _rpc_call(self, method: str, params: list[Any]) -> Any:
         payload = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params}).encode('utf-8')
         req = request.Request(self.rpc_url, data=payload, headers={'Content-Type': 'application/json'})
-        with request.urlopen(req, timeout=15) as resp:  # nosec B310
-            body = json.loads(resp.read().decode('utf-8'))
-        if body.get('error'):
-            raise RuntimeError(f"json-rpc error: {body['error']}")
-        return body.get('result')
+        backoff = 2.0
+        for attempt in range(4):
+            try:
+                with request.urlopen(req, timeout=15) as resp:  # nosec B310
+                    body = json.loads(resp.read().decode('utf-8'))
+                if body.get('error'):
+                    raise RuntimeError(f"json-rpc error: {body['error']}")
+                return body.get('result')
+            except _urllib_error.HTTPError as exc:
+                if exc.code in (429, 500, 502, 503, 504) and attempt < 3:
+                    time.sleep(backoff)
+                    backoff = min(30.0, backoff * 2)
+                    continue
+                raise RuntimeError(f"rpc_http_error:{exc.code} method={method}")
+        return None  # unreachable
 
     def _watched_targets(self) -> list[dict[str, Any]]:
         with pg_connection() as connection:
@@ -337,6 +348,9 @@ class EvmIngestor:
 
     async def run_forever(self) -> None:
         retry = 1.0
+        _last_error_key: str | None = None
+        _last_error_logged_at: float = 0.0
+        _ERROR_LOG_WINDOW = 60.0
         while True:
             is_leader = await self._ensure_leader_lease()
             if not is_leader:
@@ -357,6 +371,7 @@ class EvmIngestor:
                     await self._backfill(max(0, head - self.confirmations_required), head)
                     await asyncio.sleep(self.heartbeat_seconds)
                 retry = 1.0
+                _last_error_key = None
             except asyncio.TimeoutError:
                 self._record_heartbeat()
                 continue
@@ -364,8 +379,20 @@ class EvmIngestor:
                 self.state['metrics']['ws_reconnects'] += 1
                 increment('decoda_provider_failures_total', provider='evm_websocket', error_type=type(exc).__name__)
                 self.state['degraded'] = True
+                error_key = f'{type(exc).__name__}:{str(exc)[:80]}'
                 self.state['degraded_reason'] = str(exc)[:160]
-                head = _hex_to_int(self._rpc_call('eth_blockNumber', [])) if self.rpc_url else None
+                now = time.monotonic()
+                if error_key != _last_error_key or now - _last_error_logged_at >= _ERROR_LOG_WINDOW:
+                    logger.warning(
+                        'event=evm_ingestor_error chain=%s error_type=%s error=%s retry_in=%.1fs',
+                        self.chain_network, type(exc).__name__, str(exc)[:200], min(30.0, retry),
+                    )
+                    _last_error_key = error_key
+                    _last_error_logged_at = now
+                try:
+                    head = _hex_to_int(self._rpc_call('eth_blockNumber', [])) if self.rpc_url else None
+                except Exception:
+                    head = None
                 last = int(self.state.get('last_processed_block') or max(0, (head or 0) - self.confirmations_required))
                 if head is not None and head >= last:
                     logger.warning('ws_buffer_overflow_or_disconnect -> backfill from_block=%s to_block=%s', last, head)

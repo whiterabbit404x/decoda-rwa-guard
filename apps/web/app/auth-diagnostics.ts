@@ -134,8 +134,12 @@ export function classifyAuthResponseError(
     return safeDetail ?? 'Authentication is temporarily unavailable. Please retry in a moment.';
   }
 
-  if (status === 401 && safeDetail === 'Invalid email or password.') {
-    return safeDetail;
+  if (status === 401) {
+    return safeDetail ?? 'Invalid email or password.';
+  }
+
+  if (status === 403) {
+    return safeDetail ?? `Unable to ${actionLabel}. Your account may require email verification or has been suspended.`;
   }
 
   if (status === 409) {

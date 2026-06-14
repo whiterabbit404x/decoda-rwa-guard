@@ -222,8 +222,20 @@ export async function proxyAuthRequest(request: Request, backendPath: string, me
 
   try {
     const response = await fetch(`${backendApiUrl}${backendPath}`, init);
+    if (!response.ok) {
+      console.error(JSON.stringify({
+        event: 'auth_proxy_backend_error',
+        path: backendPath,
+        status: response.status,
+      }));
+    }
     return await buildBackendResponse(response, options?.cookieAction ?? 'none');
-  } catch {
+  } catch (networkError) {
+    console.error(JSON.stringify({
+      event: 'auth_proxy_network_error',
+      path: backendPath,
+      error: networkError instanceof Error ? networkError.message : String(networkError),
+    }));
     return errorResponse(502, {
       detail: 'We could not reach the authentication service. Please try again shortly.',
       code: 'backend_unreachable',
