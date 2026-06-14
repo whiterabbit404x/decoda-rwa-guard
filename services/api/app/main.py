@@ -244,6 +244,7 @@ from services.api.app.monitoring_runner import (
     backfill_target_block_range,
     get_background_loop_health,
     get_monitoring_health,
+    inspect_target_dead_letter_state,
     list_monitoring_evidence,
     list_monitoring_heartbeats,
     list_monitoring_worker_errors,
@@ -253,6 +254,7 @@ from services.api.app.monitoring_runner import (
     monitoring_runtime_status,
     patch_monitoring_target,
     production_claim_validator,
+    recover_target_dead_letter,
     run_monitoring_cycle,
     run_monitoring_once,
     set_background_loop_health,
@@ -3323,6 +3325,27 @@ def ops_monitoring_target_backfill(target_id: str, payload: dict[str, Any], requ
     if from_block <= 0 or to_block <= 0:
         raise HTTPException(status_code=400, detail='from_block and to_block must be positive integers')
     return with_auth_schema_json(lambda: backfill_target_block_range(request, target_id, from_block, to_block))
+
+
+@app.get('/ops/monitoring/targets/{target_id}/state', summary='Inspect dead-letter and skip state for a monitoring target')
+def ops_monitoring_target_state(target_id: str, request: Request) -> dict[str, Any]:
+    """Return dead-letter status, delivery attempts, last run status, and recent telemetry.
+
+    Requires x-workspace-id header.  Read-only — does not modify any state.
+    """
+    enforce_auth_rate_limit(request, 'ops_monitoring_target_state')
+    return with_auth_schema_json(lambda: inspect_target_dead_letter_state(request, target_id))
+
+
+@app.post('/ops/monitoring/targets/{target_id}/recover-dead-letter', summary='Clear dead-letter state for a monitoring target')
+def ops_monitoring_target_recover_dead_letter(target_id: str, request: Request) -> dict[str, Any]:
+    """Reset monitoring_dead_lettered_at and delivery_attempts so the target is picked up next cycle.
+
+    Idempotent — safe to call even if the target is not currently dead-lettered.
+    Requires x-workspace-id header.
+    """
+    enforce_auth_rate_limit(request, 'ops_monitoring_recover_dead_letter')
+    return with_auth_schema_json(lambda: recover_target_dead_letter(request, target_id))
 
 
 @app.get('/ops/metrics/mttd', summary='Detection MTTD metrics')
