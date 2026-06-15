@@ -132,8 +132,8 @@ def _resolve_evm_rpc_url() -> str:
         if chain_specific:
             return chain_specific
         _chain_aliases: dict[str, tuple[str, ...]] = {
-            '1': ('ETHEREUM_EVM_RPC_URL', 'ETH_EVM_RPC_URL'),
-            '8453': ('BASE_EVM_RPC_URL',),
+            '1': ('ETHEREUM_EVM_RPC_URL', 'EVM_ETHEREUM_RPC_URL', 'ETH_EVM_RPC_URL'),
+            '8453': ('BASE_EVM_RPC_URL', 'EVM_BASE_RPC_URL'),
             '42161': ('ARBITRUM_EVM_RPC_URL', 'ARB_EVM_RPC_URL'),
         }
         for alias in _chain_aliases.get(chain_id_raw, ()):
@@ -218,9 +218,11 @@ CHAIN_MAP = {
 
 # Per-chain RPC endpoint env-var aliases. ``EVM_RPC_URL_<chain_id>`` is always
 # checked first; these named aliases are accepted for operator readability.
+# Both ``BASE_EVM_RPC_URL`` and ``EVM_BASE_RPC_URL`` are accepted so operators
+# can use either prefix convention. Same for Ethereum.
 _CHAIN_RPC_ENV_ALIASES = {
-    1: ('ETHEREUM_EVM_RPC_URL', 'ETH_EVM_RPC_URL'),
-    8453: ('BASE_EVM_RPC_URL',),
+    1: ('ETHEREUM_EVM_RPC_URL', 'EVM_ETHEREUM_RPC_URL', 'ETH_EVM_RPC_URL'),
+    8453: ('BASE_EVM_RPC_URL', 'EVM_BASE_RPC_URL'),
     42161: ('ARBITRUM_EVM_RPC_URL', 'ARB_EVM_RPC_URL'),
 }
 
