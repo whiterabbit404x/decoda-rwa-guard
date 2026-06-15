@@ -10,17 +10,86 @@ Usage:
 """
 from __future__ import annotations
 
+import os
 import sys
 from services.api.app.pilot import ensure_pilot_schema, pg_connection
+
+# Tables that must exist for sign-in to work.
+_REQUIRED_AUTH_TABLES = (
+    'users',
+    'auth_sessions',
+    'auth_tokens',
+    'workspace_members',
+    'workspaces',
+)
+
+
+def _check_auth_tables(conn) -> list[str]:
+    """Return a list of required auth tables that are missing."""
+    missing: list[str] = []
+    for table in _REQUIRED_AUTH_TABLES:
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name=%s",
+                (table,),
+            ).fetchone()
+            if row is None:
+                missing.append(table)
+        except Exception:
+            missing.append(table)
+    return missing
+
+
+def _check_env_vars() -> list[str]:
+    """Check critical environment variables. Returns list of warnings (no secrets)."""
+    warnings: list[str] = []
+    database_url = (os.getenv('DATABASE_URL') or '').strip()
+    if not database_url:
+        warnings.append('DATABASE_URL is not set — cannot connect to the production database')
+    elif database_url.startswith('sqlite'):
+        warnings.append('DATABASE_URL points to SQLite — this is a local dev database, not production')
+
+    auth_secret = (os.getenv('AUTH_TOKEN_SECRET') or '').strip()
+    if not auth_secret:
+        warnings.append('AUTH_TOKEN_SECRET is not set — session tokens cannot be signed, sign-in will fail at cookie_write_failed step')
+    elif len(auth_secret) < 32:
+        warnings.append('AUTH_TOKEN_SECRET is shorter than 32 characters — consider using a longer secret')
+
+    app_url = (os.getenv('APP_PUBLIC_URL') or os.getenv('NEXT_PUBLIC_APP_URL') or '').strip()
+    if not app_url:
+        warnings.append('APP_PUBLIC_URL is not set — cookie domain may not be set correctly for rwa.decodasecurity.com')
+    elif 'rwa.decodasecurity.com' not in app_url:
+        warnings.append(f'APP_PUBLIC_URL={app_url!r} does not contain rwa.decodasecurity.com — verify this is the correct production URL')
+
+    return warnings
 
 
 def check_user_auth_state(email: str) -> int:
     email = email.strip().lower()
     print(f'checking email={email}')
+    print()
+
+    env_warnings = _check_env_vars()
+    if env_warnings:
+        print('ENV_WARNINGS')
+        for w in env_warnings:
+            print(f'  warning={w}')
+        print()
 
     try:
         with pg_connection() as conn:
             ensure_pilot_schema(conn)
+
+            missing_tables = _check_auth_tables(conn)
+            if missing_tables:
+                print('AUTH_TABLES_MISSING')
+                for t in missing_tables:
+                    print(f'  missing_table={t}')
+                print('  action=run database migrations before attempting sign-in')
+                print()
+            else:
+                print(f'AUTH_TABLES_OK tables_checked={len(_REQUIRED_AUTH_TABLES)}')
+                print()
 
             user = conn.execute(
                 '''
@@ -57,6 +126,7 @@ def check_user_auth_state(email: str) -> int:
     print(f'  mfa_enabled={mfa_enabled}')
     print(f'  last_sign_in_at={user["last_sign_in_at"]}')
     print(f'  created_at={user["created_at"]}')
+    print()
 
     issues: list[str] = []
     if not has_password:
@@ -90,6 +160,7 @@ def check_user_auth_state(email: str) -> int:
         print('  workspace_memberships=0')
         issues.append('no_workspace: user has no workspace membership — onboarding incomplete')
 
+    print()
     if issues:
         print('SIGN_IN_BLOCKED')
         for issue in issues:

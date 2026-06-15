@@ -73,6 +73,75 @@ def _resolve_worker_enabled_env() -> None:
         os.environ.setdefault('LIVE_MODE_ENABLED', 'true')
 
 
+_BASE_CHAIN_ID = 8453
+_BASE_CHAIN_NAMES = ('base', 'base-mainnet')
+
+# Per-chain RPC validation: (chain_name, expected_chain_id, env_var_names)
+_PER_CHAIN_VALIDATIONS = [
+    ('base', _BASE_CHAIN_ID, ('EVM_RPC_URL_8453', 'BASE_EVM_RPC_URL')),
+]
+
+
+def _validate_per_chain_rpcs(logger: logging.Logger) -> None:
+    """Probe each configured per-chain RPC and warn when the returned chainId doesn't match.
+
+    Runs at worker startup so misrouted RPC URLs surface immediately in logs
+    rather than silently writing wrong-chain block numbers to telemetry.
+    """
+    from services.api.app.evm_activity_provider import probe_rpc_health
+    from urllib.parse import urlparse as _urlparse
+
+    for chain_name, expected_chain_id, env_vars in _PER_CHAIN_VALIDATIONS:
+        rpc_url = ''
+        rpc_url_env = ''
+        for env_var in env_vars:
+            value = (os.getenv(env_var) or '').strip()
+            if value:
+                rpc_url = value
+                rpc_url_env = env_var
+                break
+        if not rpc_url:
+            continue
+        try:
+            rpc_host = _urlparse(rpc_url).hostname or 'unknown'
+        except Exception:
+            rpc_host = 'unknown'
+        try:
+            health = probe_rpc_health(rpc_url)
+        except Exception as exc:
+            logger.error(
+                'startup_per_chain_rpc_probe_failed chain=%s expected_chain_id=%s '
+                'rpc_url_env=%s rpc_host=%s error=%s',
+                chain_name, expected_chain_id, rpc_url_env, rpc_host, str(exc)[:200],
+            )
+            continue
+        actual_chain_id = health.get('chain_id_int')
+        if not health.get('ok'):
+            logger.error(
+                'startup_per_chain_rpc_unhealthy chain=%s expected_chain_id=%s '
+                'rpc_url_env=%s rpc_host=%s rpc_error=%s',
+                chain_name, expected_chain_id, rpc_url_env, rpc_host,
+                health.get('error') or 'unknown',
+            )
+        elif actual_chain_id != expected_chain_id:
+            logger.error(
+                'startup_per_chain_rpc_chain_id_mismatch chain=%s expected_chain_id=%s '
+                'actual_chain_id=%s rpc_url_env=%s rpc_host=%s '
+                'action=worker_may_write_wrong_chain_telemetry '
+                'fix=set_%s_to_a_%s_mainnet_json_rpc_endpoint',
+                chain_name, expected_chain_id, actual_chain_id,
+                rpc_url_env, rpc_host,
+                rpc_url_env, chain_name,
+            )
+        else:
+            logger.info(
+                'startup_per_chain_rpc_ok chain=%s chain_id=%s rpc_url_env=%s rpc_host=%s '
+                'eth_blockNumber=%s',
+                chain_name, actual_chain_id, rpc_url_env, rpc_host,
+                health.get('block_number_int'),
+            )
+
+
 def _log_startup_provider_status(logger: logging.Logger) -> dict:
     """Emit safe startup log lines for provider configuration. Never prints secrets.
 
@@ -173,7 +242,6 @@ def _log_startup_provider_status(logger: logging.Logger) -> dict:
                 health.get('block_number_int'),
                 health.get('chain_id_int'),
             )
-            return {'rpc_health_ok': True, 'database_url_configured': db_url_configured}
         else:
             logger.error(
                 'startup_rpc_health_check status=FAILED rpc_host=%s '
@@ -190,13 +258,17 @@ def _log_startup_provider_status(logger: logging.Logger) -> dict:
                 'Fix EVM_RPC_URL connectivity in the Railway worker service environment. '
                 'No live chain telemetry will be inserted until RPC responds successfully.'
             )
-            return {'rpc_health_ok': False, 'database_url_configured': db_url_configured}
     else:
         logger.info(
             'startup_rpc_health_check status=skipped reason=EVM_RPC_URL_not_configured rpc_host=%s',
             rpc_host,
         )
-        return {'rpc_health_ok': None, 'database_url_configured': db_url_configured}
+
+    # Validate per-chain RPC endpoints at startup — Base mainnet (chain_id=8453) must serve
+    # chain 8453, not Ethereum. A misconfigured URL silently produces wrong block numbers.
+    _validate_per_chain_rpcs(logger)
+
+    return {'rpc_health_ok': rpc_health_ok, 'database_url_configured': db_url_configured}
 
 
 def main() -> int:

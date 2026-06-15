@@ -215,7 +215,7 @@ def test_block_fetch_failure_logs_exception_and_continues(monkeypatch, caplog):
         'chain_network': 'ethereum',
         'wallet_address': '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     }
-    with caplog.at_level(logging.ERROR, logger='services.api.app.evm_activity_provider'):
+    with caplog.at_level(logging.WARNING, logger='services.api.app.evm_activity_provider'):
         fetch_evm_activity(target, None, rpc_client=_FailOneRpc())
 
     log_text = '\n'.join(r.getMessage() for r in caplog.records)
