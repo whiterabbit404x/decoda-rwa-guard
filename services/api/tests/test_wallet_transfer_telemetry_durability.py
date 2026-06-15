@@ -208,26 +208,36 @@ def _run_target(outer_conn, target, dedicated_conn, *, analysis_side_effect=None
 # ---------------------------------------------------------------------------
 
 def test_wallet_transfer_persists_when_threat_analysis_raises():
+    # Fix 3 (event_processing_failed wrapper): analysis failures are now swallowed at the
+    # event level so the cursor and telemetry survive. process_monitoring_target returns
+    # normally rather than propagating analysis_unavailable.
     target = _make_target()
     dedicated = _DedicatedConn(verify_count=1)
     outer = _OuterConn(target)
 
-    with pytest.raises(RuntimeError, match='analysis_unavailable'):
-        _run_target(
-            outer,
-            target,
-            dedicated,
-            analysis_side_effect=RuntimeError('analysis_unavailable:live_engine_unavailable'),
-        )
+    _run_target(
+        outer,
+        target,
+        dedicated,
+        analysis_side_effect=RuntimeError('analysis_unavailable:live_engine_unavailable'),
+    )
 
     # The dedicated connection committed the raw transfer BEFORE analysis raised.
     assert dedicated.commit_calls >= 1, 'raw telemetry must be committed on a dedicated connection'
     tx_rows = [p for p in dedicated.telemetry_inserts if any(TX_HASH in str(x) for x in p)]
     assert tx_rows, 'wallet transfer telemetry must be inserted on the dedicated connection'
 
-    # And it must NOT live only inside the outer transaction that gets rolled back.
-    outer_tx_rows = [p for p in outer.telemetry_inserts if any(TX_HASH in str(x) for x in p)]
-    assert not outer_tx_rows, 'wallet transfer evidence must not depend on the rolled-back outer transaction'
+    # Wallet transfer must NOT be on the outer shared connection — it must live on the
+    # independently committed dedicated connection.
+    # Coverage telemetry is legitimately written to the outer connection and its
+    # payload_json includes the checkpoint string which embeds TX_HASH; exclude those
+    # rows by checking for 'coverage' in any param (idempotency key or payload).
+    outer_tx_rows = [
+        p for p in outer.telemetry_inserts
+        if any(TX_HASH in str(x) for x in p)
+        and not any('coverage' in str(x).lower() for x in p)
+    ]
+    assert not outer_tx_rows, 'wallet transfer evidence must not be duplicated on the outer connection'
 
 
 def test_wallet_transfer_committed_before_analysis_runs():
@@ -250,8 +260,8 @@ def test_wallet_transfer_committed_before_analysis_runs():
 
     dedicated.commit = _tracking_commit  # type: ignore[assignment]
 
-    with pytest.raises(RuntimeError, match='analysis_unavailable'):
-        _run_target(outer, target, dedicated, analysis_side_effect=_analysis)
+    # Fix 3: analysis failure is swallowed, process_monitoring_target returns normally.
+    _run_target(outer, target, dedicated, analysis_side_effect=_analysis)
 
     assert order, 'expected commit and analysis to be recorded'
     assert order.index('commit') < order.index('analysis'), (

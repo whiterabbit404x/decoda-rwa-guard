@@ -785,7 +785,7 @@ def test_due_base_target_is_selected_when_due_in_seconds_zero(monkeypatch):
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
 
-    def _process(_connection, target, triggered_by_user_id=None):
+    def _process(_connection, target, triggered_by_user_id=None, monitoring_run_id=None):
         processed.append(target['id'])
         return {'alerts_generated': 0, 'target_id': target['id'], 'runs': [], 'status': 'completed'}
 
@@ -852,7 +852,7 @@ def test_dead_lettered_target_excluded_from_due_target_ids(monkeypatch):
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
 
-    def _process(_connection, target, triggered_by_user_id=None):
+    def _process(_connection, target, triggered_by_user_id=None, monitoring_run_id=None):
         processed.append(target['id'])
         return {'alerts_generated': 0, 'target_id': target['id'], 'runs': [], 'status': 'completed'}
 
@@ -920,7 +920,7 @@ def test_chain_rpc_mismatch_target_does_not_prevent_base_target_processing(monke
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
 
-    def _process(_connection, target, triggered_by_user_id=None):
+    def _process(_connection, target, triggered_by_user_id=None, monitoring_run_id=None):
         if target['id'] == eth_target_id:
             raise RuntimeError('chain_rpc_mismatch: rpc_chain_id=8453 target_chain_network=ethereum')
         processed.append(target['id'])
