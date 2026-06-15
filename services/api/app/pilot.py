@@ -3383,14 +3383,19 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 _raise_graceful_auth_backend_error(exc)
                 logger.exception('signin_user failed during user lookup', extra={'step': 'fetch_user_by_email', 'email': email})
                 raise
-            if user is None or not verify_password(password, user['password_hash']):
-                logger.warning('signin_user rejected credentials', extra={'event': 'auth.signin.invalid_credentials', 'email': email})
+            if user is None:
+                logger.warning('event=auth.signin.failed reason=user_not_found status=401')
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid email or password.')
+            if not verify_password(password, user['password_hash']):
+                logger.warning('event=auth.signin.failed reason=bad_password user_id=%s status=401', str(user['id']))
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid email or password.')
             user_id = str(user['id'])
             suspension = connection.execute('SELECT suspended_at FROM users WHERE id = %s', (user_id,)).fetchone()
             if suspension and suspension.get('suspended_at'):
+                logger.warning('event=auth.signin.failed reason=account_suspended user_id=%s status=403', user_id)
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='This account is suspended.')
             if not user['email_verified_at']:
+                logger.warning('event=auth.signin.failed reason=email_unverified user_id=%s status=403', user_id)
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Verify your email before signing in.')
             if user['mfa_enabled_at']:
                 challenge_token = _create_user_token(connection, user_id, 'mfa_challenge', 10, request=request)
@@ -3442,7 +3447,7 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             connection.commit()
     except Exception as exc:
         _raise_graceful_auth_backend_error(exc)
-        logger.exception('signin_user failed during token creation', extra={'step': 'create_access_token', 'user_id': user_id})
+        logger.exception('event=auth.signin.failed reason=session_cookie_error user_id=%s', user_id, extra={'step': 'create_access_token', 'user_id': user_id})
         raise
     logger.info('signin_user succeeded', extra={'event': 'auth.signin.success', 'user_id': user_id})
     return {'access_token': access_token, 'token_type': 'bearer', 'user': hydrated_user}
