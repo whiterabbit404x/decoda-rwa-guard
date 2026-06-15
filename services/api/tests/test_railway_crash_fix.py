@@ -223,3 +223,86 @@ class TestProductionPostgresNeverTouchesSQLite:
         assert not any(postgres_url[:12] in c for c in mkdir_calls), (
             f"mkdir was called with URL-like path: {mkdir_calls}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 5. Production threat-analysis diagnostics never call SQLite dev_support
+# ---------------------------------------------------------------------------
+#
+# Root cause of the wallet-transfer telemetry loss: proxy_threat() ->
+# mark_live_payload() -> attach_dependency_diagnostics() called
+# load_service() (phase1_local SQLite). In production that raised
+# "dev_support configuration error", so live threat analysis returned None and
+# surfaced as analysis_unavailable:live_engine_unavailable, which rolled back the
+# detected wallet-transfer telemetry. attach_dependency_diagnostics must skip the
+# SQLite registry outside local/dev mode.
+
+class TestThreatDiagnosticsSkipsDevSupportInProduction:
+    def _get_main(self):
+        if str(API_ROOT) not in sys.path:
+            sys.path.insert(0, str(API_ROOT))
+        import services.api.app.main as m
+        return m
+
+    def test_attach_dependency_diagnostics_does_not_call_load_service_in_production(self, monkeypatch):
+        monkeypatch.setenv('APP_ENV', 'production')
+        monkeypatch.delenv('ENABLE_LOCAL_DEV_SUPPORT', raising=False)
+        m = self._get_main()
+        # Drive the guard deterministically (earlier tests in this file reassign the module
+        # global directly, so do not rely on the leaked value).
+        monkeypatch.setattr(m, '_is_local_dev_mode', lambda: False)
+
+        call_log: list[str] = []
+
+        def _refuse(*args, **kwargs):
+            call_log.append('load_service')
+            raise RuntimeError('dev_support configuration error: must not be used in production')
+
+        monkeypatch.setattr(m, 'load_service', _refuse)
+
+        payload = m.attach_dependency_diagnostics({'source': 'live', 'degraded': False}, 'threat_engine')
+
+        assert 'load_service' not in call_log, 'load_service (SQLite dev_support) must be skipped in production'
+        assert payload['diagnostics']['registry_status'] is None
+
+    def test_attach_dependency_diagnostics_uses_load_service_in_dev(self, monkeypatch):
+        monkeypatch.setenv('APP_ENV', 'development')
+        monkeypatch.delenv('ENABLE_LOCAL_DEV_SUPPORT', raising=False)
+        m = self._get_main()
+        monkeypatch.setattr(m, '_is_local_dev_mode', lambda: True)
+
+        seen: list[str] = []
+
+        def _fake_load_service(name):
+            seen.append(name)
+            return {'service_name': name, 'status': 'ok'}
+
+        monkeypatch.setattr(m, 'load_service', _fake_load_service)
+
+        payload = m.attach_dependency_diagnostics({'source': 'live'}, 'threat_engine')
+
+        assert seen, 'dev mode should consult the local SQLite registry'
+        assert payload['diagnostics']['registry_status'] == {'service_name': seen[0], 'status': 'ok'}
+
+    def test_mark_live_payload_does_not_crash_in_production(self, monkeypatch):
+        """The exact production crash path: proxy_threat -> mark_live_payload must not raise."""
+        monkeypatch.setenv('APP_ENV', 'production')
+        monkeypatch.delenv('ENABLE_LOCAL_DEV_SUPPORT', raising=False)
+        m = self._get_main()
+        monkeypatch.setattr(m, '_is_local_dev_mode', lambda: False)
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError(
+                'dev_support configuration error: phase1_local SQLite dev support must not be used in production'
+            )
+
+        # Any SQLite dev_support touch in production would raise; patch all of them to prove
+        # mark_live_payload no longer reaches them.
+        monkeypatch.setattr(m, 'load_service', _boom)
+        monkeypatch.setattr(m, 'upsert_service', _boom)
+        monkeypatch.setattr(m, 'replace_metrics', _boom)
+
+        result = m.mark_live_payload({'source': 'live', 'score': 1}, 'threat_engine')
+
+        assert result['source'] == 'live'
+        assert result['diagnostics']['registry_status'] is None
