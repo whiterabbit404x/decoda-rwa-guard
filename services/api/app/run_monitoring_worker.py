@@ -62,14 +62,15 @@ def _compute_next_sleep_seconds(
 
 def _resolve_worker_enabled_env() -> None:
     """
-    Honor STAGING_WORKER_ENABLED (preferred) and WORKER_ENABLED (fallback)
-    as aliases for LIVE_MODE_ENABLED so Railway staging workers start correctly
-    without requiring a separate LIVE_MODE_ENABLED variable.
+    Honor STAGING_WORKER_ENABLED, WORKER_ENABLED, and MONITORING_WORKER_ENABLED
+    as aliases for LIVE_MODE_ENABLED so Railway workers start correctly without
+    requiring a separate LIVE_MODE_ENABLED variable.
     """
     _truthy = {'1', 'true', 'yes', 'on'}
     staging_flag = (os.getenv('STAGING_WORKER_ENABLED') or '').strip().lower()
     base_flag = (os.getenv('WORKER_ENABLED') or '').strip().lower()
-    if staging_flag in _truthy or base_flag in _truthy:
+    monitoring_flag = (os.getenv('MONITORING_WORKER_ENABLED') or '').strip().lower()
+    if staging_flag in _truthy or base_flag in _truthy or monitoring_flag in _truthy:
         os.environ.setdefault('LIVE_MODE_ENABLED', 'true')
 
 
@@ -162,8 +163,9 @@ def _log_startup_provider_status(logger: logging.Logger) -> dict:
     _truthy = {'1', 'true', 'yes', 'on'}
     staging_worker_enabled = (os.getenv('STAGING_WORKER_ENABLED') or '').strip().lower() in _truthy
     base_worker_enabled = (os.getenv('WORKER_ENABLED') or '').strip().lower() in _truthy
+    monitoring_worker_enabled = (os.getenv('MONITORING_WORKER_ENABLED') or '').strip().lower() in _truthy
     live_mode_env = (os.getenv('LIVE_MODE_ENABLED') or '').strip().lower() in _truthy
-    worker_enabled = staging_worker_enabled or base_worker_enabled or live_mode_env
+    worker_enabled = staging_worker_enabled or base_worker_enabled or monitoring_worker_enabled or live_mode_env
     live_mode_active = _live_mode_enabled()
 
     # Compute the enabling reason (which env var triggered it)
@@ -171,6 +173,8 @@ def _log_startup_provider_status(logger: logging.Logger) -> dict:
         enabled_reason = 'STAGING_WORKER_ENABLED=true'
     elif base_worker_enabled:
         enabled_reason = 'WORKER_ENABLED=true'
+    elif monitoring_worker_enabled:
+        enabled_reason = 'MONITORING_WORKER_ENABLED=true'
     elif live_mode_env:
         enabled_reason = 'LIVE_MODE_ENABLED=true'
     else:
@@ -209,7 +213,7 @@ def _log_startup_provider_status(logger: logging.Logger) -> dict:
     if not worker_enabled:
         logger.warning(
             'worker_startup_DISABLED reason=no_enabling_env_var '
-            'set STAGING_WORKER_ENABLED=true or WORKER_ENABLED=true or LIVE_MODE_ENABLED=true '
+            'set STAGING_WORKER_ENABLED=true or WORKER_ENABLED=true or MONITORING_WORKER_ENABLED=true or LIVE_MODE_ENABLED=true '
             'in the Railway worker service environment'
         )
     elif not evm_rpc_configured:

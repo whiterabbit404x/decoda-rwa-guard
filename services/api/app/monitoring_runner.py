@@ -559,6 +559,95 @@ def _persist_raw_wallet_transfer_telemetry(
         return False
 
 
+def _wallet_transfer_smoke_alert(
+    *,
+    workspace_id: str,
+    user_id: str,
+    target_id: str,
+    target_name: str,
+    payload: dict[str, Any],
+    evidence_source: str,
+) -> str | None:
+    """Create a low/info alert for every live wallet_transfer_detected event.
+
+    Uses a dedicated pg_connection() so the alert is committed independently of
+    the surrounding monitoring transaction. This guarantees the alert survives even
+    when downstream threat-engine analysis raises (e.g. analysis_unavailable).
+
+    Never fires on simulator, replay, or demo evidence — only 'live' evidence
+    creates alerts through this rule. Does NOT create an incident.
+    """
+    if evidence_source != 'live':
+        return None
+    tx_hash = str(payload.get('tx_hash') or payload.get('hash') or '')
+    from_address = str(payload.get('from') or payload.get('owner') or '')
+    to_address = str(payload.get('to') or '')
+    amount_wei = str(payload.get('value') or payload.get('amount_wei') or payload.get('amount') or '0')
+    chain_id = payload.get('chain_id')
+    block_number = payload.get('block_number')
+    direction = str(payload.get('wallet_transfer_direction') or 'unknown')
+    response: dict[str, Any] = {
+        'severity': 'low',
+        'recommended_action': 'review_wallet_transfer',
+        'explanation': (
+            f'Wallet transfer detected on chain {chain_id}: '
+            f'{from_address[:10]}…→{to_address[:10]}… '
+            f'({direction}) block={block_number}'
+        ),
+        'matched_patterns': [
+            {'label': 'wallet_transfer_detected', 'rule_id': 'smoke_wallet_transfer', 'severity': 'low'}
+        ],
+        'reasons': ['wallet_transfer_detected'],
+        'source': 'live',
+        'degraded': False,
+        'evidence_source': evidence_source,
+        'tx_hash': tx_hash,
+        'from_address': from_address,
+        'to_address': to_address,
+        'amount_wei': amount_wei,
+        'chain_id': chain_id,
+        'block_number': block_number,
+    }
+    # Deduplicate on (target_id, tx_hash) — the same on-chain transaction must never
+    # produce more than one smoke alert regardless of how many times the worker polls it.
+    signature = uuid.uuid5(
+        uuid.NAMESPACE_DNS,
+        json.dumps(
+            {'target_id': target_id, 'tx_hash': tx_hash, 'rule': 'smoke_wallet_transfer'},
+            sort_keys=True,
+        ),
+    ).hex
+    analysis_run_id = str(uuid.uuid4())
+    title = f'{target_name}: wallet transfer detected (chain {chain_id})'
+    try:
+        with pg_connection() as conn:
+            alert_id = _upsert_alert(
+                conn,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                target_id=target_id,
+                analysis_run_id=analysis_run_id,
+                title=title,
+                response=response,
+                signature=signature,
+            )
+            conn.commit()
+        if alert_id:
+            logger.info(
+                'wallet_transfer_smoke_alert_created workspace_id=%s target_id=%s '
+                'alert_id=%s tx_hash=%s chain_id=%s block=%s evidence_source=%s',
+                workspace_id, target_id, alert_id, tx_hash or 'unknown',
+                chain_id, block_number, evidence_source,
+            )
+        return alert_id or None
+    except Exception:
+        logger.exception(
+            'wallet_transfer_smoke_alert_failed workspace_id=%s target_id=%s tx_hash=%s',
+            workspace_id, target_id, tx_hash or 'unknown',
+        )
+        return None
+
+
 def set_background_loop_health(
     *,
     loop_running: bool,
@@ -3201,6 +3290,16 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
                 _telem_id,
                 telemetry_evidence_source,
                 str(_wallet_transfer_persisted).lower(),
+            )
+            # Smoke-test rule: create a low/info alert for every live wallet transfer,
+            # committed on its own connection so it survives threat-engine failures.
+            _wallet_transfer_smoke_alert(
+                workspace_id=str(target['workspace_id']),
+                user_id=user_id,
+                target_id=str(target['id']),
+                target_name=str(target.get('name') or target.get('id') or ''),
+                payload=_ev_payload,
+                evidence_source=telemetry_evidence_source,
             )
         else:
             connection.execute(

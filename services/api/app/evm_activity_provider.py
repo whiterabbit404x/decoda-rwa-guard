@@ -118,7 +118,28 @@ def explain_wallet_transfer_match(monitored_wallet: str | None, tx: dict[str, An
 
 
 def _resolve_evm_rpc_url() -> str:
-    """Prefer STAGING_EVM_RPC_URL, fall back to EVM_RPC_URL."""
+    """Resolve the global EVM RPC URL for health checks and legacy single-chain deployments.
+
+    Resolution order:
+      1. EVM_RPC_URL_<chain_id>  (e.g. EVM_RPC_URL_8453 for Base when EVM_CHAIN_ID=8453)
+      2. Named chain alias       (e.g. BASE_EVM_RPC_URL when EVM_CHAIN_ID=8453)
+      3. STAGING_EVM_RPC_URL
+      4. EVM_RPC_URL
+    """
+    chain_id_raw = (os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or '').strip()
+    if chain_id_raw.isdigit():
+        chain_specific = (os.getenv(f'EVM_RPC_URL_{chain_id_raw}') or '').strip()
+        if chain_specific:
+            return chain_specific
+        _chain_aliases: dict[str, tuple[str, ...]] = {
+            '1': ('ETHEREUM_EVM_RPC_URL', 'ETH_EVM_RPC_URL'),
+            '8453': ('BASE_EVM_RPC_URL',),
+            '42161': ('ARBITRUM_EVM_RPC_URL', 'ARB_EVM_RPC_URL'),
+        }
+        for alias in _chain_aliases.get(chain_id_raw, ()):
+            value = (os.getenv(alias) or '').strip()
+            if value:
+                return value
     return (os.getenv('STAGING_EVM_RPC_URL') or os.getenv('EVM_RPC_URL') or '').strip()
 
 
