@@ -108,6 +108,18 @@ function formatConfigSource(source: unknown): string {
   }
 }
 
+type BackendHealthResult = {
+  reachable: boolean;
+  configured: boolean;
+  status?: number | null;
+  api_url?: string;
+  error_type?: string;
+  reason?: string;
+  backend_git_commit?: string | null;
+  backend_build_id?: string | null;
+  diagnostic?: string | null;
+};
+
 function DiagnosticsExpanded({
   runtimeConfig,
   loading,
@@ -117,6 +129,8 @@ function DiagnosticsExpanded({
 }) {
   const [buildInfo, setBuildInfo] = useState<BuildInfo | null>(null);
   const [buildLoading, setBuildLoading] = useState(true);
+  const [backendHealth, setBackendHealth] = useState<BackendHealthResult | null>(null);
+  const [backendHealthLoading, setBackendHealthLoading] = useState(true);
 
   useEffect(() => {
     let active = true;
@@ -138,7 +152,42 @@ function DiagnosticsExpanded({
     };
   }, []);
 
+  useEffect(() => {
+    let active = true;
+
+    fetch('/api/auth/backend-health', { cache: 'no-store' })
+      .then((res) => res.json() as Promise<BackendHealthResult>)
+      .then((data) => {
+        if (active) {
+          setBackendHealth(data);
+          setBackendHealthLoading(false);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setBackendHealth({ reachable: false, configured: false, reason: 'probe_failed' });
+          setBackendHealthLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const fmt = (value: string | null | undefined) => (value && String(value).trim() ? value : 'unavailable');
+
+  function formatBackendConnectivity() {
+    if (backendHealthLoading) return 'checking...';
+    if (!backendHealth) return 'unknown';
+    if (!backendHealth.configured) return `not configured — ${backendHealth.diagnostic ?? 'API_URL missing'}`;
+    if (backendHealth.reachable) {
+      const commit = backendHealth.backend_git_commit ? ` (${backendHealth.backend_git_commit.slice(0, 7)})` : '';
+      return `reachable${commit}`;
+    }
+    const detail = backendHealth.error_type ? ` (${backendHealth.error_type})` : backendHealth.reason ? ` (${backendHealth.reason})` : '';
+    return `unreachable${detail}`;
+  }
 
   const diagRows = [
     ['Environment', buildLoading ? 'loading...' : fmt(buildInfo?.vercelEnv)],
@@ -147,6 +196,7 @@ function DiagnosticsExpanded({
     ['Short commit SHA', buildLoading ? 'loading...' : fmt(buildInfo?.shortCommitSha ?? buildInfo?.commitSha)],
     ['Auth mode', buildLoading ? 'loading...' : fmt(buildInfo?.authMode)],
     ['API URL source', loading ? 'loading...' : maskApiUrl(runtimeConfig.apiUrl)],
+    ['API connectivity', formatBackendConnectivity()],
     ['Live mode', loading ? 'loading...' : (runtimeConfig.liveModeEnabled ? 'enabled' : 'disabled')],
     ['API timeout', loading ? 'loading...' : (runtimeConfig.apiTimeoutMs ? `${runtimeConfig.apiTimeoutMs}ms` : 'default')],
     ['Config source', loading ? 'loading...' : formatConfigSource(runtimeConfig.source)],

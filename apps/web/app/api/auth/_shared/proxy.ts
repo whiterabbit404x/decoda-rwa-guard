@@ -164,6 +164,15 @@ async function buildBackendResponse(response: Response, cookieAction: AuthCookie
   return proxyResponse;
 }
 
+function maskAuthRequestUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.protocol}//${parsed.host}/[masked]`;
+  } catch {
+    return '[masked]';
+  }
+}
+
 export async function proxyAuthRequest(request: Request, backendPath: string, method: AuthProxyMethod, options?: { requireAuth?: boolean; cookieAction?: AuthCookieAction }) {
   const runtimeConfig = getRuntimeConfig();
   const backendApiUrl = normalizeApiBaseUrl(runtimeConfig.apiUrl);
@@ -220,13 +229,18 @@ export async function proxyAuthRequest(request: Request, backendPath: string, me
     init.body = JSON.stringify(await readJsonBody(request) ?? {});
   }
 
+  const authRequestUrl = `${backendApiUrl}${backendPath}`;
+  const requestId = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+
   try {
-    const response = await fetch(`${backendApiUrl}${backendPath}`, init);
+    const response = await fetch(authRequestUrl, init);
     if (!response.ok) {
       console.error(JSON.stringify({
         event: 'auth_proxy_backend_error',
         path: backendPath,
         status: response.status,
+        request_id: requestId,
+        auth_request_url: maskAuthRequestUrl(authRequestUrl),
       }));
     }
     return await buildBackendResponse(response, options?.cookieAction ?? 'none');
@@ -235,6 +249,9 @@ export async function proxyAuthRequest(request: Request, backendPath: string, me
       event: 'auth_proxy_network_error',
       path: backendPath,
       error: networkError instanceof Error ? networkError.message : String(networkError),
+      error_type: networkError instanceof Error ? networkError.name : 'UnknownError',
+      request_id: requestId,
+      auth_request_url: maskAuthRequestUrl(authRequestUrl),
     }));
     return errorResponse(502, {
       detail: 'We could not reach the authentication service. Please try again shortly.',

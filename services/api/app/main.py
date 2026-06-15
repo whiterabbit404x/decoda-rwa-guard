@@ -1512,6 +1512,14 @@ def emit_startup_fixture_diagnostics() -> None:
             identity['database_backend'],
             identity['database_fingerprint'],
         )
+        logger.info(
+            'event=startup_auth_env database_url_configured=%s auth_token_secret_configured=%s '
+            'app_public_url=%s cors_allowed_origins=%s',
+            resolved_database_url() is not None,
+            auth_token_secret_configured(),
+            os.getenv('APP_PUBLIC_URL', 'not_set').strip() or 'not_set',
+            ','.join(ALLOWED_ORIGINS) or 'none',
+        )
     except Exception as exc:  # pragma: no cover - defensive startup guard
         logger.warning('startup fixture diagnostics emission skipped: %s', exc)
 

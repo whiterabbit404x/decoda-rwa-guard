@@ -3380,6 +3380,8 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             reason, email, status_code, _request_id, user_id or 'unknown',
         )
 
+    logger.info('event=auth_sign_in_attempt email=%s request_id=%s', email, _request_id)
+
     try:
         with pg_connection() as connection:
             ensure_pilot_schema(connection)
