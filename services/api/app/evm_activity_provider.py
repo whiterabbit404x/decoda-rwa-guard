@@ -804,60 +804,82 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
                 if _http_code in (400, 429):
                     break
 
+    # Live-tail window: when catchup_mode, also scan the most recent blocks so new
+    # transactions are detected immediately without waiting for backfill to complete.
+    live_tail_blocks = max(0, int(os.getenv('EVM_LIVE_TAIL_BLOCKS', '0')))
+    live_tail_from: int | None = None
+    if catchup_mode and live_tail_blocks > 0:
+        _lt_candidate = max(scan_ceiling + 1, safe_to - live_tail_blocks)
+        if _lt_candidate <= safe_to:
+            live_tail_from = _lt_candidate
+            logger.info(
+                'live_tail_scan_planned target_id=%s chain=%s backfill_ceiling=%s '
+                'live_tail_from=%s live_tail_to=%s live_tail_blocks=%s',
+                target.get('id'), network, scan_ceiling,
+                live_tail_from, safe_to, live_tail_blocks,
+            )
+
+    # Build list of (from, to) ranges to scan: always the backfill range, plus
+    # an optional live-tail range when in catchup_mode.
+    _scan_ranges: list[tuple[int, int]] = [(from_block, scan_ceiling)]
+    if live_tail_from is not None:
+        _scan_ranges.append((live_tail_from, safe_to))
+
     _transactions_inspected = 0
     _wallet_transfers_detected = 0
     _detected_tx_hashes: list[str] = []
     _failed_blocks: list[int] = []
-    for chunk_from, chunk_to in _iter_block_ranges(from_block, scan_ceiling, block_scan_chunk):
-        for block_number in range(chunk_from, chunk_to + 1):
-            try:
-                block = client.call('eth_getBlockByNumber', [hex(block_number), True]) or {}
-            except Exception as block_exc:
-                _failed_blocks.append(block_number)
-                logger.warning(
-                    'evm_block_fetch_failed target_id=%s chain=%s block_number=%s block_number_hex=%s '
-                    'from_block=%s to_block=%s error_type=%s http_status=%s error=%s action=continue_remaining_blocks',
-                    target.get('id'), network, block_number, hex(block_number),
-                    from_block, scan_ceiling,
-                    type(block_exc).__name__, getattr(block_exc, 'code', None) if isinstance(block_exc, _urllib_error.HTTPError) else None,
-                    str(block_exc)[:200],
-                )
-                continue
-            block_hash = str(block.get('hash') or '')
-            if block_hash and block_hash not in block_ts_cache:
-                block_ts_cache[block_hash] = _iso_from_block_ts(block.get('timestamp'))
-            txs = block.get('transactions') or []
-            for tx in txs:
-                _transactions_inspected += 1
-                tx_to = str(tx.get('to') or '').lower()
-                tx_from = str(tx.get('from') or '').lower()
-                if target_type == 'wallet' and target_address not in {tx_to, tx_from}:
+    for _range_from, _range_to in _scan_ranges:
+        for chunk_from, chunk_to in _iter_block_ranges(_range_from, _range_to, block_scan_chunk):
+            for block_number in range(chunk_from, chunk_to + 1):
+                try:
+                    block = client.call('eth_getBlockByNumber', [hex(block_number), True]) or {}
+                except Exception as block_exc:
+                    _failed_blocks.append(block_number)
+                    logger.warning(
+                        'evm_block_fetch_failed target_id=%s chain=%s block_number=%s block_number_hex=%s '
+                        'from_block=%s to_block=%s error_type=%s http_status=%s error=%s action=continue_remaining_blocks',
+                        target.get('id'), network, block_number, hex(block_number),
+                        _range_from, _range_to,
+                        type(block_exc).__name__, getattr(block_exc, 'code', None) if isinstance(block_exc, _urllib_error.HTTPError) else None,
+                        str(block_exc)[:200],
+                    )
                     continue
-                if target_type == 'contract' and tx_to != target_address:
-                    continue
-                tx_hash = str(tx.get('hash') or '')
-                observed_at = block_ts_cache.get(block_hash) or _iso_from_block_ts(block.get('timestamp'))
-                cursor_value = _event_cursor(block_number, tx_hash, None)
-                payload = _build_base_payload(
-                    target=target,
-                    network=network,
-                    chain_id=chain_id,
-                    block_number=block_number,
-                    block_hash=block_hash or tx.get('blockHash'),
-                    tx=tx,
-                    tx_hash=tx_hash,
-                    raw_reference=f'{network}:{tx_hash}',
-                )
-                payload['observed_at'] = observed_at.isoformat()
-                payload['event_type'] = 'transaction' if target_type == 'wallet' else 'contract_interaction'
-                payload['source_type'] = 'rpc_polling'
-                if target_type == 'wallet' and target_address in {tx_to, tx_from}:
-                    payload['wallet_transfer_direction'] = 'outbound' if tx_from == target_address else 'inbound'
-                    _wallet_transfers_detected += 1
-                    if tx_hash:
-                        _detected_tx_hashes.append(tx_hash)
-                kind = 'transaction' if target_type == 'wallet' else 'contract'
-                events.append(ActivityEvent(event_id=_make_event_id(str(target['id']), cursor_value, kind), kind=kind, observed_at=observed_at, ingestion_source=preferred_source, cursor=cursor_value, payload=payload))
+                block_hash = str(block.get('hash') or '')
+                if block_hash and block_hash not in block_ts_cache:
+                    block_ts_cache[block_hash] = _iso_from_block_ts(block.get('timestamp'))
+                txs = block.get('transactions') or []
+                for tx in txs:
+                    _transactions_inspected += 1
+                    tx_to = str(tx.get('to') or '').lower()
+                    tx_from = str(tx.get('from') or '').lower()
+                    if target_type == 'wallet' and target_address not in {tx_to, tx_from}:
+                        continue
+                    if target_type == 'contract' and tx_to != target_address:
+                        continue
+                    tx_hash = str(tx.get('hash') or '')
+                    observed_at = block_ts_cache.get(block_hash) or _iso_from_block_ts(block.get('timestamp'))
+                    cursor_value = _event_cursor(block_number, tx_hash, None)
+                    payload = _build_base_payload(
+                        target=target,
+                        network=network,
+                        chain_id=chain_id,
+                        block_number=block_number,
+                        block_hash=block_hash or tx.get('blockHash'),
+                        tx=tx,
+                        tx_hash=tx_hash,
+                        raw_reference=f'{network}:{tx_hash}',
+                    )
+                    payload['observed_at'] = observed_at.isoformat()
+                    payload['event_type'] = 'transaction' if target_type == 'wallet' else 'contract_interaction'
+                    payload['source_type'] = 'rpc_polling'
+                    if target_type == 'wallet' and target_address in {tx_to, tx_from}:
+                        payload['wallet_transfer_direction'] = 'outbound' if tx_from == target_address else 'inbound'
+                        _wallet_transfers_detected += 1
+                        if tx_hash:
+                            _detected_tx_hashes.append(tx_hash)
+                    kind = 'transaction' if target_type == 'wallet' else 'contract'
+                    events.append(ActivityEvent(event_id=_make_event_id(str(target['id']), cursor_value, kind), kind=kind, observed_at=observed_at, ingestion_source=preferred_source, cursor=cursor_value, payload=payload))
 
     for log in logs:
         tx_hash = str(log.get('transactionHash') or '')

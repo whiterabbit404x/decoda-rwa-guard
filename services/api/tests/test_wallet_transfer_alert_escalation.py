@@ -316,11 +316,13 @@ def test_smoke_alert_committed_before_analysis(caplog):
         patch.object(monitoring_runner, 'persist_analysis_run', MagicMock(return_value=str(uuid.uuid4()))),
         patch.object(monitoring_runner, '_load_checkpoint', return_value=0),
         patch.object(monitoring_runner, '_process_single_event', side_effect=_analysis_with_tracking),
+        patch.object(monitoring_runner, '_persist_detection_evaluation_checkpoint', return_value=None),
     ):
-        with pytest.raises(RuntimeError, match='analysis_unavailable'):
-            monitoring_runner.process_monitoring_target(outer_stub, target)
+        # Since Fix 3 (event_processing_failed wrapper), analysis failures are swallowed
+        # so the cursor and telemetry survive. process_monitoring_target now returns normally.
+        monitoring_runner.process_monitoring_target(outer_stub, target)
 
-    assert 'smoke_alert_commit' in order, 'smoke alert commit must fire'
+    assert 'smoke_alert_commit' in order, 'smoke alert commit must fire before analysis raises'
     assert 'analysis' in order, 'analysis must fire'
     assert order.index('smoke_alert_commit') < order.index('analysis'), (
         f'smoke alert commit must precede analysis; order={order}'

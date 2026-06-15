@@ -2635,7 +2635,7 @@ def _upsert_alert(
             source_service, source, summary, payload, matched_patterns, reasons, recommended_action,
             degraded, dedupe_signature, detection_id, occurrence_count, first_seen_at, last_seen_at, created_at, updated_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'open', %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s::uuid, 1, NOW(), NOW(), NOW(), NOW())
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'open', %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s, %s::uuid, 1, NOW(), NOW(), NOW(), NOW())
         ''',
         (
             alert_id,
@@ -3070,11 +3070,38 @@ def _persist_detection_evaluation_checkpoint(
     )
 
 
-def process_monitoring_target(connection: Any, target: dict[str, Any], *, triggered_by_user_id: str | None = None) -> dict[str, Any]:
+def process_monitoring_target(
+    connection: Any,
+    target: dict[str, Any],
+    *,
+    triggered_by_user_id: str | None = None,
+    monitoring_run_id: str | None = None,
+) -> dict[str, Any]:
     workspace_row = connection.execute('SELECT id, name FROM workspaces WHERE id = %s', (target['workspace_id'],)).fetchone() or {'id': target['workspace_id'], 'name': 'Workspace'}
     workspace = _json_safe_value(dict(workspace_row))
     user_id = triggered_by_user_id or str(target.get('updated_by_user_id') or target.get('created_by_user_id'))
-    monitoring_run_id = str(uuid.uuid4())
+    if monitoring_run_id is None:
+        monitoring_run_id = str(uuid.uuid4())
+        connection.execute(
+            '''
+            INSERT INTO monitoring_runs (
+                id, workspace_id, started_at, status, trigger_type,
+                systems_checked_count, assets_checked_count, detections_created_count,
+                alerts_created_count, telemetry_records_seen_count, notes
+            )
+            VALUES (%s::uuid, %s::uuid, NOW(), 'running', %s, 0, 0, 0, 0, 0, %s)
+            ''',
+            (
+                monitoring_run_id,
+                str(target['workspace_id']),
+                'manual' if triggered_by_user_id else 'worker_direct',
+                f'target_id={target.get("id")}',
+            ),
+        )
+    logger.info(
+        'monitoring_run_bound target_id=%s workspace_id=%s monitoring_run_id=%s',
+        target.get('id'), target.get('workspace_id'), monitoring_run_id,
+    )
     monitoring_path = 'manual_run_once' if triggered_by_user_id else 'worker'
     checkpoint = _parse_ts(target.get('monitoring_checkpoint_at') or target.get('last_checked_at'))
     chain = str(target.get('chain_network') or os.getenv('EVM_CHAIN_NETWORK', 'ethereum')).strip().lower()
@@ -3324,15 +3351,32 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
                     telemetry_idempotency_key,
                 ),
             )
-        processed = _process_single_event(
-            connection,
-            target=target,
-            workspace=workspace,
-            user_id=user_id,
-            monitoring_run_id=monitoring_run_id,
-            event=event,
-            monitoring_path=monitoring_path,
-        )
+        try:
+            processed = _process_single_event(
+                connection,
+                target=target,
+                workspace=workspace,
+                user_id=user_id,
+                monitoring_run_id=monitoring_run_id,
+                event=event,
+                monitoring_path=monitoring_path,
+            )
+        except Exception as _single_event_exc:
+            _tx_hash_for_log = str(_ev_payload.get('tx_hash') or _ev_payload.get('hash') or 'unknown')
+            logger.warning(
+                'event_processing_failed target_id=%s tx_hash=%s monitoring_run_id=%s '
+                'error=%s action=skip_event_continue_cursor',
+                target.get('id'), _tx_hash_for_log, monitoring_run_id,
+                str(_single_event_exc)[:300],
+            )
+            processed = {
+                'analysis_run_id': str(uuid.uuid4()),
+                'monitoring_state': 'event_error',
+                'alert_id': None,
+                'incident_id': None,
+                'detection_id': None,
+                'protected_asset_coverage_record': None,
+            }
         analysis_run_id = str(processed['analysis_run_id'])
         run_ids.append(analysis_run_id)
         event_state = str(processed.get('monitoring_state') or 'real_event_no_anomaly')
@@ -3378,6 +3422,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     # Without this, empty scans leave the checkpoint unchanged and every poll
     # repeats the same replay window instead of scanning forward through new blocks.
     _scan_top = int(provider_result.latest_block or 0)
+    _checkpoint_before = checkpoint_cursor
     if 0 < _scan_top <= 500_000_000:
         latest_processed_block = max(latest_processed_block, _scan_top)
         _cursor_block = int((checkpoint_cursor or '0').split(':')[0] or '0')
@@ -3385,14 +3430,19 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             checkpoint_cursor = f"{_scan_top}:checkpoint:-1"
     logger.info(
         'scan_cursor_persist target_id=%s chain=%s previous_cursor=%s '
-        'from_block=%s to_block=%s blocks_scanned=see_evm_block_scan_summary '
-        'latest_processed_block=%s persisted_cursor=%s',
+        'checkpoint_before=%s checkpoint_after=%s '
+        'latest_block=%s from_block=%s to_block=%s blocks_scanned=see_evm_block_scan_summary '
+        'latest_processed_block=%s persisted_cursor=%s checked=%s',
         target.get('id'), chain,
         target.get('monitoring_checkpoint_cursor') or 'none',
-        target.get('monitoring_checkpoint_cursor', '').split(':')[0] if target.get('monitoring_checkpoint_cursor') else 'none',
+        _checkpoint_before or 'none',
+        checkpoint_cursor or 'none',
+        _scan_top or 0,
+        (target.get('monitoring_checkpoint_cursor') or '').split(':')[0] or 'none',
         _scan_top or 'unavailable',
         latest_processed_block,
         checkpoint_cursor or 'none',
+        1,
     )
     logger.info(
         'polling_cycle_summary target_id=%s wallet_address=%s latest_block=%s '
@@ -3619,31 +3669,29 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     )
     stale_open_alerts_closed = 0
     if provider_result.mode in {'live', 'hybrid'} and live_source_eligible and provider_result.status in {'live', 'no_evidence'}:
-        stale_open_alerts_closed = int(
-            connection.execute(
-                '''
-                UPDATE alerts
-                SET status = 'resolved',
-                    resolution_note = %s,
-                    resolved_at = NOW(),
-                    updated_at = NOW()
-                WHERE workspace_id = %s::uuid
-                  AND target_id = %s::uuid
-                  AND status IN ('open', 'acknowledged', 'investigating')
-                  AND COALESCE(alert_type, '') <> 'monitoring_proof'
-                  AND (
-                        last_seen_at IS NULL
-                        OR last_seen_at < NOW() - INTERVAL '30 seconds'
-                  )
-                ''',
-                (
-                    'Auto-resolved by monitoring worker: no current evidence-linked threat signal in latest evaluation.',
-                    str(target['workspace_id']),
-                    str(target['id']),
-                ),
-            ).rowcount
-            or 0
+        _stale_result = connection.execute(
+            '''
+            UPDATE alerts
+            SET status = 'resolved',
+                resolution_note = %s,
+                resolved_at = NOW(),
+                updated_at = NOW()
+            WHERE workspace_id = %s::uuid
+              AND target_id = %s::uuid
+              AND status IN ('open', 'acknowledged', 'investigating')
+              AND COALESCE(alert_type, '') <> 'monitoring_proof'
+              AND (
+                    last_seen_at IS NULL
+                    OR last_seen_at < NOW() - INTERVAL '30 seconds'
+              )
+            ''',
+            (
+                'Auto-resolved by monitoring worker: no current evidence-linked threat signal in latest evaluation.',
+                str(target['workspace_id']),
+                str(target['id']),
+            ),
         )
+        stale_open_alerts_closed = int(getattr(_stale_result, 'rowcount', 0) or 0)
     logger.info('checked target %s %s status=%s runs=%s alerts=%s incidents=%s', target['id'], target.get('name') or 'unknown', last_status, len(run_ids), alerts_generated, incidents_created)
     latest_telemetry_row = connection.execute(
         '''
@@ -4732,7 +4780,11 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                         'UPDATE targets SET monitoring_claimed_by = %s, monitoring_claimed_at = NOW() WHERE id = %s AND workspace_id = %s',
                         (worker_name, target['id'], target['workspace_id']),
                     )
-                    result = process_monitoring_target(connection, target)
+                    result = process_monitoring_target(
+                        connection,
+                        target,
+                        monitoring_run_id=workspace_run_ids.get(workspace_id),
+                    )
                 monitored_system_id = due_system_ids.get(str(target['id']))
                 if monitored_system_id:
                     runtime_status, freshness_status, confidence_status, coverage_reason = _derive_system_runtime_state(
@@ -4790,6 +4842,15 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                                     monitored_system_id, str(target['workspace_id']),
                                 )
                 connection.execute("UPDATE monitoring_polls SET poll_finished_at = NOW(), status = %s, error_message = NULL WHERE id = %s::uuid", ('completed', poll_id))
+                logger.info(
+                    'poll_completed target_id=%s poll_id=%s checked=1 '
+                    'alerts=%s detections=%s events_ingested=%s monitoring_run_id=%s',
+                    target.get('id'), poll_id,
+                    result.get('alerts_generated', 0),
+                    result.get('detections_created', 0),
+                    result.get('events_ingested', 0),
+                    result.get('monitoring_run_id'),
+                )
                 alerts_generated += int(result['alerts_generated'])
                 if workspace_id:
                     workspace_systems_checked[workspace_id] += 1
