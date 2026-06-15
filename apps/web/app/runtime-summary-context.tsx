@@ -45,6 +45,7 @@ const REASON_CODE_MESSAGES: Record<string, string> = {
   no_live_evidence: 'No live evidence has been persisted yet. Trigger and validate a real detection path.',
   live_worker_not_running: 'The monitoring worker is not running. Deploy the worker service with WORKER_ENABLED=true and EVM_RPC_URL set.',
   stale_heartbeat: 'Worker heartbeat is stale. The monitoring worker may have stopped or lost its database connection.',
+  targets_blocked: 'The monitoring worker is alive, but one or more targets are blocked (dead-lettered) and are not being polled. Recover the affected target(s) to resume live coverage.',
   no_fresh_live_coverage_telemetry: 'Worker is running but has not received live chain data. Check EVM_RPC_URL connectivity in the worker service.',
   runtime_contradiction_asset_monitoring_attached_but_no_monitored_systems: 'Assets are registered, but monitoring is not attached to any running systems.',
   runtime_contradiction_asset_count_mismatch_runtime_vs_registry: 'Asset counts are out of sync between registry and runtime.',
