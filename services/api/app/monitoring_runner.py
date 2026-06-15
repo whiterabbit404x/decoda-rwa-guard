@@ -74,6 +74,15 @@ MONITORING_DUE_SELECTION_BACKFILL_MIN_AGE_SECONDS = max(
     30,
     int(os.getenv('MONITORING_DUE_SELECTION_BACKFILL_MIN_AGE_SECONDS', '60')),
 )
+# Fast self-healing for dead-lettered targets: a target that hit the delivery-attempt
+# ceiling is retried after this many seconds (backoff) instead of staying blocked for
+# MONITORING_DEAD_LETTER_RECOVERY_HOURS. This keeps a valid target that failed on a
+# transient error (e.g. an RPC blip) from being silently excluded from the worker loop
+# for a full day, while still providing backoff so a genuinely broken target is not hot-looped.
+MONITORING_DEAD_LETTER_RETRY_SECONDS = max(
+    60,
+    int(os.getenv('MONITORING_DEAD_LETTER_RETRY_SECONDS', '600')),
+)
 
 logger = logging.getLogger(__name__)
 
@@ -3913,6 +3922,46 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             )
         except Exception:
             logger.warning('dead_letter_auto_recovery_failed recovery_hours=%s', _dead_letter_recovery_hours)
+        # Fast self-healing: retry dead-lettered targets after a short backoff so a valid
+        # target that failed on a transient error re-enters normal due-selection promptly
+        # instead of waiting a full MONITORING_DEAD_LETTER_RECOVERY_HOURS window. This is the
+        # canonical recovery path; it does NOT depend on the backfill cooldown, so a target
+        # blocked by backfill cooldown can still be recovered and live-polled normally.
+        _dead_letter_retry_seconds = MONITORING_DEAD_LETTER_RETRY_SECONDS
+        try:
+            _recovered_rows = connection.execute(
+                f"""
+                UPDATE targets
+                SET monitoring_dead_lettered_at = NULL,
+                    monitoring_delivery_attempts = 0,
+                    monitoring_claimed_by = NULL,
+                    monitoring_claimed_at = NULL,
+                    monitoring_lease_token = NULL,
+                    monitoring_lease_expires_at = NULL,
+                    last_run_status = 'recovered',
+                    updated_at = NOW()
+                WHERE monitoring_dead_lettered_at IS NOT NULL
+                  AND monitoring_dead_lettered_at < NOW() - (%s * INTERVAL '1 second')
+                  AND deleted_at IS NULL
+                  AND COALESCE(enabled, FALSE) = TRUE
+                  AND COALESCE(monitoring_enabled, FALSE) = TRUE
+                RETURNING id, workspace_id
+                """,
+                (_dead_letter_retry_seconds,),
+            ).fetchall()
+            for _rec in (_recovered_rows or []):
+                _rec_row = dict(_rec)
+                logger.info(
+                    'dead_letter_fast_recovery target_id=%s workspace_id=%s '
+                    'retry_after_seconds=%s action=recovered_for_retry',
+                    _rec_row.get('id'),
+                    _rec_row.get('workspace_id'),
+                    _dead_letter_retry_seconds,
+                )
+        except Exception:
+            logger.warning(
+                'dead_letter_fast_recovery_failed retry_seconds=%s', _dead_letter_retry_seconds
+            )
         candidate_systems = connection.execute(
             '''
             SELECT ms.id AS monitored_system_id,
@@ -4184,6 +4233,13 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 or not bool(system.get('is_active'))
             ):
                 continue
+            # Dead-lettered targets are excluded by the FOR UPDATE claim query, so they can
+            # never be claimed via backfill. Picking one as the backfill candidate would burn
+            # the per-workspace backfill cooldown without ever checking a target, permanently
+            # starving recovery. Skip them here — the dead-letter fast-recovery path above is
+            # responsible for returning them to normal due-selection.
+            if system.get('monitoring_dead_lettered_at') is not None:
+                continue
             parsed_checked = _parse_ts(system.get('last_checked_at'))
             if parsed_checked is None:
                 continue
@@ -4267,6 +4323,52 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         )
         if backfill_executed > 0 and fallback_target_id in skipped_not_due_target_ids:
             effective_skipped_not_due = max(0, skipped_not_due - 1)
+        # Per-target due-selection diagnostics: emit one truthful line per candidate so the
+        # exact reason a target is or is not processed this cycle is visible in worker logs.
+        # backfill appended fallback_target_id to due_target_ids, so distinguish it from the
+        # live-poll set explicitly.
+        _live_poll_id_set = {str(item) for item in due_target_ids}
+        _backfill_selected_id = str(fallback_target_id) if backfill_executed > 0 else ''
+        if _backfill_selected_id:
+            _live_poll_id_set.discard(_backfill_selected_id)
+        for row in candidate_systems:
+            system = dict(row)
+            _tid = str(system.get('target_id') or '').strip()
+            _wsid = str(system.get('workspace_id') or '').strip()
+            _dead_lettered = system.get('monitoring_dead_lettered_at') is not None
+            _selected_for_live_poll = _tid in _live_poll_id_set
+            _selected_for_backfill = bool(_backfill_selected_id) and _tid == _backfill_selected_id
+            _last_backfill = _LAST_MONITORING_DUE_SELECTION_BACKFILL_AT.get(_wsid)
+            _cooldown_until = (
+                (_last_backfill + timedelta(seconds=backfill_cooldown_seconds)).isoformat()
+                if _last_backfill is not None
+                else None
+            )
+            _blocked_reason: str | None = None
+            if _selected_for_live_poll or _selected_for_backfill:
+                _blocked_reason = None
+            elif _dead_lettered:
+                _blocked_reason = 'dead_lettered'
+            elif not bool(system.get('monitored_system_enabled')) or not bool(system.get('monitoring_enabled')) or not bool(system.get('enabled')):
+                _blocked_reason = 'disabled'
+            elif not bool(system.get('is_active')):
+                _blocked_reason = 'inactive'
+            elif _tid in skipped_not_due_target_ids:
+                _blocked_reason = 'not_due'
+            else:
+                _blocked_reason = 'not_selected'
+            logger.info(
+                'monitoring target-selection target_id=%s workspace_id=%s '
+                'selected_for_live_poll=%s selected_for_backfill=%s dead_lettered=%s '
+                'blocked_reason=%s cooldown_until=%s',
+                _tid,
+                _wsid,
+                _selected_for_live_poll,
+                _selected_for_backfill,
+                _dead_lettered,
+                _blocked_reason,
+                _cooldown_until,
+            )
         due_targets = []
         if due_target_ids:
             due_target_id_set = {str(item) for item in due_target_ids}
@@ -6371,6 +6473,29 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     error_code='runtime_optional_query_failed',
                 )
                 broken_targets = {'c': 0}
+            _mark_query_checkpoint('count_dead_lettered_targets')
+            try:
+                dead_lettered_targets = connection.execute(
+                    f'''
+                    SELECT COUNT(*) AS c
+                    FROM targets t
+                    WHERE t.deleted_at IS NULL
+                      AND t.enabled = TRUE
+                      AND COALESCE(t.monitoring_enabled, FALSE) = TRUE
+                      AND t.monitoring_dead_lettered_at IS NOT NULL
+                      {target_workspace_filter}
+                    ''',
+                    scoped_params,
+                ).fetchone()
+            except Exception as exc:
+                _record_optional_query_failure(
+                    exc=exc,
+                    checkpoint_label='count_dead_lettered_targets',
+                    impacted_fields=['dead_lettered_targets'],
+                    reason_code='optional_table_unavailable',
+                    error_code='runtime_optional_query_failed',
+                )
+                dead_lettered_targets = {'c': 0}
             summary_cache_key = f'workspace:{workspace_id}' if workspace_id else None
             cached_workspace_summary = RUNTIME_STATUS_SUMMARY_CACHE.get(summary_cache_key) if summary_cache_key else None
             summary_cache_valid = False
@@ -6932,12 +7057,18 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             and detection_eval_freshness <= max(900, MONITOR_POLL_INTERVAL_SECONDS * 10)
         )
         detection_pipeline_checkpoint_at = latest_detection_at or latest_detection_evaluation_at
+        # worker_alive is derived strictly from worker heartbeat freshness. A fresh heartbeat
+        # proves the worker/service is alive even if no target was polled this cycle (e.g. every
+        # target is dead-lettered/blocked). Target-level blockage must NOT be reported as
+        # "worker not running" — it surfaces separately as a degraded/blocked target reason.
         runner_alive = bool(health.get('worker_running')) or not stale_heartbeat
+        worker_alive = runner_alive
+        dead_lettered_count = int((dead_lettered_targets or {}).get('c') or 0) if 'dead_lettered_targets' in locals() else 0
         has_monitorable_targets = healthy_enabled_targets_count > 0
         has_any_monitored_rows = len(monitored_rows) > 0
         if healthy_enabled_targets_count == 0 and len(monitored_rows) == 0:
             monitoring_status = 'offline'
-        elif not runner_alive or health.get('last_error') or health.get('degraded') or stale_heartbeat or int((broken_targets or {}).get('c') or 0) > 0:
+        elif not runner_alive or health.get('last_error') or health.get('degraded') or stale_heartbeat or int((broken_targets or {}).get('c') or 0) > 0 or dead_lettered_count > 0:
             monitoring_status = 'degraded'
         elif evidence_freshness is None or evidence_freshness > max(900, MONITOR_POLL_INTERVAL_SECONDS * 10):
             monitoring_status = 'idle'
@@ -6956,16 +7087,19 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             runtime_status = 'Offline'
         elif health.get('last_error'):
             runtime_status = 'Error'
-        elif health.get('degraded') or degraded_reason or stale_heartbeat or int((broken_targets or {}).get('c') or 0) > 0:
+        elif health.get('degraded') or degraded_reason or stale_heartbeat or int((broken_targets or {}).get('c') or 0) > 0 or dead_lettered_count > 0:
             runtime_status = 'Degraded'
             _stale_detail = (
                 'live_worker_not_running'
                 if stale_heartbeat and not runner_alive and enabled_system_count > 0
                 else ('stale_heartbeat' if stale_heartbeat else None)
             )
+            # Dead-lettered/blocked targets are a target-level condition, not a worker outage.
+            # Only attribute to the worker when the heartbeat is actually stale; otherwise the
+            # truthful reason is that the target(s) are blocked while the worker is alive.
             degraded_reason = degraded_reason or (
                 'invalid_enabled_targets' if int((broken_targets or {}).get('c') or 0) > 0
-                else _stale_detail
+                else (_stale_detail or ('targets_blocked' if dead_lettered_count > 0 else None))
             )
         elif evidence_freshness is None or evidence_freshness > max(900, MONITOR_POLL_INTERVAL_SECONDS * 10):
             runtime_status = 'Idle'
@@ -8260,6 +8394,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'coverage_receipts_last_at': live_coverage_receipts_workspace_latest.isoformat() if live_coverage_receipts_workspace_latest else None,
             'coverage_receipts_workspace_count': int(live_coverage_receipts_persisted_count),
             'stale_heartbeat': stale_heartbeat,
+            'worker_alive': bool(worker_alive),
+            'dead_lettered_targets': dead_lettered_count,
             'provider_degraded_flag': provider_degraded_or_unreachable,
             'telemetry_kind': telemetry_kind,
             'last_detection_at': runtime_last_detection_at.isoformat() if runtime_last_detection_at else None,

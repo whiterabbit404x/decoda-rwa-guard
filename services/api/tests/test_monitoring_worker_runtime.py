@@ -9,6 +9,8 @@ from services.api.app import monitoring_runner
 from services.api.app import pilot
 from services.api.app import run_monitoring_worker
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
 
 class _Result:
     def __init__(self, *, rows=None, row=None):
@@ -61,6 +63,8 @@ class _FakeConnection:
                     'enabled': target.get('enabled', True),
                     'is_active': target.get('is_active', True),
                     'created_at': target.get('created_at'),
+                    'monitoring_dead_lettered_at': target.get('monitoring_dead_lettered_at'),
+                    'chain_network': target.get('chain_network'),
                 }
                 for target in self.due_targets
             ]
@@ -1983,3 +1987,168 @@ def test_startup_log_returns_database_url_configured_flag(monkeypatch, caplog) -
     assert result['database_url_configured'] is False
     log_text = '\n'.join(r.getMessage() for r in caplog.records)
     assert 'database_url_configured=False' in log_text
+
+
+# ---------------------------------------------------------------------------
+# Dead-letter fast recovery + per-target due-selection diagnostics
+# (regression coverage for the Base target that stayed skipped_dead_lettered=1)
+# ---------------------------------------------------------------------------
+
+_E785_TARGET_ID = 'e7851a52-8fb1-48cd-84a3-d033f591c5dd'
+_E785_WORKSPACE_ID = '1155f479-3e5b-4d90-be6c-fd6c1d6b957d'
+
+
+def test_dead_letter_fast_recovery_constant_and_default():
+    """The fast-retry window must exist, be env-overridable, and floor at 60s."""
+    assert hasattr(monitoring_runner, 'MONITORING_DEAD_LETTER_RETRY_SECONDS')
+    assert monitoring_runner.MONITORING_DEAD_LETTER_RETRY_SECONDS >= 60
+
+
+def test_dead_letter_fast_recovery_sql_present_and_decoupled_from_backfill():
+    """The cycle must run a short-backoff dead-letter recovery UPDATE that is
+    independent of the backfill cooldown, so a target blocked by backfill cooldown
+    can still be recovered and live-polled normally."""
+    content = (REPO_ROOT / 'services/api/app/monitoring_runner.py').read_text(encoding='utf-8')
+    assert 'dead_letter_fast_recovery' in content
+    assert 'MONITORING_DEAD_LETTER_RETRY_SECONDS' in content
+    # Recovery is gated on the dead-letter timestamp, not on _LAST_..._BACKFILL_AT.
+    assert "monitoring_dead_lettered_at < NOW() - (%s * INTERVAL '1 second')" in content
+
+
+def _make_basic_cycle_env(monkeypatch, connection):
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+
+
+def test_per_target_diagnostics_logged_for_live_and_dead_lettered(monkeypatch, caplog):
+    """Task 6: one truthful per-target line carrying selected_for_live_poll,
+    selected_for_backfill, dead_lettered, blocked_reason and cooldown_until."""
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': _E785_TARGET_ID,
+            'name': 'Base wallet target',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': _E785_WORKSPACE_ID,
+            'chain_network': 'base',
+            'last_checked_at': None,  # never checked => due now (due_in_seconds=0)
+            'monitoring_interval_seconds': 30,
+            'monitoring_dead_lettered_at': None,
+            'created_at': now,
+        },
+        {
+            'id': 'dead-target',
+            'name': 'Dead target',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': _E785_WORKSPACE_ID,
+            'chain_network': 'base',
+            'last_checked_at': now - timedelta(hours=2),
+            'monitoring_interval_seconds': 30,
+            'monitoring_dead_lettered_at': now - timedelta(minutes=1),
+            'created_at': now,
+        },
+    ]
+    connection = _FakeConnection(due_targets)
+    _make_basic_cycle_env(monkeypatch, connection)
+    monkeypatch.setattr(
+        monitoring_runner,
+        'process_monitoring_target',
+        lambda *_a, **_k: {'alerts_generated': 0, 'status': 'completed'},
+    )
+
+    with caplog.at_level('INFO'):
+        summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10)
+
+    # The valid Base target with due_in_seconds=0 becomes effective_due_count=1 / checked=1.
+    assert summary['effective_due_count'] == 1
+    assert summary['checked'] == 1
+
+    live_line = next(
+        (m for m in caplog.messages if 'monitoring target-selection' in m and _E785_TARGET_ID in m),
+        None,
+    )
+    assert live_line is not None
+    assert 'selected_for_live_poll=True' in live_line
+    assert 'selected_for_backfill=False' in live_line
+    assert 'dead_lettered=False' in live_line
+    assert 'blocked_reason=None' in live_line
+    assert 'cooldown_until=' in live_line
+
+    dead_line = next(
+        (m for m in caplog.messages if 'monitoring target-selection' in m and 'target_id=dead-target' in m),
+        None,
+    )
+    assert dead_line is not None
+    assert 'selected_for_live_poll=False' in dead_line
+    assert 'dead_lettered=True' in dead_line
+    assert 'blocked_reason=dead_lettered' in dead_line
+
+
+def test_dead_lettered_only_target_does_not_burn_backfill_cooldown(monkeypatch, caplog):
+    """Tasks 4/5: when the sole candidate is dead-lettered it must not be picked as the
+    backfill fallback (the claim query excludes it anyway). Backfill reports
+    missing-candidate, never blocked_by_cooldown, so the cooldown is never consumed and
+    normal recovery is not starved."""
+    now = datetime.now(timezone.utc)
+    monitoring_runner._LAST_MONITORING_DUE_SELECTION_BACKFILL_AT.pop(_E785_WORKSPACE_ID, None)
+    due_targets = [
+        {
+            'id': _E785_TARGET_ID,
+            'name': 'Base wallet target',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': _E785_WORKSPACE_ID,
+            'chain_network': 'base',
+            'last_checked_at': now - timedelta(hours=3),
+            'monitoring_interval_seconds': 30,
+            'monitoring_dead_lettered_at': now - timedelta(minutes=1),
+            'created_at': now,
+        }
+    ]
+    connection = _FakeConnection(due_targets)
+    _make_basic_cycle_env(monkeypatch, connection)
+    monkeypatch.setattr(
+        monitoring_runner,
+        'process_monitoring_target',
+        lambda *_a, **_k: {'alerts_generated': 0, 'status': 'completed'},
+    )
+
+    with caplog.at_level('INFO'):
+        monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10)
+
+    summary_line = next((m for m in caplog.messages if 'monitoring cycle summary' in m), None)
+    assert summary_line is not None
+    assert 'skipped_dead_lettered=1' in summary_line
+    assert 'backfill_blocked_by_cooldown=0' in summary_line
+    # The dead-lettered target was excluded from the backfill fallback candidate.
+    assert _E785_WORKSPACE_ID not in monitoring_runner._LAST_MONITORING_DUE_SELECTION_BACKFILL_AT
+
+
+def test_status_payload_exposes_worker_alive_and_dead_lettered_targets():
+    """Task 7: the status surface must carry worker_alive (heartbeat-derived) and a
+    dead_lettered_targets count, and attribute a blocked target to 'targets_blocked'
+    rather than worker_not_running when the heartbeat is fresh."""
+    content = (REPO_ROOT / 'services/api/app/monitoring_runner.py').read_text(encoding='utf-8')
+    assert "'worker_alive': bool(worker_alive)" in content
+    assert "'dead_lettered_targets': dead_lettered_count" in content
+    assert "'targets_blocked'" in content
+    # worker_not_running must remain gated on a stale heartbeat, never on blocked targets.
+    assert (
+        "'live_worker_not_running'\n"
+        "                if stale_heartbeat and not runner_alive and enabled_system_count > 0"
+    ) in content
+
+
+def test_frontend_maps_targets_blocked_reason_code():
+    """The banner copy for targets_blocked must be truthful and not claim the worker is down."""
+    fe = (REPO_ROOT / 'apps/web/app/runtime-summary-context.tsx').read_text(encoding='utf-8')
+    assert 'targets_blocked:' in fe
+    line = next(l for l in fe.splitlines() if l.strip().startswith('targets_blocked:'))
+    assert 'alive' in line.lower()
+    assert 'block' in line.lower()
