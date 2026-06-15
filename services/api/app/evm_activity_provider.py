@@ -682,20 +682,41 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     else:
         # Continue from the persisted cursor; replay_blocks of overlap guards against reorgs.
         from_block = max(0, last_block - replay_blocks)
+
+    # Cap blocks scanned per cycle to avoid overwhelming RPCs during catch-up
+    # (e.g. after downtime a worker can be 60k+ blocks behind on Base).
+    # Initial backfill (no cursor) is bounded by safe_backfill_window (≤2000 for Base).
+    # Cursor-based catch-up could be unbounded, so we cap it here and advance the
+    # cursor incrementally each cycle until fully caught up.
+    _CHAIN_MAX_BLOCKS_PER_CYCLE: dict[str, int] = {'base': 1000, 'base-mainnet': 1000}
+    max_blocks_per_cycle: int = max(
+        block_scan_chunk,
+        int(os.getenv('MAX_BLOCKS_PER_CYCLE', str(_CHAIN_MAX_BLOCKS_PER_CYCLE.get(network, 5000)))),
+    )
+    if last_block is not None:
+        scan_ceiling = min(from_block + max_blocks_per_cycle - 1, safe_to)
+    else:
+        scan_ceiling = safe_to
+    catchup_mode: bool = last_block is not None and scan_ceiling < safe_to
+    blocks_deferred: int = max(0, safe_to - scan_ceiling)
+
     logger.info(
         'evm_block_scan_start target_id=%s chain=%s monitored_wallet=%s '
         'latest_block_hex=%s latest_block_decimal=%s previous_cursor=%s '
         'repaired_cursor=%s from_block=%s to_block=%s blocks_to_scan=%s '
-        'safe_backfill_window=%s',
+        'safe_backfill_window=%s catchup_mode=%s max_blocks_per_cycle=%s '
+        'planned_from_block=%s planned_to_block=%s blocks_deferred=%s',
         target.get('id'), network,
         target_address if target_type == 'wallet' else 'n/a',
         latest_block_raw_hex, latest,
         cursor or 'none',
         'yes' if (cursor and last_block is None and ':' in cursor) else 'no',
-        from_block, safe_to, max(0, safe_to - from_block + 1),
-        safe_backfill_window if last_block is None else 0,
+        from_block, scan_ceiling, max(0, scan_ceiling - from_block + 1),
+        safe_backfill_window if last_block is None else max_blocks_per_cycle,
+        catchup_mode, max_blocks_per_cycle,
+        from_block, scan_ceiling, blocks_deferred,
     )
-    if safe_to < from_block:
+    if scan_ceiling < from_block:
         return []
 
     events: list[ActivityEvent] = []
@@ -708,7 +729,7 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     _logs_fetch_error_count = 0
     target_type = str(target.get('target_type') or '').lower()
     if target_type == 'wallet':
-        for chunk_from, chunk_to in _iter_block_ranges(from_block, safe_to, block_scan_chunk):
+        for chunk_from, chunk_to in _iter_block_ranges(from_block, scan_ceiling, block_scan_chunk):
             # eth_getLogs is best-effort enrichment for ERC-20 transfer/approval logs.
             # Many public Base RPC endpoints reject the multi-topic OR filter or large
             # ranges; a failure here must NOT collapse the whole scan into provider_error.
@@ -764,7 +785,7 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     _wallet_transfers_detected = 0
     _detected_tx_hashes: list[str] = []
     _failed_blocks: list[int] = []
-    for chunk_from, chunk_to in _iter_block_ranges(from_block, safe_to, block_scan_chunk):
+    for chunk_from, chunk_to in _iter_block_ranges(from_block, scan_ceiling, block_scan_chunk):
         for block_number in range(chunk_from, chunk_to + 1):
             try:
                 block = client.call('eth_getBlockByNumber', [hex(block_number), True]) or {}
@@ -774,7 +795,7 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
                     'evm_block_fetch_failed target_id=%s chain=%s block_number=%s block_number_hex=%s '
                     'from_block=%s to_block=%s error_type=%s http_status=%s error=%s action=continue_remaining_blocks',
                     target.get('id'), network, block_number, hex(block_number),
-                    from_block, safe_to,
+                    from_block, scan_ceiling,
                     type(block_exc).__name__, getattr(block_exc, 'code', None) if isinstance(block_exc, _urllib_error.HTTPError) else None,
                     str(block_exc)[:200],
                 )
@@ -872,35 +893,39 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         payload['liquidity_observations'] = telemetry['liquidity_observations']
         payload['venue_observations'] = telemetry['venue_observations']
         event.payload = payload
-    _blocks_scanned = max(0, safe_to - from_block + 1) - len(_failed_blocks)
+    _blocks_scanned = max(0, scan_ceiling - from_block + 1) - len(_failed_blocks)
     logger.info(
         'evm_block_scan_complete target_id=%s chain=%s monitored_wallet=%s '
         'eth_blockNumber_raw=%s from_block=%s to_block=%s '
         'blocks_scanned=%s transactions_inspected=%s wallet_transfers_detected=%s '
-        'detected_tx_hashes=%s matches_found=%s',
+        'detected_tx_hashes=%s matches_found=%s catchup_mode=%s blocks_deferred=%s',
         target.get('id'), network,
         target_address if target_type == 'wallet' else 'n/a',
         latest_block_raw_hex,
-        from_block, safe_to,
+        from_block, scan_ceiling,
         max(0, _blocks_scanned),
         _transactions_inspected,
         _wallet_transfers_detected,
         _detected_tx_hashes[:25],
         len(deduped),
+        catchup_mode, blocks_deferred,
     )
     # Canonical end-of-scan summary. evm_block_scan_start must always be followed by
     # this line (never a bare provider_error): it proves the scan loop ran to completion
     # and reports exactly what was inspected, what failed, and what was detected.
-    _persisted_cursor = f"{safe_to}:checkpoint:-1"
+    # When in catchup_mode the cursor advances only to scan_ceiling (not the chain head)
+    # so the next cycle picks up the next chunk automatically.
+    _persisted_cursor = f"{scan_ceiling}:checkpoint:-1"
     logger.info(
         'evm_block_scan_summary target_id=%s monitored_wallet=%s chain=%s chain_id=%s '
         'source_type=rpc_polling from_block=%s to_block=%s blocks_scanned=%s failed_blocks=%s '
         'logs_fetch_status=%s logs_fetch_error_count=%s transactions_inspected=%s wallet_transfers_detected=%s '
-        'detected_tx_hashes=%s events_emitted=%s persisted_cursor=%s',
+        'detected_tx_hashes=%s events_emitted=%s persisted_cursor=%s '
+        'catchup_mode=%s max_blocks_per_cycle=%s blocks_deferred=%s checkpoint_persisted=%s',
         target.get('id'),
         target_address if target_type == 'wallet' else 'n/a',
         network, chain_id,
-        from_block, safe_to,
+        from_block, scan_ceiling,
         max(0, _blocks_scanned),
         _failed_blocks[:25],
         _logs_fetch_status,
@@ -910,10 +935,14 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         _detected_tx_hashes[:25],
         len(deduped),
         _persisted_cursor,
+        catchup_mode, max_blocks_per_cycle, blocks_deferred,
+        scan_ceiling,
     )
     # Expose the exact block we scanned up to so the runner can advance the cursor
     # even on empty scans (no events), preventing repeated small-window polling.
-    target['_evm_scan_to_block'] = safe_to
+    # In catchup_mode this is scan_ceiling (not the chain head), so the next cycle
+    # starts from here and advances another max_blocks_per_cycle until caught up.
+    target['_evm_scan_to_block'] = scan_ceiling
     return deduped
 
 
