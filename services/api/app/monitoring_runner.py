@@ -457,6 +457,108 @@ def _telemetry_idempotency_key(*, workspace_id: Any, target_id: Any, event: Acti
     return f'{workspace_part}:{target_part}:{event_part}'
 
 
+_TELEMETRY_EVENT_INSERT_SQL = """
+INSERT INTO telemetry_events (
+    id, workspace_id, asset_id, target_id, provider_type, event_type, observed_at, evidence_source, payload_hash, payload_json, idempotency_key
+)
+VALUES (%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s::jsonb, %s)
+ON CONFLICT (workspace_id, target_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+"""
+
+_TELEMETRY_TX_PERSISTED_VERIFY_SQL = """
+SELECT COUNT(*) AS c
+FROM telemetry_events
+WHERE workspace_id = %s::uuid
+  AND target_id = %s::uuid
+  AND (
+    id = %s::uuid
+    OR (%s <> '' AND lower(payload_json->>'tx_hash') = lower(%s))
+  )
+"""
+
+
+def _persist_raw_wallet_transfer_telemetry(
+    connection: Any,
+    *,
+    telemetry_id: str,
+    workspace_id: str,
+    asset_id: str | None,
+    target_id: str,
+    provider_type: str,
+    event_type: str,
+    observed_at: Any,
+    evidence_source: str,
+    payload: dict[str, Any],
+    idempotency_key: str | None,
+) -> bool:
+    """Persist a detected wallet transfer as raw live evidence in its own committed transaction.
+
+    A detected wallet transfer is canonical live evidence. It must survive even when the
+    downstream threat analysis raises (e.g. ``analysis_unavailable``) and the surrounding
+    monitoring transaction rolls back. This helper writes and COMMITS the telemetry row on a
+    dedicated connection so the commit is independent of ``connection``'s transaction, then
+    verifies the row is durably present (count by target_id + tx_hash). It returns ``True``
+    only when persistence is confirmed.
+
+    If the dedicated commit fails (e.g. transient connection error), it falls back to inserting
+    on the shared ``connection`` as a best effort so the row is not silently dropped, and
+    returns ``False`` to signal the independent commit did not hold.
+    """
+    safe_payload = payload if isinstance(payload, dict) else {}
+    payload_json = _json_dumps(safe_payload)
+    payload_hash = hashlib.sha256(payload_json.encode('utf-8')).hexdigest()
+    tx_hash = str(safe_payload.get('tx_hash') or safe_payload.get('hash') or '')
+    insert_params = (
+        telemetry_id,
+        workspace_id,
+        asset_id,
+        target_id,
+        provider_type,
+        event_type,
+        observed_at,
+        evidence_source,
+        payload_hash,
+        payload_json,
+        idempotency_key,
+    )
+    try:
+        with pg_connection() as raw_conn:
+            raw_conn.execute(_TELEMETRY_EVENT_INSERT_SQL, insert_params)
+            raw_conn.commit()
+            verify_row = raw_conn.execute(
+                _TELEMETRY_TX_PERSISTED_VERIFY_SQL,
+                (workspace_id, target_id, telemetry_id, tx_hash, tx_hash),
+            ).fetchone()
+        persisted = int((verify_row or {}).get('c') or 0) > 0
+        logger.info(
+            'wallet_transfer_telemetry_committed telemetry_id=%s target_id=%s tx_hash=%s block=%s persisted=%s',
+            telemetry_id,
+            target_id,
+            tx_hash or 'unknown',
+            safe_payload.get('block_number'),
+            str(persisted).lower(),
+        )
+        return persisted
+    except Exception:
+        logger.exception(
+            'wallet_transfer_telemetry_commit_failed telemetry_id=%s target_id=%s tx_hash=%s '
+            'fallback=shared_connection',
+            telemetry_id,
+            target_id,
+            tx_hash or 'unknown',
+        )
+        # Best effort: keep the evidence on the shared connection rather than dropping it.
+        connection.execute(_TELEMETRY_EVENT_INSERT_SQL, insert_params)
+        logger.info(
+            'wallet_transfer_telemetry_committed telemetry_id=%s target_id=%s tx_hash=%s persisted=false '
+            'durable_commit=false',
+            telemetry_id,
+            target_id,
+            tx_hash or 'unknown',
+        )
+        return False
+
+
 def set_background_loop_health(
     *,
     loop_running: bool,
@@ -3069,33 +3171,28 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         else:
             _telem_event_type = str(event.kind or 'target_event')
         _telem_id = str(uuid.uuid4())
-        connection.execute(
-            """
-            INSERT INTO telemetry_events (
-                id, workspace_id, asset_id, target_id, provider_type, event_type, observed_at, evidence_source, payload_hash, payload_json, idempotency_key
-            )
-            VALUES (%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s::jsonb, %s)
-            ON CONFLICT (workspace_id, target_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
-            """,
-            (
-                _telem_id,
-                str(target['workspace_id']),
-                str(target.get('asset_id')) if target.get('asset_id') else None,
-                str(target['id']),
-                str(provider_result.provider_name or 'monitoring_provider'),
-                _telem_event_type,
-                event.observed_at,
-                telemetry_evidence_source,
-                hashlib.sha256(_json_dumps(event.payload if isinstance(event.payload, dict) else {}).encode('utf-8')).hexdigest(),
-                _json_dumps(event.payload if isinstance(event.payload, dict) else {}),
-                telemetry_idempotency_key,
-            ),
-        )
         if _is_wallet_tx:
+            # Detected wallet transfers are canonical live evidence. Persist and COMMIT the
+            # raw telemetry on a dedicated connection BEFORE threat analysis runs. If analysis
+            # later raises (e.g. analysis_unavailable) the surrounding monitoring transaction
+            # rolls back, but this committed evidence row survives and stays searchable.
+            _wallet_transfer_persisted = _persist_raw_wallet_transfer_telemetry(
+                connection,
+                telemetry_id=_telem_id,
+                workspace_id=str(target['workspace_id']),
+                asset_id=str(target.get('asset_id')) if target.get('asset_id') else None,
+                target_id=str(target['id']),
+                provider_type=str(provider_result.provider_name or 'monitoring_provider'),
+                event_type=_telem_event_type,
+                observed_at=event.observed_at,
+                evidence_source=telemetry_evidence_source,
+                payload=_ev_payload,
+                idempotency_key=telemetry_idempotency_key,
+            )
             wallet_transfers_detected += 1
             inserted_telemetry_ids.append(_telem_id)
             logger.info(
-                'wallet_transfer_detected target_id=%s tx_hash=%s from=%s to=%s block=%s telemetry_id=%s evidence_source=%s',
+                'wallet_transfer_detected target_id=%s tx_hash=%s from=%s to=%s block=%s telemetry_id=%s evidence_source=%s persisted=%s',
                 target.get('id'),
                 str(_ev_payload.get('tx_hash') or _ev_payload.get('hash') or 'unknown'),
                 str(_ev_from or 'unknown'),
@@ -3103,6 +3200,30 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
                 _ev_payload.get('block_number'),
                 _telem_id,
                 telemetry_evidence_source,
+                str(_wallet_transfer_persisted).lower(),
+            )
+        else:
+            connection.execute(
+                """
+                INSERT INTO telemetry_events (
+                    id, workspace_id, asset_id, target_id, provider_type, event_type, observed_at, evidence_source, payload_hash, payload_json, idempotency_key
+                )
+                VALUES (%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s::jsonb, %s)
+                ON CONFLICT (workspace_id, target_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+                """,
+                (
+                    _telem_id,
+                    str(target['workspace_id']),
+                    str(target.get('asset_id')) if target.get('asset_id') else None,
+                    str(target['id']),
+                    str(provider_result.provider_name or 'monitoring_provider'),
+                    _telem_event_type,
+                    event.observed_at,
+                    telemetry_evidence_source,
+                    hashlib.sha256(_json_dumps(event.payload if isinstance(event.payload, dict) else {}).encode('utf-8')).hexdigest(),
+                    _json_dumps(event.payload if isinstance(event.payload, dict) else {}),
+                    telemetry_idempotency_key,
+                ),
             )
         processed = _process_single_event(
             connection,

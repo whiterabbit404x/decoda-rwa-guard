@@ -5016,12 +5016,19 @@ def build_mixer_request(sample_request: dict[str, Any], suspicious_events: list[
 
 def attach_dependency_diagnostics(payload: dict[str, Any], dependency_name: str, *, fallback_reason: str | None = None) -> dict[str, Any]:
     runtime = DEPENDENCY_RUNTIME_STATUS.get(dependency_name, {})
+    # The SQLite dev registry (phase1_local.dev_support.load_service) is only available in
+    # local/dev mode. In production DATABASE_URL is a remote Postgres URL, so calling
+    # load_service() here makes resolve_sqlite_path() raise RuntimeError. Because this helper
+    # runs inside mark_live_payload() -> proxy_threat(), that crash made live threat analysis
+    # return None, surfacing as analysis_unavailable:live_engine_unavailable and rolling back
+    # detected wallet-transfer telemetry. Skip the SQLite lookup outside local/dev mode.
+    registry_status = load_service(dependency_service_name(dependency_name)) if _is_local_dev_mode() else None
     payload['diagnostics'] = {
         'dependency': dependency_service_name(dependency_name),
         'selected_mode': runtime.get('selected_mode', dependency_mode(dependency_name)),
         'last_used_mode': runtime.get('last_used_mode', dependency_mode(dependency_name)),
         'last_error': runtime.get('last_error'),
-        'registry_status': load_service(dependency_service_name(dependency_name)),
+        'registry_status': registry_status,
         'payload_source': payload.get('source'),
         'degraded': payload.get('degraded'),
         'fallback_reason': fallback_reason,
