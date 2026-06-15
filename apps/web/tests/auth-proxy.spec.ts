@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { expect, test } from '@playwright/test';
 
+import { GET as getBackendHealthRoute } from '../app/api/auth/backend-health/route';
 import { GET as getAuthMeRoute } from '../app/api/auth/me/route';
 import { POST as postAuthSigninRoute } from '../app/api/auth/signin/route';
 import { POST as postAuthSignupRoute } from '../app/api/auth/signup/route';
@@ -163,6 +164,92 @@ test.describe('same-origin auth proxy routes', () => {
           configured: false,
         });
       });
+    });
+  });
+});
+
+test.describe('backend-health route', () => {
+  test('returns not_configured when API_URL is absent', async () => {
+    await withEnv({ NODE_ENV: 'production', API_URL: undefined, NEXT_PUBLIC_API_URL: undefined }, async () => {
+      await withMockFetch(async () => {
+        throw new Error('fetch should not be called when API_URL is not configured');
+      }, async () => {
+        const response = await getBackendHealthRoute();
+        expect(response.status).toBe(200);
+        const payload = await response.json();
+        expect(payload.reachable).toBe(false);
+        expect(payload.configured).toBe(false);
+        expect(payload.reason).toBe('api_url_not_configured');
+      });
+    });
+  });
+
+  test('returns reachable=true when backend /health responds 200', async () => {
+    await withEnv({ NODE_ENV: 'production', API_URL: 'https://api.decoda.example' }, async () => {
+      await withMockFetch(async (input) => {
+        expect(input).toBe('https://api.decoda.example/health');
+        return new Response(JSON.stringify({ service: 'decoda-rwa-guard-api', backend_git_commit: 'abc1234' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }, async () => {
+        const response = await getBackendHealthRoute();
+        expect(response.status).toBe(200);
+        const payload = await response.json();
+        expect(payload.reachable).toBe(true);
+        expect(payload.configured).toBe(true);
+        expect(payload.status).toBe(200);
+        expect(payload.backend_service).toBe('decoda-rwa-guard-api');
+        expect(payload.backend_git_commit).toBe('abc1234');
+        expect(payload.api_url).toBe('https://api.decoda.example/[...]');
+      });
+    });
+  });
+
+  test('returns reachable=false when backend /health is unreachable', async () => {
+    await withEnv({ NODE_ENV: 'production', API_URL: 'https://api.decoda.example' }, async () => {
+      await withMockFetch(async () => {
+        throw new TypeError('fetch failed');
+      }, async () => {
+        const response = await getBackendHealthRoute();
+        expect(response.status).toBe(200);
+        const payload = await response.json();
+        expect(payload.reachable).toBe(false);
+        expect(payload.configured).toBe(true);
+        expect(payload.reason).toBe('network_error');
+        expect(payload.error_type).toBe('TypeError');
+        expect(payload.api_url).toBe('https://api.decoda.example/[...]');
+      });
+    });
+  });
+
+  test('proxy backend error log includes request_id and masked auth_request_url', async () => {
+    await withEnv({ NODE_ENV: 'production', API_URL: 'https://railway.decoda.example' }, async () => {
+      const logged: string[] = [];
+      const originalError = console.error;
+      console.error = (...args: unknown[]) => { logged.push(String(args[0])); };
+
+      try {
+        await withMockFetch(async () => new Response(JSON.stringify({ detail: 'Invalid email or password.' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        }), async () => {
+          await postAuthSigninRoute(new Request('http://localhost/api/auth/signin', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: 'pilot@example.com', password: 'hunter2' }),
+          }));
+        });
+      } finally {
+        console.error = originalError;
+      }
+
+      expect(logged.length).toBeGreaterThan(0);
+      const parsed = JSON.parse(logged[0]);
+      expect(parsed.event).toBe('auth_proxy_backend_error');
+      expect(parsed.status).toBe(401);
+      expect(typeof parsed.request_id).toBe('string');
+      expect(parsed.auth_request_url).toBe('https://railway.decoda.example/[masked]');
     });
   });
 });
