@@ -705,6 +705,7 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
 
     logs: list[dict[str, Any]] = []
     _logs_fetch_status = 'ok'
+    _logs_fetch_error_count = 0
     target_type = str(target.get('target_type') or '').lower()
     if target_type == 'wallet':
         for chunk_from, chunk_to in _iter_block_ranges(from_block, safe_to, block_scan_chunk):
@@ -717,15 +718,46 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
                 logs.extend(_fetch_logs(client, target_address, chunk_from, chunk_to))
             except Exception as logs_exc:
                 _logs_fetch_status = 'failed'
-                _http_code = getattr(logs_exc, 'code', None) if isinstance(logs_exc, _urllib_error.HTTPError) else None
-                _log_fn = logger.warning if isinstance(logs_exc, _urllib_error.HTTPError) else logger.exception
-                _log_fn(
-                    'evm_logs_fetch_failed target_id=%s chain=%s from_block=%s to_block=%s '
-                    'error_type=%s http_status=%s error=%s action=continue_with_block_scan',
-                    target.get('id'), network, chunk_from, chunk_to,
-                    type(logs_exc).__name__, _http_code, str(logs_exc)[:200],
-                )
-                if _http_code == 429:
+                _logs_fetch_error_count += 1
+                error_str = str(logs_exc)[:300]
+                # Detect HTTP status from direct HTTPError or from FailoverJsonRpcClient RuntimeError message.
+                _http_code: int | None = getattr(logs_exc, 'code', None) if isinstance(logs_exc, _urllib_error.HTTPError) else None
+                if _http_code is None:
+                    for _sentinel in ('HTTP Error 400', 'status 400', 'code 400'):
+                        if _sentinel in error_str:
+                            _http_code = 400
+                            break
+                    if _http_code is None:
+                        for _sentinel in ('HTTP Error 429', 'status 429', 'code 429'):
+                            if _sentinel in error_str:
+                                _http_code = 429
+                                break
+                # Log full details only on the first failure per cycle to avoid log floods.
+                # Subsequent chunk failures are counted and surfaced in evm_block_scan_summary.
+                if _logs_fetch_error_count == 1:
+                    logger.warning(
+                        'evm_logs_fetch_failed target_id=%s chain=%s from_block=%s to_block=%s '
+                        'error_type=%s http_status=%s error=%s action=continue_with_block_scan',
+                        target.get('id'), network, chunk_from, chunk_to,
+                        type(logs_exc).__name__, _http_code, error_str,
+                    )
+                    # On HTTP 400, log the raw response body once to help diagnose
+                    # whether it is a filter format issue, address encoding, or range limit.
+                    if _http_code == 400 and isinstance(logs_exc, _urllib_error.HTTPError):
+                        try:
+                            _body = logs_exc.read().decode('utf-8', errors='replace')[:500]
+                            if _body:
+                                logger.warning(
+                                    'evm_logs_fetch_failed_400_body target_id=%s chain=%s http_body=%s',
+                                    target.get('id'), network, _body,
+                                )
+                        except Exception:
+                            pass
+                # HTTP 400 means the RPC permanently rejected the filter (wrong format, too many
+                # topics, address encoding error, or unsupported range). Do not retry remaining
+                # chunks — they will fail identically. HTTP 429 means rate-limited; also stop
+                # chunking for this cycle to avoid compounding the rate limit.
+                if _http_code in (400, 429):
                     break
 
     _transactions_inspected = 0
@@ -738,8 +770,7 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
                 block = client.call('eth_getBlockByNumber', [hex(block_number), True]) or {}
             except Exception as block_exc:
                 _failed_blocks.append(block_number)
-                _blk_log_fn = logger.warning if isinstance(block_exc, _urllib_error.HTTPError) else logger.exception
-                _blk_log_fn(
+                logger.warning(
                     'evm_block_fetch_failed target_id=%s chain=%s block_number=%s block_number_hex=%s '
                     'from_block=%s to_block=%s error_type=%s http_status=%s error=%s action=continue_remaining_blocks',
                     target.get('id'), network, block_number, hex(block_number),
@@ -864,7 +895,7 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     logger.info(
         'evm_block_scan_summary target_id=%s monitored_wallet=%s chain=%s chain_id=%s '
         'source_type=rpc_polling from_block=%s to_block=%s blocks_scanned=%s failed_blocks=%s '
-        'logs_fetch_status=%s transactions_inspected=%s wallet_transfers_detected=%s '
+        'logs_fetch_status=%s logs_fetch_error_count=%s transactions_inspected=%s wallet_transfers_detected=%s '
         'detected_tx_hashes=%s events_emitted=%s persisted_cursor=%s',
         target.get('id'),
         target_address if target_type == 'wallet' else 'n/a',
@@ -873,6 +904,7 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         max(0, _blocks_scanned),
         _failed_blocks[:25],
         _logs_fetch_status,
+        _logs_fetch_error_count,
         _transactions_inspected,
         _wallet_transfers_detected,
         _detected_tx_hashes[:25],

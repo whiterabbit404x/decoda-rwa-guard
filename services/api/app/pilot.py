@@ -3371,6 +3371,15 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             },
         ) from exc
 
+    _request_id = str(request.headers.get('x-request-id') or secrets.token_hex(4)).strip() if request else secrets.token_hex(4)
+
+    def _log_auth_failure(reason: str, status_code: int, user_id: str | None = None) -> None:
+        """Emit a structured auth failure log. Never logs password or password_hash."""
+        logger.warning(
+            'event=auth_sign_in_failed reason=%s email=%s status_code=%s request_id=%s user_id=%s',
+            reason, email, status_code, _request_id, user_id or 'unknown',
+        )
+
     try:
         with pg_connection() as connection:
             ensure_pilot_schema(connection)
@@ -3381,21 +3390,22 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 ).fetchone()
             except Exception as exc:
                 _raise_graceful_auth_backend_error(exc)
-                logger.exception('signin_user failed during user lookup', extra={'step': 'fetch_user_by_email', 'email': email})
+                _log_auth_failure('db_error', 503)
+                logger.exception('signin_user failed during user lookup step=fetch_user_by_email request_id=%s', _request_id)
                 raise
             if user is None:
-                logger.warning('event=auth.signin.failed reason=user_not_found status=401')
+                _log_auth_failure('user_not_found', 401)
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid email or password.')
             if not verify_password(password, user['password_hash']):
-                logger.warning('event=auth.signin.failed reason=bad_password user_id=%s status=401', str(user['id']))
+                _log_auth_failure('password_mismatch', 401, str(user['id']))
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid email or password.')
             user_id = str(user['id'])
             suspension = connection.execute('SELECT suspended_at FROM users WHERE id = %s', (user_id,)).fetchone()
             if suspension and suspension.get('suspended_at'):
-                logger.warning('event=auth.signin.failed reason=account_suspended user_id=%s status=403', user_id)
+                _log_auth_failure('account_suspended', 403, user_id)
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='This account is suspended.')
             if not user['email_verified_at']:
-                logger.warning('event=auth.signin.failed reason=email_unverified user_id=%s status=403', user_id)
+                _log_auth_failure('email_unverified', 403, user_id)
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Verify your email before signing in.')
             if user['mfa_enabled_at']:
                 challenge_token = _create_user_token(connection, user_id, 'mfa_challenge', 10, request=request)
@@ -3405,7 +3415,8 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 connection.execute('UPDATE users SET last_sign_in_at = NOW(), updated_at = NOW() WHERE id = %s', (user_id,))
             except Exception as exc:
                 _raise_graceful_auth_backend_error(exc)
-                logger.exception('signin_user failed during last_sign_in_at update', extra={'step': 'update_last_sign_in_at', 'user_id': user_id})
+                _log_auth_failure('db_error', 503, user_id)
+                logger.exception('signin_user failed during last_sign_in_at update step=update_last_sign_in_at user_id=%s request_id=%s', user_id, _request_id)
                 raise
             try:
                 log_audit(
@@ -3420,24 +3431,31 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 )
             except Exception as exc:
                 _raise_graceful_auth_backend_error(exc)
-                logger.exception('signin_user failed during audit log insert', extra={'step': 'insert_audit_log', 'user_id': user_id})
+                _log_auth_failure('db_error', 503, user_id)
+                logger.exception('signin_user failed during audit log insert step=insert_audit_log user_id=%s request_id=%s', user_id, _request_id)
                 raise
             connection.commit()
             try:
                 hydrated_user = build_user_response(connection, user_id)
                 if not hydrated_user.get('current_workspace'):
-                    logger.info('signin_user completed without active workspace', extra={'event': 'auth.signin.no_workspace', 'user_id': user_id})
+                    logger.info(
+                        'event=auth_sign_in_no_workspace email=%s user_id=%s request_id=%s',
+                        email, user_id, _request_id,
+                    )
             except Exception as exc:
                 _raise_graceful_auth_backend_error(exc)
-                logger.exception('signin_user failed during user hydration', extra={'step': 'build_user_response', 'user_id': user_id})
+                _log_auth_failure('db_error', 503, user_id)
+                logger.exception('signin_user failed during user hydration step=build_user_response user_id=%s request_id=%s', user_id, _request_id)
                 raise
     except HTTPException:
         raise
     except Exception as exc:
         _raise_graceful_auth_backend_error(exc)
         if _missing_relation_error(exc):
+            _log_auth_failure('db_error', 503)
             raise _schema_missing_http_exception(('users',)) from exc
-        logger.exception('signin_user failed due to unexpected backend exception', extra={'step': 'unexpected'})
+        _log_auth_failure('db_error', 500)
+        logger.exception('signin_user failed due to unexpected backend exception step=unexpected request_id=%s', _request_id)
         raise
     try:
         access_token = create_access_token(user_id, int(user.get('session_version') or 1))
@@ -3447,9 +3465,10 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             connection.commit()
     except Exception as exc:
         _raise_graceful_auth_backend_error(exc)
-        logger.exception('event=auth.signin.failed reason=session_cookie_error user_id=%s', user_id, extra={'step': 'create_access_token', 'user_id': user_id})
+        _log_auth_failure('cookie_write_failed', 500, user_id)
+        logger.exception('signin_user failed creating session step=create_access_token user_id=%s request_id=%s', user_id, _request_id)
         raise
-    logger.info('signin_user succeeded', extra={'event': 'auth.signin.success', 'user_id': user_id})
+    logger.info('event=auth_sign_in_success email=%s user_id=%s request_id=%s', email, user_id, _request_id)
     return {'access_token': access_token, 'token_type': 'bearer', 'user': hydrated_user}
 
 

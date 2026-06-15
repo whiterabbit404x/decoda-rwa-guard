@@ -154,8 +154,16 @@ export function classifyAuthResponseError(
     return 'Authentication is temporarily unavailable. Please retry in a moment.';
   }
 
+  if (status === 503) {
+    return safeDetail ?? 'The authentication service is temporarily unavailable. Please retry in a moment.';
+  }
+
+  if (status === 502 || status === 504) {
+    return safeDetail ?? 'The authentication service could not be reached. Please try again shortly.';
+  }
+
   if (authTransport && status >= 400) {
-    return safeDetail ?? `Unable to ${actionLabel}. Please try again.`;
+    return safeDetail ?? `Unable to ${actionLabel}. Check your email and password and try again.`;
   }
 
   return safeDetail ?? `Unable to ${actionLabel}.`;
