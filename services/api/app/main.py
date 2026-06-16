@@ -244,6 +244,7 @@ from services.api.app.monitoring_runner import (
     backfill_target_block_range,
     get_background_loop_health,
     get_monitoring_health,
+    ingest_tx_by_hash,
     inspect_target_dead_letter_state,
     list_monitoring_evidence,
     list_monitoring_heartbeats,
@@ -3333,6 +3334,25 @@ def ops_monitoring_target_backfill(target_id: str, payload: dict[str, Any], requ
     if from_block <= 0 or to_block <= 0:
         raise HTTPException(status_code=400, detail='from_block and to_block must be positive integers')
     return with_auth_schema_json(lambda: backfill_target_block_range(request, target_id, from_block, to_block))
+
+
+@app.post('/ops/monitoring/targets/{target_id}/import-tx', summary='Import a single transaction by hash for a wallet monitoring target')
+def ops_monitoring_target_import_tx(target_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Import a known transaction by hash without requiring a full block-range backfill.
+
+    Useful when a transaction block is older than the current worker scan window.
+    Fetches the tx via eth_getTransactionByHash + eth_getTransactionReceipt, verifies
+    the chain and monitored wallet match, then persists wallet_transfer_detected telemetry.
+    Idempotent — safe to call multiple times for the same tx_hash.
+
+    Body params: tx_hash (str, 66-char 0x-prefixed).
+    Requires x-workspace-id header.
+    """
+    enforce_auth_rate_limit(request, 'ops_monitoring_import_tx')
+    tx_hash = str(payload.get('tx_hash') or '').strip()
+    if not tx_hash:
+        raise HTTPException(status_code=400, detail='tx_hash is required')
+    return with_auth_schema_json(lambda: ingest_tx_by_hash(request, target_id, tx_hash))
 
 
 @app.get('/ops/monitoring/targets/{target_id}/state', summary='Inspect dead-letter and skip state for a monitoring target')
