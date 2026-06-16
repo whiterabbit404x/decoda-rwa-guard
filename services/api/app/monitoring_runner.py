@@ -700,6 +700,9 @@ def _wallet_transfer_smoke_alert(
             # Step 3: create or dedup the alert.
             # analysis_run_id is NULL for live smoke-rule alerts: no analysis_runs row
             # exists for this path, and the FK allows NULL (ON DELETE SET NULL).
+            # Add monitoring_run_id to the payload so the alert links back to the
+            # monitoring_runs row (satisfying requirement 4 for the evidence chain).
+            response['monitoring_run_id'] = smoke_run_id
             alert_id = _upsert_alert(
                 conn,
                 workspace_id=workspace_id,
@@ -3484,14 +3487,14 @@ def process_monitoring_target(
                 str(_single_event_exc)[:300],
             )
             processed = {
-                'analysis_run_id': str(uuid.uuid4()),
+                'analysis_run_id': None,
                 'monitoring_state': 'event_error',
                 'alert_id': None,
                 'incident_id': None,
                 'detection_id': None,
                 'protected_asset_coverage_record': None,
             }
-        analysis_run_id = str(processed['analysis_run_id'])
+        analysis_run_id = processed.get('analysis_run_id')
         run_ids.append(analysis_run_id)
         event_state = str(processed.get('monitoring_state') or 'real_event_no_anomaly')
         if event_state in {'anomaly_escalated_to_incident', 'real_event_anomaly_detected'}:
