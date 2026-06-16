@@ -4,7 +4,9 @@ import argparse
 import logging
 import os
 import socket
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from services.api.app.activity_providers import validate_monitoring_config_or_raise
 from services.api.app.pilot import evaluate_monitoring_system_alerts
@@ -275,11 +277,45 @@ def _log_startup_provider_status(logger: logging.Logger) -> dict:
     return {'rpc_health_ok': rpc_health_ok, 'database_url_configured': db_url_configured}
 
 
+def _start_health_server(port: int, logger: logging.Logger) -> None:
+    # Railway requires a passing healthcheck. The worker has no FastAPI app, so we
+    # serve a bare-minimum /health endpoint from a daemon thread. The monitoring
+    # loop is unaffected — it runs in the main thread as before.
+    # Railway worker service config: set healthcheckPath=/health and expose $PORT.
+    # API service config: unchanged — FastAPI already handles /health.
+    class _HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            if self.path == '/health':
+                body = b'{"status":"ok","service":"monitoring-worker"}'
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            pass  # suppress per-request HTTP logs from the health server
+
+    server = HTTPServer(('0.0.0.0', port), _HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True, name='worker-health-server')
+    thread.start()
+    logger.info('worker_health_server_started host=0.0.0.0 port=%s path=/health', port)
+
+
 def main() -> int:
     logging.basicConfig(level=os.getenv('LOG_LEVEL', 'INFO').upper(), format='%(asctime)s %(levelname)s %(name)s %(message)s')
     logger = logging.getLogger(__name__)
     _resolve_worker_enabled_env()
     args = parse_args()
+
+    # Start the health server early so Railway's healthcheck passes while the
+    # monitoring loop initialises (RPC probes, schema checks, etc.).
+    _health_port_raw = (os.getenv('PORT') or '').strip()
+    _health_port = int(_health_port_raw) if _health_port_raw.isdigit() else 8000
+    _start_health_server(_health_port, logger)
     logger.info('monitoring worker starting')
     logger.info('startup_git_commit_sha service_role=worker git_commit_sha=%s', _resolve_git_commit_sha() or 'unavailable')
     _startup_status = _log_startup_provider_status(logger)
