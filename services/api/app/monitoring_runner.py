@@ -10308,3 +10308,160 @@ def run_detection_from_existing_telemetry(request: Request) -> dict[str, Any]:
         'alerts_created': len(alerts_created),
         'alert_ids': alerts_created,
     }
+
+
+def open_alert_from_detection(request: Request) -> dict[str, Any]:
+    """Create an alert from the most recent open detection without a linked alert.
+
+    Called by POST /alerts/open-from-detection. Used when detections exist but
+    no alert has been opened (e.g. because alert creation previously rolled back).
+    Never fires on simulator evidence. Sets analysis_run_id=NULL — live smoke
+    alerts do not have an analysis_runs row. The FK allows NULL (ON DELETE SET NULL).
+    """
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        workspace_id = workspace_context['workspace_id']
+        user_id = user['id']
+
+        logger.info('open_alert_request_started workspace_id=%s user_id=%s', workspace_id, user_id)
+
+        row = connection.execute(
+            '''
+            SELECT
+                d.id            AS detection_id,
+                d.target_id,
+                d.detection_type,
+                d.severity,
+                d.title,
+                d.evidence_summary,
+                d.evidence_source,
+                d.raw_evidence_json,
+                d.monitoring_run_id,
+                COALESCE(t.name, d.target_id::text) AS target_name
+            FROM detections d
+            LEFT JOIN targets t ON t.id = d.target_id
+            WHERE d.workspace_id = %s::uuid
+              AND d.evidence_source = 'live'
+              AND (
+                  d.linked_alert_id IS NULL
+                  OR NOT EXISTS (
+                      SELECT 1 FROM alerts a
+                      WHERE a.id = d.linked_alert_id
+                        AND a.workspace_id = d.workspace_id
+                  )
+              )
+            ORDER BY d.created_at DESC
+            LIMIT 1
+            ''',
+            (workspace_id,),
+        ).fetchone()
+
+        if row is None:
+            logger.info(
+                'open_alert_no_detection workspace_id=%s reason=no_open_detection_without_alert',
+                workspace_id,
+            )
+            return {'status': 'no_detection', 'alert_id': None, 'detection_id': None}
+
+        detection_id = str(row['detection_id'])
+        target_id = str(row['target_id']) if row['target_id'] else ''
+        target_name = str(row['target_name'] or target_id)
+        raw_evidence = dict(row['raw_evidence_json'] or {})
+        monitoring_run_id = str(row['monitoring_run_id']) if row['monitoring_run_id'] else None
+
+        # Extract linkage fields from raw_evidence_json so the alert carries
+        # all required traceability fields (requirement 4).
+        event_block = raw_evidence.get('event') or {}
+        tx_hash = str(raw_evidence.get('tx_hash') or event_block.get('tx_hash') or '')
+        chain_id = raw_evidence.get('chain_id') or event_block.get('chain_id')
+        block_number = raw_evidence.get('block_number') or event_block.get('block_number')
+        telemetry_id = str(raw_evidence.get('telemetry_id') or event_block.get('telemetry_id') or '')
+        from_address = str(raw_evidence.get('from_address') or event_block.get('from') or '')
+        to_address = str(raw_evidence.get('to_address') or event_block.get('to') or '')
+        amount_wei = str(raw_evidence.get('amount_wei') or event_block.get('value') or '0')
+
+        title = str(row['title'] or f'Alert from detection: {detection_id[:8]}')
+        response: dict[str, Any] = {
+            'severity': str(row['severity'] or 'low'),
+            'confidence': 'high',
+            'detection_type': str(row['detection_type'] or 'monitored_wallet_transfer'),
+            'recommended_action': 'review_wallet_transfer',
+            'explanation': str(row['evidence_summary'] or title),
+            'matched_patterns': [
+                {
+                    'label': str(row['detection_type'] or 'wallet_transfer_detected'),
+                    'rule_id': 'open_from_detection',
+                    'severity': str(row['severity'] or 'low'),
+                }
+            ],
+            'reasons': [str(row['detection_type'] or 'wallet_transfer_detected')],
+            'source': str(row['evidence_source'] or 'live'),
+            'degraded': False,
+            'evidence_source': str(row['evidence_source'] or 'live'),
+            'tx_hash': tx_hash,
+            'from_address': from_address,
+            'to_address': to_address,
+            'amount_wei': amount_wei,
+            'chain_id': chain_id,
+            'block_number': block_number,
+            'telemetry_id': telemetry_id,
+            'target_id': target_id,
+            'detection_id': detection_id,
+            'monitoring_run_id': monitoring_run_id,
+        }
+
+        # Dedupe signature is detection-scoped so one alert per detection from
+        # this path. Does not collide with smoke_wallet_transfer signatures.
+        _dedup_seed = json.dumps(
+            {'detection_id': detection_id, 'rule': 'open_from_detection'},
+            sort_keys=True,
+        )
+        signature = uuid.uuid5(uuid.NAMESPACE_DNS, _dedup_seed).hex
+
+        try:
+            alert_id = _upsert_alert(
+                connection,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                target_id=target_id,
+                analysis_run_id=None,
+                title=title,
+                response=response,
+                signature=signature,
+                detection_id=detection_id,
+            )
+            if alert_id:
+                connection.execute(
+                    "UPDATE detections SET linked_alert_id = %s::uuid, status = 'escalated', updated_at = NOW() WHERE id = %s::uuid",
+                    (alert_id, detection_id),
+                )
+            connection.commit()
+        except Exception as exc:
+            logger.exception(
+                'open_alert_failed workspace_id=%s detection_id=%s error=%s',
+                workspace_id, detection_id, str(exc),
+            )
+            raise
+
+        if alert_id:
+            logger.info(
+                'open_alert_created workspace_id=%s detection_id=%s alert_id=%s '
+                'tx_hash=%s chain_id=%s block_number=%s telemetry_id=%s',
+                workspace_id, detection_id, alert_id,
+                tx_hash or 'unknown', chain_id, block_number, telemetry_id or 'none',
+            )
+
+        return {
+            'status': 'created' if alert_id else 'deduplicated',
+            'alert_id': alert_id or None,
+            'detection_id': detection_id,
+            'target_id': target_id,
+            'tx_hash': tx_hash or None,
+            'chain_id': chain_id,
+            'block_number': block_number,
+            'telemetry_id': telemetry_id or None,
+            'monitoring_run_id': monitoring_run_id,
+        }
