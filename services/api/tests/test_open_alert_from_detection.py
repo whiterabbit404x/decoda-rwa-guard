@@ -146,6 +146,72 @@ def test_open_alert_commits_transaction(monkeypatch):
     assert conn.committed
 
 
+def test_duplicate_open_alert_returns_already_exists_without_new_insert(monkeypatch):
+    """Second Open Alert: detection already linked to a valid alert -> already_exists, no duplicate.
+
+    The first query (detection WITHOUT a valid alert) returns None; the fallback query
+    (detection JOINed to its existing alert) returns the existing alert. The endpoint must
+    report status=already_exists (HTTP 409) and must NOT insert a second alert row.
+    """
+    existing_alert_id = 'alert-existing-1'
+
+    class _LinkedConn(_FakeConn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM detections d' in q and 'LEFT JOIN targets t' in q:
+                # No detection is missing an alert.
+                return _Result(row=None)
+            if 'FROM detections d' in q and 'JOIN alerts a' in q:
+                # A live detection already has a valid linked alert.
+                return _Result(row={
+                    'detection_id': 'det-abc123',
+                    'target_id': 'target-1',
+                    'alert_id': existing_alert_id,
+                })
+            return super().execute(query, params)
+
+    conn = _LinkedConn(detection_row=None)
+    _bootstrap(monkeypatch, conn)
+
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
+    result = monitoring_runner.open_alert_from_detection(request)
+
+    assert result['status'] == 'already_exists'
+    assert result['alert_id'] == existing_alert_id
+    assert result['detection_id'] == 'det-abc123'
+    assert 'alert' not in conn.inserts, 'duplicate Open Alert must not insert a second alert row'
+
+
+def test_open_alert_dedupe_window_returns_already_exists(monkeypatch):
+    """Detection is unlinked but a same-signature alert already exists in the dedupe window.
+
+    _upsert_alert returns the existing alert id without inserting; the endpoint must
+    report already_exists (409) rather than created (201).
+    """
+    existing_alert_id = 'alert-dedupe-1'
+
+    class _DedupeConn(_FakeConn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if q.startswith('SELECT id, occurrence_count') and 'dedupe_signature' in q:
+                # An alert with this signature already exists within the window.
+                return _Result(row={'id': existing_alert_id, 'occurrence_count': 1})
+            if q.startswith('INSERT INTO alerts'):
+                self.inserts.append('alert')
+                return _Result()
+            return super().execute(query, params)
+
+    conn = _DedupeConn(detection_row=_DETECTION_ROW)
+    _bootstrap(monkeypatch, conn)
+
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
+    result = monitoring_runner.open_alert_from_detection(request)
+
+    assert result['status'] == 'already_exists'
+    assert result['alert_id'] == existing_alert_id
+    assert 'alert' not in conn.inserts, 'no new alert row must be inserted on dedupe'
+
+
 def test_active_alerts_count_increases_after_open_alert(monkeypatch):
     """Simulated active_alerts count should be 1 after opening an alert from a detection."""
     created_alerts: list[str] = []

@@ -4168,14 +4168,28 @@ def run_detection(request: Request) -> dict[str, Any]:
 
 
 @app.post('/alerts/open-from-detection', summary='Open alert from an existing detection')
-def alerts_open_from_detection(request: Request) -> dict[str, Any]:
+def alerts_open_from_detection(request: Request, response: Response) -> Any:
     try:
-        return with_auth_schema_json(lambda: open_alert_from_detection(request))
+        result = with_auth_schema_json(lambda: open_alert_from_detection(request))
     except HTTPException:
         raise
     except Exception as exc:
+        # Requirement 6: surface the exact backend error on a 500 so the failure is
+        # diagnosable instead of being masked as a generic / network error.
         logger.error('open_alert_failed method=%s error_type=%s error=%s', request.method, exc.__class__.__name__, exc)
-        raise HTTPException(status_code=500, detail='Unable to open alert at this time.') from None
+        raise HTTPException(status_code=500, detail=f'Open alert failed: {exc.__class__.__name__}: {exc}') from None
+
+    # Map the canonical status to a truthful HTTP code (requirement 6):
+    #   created       -> 201 (a new alert row was inserted)
+    #   already_exists -> 409 (an alert already exists for this detection; no duplicate)
+    #   suppressed / no_detection -> 200 (nothing to create)
+    if isinstance(result, dict):
+        status_value = str(result.get('status') or '')
+        if status_value == 'created':
+            response.status_code = 201
+        elif status_value == 'already_exists':
+            response.status_code = 409
+    return result
 
 
 @app.get('/alerts', summary='List alerts')
