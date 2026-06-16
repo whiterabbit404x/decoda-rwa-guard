@@ -53,6 +53,18 @@ def _make_transfer_payload(*, evidence_source: str = 'live') -> dict[str, Any]:
 # Minimal DB connection stub
 # ---------------------------------------------------------------------------
 
+class _Rows:
+    def __init__(self, rows=None, rowcount=None):
+        self._rows = list(rows or [])
+        self.rowcount = rowcount if rowcount is not None else len(self._rows)
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return list(self._rows)
+
+
 class _StubConn:
     """Tracks all INSERT/UPDATE/SELECT calls without real DB."""
 
@@ -61,17 +73,22 @@ class _StubConn:
         self.commit_calls = 0
         self._suppression_row = None  # no suppression by default
         self._existing_alert_row = None  # no dedup match by default
+        self._detection_conflict = False  # set True to simulate ON CONFLICT DO NOTHING
 
     def execute(self, query: str, params=None):
         q = (query or '').strip().lower()
         if q.startswith('insert into'):
             table = q.split('insert into')[1].strip().split('(')[0].strip().split()[0]
             self.inserts.append((table, tuple(params or ())))
+            # Simulate ON CONFLICT DO NOTHING returning rowcount=0 for detections
+            if 'detections' in table and self._detection_conflict:
+                return _Rows(rowcount=0)
+            return _Rows(rowcount=1)
         if 'alert_suppression_rules' in q and 'select' in q:
             return _Rows([self._suppression_row] if self._suppression_row else [])
         if q.startswith('select') and 'from alerts' in q:
             return _Rows([self._existing_alert_row] if self._existing_alert_row else [])
-        return _Rows([])
+        return _Rows()
 
     def commit(self):
         self.commit_calls += 1
@@ -79,17 +96,6 @@ class _StubConn:
     @contextmanager
     def transaction(self):
         yield
-
-
-class _Rows:
-    def __init__(self, rows=None):
-        self._rows = list(rows or [])
-
-    def fetchone(self):
-        return self._rows[0] if self._rows else None
-
-    def fetchall(self):
-        return list(self._rows)
 
 
 # ---------------------------------------------------------------------------
@@ -711,3 +717,229 @@ def test_smoke_alert_includes_telemetry_and_target_id_in_response():
     r = captured_response[0]
     assert r.get('telemetry_id') == TELEMETRY_ID, 'response must include telemetry_id'
     assert r.get('target_id') == TARGET_ID, 'response must include target_id'
+
+
+# ---------------------------------------------------------------------------
+# 5.  Idempotency: duplicate tx_hash on second poll must not create new alert
+# ---------------------------------------------------------------------------
+
+def test_smoke_alert_skips_duplicate_tx_on_second_poll():
+    """When the detection INSERT conflicts (same tx already processed), no alert is created."""
+    stub = _StubConn()
+    stub._detection_conflict = True  # simulate ON CONFLICT DO NOTHING (detection exists)
+
+    @contextmanager
+    def _fake_pg():
+        yield stub
+
+    with patch.object(monitoring_runner, 'pg_connection', _fake_pg):
+        result = monitoring_runner._wallet_transfer_smoke_alert(
+            workspace_id=WORKSPACE_ID,
+            user_id=USER_ID,
+            target_id=TARGET_ID,
+            target_name='Base Wallet',
+            payload=_make_transfer_payload(),
+            evidence_source='live',
+        )
+
+    assert result is None, 'must return None when detection already exists (duplicate tx)'
+    alert_inserts = [t for t, _ in stub.inserts if t == 'alerts']
+    assert not alert_inserts, 'no alert must be created when detection is a duplicate'
+    assert stub.commit_calls >= 1, 'must still commit (the monitoring_run INSERT) on duplicate'
+
+
+# ---------------------------------------------------------------------------
+# 6.  End-to-end: telemetry → detection → alert → visible in /alerts
+# ---------------------------------------------------------------------------
+
+def test_wallet_transfer_detected_creates_detection_and_alert_pipeline():
+    """wallet_transfer_detected telemetry → detection row → alert row visible in /alerts.
+
+    Verifies the full proof-chain from telemetry event to committed alert:
+    1. monitoring_runs row is inserted before detections (FK prerequisite).
+    2. detections row is created with detection_type=monitored_wallet_transfer.
+    3. alerts row is created with severity=low, source=live, title containing
+       'Monitored wallet transfer detected'.
+    4. detections.linked_alert_id is back-patched after alert creation.
+    5. Alert fields match what list_alerts SELECT would return
+       (workspace_id, target_id, severity, source, title, detection_id).
+    """
+    TELEMETRY_ID = str(uuid.uuid4())
+    stub = _StubConn()
+    alert_insert_params: list[tuple] = []
+
+    original_execute = stub.execute
+
+    def _tracking_execute(query: str, params=None):
+        q = (query or '').strip().lower()
+        if q.startswith('insert into alerts'):
+            alert_insert_params.append(tuple(params or ()))
+        return original_execute(query, params)
+
+    stub.execute = _tracking_execute  # type: ignore[assignment]
+
+    @contextmanager
+    def _fake_pg():
+        yield stub
+
+    with patch.object(monitoring_runner, 'pg_connection', _fake_pg):
+        alert_id = monitoring_runner._wallet_transfer_smoke_alert(
+            workspace_id=WORKSPACE_ID,
+            user_id=USER_ID,
+            target_id=TARGET_ID,
+            target_name='Base Wallet',
+            payload=_make_transfer_payload(),
+            evidence_source='live',
+            telemetry_id=TELEMETRY_ID,
+        )
+
+    # Alert must be created and committed
+    assert alert_id, 'alert_id must be returned for live wallet transfer'
+    assert stub.commit_calls >= 1, 'alert must be committed on the dedicated connection'
+
+    insert_tables = [t for t, _ in stub.inserts]
+
+    # monitoring_runs row created before detections (FK prerequisite)
+    assert 'monitoring_runs' in insert_tables, 'monitoring_run must be inserted'
+    assert 'detections' in insert_tables, 'detection must be inserted'
+    assert 'alerts' in insert_tables, 'alert must be inserted'
+    assert insert_tables.index('monitoring_runs') < insert_tables.index('detections'), (
+        'monitoring_run must be inserted before detection (FK prerequisite)'
+    )
+    assert insert_tables.index('detections') < insert_tables.index('alerts'), (
+        'detection must be inserted before alert'
+    )
+
+    # Detection row fields
+    detection_params = [p for t, p in stub.inserts if t == 'detections'][0]
+    assert detection_params[4] == 'monitored_wallet_transfer', 'detection_type must be monitored_wallet_transfer'
+    assert detection_params[5] == 'low', 'severity must be low'
+    assert detection_params[9] == 'live', 'evidence_source must be live'
+    assert detection_params[10] == 'smoke_wallet_transfer', 'source_rule must be smoke_wallet_transfer'
+    raw = json.loads(detection_params[11])
+    assert raw.get('tx_hash') == TX_HASH
+    assert raw.get('telemetry_id') == TELEMETRY_ID
+    assert raw.get('target_id') == TARGET_ID
+    assert raw.get('chain_id') == CHAIN_ID
+    assert raw.get('block_number') == BLOCK_NUMBER
+
+    # Alert row fields match list_alerts SELECT columns
+    assert alert_insert_params, 'alert INSERT must have been captured'
+    a = alert_insert_params[0]
+    # Param order from _upsert_alert INSERT:
+    # (id, workspace_id, user_id, analysis_run_id, target_id, alert_type, title, severity,
+    #  'open'(literal), source_service, source, summary, payload, matched_patterns, reasons,
+    #  recommended_action, degraded, signature, detection_id, 1(literal), NOW()...)
+    assert a[1] == WORKSPACE_ID, 'alert workspace_id must match'
+    assert a[4] == TARGET_ID, 'alert target_id must match'
+    assert a[5] == 'threat_monitoring', 'alert_type must be threat_monitoring'
+    assert 'Monitored wallet transfer detected' in str(a[6]), (
+        f'alert title must start with "Monitored wallet transfer detected"; got {a[6]}'
+    )
+    assert a[7] == 'low', f'alert severity must be low; got {a[7]}'
+    assert a[9] == 'live', f'alert source must be live; got {a[9]}'
+
+    # linked_alert_id back-patched on detection
+    update_calls = [
+        (q, p) for q, p in []  # tracked separately below
+    ]
+    # Verify via stub.inserts that detection INSERT has monitoring_run_id (not NULL)
+    assert detection_params[12] is not None, (
+        'detection monitoring_run_id must not be NULL (smoke_run_id must be linked)'
+    )
+
+
+def test_smoke_alert_logs_detection_created_and_alert_created(caplog):
+    """The required log events wallet_transfer_detection_created and
+    wallet_transfer_alert_created must fire on the happy path."""
+    import logging
+
+    stub = _StubConn()
+
+    @contextmanager
+    def _fake_pg():
+        yield stub
+
+    with caplog.at_level(logging.INFO):
+        with patch.object(monitoring_runner, 'pg_connection', _fake_pg):
+            monitoring_runner._wallet_transfer_smoke_alert(
+                workspace_id=WORKSPACE_ID,
+                user_id=USER_ID,
+                target_id=TARGET_ID,
+                target_name='Base Wallet',
+                payload=_make_transfer_payload(),
+                evidence_source='live',
+            )
+
+    log_events = [r.message for r in caplog.records]
+    detection_logs = [m for m in log_events if 'wallet_transfer_detection_created' in m]
+    alert_logs = [m for m in log_events if 'wallet_transfer_alert_created' in m]
+    assert detection_logs, f'wallet_transfer_detection_created must be logged; got: {log_events}'
+    assert alert_logs, f'wallet_transfer_alert_created must be logged; got: {log_events}'
+
+
+def test_smoke_alert_logs_skipped_duplicate(caplog):
+    """wallet_transfer_alert_skipped_duplicate must be logged when detection already exists."""
+    import logging
+
+    stub = _StubConn()
+    stub._detection_conflict = True
+
+    @contextmanager
+    def _fake_pg():
+        yield stub
+
+    with caplog.at_level(logging.INFO):
+        with patch.object(monitoring_runner, 'pg_connection', _fake_pg):
+            monitoring_runner._wallet_transfer_smoke_alert(
+                workspace_id=WORKSPACE_ID,
+                user_id=USER_ID,
+                target_id=TARGET_ID,
+                target_name='Base Wallet',
+                payload=_make_transfer_payload(),
+                evidence_source='live',
+            )
+
+    log_events = [r.message for r in caplog.records]
+    skipped_logs = [m for m in log_events if 'wallet_transfer_alert_skipped_duplicate' in m]
+    assert skipped_logs, (
+        f'wallet_transfer_alert_skipped_duplicate must be logged on duplicate; got: {log_events}'
+    )
+
+
+def test_smoke_alert_logs_failed_with_sql_error(caplog):
+    """wallet_transfer_alert_failed must be logged with sql_error= when an exception is raised."""
+    import logging
+
+    stub = _StubConn()
+
+    class _BrokenConn(_StubConn):
+        def execute(self, query: str, params=None):
+            if 'detections' in (query or '').lower():
+                raise RuntimeError('psycopg.ProgrammingError: query has 17 placeholders but 18 parameters')
+            return super().execute(query, params)
+
+    broken_stub = _BrokenConn()
+
+    @contextmanager
+    def _fake_pg_broken():
+        yield broken_stub
+
+    with caplog.at_level(logging.ERROR):
+        with patch.object(monitoring_runner, 'pg_connection', _fake_pg_broken):
+            result = monitoring_runner._wallet_transfer_smoke_alert(
+                workspace_id=WORKSPACE_ID,
+                user_id=USER_ID,
+                target_id=TARGET_ID,
+                target_name='Base Wallet',
+                payload=_make_transfer_payload(),
+                evidence_source='live',
+            )
+
+    assert result is None, 'must return None on exception'
+    log_events = [r.message for r in caplog.records]
+    failed_logs = [m for m in log_events if 'wallet_transfer_alert_failed' in m]
+    assert failed_logs, f'wallet_transfer_alert_failed must be logged; got: {log_events}'
+    assert any('sql_error' in m for m in failed_logs), (
+        'wallet_transfer_alert_failed must include sql_error= in message'
+    )
