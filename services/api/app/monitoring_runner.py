@@ -9686,6 +9686,274 @@ def backfill_target_block_range(
     }
 
 
+def ingest_tx_by_hash(
+    request: Request,
+    target_id: str,
+    tx_hash: str,
+) -> dict[str, Any]:
+    """Import a single transaction by hash without requiring a full block-range backfill.
+
+    Useful when a transaction block is older than the current scan window.
+    Fetches the transaction via eth_getTransactionByHash + eth_getTransactionReceipt,
+    verifies the chain_id and monitored wallet match, then persists a
+    wallet_transfer_detected telemetry row.  Idempotent — safe to call multiple times.
+    """
+    from services.api.app.evm_activity_provider import (
+        resolve_monitored_wallet,
+        resolve_chain_rpc,
+        FailoverJsonRpcClient,
+        CHAIN_MAP,
+        _hex_to_int,
+        _iso_from_block_ts,
+        _build_base_payload,
+        _event_cursor,
+    )
+
+    _log = logging.getLogger(__name__)
+
+    if not tx_hash or not str(tx_hash).startswith('0x') or len(str(tx_hash)) != 66:
+        raise HTTPException(status_code=400, detail='tx_hash must be a 66-char 0x-prefixed hex string')
+    tx_hash_norm = str(tx_hash).lower()
+
+    workspace_id = normalize_workspace_header_value(request.headers.get('x-workspace-id'))
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail='x-workspace-id header required')
+
+    _log.info(
+        'tx_hash_import_started target_id=%s tx_hash=%s workspace_id=%s',
+        target_id, tx_hash_norm, workspace_id,
+    )
+
+    with pg_connection() as connection:
+        target_row = connection.execute(
+            'SELECT * FROM targets WHERE id = %s::uuid AND workspace_id = %s::uuid AND deleted_at IS NULL',
+            (target_id, workspace_id),
+        ).fetchone()
+        if not target_row:
+            raise HTTPException(status_code=404, detail='target not found')
+        target = _json_safe_value(dict(target_row))
+        if str(target.get('target_type') or '').lower() != 'wallet':
+            raise HTTPException(status_code=400, detail='target must be type=wallet for tx hash import')
+
+        if not target.get('wallet_address'):
+            asset_ctx = _load_target_asset_context(connection, workspace_id=workspace_id, target=target)
+            if isinstance(asset_ctx, dict):
+                target['asset_context'] = asset_ctx
+        monitored_wallet = resolve_monitored_wallet(target)
+        if not monitored_wallet:
+            raise HTTPException(status_code=400, detail='monitored_wallet not configured for target')
+
+        chain_network = str(target.get('chain_network') or 'base').strip().lower()
+        chain_rpc = resolve_chain_rpc(chain_network)
+        if not chain_rpc.get('rpc_url'):
+            raise HTTPException(status_code=503, detail=f'EVM RPC not configured for chain {chain_network}')
+
+        client = FailoverJsonRpcClient(chain_rpc['rpc_urls'])
+        chain_id_from_map = (CHAIN_MAP.get(chain_network) or {}).get('chain_id')
+        env_chain_id = int(os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or 0) or 1
+        chain_id = chain_id_from_map or env_chain_id
+        expected_chain_id = chain_rpc.get('expected_chain_id')
+
+        try:
+            rpc_chain_id = _hex_to_int(client.call('eth_chainId', []))
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f'RPC eth_chainId probe failed: {str(exc)[:200]}')
+        if expected_chain_id and rpc_chain_id is not None and rpc_chain_id != expected_chain_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f'RPC serves chain_id={rpc_chain_id} but target expects chain_id={expected_chain_id} ({chain_network})',
+            )
+
+        try:
+            tx = client.call('eth_getTransactionByHash', [tx_hash_norm])
+        except Exception as exc:
+            _log.warning(
+                'tx_hash_import_skipped_reason target_id=%s tx_hash=%s reason=rpc_error error=%s',
+                target_id, tx_hash_norm, str(exc)[:200],
+            )
+            raise HTTPException(status_code=503, detail=f'eth_getTransactionByHash failed: {str(exc)[:200]}')
+
+        if not tx:
+            _log.info(
+                'tx_hash_import_skipped_reason target_id=%s tx_hash=%s reason=transaction_not_found',
+                target_id, tx_hash_norm,
+            )
+            return {
+                'target_id': target_id,
+                'tx_hash': tx_hash_norm,
+                'imported': False,
+                'reason': 'transaction_not_found',
+                'message': 'Transaction not found on the RPC endpoint. It may be on a different chain or the RPC does not index this tx.',
+            }
+
+        try:
+            receipt = client.call('eth_getTransactionReceipt', [tx_hash_norm]) or {}
+        except Exception:
+            receipt = {}
+
+        tx_chain_id = _hex_to_int(tx.get('chainId'))
+        if tx_chain_id is not None and expected_chain_id is not None and tx_chain_id != expected_chain_id:
+            _log.info(
+                'tx_hash_import_skipped_reason target_id=%s tx_hash=%s reason=chain_id_mismatch '
+                'tx_chain_id=%s expected_chain_id=%s',
+                target_id, tx_hash_norm, tx_chain_id, expected_chain_id,
+            )
+            return {
+                'target_id': target_id,
+                'tx_hash': tx_hash_norm,
+                'imported': False,
+                'reason': 'chain_id_mismatch',
+                'tx_chain_id': tx_chain_id,
+                'expected_chain_id': expected_chain_id,
+            }
+
+        tx_from = str(tx.get('from') or '').lower()
+        tx_to = str(tx.get('to') or '').lower()
+        if monitored_wallet not in {tx_from, tx_to}:
+            _log.info(
+                'tx_hash_import_skipped_reason target_id=%s tx_hash=%s reason=wallet_not_in_tx '
+                'monitored_wallet=%s tx_from=%s tx_to=%s',
+                target_id, tx_hash_norm, monitored_wallet, tx_from, tx_to,
+            )
+            return {
+                'target_id': target_id,
+                'tx_hash': tx_hash_norm,
+                'imported': False,
+                'reason': 'wallet_not_in_tx',
+                'monitored_wallet': monitored_wallet,
+                'tx_from': tx_from,
+                'tx_to': tx_to,
+            }
+
+        direction = 'outbound' if tx_from == monitored_wallet else 'inbound'
+        _log.info(
+            'tx_hash_import_match_found target_id=%s tx_hash=%s direction=%s '
+            'monitored_wallet=%s tx_from=%s tx_to=%s',
+            target_id, tx_hash_norm, direction, monitored_wallet, tx_from, tx_to,
+        )
+
+        block_number_hex = str(tx.get('blockNumber') or receipt.get('blockNumber') or '')
+        block_number = _hex_to_int(block_number_hex) or 0
+        block_hash_val = str(tx.get('blockHash') or receipt.get('blockHash') or '')
+
+        block_ts = None
+        if block_hash_val:
+            try:
+                blk = client.call('eth_getBlockByHash', [block_hash_val, False]) or {}
+                block_ts = _iso_from_block_ts(blk.get('timestamp'))
+            except Exception:
+                pass
+        if block_ts is None and block_number:
+            try:
+                blk = client.call('eth_getBlockByNumber', [hex(block_number), False]) or {}
+                block_ts = _iso_from_block_ts(blk.get('timestamp'))
+            except Exception:
+                pass
+        if block_ts is None:
+            block_ts = datetime.now(timezone.utc)
+
+        asset_id = str(target.get('asset_id')) if target.get('asset_id') else None
+        cursor_value = _event_cursor(block_number, tx_hash_norm, None)
+        idempotency_key = f'{workspace_id}:{target_id}:{cursor_value}'
+
+        payload = _build_base_payload(
+            target=target,
+            network=chain_network,
+            chain_id=chain_id,
+            block_number=block_number,
+            block_hash=block_hash_val or None,
+            tx=tx,
+            tx_hash=tx_hash_norm,
+            raw_reference=f'{chain_network}:{tx_hash_norm}',
+        )
+        payload['observed_at'] = block_ts.isoformat()
+        payload['event_type'] = 'transaction'
+        payload['source_type'] = 'tx_hash_import'
+        payload['wallet_transfer_direction'] = direction
+        payload['ingestion_method'] = 'tx_hash_import'
+        payload['evidence_source'] = 'live'
+        if receipt:
+            payload['tx_status'] = _hex_to_int(receipt.get('status'))
+            payload['gas_used'] = _hex_to_int(receipt.get('gasUsed'))
+
+        telem_id = str(uuid.uuid4())
+        payload_json = _json_dumps(payload)
+        payload_hash = hashlib.sha256(payload_json.encode('utf-8')).hexdigest()
+
+        try:
+            with connection.transaction():
+                result_cursor = connection.execute(
+                    """
+                    INSERT INTO telemetry_events (
+                        id, workspace_id, asset_id, target_id, provider_type, event_type,
+                        observed_at, evidence_source, payload_hash, payload_json, idempotency_key
+                    )
+                    VALUES (%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s::jsonb, %s)
+                    ON CONFLICT (workspace_id, target_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+                    """,
+                    (
+                        telem_id,
+                        workspace_id,
+                        asset_id,
+                        target_id,
+                        'evm_rpc',
+                        'wallet_transfer_detected',
+                        block_ts,
+                        'live',
+                        payload_hash,
+                        payload_json,
+                        idempotency_key,
+                    ),
+                )
+                inserted = result_cursor.rowcount if hasattr(result_cursor, 'rowcount') else 1
+        except Exception as ins_exc:
+            _log.exception(
+                'tx_hash_import_skipped_reason target_id=%s tx_hash=%s reason=insert_failed error=%s',
+                target_id, tx_hash_norm, str(ins_exc)[:200],
+            )
+            raise HTTPException(status_code=500, detail=f'Failed to persist telemetry: {str(ins_exc)[:200]}')
+
+        value_wei = _hex_to_int(tx.get('value')) or 0
+        if inserted == 0:
+            _log.info(
+                'tx_hash_import_skipped_reason target_id=%s tx_hash=%s reason=duplicate '
+                'block_number=%s direction=%s',
+                target_id, tx_hash_norm, block_number, direction,
+            )
+            return {
+                'target_id': target_id,
+                'tx_hash': tx_hash_norm,
+                'imported': False,
+                'reason': 'duplicate',
+                'message': 'Transaction already imported (idempotency key conflict).',
+                'block_number': block_number,
+                'direction': direction,
+                'monitored_wallet': monitored_wallet,
+                'chain_id': chain_id,
+                'amount_wei': str(value_wei),
+            }
+
+        _log.info(
+            'tx_hash_import_persisted target_id=%s tx_hash=%s telemetry_id=%s '
+            'block_number=%s direction=%s amount_wei=%s chain_id=%s',
+            target_id, tx_hash_norm, telem_id, block_number, direction, value_wei, chain_id,
+        )
+        return {
+            'target_id': target_id,
+            'tx_hash': tx_hash_norm,
+            'imported': True,
+            'telemetry_id': telem_id,
+            'block_number': block_number,
+            'direction': direction,
+            'monitored_wallet': monitored_wallet,
+            'chain_network': chain_network,
+            'chain_id': chain_id,
+            'amount_wei': str(value_wei),
+            'amount_eth': round(value_wei / 10 ** 18, 18),
+            'observed_at': block_ts.isoformat(),
+        }
+
+
 def inspect_target_dead_letter_state(
     request: Request,
     target_id: str,
