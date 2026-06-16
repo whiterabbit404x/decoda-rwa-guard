@@ -624,7 +624,7 @@ def _wallet_transfer_smoke_alert(
     # Alert dedup signature unchanged for backward compat with existing alert rows.
     signature = uuid.uuid5(uuid.NAMESPACE_DNS, _dedup_seed).hex
     analysis_run_id = str(uuid.uuid4())
-    title = f'{target_name}: wallet transfer detected (chain {chain_id})'
+    title = f'Monitored wallet transfer detected: {target_name} (chain {chain_id})'
     raw_evidence = {
         'event_type': 'wallet_transfer_detected',
         'detection_type': 'monitored_wallet_transfer',
@@ -640,7 +640,20 @@ def _wallet_transfer_smoke_alert(
     }
     try:
         with pg_connection() as conn:
+            # Step 1: insert a committed monitoring_run BEFORE the detection so the FK
+            # constraint (detections.monitoring_run_id → monitoring_runs.id) is satisfied
+            # within this transaction even on a fresh connection.
+            smoke_run_id = str(uuid.uuid4())
             conn.execute(
+                '''
+                INSERT INTO monitoring_runs (id, workspace_id, status, trigger_type, notes)
+                VALUES (%s::uuid, %s::uuid, 'completed', 'smoke_rule', %s)
+                ''',
+                (smoke_run_id, workspace_id, f'smoke_wallet_transfer target_id={target_id} tx={tx_hash[:20]}'),
+            )
+            # Step 2: insert detection — ON CONFLICT DO NOTHING provides tx_hash idempotency
+            # (smoke_detection_id is UUID5-deterministic on target_id+tx_hash+rule).
+            det_cur = conn.execute(
                 '''
                 INSERT INTO detections (
                     id, workspace_id, monitored_system_id, protected_asset_id,
@@ -653,7 +666,7 @@ def _wallet_transfer_smoke_alert(
                     %s::uuid, %s::uuid, %s::uuid, %s::uuid,
                     %s, %s, %s, %s, %s,
                     %s, %s, \'open\', NOW(),
-                    %s::jsonb, NULL, NULL,
+                    %s::jsonb, %s::uuid, NULL,
                     NOW(), NOW()
                 )
                 ON CONFLICT (id) DO NOTHING
@@ -661,10 +674,28 @@ def _wallet_transfer_smoke_alert(
                 (
                     smoke_detection_id, workspace_id,
                     monitored_system_id or None, protected_asset_id or None,
-                    'monitored_wallet_transfer', 'low', 0.9, title, explanation,
+                    'monitored_wallet_transfer', 'low', 1.0, title, explanation,
                     evidence_source, 'smoke_wallet_transfer', _json_dumps(raw_evidence),
+                    smoke_run_id,
                 ),
             )
+            if det_cur.rowcount == 0:
+                # Detection already exists — this tx was already processed on a prior poll.
+                # Commit the monitoring_run and skip alert creation to avoid duplicates.
+                conn.commit()
+                logger.info(
+                    'wallet_transfer_alert_skipped_duplicate workspace_id=%s target_id=%s '
+                    'detection_id=%s tx_hash=%s reason=detection_already_exists',
+                    workspace_id, target_id, smoke_detection_id, tx_hash or 'unknown',
+                )
+                return None
+            logger.info(
+                'wallet_transfer_detection_created workspace_id=%s target_id=%s '
+                'detection_id=%s monitoring_run_id=%s tx_hash=%s chain_id=%s block=%s',
+                workspace_id, target_id, smoke_detection_id, smoke_run_id,
+                tx_hash or 'unknown', chain_id, block_number,
+            )
+            # Step 3: create or dedup the alert
             alert_id = _upsert_alert(
                 conn,
                 workspace_id=workspace_id,
@@ -684,16 +715,16 @@ def _wallet_transfer_smoke_alert(
             conn.commit()
         if alert_id:
             logger.info(
-                'wallet_transfer_smoke_detection_alert_created workspace_id=%s target_id=%s '
+                'wallet_transfer_alert_created workspace_id=%s target_id=%s '
                 'detection_id=%s alert_id=%s tx_hash=%s chain_id=%s block=%s evidence_source=%s',
                 workspace_id, target_id, smoke_detection_id, alert_id,
                 tx_hash or 'unknown', chain_id, block_number, evidence_source,
             )
         return alert_id or None
-    except Exception:
+    except Exception as exc:
         logger.exception(
-            'wallet_transfer_smoke_alert_failed workspace_id=%s target_id=%s tx_hash=%s',
-            workspace_id, target_id, tx_hash or 'unknown',
+            'wallet_transfer_alert_failed workspace_id=%s target_id=%s tx_hash=%s sql_error=%s',
+            workspace_id, target_id, tx_hash or 'unknown', str(exc),
         )
         return None
 
