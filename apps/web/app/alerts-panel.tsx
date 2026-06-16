@@ -125,6 +125,7 @@ export default function AlertsPanel() {
   const [dataLoading, setDataLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [streamStatus, setStreamStatus] = useState<'connected' | 'reconnecting' | 'polling' | 'offline'>('offline');
+  const [runDetectionLoading, setRunDetectionLoading] = useState(false);
 
   const counts = runtime?.counts as Record<string, number> | undefined;
   const workspaceEvidenceSource: string = summary.evidence_source_summary ?? '';
@@ -132,34 +133,61 @@ export default function AlertsPanel() {
   const detectionOk = (counts?.detections ?? 0) > 0 || !!(summary as any).last_detection_at;
   const activeAlerts: number = (counts?.active_alerts as number | undefined) ?? summary.active_alerts_count ?? 0;
 
+  async function fetchAlerts(cancelled: { value: boolean }) {
+    try {
+      const params = new URLSearchParams();
+      if (severityFilter) params.set('severity', severityFilter);
+      if (statusFilter) params.set('status_value', statusFilter);
+      const res = await fetch(`${apiUrl}/alerts?${params.toString()}`, {
+        headers: authHeaders(),
+        cache: 'no-store',
+      });
+      if (!res.ok || cancelled.value) return;
+      const json = (await res.json()) as Record<string, unknown>;
+      const rows = (json.alerts ?? []) as AlertRow[];
+      if (!cancelled.value) {
+        setAlerts(rows);
+        if (!selectedId && rows.length > 0) setSelectedId(rows[0].id);
+      }
+    } finally {
+      if (!cancelled.value) setDataLoading(false);
+    }
+  }
+
+  async function runDetection() {
+    setRunDetectionLoading(true);
+    setMessage('');
+    try {
+      const res = await fetch(`${apiUrl}/run-detection`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      });
+      if (res.ok) {
+        const json = (await res.json()) as Record<string, unknown>;
+        const created = (json.alerts_created as number | undefined) ?? 0;
+        setMessage(created > 0 ? `Detection run complete. ${created} alert(s) created.` : 'Detection run complete. No new alerts (existing detections are already up to date).');
+        const noop = { value: false };
+        setDataLoading(true);
+        void fetchAlerts(noop);
+      } else {
+        setMessage('Detection run failed. Check logs for details.');
+      }
+    } catch {
+      setMessage('Detection run failed — network error.');
+    } finally {
+      setRunDetectionLoading(false);
+    }
+  }
+
   useEffect(() => {
     if (runtimeLoading) return;
-    let cancelled = false;
+    const cancelled = { value: false };
     setDataLoading(true);
-    async function loadAlerts() {
-      try {
-        const params = new URLSearchParams();
-        if (severityFilter) params.set('severity', severityFilter);
-        if (statusFilter) params.set('status_value', statusFilter);
-        const res = await fetch(`${apiUrl}/alerts?${params.toString()}`, {
-          headers: authHeaders(),
-          cache: 'no-store',
-        });
-        if (!res.ok || cancelled) return;
-        const json = (await res.json()) as Record<string, unknown>;
-        const rows = (json.alerts ?? []) as AlertRow[];
-        if (!cancelled) {
-          setAlerts(rows);
-          if (!selectedId && rows.length > 0) setSelectedId(rows[0].id);
-        }
-      } finally {
-        if (!cancelled) setDataLoading(false);
-      }
-    }
-    void loadAlerts();
+    void fetchAlerts(cancelled);
     return () => {
-      cancelled = true;
+      cancelled.value = true;
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiUrl, authHeaders, runtimeLoading, severityFilter, statusFilter]);
 
   // SSE streaming — supplements polling with real-time alert updates.
@@ -267,7 +295,7 @@ export default function AlertsPanel() {
   const linkedIncidentCount = alerts.filter((a) => !!a.incident_id).length;
 
   /* ── Empty state blocker ────────────────────────────────────────── */
-  type Blocker = { title: string; body: string; ctaHref: string; ctaLabel: string };
+  type Blocker = { title: string; body: string; ctaHref?: string; ctaLabel: string; ctaOnClick?: () => void; ctaDisabled?: boolean };
 
   function getBlocker(): Blocker | null {
     if (!telemetryOk) {
@@ -282,8 +310,9 @@ export default function AlertsPanel() {
       return {
         title: 'No alerts yet',
         body: 'Telemetry has been received, but no detection has been generated yet.',
-        ctaHref: '/threat',
-        ctaLabel: 'Run Detection',
+        ctaLabel: runDetectionLoading ? 'Running...' : 'Run Detection',
+        ctaOnClick: runDetection,
+        ctaDisabled: runDetectionLoading,
       };
     }
     if (alerts.length === 0) {
@@ -404,6 +433,8 @@ export default function AlertsPanel() {
           body={blocker.body}
           ctaHref={blocker.ctaHref}
           ctaLabel={blocker.ctaLabel}
+          ctaOnClick={blocker.ctaOnClick}
+          ctaDisabled={blocker.ctaDisabled}
         />
       ) : (
         <div
