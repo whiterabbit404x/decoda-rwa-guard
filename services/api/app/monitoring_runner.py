@@ -567,15 +567,18 @@ def _wallet_transfer_smoke_alert(
     target_name: str,
     payload: dict[str, Any],
     evidence_source: str,
+    telemetry_id: str | None = None,
+    monitored_system_id: str | None = None,
+    protected_asset_id: str | None = None,
 ) -> str | None:
-    """Create a low/info alert for every live wallet_transfer_detected event.
+    """Create a detection + low/info alert for every live wallet_transfer_detected event.
 
-    Uses a dedicated pg_connection() so the alert is committed independently of
-    the surrounding monitoring transaction. This guarantees the alert survives even
-    when downstream threat-engine analysis raises (e.g. analysis_unavailable).
+    Uses a dedicated pg_connection() so the detection and alert are committed
+    independently of the surrounding monitoring transaction. This guarantees the
+    evidence survives even when downstream threat-engine analysis raises.
 
     Never fires on simulator, replay, or demo evidence — only 'live' evidence
-    creates alerts through this rule. Does NOT create an incident.
+    creates detections/alerts through this rule. Does NOT create an incident.
     """
     if evidence_source != 'live':
         return None
@@ -586,14 +589,15 @@ def _wallet_transfer_smoke_alert(
     chain_id = payload.get('chain_id')
     block_number = payload.get('block_number')
     direction = str(payload.get('wallet_transfer_direction') or 'unknown')
+    explanation = (
+        f'Wallet transfer detected on chain {chain_id}: '
+        f'{from_address[:10]}…→{to_address[:10]}… '
+        f'({direction}) block={block_number}'
+    )
     response: dict[str, Any] = {
         'severity': 'low',
         'recommended_action': 'review_wallet_transfer',
-        'explanation': (
-            f'Wallet transfer detected on chain {chain_id}: '
-            f'{from_address[:10]}…→{to_address[:10]}… '
-            f'({direction}) block={block_number}'
-        ),
+        'explanation': explanation,
         'matched_patterns': [
             {'label': 'wallet_transfer_detected', 'rule_id': 'smoke_wallet_transfer', 'severity': 'low'}
         ],
@@ -607,20 +611,60 @@ def _wallet_transfer_smoke_alert(
         'amount_wei': amount_wei,
         'chain_id': chain_id,
         'block_number': block_number,
+        'telemetry_id': telemetry_id,
+        'target_id': target_id,
     }
-    # Deduplicate on (target_id, tx_hash) — the same on-chain transaction must never
-    # produce more than one smoke alert regardless of how many times the worker polls it.
-    signature = uuid.uuid5(
-        uuid.NAMESPACE_DNS,
-        json.dumps(
-            {'target_id': target_id, 'tx_hash': tx_hash, 'rule': 'smoke_wallet_transfer'},
-            sort_keys=True,
-        ),
-    ).hex
+    _dedup_seed = json.dumps(
+        {'target_id': target_id, 'tx_hash': tx_hash, 'rule': 'smoke_wallet_transfer'},
+        sort_keys=True,
+    )
+    # Deterministic detection ID: same tx on the same target always produces the same
+    # detection row so re-polls are idempotent (ON CONFLICT DO NOTHING on the PK).
+    smoke_detection_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f'detection:{_dedup_seed}'))
+    # Alert dedup signature unchanged for backward compat with existing alert rows.
+    signature = uuid.uuid5(uuid.NAMESPACE_DNS, _dedup_seed).hex
     analysis_run_id = str(uuid.uuid4())
     title = f'{target_name}: wallet transfer detected (chain {chain_id})'
+    raw_evidence = {
+        'event_type': 'wallet_transfer_detected',
+        'detection_type': 'monitored_wallet_transfer',
+        'tx_hash': tx_hash,
+        'from_address': from_address,
+        'to_address': to_address,
+        'amount_wei': amount_wei,
+        'chain_id': chain_id,
+        'block_number': block_number,
+        'evidence_source': evidence_source,
+        'telemetry_id': telemetry_id,
+        'target_id': target_id,
+    }
     try:
         with pg_connection() as conn:
+            conn.execute(
+                '''
+                INSERT INTO detections (
+                    id, workspace_id, monitored_system_id, protected_asset_id,
+                    detection_type, severity, confidence, title, evidence_summary,
+                    evidence_source, source_rule, status, detected_at,
+                    raw_evidence_json, monitoring_run_id, linked_alert_id,
+                    created_at, updated_at
+                )
+                VALUES (
+                    %s::uuid, %s::uuid, %s::uuid, %s::uuid,
+                    %s, %s, %s, %s, %s,
+                    %s, %s, \'open\', NOW(),
+                    %s::jsonb, NULL, NULL,
+                    NOW(), NOW()
+                )
+                ON CONFLICT (id) DO NOTHING
+                ''',
+                (
+                    smoke_detection_id, workspace_id,
+                    monitored_system_id or None, protected_asset_id or None,
+                    'monitored_wallet_transfer', 'low', 0.9, title, explanation,
+                    evidence_source, 'smoke_wallet_transfer', _json_dumps(raw_evidence),
+                ),
+            )
             alert_id = _upsert_alert(
                 conn,
                 workspace_id=workspace_id,
@@ -630,14 +674,20 @@ def _wallet_transfer_smoke_alert(
                 title=title,
                 response=response,
                 signature=signature,
+                detection_id=smoke_detection_id,
             )
+            if alert_id:
+                conn.execute(
+                    "UPDATE detections SET linked_alert_id = %s::uuid, status = 'escalated', updated_at = NOW() WHERE id = %s::uuid",
+                    (alert_id, smoke_detection_id),
+                )
             conn.commit()
         if alert_id:
             logger.info(
-                'wallet_transfer_smoke_alert_created workspace_id=%s target_id=%s '
-                'alert_id=%s tx_hash=%s chain_id=%s block=%s evidence_source=%s',
-                workspace_id, target_id, alert_id, tx_hash or 'unknown',
-                chain_id, block_number, evidence_source,
+                'wallet_transfer_smoke_detection_alert_created workspace_id=%s target_id=%s '
+                'detection_id=%s alert_id=%s tx_hash=%s chain_id=%s block=%s evidence_source=%s',
+                workspace_id, target_id, smoke_detection_id, alert_id,
+                tx_hash or 'unknown', chain_id, block_number, evidence_source,
             )
         return alert_id or None
     except Exception:
@@ -3344,8 +3394,8 @@ def process_monitoring_target(
                 telemetry_evidence_source,
                 str(_wallet_transfer_persisted).lower(),
             )
-            # Smoke-test rule: create a low/info alert for every live wallet transfer,
-            # committed on its own connection so it survives threat-engine failures.
+            # Smoke-test rule: create a detection + low/info alert for every live wallet
+            # transfer, committed on its own connection so it survives threat-engine failures.
             _wallet_transfer_smoke_alert(
                 workspace_id=str(target['workspace_id']),
                 user_id=user_id,
@@ -3353,6 +3403,9 @@ def process_monitoring_target(
                 target_name=str(target.get('name') or target.get('id') or ''),
                 payload=_ev_payload,
                 evidence_source=telemetry_evidence_source,
+                telemetry_id=_telem_id,
+                monitored_system_id=str(target['monitored_system_id']) if target.get('monitored_system_id') else None,
+                protected_asset_id=str(target['asset_id']) if target.get('asset_id') else None,
             )
         else:
             connection.execute(
@@ -7398,7 +7451,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             runtime_status = 'Degraded'
             _stale_detail = (
                 'live_worker_not_running'
-                if stale_heartbeat and not runner_alive and enabled_system_count > 0
+                if stale_heartbeat and not runner_alive and enabled_system_count > 0 and last_heartbeat is None
                 else ('stale_heartbeat' if stale_heartbeat else None)
             )
             # Dead-lettered/blocked targets are a target-level condition, not a worker outage.
