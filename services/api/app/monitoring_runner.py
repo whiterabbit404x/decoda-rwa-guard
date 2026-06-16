@@ -2662,7 +2662,15 @@ def _upsert_alert(
     response: dict[str, Any],
     signature: str,
     detection_id: str | None = None,
+    out: dict[str, Any] | None = None,
 ) -> str:
+    # `out` is an optional mutable dict the caller can pass to learn whether a new
+    # alert row was inserted ({'created': True}) or an existing alert was reused
+    # ({'created': False}). Used by open_alert_from_detection to return an accurate
+    # 201 (created) vs 409 (already exists) HTTP status. Backward compatible: callers
+    # that omit `out` are unaffected.
+    if out is not None:
+        out['created'] = False
     suppression = connection.execute(
         '''
         SELECT id
@@ -2716,6 +2724,8 @@ def _upsert_alert(
         return str(existing['id'])
 
     alert_id = str(uuid.uuid4())
+    if out is not None:
+        out['created'] = True
     connection.execute(
         '''
         INSERT INTO alerts (
@@ -10360,6 +10370,38 @@ def open_alert_from_detection(request: Request) -> dict[str, Any]:
         ).fetchone()
 
         if row is None:
+            # No live detection is missing an alert. Distinguish two cases so the
+            # endpoint can return an accurate HTTP status (requirement 6):
+            #   * a live detection already has a valid alert  -> 409 already_exists
+            #   * no live detection exists at all             -> 200 no_detection
+            existing = connection.execute(
+                '''
+                SELECT
+                    d.id AS detection_id,
+                    d.target_id,
+                    a.id AS alert_id
+                FROM detections d
+                JOIN alerts a
+                  ON a.id = d.linked_alert_id
+                 AND a.workspace_id = d.workspace_id
+                WHERE d.workspace_id = %s::uuid
+                  AND d.evidence_source = 'live'
+                ORDER BY d.created_at DESC
+                LIMIT 1
+                ''',
+                (workspace_id,),
+            ).fetchone()
+            if existing is not None:
+                logger.info(
+                    'open_alert_already_exists workspace_id=%s detection_id=%s alert_id=%s',
+                    workspace_id, existing['detection_id'], existing['alert_id'],
+                )
+                return {
+                    'status': 'already_exists',
+                    'alert_id': str(existing['alert_id']),
+                    'detection_id': str(existing['detection_id']),
+                    'target_id': str(existing['target_id']) if existing['target_id'] else None,
+                }
             logger.info(
                 'open_alert_no_detection workspace_id=%s reason=no_open_detection_without_alert',
                 workspace_id,
@@ -10421,6 +10463,7 @@ def open_alert_from_detection(request: Request) -> dict[str, Any]:
         )
         signature = uuid.uuid5(uuid.NAMESPACE_DNS, _dedup_seed).hex
 
+        upsert_out: dict[str, Any] = {}
         try:
             alert_id = _upsert_alert(
                 connection,
@@ -10432,6 +10475,7 @@ def open_alert_from_detection(request: Request) -> dict[str, Any]:
                 response=response,
                 signature=signature,
                 detection_id=detection_id,
+                out=upsert_out,
             )
             if alert_id:
                 connection.execute(
@@ -10446,16 +10490,29 @@ def open_alert_from_detection(request: Request) -> dict[str, Any]:
             )
             raise
 
-        if alert_id:
+        created_new = bool(alert_id) and bool(upsert_out.get('created'))
+        if created_new:
             logger.info(
                 'open_alert_created workspace_id=%s detection_id=%s alert_id=%s '
                 'tx_hash=%s chain_id=%s block_number=%s telemetry_id=%s',
                 workspace_id, detection_id, alert_id,
                 tx_hash or 'unknown', chain_id, block_number, telemetry_id or 'none',
             )
+        elif alert_id:
+            # _upsert_alert returned an existing alert (dedupe/suppression) rather than
+            # inserting a new row — surface as already_exists so the endpoint returns 409.
+            logger.info(
+                'open_alert_already_exists workspace_id=%s detection_id=%s alert_id=%s reason=dedupe',
+                workspace_id, detection_id, alert_id,
+            )
+
+        if alert_id:
+            status_value = 'created' if created_new else 'already_exists'
+        else:
+            status_value = 'suppressed'
 
         return {
-            'status': 'created' if alert_id else 'deduplicated',
+            'status': status_value,
             'alert_id': alert_id or None,
             'detection_id': detection_id,
             'target_id': target_id,

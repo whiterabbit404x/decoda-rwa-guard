@@ -165,9 +165,22 @@ export default function AlertsPanel() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
       });
-      if (res.ok) {
-        const json = (await res.json()) as { status?: string; alert_id?: string | null; detection_id?: string | null };
-        if (json.alert_id) {
+      let json: { status?: string; alert_id?: string | null; detection_id?: string | null; detail?: unknown } = {};
+      try {
+        json = (await res.json()) as typeof json;
+      } catch {
+        json = {};
+      }
+      // 409 = an alert already exists for this detection (no duplicate created).
+      if (res.status === 409) {
+        console.log('open_alert_already_exists', json.alert_id ?? null);
+        setMessage('Alert already exists for this detection.');
+        const noop = { value: false };
+        setDataLoading(true);
+        void fetchAlerts(noop);
+      } else if (res.ok) {
+        // 201 (created) or 200 (no_detection / suppressed)
+        if (json.alert_id && json.status === 'created') {
           console.log('open_alert_created', json.alert_id);
           setMessage('Alert opened successfully.');
           const noop = { value: false };
@@ -182,8 +195,10 @@ export default function AlertsPanel() {
           void fetchAlerts(noop);
         }
       } else {
-        console.log('open_alert_failed', res.status);
-        setMessage('Failed to open alert. Check logs for details.');
+        // 500 with exact backend error in `detail` (requirement 6).
+        console.log('open_alert_failed', res.status, json.detail);
+        const detail = typeof json.detail === 'string' ? json.detail : '';
+        setMessage(detail ? `Failed to open alert — ${detail}` : 'Failed to open alert. Check logs for details.');
       }
     } catch {
       console.log('open_alert_failed', 'network_error');
