@@ -369,3 +369,182 @@ def test_live_tail_detects_new_tx_during_catchup(monkeypatch):
         f"Cursor must NOT advance to chain head during catchup; _evm_scan_to_block={scan_to}, "
         f"chain_safe_to={CHAIN_SAFE_TO}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 5. Recoverable detection/alert SQL errors do NOT increment delivery_attempts
+# ---------------------------------------------------------------------------
+
+def test_detection_insert_failure_does_not_dead_letter(monkeypatch):
+    """When _create_detection raises an FK/SQL error, the per-event savepoint rolls it
+    back, process_monitoring_target completes normally, and the target is NOT dead-lettered
+    (delivery_attempts must NOT be incremented by the outer error handler)."""
+    from services.api.app import monitoring_runner
+    from services.api.app.activity_providers import ActivityProviderResult
+
+    workspace_id = str(uuid.uuid4())
+    target_id = str(uuid.uuid4())
+    monitoring_run_id = str(uuid.uuid4())
+
+    class _SavepointCtx:
+        def __init__(self, should_fail=False):
+            self._fail = should_fail
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    _savepoint_calls: list[str] = []
+
+    class _ConnWithSavepoints:
+        """Connection that raises IntegrityError inside the detection savepoint."""
+        def __init__(self):
+            self.executed: list[str] = []
+            self._in_detection_savepoint = False
+
+        def execute(self, sql: str, params=()) -> _FakeRows:
+            sql_lower = sql.strip().lower()
+            self.executed.append(sql_lower[:60])
+            if 'select id, name from workspaces' in sql_lower:
+                return _FakeRows([{'id': workspace_id, 'name': 'ws'}])
+            if 'select 1 from targets' in sql_lower:
+                return _FakeRows([{'1': 1}])
+            if 'insert into detections' in sql_lower:
+                # Simulate FK violation: monitoring_run_id not found
+                raise Exception('detections_monitoring_run_id_fkey violates foreign key constraint')
+            if 'insert into alerts' in sql_lower:
+                raise Exception('_upsert_alert placeholder count mismatch simulation')
+            return _FakeRows()
+
+        def transaction(self):
+            # Real savepoint: catches DB exceptions; returning False re-raises them
+            class _SP:
+                def __enter__(s2):
+                    return s2
+                def __exit__(s2, exc_type, exc, tb):
+                    _savepoint_calls.append('exit')
+                    return False
+            return _SP()
+
+    conn = _ConnWithSavepoints()
+
+    target = {
+        'id': target_id,
+        'workspace_id': workspace_id,
+        'name': 'Test Target',
+        'target_type': 'wallet',
+        'chain_network': 'base',
+        'wallet_address': WALLET_ADDR,
+        'contract_identifier': None,
+        'monitoring_checkpoint_cursor': None,
+        'monitoring_interval_seconds': 300,
+        'updated_by_user_id': str(uuid.uuid4()),
+        'created_by_user_id': str(uuid.uuid4()),
+        'asset_id': None,
+        'monitoring_enabled': True,
+        'monitoring_mode': 'live',
+        'auto_create_alerts': True,
+        'auto_create_incidents': False,
+        'severity_threshold': 'low',
+        'monitoring_claimed_by': None,
+        'monitoring_lease_token': None,
+        'monitoring_lease_expires_at': None,
+        'watcher_last_observed_block': 0,
+        'monitored_system_id': None,
+        'severity_preference': None,
+        'enabled': True,
+        'is_active': True,
+    }
+
+    from services.api.app.activity_providers import ActivityProviderResult
+    from services.api.app.evm_activity_provider import ActivityEvent
+
+    live_event = ActivityEvent(
+        event_id=str(uuid.uuid4()),
+        kind='transaction',
+        observed_at=datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc),
+        cursor=f'{CHAIN_LATEST}:checkpoint:-1',
+        ingestion_source='live',
+        payload={
+            'tx_hash': '0xfeedfeed',
+            'from': WALLET_ADDR,
+            'to': '0xcafe',
+            'value': str(10 ** 18),
+            'block_number': CHAIN_LATEST,
+            'event_type': 'transaction',
+        },
+    )
+
+    fake_result = ActivityProviderResult(
+        events=[live_event],
+        status='live',
+        mode='live',
+        source_type='rpc_polling',
+        provider_name='evm',
+        provider_kind='evm',
+        evidence_state='REAL_EVIDENCE',
+        truthfulness_state='UNKNOWN_RISK',
+        degraded_reason=None,
+        last_real_event_at=live_event.observed_at,
+        latest_block=CHAIN_LATEST,
+        recent_real_event_count=1,
+        synthetic=False,
+        evidence_present=True,
+        checkpoint=None,
+        checkpoint_age_seconds=None,
+        error_code=None,
+        reason_code=None,
+        claim_safe=False,
+        detection_outcome='DETECTION_CONFIRMED',
+    )
+
+    raised = False
+    try:
+        with (
+            patch.object(monitoring_runner, 'fetch_target_activity_result', return_value=fake_result),
+            patch.object(monitoring_runner, '_load_target_asset_context', return_value={}),
+            patch.object(monitoring_runner, '_persist_live_coverage_telemetry', return_value=None),
+            patch.object(monitoring_runner, '_persist_detection_evaluation_checkpoint', return_value=None),
+            patch.object(monitoring_runner, '_persist_no_threat_evaluation_marker', return_value=None),
+            patch.object(monitoring_runner, '_resolve_coverage_asset_id', return_value=None),
+            patch.object(monitoring_runner, '_load_checkpoint', return_value=0),
+            patch.object(monitoring_runner, '_threat_call', return_value=(
+                {
+                    'severity': 'high',
+                    'matched_patterns': [{'label': 'large_transfer'}],
+                    'explanation': 'large transfer detected',
+                    'recommended_action': 'review',
+                    'degraded': False,
+                    'source': 'live',
+                },
+                {},
+            )),
+            patch.object(monitoring_runner, 'persist_analysis_run', return_value=str(uuid.uuid4())),
+            patch.object(monitoring_runner, '_persist_raw_wallet_transfer_telemetry', return_value=True),
+            patch.object(monitoring_runner, '_wallet_transfer_smoke_alert', return_value=None),
+            patch.object(monitoring_runner, '_persist_evidence', return_value=None),
+            patch.object(monitoring_runner, '_record_detection_metric', return_value=None),
+            patch.object(monitoring_runner, '_upsert_checkpoint', return_value=None),
+            patch.object(monitoring_runner, '_persist_detection_evaluation_checkpoint', return_value=None),
+        ):
+            monitoring_runner.process_monitoring_target(conn, target, monitoring_run_id=monitoring_run_id)
+    except Exception as exc:
+        raised = True
+        assert False, (
+            f"process_monitoring_target must NOT raise when detection/alert INSERT fails with "
+            f"a recoverable SQL error. Got: {exc!r}"
+        )
+
+    assert not raised, "process_monitoring_target raised unexpectedly"
+
+    # Verify that at least one savepoint was opened (for detection and/or alert insert)
+    assert len(_savepoint_calls) >= 1, (
+        "At least one savepoint must have been entered for detection/alert inserts"
+    )
+
+    # Verify that target UPDATE (clear lease) still ran — proves connection stayed healthy
+    target_update_ran = any('update targets' in s for s in conn.executed)
+    assert target_update_ran, (
+        f"targets UPDATE (clear lease) must still run after recoverable detection/alert failure. "
+        f"Executed: {conn.executed}"
+    )

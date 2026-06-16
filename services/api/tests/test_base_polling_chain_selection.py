@@ -198,7 +198,7 @@ def test_base_target_is_selected_for_live_poll_when_due(monkeypatch):
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
 
-    def _process(_c, tgt, triggered_by_user_id=None):
+    def _process(_c, tgt, triggered_by_user_id=None, **kwargs):
         processed_ids.append(tgt['id'])
         return {'alerts_generated': 0, 'target_id': tgt['id'], 'runs': [], 'status': 'completed'}
 
@@ -227,7 +227,7 @@ def test_base_target_selected_for_live_poll_when_never_checked(monkeypatch):
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
 
-    def _process(_c, tgt, triggered_by_user_id=None):
+    def _process(_c, tgt, triggered_by_user_id=None, **kwargs):
         processed_ids.append(tgt['id'])
         return {'alerts_generated': 0, 'target_id': tgt['id'], 'runs': [], 'status': 'completed'}
 
@@ -259,7 +259,7 @@ def test_ethereum_target_excluded_when_evm_chain_id_is_base(monkeypatch):
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
 
-    def _process(_c, tgt, triggered_by_user_id=None):
+    def _process(_c, tgt, triggered_by_user_id=None, **kwargs):
         processed_ids.append(tgt['id'])
         return {'alerts_generated': 0, 'target_id': tgt['id'], 'runs': [], 'status': 'completed'}
 
@@ -290,7 +290,7 @@ def test_base_target_selected_ethereum_excluded_in_same_cycle(monkeypatch):
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
 
-    def _process(_c, tgt, triggered_by_user_id=None):
+    def _process(_c, tgt, triggered_by_user_id=None, **kwargs):
         processed_ids.append(tgt['id'])
         return {'alerts_generated': 0, 'target_id': tgt['id'], 'runs': [], 'status': 'completed'}
 

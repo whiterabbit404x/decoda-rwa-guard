@@ -2910,50 +2910,76 @@ def _process_single_event(
             analysis_source=response.get('source'),
             ingestion_mode=response.get('ingestion_mode'),
         )
-        detection_id = _create_detection(
-            connection,
-            workspace_id=str(target['workspace_id']),
-            monitored_system_id=str(target.get('monitored_system_id') or '') or None,
-            protected_asset_id=str(target.get('asset_id') or '') or None,
-            detection_type=f'monitoring_{kind}',
-            severity=str(response.get('severity') or 'medium'),
-            confidence=confidence,
-            title=f"{target.get('name')}: {response.get('severity', 'medium')} risk",
-            evidence_summary=str(response.get('explanation') or response.get('summary') or 'Rule matched from monitored evidence.'),
-            evidence_source=evidence_source,
-            source_rule=source_rule,
-            raw_evidence_json={
-                'event': normalized,
-                'response': response,
-                'event_id': event.event_id,
-            },
-            monitoring_run_id=monitoring_run_id,
-        )
+        try:
+            with connection.transaction():
+                detection_id = _create_detection(
+                    connection,
+                    workspace_id=str(target['workspace_id']),
+                    monitored_system_id=str(target.get('monitored_system_id') or '') or None,
+                    protected_asset_id=str(target.get('asset_id') or '') or None,
+                    detection_type=f'monitoring_{kind}',
+                    severity=str(response.get('severity') or 'medium'),
+                    confidence=confidence,
+                    title=f"{target.get('name')}: {response.get('severity', 'medium')} risk",
+                    evidence_summary=str(response.get('explanation') or response.get('summary') or 'Rule matched from monitored evidence.'),
+                    evidence_source=evidence_source,
+                    source_rule=source_rule,
+                    raw_evidence_json={
+                        'event': normalized,
+                        'response': response,
+                        'event_id': event.event_id,
+                    },
+                    monitoring_run_id=monitoring_run_id,
+                )
+        except Exception as _det_exc:
+            logger.warning(
+                'detection_insert_recoverable target_id=%s monitoring_run_id=%s '
+                'error=%s action=skip_detection_continue',
+                target.get('id'), monitoring_run_id, str(_det_exc)[:300],
+            )
+            detection_id = None
     if bool(target.get('auto_create_alerts', True)) and _severity_meets_threshold(str(response.get('severity') or 'low'), severity_threshold):
         signature = _signature(str(target['id']), normalized, response)
-        alert_id = _upsert_alert(
-            connection,
-            workspace_id=str(target['workspace_id']),
-            user_id=user_id,
-            target_id=str(target['id']),
-            analysis_run_id=analysis_run_id,
-            title=f"{target.get('name')}: {response.get('severity', 'medium')} risk",
-            response=response,
-            signature=signature,
-            detection_id=detection_id,
-        )
+        try:
+            with connection.transaction():
+                alert_id = _upsert_alert(
+                    connection,
+                    workspace_id=str(target['workspace_id']),
+                    user_id=user_id,
+                    target_id=str(target['id']),
+                    analysis_run_id=analysis_run_id,
+                    title=f"{target.get('name')}: {response.get('severity', 'medium')} risk",
+                    response=response,
+                    signature=signature,
+                    detection_id=detection_id,
+                )
+        except Exception as _alert_exc:
+            logger.warning(
+                'alert_insert_recoverable target_id=%s monitoring_run_id=%s '
+                'error=%s action=skip_alert_continue',
+                target.get('id'), monitoring_run_id, str(_alert_exc)[:300],
+            )
+            alert_id = None
         if alert_id:
             if detection_id:
-                connection.execute(
-                    '''
-                    UPDATE detections
-                    SET linked_alert_id = %s::uuid,
-                        status = 'escalated',
-                        updated_at = NOW()
-                    WHERE id = %s::uuid
-                    ''',
-                    (alert_id, detection_id),
-                )
+                try:
+                    with connection.transaction():
+                        connection.execute(
+                            '''
+                            UPDATE detections
+                            SET linked_alert_id = %s::uuid,
+                                status = 'escalated',
+                                updated_at = NOW()
+                            WHERE id = %s::uuid
+                            ''',
+                            (alert_id, detection_id),
+                        )
+                except Exception as _link_exc:
+                    logger.warning(
+                        'detection_alert_link_recoverable target_id=%s detection_id=%s alert_id=%s '
+                        'error=%s action=skip_link_continue',
+                        target.get('id'), detection_id, alert_id, str(_link_exc)[:200],
+                    )
             incident_id = _maybe_create_incident(
                 connection,
                 workspace_id=str(target['workspace_id']),

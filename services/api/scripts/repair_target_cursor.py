@@ -2,18 +2,21 @@
 """Admin repair: reset a monitoring target's block cursor to latest - N or run batched catchup.
 
 Usage:
-    # Reset cursor to latest_block - 300 (smoke-test window)
-    python repair_target_cursor.py --target-id <uuid> --mode reset
+    # Reset cursor to latest_block - 300 (smoke-test window) and clear dead-letter state
+    python repair_target_cursor.py --target-id <uuid> --mode reset --clear-dead-letter
 
     # Reset cursor to a specific block
     python repair_target_cursor.py --target-id <uuid> --mode reset --block 47376000
+
+    # Clear dead-letter state only (no cursor change)
+    python repair_target_cursor.py --target-id <uuid> --mode reset --clear-dead-letter --block 0
 
     # Run catchup in batches until cursor reaches chain head
     python repair_target_cursor.py --target-id <uuid> --mode catchup --batches 20
 
 Environment:
     DATABASE_URL   PostgreSQL DSN (required)
-    EVM_RPC_URL    RPC endpoint for eth_blockNumber (required for --mode reset)
+    EVM_RPC_URL    RPC endpoint for eth_blockNumber (required for --mode reset without --block)
     EVM_CHAIN_ID   Chain ID (optional, for logging)
 """
 from __future__ import annotations
@@ -75,20 +78,65 @@ def _cursor_block(cursor: str | None) -> int:
         return 0
 
 
-def cmd_reset(conn, target_id: str, block: int) -> None:
+def cmd_clear_dead_letter(conn, target_id: str) -> None:
+    """Clear dead_lettered state, lease, and cooldown fields for a target."""
     cur = conn.cursor()
-    new_cursor = f'{block}:checkpoint:-1'
-    print(f'[repair_target_cursor] Resetting target {target_id} cursor to block {block} ({new_cursor})')
     cur.execute(
         '''
+        UPDATE targets
+        SET monitoring_dead_lettered_at  = NULL,
+            monitoring_delivery_attempts = 0,
+            monitoring_claimed_by        = NULL,
+            monitoring_claimed_at        = NULL,
+            monitoring_lease_token       = NULL,
+            monitoring_lease_expires_at  = NULL,
+            last_run_status              = 'recovered',
+            updated_at                   = NOW()
+        WHERE id = %s::uuid
+        RETURNING id, workspace_id, monitoring_dead_lettered_at, monitoring_delivery_attempts
+        ''',
+        (target_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        print(f'[repair_target_cursor] ERROR: target {target_id} not found for dead-letter clear', file=sys.stderr)
+        conn.rollback()
+        sys.exit(1)
+    conn.commit()
+    print(f'[repair_target_cursor] dead_letter cleared: target={target_id} last_run_status=recovered')
+
+
+def cmd_reset(conn, target_id: str, block: int, clear_dead_letter: bool = False) -> None:
+    cur = conn.cursor()
+    if block == 0:
+        new_cursor = None
+        print(f'[repair_target_cursor] Resetting target {target_id} cursor to NULL (fresh backfill)')
+    else:
+        new_cursor = f'{block}:checkpoint:-1'
+        print(f'[repair_target_cursor] Resetting target {target_id} cursor to block {block} ({new_cursor})')
+    extra_fields = ''
+    extra_params: list = []
+    if clear_dead_letter:
+        extra_fields = (
+            ', monitoring_dead_lettered_at = NULL'
+            ', monitoring_delivery_attempts = 0'
+            ', monitoring_claimed_by = NULL'
+            ', monitoring_claimed_at = NULL'
+            ', monitoring_lease_token = NULL'
+            ', monitoring_lease_expires_at = NULL'
+            ", last_run_status = 'recovered'"
+        )
+    cur.execute(
+        f'''
         UPDATE targets
         SET monitoring_checkpoint_cursor = %s,
             watcher_last_observed_block   = %s,
             updated_at                    = NOW()
+            {extra_fields}
         WHERE id = %s::uuid
         RETURNING id, workspace_id, monitoring_checkpoint_cursor
         ''',
-        (new_cursor, block, target_id),
+        ([new_cursor, block if block else None, target_id] + extra_params),
     )
     row = cur.fetchone()
     if not row:
@@ -108,16 +156,25 @@ def cmd_reset(conn, target_id: str, block: int) -> None:
     if t:
         workspace_id = str(t['workspace_id'])
         chain = str(t.get('chain_network') or 'base').strip().lower()
-        cur.execute(
-            '''
-            UPDATE monitor_checkpoint
-            SET last_processed_block = %s, updated_at = NOW()
-            WHERE workspace_id = %s::uuid AND chain = %s
-            ''',
-            (block, workspace_id, chain),
-        )
-        print(f'[repair_target_cursor] monitor_checkpoint updated: workspace={workspace_id} chain={chain} block={block}')
+        if block == 0:
+            cur.execute(
+                'DELETE FROM monitor_checkpoint WHERE workspace_id = %s::uuid AND chain = %s',
+                (workspace_id, chain),
+            )
+            print(f'[repair_target_cursor] monitor_checkpoint deleted: workspace={workspace_id} chain={chain}')
+        else:
+            cur.execute(
+                '''
+                UPDATE monitor_checkpoint
+                SET last_processed_block = %s, updated_at = NOW()
+                WHERE workspace_id = %s::uuid AND chain = %s
+                ''',
+                (block, workspace_id, chain),
+            )
+            print(f'[repair_target_cursor] monitor_checkpoint updated: workspace={workspace_id} chain={chain} block={block}')
     conn.commit()
+    if clear_dead_letter:
+        print(f'[repair_target_cursor] dead_letter cleared: target={target_id}')
     print(f'[repair_target_cursor] Done. New cursor: {new_cursor}')
 
 
@@ -158,10 +215,11 @@ def cmd_catchup(conn, target_id: str, rpc_url: str, max_batches: int, batch_size
 def main() -> None:
     parser = argparse.ArgumentParser(description='Repair monitoring target cursor')
     parser.add_argument('--target-id', required=True, help='Target UUID to repair')
-    parser.add_argument('--mode', required=True, choices=['reset', 'catchup'], help='Repair mode')
-    parser.add_argument('--block', type=int, default=None, help='Block to reset to (reset mode). Default: latest - 300')
+    parser.add_argument('--mode', required=True, choices=['reset', 'catchup', 'clear-dead-letter'], help='Repair mode')
+    parser.add_argument('--block', type=int, default=None, help='Block to reset to (reset mode). Default: latest - 300. Use 0 to null cursor (fresh backfill).')
     parser.add_argument('--batches', type=int, default=10, help='Number of catchup batches (catchup mode)')
     parser.add_argument('--batch-size', type=int, default=1000, help='Blocks per catchup batch')
+    parser.add_argument('--clear-dead-letter', action='store_true', help='Also clear dead_lettered state when resetting cursor')
     args = parser.parse_args()
 
     dsn = os.getenv('DATABASE_URL', '')
@@ -179,7 +237,9 @@ def main() -> None:
 
     conn = _pg_connect(dsn)
     try:
-        if args.mode == 'reset':
+        if args.mode == 'clear-dead-letter':
+            cmd_clear_dead_letter(conn, args.target_id)
+        elif args.mode == 'reset':
             if args.block is not None:
                 target_block = args.block
             elif rpc_url:
@@ -189,7 +249,7 @@ def main() -> None:
             else:
                 print('ERROR: --block required when EVM_RPC_URL is not set', file=sys.stderr)
                 sys.exit(1)
-            cmd_reset(conn, args.target_id, target_block)
+            cmd_reset(conn, args.target_id, target_block, clear_dead_letter=args.clear_dead_letter)
         elif args.mode == 'catchup':
             if not rpc_url:
                 print('ERROR: EVM_RPC_URL required for catchup mode', file=sys.stderr)

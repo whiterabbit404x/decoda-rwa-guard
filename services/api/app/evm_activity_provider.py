@@ -806,7 +806,8 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
 
     # Live-tail window: when catchup_mode, also scan the most recent blocks so new
     # transactions are detected immediately without waiting for backfill to complete.
-    live_tail_blocks = max(0, int(os.getenv('EVM_LIVE_TAIL_BLOCKS', '0')))
+    _live_tail_default = '300' if network in {'base', 'base-mainnet'} else '0'
+    live_tail_blocks = max(0, int(os.getenv('EVM_LIVE_TAIL_BLOCKS', _live_tail_default)))
     live_tail_from: int | None = None
     if catchup_mode and live_tail_blocks > 0:
         _lt_candidate = max(scan_ceiling + 1, safe_to - live_tail_blocks)
