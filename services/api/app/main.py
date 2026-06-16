@@ -349,6 +349,7 @@ OPTIONAL_FIXTURE_WARNINGS_EMITTED: set[tuple[str, str]] = set()
 STARTUP_BOOTSTRAP_STATUS: dict[str, Any] = {'enabled': False, 'ran': False, 'applied_versions': []}
 MONITORING_BACKGROUND_TASK: asyncio.Task[Any] | None = None
 ALERT_EVENT_BACKGROUND_TASK: asyncio.Task[Any] | None = None
+DEFERRED_STARTUP_RECONCILE_TASK: asyncio.Task[Any] | None = None
 HAS_EMITTED_INITIAL_MONITORING_DB_DEGRADED_EVENT = False
 HAS_EMITTED_INITIAL_STARTUP_RECONCILE_DB_DEGRADED_EVENT = False
 MONITORING_LOOP_RUNTIME_STATE: dict[str, Any] = {
@@ -1553,53 +1554,13 @@ def bootstrap_live_pilot() -> dict[str, Any]:
             STARTUP_BOOTSTRAP_STATUS.get('process_role', 'api'),
             STARTUP_BOOTSTRAP_STATUS.get('reason', 'migration startup is disabled'),
         )
-    try:
-        reconcile_result = reconcile_monitored_systems_for_enabled_targets()
-        STARTUP_BOOTSTRAP_STATUS['monitored_systems_reconcile'] = reconcile_result
-        logger.info(
-            'startup monitored systems reconcile scanned=%s upserted=%s invalid=%s',
-            reconcile_result.get('enabled_targets_scanned', 0),
-            reconcile_result.get('created_or_updated', 0),
-            len(reconcile_result.get('invalid_targets', [])),
-        )
-    except Exception as exc:  # pragma: no cover - startup safety
-        classification = classify_db_error(exc)
-        if classification in {'quota_exceeded', 'network_unreachable', 'db_unavailable', 'auth_error'}:
-            db_host = extract_db_host_from_dsn(resolved_database_url())
-            reason = db_error_reason_label(classification)
-            STARTUP_BOOTSTRAP_STATUS['monitored_systems_reconcile'] = {
-                'degraded': True,
-                'classification': classification,
-                'reason': reason,
-                'db_host': db_host,
-            }
-            if not HAS_EMITTED_INITIAL_STARTUP_RECONCILE_DB_DEGRADED_EVENT:
-                logger.info(
-                    'event=startup_monitored_systems_reconcile_db_degraded classification=%s reason=%s '
-                    'db_host=%s retry_scheduled=%s retry_backoff_seconds=%s next_retry_at=%s',
-                    classification,
-                    reason,
-                    db_host or 'unknown',
-                    False,
-                    0,
-                    'none',
-                )
-                HAS_EMITTED_INITIAL_STARTUP_RECONCILE_DB_DEGRADED_EVENT = True
-            else:
-                logger.info(
-                    'startup monitored systems reconcile skipped due to degraded database connectivity '
-                    'classification=%s db_host=%s',
-                    classification,
-                    db_host,
-                )
-        else:
-            logger.exception('startup monitored systems reconcile failed')
+    logger.info('startup monitored_systems_reconcile=deferred reason=non_blocking_startup')
     return STARTUP_BOOTSTRAP_STATUS
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global MONITORING_BACKGROUND_TASK, MONITORING_LOOP_RUNTIME_STATE, ALERT_EVENT_BACKGROUND_TASK
+    global MONITORING_BACKGROUND_TASK, MONITORING_LOOP_RUNTIME_STATE, ALERT_EVENT_BACKGROUND_TASK, DEFERRED_STARTUP_RECONCILE_TASK
     validate_secret_encryption_key_at_startup()
     validate_signing_secret_at_startup()
     if _is_local_dev_mode():
@@ -1780,7 +1741,39 @@ async def lifespan(_: FastAPI):
                     logger.exception('alert_event_worker_cycle_failed')
                 await asyncio.sleep(interval)
         ALERT_EVENT_BACKGROUND_TASK = asyncio.create_task(_alert_event_loop())
+    if str(os.getenv('LIVE_MONITORING_ENABLED', 'true')).strip().lower() in {'1', 'true', 'yes', 'on'} and resolved_database_url():
+        _reconcile_timeout_seconds = max(10, int(os.getenv('STARTUP_RECONCILE_TIMEOUT_SECONDS', '60')))
+
+        async def _deferred_startup_reconcile() -> None:
+            await asyncio.sleep(0)  # yield so startup completes and "Application startup complete" is logged first
+            loop = asyncio.get_running_loop()
+            try:
+                reconcile_result = await asyncio.wait_for(
+                    loop.run_in_executor(None, reconcile_monitored_systems_for_enabled_targets),
+                    timeout=_reconcile_timeout_seconds,
+                )
+                logger.info(
+                    'startup_reconcile_deferred_complete scanned=%s upserted=%s invalid=%s auth_available=True',
+                    reconcile_result.get('enabled_targets_scanned', 0),
+                    reconcile_result.get('created_or_updated', 0),
+                    len(reconcile_result.get('invalid_targets', [])),
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    'startup_reconcile_deferred_timeout timeout_seconds=%s auth_available=True monitoring_reconcile=skipped',
+                    _reconcile_timeout_seconds,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning('startup_reconcile_deferred_failed auth_available=True monitoring_reconcile=failed', exc_info=True)
+
+        DEFERRED_STARTUP_RECONCILE_TASK = asyncio.create_task(_deferred_startup_reconcile())
     yield
+    if DEFERRED_STARTUP_RECONCILE_TASK is not None:
+        DEFERRED_STARTUP_RECONCILE_TASK.cancel()
+        with suppress(asyncio.CancelledError):
+            await DEFERRED_STARTUP_RECONCILE_TASK
     if ALERT_EVENT_BACKGROUND_TASK is not None:
         ALERT_EVENT_BACKGROUND_TASK.cancel()
         with suppress(asyncio.CancelledError):
@@ -2126,6 +2119,16 @@ def health() -> dict[str, object]:
         'monitoring_ingestion_reason': ingestion_runtime.get('reason'),
         'billing': billing_runtime_status(),
         'retention_worker': retention_worker,
+    }
+
+
+@app.get('/auth/health', summary='Authentication service health check', description='Returns authentication service availability. Must respond quickly regardless of background monitoring reconcile state.')
+def auth_health() -> dict[str, object]:
+    return {
+        'status': 'ok',
+        'service': 'auth',
+        'auth_token_configured': auth_token_secret_configured(),
+        'database_url_configured': resolved_database_url() is not None,
     }
 
 
