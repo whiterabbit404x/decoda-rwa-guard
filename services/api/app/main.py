@@ -256,6 +256,7 @@ from services.api.app.monitoring_runner import (
     patch_monitoring_target,
     production_claim_validator,
     recover_target_dead_letter,
+    run_detection_from_existing_telemetry,
     run_monitoring_cycle,
     run_monitoring_once,
     set_background_loop_health,
@@ -4152,6 +4153,17 @@ def modules_get_config(module_key: str, request: Request) -> dict[str, Any]:
 @app.put('/modules/{module_key}/config', summary='Save module config')
 def modules_put_config(module_key: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: put_module_config(module_key, payload, request))
+
+
+@app.post('/run-detection', summary='Run detection on existing live telemetry')
+def run_detection(request: Request) -> dict[str, Any]:
+    try:
+        return with_auth_schema_json(lambda: run_detection_from_existing_telemetry(request))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error('run_detection_failed method=%s error_type=%s error=%s', request.method, exc.__class__.__name__, exc)
+        raise HTTPException(status_code=500, detail='Unable to run detection at this time.') from None
 
 
 @app.get('/alerts', summary='List alerts')

@@ -42,6 +42,7 @@ from services.api.app.pilot import (
     authenticate_with_connection,
     ensure_pilot_schema,
     live_mode_enabled,
+    require_live_mode,
     log_audit,
     list_workspace_monitored_system_rows,
     monitored_system_row_enabled,
@@ -596,6 +597,8 @@ def _wallet_transfer_smoke_alert(
     )
     response: dict[str, Any] = {
         'severity': 'low',
+        'confidence': 'high',
+        'detection_type': 'monitored_wallet_transfer',
         'recommended_action': 'review_wallet_transfer',
         'explanation': explanation,
         'matched_patterns': [
@@ -10218,4 +10221,86 @@ def recover_target_dead_letter(
             if was_dead_lettered
             else 'Target was not dead-lettered; no change needed.'
         ),
+    }
+
+
+def run_detection_from_existing_telemetry(request: Request) -> dict[str, Any]:
+    """Process existing live wallet_transfer_detected telemetry and create detections/alerts.
+
+    Called by POST /run-detection. Idempotent — same tx on same target always produces
+    the same detection UUID (UUID5-deterministic dedup in _wallet_transfer_smoke_alert).
+    Only processes evidence_source='live' telemetry; never touches simulator data.
+    """
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        workspace_id = workspace_context['workspace_id']
+        user_id = user['id']
+
+        logger.info('run_detection_started workspace_id=%s user_id=%s', workspace_id, user_id)
+
+        rows = connection.execute(
+            '''
+            SELECT
+                te.id,
+                te.target_id,
+                te.payload_json,
+                te.evidence_source,
+                COALESCE(t.name, te.target_id::text) AS target_name,
+                ms.id AS monitored_system_id,
+                COALESCE(te.asset_id, ms.asset_id) AS protected_asset_id
+            FROM telemetry_events te
+            LEFT JOIN targets t ON t.id = te.target_id
+            LEFT JOIN monitored_systems ms
+                ON ms.target_id = te.target_id
+               AND ms.workspace_id = te.workspace_id
+            WHERE te.workspace_id = %s::uuid
+              AND te.event_type = 'wallet_transfer_detected'
+              AND te.evidence_source = 'live'
+            ORDER BY te.observed_at DESC
+            LIMIT 50
+            ''',
+            (workspace_id,),
+        ).fetchall()
+
+    alerts_created: list[str] = []
+    for row in rows:
+        telemetry_id = str(row['id'])
+        target_id = str(row['target_id']) if row['target_id'] else ''
+        target_name = str(row['target_name'] or target_id)
+        payload = dict(row['payload_json'] or {})
+        evidence_source = str(row['evidence_source'] or 'live')
+        monitored_system_id = str(row['monitored_system_id']) if row['monitored_system_id'] else None
+        protected_asset_id = str(row['protected_asset_id']) if row['protected_asset_id'] else None
+
+        alert_id = _wallet_transfer_smoke_alert(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            target_id=target_id,
+            target_name=target_name,
+            payload=payload,
+            evidence_source=evidence_source,
+            telemetry_id=telemetry_id,
+            monitored_system_id=monitored_system_id,
+            protected_asset_id=protected_asset_id,
+        )
+        if alert_id:
+            logger.info(
+                'alert_visible_in_workspace workspace_id=%s alert_id=%s telemetry_id=%s',
+                workspace_id, alert_id, telemetry_id,
+            )
+            alerts_created.append(alert_id)
+
+    logger.info(
+        'run_detection_completed workspace_id=%s user_id=%s telemetry_processed=%s alerts_created=%s',
+        workspace_id, user_id, len(rows), len(alerts_created),
+    )
+
+    return {
+        'status': 'completed',
+        'telemetry_processed': len(rows),
+        'alerts_created': len(alerts_created),
+        'alert_ids': alerts_created,
     }

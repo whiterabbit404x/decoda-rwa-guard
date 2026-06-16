@@ -66,12 +66,16 @@ export function TableShell({ headers, children, compact = false }: { headers: st
 }
 
 /* ── Empty state ──────────────────────────────────────────────── */
-export function EmptyStateBlocker({ title, body, ctaHref, ctaLabel }: { title: string; body: string; ctaHref?: string; ctaLabel?: string }) {
+export function EmptyStateBlocker({ title, body, ctaHref, ctaLabel, ctaOnClick, ctaDisabled }: { title: string; body: string; ctaHref?: string; ctaLabel?: string; ctaOnClick?: () => void; ctaDisabled?: boolean }) {
   return (
     <div className="emptyStatePanel sharedEmptyStateBlocker">
       <h4>{title}</h4>
       <p className="muted">{body}</p>
-      {ctaHref && ctaLabel ? <Link href={ctaHref} prefetch={false} className="btn btn-secondary" style={{ marginTop: '0.75rem' }}>{ctaLabel}</Link> : null}
+      {ctaOnClick && ctaLabel ? (
+        <button type="button" className="btn btn-secondary" style={{ marginTop: '0.75rem' }} onClick={ctaOnClick} disabled={ctaDisabled}>{ctaLabel}</button>
+      ) : ctaHref && ctaLabel ? (
+        <Link href={ctaHref} prefetch={false} className="btn btn-secondary" style={{ marginTop: '0.75rem' }}>{ctaLabel}</Link>
+      ) : null}
     </div>
   );
 }
