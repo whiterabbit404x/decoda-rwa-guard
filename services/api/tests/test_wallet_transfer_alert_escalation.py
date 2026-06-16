@@ -943,3 +943,183 @@ def test_smoke_alert_logs_failed_with_sql_error(caplog):
     assert any('sql_error' in m for m in failed_logs), (
         'wallet_transfer_alert_failed must include sql_error= in message'
     )
+
+
+# ---------------------------------------------------------------------------
+# 7.  FK safety: analysis_run_id must be NULL (not a random UUID) in smoke alerts
+# ---------------------------------------------------------------------------
+
+LIVE_WORKSPACE_ID = '1155f479-3e5b-4d90-be6c-fd6c1d6b957d'
+
+
+def test_smoke_alert_analysis_run_id_is_null_not_random_uuid():
+    """The alert INSERT must pass analysis_run_id=None (SQL NULL), never a random UUID.
+
+    Previously a random uuid.uuid4() was generated and passed as analysis_run_id
+    without creating a matching analysis_runs row, causing the FK constraint
+    alerts_analysis_run_id_fkey to be violated.  The column is nullable
+    (NULL REFERENCES analysis_runs(id) ON DELETE SET NULL), so NULL is correct
+    for live smoke-rule alerts that bypass the analysis_runs path.
+    """
+    stub = _StubConn()
+    alert_insert_params: list[tuple] = []
+
+    original_execute = stub.execute
+
+    def _capturing_execute(query: str, params=None):
+        q = (query or '').strip().lower()
+        if q.startswith('insert into alerts'):
+            alert_insert_params.append(tuple(params or ()))
+        return original_execute(query, params)
+
+    stub.execute = _capturing_execute  # type: ignore[assignment]
+
+    @contextmanager
+    def _fake_pg():
+        yield stub
+
+    with patch.object(monitoring_runner, 'pg_connection', _fake_pg):
+        monitoring_runner._wallet_transfer_smoke_alert(
+            workspace_id=WORKSPACE_ID,
+            user_id=USER_ID,
+            target_id=TARGET_ID,
+            target_name='Base Wallet',
+            payload=_make_transfer_payload(),
+            evidence_source='live',
+        )
+
+    assert alert_insert_params, 'expected an INSERT INTO alerts'
+    # Param order: (id, workspace_id, user_id, analysis_run_id, target_id, ...)
+    params = alert_insert_params[0]
+    analysis_run_id_value = params[3]
+    assert analysis_run_id_value is None, (
+        f'analysis_run_id must be None (SQL NULL) for smoke alerts; '
+        f'got {analysis_run_id_value!r} — a non-NULL value violates '
+        f'alerts_analysis_run_id_fkey when no analysis_runs row exists'
+    )
+
+
+def test_smoke_alert_fk_fields_are_valid():
+    """Alert row must have valid FK-safe fields: workspace_id, user_id, target_id, detection_id.
+
+    Verifies that the alert INSERT carries all required foreign-key columns so
+    the row would pass DB constraints even when analysis_run_id is NULL.
+    """
+    stub = _StubConn()
+    alert_insert_params: list[tuple] = []
+    alert_id_returned: list[str] = []
+
+    original_execute = stub.execute
+
+    def _capturing_execute(query: str, params=None):
+        q = (query or '').strip().lower()
+        if q.startswith('insert into alerts'):
+            alert_insert_params.append(tuple(params or ()))
+        return original_execute(query, params)
+
+    stub.execute = _capturing_execute  # type: ignore[assignment]
+
+    @contextmanager
+    def _fake_pg():
+        yield stub
+
+    with patch.object(monitoring_runner, 'pg_connection', _fake_pg):
+        aid = monitoring_runner._wallet_transfer_smoke_alert(
+            workspace_id=WORKSPACE_ID,
+            user_id=USER_ID,
+            target_id=TARGET_ID,
+            target_name='Base Wallet',
+            payload=_make_transfer_payload(),
+            evidence_source='live',
+            telemetry_id=str(uuid.uuid4()),
+        )
+        if aid:
+            alert_id_returned.append(aid)
+
+    assert alert_insert_params, 'expected an INSERT INTO alerts'
+    params = alert_insert_params[0]
+    # INSERT param order (from _upsert_alert):
+    # 0:id, 1:workspace_id, 2:user_id, 3:analysis_run_id, 4:target_id, 5:alert_type,
+    # 6:title, 7:severity, 8:source_service, 9:source, 10:summary, 11:payload,
+    # 12:matched_patterns, 13:reasons, 14:recommended_action, 15:degraded,
+    # 16:dedupe_signature, 17:detection_id
+
+    uuid.UUID(str(params[0]))          # id — valid UUID
+    assert params[1] == WORKSPACE_ID   # workspace_id
+    assert params[2] == USER_ID        # user_id
+    assert params[3] is None, f'analysis_run_id must be None; got {params[3]!r}'  # 3: analysis_run_id
+    assert params[4] == TARGET_ID      # target_id
+    detection_id_value = params[17]    # detection_id
+    assert detection_id_value is not None, 'detection_id must be set in alert row'
+    uuid.UUID(str(detection_id_value))
+
+
+def test_wallet_transfer_detected_telemetry_creates_alert_visible_for_workspace():
+    """Full pipeline: wallet_transfer_detected telemetry → detection → alert visible in /alerts.
+
+    Simulates the workspace_id=1155f479-3e5b-4d90-be6c-fd6c1d6b957d scenario and
+    verifies the alert INSERT produces a row with the correct workspace_id, target_id,
+    source=live, and a non-None detection_id so /alerts would return it.
+    """
+    workspace_id = LIVE_WORKSPACE_ID
+    target_id = str(uuid.uuid4())
+    user_id = str(uuid.uuid4())
+    telemetry_id = str(uuid.uuid4())
+    tx_hash = '0xc0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00'
+
+    stub = _StubConn()
+    alert_rows: list[tuple] = []
+
+    original_execute = stub.execute
+
+    def _capturing_execute(query: str, params=None):
+        q = (query or '').strip().lower()
+        if q.startswith('insert into alerts'):
+            alert_rows.append(tuple(params or ()))
+        return original_execute(query, params)
+
+    stub.execute = _capturing_execute  # type: ignore[assignment]
+
+    @contextmanager
+    def _fake_pg():
+        yield stub
+
+    with patch.object(monitoring_runner, 'pg_connection', _fake_pg):
+        alert_id = monitoring_runner._wallet_transfer_smoke_alert(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            target_id=target_id,
+            target_name='Live Treasury Wallet',
+            payload={
+                'tx_hash': tx_hash,
+                'from': '0xaaaa000000000000000000000000000000000001',
+                'to': '0xbbbb000000000000000000000000000000000002',
+                'value': hex(int(1.5 * 10 ** 18)),
+                'block_number': 48_000_000,
+                'chain_id': 8453,
+                'wallet_transfer_direction': 'inbound',
+            },
+            evidence_source='live',
+            telemetry_id=telemetry_id,
+        )
+
+    assert alert_id, 'alert must be created for live wallet transfer'
+    assert alert_rows, 'alert INSERT must have been captured'
+    params = alert_rows[0]
+    # INSERT param order (from _upsert_alert):
+    # 0:id, 1:workspace_id, 2:user_id, 3:analysis_run_id, 4:target_id, 5:alert_type,
+    # 6:title, 7:severity, 8:source_service, 9:source, 10:summary, 11:payload,
+    # 12:matched_patterns, 13:reasons, 14:recommended_action, 15:degraded,
+    # 16:dedupe_signature, 17:detection_id
+
+    # workspace_id (index 1) — /alerts is workspace-scoped on this field
+    assert params[1] == workspace_id, f'alert workspace_id must be {workspace_id}; got {params[1]}'
+    # analysis_run_id (index 3) must be NULL to satisfy FK
+    assert params[3] is None, (
+        f'analysis_run_id must be None to avoid alerts_analysis_run_id_fkey violation; '
+        f'got {params[3]!r}'
+    )
+    # source (index 9) must be 'live' — /alerts must never show simulator data as live
+    assert params[9] == 'live', f'alert source must be live; got {params[9]}'
+    # detection_id (index 17) — links the alert to the detections row
+    assert params[17] is not None, 'detection_id must be set so /alerts can show the proof chain'

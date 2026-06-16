@@ -626,7 +626,6 @@ def _wallet_transfer_smoke_alert(
     smoke_detection_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f'detection:{_dedup_seed}'))
     # Alert dedup signature unchanged for backward compat with existing alert rows.
     signature = uuid.uuid5(uuid.NAMESPACE_DNS, _dedup_seed).hex
-    analysis_run_id = str(uuid.uuid4())
     title = f'Monitored wallet transfer detected: {target_name} (chain {chain_id})'
     raw_evidence = {
         'event_type': 'wallet_transfer_detected',
@@ -698,13 +697,15 @@ def _wallet_transfer_smoke_alert(
                 workspace_id, target_id, smoke_detection_id, smoke_run_id,
                 tx_hash or 'unknown', chain_id, block_number,
             )
-            # Step 3: create or dedup the alert
+            # Step 3: create or dedup the alert.
+            # analysis_run_id is NULL for live smoke-rule alerts: no analysis_runs row
+            # exists for this path, and the FK allows NULL (ON DELETE SET NULL).
             alert_id = _upsert_alert(
                 conn,
                 workspace_id=workspace_id,
                 user_id=user_id,
                 target_id=target_id,
-                analysis_run_id=analysis_run_id,
+                analysis_run_id=None,
                 title=title,
                 response=response,
                 signature=signature,
@@ -2653,7 +2654,7 @@ def _upsert_alert(
     workspace_id: str,
     user_id: str,
     target_id: str,
-    analysis_run_id: str,
+    analysis_run_id: str | None,
     title: str,
     response: dict[str, Any],
     signature: str,
