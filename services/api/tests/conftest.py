@@ -67,6 +67,11 @@ if 'psycopg' not in sys.modules:
         'psycopg.errors',
         UniqueViolation=type('UniqueViolation', (Exception,), {}),
         OperationalError=type('OperationalError', (Exception,), {}),
+        DeadlockDetected=type('DeadlockDetected', (Exception,), {}),
+        ForeignKeyViolation=type('ForeignKeyViolation', (Exception,), {}),
+        IntegrityError=type('IntegrityError', (Exception,), {}),
+        UndefinedTable=type('UndefinedTable', (Exception,), {}),
+        UndefinedColumn=type('UndefinedColumn', (Exception,), {}),
     )
     _pg = _make_stub(
         'psycopg',
