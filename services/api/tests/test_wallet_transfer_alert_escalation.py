@@ -494,3 +494,220 @@ def test_incident_linked_to_alert_contains_evidence_fields():
     assert payload.get('tx_hash') == TX_HASH
     assert payload.get('chain_id') == CHAIN_ID
     assert payload.get('evidence_source') == 'live'
+
+
+# ---------------------------------------------------------------------------
+# 4.  Detection row is created before the alert (detection → alert proof chain)
+# ---------------------------------------------------------------------------
+
+def test_smoke_alert_creates_detection_row():
+    """A live wallet_transfer_detected event must INSERT a detection row before the alert."""
+    stub = _StubConn()
+
+    @contextmanager
+    def _fake_pg():
+        yield stub
+
+    with patch.object(monitoring_runner, 'pg_connection', _fake_pg):
+        alert_id = monitoring_runner._wallet_transfer_smoke_alert(
+            workspace_id=WORKSPACE_ID,
+            user_id=USER_ID,
+            target_id=TARGET_ID,
+            target_name='Base Wallet',
+            payload=_make_transfer_payload(),
+            evidence_source='live',
+        )
+
+    assert alert_id, 'must return alert_id for live evidence'
+    detection_inserts = [p for t, p in stub.inserts if t == 'detections']
+    assert detection_inserts, 'a detections row must be inserted'
+    # Detection must appear before the alert in the inserts list
+    insert_tables = [t for t, _ in stub.inserts]
+    assert 'detections' in insert_tables, 'detections must be in insert list'
+    assert 'alerts' in insert_tables, 'alerts must be in insert list'
+    assert insert_tables.index('detections') < insert_tables.index('alerts'), (
+        'detection must be inserted before the alert'
+    )
+
+
+def test_detection_row_has_correct_type_and_evidence_fields():
+    """Detection row must have detection_type='monitored_wallet_transfer' and correct evidence."""
+    TELEMETRY_ID = str(uuid.uuid4())
+    SYSTEM_ID = str(uuid.uuid4())
+    ASSET_ID = str(uuid.uuid4())
+    stub = _StubConn()
+
+    @contextmanager
+    def _fake_pg():
+        yield stub
+
+    with patch.object(monitoring_runner, 'pg_connection', _fake_pg):
+        monitoring_runner._wallet_transfer_smoke_alert(
+            workspace_id=WORKSPACE_ID,
+            user_id=USER_ID,
+            target_id=TARGET_ID,
+            target_name='Base Wallet',
+            payload=_make_transfer_payload(),
+            evidence_source='live',
+            telemetry_id=TELEMETRY_ID,
+            monitored_system_id=SYSTEM_ID,
+            protected_asset_id=ASSET_ID,
+        )
+
+    detection_inserts = [(t, p) for t, p in stub.inserts if t == 'detections']
+    assert detection_inserts, 'expected detection insert'
+    _, params = detection_inserts[0]
+    # INSERT param order: (smoke_detection_id, workspace_id, monitored_system_id, protected_asset_id,
+    #   detection_type, severity, confidence, title, explanation,
+    #   evidence_source, source_rule, raw_evidence_json)
+    assert params[1] == WORKSPACE_ID, 'workspace_id mismatch'
+    assert params[2] == SYSTEM_ID, 'monitored_system_id mismatch'
+    assert params[3] == ASSET_ID, 'protected_asset_id mismatch'
+    assert params[4] == 'monitored_wallet_transfer', f'detection_type must be monitored_wallet_transfer; got {params[4]}'
+    assert params[5] == 'low', f'severity must be low; got {params[5]}'
+    assert params[9] == 'live', f'evidence_source must be live; got {params[9]}'
+    assert params[10] == 'smoke_wallet_transfer', f'source_rule mismatch; got {params[10]}'
+    raw = json.loads(params[11])
+    assert raw['tx_hash'] == TX_HASH, 'raw_evidence must include tx_hash'
+    assert raw['from_address'] == FROM_ADDR, 'raw_evidence must include from_address'
+    assert raw['to_address'] == TO_ADDR, 'raw_evidence must include to_address'
+    assert raw['chain_id'] == CHAIN_ID, 'raw_evidence must include chain_id'
+    assert raw['block_number'] == BLOCK_NUMBER, 'raw_evidence must include block_number'
+    assert raw['telemetry_id'] == TELEMETRY_ID, 'raw_evidence must include telemetry_id'
+    assert raw['target_id'] == TARGET_ID, 'raw_evidence must include target_id'
+    assert raw['detection_type'] == 'monitored_wallet_transfer'
+
+
+def test_alert_references_detection_id():
+    """_upsert_alert must be called with the deterministic smoke_detection_id."""
+    TELEMETRY_ID = str(uuid.uuid4())
+    stub = _StubConn()
+    captured_detection_ids: list[str | None] = []
+
+    original_upsert = monitoring_runner._upsert_alert
+
+    def _capturing_upsert(conn, *, detection_id=None, **kwargs):
+        captured_detection_ids.append(detection_id)
+        return original_upsert(conn, detection_id=detection_id, **kwargs)
+
+    @contextmanager
+    def _fake_pg():
+        yield stub
+
+    with (
+        patch.object(monitoring_runner, 'pg_connection', _fake_pg),
+        patch.object(monitoring_runner, '_upsert_alert', _capturing_upsert),
+    ):
+        monitoring_runner._wallet_transfer_smoke_alert(
+            workspace_id=WORKSPACE_ID,
+            user_id=USER_ID,
+            target_id=TARGET_ID,
+            target_name='Base Wallet',
+            payload=_make_transfer_payload(),
+            evidence_source='live',
+            telemetry_id=TELEMETRY_ID,
+        )
+
+    assert captured_detection_ids, '_upsert_alert must be called'
+    det_id = captured_detection_ids[0]
+    assert det_id is not None, 'detection_id passed to _upsert_alert must not be None'
+    uuid.UUID(det_id)  # raises ValueError if not a valid UUID
+
+    # Re-invoke with identical inputs: must produce the same deterministic detection_id
+    stub2 = _StubConn()
+    captured2: list[str | None] = []
+
+    def _capturing_upsert2(conn, *, detection_id=None, **kwargs):
+        captured2.append(detection_id)
+        return original_upsert(conn, detection_id=detection_id, **kwargs)
+
+    @contextmanager
+    def _fake_pg2():
+        yield stub2
+
+    with (
+        patch.object(monitoring_runner, 'pg_connection', _fake_pg2),
+        patch.object(monitoring_runner, '_upsert_alert', _capturing_upsert2),
+    ):
+        monitoring_runner._wallet_transfer_smoke_alert(
+            workspace_id=WORKSPACE_ID,
+            user_id=USER_ID,
+            target_id=TARGET_ID,
+            target_name='Base Wallet',
+            payload=_make_transfer_payload(),
+            evidence_source='live',
+            telemetry_id=TELEMETRY_ID,
+        )
+
+    assert captured2[0] == det_id, 'smoke_detection_id must be deterministic for same tx_hash/target_id'
+
+
+def test_detection_linked_alert_id_updated_after_alert_created():
+    """After alert creation, UPDATE detections SET linked_alert_id must be called with the alert_id."""
+    stub = _StubConn()
+    updates: list[tuple[str, tuple]] = []
+
+    original_execute = stub.execute
+
+    def _tracking_execute(query: str, params=None):
+        q = (query or '').strip().lower()
+        if 'update detections' in q and 'linked_alert_id' in q:
+            updates.append(('detections', tuple(params or ())))
+        return original_execute(query, params)
+
+    stub.execute = _tracking_execute  # type: ignore[assignment]
+
+    @contextmanager
+    def _fake_pg():
+        yield stub
+
+    with patch.object(monitoring_runner, 'pg_connection', _fake_pg):
+        alert_id = monitoring_runner._wallet_transfer_smoke_alert(
+            workspace_id=WORKSPACE_ID,
+            user_id=USER_ID,
+            target_id=TARGET_ID,
+            target_name='Base Wallet',
+            payload=_make_transfer_payload(),
+            evidence_source='live',
+        )
+
+    assert alert_id, 'alert must be created'
+    assert updates, 'UPDATE detections SET linked_alert_id must be called'
+    _, params = updates[0]
+    assert alert_id in params, f'alert_id {alert_id} must appear in UPDATE detections params; got {params}'
+
+
+def test_smoke_alert_includes_telemetry_and_target_id_in_response():
+    """Alert response payload must include telemetry_id and target_id for evidence tracing."""
+    TELEMETRY_ID = str(uuid.uuid4())
+    captured_response: list[dict] = []
+    stub = _StubConn()
+
+    original_upsert = monitoring_runner._upsert_alert
+
+    def _capturing_upsert(conn, *, response, **kwargs):
+        captured_response.append(dict(response))
+        return original_upsert(conn, response=response, **kwargs)
+
+    @contextmanager
+    def _fake_pg():
+        yield stub
+
+    with (
+        patch.object(monitoring_runner, 'pg_connection', _fake_pg),
+        patch.object(monitoring_runner, '_upsert_alert', _capturing_upsert),
+    ):
+        monitoring_runner._wallet_transfer_smoke_alert(
+            workspace_id=WORKSPACE_ID,
+            user_id=USER_ID,
+            target_id=TARGET_ID,
+            target_name='Base Wallet',
+            payload=_make_transfer_payload(),
+            evidence_source='live',
+            telemetry_id=TELEMETRY_ID,
+        )
+
+    assert captured_response, 'expected _upsert_alert to be called'
+    r = captured_response[0]
+    assert r.get('telemetry_id') == TELEMETRY_ID, 'response must include telemetry_id'
+    assert r.get('target_id') == TARGET_ID, 'response must include target_id'
