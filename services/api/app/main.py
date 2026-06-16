@@ -256,6 +256,7 @@ from services.api.app.monitoring_runner import (
     patch_monitoring_target,
     production_claim_validator,
     recover_target_dead_letter,
+    open_alert_from_detection,
     run_detection_from_existing_telemetry,
     run_monitoring_cycle,
     run_monitoring_once,
@@ -4164,6 +4165,17 @@ def run_detection(request: Request) -> dict[str, Any]:
     except Exception as exc:
         logger.error('run_detection_failed method=%s error_type=%s error=%s', request.method, exc.__class__.__name__, exc)
         raise HTTPException(status_code=500, detail='Unable to run detection at this time.') from None
+
+
+@app.post('/alerts/open-from-detection', summary='Open alert from an existing detection')
+def alerts_open_from_detection(request: Request) -> dict[str, Any]:
+    try:
+        return with_auth_schema_json(lambda: open_alert_from_detection(request))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error('open_alert_failed method=%s error_type=%s error=%s', request.method, exc.__class__.__name__, exc)
+        raise HTTPException(status_code=500, detail='Unable to open alert at this time.') from None
 
 
 @app.get('/alerts', summary='List alerts')

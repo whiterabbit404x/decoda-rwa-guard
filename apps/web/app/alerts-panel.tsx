@@ -126,6 +126,7 @@ export default function AlertsPanel() {
   const [message, setMessage] = useState('');
   const [streamStatus, setStreamStatus] = useState<'connected' | 'reconnecting' | 'polling' | 'offline'>('offline');
   const [runDetectionLoading, setRunDetectionLoading] = useState(false);
+  const [openAlertLoading, setOpenAlertLoading] = useState(false);
 
   const counts = runtime?.counts as Record<string, number> | undefined;
   const workspaceEvidenceSource: string = summary.evidence_source_summary ?? '';
@@ -151,6 +152,44 @@ export default function AlertsPanel() {
       }
     } finally {
       if (!cancelled.value) setDataLoading(false);
+    }
+  }
+
+  async function openAlert() {
+    console.log('open_alert_clicked');
+    setOpenAlertLoading(true);
+    setMessage('');
+    try {
+      console.log('open_alert_request_started');
+      const res = await fetch(`${apiUrl}/alerts/open-from-detection`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      });
+      if (res.ok) {
+        const json = (await res.json()) as { status?: string; alert_id?: string | null; detection_id?: string | null };
+        if (json.alert_id) {
+          console.log('open_alert_created', json.alert_id);
+          setMessage('Alert opened successfully.');
+          const noop = { value: false };
+          setDataLoading(true);
+          void fetchAlerts(noop);
+        } else if (json.status === 'no_detection') {
+          setMessage('No open detections found. Run Detection first.');
+        } else {
+          setMessage('Alert already exists for this detection.');
+          const noop = { value: false };
+          setDataLoading(true);
+          void fetchAlerts(noop);
+        }
+      } else {
+        console.log('open_alert_failed', res.status);
+        setMessage('Failed to open alert. Check logs for details.');
+      }
+    } catch {
+      console.log('open_alert_failed', 'network_error');
+      setMessage('Failed to open alert — network error.');
+    } finally {
+      setOpenAlertLoading(false);
     }
   }
 
@@ -319,8 +358,9 @@ export default function AlertsPanel() {
       return {
         title: 'No alerts opened',
         body: 'Detections exist, but no alert has been opened yet.',
-        ctaHref: '/threat',
-        ctaLabel: 'Open Alert',
+        ctaLabel: openAlertLoading ? 'Opening...' : 'Open Alert',
+        ctaOnClick: openAlert,
+        ctaDisabled: openAlertLoading,
       };
     }
     return null;
