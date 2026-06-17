@@ -6433,7 +6433,13 @@ def evaluate_monitoring_system_alerts(*, stale_after_seconds: int = 120) -> dict
                 FROM monitoring_watcher_state WHERE last_heartbeat_at IS NULL OR last_heartbeat_at < NOW()-(%s || ' seconds')::interval''', (stale_after_seconds,), 'missing_heartbeats'),
             ('stale_telemetry', 'critical', 'Workspace telemetry is stale.',
              '''SELECT workspace_id::text AS fingerprint, jsonb_build_object('latest_telemetry_at',MAX(observed_at)) AS details
-                FROM telemetry_events GROUP BY workspace_id HAVING MAX(observed_at) < NOW()-(%s || ' seconds')::interval''', (stale_after_seconds * 2,), 'stale_telemetry'),
+                FROM telemetry_events GROUP BY workspace_id
+                HAVING MAX(observed_at) < NOW()-(%s || ' seconds')::interval
+                  AND COALESCE(
+                    MAX(observed_at) FILTER (WHERE event_type = 'rpc_polling' AND evidence_source = 'live'),
+                    '1970-01-01'::timestamptz
+                  ) < NOW()-(%s || ' seconds')::interval''',
+             (stale_after_seconds * 2, stale_after_seconds * 2), 'stale_telemetry'),
             ('proof_chain_failure', 'critical', 'Monitoring proof chain verification failed.',
              '''SELECT workspace_id::text AS fingerprint, jsonb_build_object('failed_records',COUNT(*)) AS details
                 FROM audit_logs WHERE metadata->>'proof_chain_status'='failed' AND created_at > NOW()-INTERVAL '15 minutes' GROUP BY workspace_id''', (), 'proof_chain_failures'),
