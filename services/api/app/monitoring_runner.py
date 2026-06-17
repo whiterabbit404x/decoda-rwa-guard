@@ -8420,8 +8420,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 else 'workspace_not_configured'
             )
         else:
+            # Suppress 'no_fresh_live_coverage_telemetry' when rpc_polling coverage is fresh.
+            # A fresh coverage_fresh signals the worker is actively polling the chain even if
+            # the reporting_systems JOIN hasn't caught up yet.
             runtime_status_reason = degraded_reason or (
-                'no_fresh_live_coverage_telemetry' if reporting_systems <= 0 or not coverage_fresh else None
+                'no_fresh_live_coverage_telemetry' if not coverage_fresh else None
             )
         if workspace_configured and reporting_systems <= 0 and evidence_source == 'live':
             runtime_status_summary = 'degraded'
@@ -8947,8 +8950,12 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             summary['runtime_status'] = 'degraded'
             summary['monitoring_status'] = 'limited'
             if runtime_status_reason is None:
-                runtime_status_reason = 'no_fresh_live_coverage_telemetry'
-                summary['status_reason'] = runtime_status_reason
+                # Only blame missing coverage telemetry when coverage is actually not fresh.
+                # When coverage_fresh=True the worker is polling; the gap is a reporting_systems
+                # JOIN miss, not an RPC connectivity problem.
+                if not coverage_fresh:
+                    runtime_status_reason = 'no_fresh_live_coverage_telemetry'
+                    summary['status_reason'] = runtime_status_reason
         if runtime_status_summary not in {'live', 'healthy', 'degraded', 'offline', 'fail', 'idle'}:
             runtime_status_summary = 'degraded' if workspace_configured else 'offline'
             summary['runtime_status'] = runtime_status_summary
@@ -9846,7 +9853,14 @@ def list_target_telemetry(
                 """EXISTS (
                     SELECT 1 FROM alerts a
                     WHERE a.workspace_id = te.workspace_id
-                      AND a.payload->>'telemetry_id' = te.id::text
+                      AND (
+                        a.payload->>'telemetry_id' = te.id::text
+                        OR (
+                          a.payload->>'tx_hash' IS NOT NULL
+                          AND a.payload->>'tx_hash' = te.payload_json->>'tx_hash'
+                          AND te.event_type IN ('wallet_transfer_detected', 'native_transfer')
+                        )
+                      )
                 )"""
             )
         elif _etf:
@@ -10390,6 +10404,41 @@ def ingest_tx_by_hash(
                 'amount_wei': str(value_wei),
             }
 
+        # Fire alert evaluators immediately after new wallet_transfer_detected telemetry.
+        _ingest_user_id = str(
+            target.get('updated_by_user_id') or target.get('created_by_user_id') or ''
+        )
+        try:
+            _wallet_transfer_smoke_alert(
+                workspace_id=workspace_id,
+                user_id=_ingest_user_id,
+                target_id=target_id,
+                target_name=str(target.get('name') or target_id),
+                payload=payload,
+                evidence_source='live',
+                telemetry_id=telem_id,
+            )
+        except Exception as _smoke_exc:
+            _log.warning(
+                'tx_hash_import_smoke_alert_failed target_id=%s tx_hash=%s error=%s',
+                target_id, tx_hash_norm, str(_smoke_exc)[:200],
+            )
+        try:
+            _strategic_infrastructure_guard_alert(
+                workspace_id=workspace_id,
+                user_id=_ingest_user_id,
+                target_id=target_id,
+                target_name=str(target.get('name') or target_id),
+                target_wallet_address=monitored_wallet,
+                payload=payload,
+                evidence_source='live',
+                telemetry_id=telem_id,
+            )
+        except Exception as _sig_exc:
+            _log.warning(
+                'tx_hash_import_sig_alert_failed target_id=%s tx_hash=%s error=%s',
+                target_id, tx_hash_norm, str(_sig_exc)[:200],
+            )
         _log.info(
             'tx_hash_import_persisted target_id=%s tx_hash=%s telemetry_id=%s '
             'block_number=%s direction=%s amount_wei=%s chain_id=%s',
