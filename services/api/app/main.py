@@ -3775,8 +3775,24 @@ def monitoring_run_get(run_id: str, request: Request) -> dict[str, Any]:
 
 
 @app.get('/monitoring/targets/{target_id}/telemetry', summary='List telemetry events for a target')
-def monitoring_target_telemetry(target_id: str, request: Request, limit: int = 50, q: str | None = None) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: list_target_telemetry(request, target_id=target_id, limit=limit, q=q))
+def monitoring_target_telemetry(
+    target_id: str,
+    request: Request,
+    limit: int = 50,
+    offset: int = 0,
+    q: str | None = None,
+    event_type_filter: str | None = None,
+) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: list_target_telemetry(
+            request,
+            target_id=target_id,
+            limit=limit,
+            offset=offset,
+            q=q,
+            event_type_filter=event_type_filter,
+        )
+    )
 
 
 @app.patch('/monitoring/targets/{target_id}', summary='Update target monitoring settings')
