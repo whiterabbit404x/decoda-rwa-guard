@@ -308,6 +308,44 @@ def test_alerts_only_empty_when_no_alert_linked():
     assert result['telemetry'] == []
 
 
+def test_alerts_only_filter_matches_tx_hash_evidence_and_detection_linkage():
+    """alerts_only must link rows via telemetry_id OR the alert's tx_hash OR the alert's
+    evidence tx_hash OR a detection (evidence tx_hash) linked to an alert — so every
+    distinct tx_hash with an alert surfaces, not just one."""
+    target_id = str(uuid.uuid4())
+    ws_id = str(uuid.uuid4())
+    conn = CapturingConn(count=0)
+
+    _run_telemetry(target_id, ws_id, conn, event_type_filter='alerts_only')
+
+    data_sql = conn.executed_sqls[-1]
+    # tx_hash on the alert payload (already supported)
+    assert "a.payload->>'tx_hash'" in data_sql
+    # tx_hash carried in the alert's evidence object
+    assert "payload->'evidence'->>'tx_hash'" in data_sql
+    # detection-linkage path: a detection carrying this tx_hash linked to an alert
+    assert 'detections' in data_sql
+    assert "raw_evidence_json->>'tx_hash'" in data_sql
+    assert 'linked_alert_id' in data_sql
+
+
+def test_alerts_only_filter_is_per_row_not_grouped():
+    """The filter must be a per-row EXISTS (no GROUP BY / LIMIT inside) so multiple distinct
+    tx_hashes each appear."""
+    target_id = str(uuid.uuid4())
+    ws_id = str(uuid.uuid4())
+    conn = CapturingConn(count=0)
+
+    _run_telemetry(target_id, ws_id, conn, event_type_filter='alerts_only')
+
+    data_sql = conn.executed_sqls[-1].lower()
+    # The alerts_only correlation must not collapse rows by target/rule.
+    assert 'group by' not in data_sql
+    # Workspace-scoped correlation (no cross-tenant leakage).
+    assert 'a.workspace_id = te.workspace_id' in conn.executed_sqls[-1]
+    assert 'd.workspace_id = te.workspace_id' in conn.executed_sqls[-1]
+
+
 # --- Unknown / invalid filter is silently ignored ---
 
 def test_unknown_event_type_filter_is_ignored():
