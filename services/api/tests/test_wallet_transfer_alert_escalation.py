@@ -1123,3 +1123,210 @@ def test_wallet_transfer_detected_telemetry_creates_alert_visible_for_workspace(
     assert params[9] == 'live', f'alert source must be live; got {params[9]}'
     # detection_id (index 17) — links the alert to the detections row
     assert params[17] is not None, 'detection_id must be set so /alerts can show the proof chain'
+
+
+# ---------------------------------------------------------------------------
+# 9.  Pipeline: wallet_transfer_detected → alert → Alerts only tab
+# ---------------------------------------------------------------------------
+
+def test_smoke_alert_payload_json_contains_telemetry_id():
+    """Requirement 5/6: alerts.payload JSON must contain telemetry_id.
+
+    The alerts_only filter in list_target_telemetry uses:
+        a.payload->>'telemetry_id' = te.id::text
+    so the alert's payload column must store the telemetry_id as a top-level
+    JSON key for the Alerts only tab to return the linked telemetry row.
+    """
+    telemetry_id = str(uuid.uuid4())
+    stub = _StubConn()
+    captured_payloads: list[dict] = []
+    original_execute = stub.execute
+
+    def _capturing_execute(query: str, params=None):
+        q = (query or '').strip().lower()
+        if q.startswith('insert into alerts') and params and len(params) > 11:
+            try:
+                captured_payloads.append(json.loads(params[11]))
+            except Exception:
+                pass
+        return original_execute(query, params)
+
+    stub.execute = _capturing_execute  # type: ignore[assignment]
+
+    @contextmanager
+    def _fake_pg():
+        yield stub
+
+    with patch.object(monitoring_runner, 'pg_connection', _fake_pg):
+        monitoring_runner._wallet_transfer_smoke_alert(
+            workspace_id=WORKSPACE_ID,
+            user_id=USER_ID,
+            target_id=TARGET_ID,
+            target_name='Treasury',
+            payload=_make_transfer_payload(),
+            evidence_source='live',
+            telemetry_id=telemetry_id,
+        )
+
+    assert captured_payloads, 'alert INSERT must have been captured'
+    payload = captured_payloads[0]
+    assert payload.get('telemetry_id') == telemetry_id, (
+        f'alerts.payload JSON must contain telemetry_id={telemetry_id!r} '
+        "for the alerts_only filter (a.payload->>'telemetry_id' = te.id::text); "
+        f'got payload.telemetry_id={payload.get("telemetry_id")!r}'
+    )
+    assert payload.get('tx_hash') == TX_HASH, 'payload must include tx_hash'
+    assert payload.get('chain_id') == CHAIN_ID, 'payload must include chain_id'
+    assert payload.get('block_number') == BLOCK_NUMBER, 'payload must include block_number'
+    assert payload.get('monitoring_run_id') is not None, (
+        'payload must include monitoring_run_id so the alert links back to the monitoring cycle'
+    )
+
+
+def test_wallet_transfer_to_alerts_only_tab_pipeline():
+    """Requirement 9: full pipeline wallet_transfer_detected → detection → alert → Alerts only tab.
+
+    Proves the chain:
+    1. _wallet_transfer_smoke_alert creates an alert with telemetry_id in alerts.payload JSON.
+    2. list_target_telemetry(event_type_filter='alerts_only') generates SQL that uses
+       a.payload->>'telemetry_id' = te.id::text to find telemetry linked to real alerts.
+    3. When the DB returns a matching wallet_transfer_detected row, it appears in the result
+       and live_telemetry_ready is True.
+    """
+    from services.api.app.monitoring_runner import list_target_telemetry
+    from fastapi import Request
+    from unittest.mock import patch as _patch
+
+    ws_id = str(uuid.uuid4())
+    target_id = str(uuid.uuid4())
+    user_id = str(uuid.uuid4())
+    telemetry_id = str(uuid.uuid4())
+
+    # ---- Step 1: smoke alert stores telemetry_id in payload ----
+    stub = _StubConn()
+    captured_payload: dict = {}
+    original_execute = stub.execute
+
+    def _capturing_execute(query: str, params=None):
+        q = (query or '').strip().lower()
+        if q.startswith('insert into alerts') and params and len(params) > 11:
+            try:
+                captured_payload.update(json.loads(params[11]))
+            except Exception:
+                pass
+        return original_execute(query, params)
+
+    stub.execute = _capturing_execute  # type: ignore[assignment]
+
+    @contextmanager
+    def _fake_pg():
+        yield stub
+
+    with patch.object(monitoring_runner, 'pg_connection', _fake_pg):
+        alert_id = monitoring_runner._wallet_transfer_smoke_alert(
+            workspace_id=ws_id,
+            user_id=user_id,
+            target_id=target_id,
+            target_name='Pipeline Test Wallet',
+            payload=_make_transfer_payload(),
+            evidence_source='live',
+            telemetry_id=telemetry_id,
+        )
+
+    assert alert_id, 'alert must be created for live wallet transfer'
+    assert captured_payload.get('telemetry_id') == telemetry_id, (
+        f'alert payload must include telemetry_id={telemetry_id!r}; '
+        f'got {captured_payload.get("telemetry_id")!r}'
+    )
+
+    # ---- Step 2 & 3: alerts_only SQL + result from list_target_telemetry ----
+    executed_sqls: list[str] = []
+    _telemetry_row = {
+        'id': telemetry_id,
+        'workspace_id': ws_id,
+        'target_id': target_id,
+        'provider_type': 'evm_rpc',
+        'source_type': 'wallet_transfer_detected',
+        'evidence_source': 'live',
+        'observed_at': '2026-06-17T10:00:00Z',
+        'ingested_at': '2026-06-17T10:00:01Z',
+        'payload_json': {'tx_hash': TX_HASH, 'block_number': BLOCK_NUMBER, 'chain_id': CHAIN_ID},
+        'chain_network': 'base',
+        'receipt_block_number': None,
+    }
+
+    class _TelemetryConn:
+        def execute(self_inner, sql, params=None):
+            executed_sqls.append(sql)
+
+            class _R:
+                def fetchone(self):
+                    return {'cnt': 1}
+
+                def fetchall(self):
+                    return [dict(_telemetry_row)]
+
+            return _R()
+
+        def commit(self):
+            pass
+
+    mock_pg = MagicMock()
+    _conn = _TelemetryConn()
+    mock_pg.return_value.__enter__ = lambda s: _conn
+    mock_pg.return_value.__exit__ = MagicMock(return_value=False)
+
+    scope = {
+        'type': 'http',
+        'method': 'GET',
+        'path': f'/monitoring/targets/{target_id}/telemetry',
+        'query_string': b'',
+        'headers': [(b'x-workspace-id', ws_id.encode())],
+        'client': ('127.0.0.1', 9000),
+    }
+    request = Request(scope)
+
+    with (
+        _patch('services.api.app.monitoring_runner.pg_connection', mock_pg),
+        _patch('services.api.app.monitoring_runner.ensure_pilot_schema'),
+        _patch(
+            'services.api.app.monitoring_runner.authenticate_with_connection',
+            return_value={'id': user_id},
+        ),
+        _patch(
+            'services.api.app.monitoring_runner.resolve_workspace',
+            return_value={'workspace_id': ws_id, 'workspace': {}},
+        ),
+    ):
+        result = list_target_telemetry(
+            request, target_id=target_id, event_type_filter='alerts_only'
+        )
+
+    # Verify the SQL references alerts.payload->>'telemetry_id' for the JOIN
+    data_sql = executed_sqls[-1]
+    assert 'telemetry_id' in data_sql, (
+        'alerts_only SQL must reference telemetry_id to link alerts → telemetry rows'
+    )
+    assert 'payload' in data_sql.lower(), (
+        "alerts_only SQL must use alert.payload->>'telemetry_id' for the JOIN condition"
+    )
+    assert 'EXISTS' in data_sql.upper(), (
+        'alerts_only SQL must use EXISTS subquery to check alert linkage'
+    )
+
+    # Verify the telemetry row is returned in the Alerts only result
+    assert result['total_count'] == 1, (
+        f'/alerts_only must return 1 telemetry row for the linked alert; '
+        f'got total_count={result["total_count"]}'
+    )
+    assert len(result['telemetry']) == 1, (
+        f'Alerts only tab must contain the wallet_transfer_detected row; '
+        f'got {len(result["telemetry"])} rows'
+    )
+    assert result['live_telemetry_ready'] is True, (
+        'live evidence_source telemetry must set live_telemetry_ready=True'
+    )
+    row = result['telemetry'][0]
+    assert str(row.get('id')) == telemetry_id, (
+        f'returned telemetry row id must be {telemetry_id!r}; got {row.get("id")!r}'
+    )
