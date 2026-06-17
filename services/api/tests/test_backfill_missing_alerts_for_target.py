@@ -277,3 +277,44 @@ def test_smoke_alert_recovery_creates_alert_when_detection_exists_no_alert(monke
     assert 'alerts' in stub.inserts, 'alert INSERT must be issued on recovery path'
     assert 'detections' in stub.updates, 'detections must be updated with linked_alert_id'
     assert stub.commit_calls >= 2, 'at least two commits: first for monitoring_run, second for alert+update'
+
+
+def test_backfill_two_different_tx_hashes_create_two_alerts(monkeypatch):
+    """Two wallet_transfer_detected rows with different tx_hashes must produce two separate
+    alerts — different tx_hash = different alert, no cross-tx deduplication."""
+    from services.api.app import monitoring_runner
+
+    TX_HASH_1 = '0xaaaa000000000000000000000000000000000000000000000000000000001234'
+    TX_HASH_2 = '0xbbbb000000000000000000000000000000000000000000000000000000005678'
+    alert_id_1 = str(uuid.uuid4())
+    alert_id_2 = str(uuid.uuid4())
+
+    smoke_call_hashes: list[str] = []
+
+    def _fake_smoke(**kwargs):
+        tx = str((kwargs.get('payload') or {}).get('tx_hash') or '')
+        smoke_call_hashes.append(tx)
+        if tx == TX_HASH_1:
+            return alert_id_1
+        return alert_id_2
+
+    row1 = _make_telemetry_row(telemetry_id=str(uuid.uuid4()), tx_hash=TX_HASH_1)
+    row2 = _make_telemetry_row(telemetry_id=str(uuid.uuid4()), tx_hash=TX_HASH_2)
+
+    conn = _FakeConn([row1, row2])
+    monkeypatch.setattr(monitoring_runner, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(monitoring_runner, 'authenticate_with_connection', lambda *_: {'id': USER_ID})
+    monkeypatch.setattr(monitoring_runner, 'resolve_workspace', lambda *_: {'workspace_id': WORKSPACE_ID})
+    monkeypatch.setattr(monitoring_runner, '_wallet_transfer_smoke_alert', _fake_smoke)
+    monkeypatch.setattr(monitoring_runner, '_strategic_infrastructure_guard_alert', lambda **_: None)
+
+    request = SimpleNamespace(headers={'x-workspace-id': WORKSPACE_ID})
+    result = monitoring_runner.backfill_missing_alerts_for_target(request, target_id=TARGET_ID)
+
+    assert result['telemetry_processed'] == 2
+    assert result['alerts_created'] == 2, 'each distinct tx_hash must produce a distinct alert'
+    assert set(result['alert_ids']) == {alert_id_1, alert_id_2}
+    assert TX_HASH_1 in smoke_call_hashes
+    assert TX_HASH_2 in smoke_call_hashes

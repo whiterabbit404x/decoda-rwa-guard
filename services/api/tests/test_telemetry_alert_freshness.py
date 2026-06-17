@@ -230,7 +230,9 @@ def test_ingest_tx_by_hash_fires_alert_evaluators_after_insert(monkeypatch):
 def test_stale_telemetry_query_excludes_fresh_rpc_polling_workspaces(monkeypatch):
     """evaluate_monitoring_system_alerts must not fire stale_telemetry for workspaces
     that have a fresh rpc_polling event.  The SQL HAVING clause must contain a
-    FILTER aggregate or equivalent guard on rpc_polling/evidence_source=live."""
+    FILTER aggregate or equivalent guard on rpc_polling/evidence_source=live.
+    The query must group by both workspace_id and target_id so operators can see
+    which specific target is stale — not just which workspace."""
     from services.api.app import pilot
 
     captured: list[tuple[str, Any]] = []
@@ -260,6 +262,9 @@ def test_stale_telemetry_query_excludes_fresh_rpc_polling_workspaces(monkeypatch
     )
     assert 'filter' in q_lower, (
         "stale_telemetry query must use FILTER aggregate to check rpc_polling freshness"
+    )
+    assert 'target_id' in q_lower, (
+        "stale_telemetry query must group by target_id so stale log identifies the specific target"
     )
 
 
@@ -321,4 +326,9 @@ def test_alerts_only_filter_sql_matches_by_tx_hash(monkeypatch):
     )
     assert 'wallet_transfer_detected' in q_lower, (
         "alerts_only tx_hash filter must be scoped to wallet_transfer_detected events"
+    )
+    # The filter must also check payload_json->>'hash' so rows where the provider stored the
+    # tx hash under the 'hash' key (not 'tx_hash') are still matched.
+    assert "coalesce" in q_lower or "->>'hash'" in q_lower, (
+        "alerts_only filter must handle payload_json->>'hash' as alternative to ->>'tx_hash'"
     )

@@ -6431,9 +6431,12 @@ def evaluate_monitoring_system_alerts(*, stale_after_seconds: int = 120) -> dict
             ('missing_heartbeat', 'critical', 'Monitoring watcher heartbeat is missing.',
              '''SELECT watcher_name AS fingerprint, jsonb_build_object('last_heartbeat_at',last_heartbeat_at,'status',status) AS details
                 FROM monitoring_watcher_state WHERE last_heartbeat_at IS NULL OR last_heartbeat_at < NOW()-(%s || ' seconds')::interval''', (stale_after_seconds,), 'missing_heartbeats'),
-            ('stale_telemetry', 'critical', 'Workspace telemetry is stale.',
-             '''SELECT workspace_id::text AS fingerprint, jsonb_build_object('latest_telemetry_at',MAX(observed_at)) AS details
-                FROM telemetry_events GROUP BY workspace_id
+            ('stale_telemetry', 'critical', 'Target telemetry is stale.',
+             '''SELECT (workspace_id::text || ':' || COALESCE(target_id::text, 'global')) AS fingerprint,
+                       jsonb_build_object('workspace_id', workspace_id::text, 'target_id', COALESCE(target_id::text, ''), 'latest_telemetry_at', MAX(observed_at)) AS details
+                FROM telemetry_events
+                WHERE target_id IS NOT NULL
+                GROUP BY workspace_id, target_id
                 HAVING MAX(observed_at) < NOW()-(%s || ' seconds')::interval
                   AND COALESCE(
                     MAX(observed_at) FILTER (WHERE event_type = 'rpc_polling' AND evidence_source = 'live'),

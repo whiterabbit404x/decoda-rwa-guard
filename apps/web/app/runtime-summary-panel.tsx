@@ -46,6 +46,9 @@ function bannerHeadline(state: BannerState, summary: WorkspaceMonitoringTruth): 
     if (summary.protected_assets_count === 0) return 'No protected assets registered. Add an asset to begin.';
     return 'Setup required: protected asset found, but live telemetry is not connected yet.';
   }
+  if (summary.telemetry_freshness === 'fresh' && Boolean(summary.last_telemetry_at ?? summary.last_coverage_telemetry_at)) {
+    return 'LIMITED COVERAGE — Live telemetry active; proof-chain enrichment incomplete.';
+  }
   return 'Limited coverage: asset is configured, but live telemetry is missing or stale.';
 }
 

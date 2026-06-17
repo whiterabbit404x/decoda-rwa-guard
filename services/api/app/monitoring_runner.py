@@ -617,14 +617,17 @@ def _wallet_transfer_smoke_alert(
         'telemetry_id': telemetry_id,
         'target_id': target_id,
     }
-    _dedup_seed = json.dumps(
+    # Detection ID uses narrow seed so existing detection rows remain findable.
+    _detection_seed = json.dumps(
         {'target_id': target_id, 'tx_hash': tx_hash, 'rule': 'smoke_wallet_transfer'},
         sort_keys=True,
     )
-    # Deterministic detection ID: same tx on the same target always produces the same
-    # detection row so re-polls are idempotent (ON CONFLICT DO NOTHING on the PK).
-    smoke_detection_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f'detection:{_dedup_seed}'))
-    # Alert dedup signature unchanged for backward compat with existing alert rows.
+    smoke_detection_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f'detection:{_detection_seed}'))
+    # Alert signature includes workspace_id + chain_id: workspace_id + target_id + chain_id + tx_hash + rule_key.
+    _dedup_seed = json.dumps(
+        {'workspace_id': workspace_id, 'target_id': target_id, 'chain_id': str(chain_id or ''), 'tx_hash': tx_hash, 'rule': 'smoke_wallet_transfer'},
+        sort_keys=True,
+    )
     signature = uuid.uuid5(uuid.NAMESPACE_DNS, _dedup_seed).hex
     title = f'Monitored wallet transfer detected: {target_name} (chain {chain_id})'
     raw_evidence = {
@@ -841,11 +844,17 @@ def _strategic_infrastructure_guard_alert(
     amount_wei = str(payload.get('value') or payload.get('amount_wei') or payload.get('amount') or '0')
     block_number = payload.get('block_number')
 
-    _dedup_seed = json.dumps(
+    # Detection ID seed kept stable so existing detection rows remain findable.
+    _detection_seed = json.dumps(
         {'target_id': target_id, 'tx_hash': tx_hash, 'rule': _SIG_RULE_KEY, 'chain_id': 8453},
         sort_keys=True,
     )
-    sig_detection_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f'detection:{_dedup_seed}'))
+    sig_detection_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f'detection:{_detection_seed}'))
+    # Alert signature: workspace_id + target_id + chain_id + tx_hash + rule_key.
+    _dedup_seed = json.dumps(
+        {'workspace_id': workspace_id, 'target_id': target_id, 'chain_id': 8453, 'tx_hash': tx_hash, 'rule': _SIG_RULE_KEY},
+        sort_keys=True,
+    )
     signature = uuid.uuid5(uuid.NAMESPACE_DNS, _dedup_seed).hex
 
     raw_evidence = {
@@ -947,9 +956,9 @@ def _strategic_infrastructure_guard_alert(
                 )
                 if existing_alert_id:
                     logger.info(
-                        'sig_alert_skipped_duplicate workspace_id=%s target_id=%s '
-                        'detection_id=%s tx_hash=%s reason=alert_already_linked alert_id=%s',
-                        workspace_id, target_id, sig_detection_id, tx_hash, existing_alert_id,
+                        'strategic_guard_alert_deduped workspace_id=%s target_id=%s '
+                        'detection_id=%s tx_hash=%s dedupe_key=%s reason=alert_already_linked alert_id=%s',
+                        workspace_id, target_id, sig_detection_id, tx_hash, signature, existing_alert_id,
                     )
                     return existing_alert_id
                 # Detection exists but no alert — recover.
@@ -979,9 +988,9 @@ def _strategic_infrastructure_guard_alert(
                 conn.commit()
                 if recovery_alert_id:
                     logger.info(
-                        'sig_alert_recovered workspace_id=%s target_id=%s '
-                        'detection_id=%s alert_id=%s tx_hash=%s',
-                        workspace_id, target_id, sig_detection_id, recovery_alert_id, tx_hash,
+                        'strategic_guard_alert_recovered workspace_id=%s target_id=%s '
+                        'detection_id=%s alert_id=%s tx_hash=%s dedupe_key=%s',
+                        workspace_id, target_id, sig_detection_id, recovery_alert_id, tx_hash, signature,
                     )
                 return recovery_alert_id or None
             logger.info(
@@ -1011,10 +1020,10 @@ def _strategic_infrastructure_guard_alert(
             conn.commit()
         if alert_id:
             logger.info(
-                'sig_alert_created workspace_id=%s target_id=%s '
-                'detection_id=%s alert_id=%s tx_hash=%s chain_id=%s block=%s evidence_source=%s',
+                'strategic_guard_alert_created workspace_id=%s target_id=%s '
+                'detection_id=%s alert_id=%s tx_hash=%s chain_id=%s block=%s evidence_source=%s dedupe_key=%s',
                 workspace_id, target_id, sig_detection_id, alert_id,
-                tx_hash, chain_id, block_number, evidence_source,
+                tx_hash, chain_id, block_number, evidence_source, signature,
             )
         return alert_id or None
     except Exception as exc:
@@ -9858,7 +9867,9 @@ def list_target_telemetry(
                         a.payload->>'telemetry_id' = te.id::text
                         OR (
                           a.payload->>'tx_hash' IS NOT NULL
-                          AND lower(a.payload->>'tx_hash') = lower(te.payload_json->>'tx_hash')
+                          AND lower(a.payload->>'tx_hash') = lower(
+                            COALESCE(te.payload_json->>'tx_hash', te.payload_json->>'hash')
+                          )
                           AND te.event_type IN ('wallet_transfer_detected', 'native_transfer')
                         )
                       )
@@ -10806,6 +10817,7 @@ def backfill_missing_alerts_for_target(request: Request, *, target_id: str) -> d
         ).fetchall()
 
     alerts_created: list[str] = []
+    deduped_count = 0
     for row in rows:
         telemetry_id = str(row['id'])
         row_target_id = str(row['target_id']) if row['target_id'] else ''
@@ -10815,6 +10827,7 @@ def backfill_missing_alerts_for_target(request: Request, *, target_id: str) -> d
         evidence_source = str(row['evidence_source'] or 'live')
         monitored_system_id = str(row['monitored_system_id']) if row['monitored_system_id'] else None
         protected_asset_id = str(row['protected_asset_id']) if row['protected_asset_id'] else None
+        row_tx_hash = str(payload.get('tx_hash') or payload.get('hash') or '')
 
         alert_id = _wallet_transfer_smoke_alert(
             workspace_id=workspace_id,
@@ -10829,10 +10842,18 @@ def backfill_missing_alerts_for_target(request: Request, *, target_id: str) -> d
         )
         if alert_id and alert_id not in alerts_created:
             logger.info(
-                'backfill_smoke_alert workspace_id=%s target_id=%s alert_id=%s telemetry_id=%s',
-                workspace_id, row_target_id, alert_id, telemetry_id,
+                'strategic_guard_alert_backfill_created workspace_id=%s target_id=%s '
+                'alert_id=%s telemetry_id=%s tx_hash=%s rule=smoke_wallet_transfer',
+                workspace_id, row_target_id, alert_id, telemetry_id, row_tx_hash,
             )
             alerts_created.append(alert_id)
+        elif alert_id:
+            deduped_count += 1
+            logger.info(
+                'strategic_guard_alert_backfill_deduped workspace_id=%s target_id=%s '
+                'alert_id=%s telemetry_id=%s tx_hash=%s rule=smoke_wallet_transfer',
+                workspace_id, row_target_id, alert_id, telemetry_id, row_tx_hash,
+            )
 
         sig_alert_id = _strategic_infrastructure_guard_alert(
             workspace_id=workspace_id,
@@ -10848,15 +10869,24 @@ def backfill_missing_alerts_for_target(request: Request, *, target_id: str) -> d
         )
         if sig_alert_id and sig_alert_id not in alerts_created:
             logger.info(
-                'backfill_sig_alert workspace_id=%s target_id=%s alert_id=%s telemetry_id=%s',
-                workspace_id, row_target_id, sig_alert_id, telemetry_id,
+                'strategic_guard_alert_backfill_created workspace_id=%s target_id=%s '
+                'alert_id=%s telemetry_id=%s tx_hash=%s rule=strategic_infrastructure_guard',
+                workspace_id, row_target_id, sig_alert_id, telemetry_id, row_tx_hash,
             )
             alerts_created.append(sig_alert_id)
+        elif sig_alert_id:
+            deduped_count += 1
+            logger.info(
+                'strategic_guard_alert_backfill_deduped workspace_id=%s target_id=%s '
+                'alert_id=%s telemetry_id=%s tx_hash=%s rule=strategic_infrastructure_guard',
+                workspace_id, row_target_id, sig_alert_id, telemetry_id, row_tx_hash,
+            )
 
     logger.info(
-        'backfill_missing_alerts_completed workspace_id=%s target_id=%s '
-        'telemetry_processed=%s alerts_created=%s',
-        workspace_id, target_id, len(rows), len(alerts_created),
+        'strategic_guard_alert_backfill_completed workspace_id=%s target_id=%s '
+        'telemetry_processed=%s created_count=%s deduped_count=%s alert_ids=%s',
+        workspace_id, target_id, len(rows), len(alerts_created), deduped_count,
+        ','.join(alerts_created) if alerts_created else 'none',
     )
     return {
         'status': 'completed',
