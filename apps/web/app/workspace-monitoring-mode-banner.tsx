@@ -62,6 +62,12 @@ function bannerMessage(state: BannerState, truth: WorkspaceMonitoringTruth): Ban
     };
   }
   // LIMITED_COVERAGE
+  if (truth.telemetry_freshness === 'fresh' && Boolean(truth.last_telemetry_at)) {
+    return {
+      headline: 'LIMITED COVERAGE — Live telemetry active; proof-chain enrichment incomplete.',
+      subtext: 'Live telemetry is flowing; full coverage requires proof-chain enrichment to complete.',
+    };
+  }
   return {
     headline: 'Limited coverage: asset is configured, but live telemetry is missing or stale.',
     subtext: 'Monitoring will become live after provider polling and telemetry verification.',
