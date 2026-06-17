@@ -364,3 +364,146 @@ def test_backfill_missing_alerts_query_includes_native_transfer(monkeypatch):
     assert 'native_transfer' in telemetry_query, (
         "backfill query must include native_transfer so block-range-backfilled rows get alerts"
     )
+
+
+# --- Granular counts, scan-all, and simulator/skip handling ---
+
+
+def test_backfill_returns_granular_counts(monkeypatch):
+    """Backfill response exposes created/deduped/linked/skipped counts so an operator can
+    confirm whether alerts were created or only deduped (worker shows alerts=0 otherwise)."""
+    from services.api.app import monitoring_runner
+
+    conn = _FakeConn([_make_telemetry_row()])
+    monkeypatch.setattr(monitoring_runner, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(monitoring_runner, 'authenticate_with_connection', lambda *_: {'id': USER_ID})
+    monkeypatch.setattr(monitoring_runner, 'resolve_workspace', lambda *_: {'workspace_id': WORKSPACE_ID})
+    monkeypatch.setattr(monitoring_runner, '_wallet_transfer_smoke_alert', lambda **_: str(uuid.uuid4()))
+    monkeypatch.setattr(monitoring_runner, '_strategic_infrastructure_guard_alert', lambda **_: str(uuid.uuid4()))
+
+    request = SimpleNamespace(headers={'x-workspace-id': WORKSPACE_ID})
+    result = monitoring_runner.backfill_missing_alerts_for_target(request, target_id=TARGET_ID)
+
+    for key in ('created_count', 'deduped_count', 'linked_count', 'skipped_count'):
+        assert key in result, f'backfill result must expose {key}'
+    assert result['linked_count'] == 1
+    assert result['created_count'] == 1
+    assert result['skipped_count'] == 0
+
+
+def test_backfill_skips_simulator_rows_without_creating_alerts(monkeypatch):
+    """Simulator/replay rows are scanned (visible) but never create alerts — truthfulness:
+    fallback data must never be presented as customer evidence."""
+    from services.api.app import monitoring_runner
+
+    live = _make_telemetry_row(
+        telemetry_id=str(uuid.uuid4()),
+        tx_hash='0x' + 'a' * 60 + 'a517',
+        evidence_source='live',
+    )
+    sim = _make_telemetry_row(
+        telemetry_id=str(uuid.uuid4()),
+        tx_hash='0x' + 'b' * 60 + '90c7',
+        evidence_source='simulator',
+    )
+
+    smoke_calls: list[dict] = []
+
+    def _fake_smoke(**kwargs):
+        smoke_calls.append(kwargs)
+        return str(uuid.uuid4())
+
+    conn = _FakeConn([live, sim])
+    monkeypatch.setattr(monitoring_runner, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(monitoring_runner, 'authenticate_with_connection', lambda *_: {'id': USER_ID})
+    monkeypatch.setattr(monitoring_runner, 'resolve_workspace', lambda *_: {'workspace_id': WORKSPACE_ID})
+    monkeypatch.setattr(monitoring_runner, '_wallet_transfer_smoke_alert', _fake_smoke)
+    monkeypatch.setattr(monitoring_runner, '_strategic_infrastructure_guard_alert', lambda **_: None)
+
+    request = SimpleNamespace(headers={'x-workspace-id': WORKSPACE_ID})
+    result = monitoring_runner.backfill_missing_alerts_for_target(request, target_id=TARGET_ID)
+
+    assert result['telemetry_processed'] == 2
+    assert result['skipped_count'] == 1, 'the simulator row must be skipped'
+    assert result['linked_count'] == 1, 'only the live row is linked to an alert'
+    # smoke alert evaluator only invoked for the live row
+    assert len(smoke_calls) == 1
+    assert smoke_calls[0]['evidence_source'] == 'live'
+
+
+def test_backfill_skips_row_missing_tx_hash(monkeypatch):
+    """A wallet row with no tx_hash cannot be deduped by tx and is skipped, not collapsed
+    into another transaction's alert."""
+    from services.api.app import monitoring_runner
+
+    row = _make_telemetry_row(telemetry_id=str(uuid.uuid4()))
+    row['payload_json'] = {'from': WALLET_ADDR, 'to': '0xbbbb', 'chain_id': 8453, 'block_number': 1}
+
+    called = {'smoke': 0}
+
+    def _fake_smoke(**kwargs):
+        called['smoke'] += 1
+        return str(uuid.uuid4())
+
+    conn = _FakeConn([row])
+    monkeypatch.setattr(monitoring_runner, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(monitoring_runner, 'authenticate_with_connection', lambda *_: {'id': USER_ID})
+    monkeypatch.setattr(monitoring_runner, 'resolve_workspace', lambda *_: {'workspace_id': WORKSPACE_ID})
+    monkeypatch.setattr(monitoring_runner, '_wallet_transfer_smoke_alert', _fake_smoke)
+    monkeypatch.setattr(monitoring_runner, '_strategic_infrastructure_guard_alert', lambda **_: None)
+
+    request = SimpleNamespace(headers={'x-workspace-id': WORKSPACE_ID})
+    result = monitoring_runner.backfill_missing_alerts_for_target(request, target_id=TARGET_ID)
+
+    assert result['skipped_count'] == 1
+    assert result['linked_count'] == 0
+    assert called['smoke'] == 0, 'must not evaluate alert rules for a tx-less row'
+
+
+# --- Dedupe signature helpers: different tx_hash = different alert ---
+
+
+def test_sig_dedupe_signature_differs_by_tx_hash():
+    from services.api.app import monitoring_runner
+
+    sig_90c7 = monitoring_runner._sig_dedupe_signature(
+        workspace_id=WORKSPACE_ID, target_id=TARGET_ID, chain_id=8453, tx_hash='0xaaa90c7')
+    sig_a517 = monitoring_runner._sig_dedupe_signature(
+        workspace_id=WORKSPACE_ID, target_id=TARGET_ID, chain_id=8453, tx_hash='0xbbba517')
+    assert sig_90c7 != sig_a517, 'different tx_hash must yield a different dedupe key'
+
+
+def test_sig_dedupe_signature_stable_for_same_inputs():
+    from services.api.app import monitoring_runner
+
+    args = dict(workspace_id=WORKSPACE_ID, target_id=TARGET_ID, chain_id=8453, tx_hash=TX_HASH)
+    assert monitoring_runner._sig_dedupe_signature(**args) == monitoring_runner._sig_dedupe_signature(**args)
+
+
+def test_sig_dedupe_signature_not_collapsed_by_target_or_rule_alone():
+    """Same workspace/target/chain/rule but two transactions => two distinct keys.
+    Guards against deduping by target_id only / target_id + rule_key."""
+    from services.api.app import monitoring_runner
+
+    keys = {
+        monitoring_runner._sig_dedupe_signature(
+            workspace_id=WORKSPACE_ID, target_id=TARGET_ID, chain_id=8453, tx_hash=tx)
+        for tx in ('0x1111', '0x2222', '0x3333')
+    }
+    assert len(keys) == 3, 'each tx_hash must map to its own dedupe key'
+
+
+def test_smoke_and_sig_signatures_are_distinct_rules():
+    from services.api.app import monitoring_runner
+
+    sig = monitoring_runner._sig_dedupe_signature(
+        workspace_id=WORKSPACE_ID, target_id=TARGET_ID, chain_id=8453, tx_hash=TX_HASH)
+    smoke = monitoring_runner._smoke_dedupe_signature(
+        workspace_id=WORKSPACE_ID, target_id=TARGET_ID, chain_id=8453, tx_hash=TX_HASH)
+    assert sig != smoke, 'smoke and SIG rules must not share a dedupe key for the same tx'
