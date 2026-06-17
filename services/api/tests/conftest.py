@@ -24,41 +24,50 @@ def _make_stub(name: str, **attrs):
 
 # -- fastapi ------------------------------------------------------------------
 if 'fastapi' not in sys.modules:
-    class _HTTPException(Exception):
-        def __init__(self, status_code: int = 400, detail: str = ''):
-            self.status_code = status_code
-            self.detail = detail
-            super().__init__(detail)
+    try:
+        import fastapi as _fa  # use real fastapi when installed
+        # Register sub-modules so they are importable without re-importing
+        import fastapi.testclient  # noqa: F401
+        import fastapi.responses   # noqa: F401
+        import fastapi.middleware  # noqa: F401
+        import fastapi.middleware.cors  # noqa: F401
+    except ImportError:
+        class _HTTPException(Exception):
+            def __init__(self, status_code: int = 400, detail: str = ''):
+                self.status_code = status_code
+                self.detail = detail
+                super().__init__(detail)
 
-    class _Request:
-        def __init__(self, headers=None):
-            self.headers = headers or {}
+        class _Request:
+            def __init__(self, headers=None):
+                self.headers = headers or {}
 
-    class _Status:
-        HTTP_200_OK = 200
-        HTTP_201_CREATED = 201
-        HTTP_400_BAD_REQUEST = 400
-        HTTP_401_UNAUTHORIZED = 401
-        HTTP_403_FORBIDDEN = 403
-        HTTP_404_NOT_FOUND = 404
-        HTTP_422_UNPROCESSABLE_ENTITY = 422
-        HTTP_500_INTERNAL_SERVER_ERROR = 500
+        class _Status:
+            HTTP_200_OK = 200
+            HTTP_201_CREATED = 201
+            HTTP_400_BAD_REQUEST = 400
+            HTTP_401_UNAUTHORIZED = 401
+            HTTP_403_FORBIDDEN = 403
+            HTTP_404_NOT_FOUND = 404
+            HTTP_422_UNPROCESSABLE_ENTITY = 422
+            HTTP_500_INTERNAL_SERVER_ERROR = 500
 
-    _fastapi = _make_stub(
-        'fastapi',
-        HTTPException=_HTTPException,
-        Request=_Request,
-        status=_Status(),
-        FastAPI=type('FastAPI', (), {'__init__': lambda self, **kw: None}),
-        APIRouter=type('APIRouter', (), {'__init__': lambda self, **kw: None}),
-    )
-    _resp_names = ('JSONResponse', 'RedirectResponse', 'Response', 'StreamingResponse')
-    _responses = _make_stub('fastapi.responses', **{c: type(c, (), {}) for c in _resp_names})
-    _fastapi.responses = _responses
-    _mw = _make_stub('fastapi.middleware')
-    _cors = _make_stub('fastapi.middleware.cors', CORSMiddleware=type('CORSMiddleware', (), {}))
-    _fastapi.middleware = _mw
-    _mw.cors = _cors
+        _fastapi = _make_stub(
+            'fastapi',
+            HTTPException=_HTTPException,
+            Request=_Request,
+            status=_Status(),
+            FastAPI=type('FastAPI', (), {'__init__': lambda self, **kw: None}),
+            APIRouter=type('APIRouter', (), {'__init__': lambda self, **kw: None}),
+        )
+        _resp_names = ('JSONResponse', 'RedirectResponse', 'Response', 'StreamingResponse')
+        _responses = _make_stub('fastapi.responses', **{c: type(c, (), {}) for c in _resp_names})
+        _fastapi.responses = _responses
+        _mw = _make_stub('fastapi.middleware')
+        _cors = _make_stub('fastapi.middleware.cors', CORSMiddleware=type('CORSMiddleware', (), {}))
+        _fastapi.middleware = _mw
+        _mw.cors = _cors
+        _make_stub('fastapi.testclient', TestClient=type('TestClient', (), {'__init__': lambda *a, **kw: None}))
 
 
 # -- psycopg ------------------------------------------------------------------
