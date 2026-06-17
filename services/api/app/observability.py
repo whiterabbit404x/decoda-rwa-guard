@@ -141,9 +141,10 @@ def send_external_oncall_alert(alert_type: str, summary: str, **details: Any) ->
         # the alert could not be externally routed, but avoid CRITICAL since the issue
         # is configuration, not an active system failure. Set MONITORING_ONCALL_URL to
         # route self-monitoring alerts to an external oncall endpoint.
+        _fingerprint = details.get('fingerprint', '')
         logger.warning(
-            'self_monitoring_alert_unrouted alert_type=%s summary=%s configure=MONITORING_ONCALL_URL',
-            alert_type, summary,
+            'self_monitoring_alert_unrouted alert_type=%s summary=%s fingerprint=%s configure=MONITORING_ONCALL_URL',
+            alert_type, summary, _fingerprint,
             extra={'operation': alert_type, 'severity': 'critical', 'context': details, 'status': 'unrouted_config_missing'},
         )
         return False
