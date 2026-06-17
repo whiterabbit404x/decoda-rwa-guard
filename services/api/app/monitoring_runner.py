@@ -736,6 +736,209 @@ def _wallet_transfer_smoke_alert(
         return None
 
 
+# ---------------------------------------------------------------------------
+# Rule: Strategic Infrastructure Guard — outbound ETH from Base wallet
+# ---------------------------------------------------------------------------
+
+_SIG_RULE_KEY = 'strategic_infrastructure_guard_wallet_outbound_transfer'
+_SIG_ALERT_TITLE = 'Strategic Infrastructure Guard: Treasury RWA Control Wallet Movement Detected'
+_SIG_ALERT_REASON = 'Outbound ETH movement from a wallet classified as Treasury RWA operational infrastructure.'
+
+
+def _strategic_infrastructure_guard_alert(
+    *,
+    workspace_id: str,
+    user_id: str,
+    target_id: str,
+    target_name: str,
+    target_wallet_address: str,
+    payload: dict[str, Any],
+    evidence_source: str,
+    telemetry_id: str | None = None,
+    monitored_system_id: str | None = None,
+    protected_asset_id: str | None = None,
+) -> str | None:
+    """Create a Critical alert for outbound ETH transfers from monitored Base chain wallets.
+
+    Fires only when ALL of the following are true:
+    - evidence_source == 'live'
+    - chain_id == 8453 (Base mainnet)
+    - from_address == target_wallet_address (outbound transfer)
+    - tx_hash is present (no fake or demo alerts)
+    - value > 0 when value field is present
+
+    Uses UUID5-deterministic IDs for detection and dedup signature, so re-polling
+    the same tx_hash never creates duplicate alerts or detections.
+    Never fires on simulator, replay, or demo evidence.
+    """
+    if evidence_source != 'live':
+        return None
+
+    tx_hash = str(payload.get('tx_hash') or payload.get('hash') or '').strip()
+    if not tx_hash:
+        return None
+
+    chain_id = payload.get('chain_id')
+    if int(chain_id or 0) != 8453:
+        return None
+
+    from_address = str(payload.get('from') or payload.get('owner') or '').strip().lower()
+    target_addr = str(target_wallet_address or '').strip().lower()
+    if not target_addr or from_address != target_addr:
+        return None
+
+    _raw_value = payload.get('value') or payload.get('amount_wei') or payload.get('amount')
+    if _raw_value is not None:
+        try:
+            if int(_raw_value) == 0:
+                return None
+        except (ValueError, TypeError):
+            pass
+
+    to_address = str(payload.get('to') or '').strip()
+    amount_wei = str(payload.get('value') or payload.get('amount_wei') or payload.get('amount') or '0')
+    block_number = payload.get('block_number')
+
+    _dedup_seed = json.dumps(
+        {'target_id': target_id, 'tx_hash': tx_hash, 'rule': _SIG_RULE_KEY, 'chain_id': 8453},
+        sort_keys=True,
+    )
+    sig_detection_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f'detection:{_dedup_seed}'))
+    signature = uuid.uuid5(uuid.NAMESPACE_DNS, _dedup_seed).hex
+
+    raw_evidence = {
+        'evidence_type': 'live_onchain_transaction',
+        'event_type': 'wallet_transfer_detected',
+        'source': 'rpc_polling',
+        'detection_type': 'strategic_infrastructure_guard_outbound_transfer',
+        'tx_hash': tx_hash,
+        'from_address': from_address,
+        'to_address': to_address,
+        'value_wei': amount_wei,
+        'chain_id': chain_id,
+        'block_number': block_number,
+        'evidence_source': evidence_source,
+        'telemetry_id': telemetry_id,
+        'target_id': target_id,
+        'asset_classification': 'rwa_treasury_control_wallet',
+        'program': 'Strategic Infrastructure Guard',
+    }
+    response: dict[str, Any] = {
+        'severity': 'critical',
+        'confidence': 'high',
+        'detection_type': 'strategic_infrastructure_guard_outbound_transfer',
+        'recommended_action': 'review_wallet_transfer',
+        'explanation': _SIG_ALERT_REASON,
+        'matched_patterns': [
+            {
+                'label': _SIG_RULE_KEY,
+                'rule_id': _SIG_RULE_KEY,
+                'severity': 'critical',
+            }
+        ],
+        'reasons': [_SIG_ALERT_REASON],
+        'source': 'rpc_polling',
+        'degraded': False,
+        'evidence_source': evidence_source,
+        'tx_hash': tx_hash,
+        'from_address': from_address,
+        'to_address': to_address,
+        'value_wei': amount_wei,
+        'chain_id': chain_id,
+        'block_number': block_number,
+        'telemetry_id': telemetry_id,
+        'target_id': target_id,
+        'evidence_type': 'live_onchain_transaction',
+        'asset_classification': 'rwa_treasury_control_wallet',
+        'program': 'Strategic Infrastructure Guard',
+        'rule_key': _SIG_RULE_KEY,
+    }
+    try:
+        with pg_connection() as conn:
+            sig_run_id = str(uuid.uuid4())
+            conn.execute(
+                '''
+                INSERT INTO monitoring_runs (id, workspace_id, status, trigger_type, notes)
+                VALUES (%s::uuid, %s::uuid, 'completed', 'sig_rule', %s)
+                ''',
+                (sig_run_id, workspace_id, f'{_SIG_RULE_KEY} target_id={target_id} tx={tx_hash[:20]}'),
+            )
+            det_cur = conn.execute(
+                '''
+                INSERT INTO detections (
+                    id, workspace_id, monitored_system_id, protected_asset_id,
+                    detection_type, severity, confidence, title, evidence_summary,
+                    evidence_source, source_rule, status, detected_at,
+                    raw_evidence_json, monitoring_run_id, linked_alert_id,
+                    created_at, updated_at
+                )
+                VALUES (
+                    %s::uuid, %s::uuid, %s::uuid, %s::uuid,
+                    %s, %s, %s, %s, %s,
+                    %s, %s, \'open\', NOW(),
+                    %s::jsonb, %s::uuid, NULL,
+                    NOW(), NOW()
+                )
+                ON CONFLICT (id) DO NOTHING
+                ''',
+                (
+                    sig_detection_id, workspace_id,
+                    monitored_system_id or None, protected_asset_id or None,
+                    'strategic_infrastructure_guard_outbound_transfer', 'critical', 1.0,
+                    _SIG_ALERT_TITLE, _SIG_ALERT_REASON,
+                    evidence_source, _SIG_RULE_KEY, _json_dumps(raw_evidence),
+                    sig_run_id,
+                ),
+            )
+            if det_cur.rowcount == 0:
+                conn.commit()
+                logger.info(
+                    'sig_alert_skipped_duplicate workspace_id=%s target_id=%s '
+                    'detection_id=%s tx_hash=%s reason=detection_already_exists',
+                    workspace_id, target_id, sig_detection_id, tx_hash,
+                )
+                return None
+            logger.info(
+                'sig_detection_created workspace_id=%s target_id=%s '
+                'detection_id=%s monitoring_run_id=%s tx_hash=%s chain_id=%s block=%s',
+                workspace_id, target_id, sig_detection_id, sig_run_id,
+                tx_hash, chain_id, block_number,
+            )
+            response['monitoring_run_id'] = sig_run_id
+            alert_id = _upsert_alert(
+                conn,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                target_id=target_id,
+                analysis_run_id=None,
+                title=_SIG_ALERT_TITLE,
+                response=response,
+                signature=signature,
+                detection_id=sig_detection_id,
+                module_key='strategic_infrastructure_guard',
+            )
+            if alert_id:
+                conn.execute(
+                    "UPDATE detections SET linked_alert_id = %s::uuid, status = 'escalated', updated_at = NOW() WHERE id = %s::uuid",
+                    (alert_id, sig_detection_id),
+                )
+            conn.commit()
+        if alert_id:
+            logger.info(
+                'sig_alert_created workspace_id=%s target_id=%s '
+                'detection_id=%s alert_id=%s tx_hash=%s chain_id=%s block=%s evidence_source=%s',
+                workspace_id, target_id, sig_detection_id, alert_id,
+                tx_hash, chain_id, block_number, evidence_source,
+            )
+        return alert_id or None
+    except Exception as exc:
+        logger.exception(
+            'sig_alert_failed workspace_id=%s target_id=%s tx_hash=%s sql_error=%s',
+            workspace_id, target_id, tx_hash, str(exc),
+        )
+        return None
+
+
 def set_background_loop_health(
     *,
     loop_running: bool,
@@ -2667,6 +2870,7 @@ def _upsert_alert(
     signature: str,
     detection_id: str | None = None,
     out: dict[str, Any] | None = None,
+    module_key: str | None = None,
 ) -> str:
     # `out` is an optional mutable dict the caller can pass to learn whether a new
     # alert row was inserted ({'created': True}) or an existing alert was reused
@@ -2733,11 +2937,11 @@ def _upsert_alert(
     connection.execute(
         '''
         INSERT INTO alerts (
-            id, workspace_id, user_id, analysis_run_id, target_id, alert_type, title, severity, status,
+            id, workspace_id, user_id, analysis_run_id, target_id, module_key, alert_type, title, severity, status,
             source_service, source, summary, payload, matched_patterns, reasons, recommended_action,
             degraded, dedupe_signature, detection_id, occurrence_count, first_seen_at, last_seen_at, created_at, updated_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'open', %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s, %s::uuid, 1, NOW(), NOW(), NOW(), NOW())
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'open', %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s, %s::uuid, 1, NOW(), NOW(), NOW(), NOW())
         ''',
         (
             alert_id,
@@ -2745,6 +2949,7 @@ def _upsert_alert(
             user_id,
             analysis_run_id,
             target_id,
+            module_key,
             'threat_monitoring',
             title,
             str(response.get('severity') or 'medium'),
@@ -3453,6 +3658,19 @@ def process_monitoring_target(
                 user_id=user_id,
                 target_id=str(target['id']),
                 target_name=str(target.get('name') or target.get('id') or ''),
+                payload=_ev_payload,
+                evidence_source=telemetry_evidence_source,
+                telemetry_id=_telem_id,
+                monitored_system_id=str(target['monitored_system_id']) if target.get('monitored_system_id') else None,
+                protected_asset_id=str(target['asset_id']) if target.get('asset_id') else None,
+            )
+            # Strategic Infrastructure Guard rule: critical alert for outbound Base ETH transfers.
+            _strategic_infrastructure_guard_alert(
+                workspace_id=str(target['workspace_id']),
+                user_id=user_id,
+                target_id=str(target['id']),
+                target_name=str(target.get('name') or target.get('id') or ''),
+                target_wallet_address=_target_wallet,
                 payload=_ev_payload,
                 evidence_source=telemetry_evidence_source,
                 telemetry_id=_telem_id,
@@ -10309,6 +10527,7 @@ def run_detection_from_existing_telemetry(request: Request) -> dict[str, Any]:
                 te.payload_json,
                 te.evidence_source,
                 COALESCE(t.name, te.target_id::text) AS target_name,
+                t.wallet_address AS target_wallet_address,
                 ms.id AS monitored_system_id,
                 COALESCE(te.asset_id, ms.asset_id) AS protected_asset_id
             FROM telemetry_events te
@@ -10330,6 +10549,7 @@ def run_detection_from_existing_telemetry(request: Request) -> dict[str, Any]:
         telemetry_id = str(row['id'])
         target_id = str(row['target_id']) if row['target_id'] else ''
         target_name = str(row['target_name'] or target_id)
+        target_wallet_address = str(row['target_wallet_address'] or '') if row['target_wallet_address'] else ''
         payload = dict(row['payload_json'] or {})
         evidence_source = str(row['evidence_source'] or 'live')
         monitored_system_id = str(row['monitored_system_id']) if row['monitored_system_id'] else None
@@ -10352,6 +10572,24 @@ def run_detection_from_existing_telemetry(request: Request) -> dict[str, Any]:
                 workspace_id, alert_id, telemetry_id,
             )
             alerts_created.append(alert_id)
+        sig_alert_id = _strategic_infrastructure_guard_alert(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            target_id=target_id,
+            target_name=target_name,
+            target_wallet_address=target_wallet_address,
+            payload=payload,
+            evidence_source=evidence_source,
+            telemetry_id=telemetry_id,
+            monitored_system_id=monitored_system_id,
+            protected_asset_id=protected_asset_id,
+        )
+        if sig_alert_id and sig_alert_id not in alerts_created:
+            logger.info(
+                'sig_alert_visible_in_workspace workspace_id=%s alert_id=%s telemetry_id=%s',
+                workspace_id, sig_alert_id, telemetry_id,
+            )
+            alerts_created.append(sig_alert_id)
 
     logger.info(
         'run_detection_completed workspace_id=%s user_id=%s telemetry_processed=%s alerts_created=%s',

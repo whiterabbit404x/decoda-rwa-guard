@@ -372,15 +372,16 @@ def test_alert_row_fields_are_visible_to_list_alerts_query():
     # The INSERT parameter order matches _upsert_alert:
     # (id, workspace_id, user_id, analysis_run_id, target_id, alert_type, title, severity, ...)
     params = inserted_params[0]
-    # severity is at index 7
-    assert params[7] == 'low', f'alert severity must be low; got {params[7]}'
-    # title is at index 6
-    assert 'wallet transfer detected' in str(params[6]).lower(), (
-        f'alert title must mention wallet transfer; got {params[6]}'
+    # Param order (from _upsert_alert INSERT):
+    # 0:id, 1:workspace_id, 2:user_id, 3:analysis_run_id, 4:target_id, 5:module_key,
+    # 6:alert_type, 7:title, 8:severity, 9:source_service, 10:source, 11:summary,
+    # 12:payload, 13:matched_patterns, 14:reasons, 15:recommended_action,
+    # 16:degraded, 17:dedupe_signature, 18:detection_id
+    assert params[8] == 'low', f'alert severity must be low; got {params[8]}'
+    assert 'wallet transfer detected' in str(params[7]).lower(), (
+        f'alert title must mention wallet transfer; got {params[7]}'
     )
-    # workspace_id at index 1
     assert params[1] == WORKSPACE_ID
-    # target_id at index 4
     assert params[4] == TARGET_ID
 
 
@@ -827,17 +828,18 @@ def test_wallet_transfer_detected_creates_detection_and_alert_pipeline():
     assert alert_insert_params, 'alert INSERT must have been captured'
     a = alert_insert_params[0]
     # Param order from _upsert_alert INSERT:
-    # (id, workspace_id, user_id, analysis_run_id, target_id, alert_type, title, severity,
-    #  'open'(literal), source_service, source, summary, payload, matched_patterns, reasons,
-    #  recommended_action, degraded, signature, detection_id, 1(literal), NOW()...)
+    # 0:id, 1:workspace_id, 2:user_id, 3:analysis_run_id, 4:target_id, 5:module_key,
+    # 6:alert_type, 7:title, 8:severity, 9:source_service, 10:source, 11:summary,
+    # 12:payload, 13:matched_patterns, 14:reasons, 15:recommended_action,
+    # 16:degraded, 17:signature, 18:detection_id
     assert a[1] == WORKSPACE_ID, 'alert workspace_id must match'
     assert a[4] == TARGET_ID, 'alert target_id must match'
-    assert a[5] == 'threat_monitoring', 'alert_type must be threat_monitoring'
-    assert 'Monitored wallet transfer detected' in str(a[6]), (
-        f'alert title must start with "Monitored wallet transfer detected"; got {a[6]}'
+    assert a[6] == 'threat_monitoring', 'alert_type must be threat_monitoring'
+    assert 'Monitored wallet transfer detected' in str(a[7]), (
+        f'alert title must start with "Monitored wallet transfer detected"; got {a[7]}'
     )
-    assert a[7] == 'low', f'alert severity must be low; got {a[7]}'
-    assert a[9] == 'live', f'alert source must be live; got {a[9]}'
+    assert a[8] == 'low', f'alert severity must be low; got {a[8]}'
+    assert a[10] == 'live', f'alert source must be live; got {a[10]}'
 
     # linked_alert_id back-patched on detection
     update_calls = [
@@ -1112,6 +1114,12 @@ def test_wallet_transfer_detected_telemetry_creates_alert_visible_for_workspace(
     # 12:matched_patterns, 13:reasons, 14:recommended_action, 15:degraded,
     # 16:dedupe_signature, 17:detection_id
 
+    # INSERT param order (from _upsert_alert):
+    # 0:id, 1:workspace_id, 2:user_id, 3:analysis_run_id, 4:target_id, 5:module_key,
+    # 6:alert_type, 7:title, 8:severity, 9:source_service, 10:source, 11:summary,
+    # 12:payload, 13:matched_patterns, 14:reasons, 15:recommended_action,
+    # 16:degraded, 17:dedupe_signature, 18:detection_id
+
     # workspace_id (index 1) — /alerts is workspace-scoped on this field
     assert params[1] == workspace_id, f'alert workspace_id must be {workspace_id}; got {params[1]}'
     # analysis_run_id (index 3) must be NULL to satisfy FK
@@ -1119,10 +1127,10 @@ def test_wallet_transfer_detected_telemetry_creates_alert_visible_for_workspace(
         f'analysis_run_id must be None to avoid alerts_analysis_run_id_fkey violation; '
         f'got {params[3]!r}'
     )
-    # source (index 9) must be 'live' — /alerts must never show simulator data as live
-    assert params[9] == 'live', f'alert source must be live; got {params[9]}'
-    # detection_id (index 17) — links the alert to the detections row
-    assert params[17] is not None, 'detection_id must be set so /alerts can show the proof chain'
+    # source (index 10) must be 'live' — /alerts must never show simulator data as live
+    assert params[10] == 'live', f'alert source must be live; got {params[10]}'
+    # detection_id (index 18) — links the alert to the detections row
+    assert params[18] is not None, 'detection_id must be set so /alerts can show the proof chain'
 
 
 # ---------------------------------------------------------------------------
@@ -1144,9 +1152,9 @@ def test_smoke_alert_payload_json_contains_telemetry_id():
 
     def _capturing_execute(query: str, params=None):
         q = (query or '').strip().lower()
-        if q.startswith('insert into alerts') and params and len(params) > 11:
+        if q.startswith('insert into alerts') and params and len(params) > 12:
             try:
-                captured_payloads.append(json.loads(params[11]))
+                captured_payloads.append(json.loads(params[12]))
             except Exception:
                 pass
         return original_execute(query, params)
@@ -1209,9 +1217,9 @@ def test_wallet_transfer_to_alerts_only_tab_pipeline():
 
     def _capturing_execute(query: str, params=None):
         q = (query or '').strip().lower()
-        if q.startswith('insert into alerts') and params and len(params) > 11:
+        if q.startswith('insert into alerts') and params and len(params) > 12:
             try:
-                captured_payload.update(json.loads(params[11]))
+                captured_payload.update(json.loads(params[12]))
             except Exception:
                 pass
         return original_execute(query, params)
