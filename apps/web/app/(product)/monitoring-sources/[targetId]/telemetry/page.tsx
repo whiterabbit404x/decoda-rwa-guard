@@ -469,10 +469,12 @@ function TelemetryDetailModal({
 const PAGE_SIZE = 50;
 
 // Map quick filters to backend event_type_filter values for server-side scoping.
+// wallet_transfers → backend maps to IN('wallet_transfer_detected','native_transfer')
+// alerts_only → backend joins with alerts to return only alert-linked telemetry
 const QUICK_FILTER_TO_EVENT_TYPE: Partial<Record<QuickFilter, string>> = {
-  wallet_transfers: 'wallet_transfer_detected',
+  wallet_transfers: 'wallet_transfers',
   rpc_polling: 'rpc_polling',
-  alerts_only: 'wallet_transfer_detected',
+  alerts_only: 'alerts_only',
 };
 
 function buildTelemetryUrl(
@@ -504,7 +506,9 @@ export default function TargetTelemetryPage() {
   const [quickFilter, setQuickFilter] = useState<QuickFilter>('all');
   const [copiedTxId, setCopiedTxId] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(0);
-  const [hasMore, setHasMore] = useState(false);
+  const [hasNext, setHasNext] = useState(false);
+  const [hasPrev, setHasPrev] = useState(false);
+  const [totalCount, setTotalCount] = useState(0);
 
   const { authHeaders } = usePilotAuth();
 
@@ -546,7 +550,9 @@ export default function TargetTelemetryPage() {
           return;
         }
         setRows((payload.telemetry as TelemetryRow[]) ?? []);
-        setHasMore(payload.has_more === true);
+        setHasNext(payload.has_next === true);
+        setHasPrev(payload.has_prev === true);
+        setTotalCount(typeof payload.total_count === 'number' ? payload.total_count : 0);
         if (typeof payload.workspace_id === 'string') {
           setWorkspaceId(payload.workspace_id);
         }
@@ -686,19 +692,19 @@ export default function TargetTelemetryPage() {
           }}
         >
           <span>
-            Page {currentPage + 1} &middot; {filteredRows.length} row{filteredRows.length !== 1 ? 's' : ''}
+            Page {currentPage + 1} &middot; {filteredRows.length} of {totalCount} row{totalCount !== 1 ? 's' : ''}
           </span>
           <div style={{ display: 'flex', gap: '0.4rem' }}>
             <button
               type="button"
-              disabled={currentPage === 0}
+              disabled={!hasPrev}
               onClick={() => setCurrentPage((p) => Math.max(0, p - 1))}
               style={{
                 background: 'var(--bg-surface)',
                 border: '1px solid var(--border)',
                 borderRadius: 'var(--radius-xs)',
-                color: currentPage === 0 ? 'var(--text-muted)' : 'var(--text-secondary)',
-                cursor: currentPage === 0 ? 'default' : 'pointer',
+                color: !hasPrev ? 'var(--text-muted)' : 'var(--text-secondary)',
+                cursor: !hasPrev ? 'default' : 'pointer',
                 fontSize: '0.78rem',
                 padding: '0.25rem 0.6rem',
               }}
@@ -707,14 +713,14 @@ export default function TargetTelemetryPage() {
             </button>
             <button
               type="button"
-              disabled={!hasMore}
+              disabled={!hasNext}
               onClick={() => setCurrentPage((p) => p + 1)}
               style={{
                 background: 'var(--bg-surface)',
                 border: '1px solid var(--border)',
                 borderRadius: 'var(--radius-xs)',
-                color: !hasMore ? 'var(--text-muted)' : 'var(--text-secondary)',
-                cursor: !hasMore ? 'default' : 'pointer',
+                color: !hasNext ? 'var(--text-muted)' : 'var(--text-secondary)',
+                cursor: !hasNext ? 'default' : 'pointer',
                 fontSize: '0.78rem',
                 padding: '0.25rem 0.6rem',
               }}

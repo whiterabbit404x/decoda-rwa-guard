@@ -9457,6 +9457,8 @@ _TELEMETRY_ALLOWED_EVENT_TYPE_FILTERS = frozenset({
     'wallet_transfer_detected',
     'rpc_polling',
     'native_transfer',
+    'wallet_transfers',   # friendly alias: matches wallet_transfer_detected OR native_transfer
+    'alerts_only',        # telemetry rows linked to a real alert row
 })
 
 
@@ -9521,47 +9523,56 @@ def list_target_telemetry(
                 te.observed_at DESC
         '''
 
+        # Build additive WHERE clauses so filters compose cleanly.
+        _filter_clauses: list[str] = []
+        _filter_params: list[Any] = []
+
+        if _etf == 'wallet_transfers':
+            _filter_clauses.append(
+                "te.event_type IN ('wallet_transfer_detected', 'native_transfer')"
+            )
+        elif _etf == 'alerts_only':
+            _filter_clauses.append(
+                """EXISTS (
+                    SELECT 1 FROM alerts a
+                    WHERE a.workspace_id = te.workspace_id
+                      AND a.payload->>'telemetry_id' = te.id::text
+                )"""
+            )
+        elif _etf:
+            _filter_clauses.append('te.event_type = %s')
+            _filter_params.append(_etf)
+
         if _q:
             _like = f'%{_q}%'
-            if _etf:
-                rows = connection.execute(
-                    _select + '''
-                      AND te.event_type = %s
-                      AND (
-                        lower(te.payload_json->>'tx_hash') LIKE lower(%s)
-                        OR lower(te.payload_json->>'from') LIKE lower(%s)
-                        OR lower(te.payload_json->>'to') LIKE lower(%s)
-                        OR (te.payload_json->>'block_number') LIKE %s
-                        OR lower(te.event_type) LIKE lower(%s)
-                        OR lower(te.id::text) LIKE lower(%s)
-                      )
-                    ''' + _order + ' LIMIT %s OFFSET %s',
-                    (workspace_id, target_id, _etf, _like, _like, _like, _like, _like, _like, _effective_limit, _effective_offset),
-                ).fetchall()
-            else:
-                rows = connection.execute(
-                    _select + '''
-                      AND (
-                        lower(te.payload_json->>'tx_hash') LIKE lower(%s)
-                        OR lower(te.payload_json->>'from') LIKE lower(%s)
-                        OR lower(te.payload_json->>'to') LIKE lower(%s)
-                        OR (te.payload_json->>'block_number') LIKE %s
-                        OR lower(te.event_type) LIKE lower(%s)
-                        OR lower(te.id::text) LIKE lower(%s)
-                      )
-                    ''' + _order + ' LIMIT %s OFFSET %s',
-                    (workspace_id, target_id, _like, _like, _like, _like, _like, _like, _effective_limit, _effective_offset),
-                ).fetchall()
-        elif _etf:
-            rows = connection.execute(
-                _select + ' AND te.event_type = %s' + _order + ' LIMIT %s OFFSET %s',
-                (workspace_id, target_id, _etf, _effective_limit, _effective_offset),
-            ).fetchall()
-        else:
-            rows = connection.execute(
-                _select + _order + ' LIMIT %s OFFSET %s',
-                (workspace_id, target_id, _effective_limit, _effective_offset),
-            ).fetchall()
+            _filter_clauses.append(
+                """(
+                    lower(te.payload_json->>'tx_hash') LIKE lower(%s)
+                    OR lower(te.payload_json->>'from') LIKE lower(%s)
+                    OR lower(te.payload_json->>'to') LIKE lower(%s)
+                    OR (te.payload_json->>'block_number') LIKE %s
+                    OR lower(te.event_type) LIKE lower(%s)
+                    OR lower(te.id::text) LIKE lower(%s)
+                )"""
+            )
+            _filter_params.extend([_like, _like, _like, _like, _like, _like])
+
+        _filter_sql = ''.join(f' AND {c}' for c in _filter_clauses)
+        _base_params: list[Any] = [workspace_id, target_id]
+
+        # COUNT for accurate total_count / has_next / has_prev.
+        count_row = connection.execute(
+            'SELECT COUNT(*) AS cnt FROM telemetry_events te'
+            ' WHERE te.workspace_id = %s::uuid AND te.target_id = %s::uuid'
+            + _filter_sql,
+            _base_params + _filter_params,
+        ).fetchone()
+        total_count = int((count_row or {}).get('cnt') or 0)
+
+        rows = connection.execute(
+            _select + _filter_sql + _order + ' LIMIT %s OFFSET %s',
+            _base_params + _filter_params + [_effective_limit, _effective_offset],
+        ).fetchall()
 
         telemetry = []
         for row in rows:
@@ -9599,9 +9610,14 @@ def list_target_telemetry(
             'target_id': target_id,
             'workspace_id': str(workspace_id),
             'live_telemetry_ready': len(telemetry) > 0,
+            'total_count': total_count,
+            'page': _effective_offset // _effective_limit if _effective_limit > 0 else 0,
+            'page_size': _effective_limit,
+            'has_next': (_effective_offset + len(telemetry)) < total_count,
+            'has_prev': _effective_offset > 0,
+            'has_more': (_effective_offset + len(telemetry)) < total_count,  # compat
             'offset': _effective_offset,
             'limit': _effective_limit,
-            'has_more': len(telemetry) == _effective_limit,
         }
         if _q:
             result['query'] = _q
