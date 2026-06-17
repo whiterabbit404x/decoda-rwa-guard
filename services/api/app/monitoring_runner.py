@@ -596,13 +596,13 @@ def _wallet_transfer_smoke_alert(
         f'({direction}) block={block_number}'
     )
     response: dict[str, Any] = {
-        'severity': 'low',
+        'severity': 'critical',
         'confidence': 'high',
         'detection_type': 'monitored_wallet_transfer',
         'recommended_action': 'review_wallet_transfer',
         'explanation': explanation,
         'matched_patterns': [
-            {'label': 'wallet_transfer_detected', 'rule_id': 'smoke_wallet_transfer', 'severity': 'low'}
+            {'label': 'wallet_transfer_detected', 'rule_id': 'smoke_wallet_transfer', 'severity': 'critical'}
         ],
         'reasons': ['wallet_transfer_detected'],
         'source': 'live',
@@ -676,7 +676,7 @@ def _wallet_transfer_smoke_alert(
                 (
                     smoke_detection_id, workspace_id,
                     monitored_system_id or None, protected_asset_id or None,
-                    'monitored_wallet_transfer', 'low', 1.0, title, explanation,
+                    'monitored_wallet_transfer', 'critical', 1.0, title, explanation,
                     evidence_source, 'smoke_wallet_transfer', _json_dumps(raw_evidence),
                     smoke_run_id,
                 ),
@@ -9853,11 +9853,12 @@ def list_target_telemetry(
                 """EXISTS (
                     SELECT 1 FROM alerts a
                     WHERE a.workspace_id = te.workspace_id
+                      AND a.target_id = te.target_id
                       AND (
                         a.payload->>'telemetry_id' = te.id::text
                         OR (
                           a.payload->>'tx_hash' IS NOT NULL
-                          AND a.payload->>'tx_hash' = te.payload_json->>'tx_hash'
+                          AND lower(a.payload->>'tx_hash') = lower(te.payload_json->>'tx_hash')
                           AND te.event_type IN ('wallet_transfer_detected', 'native_transfer')
                         )
                       )

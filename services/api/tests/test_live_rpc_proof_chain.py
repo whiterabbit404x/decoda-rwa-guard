@@ -71,29 +71,41 @@ def _build(**overrides: object) -> dict[str, object]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# A. Live telemetry only → live_telemetry_without_proof_chain guard, not LIVE
+# A. Live telemetry with no detections → clean monitoring, can reach LIVE
+#    (live_telemetry_without_proof_chain was removed: zero-threat workspaces must
+#     not be permanently blocked from LIVE status)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def test_A_live_telemetry_without_detection_sets_proof_chain_guard() -> None:
+def test_A_live_telemetry_without_detection_has_no_removed_guard() -> None:
+    # live_telemetry_without_proof_chain was removed from HARD_GUARD_FLAGS so
+    # clean monitoring workspaces are not permanently blocked.
     summary = _build(detections_count=0)
-    assert 'live_telemetry_without_proof_chain' in summary['contradiction_flags']
+    assert 'live_telemetry_without_proof_chain' not in summary['contradiction_flags']
 
 
-def test_A_proof_chain_guard_is_in_hard_guard_flags() -> None:
-    assert 'live_telemetry_without_proof_chain' in HARD_GUARD_FLAGS
+def test_A_removed_guard_not_in_hard_guard_flags() -> None:
+    # Confirm live_telemetry_without_proof_chain is not in HARD_GUARD_FLAGS.
+    assert 'live_telemetry_without_proof_chain' not in HARD_GUARD_FLAGS
 
 
-def test_A_live_telemetry_only_does_not_yield_live_status() -> None:
+def test_A_live_telemetry_only_no_proof_chain_guard_fires() -> None:
+    # With no detections, live_proof_chain_incomplete should not fire either.
     summary = _build(detections_count=0)
-    assert summary['monitoring_status'] != 'live', (
-        f"Expected non-live but got {summary['monitoring_status']}; "
+    assert 'live_proof_chain_incomplete' not in summary['guard_flags'], (
+        f"live_proof_chain_incomplete must not fire when detections=0; "
         f"guard_flags={summary['guard_flags']}"
     )
 
 
-def test_A_guard_flag_present_in_guard_flags_list() -> None:
-    summary = _build(detections_count=0)
-    assert 'live_telemetry_without_proof_chain' in summary['guard_flags']
+def test_A_detection_without_alert_sets_incomplete_guard() -> None:
+    # When a detection exists but has no linked alert, live_proof_chain_incomplete fires.
+    now = _now()
+    summary = _build(
+        detections_count=1,
+        last_detection_at=now - timedelta(seconds=10),
+        active_alerts_count=0,
+    )
+    assert 'live_proof_chain_incomplete' in summary['guard_flags']
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -324,12 +336,16 @@ def test_E_omitting_detections_count_does_not_fire_proof_chain_guard() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# F. UI status: monitoring_status == 'live' only after full proof chain
+# F. UI status: monitoring_status == 'live' — clean monitoring CAN be live;
+#    detection-without-alert blocks live (live_proof_chain_incomplete)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def test_F_no_chain_yields_non_live_status() -> None:
+def test_F_detection_without_alert_yields_non_live_status() -> None:
+    # When a detection exists but has no alert, proof chain is incomplete → non-live.
+    now = _now()
     summary = _build(
-        detections_count=0,
+        detections_count=1,
+        last_detection_at=now - timedelta(seconds=10),
         active_alerts_count=0,
         active_incidents_count=0,
         response_actions_count=0,
@@ -338,28 +354,27 @@ def test_F_no_chain_yields_non_live_status() -> None:
     assert summary['monitoring_status'] != 'live'
 
 
-def test_F_status_transitions_to_live_only_when_full_chain_present() -> None:
+def test_F_detection_with_alert_transitions_to_live() -> None:
+    # Detection + alert is the minimum proof chain — status must reach 'live'.
     now = _now()
-    before_chain = _build(detections_count=0)
-    after_chain = _build(
+    summary = _build(
         detections_count=1,
         last_detection_at=now - timedelta(seconds=10),
         active_alerts_count=1,
-        active_incidents_count=1,
-        response_actions_count=1,
-        evidence_packages_count=1,
+        active_incidents_count=0,
+        response_actions_count=0,
+        evidence_packages_count=0,
         last_alert_at=now - timedelta(seconds=9),
-        last_incident_at=now - timedelta(seconds=8),
-        last_response_action_at=now - timedelta(seconds=7),
-        last_evidence_export_at=now - timedelta(seconds=6),
         telemetry_kind='coverage',
     )
-    assert before_chain['monitoring_status'] != 'live'
-    assert after_chain['monitoring_status'] == 'live'
+    assert summary['monitoring_status'] == 'live', (
+        f"Expected live with detection+alert; got {summary['monitoring_status']}; "
+        f"guard_flags={summary['guard_flags']}"
+    )
 
 
-def test_F_proof_chain_guard_flag_in_hard_guard_set() -> None:
-    assert 'live_telemetry_without_proof_chain' in HARD_GUARD_FLAGS
+def test_F_proof_chain_incomplete_guard_in_hard_guard_set() -> None:
+    assert 'live_proof_chain_incomplete' in HARD_GUARD_FLAGS
 
 
 # ──────────────────────────────────────────────────────────────────────────────

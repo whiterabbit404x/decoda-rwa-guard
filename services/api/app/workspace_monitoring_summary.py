@@ -659,11 +659,12 @@ def build_workspace_monitoring_summary(
             and freshness_status == 'fresh'
             and normalized_evidence == 'live_provider'
         )
-        # Detection exists but alert/incident chain is incomplete.
+        # Detection exists but alert is missing (minimum required: detection → alert).
+        # Incidents are user-initiated and optional for proof chain completeness.
         if (
             _live_gate_applies
             and int(detections_count) > 0
-            and (int(active_alerts_count) <= 0 or int(active_incidents_count) <= 0)
+            and int(active_alerts_count) <= 0
         ):
             contradiction_flags.append('live_proof_chain_incomplete')
 
@@ -727,14 +728,25 @@ def build_workspace_monitoring_summary(
         normalized_db_failure_reason = None
     prioritized_guard = next((flag for flag in HARD_GUARD_PRIORITY if flag in guard_flags), None)
     if prioritized_guard:
-        if normalized_runtime == 'live':
-            normalized_runtime = 'degraded'
-        normalized_monitoring_status = 'offline' if normalized_runtime == 'offline' else 'limited'
-        if freshness_status == 'fresh':
-            freshness_status = 'stale'
-        confidence_status = 'unavailable'
-        evidence_source_summary = 'none'
-    resolved_status_reason = f'guard:{prioritized_guard}' if prioritized_guard else normalized_status_reason
+        if prioritized_guard == 'live_proof_chain_incomplete' and last_heartbeat_at is not None:
+            # Live heartbeat proves the provider is alive; proof-chain enrichment is
+            # still catching up. Lower confidence but do not mark telemetry stale.
+            normalized_monitoring_status = 'limited'
+            confidence_status = 'unavailable'
+        else:
+            if normalized_runtime == 'live':
+                normalized_runtime = 'degraded'
+            normalized_monitoring_status = 'offline' if normalized_runtime == 'offline' else 'limited'
+            if freshness_status == 'fresh':
+                freshness_status = 'stale'
+            confidence_status = 'unavailable'
+            evidence_source_summary = 'none'
+    resolved_status_reason = (
+        'Live telemetry active; proof-chain enrichment incomplete'
+        if prioritized_guard == 'live_proof_chain_incomplete' and last_heartbeat_at is not None
+        else f'guard:{prioritized_guard}' if prioritized_guard
+        else normalized_status_reason
+    )
     summary = {
         'workspace_configured': bool(workspace_configured),
         'runtime_status': normalized_runtime,
