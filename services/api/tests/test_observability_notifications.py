@@ -46,6 +46,26 @@ def test_notification_routes_and_persistence_contract_are_wired():
     assert 'monitoring_system_alerts' in migration
 
 
+def test_send_external_oncall_alert_unrouted_logs_workspace_and_target_id(monkeypatch, caplog):
+    """When MONITORING_ONCALL_URL is not configured, the unrouted WARNING log must include
+    workspace_id and target_id as explicit searchable fields (not buried in context)."""
+    import logging
+    monkeypatch.delenv('MONITORING_ONCALL_URL', raising=False)
+    from services.api.app.observability import send_external_oncall_alert
+
+    with caplog.at_level(logging.WARNING, logger='services.api.app.observability'):
+        send_external_oncall_alert(
+            'stale_telemetry',
+            'Target telemetry is stale.',
+            fingerprint='ws-abc:tgt-123',
+            details={'workspace_id': 'ws-abc', 'target_id': 'tgt-123', 'latest_telemetry_at': '2026-01-01T00:00:00Z'},
+        )
+
+    assert any('ws-abc' in r.message and 'tgt-123' in r.message for r in caplog.records), (
+        'workspace_id and target_id must appear as explicit fields in the unrouted alert log'
+    )
+
+
 def test_runtime_components_expose_actionable_observability():
     worker = (ROOT / 'app' / 'run_monitoring_worker.py').read_text()
     executor = (ROOT / 'app' / 'response_action_executor.py').read_text()

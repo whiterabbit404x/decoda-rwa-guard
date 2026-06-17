@@ -10704,7 +10704,7 @@ def run_detection_from_existing_telemetry(request: Request) -> dict[str, Any]:
                 ON ms.target_id = te.target_id
                AND ms.workspace_id = te.workspace_id
             WHERE te.workspace_id = %s::uuid
-              AND te.event_type = 'wallet_transfer_detected'
+              AND te.event_type IN ('wallet_transfer_detected', 'native_transfer')
               AND te.evidence_source = 'live'
             ORDER BY te.observed_at DESC
             LIMIT 50
@@ -10823,7 +10823,7 @@ def backfill_missing_alerts_for_target(request: Request, *, target_id: str) -> d
                AND ms.workspace_id = te.workspace_id
             WHERE te.workspace_id = %s::uuid
               AND te.target_id = %s::uuid
-              AND te.event_type = 'wallet_transfer_detected'
+              AND te.event_type IN ('wallet_transfer_detected', 'native_transfer')
               AND te.evidence_source = 'live'
             ORDER BY te.observed_at DESC
             LIMIT 200

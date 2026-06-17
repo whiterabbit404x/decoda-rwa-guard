@@ -142,9 +142,12 @@ def send_external_oncall_alert(alert_type: str, summary: str, **details: Any) ->
         # is configuration, not an active system failure. Set MONITORING_ONCALL_URL to
         # route self-monitoring alerts to an external oncall endpoint.
         _fingerprint = details.get('fingerprint', '')
+        _sub = details.get('details') or {}
+        _workspace_id = str(_sub.get('workspace_id') or '') if isinstance(_sub, dict) else ''
+        _target_id = str(_sub.get('target_id') or '') if isinstance(_sub, dict) else ''
         logger.warning(
-            'self_monitoring_alert_unrouted alert_type=%s summary=%s fingerprint=%s configure=MONITORING_ONCALL_URL',
-            alert_type, summary, _fingerprint,
+            'self_monitoring_alert_unrouted alert_type=%s summary=%s fingerprint=%s workspace_id=%s target_id=%s configure=MONITORING_ONCALL_URL',
+            alert_type, summary, _fingerprint, _workspace_id or _fingerprint.split(':', 1)[0], _target_id,
             extra={'operation': alert_type, 'severity': 'critical', 'context': details, 'status': 'unrouted_config_missing'},
         )
         return False
