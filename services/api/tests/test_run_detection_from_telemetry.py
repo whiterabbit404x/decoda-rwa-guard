@@ -330,7 +330,7 @@ def test_existing_wallet_transfer_telemetry_creates_detection_and_alert_visible_
         f'got {params[3]!r}'
     )
     assert params[4] == target_id, f'alert target_id must match; got {params[4]}'
-    assert params[8] == 'low', f'alert severity must be low; got {params[8]}'
+    assert params[8] == 'critical', f'alert severity must be critical; got {params[8]}'
     assert params[10] == 'live', f'alert source must be live (not simulator); got {params[10]}'
     detection_id_val = params[18]
     assert detection_id_val is not None, (

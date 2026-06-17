@@ -266,7 +266,10 @@ class TestIOrphanPredicates:
 # ---------------------------------------------------------------------------
 
 class TestJRuntimeStatusTransitions:
-    def test_J_no_chain_gives_non_live_monitoring_status(self) -> None:
+    def test_J_no_detections_with_live_telemetry_is_live(self) -> None:
+        # A clean workspace (no threats detected) with fresh live telemetry CAN reach
+        # 'live' status. Zero detections does NOT require a proof chain — it means the
+        # monitoring loop ran and found nothing suspicious, which is a healthy state.
         summary = _build(
             detections_count=0,
             last_detection_at=None,
@@ -279,7 +282,28 @@ class TestJRuntimeStatusTransitions:
             last_response_action_at=None,
             last_evidence_export_at=None,
         )
-        assert summary['monitoring_status'] != 'live'
+        assert 'live_proof_chain_incomplete' not in summary['guard_flags'], (
+            f"live_proof_chain_incomplete must not fire when detections=0; got: {summary['guard_flags']}"
+        )
+
+    def test_J_detection_without_alert_gives_non_live_status(self) -> None:
+        # Detection exists but no alert — proof chain is incomplete → non-live.
+        now = _now()
+        summary = _build(
+            detections_count=1,
+            last_detection_at=now - timedelta(seconds=10),
+            active_alerts_count=0,
+            active_incidents_count=0,
+            response_actions_count=0,
+            evidence_packages_count=0,
+            last_alert_at=None,
+            last_incident_at=None,
+            last_response_action_at=None,
+            last_evidence_export_at=None,
+        )
+        assert summary['monitoring_status'] != 'live', (
+            f"Expected non-live when detections exist but alerts missing; got {summary['monitoring_status']}"
+        )
 
     def test_J_partial_chain_detection_only_is_not_live(self) -> None:
         now = _now()

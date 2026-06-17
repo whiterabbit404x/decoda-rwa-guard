@@ -216,7 +216,7 @@ def test_smoke_alert_includes_required_evidence_fields():
     assert r['chain_id'] == CHAIN_ID
     assert r['block_number'] == BLOCK_NUMBER
     assert r['evidence_source'] == 'live'
-    assert r['severity'] == 'low'
+    assert r['severity'] == 'critical'
     assert r['source'] == 'live'
 
 
@@ -387,7 +387,7 @@ def test_alert_row_fields_are_visible_to_list_alerts_query():
     # 6:alert_type, 7:title, 8:severity, 9:source_service, 10:source, 11:summary,
     # 12:payload, 13:matched_patterns, 14:reasons, 15:recommended_action,
     # 16:degraded, 17:dedupe_signature, 18:detection_id
-    assert params[8] == 'low', f'alert severity must be low; got {params[8]}'
+    assert params[8] == 'critical', f'alert severity must be critical; got {params[8]}'
     assert 'wallet transfer detected' in str(params[7]).lower(), (
         f'alert title must mention wallet transfer; got {params[7]}'
     )
@@ -581,7 +581,7 @@ def test_detection_row_has_correct_type_and_evidence_fields():
     assert params[2] == SYSTEM_ID, 'monitored_system_id mismatch'
     assert params[3] == ASSET_ID, 'protected_asset_id mismatch'
     assert params[4] == 'monitored_wallet_transfer', f'detection_type must be monitored_wallet_transfer; got {params[4]}'
-    assert params[5] == 'low', f'severity must be low; got {params[5]}'
+    assert params[5] == 'critical', f'severity must be critical; got {params[5]}'
     assert params[9] == 'live', f'evidence_source must be live; got {params[9]}'
     assert params[10] == 'smoke_wallet_transfer', f'source_rule mismatch; got {params[10]}'
     raw = json.loads(params[11])
@@ -774,7 +774,7 @@ def test_wallet_transfer_detected_creates_detection_and_alert_pipeline():
     Verifies the full proof-chain from telemetry event to committed alert:
     1. monitoring_runs row is inserted before detections (FK prerequisite).
     2. detections row is created with detection_type=monitored_wallet_transfer.
-    3. alerts row is created with severity=low, source=live, title containing
+    3. alerts row is created with severity=critical, source=live, title containing
        'Monitored wallet transfer detected'.
     4. detections.linked_alert_id is back-patched after alert creation.
     5. Alert fields match what list_alerts SELECT would return
@@ -829,7 +829,7 @@ def test_wallet_transfer_detected_creates_detection_and_alert_pipeline():
     # Detection row fields
     detection_params = [p for t, p in stub.inserts if t == 'detections'][0]
     assert detection_params[4] == 'monitored_wallet_transfer', 'detection_type must be monitored_wallet_transfer'
-    assert detection_params[5] == 'low', 'severity must be low'
+    assert detection_params[5] == 'critical', 'severity must be critical'
     assert detection_params[9] == 'live', 'evidence_source must be live'
     assert detection_params[10] == 'smoke_wallet_transfer', 'source_rule must be smoke_wallet_transfer'
     raw = json.loads(detection_params[11])
@@ -853,7 +853,7 @@ def test_wallet_transfer_detected_creates_detection_and_alert_pipeline():
     assert 'Monitored wallet transfer detected' in str(a[7]), (
         f'alert title must start with "Monitored wallet transfer detected"; got {a[7]}'
     )
-    assert a[8] == 'low', f'alert severity must be low; got {a[8]}'
+    assert a[8] == 'critical', f'alert severity must be critical; got {a[8]}'
     assert a[10] == 'live', f'alert source must be live; got {a[10]}'
 
     # linked_alert_id back-patched on detection
