@@ -1496,9 +1496,11 @@ def _persist_live_coverage_telemetry(
         'workspace_id': str(target['workspace_id']),
     }
     _telem_payload_json = _json_dumps(_telem_payload)
+    # Collapsed key (no block number) so all future polls DO UPDATE a single row
+    # per target rather than inserting a new row for every polled block.
+    # Migration 0113 already remapped existing rows to this format.
     _telem_idempotency = (
-        f"{target['workspace_id']}:{target['id']}:coverage_poll:"
-        f"{_effective_block}"
+        f"{target['workspace_id']}:{target['id']}:coverage_poll"
     )
     # Validate that target.asset_id exists in asset_registry before inserting
     # telemetry_events (which has a FK to asset_registry, not to assets).
@@ -1564,6 +1566,8 @@ def _persist_live_coverage_telemetry(
         ON CONFLICT (workspace_id, target_id, idempotency_key) WHERE idempotency_key IS NOT NULL
         DO UPDATE SET
             observed_at = EXCLUDED.observed_at,
+            payload_json = EXCLUDED.payload_json,
+            payload_hash = EXCLUDED.payload_hash,
             ingested_at = NOW()
         """,
         (
@@ -9449,7 +9453,22 @@ def list_monitoring_worker_errors(request: Request, *, limit: int = 50) -> dict[
         }
 
 
-def list_target_telemetry(request: Request, *, target_id: str, limit: int = 50, q: str | None = None) -> dict[str, Any]:
+_TELEMETRY_ALLOWED_EVENT_TYPE_FILTERS = frozenset({
+    'wallet_transfer_detected',
+    'rpc_polling',
+    'native_transfer',
+})
+
+
+def list_target_telemetry(
+    request: Request,
+    *,
+    target_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    q: str | None = None,
+    event_type_filter: str | None = None,
+) -> dict[str, Any]:
     try:
         uuid.UUID(target_id)
     except (ValueError, AttributeError):
@@ -9461,83 +9480,89 @@ def list_target_telemetry(request: Request, *, target_id: str, limit: int = 50, 
         workspace_id = workspace_context['workspace_id']
         _q = (q or '').strip()
         _effective_limit = max(1, min(limit, 200))
+        _effective_offset = max(0, offset)
+        # Validate event_type_filter to prevent injection; silently ignore unknown values.
+        _etf = (event_type_filter or '').strip().lower() or None
+        if _etf and _etf not in _TELEMETRY_ALLOWED_EVENT_TYPE_FILTERS:
+            _etf = None
+
+        _select = '''
+            SELECT
+                te.id,
+                te.workspace_id,
+                te.target_id,
+                te.provider_type,
+                te.event_type AS source_type,
+                te.evidence_source,
+                te.observed_at,
+                te.ingested_at,
+                te.payload_json,
+                t.chain_network AS chain_network,
+                mer.block_number AS receipt_block_number
+            FROM telemetry_events te
+            LEFT JOIN targets t
+              ON t.id = te.target_id
+             AND t.workspace_id = te.workspace_id
+            LEFT JOIN LATERAL (
+                SELECT block_number
+                FROM monitoring_event_receipts
+                WHERE workspace_id = te.workspace_id
+                  AND target_id = te.target_id
+                ORDER BY id DESC
+                LIMIT 1
+            ) mer ON true
+            WHERE te.workspace_id = %s::uuid
+              AND te.target_id = %s::uuid
+        '''
+        # Wallet-transfer rows always surface first; within each tier sort by recency.
+        _order = '''
+            ORDER BY
+                CASE WHEN te.event_type = 'wallet_transfer_detected' THEN 0 ELSE 1 END,
+                te.observed_at DESC
+        '''
+
         if _q:
             _like = f'%{_q}%'
+            if _etf:
+                rows = connection.execute(
+                    _select + '''
+                      AND te.event_type = %s
+                      AND (
+                        lower(te.payload_json->>'tx_hash') LIKE lower(%s)
+                        OR lower(te.payload_json->>'from') LIKE lower(%s)
+                        OR lower(te.payload_json->>'to') LIKE lower(%s)
+                        OR (te.payload_json->>'block_number') LIKE %s
+                        OR lower(te.event_type) LIKE lower(%s)
+                        OR lower(te.id::text) LIKE lower(%s)
+                      )
+                    ''' + _order + ' LIMIT %s OFFSET %s',
+                    (workspace_id, target_id, _etf, _like, _like, _like, _like, _like, _like, _effective_limit, _effective_offset),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    _select + '''
+                      AND (
+                        lower(te.payload_json->>'tx_hash') LIKE lower(%s)
+                        OR lower(te.payload_json->>'from') LIKE lower(%s)
+                        OR lower(te.payload_json->>'to') LIKE lower(%s)
+                        OR (te.payload_json->>'block_number') LIKE %s
+                        OR lower(te.event_type) LIKE lower(%s)
+                        OR lower(te.id::text) LIKE lower(%s)
+                      )
+                    ''' + _order + ' LIMIT %s OFFSET %s',
+                    (workspace_id, target_id, _like, _like, _like, _like, _like, _like, _effective_limit, _effective_offset),
+                ).fetchall()
+        elif _etf:
             rows = connection.execute(
-                '''
-                SELECT
-                    te.id,
-                    te.workspace_id,
-                    te.target_id,
-                    te.provider_type,
-                    te.event_type AS source_type,
-                    te.evidence_source,
-                    te.observed_at,
-                    te.ingested_at,
-                    te.payload_json,
-                    t.chain_network AS chain_network,
-                    mer.block_number AS receipt_block_number
-                FROM telemetry_events te
-                LEFT JOIN targets t
-                  ON t.id = te.target_id
-                 AND t.workspace_id = te.workspace_id
-                LEFT JOIN LATERAL (
-                    SELECT block_number
-                    FROM monitoring_event_receipts
-                    WHERE workspace_id = te.workspace_id
-                      AND target_id = te.target_id
-                    ORDER BY id DESC
-                    LIMIT 1
-                ) mer ON true
-                WHERE te.workspace_id = %s::uuid
-                  AND te.target_id = %s::uuid
-                  AND (
-                    lower(te.payload_json->>'tx_hash') LIKE lower(%s)
-                    OR lower(te.payload_json->>'from') LIKE lower(%s)
-                    OR lower(te.payload_json->>'to') LIKE lower(%s)
-                    OR (te.payload_json->>'block_number') LIKE %s
-                    OR lower(te.event_type) LIKE lower(%s)
-                    OR lower(te.id::text) LIKE lower(%s)
-                  )
-                ORDER BY te.observed_at DESC
-                LIMIT %s
-                ''',
-                (workspace_id, target_id, _like, _like, _like, _like, _like, _like, _effective_limit),
+                _select + ' AND te.event_type = %s' + _order + ' LIMIT %s OFFSET %s',
+                (workspace_id, target_id, _etf, _effective_limit, _effective_offset),
             ).fetchall()
         else:
             rows = connection.execute(
-                '''
-                SELECT
-                    te.id,
-                    te.workspace_id,
-                    te.target_id,
-                    te.provider_type,
-                    te.event_type AS source_type,
-                    te.evidence_source,
-                    te.observed_at,
-                    te.ingested_at,
-                    te.payload_json,
-                    t.chain_network AS chain_network,
-                    mer.block_number AS receipt_block_number
-                FROM telemetry_events te
-                LEFT JOIN targets t
-                  ON t.id = te.target_id
-                 AND t.workspace_id = te.workspace_id
-                LEFT JOIN LATERAL (
-                    SELECT block_number
-                    FROM monitoring_event_receipts
-                    WHERE workspace_id = te.workspace_id
-                      AND target_id = te.target_id
-                    ORDER BY id DESC
-                    LIMIT 1
-                ) mer ON true
-                WHERE te.workspace_id = %s::uuid
-                  AND te.target_id = %s::uuid
-                ORDER BY te.observed_at DESC
-                LIMIT %s
-                ''',
-                (workspace_id, target_id, _effective_limit),
+                _select + _order + ' LIMIT %s OFFSET %s',
+                (workspace_id, target_id, _effective_limit, _effective_offset),
             ).fetchall()
+
         telemetry = []
         for row in rows:
             item = _json_safe_value(dict(row))
@@ -9574,9 +9599,14 @@ def list_target_telemetry(request: Request, *, target_id: str, limit: int = 50, 
             'target_id': target_id,
             'workspace_id': str(workspace_id),
             'live_telemetry_ready': len(telemetry) > 0,
+            'offset': _effective_offset,
+            'limit': _effective_limit,
+            'has_more': len(telemetry) == _effective_limit,
         }
         if _q:
             result['query'] = _q
+        if _etf:
+            result['event_type_filter'] = _etf
         if not telemetry:
             if _q:
                 result['message'] = f'No telemetry found matching {_q!r}. The tx_hash will appear once the worker detects the transaction.'

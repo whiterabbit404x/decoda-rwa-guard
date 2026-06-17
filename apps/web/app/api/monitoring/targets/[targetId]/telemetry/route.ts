@@ -48,10 +48,17 @@ export async function GET(
 
   const url = new URL(request.url);
   const limit = url.searchParams.get('limit') ?? '50';
+  const offset = url.searchParams.get('offset') ?? '0';
+  const eventTypeFilter = url.searchParams.get('event_type_filter') ?? '';
+  const q = url.searchParams.get('q') ?? '';
+
+  const backendParams = new URLSearchParams({ limit, offset });
+  if (eventTypeFilter) backendParams.set('event_type_filter', eventTypeFilter);
+  if (q) backendParams.set('q', q);
 
   try {
     const response = await fetchWithTimeout(
-      `${backendApiUrl}/monitoring/targets/${encodeURIComponent(targetId)}/telemetry?limit=${encodeURIComponent(limit)}`,
+      `${backendApiUrl}/monitoring/targets/${encodeURIComponent(targetId)}/telemetry?${backendParams.toString()}`,
       { method: 'GET', headers, cache: 'no-store' },
       PROXY_TIMEOUT_MS,
     );

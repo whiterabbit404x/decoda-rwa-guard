@@ -466,11 +466,28 @@ function TelemetryDetailModal({
   );
 }
 
-function buildTelemetryUrl(targetId: string, q: string): string {
+const PAGE_SIZE = 50;
+
+// Map quick filters to backend event_type_filter values for server-side scoping.
+const QUICK_FILTER_TO_EVENT_TYPE: Partial<Record<QuickFilter, string>> = {
+  wallet_transfers: 'wallet_transfer_detected',
+  rpc_polling: 'rpc_polling',
+  alerts_only: 'wallet_transfer_detected',
+};
+
+function buildTelemetryUrl(
+  targetId: string,
+  q: string,
+  quickFilter: QuickFilter,
+  page: number,
+): string {
   const base = `/api/monitoring/targets/${encodeURIComponent(targetId)}/telemetry`;
+  const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(page * PAGE_SIZE) });
   const trimmed = q.trim();
-  if (!trimmed) return `${base}?limit=200`;
-  return `${base}?limit=200&q=${encodeURIComponent(trimmed)}`;
+  if (trimmed) params.set('q', trimmed);
+  const etf = QUICK_FILTER_TO_EVENT_TYPE[quickFilter];
+  if (etf) params.set('event_type_filter', etf);
+  return `${base}?${params.toString()}`;
 }
 
 export default function TargetTelemetryPage() {
@@ -486,6 +503,8 @@ export default function TargetTelemetryPage() {
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [quickFilter, setQuickFilter] = useState<QuickFilter>('all');
   const [copiedTxId, setCopiedTxId] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
 
   const { authHeaders } = usePilotAuth();
 
@@ -495,10 +514,17 @@ export default function TargetTelemetryPage() {
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  // Client-side filter applied on top of whatever the backend returned
-  const filteredRows = rows.filter(
-    (row) => matchesSearch(row, debouncedQuery) && matchesQuickFilter(row, quickFilter),
-  );
+  // Reset to first page when search or filter changes
+  useEffect(() => {
+    setCurrentPage(0);
+  }, [debouncedQuery, quickFilter]);
+
+  // When a server-side filter handles the event_type, no client-side filter needed.
+  // For live_evidence_only we still filter client-side since it's not an event_type.
+  const filteredRows =
+    quickFilter === 'live_evidence_only'
+      ? rows.filter((row) => row.evidence_source === 'live')
+      : rows;
 
   useEffect(() => {
     if (!targetId) return;
@@ -506,7 +532,7 @@ export default function TargetTelemetryPage() {
     setLoading(true);
     setLoadError('');
 
-    fetch(buildTelemetryUrl(targetId, debouncedQuery), {
+    fetch(buildTelemetryUrl(targetId, debouncedQuery, quickFilter, currentPage), {
       headers: authHeaders(),
       cache: 'no-store',
       signal: controller.signal,
@@ -520,6 +546,7 @@ export default function TargetTelemetryPage() {
           return;
         }
         setRows((payload.telemetry as TelemetryRow[]) ?? []);
+        setHasMore(payload.has_more === true);
         if (typeof payload.workspace_id === 'string') {
           setWorkspaceId(payload.workspace_id);
         }
@@ -534,7 +561,7 @@ export default function TargetTelemetryPage() {
 
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targetId, debouncedQuery, authHeaders]);
+  }, [targetId, debouncedQuery, quickFilter, currentPage, authHeaders]);
 
   return (
     <main className="productPage">
@@ -645,6 +672,58 @@ export default function TargetTelemetryPage() {
           </button>
         ))}
       </div>
+
+      {/* Pagination info */}
+      {!loading && !loadError && rows.length > 0 && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            marginBottom: '0.5rem',
+            fontSize: '0.82rem',
+            color: 'var(--text-secondary)',
+          }}
+        >
+          <span>
+            Page {currentPage + 1} &middot; {filteredRows.length} row{filteredRows.length !== 1 ? 's' : ''}
+          </span>
+          <div style={{ display: 'flex', gap: '0.4rem' }}>
+            <button
+              type="button"
+              disabled={currentPage === 0}
+              onClick={() => setCurrentPage((p) => Math.max(0, p - 1))}
+              style={{
+                background: 'var(--bg-surface)',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-xs)',
+                color: currentPage === 0 ? 'var(--text-muted)' : 'var(--text-secondary)',
+                cursor: currentPage === 0 ? 'default' : 'pointer',
+                fontSize: '0.78rem',
+                padding: '0.25rem 0.6rem',
+              }}
+            >
+              Prev
+            </button>
+            <button
+              type="button"
+              disabled={!hasMore}
+              onClick={() => setCurrentPage((p) => p + 1)}
+              style={{
+                background: 'var(--bg-surface)',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-xs)',
+                color: !hasMore ? 'var(--text-muted)' : 'var(--text-secondary)',
+                cursor: !hasMore ? 'default' : 'pointer',
+                fontSize: '0.78rem',
+                padding: '0.25rem 0.6rem',
+              }}
+            >
+              Next
+            </button>
+          </div>
+        </div>
+      )}
 
       {loadError ? (
         <p className="statusLine" style={{ color: 'var(--danger-fg)' }}>
