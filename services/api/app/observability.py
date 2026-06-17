@@ -137,7 +137,15 @@ def send_external_oncall_alert(alert_type: str, summary: str, **details: Any) ->
     url = os.getenv('MONITORING_ONCALL_URL', '').strip()
     if not url:
         increment('decoda_self_monitoring_alerts_total', alert_type=alert_type, outcome='unconfigured')
-        logger.critical('self_monitoring_alert_unrouted', extra={'operation': alert_type, 'severity': 'critical', 'context': details, 'runbook_url': os.getenv('OBSERVABILITY_RUNBOOK_URL', '/system-health')})
+        # MONITORING_ONCALL_URL is not configured — log at WARNING so operators know
+        # the alert could not be externally routed, but avoid CRITICAL since the issue
+        # is configuration, not an active system failure. Set MONITORING_ONCALL_URL to
+        # route self-monitoring alerts to an external oncall endpoint.
+        logger.warning(
+            'self_monitoring_alert_unrouted alert_type=%s summary=%s configure=MONITORING_ONCALL_URL',
+            alert_type, summary,
+            extra={'operation': alert_type, 'severity': 'critical', 'context': details, 'status': 'unrouted_config_missing'},
+        )
         return False
     payload = json.dumps({'event_type': f'monitoring.{alert_type}', 'severity': 'critical', 'summary': summary, 'details': details, 'trace_id': current_trace_id()}).encode()
     headers = {'Content-Type': 'application/json', 'X-Decoda-Monitoring-Alert': alert_type}

@@ -241,6 +241,7 @@ from services.api.app.pilot import (
     require_ops_rbac_guard,
 )
 from services.api.app.monitoring_runner import (
+    backfill_missing_alerts_for_target,
     backfill_target_block_range,
     get_background_loop_health,
     get_monitoring_health,
@@ -3339,6 +3340,19 @@ def ops_monitoring_target_backfill(target_id: str, payload: dict[str, Any], requ
     if from_block <= 0 or to_block <= 0:
         raise HTTPException(status_code=400, detail='from_block and to_block must be positive integers')
     return with_auth_schema_json(lambda: backfill_target_block_range(request, target_id, from_block, to_block))
+
+
+@app.post('/ops/monitoring/targets/{target_id}/backfill-alerts', summary='Create missing alerts for existing wallet_transfer_detected telemetry')
+def ops_monitoring_target_backfill_alerts(target_id: str, request: Request) -> dict[str, Any]:
+    """Scan existing live wallet_transfer_detected telemetry for the target and create
+    any missing alerts via the smoke-rule and Strategic Infrastructure Guard rule.
+
+    Idempotent — safe to call multiple times; dedup prevents duplicate alerts.
+    Only processes evidence_source='live' rows; never creates alerts from simulator data.
+    Requires x-workspace-id header.
+    """
+    enforce_auth_rate_limit(request, 'ops_monitoring_backfill_alerts')
+    return with_auth_schema_json(lambda: backfill_missing_alerts_for_target(request, target_id=target_id))
 
 
 @app.post('/ops/monitoring/targets/{target_id}/import-tx', summary='Import a single transaction by hash for a wallet monitoring target')

@@ -78,6 +78,10 @@ class _StubConn:
         self._suppression_row = None
         self._existing_alert_row = None
         self._detection_conflict = False
+        # When _detection_conflict is True:
+        # - None  → recovery path (creates alert for existing detection with no alert)
+        # - UUID str → true dedup (alert already linked, returns existing id)
+        self._linked_alert_id: str | None = None
 
     def execute(self, query: str, params=None):
         q = (query or '').strip().lower()
@@ -91,6 +95,9 @@ class _StubConn:
             return _Rows([self._suppression_row] if self._suppression_row else [])
         if q.startswith('select') and 'from alerts' in q:
             return _Rows([self._existing_alert_row] if self._existing_alert_row else [])
+        # Recovery-path: SELECT linked_alert_id FROM detections WHERE id = %s
+        if 'select' in q and 'linked_alert_id' in q and 'from detections' in q:
+            return _Rows([{'linked_alert_id': self._linked_alert_id}])
         if q.startswith('update'):
             return _Rows(rowcount=1)
         return _Rows()
@@ -140,8 +147,10 @@ def test_sig_alert_created_for_live_outbound_base_transfer():
 # ---------------------------------------------------------------------------
 
 def test_sig_alert_deduplicates_same_tx_hash():
+    existing_alert_id = str(uuid.uuid4())
     stub = _StubConn()
-    stub._detection_conflict = True  # simulate detection already exists
+    stub._detection_conflict = True   # simulate detection already exists
+    stub._linked_alert_id = existing_alert_id  # alert already linked → true dedup
 
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr(monitoring_runner, 'pg_connection', _fake_pg(stub))
@@ -155,9 +164,9 @@ def test_sig_alert_deduplicates_same_tx_hash():
             evidence_source='live',
         )
 
-    assert result is None, 'duplicate tx must not produce a second alert'
+    assert result == existing_alert_id, 'duplicate tx must return existing alert_id (true dedup)'
     alert_inserts = [t for t, _ in stub.inserts if t == 'alerts']
-    assert not alert_inserts, 'no alerts row must be inserted for duplicate detection'
+    assert not alert_inserts, 'no new alert INSERT when alert is already linked'
 
 
 # ---------------------------------------------------------------------------

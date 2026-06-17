@@ -74,6 +74,11 @@ class _StubConn:
         self._suppression_row = None  # no suppression by default
         self._existing_alert_row = None  # no dedup match by default
         self._detection_conflict = False  # set True to simulate ON CONFLICT DO NOTHING
+        # When _detection_conflict is True, this controls the linked_alert_id the stub
+        # returns for the recovery-path SELECT:
+        # - None  → recovery path runs (creates missing alert for existing detection)
+        # - a UUID str → true dedup (alert already linked, returns existing id)
+        self._linked_alert_id: str | None = None
 
     def execute(self, query: str, params=None):
         q = (query or '').strip().lower()
@@ -88,6 +93,11 @@ class _StubConn:
             return _Rows([self._suppression_row] if self._suppression_row else [])
         if q.startswith('select') and 'from alerts' in q:
             return _Rows([self._existing_alert_row] if self._existing_alert_row else [])
+        # Recovery-path: SELECT linked_alert_id FROM detections WHERE id = %s
+        if 'select' in q and 'linked_alert_id' in q and 'from detections' in q:
+            return _Rows([{'linked_alert_id': self._linked_alert_id}])
+        if q.startswith('update'):
+            return _Rows(rowcount=1)
         return _Rows()
 
     def commit(self):
@@ -725,9 +735,12 @@ def test_smoke_alert_includes_telemetry_and_target_id_in_response():
 # ---------------------------------------------------------------------------
 
 def test_smoke_alert_skips_duplicate_tx_on_second_poll():
-    """When the detection INSERT conflicts (same tx already processed), no alert is created."""
+    """When the detection INSERT conflicts (same tx already processed) and an alert is
+    already linked, the function returns the existing alert_id without creating a new one."""
+    existing_alert_id = str(uuid.uuid4())
     stub = _StubConn()
-    stub._detection_conflict = True  # simulate ON CONFLICT DO NOTHING (detection exists)
+    stub._detection_conflict = True   # simulate ON CONFLICT DO NOTHING (detection exists)
+    stub._linked_alert_id = existing_alert_id  # simulate alert already linked → true dedup
 
     @contextmanager
     def _fake_pg():
@@ -743,10 +756,12 @@ def test_smoke_alert_skips_duplicate_tx_on_second_poll():
             evidence_source='live',
         )
 
-    assert result is None, 'must return None when detection already exists (duplicate tx)'
+    assert result == existing_alert_id, (
+        f'must return existing alert_id when detection+alert both exist (true dedup); got {result!r}'
+    )
     alert_inserts = [t for t, _ in stub.inserts if t == 'alerts']
-    assert not alert_inserts, 'no alert must be created when detection is a duplicate'
-    assert stub.commit_calls >= 1, 'must still commit (the monitoring_run INSERT) on duplicate'
+    assert not alert_inserts, 'no new alert INSERT when alert is already linked to detection'
+    assert stub.commit_calls >= 1, 'must commit (the monitoring_run INSERT) on duplicate'
 
 
 # ---------------------------------------------------------------------------
@@ -881,11 +896,14 @@ def test_smoke_alert_logs_detection_created_and_alert_created(caplog):
 
 
 def test_smoke_alert_logs_skipped_duplicate(caplog):
-    """wallet_transfer_alert_skipped_duplicate must be logged when detection already exists."""
+    """wallet_transfer_alert_skipped_duplicate must be logged when detection exists and
+    alert is already linked (true dedup path — no new alert, returns existing id)."""
     import logging
 
+    existing_alert_id = str(uuid.uuid4())
     stub = _StubConn()
     stub._detection_conflict = True
+    stub._linked_alert_id = existing_alert_id  # alert already linked → true dedup
 
     @contextmanager
     def _fake_pg():
@@ -905,7 +923,7 @@ def test_smoke_alert_logs_skipped_duplicate(caplog):
     log_events = [r.message for r in caplog.records]
     skipped_logs = [m for m in log_events if 'wallet_transfer_alert_skipped_duplicate' in m]
     assert skipped_logs, (
-        f'wallet_transfer_alert_skipped_duplicate must be logged on duplicate; got: {log_events}'
+        f'wallet_transfer_alert_skipped_duplicate must be logged on true dedup; got: {log_events}'
     )
 
 
