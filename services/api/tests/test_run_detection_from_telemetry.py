@@ -49,6 +49,7 @@ class _TelemetryConn:
                 },
                 'evidence_source': 'live',
                 'target_name': 'Test Base Wallet',
+                'target_wallet_address': '0xcafe00000000000000000000000000000000feed',
                 'monitored_system_id': None,
                 'protected_asset_id': None,
             }])
@@ -98,6 +99,7 @@ def test_run_detection_creates_alert_from_existing_wallet_transfer_telemetry(mon
     monkeypatch.setattr(monitoring_runner, 'authenticate_with_connection', lambda *_: {'id': user_id})
     monkeypatch.setattr(monitoring_runner, 'resolve_workspace', lambda *_: {'workspace_id': workspace_id})
     monkeypatch.setattr(monitoring_runner, '_wallet_transfer_smoke_alert', _fake_smoke_alert)
+    monkeypatch.setattr(monitoring_runner, '_strategic_infrastructure_guard_alert', lambda **_: None)
 
     request = SimpleNamespace(headers={'x-workspace-id': workspace_id})
     result = monitoring_runner.run_detection_from_existing_telemetry(request)
@@ -134,6 +136,7 @@ def test_run_detection_idempotent_when_alert_already_exists(monkeypatch):
     monkeypatch.setattr(monitoring_runner, 'authenticate_with_connection', lambda *_: {'id': user_id})
     monkeypatch.setattr(monitoring_runner, 'resolve_workspace', lambda *_: {'workspace_id': workspace_id})
     monkeypatch.setattr(monitoring_runner, '_wallet_transfer_smoke_alert', lambda **_: None)
+    monkeypatch.setattr(monitoring_runner, '_strategic_infrastructure_guard_alert', lambda **_: None)
 
     request = SimpleNamespace(headers={'x-workspace-id': workspace_id})
     result = monitoring_runner.run_detection_from_existing_telemetry(request)
@@ -306,19 +309,19 @@ def test_existing_wallet_transfer_telemetry_creates_detection_and_alert_visible_
     assert result['telemetry_processed'] == 1, (
         f'Expected 1 telemetry row processed; got {result["telemetry_processed"]}'
     )
-    assert result['alerts_created'] == 1, (
-        f'Expected 1 alert created (Active Alerts = 1 on /alerts); '
+    assert result['alerts_created'] >= 1, (
+        f'Expected at least 1 alert created (smoke alert on /alerts); '
         f'got {result["alerts_created"]}'
     )
 
     # Verify the alert INSERT fields that /alerts queries
     assert alert_insert_params, 'alert INSERT must have been captured in smoke stub'
     params = alert_insert_params[0]
-    # Param order from _upsert_alert INSERT:
-    # 0:id, 1:workspace_id, 2:user_id, 3:analysis_run_id, 4:target_id, 5:alert_type,
-    # 6:title, 7:severity, 8:source_service, 9:source, 10:summary, 11:payload,
-    # 12:matched_patterns, 13:reasons, 14:recommended_action, 15:degraded,
-    # 16:dedupe_signature, 17:detection_id
+    # Param order from _upsert_alert INSERT (status='open' is hardcoded, not a param):
+    # 0:id, 1:workspace_id, 2:user_id, 3:analysis_run_id, 4:target_id, 5:module_key,
+    # 6:alert_type, 7:title, 8:severity, 9:source_service, 10:source, 11:summary,
+    # 12:payload, 13:matched_patterns, 14:reasons, 15:recommended_action, 16:degraded,
+    # 17:dedupe_signature, 18:detection_id
     assert params[1] == workspace_id, (
         f'alert workspace_id must match so /alerts returns it; got {params[1]}'
     )
@@ -327,9 +330,9 @@ def test_existing_wallet_transfer_telemetry_creates_detection_and_alert_visible_
         f'got {params[3]!r}'
     )
     assert params[4] == target_id, f'alert target_id must match; got {params[4]}'
-    assert params[7] == 'low', f'alert severity must be low; got {params[7]}'
-    assert params[9] == 'live', f'alert source must be live (not simulator); got {params[9]}'
-    detection_id_val = params[17]
+    assert params[8] == 'low', f'alert severity must be low; got {params[8]}'
+    assert params[10] == 'live', f'alert source must be live (not simulator); got {params[10]}'
+    detection_id_val = params[18]
     assert detection_id_val is not None, (
         'detection_id must be set in alert so /alerts can show the proof chain'
     )

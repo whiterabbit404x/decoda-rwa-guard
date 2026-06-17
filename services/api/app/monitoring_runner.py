@@ -682,15 +682,57 @@ def _wallet_transfer_smoke_alert(
                 ),
             )
             if det_cur.rowcount == 0:
-                # Detection already exists — this tx was already processed on a prior poll.
-                # Commit the monitoring_run and skip alert creation to avoid duplicates.
+                # Detection already exists. Commit the monitoring_run, then check whether a
+                # linked alert was created. If the alert is missing (e.g. it rolled back on a
+                # prior poll), create it now — this is the recovery / backfill path.
                 conn.commit()
+                det_row = conn.execute(
+                    'SELECT linked_alert_id FROM detections WHERE id = %s::uuid',
+                    (smoke_detection_id,),
+                ).fetchone()
+                existing_alert_id = (
+                    str(det_row['linked_alert_id'])
+                    if (det_row and det_row.get('linked_alert_id'))
+                    else None
+                )
+                if existing_alert_id:
+                    logger.info(
+                        'wallet_transfer_alert_skipped_duplicate workspace_id=%s target_id=%s '
+                        'detection_id=%s tx_hash=%s reason=alert_already_linked alert_id=%s',
+                        workspace_id, target_id, smoke_detection_id, tx_hash or 'unknown', existing_alert_id,
+                    )
+                    return existing_alert_id
+                # Detection exists but has no linked alert — recover by creating it now.
                 logger.info(
-                    'wallet_transfer_alert_skipped_duplicate workspace_id=%s target_id=%s '
-                    'detection_id=%s tx_hash=%s reason=detection_already_exists',
+                    'wallet_transfer_alert_recovery workspace_id=%s target_id=%s '
+                    'detection_id=%s tx_hash=%s reason=detection_exists_no_alert',
                     workspace_id, target_id, smoke_detection_id, tx_hash or 'unknown',
                 )
-                return None
+                response['monitoring_run_id'] = smoke_run_id
+                recovery_alert_id = _upsert_alert(
+                    conn,
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    target_id=target_id,
+                    analysis_run_id=None,
+                    title=title,
+                    response=response,
+                    signature=signature,
+                    detection_id=smoke_detection_id,
+                )
+                if recovery_alert_id:
+                    conn.execute(
+                        "UPDATE detections SET linked_alert_id = %s::uuid, status = 'escalated', updated_at = NOW() WHERE id = %s::uuid",
+                        (recovery_alert_id, smoke_detection_id),
+                    )
+                conn.commit()
+                if recovery_alert_id:
+                    logger.info(
+                        'wallet_transfer_alert_recovered workspace_id=%s target_id=%s '
+                        'detection_id=%s alert_id=%s tx_hash=%s',
+                        workspace_id, target_id, smoke_detection_id, recovery_alert_id, tx_hash or 'unknown',
+                    )
+                return recovery_alert_id or None
             logger.info(
                 'wallet_transfer_detection_created workspace_id=%s target_id=%s '
                 'detection_id=%s monitoring_run_id=%s tx_hash=%s chain_id=%s block=%s',
@@ -891,13 +933,57 @@ def _strategic_infrastructure_guard_alert(
                 ),
             )
             if det_cur.rowcount == 0:
+                # Detection already exists. Check if a linked alert was created.
+                # If alert is missing (prior rollback), create it now — recovery path.
                 conn.commit()
+                det_row = conn.execute(
+                    'SELECT linked_alert_id FROM detections WHERE id = %s::uuid',
+                    (sig_detection_id,),
+                ).fetchone()
+                existing_alert_id = (
+                    str(det_row['linked_alert_id'])
+                    if (det_row and det_row.get('linked_alert_id'))
+                    else None
+                )
+                if existing_alert_id:
+                    logger.info(
+                        'sig_alert_skipped_duplicate workspace_id=%s target_id=%s '
+                        'detection_id=%s tx_hash=%s reason=alert_already_linked alert_id=%s',
+                        workspace_id, target_id, sig_detection_id, tx_hash, existing_alert_id,
+                    )
+                    return existing_alert_id
+                # Detection exists but no alert — recover.
                 logger.info(
-                    'sig_alert_skipped_duplicate workspace_id=%s target_id=%s '
-                    'detection_id=%s tx_hash=%s reason=detection_already_exists',
+                    'sig_alert_recovery workspace_id=%s target_id=%s '
+                    'detection_id=%s tx_hash=%s reason=detection_exists_no_alert',
                     workspace_id, target_id, sig_detection_id, tx_hash,
                 )
-                return None
+                response['monitoring_run_id'] = sig_run_id
+                recovery_alert_id = _upsert_alert(
+                    conn,
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    target_id=target_id,
+                    analysis_run_id=None,
+                    title=_SIG_ALERT_TITLE,
+                    response=response,
+                    signature=signature,
+                    detection_id=sig_detection_id,
+                    module_key='strategic_infrastructure_guard',
+                )
+                if recovery_alert_id:
+                    conn.execute(
+                        "UPDATE detections SET linked_alert_id = %s::uuid, status = 'escalated', updated_at = NOW() WHERE id = %s::uuid",
+                        (recovery_alert_id, sig_detection_id),
+                    )
+                conn.commit()
+                if recovery_alert_id:
+                    logger.info(
+                        'sig_alert_recovered workspace_id=%s target_id=%s '
+                        'detection_id=%s alert_id=%s tx_hash=%s',
+                        workspace_id, target_id, sig_detection_id, recovery_alert_id, tx_hash,
+                    )
+                return recovery_alert_id or None
             logger.info(
                 'sig_detection_created workspace_id=%s target_id=%s '
                 'detection_id=%s monitoring_run_id=%s tx_hash=%s chain_id=%s block=%s',
@@ -3653,7 +3739,7 @@ def process_monitoring_target(
             )
             # Smoke-test rule: create a detection + low/info alert for every live wallet
             # transfer, committed on its own connection so it survives threat-engine failures.
-            _wallet_transfer_smoke_alert(
+            _smoke_alert_id = _wallet_transfer_smoke_alert(
                 workspace_id=str(target['workspace_id']),
                 user_id=user_id,
                 target_id=str(target['id']),
@@ -3664,8 +3750,11 @@ def process_monitoring_target(
                 monitored_system_id=str(target['monitored_system_id']) if target.get('monitored_system_id') else None,
                 protected_asset_id=str(target['asset_id']) if target.get('asset_id') else None,
             )
+            if _smoke_alert_id:
+                alerts_generated += 1
+                last_alert_at = utc_now()
             # Strategic Infrastructure Guard rule: critical alert for outbound Base ETH transfers.
-            _strategic_infrastructure_guard_alert(
+            _sig_alert_id = _strategic_infrastructure_guard_alert(
                 workspace_id=str(target['workspace_id']),
                 user_id=user_id,
                 target_id=str(target['id']),
@@ -3677,6 +3766,9 @@ def process_monitoring_target(
                 monitored_system_id=str(target['monitored_system_id']) if target.get('monitored_system_id') else None,
                 protected_asset_id=str(target['asset_id']) if target.get('asset_id') else None,
             )
+            if _sig_alert_id and _sig_alert_id != _smoke_alert_id:
+                alerts_generated += 1
+                last_alert_at = utc_now()
         else:
             connection.execute(
                 """
@@ -10598,6 +10690,128 @@ def run_detection_from_existing_telemetry(request: Request) -> dict[str, Any]:
 
     return {
         'status': 'completed',
+        'telemetry_processed': len(rows),
+        'alerts_created': len(alerts_created),
+        'alert_ids': alerts_created,
+    }
+
+
+def backfill_missing_alerts_for_target(request: Request, *, target_id: str) -> dict[str, Any]:
+    """Create alerts for wallet_transfer_detected rows that have no associated alert.
+
+    Scans live wallet_transfer_detected telemetry for a specific target and runs the
+    smoke-rule and Strategic Infrastructure Guard rule on each row. Both rules use
+    UUID5-deterministic detection IDs and dedupe signatures, so this is idempotent —
+    safe to call multiple times; no duplicate alerts will be created.
+
+    If a prior poll created a detection row but the alert creation rolled back, the
+    recovery path in _wallet_transfer_smoke_alert and _strategic_infrastructure_guard_alert
+    will create the missing alert and link it to the existing detection.
+
+    Only processes evidence_source='live' telemetry; never creates alerts from simulator
+    or replay data.
+    """
+    require_live_mode()
+    try:
+        uuid.UUID(target_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail='target_id must be a valid UUID.')
+
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        workspace_id = workspace_context['workspace_id']
+        user_id = user['id']
+
+        logger.info(
+            'backfill_missing_alerts_started workspace_id=%s user_id=%s target_id=%s',
+            workspace_id, user_id, target_id,
+        )
+
+        rows = connection.execute(
+            '''
+            SELECT
+                te.id,
+                te.target_id,
+                te.payload_json,
+                te.evidence_source,
+                COALESCE(t.name, te.target_id::text) AS target_name,
+                t.wallet_address AS target_wallet_address,
+                ms.id AS monitored_system_id,
+                COALESCE(te.asset_id, ms.asset_id) AS protected_asset_id
+            FROM telemetry_events te
+            LEFT JOIN targets t ON t.id = te.target_id
+            LEFT JOIN monitored_systems ms
+                ON ms.target_id = te.target_id
+               AND ms.workspace_id = te.workspace_id
+            WHERE te.workspace_id = %s::uuid
+              AND te.target_id = %s::uuid
+              AND te.event_type = 'wallet_transfer_detected'
+              AND te.evidence_source = 'live'
+            ORDER BY te.observed_at DESC
+            LIMIT 200
+            ''',
+            (workspace_id, target_id),
+        ).fetchall()
+
+    alerts_created: list[str] = []
+    for row in rows:
+        telemetry_id = str(row['id'])
+        row_target_id = str(row['target_id']) if row['target_id'] else ''
+        target_name = str(row['target_name'] or row_target_id)
+        target_wallet_address = str(row['target_wallet_address'] or '') if row['target_wallet_address'] else ''
+        payload = dict(row['payload_json'] or {})
+        evidence_source = str(row['evidence_source'] or 'live')
+        monitored_system_id = str(row['monitored_system_id']) if row['monitored_system_id'] else None
+        protected_asset_id = str(row['protected_asset_id']) if row['protected_asset_id'] else None
+
+        alert_id = _wallet_transfer_smoke_alert(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            target_id=row_target_id,
+            target_name=target_name,
+            payload=payload,
+            evidence_source=evidence_source,
+            telemetry_id=telemetry_id,
+            monitored_system_id=monitored_system_id,
+            protected_asset_id=protected_asset_id,
+        )
+        if alert_id and alert_id not in alerts_created:
+            logger.info(
+                'backfill_smoke_alert workspace_id=%s target_id=%s alert_id=%s telemetry_id=%s',
+                workspace_id, row_target_id, alert_id, telemetry_id,
+            )
+            alerts_created.append(alert_id)
+
+        sig_alert_id = _strategic_infrastructure_guard_alert(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            target_id=row_target_id,
+            target_name=target_name,
+            target_wallet_address=target_wallet_address,
+            payload=payload,
+            evidence_source=evidence_source,
+            telemetry_id=telemetry_id,
+            monitored_system_id=monitored_system_id,
+            protected_asset_id=protected_asset_id,
+        )
+        if sig_alert_id and sig_alert_id not in alerts_created:
+            logger.info(
+                'backfill_sig_alert workspace_id=%s target_id=%s alert_id=%s telemetry_id=%s',
+                workspace_id, row_target_id, sig_alert_id, telemetry_id,
+            )
+            alerts_created.append(sig_alert_id)
+
+    logger.info(
+        'backfill_missing_alerts_completed workspace_id=%s target_id=%s '
+        'telemetry_processed=%s alerts_created=%s',
+        workspace_id, target_id, len(rows), len(alerts_created),
+    )
+    return {
+        'status': 'completed',
+        'target_id': target_id,
+        'workspace_id': workspace_id,
         'telemetry_processed': len(rows),
         'alerts_created': len(alerts_created),
         'alert_ids': alerts_created,
