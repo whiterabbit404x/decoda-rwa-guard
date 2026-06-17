@@ -6675,11 +6675,12 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             for field in impacted_fields:
                 _append_field_reason(field, reason_code)
             logger.warning(
-                'monitoring_runtime_status_optional_query_failed workspace_id=%s checkpoint=%s reason_code=%s error_type=%s',
+                'monitoring_runtime_status_optional_query_failed workspace_id=%s checkpoint=%s reason_code=%s error_type=%s error_detail=%s',
                 workspace_id,
                 checkpoint_label,
                 reason_code,
                 type(exc).__name__,
+                str(exc)[:500],
             )
     
         def _load_runtime_monitored_rows(connection: Any, workspace_scope_id: str | None) -> list[dict[str, Any]]:
@@ -6970,11 +6971,14 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                       ON d.id = a.detection_id
                      AND d.workspace_id = a.workspace_id
                     WHERE a.status IN ('open','acknowledged','investigating')
-                      AND EXISTS (
-                          SELECT 1
-                          FROM detection_evidence de
-                          WHERE de.workspace_id = d.workspace_id
-                            AND de.detection_id = d.id
+                      AND (
+                        d.raw_evidence_json IS NOT NULL
+                        OR EXISTS (
+                            SELECT 1
+                            FROM detection_evidence de
+                            WHERE de.workspace_id = d.workspace_id
+                              AND de.detection_id = d.id
+                        )
                       )
                       {'AND a.workspace_id = %s' if workspace_id else ''}
                     ''',
@@ -8522,7 +8526,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             persisted_enabled_config_count=persisted_enabled_config_count,
             valid_target_system_link_count=valid_target_system_link_count,
             telemetry_window_seconds=telemetry_window_seconds,
-            active_alerts_count=int((open_alerts or {}).get('c') or 0),
+            active_alerts_count=int(max(
+                int((open_alerts or {}).get('c') or 0),
+                int((legacy_open_alerts_row or {}).get('c') or 0),
+            )),
             alerts_without_detection_count=int(open_alerts_without_evidence_count),
             active_incidents_count=int((open_incidents or {}).get('c') or 0),
             response_actions_count=int(response_actions_count),
@@ -8542,7 +8549,12 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             if 'target_rows_exist_without_reporting_systems' not in _gf:
                 _gf.append('target_rows_exist_without_reporting_systems')
                 summary['guard_flags'] = sorted(_gf)
-        if runtime_degraded_reason == 'partial_query_failure' and str(summary.get('status_reason', '')).startswith('guard:'):
+        _pqf_reason = str(summary.get('status_reason', ''))
+        if (
+            runtime_degraded_reason == 'partial_query_failure'
+            and _pqf_reason.startswith('guard:')
+            and _pqf_reason != 'guard:live_proof_chain_incomplete'
+        ):
             summary['status_reason'] = 'runtime_status_degraded:partial_query_failure'
         summary['field_reason_codes'] = dict(field_reason_codes)
         summary['configured_systems'] = int(enabled_system_count)
@@ -9061,7 +9073,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'valid_asset_linked_targets': valid_asset_linked_targets,
             'enabled_monitored_systems': enabled_monitored_systems,
             'valid_target_system_links': valid_target_system_links,
-            'active_alerts': int((open_alerts or {}).get('c') or 0),
+            'active_alerts': int(max(
+                int((open_alerts or {}).get('c') or 0),
+                int((legacy_open_alerts_row or {}).get('c') or 0),
+            )),
             'open_incidents': int((open_incidents or {}).get('c') or 0),
             'raw_open_alerts': int(raw_open_alerts_count),
             'raw_open_incidents': int(raw_open_incidents_count),
@@ -10689,7 +10704,7 @@ def run_detection_from_existing_telemetry(request: Request) -> dict[str, Any]:
                 ON ms.target_id = te.target_id
                AND ms.workspace_id = te.workspace_id
             WHERE te.workspace_id = %s::uuid
-              AND te.event_type = 'wallet_transfer_detected'
+              AND te.event_type IN ('wallet_transfer_detected', 'native_transfer')
               AND te.evidence_source = 'live'
             ORDER BY te.observed_at DESC
             LIMIT 50
@@ -10808,7 +10823,7 @@ def backfill_missing_alerts_for_target(request: Request, *, target_id: str) -> d
                AND ms.workspace_id = te.workspace_id
             WHERE te.workspace_id = %s::uuid
               AND te.target_id = %s::uuid
-              AND te.event_type = 'wallet_transfer_detected'
+              AND te.event_type IN ('wallet_transfer_detected', 'native_transfer')
               AND te.evidence_source = 'live'
             ORDER BY te.observed_at DESC
             LIMIT 200

@@ -31,6 +31,7 @@ class _RuntimeStatusConn:
         incidents_without_alert: int = 0,
         response_actions_without_incident: int = 0,
         latest_detection_at: datetime | None,
+        legacy_smoke_alerts: int = 0,
     ) -> None:
         self.now = now
         self.raw_open_alerts = raw_open_alerts
@@ -40,6 +41,7 @@ class _RuntimeStatusConn:
         self.incidents_without_alert = incidents_without_alert
         self.response_actions_without_incident = response_actions_without_incident
         self.latest_detection_at = latest_detection_at
+        self.legacy_smoke_alerts = legacy_smoke_alerts
 
     def execute(self, query, params=None):
         q = ' '.join(str(query).split())
@@ -49,6 +51,9 @@ class _RuntimeStatusConn:
             return _Result({'c': self.raw_open_alerts})
         if 'FROM alerts a' in q and 'JOIN detection_events de' in q and 'JOIN telemetry_events te' in q and 'COUNT' in q:
             return _Result({'c': self.chain_open_alerts})
+        # Legacy smoke-rule path: alerts joined to detections with raw_evidence_json
+        if 'FROM alerts a' in q and 'JOIN detections d' in q and 'raw_evidence_json IS NOT NULL' in q:
+            return _Result({'c': self.legacy_smoke_alerts})
         if "FROM incidents WHERE status IN ('open','acknowledged')" in q and 'WITH proof_chain_alerts AS (' not in q:
             return _Result({'c': self.raw_open_incidents})
         if 'WITH proof_chain_alerts AS (' in q and 'SELECT COUNT(DISTINCT i.id) AS c' in q:
@@ -199,3 +204,35 @@ def test_runtime_status_proof_chain_impossible_states_emit_contradiction_flags(m
     assert 'open_alerts_without_detection_evidence' in payload['contradiction_flags']
     assert 'incident_without_alert' in payload['contradiction_flags']
     assert 'response_action_without_incident' in payload['contradiction_flags']
+
+
+def test_runtime_status_smoke_rule_alerts_with_raw_evidence_json_not_treated_as_missing_evidence(monkeypatch):
+    """Smoke-rule alerts (detection_id + raw_evidence_json, no detection_event_id) must not
+    be counted as alerts-without-evidence.  The legacy proof-chain path now accepts
+    raw_evidence_json IS NOT NULL as sufficient evidence so that wallet_transfer_detected
+    events processed by _wallet_transfer_smoke_alert do not degrade runtime status or
+    force freshness to 'stale'."""
+    now = datetime(2026, 4, 25, 10, 15, tzinfo=timezone.utc)
+    conn = _RuntimeStatusConn(
+        now=now,
+        raw_open_alerts=2,
+        chain_open_alerts=0,
+        legacy_smoke_alerts=2,
+        raw_open_incidents=0,
+        chain_open_incidents=0,
+        latest_detection_at=None,
+    )
+    _setup_runtime_status(monkeypatch, conn, now)
+
+    payload = monitoring_runner.monitoring_runtime_status(_request())
+
+    assert payload['open_alerts_without_detection_evidence'] == 0, (
+        'Smoke-rule alerts with raw_evidence_json must not inflate alerts_without_evidence'
+    )
+    assert payload['proof_chain_status'] != 'incomplete' or 'alerts_without_canonical_detection_event' not in (
+        payload.get('proof_chain_missing_reason_codes') or []
+    ), 'alerts_without_canonical_detection_event must not fire when raw_evidence_json covers all alerts'
+    assert payload['active_alerts'] == 2, (
+        'active_alerts must reflect the legacy-path count when detection_events path returns 0'
+    )
+    assert payload['status_reason'] != 'alerts_without_canonical_detection_event'

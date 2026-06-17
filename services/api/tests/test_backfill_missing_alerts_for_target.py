@@ -7,6 +7,7 @@ Coverage:
   4. Simulator rows are excluded (evidence_source != 'live')
   5. Recovery: detection exists but no linked alert → alert is created and linked
   6. Target-scoped: only processes rows for the specified target_id
+  7. native_transfer event type IS included in backfill query (block-range backfill path)
 """
 from __future__ import annotations
 
@@ -318,3 +319,48 @@ def test_backfill_two_different_tx_hashes_create_two_alerts(monkeypatch):
     assert set(result['alert_ids']) == {alert_id_1, alert_id_2}
     assert TX_HASH_1 in smoke_call_hashes
     assert TX_HASH_2 in smoke_call_hashes
+
+
+class _QueryCapturingConn:
+    """Captures SQL queries so tests can assert what event_types were queried."""
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.captured_queries: list[str] = []
+
+    def execute(self, query, params=None):
+        self.captured_queries.append(str(query or ''))
+        return _Result(rows=self._rows)
+
+    def commit(self):
+        pass
+
+
+def test_backfill_missing_alerts_query_includes_native_transfer(monkeypatch):
+    """backfill_missing_alerts_for_target must query native_transfer in addition to
+    wallet_transfer_detected so that block-range-backfilled telemetry (which is stored
+    as native_transfer) also gets alerts created and appears in the alerts_only filter."""
+    from services.api.app import monitoring_runner
+
+    smoke_id = str(uuid.uuid4())
+    capturing_conn = _QueryCapturingConn(rows=[])
+
+    monkeypatch.setattr(monitoring_runner, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(capturing_conn))
+    monkeypatch.setattr(monitoring_runner, 'authenticate_with_connection', lambda *_: {'id': USER_ID})
+    monkeypatch.setattr(monitoring_runner, 'resolve_workspace', lambda *_: {'workspace_id': WORKSPACE_ID})
+    monkeypatch.setattr(monitoring_runner, '_wallet_transfer_smoke_alert', lambda **_: smoke_id)
+    monkeypatch.setattr(monitoring_runner, '_strategic_infrastructure_guard_alert', lambda **_: None)
+
+    request = SimpleNamespace(headers={'x-workspace-id': WORKSPACE_ID})
+    monitoring_runner.backfill_missing_alerts_for_target(request, target_id=TARGET_ID)
+
+    telemetry_query = next(
+        (q for q in capturing_conn.captured_queries if 'telemetry_events' in q.lower()),
+        None,
+    )
+    assert telemetry_query is not None, 'Expected a query against telemetry_events'
+    assert 'native_transfer' in telemetry_query, (
+        "backfill query must include native_transfer so block-range-backfilled rows get alerts"
+    )
