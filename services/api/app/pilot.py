@@ -12614,18 +12614,31 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
                 a.id, a.alert_type, a.title, a.severity, a.status, a.summary, a.module_key, a.target_id, a.detection_id, a.incident_id, a.assigned_to, a.evidence_summary,
                 a.source, a.source_service, a.recommended_action, a.degraded, a.occurrence_count, a.last_seen_at, a.findings, a.owner_user_id, a.triage_status,
                 a.resolution_note, a.suppressed_until, a.acknowledged_at, a.resolved_at, a.created_at, a.updated_at,
+                a.payload,
                 ev_stats.linked_evidence_count,
                 ev_latest.last_evidence_at,
-                ev_latest.evidence_source,
-                ev_latest.tx_hash,
-                ev_latest.block_number,
+                -- On-chain wallet-transfer alerts (smoke / Strategic Infrastructure Guard) record
+                -- their live evidence in the alert payload, not the evidence table. Prefer a real
+                -- evidence row when present, then fall back to the alert payload, then a.source —
+                -- so live tx_hash/block/evidence_source surface even when no evidence row was written.
+                -- Truthfulness: the payload's own evidence_source is used (never relabelled), so a
+                -- simulator alert still reports 'simulator', not 'live'.
+                COALESCE(ev_latest.evidence_source, a.payload->>'evidence_source', a.source) AS evidence_source,
+                COALESCE(ev_latest.tx_hash, a.payload->>'tx_hash', a.payload->'evidence'->>'tx_hash') AS tx_hash,
+                COALESCE(ev_latest.block_number::text, a.payload->>'block_number') AS block_number,
+                a.payload->>'from_address' AS from_address,
+                a.payload->>'to_address' AS to_address,
+                COALESCE(a.payload->>'amount_wei', a.payload->>'value_wei', a.payload->>'amount') AS amount_wei,
+                COALESCE(a.payload->>'chain_id', ev_latest.raw_payload_json->>'chain_id') AS chain_id,
+                COALESCE(a.payload->>'confidence', a.findings->>'confidence') AS confidence,
                 COALESCE(
                     ev_latest.raw_payload_json->>'detector_kind',
                     ev_latest.raw_payload_json->>'detector_family',
                     a.findings->>'detector_kind',
                     a.findings->>'detector_family'
                 ) AS detector_kind,
-                COALESCE(ev_latest.raw_payload_json->>'evidence_origin', ev_latest.source_provider, a.source) AS evidence_origin,
+                COALESCE(a.payload->>'detection_type', ev_latest.raw_payload_json->>'detection_type', a.alert_type) AS detection_type,
+                COALESCE(ev_latest.raw_payload_json->>'evidence_origin', ev_latest.source_provider, a.payload->>'evidence_source', a.source) AS evidence_origin,
                 ra.id AS linked_action_id,
                 (
                     SELECT ra.mode
@@ -12681,8 +12694,18 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
             item['last_evidence_at'] = item.get('last_evidence_at')
             item['evidence_origin'] = item.get('evidence_origin')
             item['origin'] = item.get('evidence_origin')
+            # On-chain transaction fields (coalesced evidence-table → alert payload in SQL).
+            # Surfaced top-level so the Alerts page can show tx_hash / from / to / amount /
+            # chain_id / block_number for live wallet-transfer alerts that carry their evidence
+            # in the alert payload rather than the evidence table.
             item['tx_hash'] = item.get('tx_hash')
             item['block_number'] = item.get('block_number')
+            item['from_address'] = item.get('from_address')
+            item['to_address'] = item.get('to_address')
+            item['amount_wei'] = item.get('amount_wei')
+            item['chain_id'] = item.get('chain_id')
+            item['confidence'] = item.get('confidence')
+            item['detection_type'] = item.get('detection_type')
             item['detector_kind'] = canonical_detector_code(item.get('detector_kind'), item.get('alert_type')) or item.get('detector_kind')
             item['rule_identifier'] = resolve_rule_identifier(item.get('detector_kind'), item.get('alert_type'))
             item['rule_label'] = rule_label(item.get('rule_identifier'))

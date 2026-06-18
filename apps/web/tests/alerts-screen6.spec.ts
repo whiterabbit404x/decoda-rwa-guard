@@ -178,3 +178,55 @@ test('page subtitle matches spec', () => {
   const src = appSource('(product)/alerts/page.tsx');
   expect(src).toContain('Review security alerts generated from telemetry and detections.');
 });
+
+// ── 16. On-chain wallet-transfer evidence is shown ───────────────
+test('alert detail panel shows on-chain transaction fields', () => {
+  const panel = appSource('alerts-panel.tsx');
+  // Detail section + each required field label from the acceptance criteria.
+  expect(panel).toContain('On-chain Transaction');
+  expect(panel).toContain('Tx Hash');
+  expect(panel).toContain('From');
+  expect(panel).toContain('To');
+  expect(panel).toContain('Amount (wei)');
+  expect(panel).toContain('Chain ID');
+  expect(panel).toContain('Block');
+});
+
+test('alert detail reads on-chain fields from the alert (top-level or payload)', () => {
+  const panel = appSource('alerts-panel.tsx');
+  expect(panel).toContain('from_address');
+  expect(panel).toContain('to_address');
+  expect(panel).toContain('amount_wei');
+  expect(panel).toContain('chain_id');
+  expect(panel).toContain('block_number');
+});
+
+// ── 17. tx_hash surfaced in the alert list rows ──────────────────
+test('alert table row shows the transaction hash', () => {
+  const panel = appSource('alerts-panel.tsx');
+  expect(panel).toContain('txHashOf(alert)');
+  expect(panel).toContain('shortHash(');
+});
+
+// ── 18. High Confidence is derived from live evidence + tx_hash ──
+test('High Confidence counts live, tx-bearing alerts (not payload.confidence string)', () => {
+  const panel = appSource('alerts-panel.tsx');
+  expect(panel).toContain('function isHighConfidence');
+  const fnStart = panel.indexOf('function isHighConfidence');
+  const fnEnd = panel.indexOf('}', panel.indexOf('return isLive'));
+  const fnText = panel.slice(fnStart, fnEnd);
+  // Truthful: requires live evidence AND a real tx_hash.
+  expect(fnText).toContain('live');
+  expect(fnText).toContain('txHashOf');
+  // The count uses the helper.
+  expect(panel).toContain('alerts.filter(isHighConfidence)');
+});
+
+// ── 19. On-chain section is gated on a real tx_hash (no empty/fake row) ──
+test('on-chain transaction section only renders when a tx_hash exists', () => {
+  const panel = appSource('alerts-panel.tsx');
+  const sectionPos = panel.indexOf('On-chain Transaction');
+  const guardPos = panel.lastIndexOf('txHashOf(alert) ?', sectionPos);
+  expect(guardPos).toBeGreaterThan(-1);
+  expect(guardPos).toBeLessThan(sectionPos);
+});

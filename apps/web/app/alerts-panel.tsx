@@ -30,16 +30,52 @@ type AlertRow = {
   created_at?: string | null;
   updated_at?: string | null;
   last_seen_at?: string | null;
+  // On-chain transaction evidence (returned top-level by /alerts, coalesced from the
+  // evidence table or the alert payload). Present for live wallet-transfer alerts.
+  tx_hash?: string | null;
+  block_number?: string | number | null;
+  from_address?: string | null;
+  to_address?: string | null;
+  amount_wei?: string | null;
+  chain_id?: string | number | null;
+  confidence?: string | null;
+  detection_type?: string | null;
   payload?: {
     asset_label?: string | null;
     detection_type?: string | null;
     confidence?: string | null;
+    tx_hash?: string | null;
+    from_address?: string | null;
+    to_address?: string | null;
+    amount_wei?: string | null;
+    chain_id?: string | number | null;
+    block_number?: string | number | null;
   } | null;
   detector_kind?: string | null;
   linked_evidence_count?: number | null;
   occurrence_count?: number | null;
   chain_linked_ids?: Record<string, string> | null;
 };
+
+/* ── On-chain field accessors (top-level field first, then payload) ─ */
+
+function txHashOf(a: AlertRow): string | null {
+  return a.tx_hash ?? a.payload?.tx_hash ?? null;
+}
+
+function shortHash(hash?: string | null): string {
+  if (!hash) return '-';
+  return hash.length > 14 ? `${hash.slice(0, 8)}…${hash.slice(-6)}` : hash;
+}
+
+// An alert is high-confidence when it carries live on-chain evidence: evidence_source=live
+// AND a real tx_hash. This is truthful — it is derived from canonical alert fields, never
+// inferred, and never counts simulator/no-evidence alerts as high confidence.
+function isHighConfidence(a: AlertRow): boolean {
+  const src = (a.evidence_source ?? a.evidence_origin ?? a.source ?? '').toLowerCase();
+  const isLive = src === 'live' || src === 'live_provider';
+  return isLive && !!txHashOf(a);
+}
 
 /* ── Helpers ────────────────────────────────────────────────────── */
 
@@ -342,10 +378,7 @@ export default function AlertsPanel() {
   const criticalCount = alerts.filter(
     (a) => (a.severity ?? '').toLowerCase() === 'critical',
   ).length;
-  const highConfidenceCount = alerts.filter((a) => {
-    const conf = (a.payload?.confidence ?? '').toLowerCase();
-    return conf === 'high' || conf === 'critical';
-  }).length;
+  const highConfidenceCount = alerts.filter(isHighConfidence).length;
   const linkedIncidentCount = alerts.filter((a) => !!a.incident_id).length;
 
   /* ── Empty state blocker ────────────────────────────────────────── */
@@ -549,7 +582,15 @@ export default function AlertsPanel() {
                         {alert.title ?? '-'}
                       </td>
                       <td style={{ fontSize: '0.8rem' }}>
-                        {alert.payload?.asset_label ?? alert.target_id ?? '-'}
+                        <div>{alert.payload?.asset_label ?? alert.target_id ?? '-'}</div>
+                        {txHashOf(alert) ? (
+                          <div
+                            style={{ fontFamily: 'monospace', fontSize: '0.7rem', color: '#94a3b8' }}
+                            title={txHashOf(alert) ?? undefined}
+                          >
+                            {shortHash(txHashOf(alert))}
+                          </div>
+                        ) : null}
                       </td>
                       <td>
                         <StatusPill label={st.label} variant={st.variant} />
@@ -612,6 +653,24 @@ export default function AlertsPanel() {
 }
 
 /* ── Alert detail panel ─────────────────────────────────────────── */
+
+function OnChainField({ label, value, mono }: { label: string; value?: string | null; mono?: boolean }) {
+  return (
+    <div>
+      <p className="tableMeta" style={{ marginBottom: '0.1rem' }}>{label}</p>
+      <p
+        style={{
+          fontSize: mono ? '0.72rem' : '0.8rem',
+          margin: 0,
+          fontFamily: mono ? 'monospace' : undefined,
+          wordBreak: mono ? 'break-all' : undefined,
+        }}
+      >
+        {value ?? '-'}
+      </p>
+    </div>
+  );
+}
 
 function AlertDetailPanel({
   alert,
@@ -698,16 +757,34 @@ function AlertDetailPanel({
         <div>
           <p className="tableMeta" style={{ marginBottom: '0.15rem' }}>Detection Type</p>
           <p style={{ fontSize: '0.8rem', margin: 0 }}>
-            {alert.payload?.detection_type ?? alert.detector_kind ?? '-'}
+            {alert.payload?.detection_type ?? alert.detection_type ?? alert.detector_kind ?? '-'}
           </p>
         </div>
         <div>
           <p className="tableMeta" style={{ marginBottom: '0.15rem' }}>Confidence</p>
           <p style={{ fontSize: '0.8rem', margin: 0 }}>
-            {alert.payload?.confidence ?? '-'}
+            {alert.payload?.confidence ?? alert.confidence ?? '-'}
           </p>
         </div>
       </div>
+
+      {/* On-chain transaction — only rendered when a real tx_hash exists, so live
+          wallet-transfer alerts show their canonical evidence and no empty/fake row appears. */}
+      {txHashOf(alert) ? (
+        <div style={{ marginBottom: '0.75rem' }}>
+          <p className="sectionEyebrow" style={{ marginBottom: '0.3rem' }}>On-chain Transaction</p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '0.4rem' }}>
+            <OnChainField label="Tx Hash" value={txHashOf(alert)} mono />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem 1rem' }}>
+              <OnChainField label="Chain ID" value={alert.chain_id != null ? String(alert.chain_id) : (alert.payload?.chain_id != null ? String(alert.payload.chain_id) : null)} />
+              <OnChainField label="Block" value={alert.block_number != null ? String(alert.block_number) : (alert.payload?.block_number != null ? String(alert.payload.block_number) : null)} />
+            </div>
+            <OnChainField label="From" value={alert.from_address ?? alert.payload?.from_address ?? null} mono />
+            <OnChainField label="To" value={alert.to_address ?? alert.payload?.to_address ?? null} mono />
+            <OnChainField label="Amount (wei)" value={alert.amount_wei ?? alert.payload?.amount_wei ?? null} mono />
+          </div>
+        </div>
+      ) : null}
 
       {/* Linked Detection */}
       <div style={{ marginBottom: '0.6rem' }}>
