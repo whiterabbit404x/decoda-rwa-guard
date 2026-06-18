@@ -12660,6 +12660,8 @@ def _normalize_alert_view(item: dict[str, Any]) -> dict[str, Any]:
 
     * status / severity are lower-cased for every alert so the count cards compare
       consistently ('CRITICAL' -> 'critical').
+    * An alert with opened_at set is always normalised to status='open' (it was
+      explicitly promoted — no further wallet-transfer check is required).
     * Wallet-transfer rule alerts additionally have a non-terminal status mapped to
       'open' and severity set to the rule's declared 'critical', and a missing title
       filled with the canonical Strategic Infrastructure Guard title.
@@ -12677,6 +12679,10 @@ def _normalize_alert_view(item: dict[str, Any]) -> dict[str, Any]:
         item['status'] = raw_status
     if raw_severity:
         item['severity'] = raw_severity
+
+    # An alert that was explicitly promoted (opened_at is set) is always 'open'.
+    if item.get('opened_at') is not None and raw_status in _OPEN_EQUIVALENT_ALERT_STATUSES:
+        item['status'] = 'open'
 
     if not _is_wallet_transfer_rule_alert(item, rule_key):
         return item
@@ -12712,6 +12718,7 @@ def _diag_status_passes(diag_row: dict[str, Any], status_filter: str | None) -> 
     A telemetry-linked wallet-transfer alert persisted with a non-terminal status
     (new/active/created/linked/…) is open for triage, so it must surface under the 'open'
     quick filter even though its raw stored status is not literally 'open'.
+    An alert with opened_at set is also treated as 'open' under the 'open' filter.
     """
     if not status_filter:
         return True
@@ -12719,8 +12726,11 @@ def _diag_status_passes(diag_row: dict[str, Any], status_filter: str | None) -> 
     raw = str(diag_row.get('status') or '').strip().lower()
     if raw == requested:
         return True
-    if requested == 'open' and _diag_alert_is_wallet_transfer(diag_row) and raw in _OPEN_EQUIVALENT_ALERT_STATUSES:
-        return True
+    if requested == 'open':
+        if diag_row.get('opened_at') is not None:
+            return True
+        if _diag_alert_is_wallet_transfer(diag_row) and raw in _OPEN_EQUIVALENT_ALERT_STATUSES:
+            return True
     return False
 
 
@@ -12747,12 +12757,15 @@ def _log_alerts_query_diagnostics(
     """
     try:
         total_before = len(diag_rows)
+        promoted_alerts = [d for d in diag_rows if d.get('opened_at') is not None]
         after_status = [d for d in diag_rows if _diag_status_passes(d, status_value)]
         # /alerts has no dedicated rule filter; severity is the rule-severity gate.
         after_rule = [d for d in after_status if _diag_severity_passes(d, severity)]
-        # 'opened_at' is not a column in this schema; the open gate is the status filter above,
-        # so the opened stage equals the rule stage (kept for diagnostic field completeness).
-        after_opened = after_rule
+        # Promoted alerts (opened_at IS NOT NULL) always pass the status='open' gate.
+        after_opened = [
+            d for d in after_rule
+            if d.get('opened_at') is not None or _diag_alert_is_wallet_transfer(d)
+        ] if status_value and status_value.strip().lower() == 'open' else after_rule
         returned_ids = {str(a.get('id')) for a in returned_alerts}
         excluded: list[str] = []
         for d in diag_rows:
@@ -12770,13 +12783,85 @@ def _log_alerts_query_diagnostics(
             excluded.append(f'{alert_id}:{reason}')
         logger.info(
             'alerts_list_query_diagnostics workspace_id=%s total_alert_rows_before_filter=%s '
-            'rows_after_status_filter=%s rows_after_rule_filter=%s rows_after_opened_filter=%s '
-            'returned_count=%s excluded=%s',
-            workspace_id, total_before, len(after_status), len(after_rule), len(after_opened),
+            'promoted_alerts_found=%s rows_after_status_filter=%s rows_after_rule_filter=%s '
+            'rows_after_opened_filter=%s returned_count=%s excluded=%s',
+            workspace_id, total_before, len(promoted_alerts),
+            len(after_status), len(after_rule), len(after_opened),
             len(returned_alerts), ','.join(excluded[:25]) if excluded else 'none',
         )
     except Exception:  # diagnostics must never break the read path
         logger.warning('alerts_list_query_diagnostics_failed workspace_id=%s', workspace_id, exc_info=True)
+
+
+def promote_wallet_transfer_alerts(connection: Any, *, workspace_id: str, target_id: str | None = None) -> int:
+    """Promote live wallet-transfer alerts to opened status (sets opened_at, status='open').
+
+    Idempotent: only updates alerts where opened_at IS NULL and status is non-terminal.
+    Returns the number of rows promoted.
+
+    Called after the backfill to ensure Strategic Guard / smoke wallet-transfer alerts are
+    visible on the main Alerts page without requiring the user to click "Open Alert".
+    Truthfulness: only promotes alerts whose payload evidence_source = 'live' or whose
+    source is 'live' / 'rpc_polling'. Simulator alerts are never promoted.
+    """
+    try:
+        cur = connection.execute(
+            '''
+            UPDATE alerts
+            SET
+                opened_at = created_at,
+                status    = 'open',
+                severity  = 'critical',
+                source    = CASE WHEN source = 'rpc_polling' THEN 'live' ELSE source END
+            WHERE workspace_id = %s
+              AND (%s::uuid IS NULL OR target_id = %s::uuid)
+              AND (
+                  payload->>'rule_key' IN (
+                      'strategic_infrastructure_guard_wallet_outbound_transfer',
+                      'smoke_wallet_transfer'
+                  )
+                  OR module_key = 'strategic_infrastructure_guard'
+                  OR payload->>'detection_type' IN (
+                      'strategic_infrastructure_guard_outbound_transfer',
+                      'monitored_wallet_transfer'
+                  )
+                  OR COALESCE(
+                      payload->>'tx_hash',
+                      payload->'evidence'->>'tx_hash'
+                  ) IS NOT NULL
+              )
+              AND (
+                  COALESCE(payload->>'evidence_source', '') = 'live'
+                  OR source IN ('live', 'rpc_polling')
+                  OR source_service = 'threat-engine'
+              )
+              AND COALESCE(
+                  payload->>'tx_hash',
+                  payload->'evidence'->>'tx_hash'
+              ) IS NOT NULL
+              AND (
+                  lower(COALESCE(status, '')) IN (
+                      '', 'open', 'active', 'new', 'created', 'linked',
+                      'detection', 'pending', 'none', 'null'
+                  )
+              )
+              AND opened_at IS NULL
+            ''',
+            (workspace_id, target_id, target_id),
+        )
+        promoted = cur.rowcount if cur.rowcount is not None else 0
+        if promoted > 0:
+            logger.info(
+                'wallet_transfer_alerts_promoted workspace_id=%s target_id=%s promoted_count=%s',
+                workspace_id, target_id or 'all', promoted,
+            )
+        return int(promoted)
+    except Exception:
+        logger.warning(
+            'wallet_transfer_alerts_promote_failed workspace_id=%s target_id=%s',
+            workspace_id, target_id or 'all', exc_info=True,
+        )
+        return 0
 
 
 def list_alerts(request: Request, *, severity: str | None = None, module: str | None = None, target_id: str | None = None, status_value: str | None = None, source: str | None = None, limit: int = 50, offset: int = 0) -> dict[str, Any]:
@@ -12800,7 +12885,8 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
                            d.payload->>'rule_key' AS payload_rule_key,
                            d.payload->>'detection_type' AS detection_type,
                            COALESCE(d.payload->>'tx_hash', d.payload->'evidence'->>'tx_hash') AS tx_hash,
-                           COALESCE(d.payload->>'evidence_source', d.source) AS evidence_source
+                           COALESCE(d.payload->>'evidence_source', d.source) AS evidence_source,
+                           d.opened_at
                     FROM alerts d
                     WHERE d.workspace_id = %s
                       AND (%s::uuid IS NULL OR d.target_id = %s::uuid)
@@ -12820,6 +12906,7 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
                 a.id, a.alert_type, a.title, a.severity, a.status, a.summary, a.module_key, a.target_id, a.detection_id, a.incident_id, a.assigned_to, a.evidence_summary,
                 a.source, a.source_service, a.recommended_action, a.degraded, a.occurrence_count, a.last_seen_at, a.findings, a.owner_user_id, a.triage_status,
                 a.resolution_note, a.suppressed_until, a.acknowledged_at, a.resolved_at, a.created_at, a.updated_at,
+                a.opened_at,
                 a.payload,
                 ev_stats.linked_evidence_count,
                 ev_latest.last_evidence_at,
@@ -12893,18 +12980,25 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
               -- a telemetry-linked wallet-transfer alert stored with a non-terminal status
               -- (new/active/created/linked/…) is open for triage, so it must surface under the
               -- 'Open' quick filter even though its raw stored status is not literally 'open'.
+              -- An alert with opened_at IS NOT NULL was explicitly promoted: it is always
+              -- returned under the 'open' filter without requiring the user to click "Open Alert".
               -- Terminal/human states (resolved/suppressed/acknowledged/…) are matched exactly.
               AND (
                     %s::text IS NULL
                     OR lower(a.status) = lower(%s::text)
                     OR (
                         lower(%s::text) = 'open'
-                        AND (a.status IS NULL OR lower(a.status) IN ('', 'open', 'active', 'new', 'created', 'linked', 'detection', 'pending', 'none', 'null'))
                         AND (
-                            a.payload->>'rule_key' IN ('strategic_infrastructure_guard_wallet_outbound_transfer', 'smoke_wallet_transfer')
-                            OR a.module_key = 'strategic_infrastructure_guard'
-                            OR a.payload->>'detection_type' IN ('strategic_infrastructure_guard_outbound_transfer', 'monitored_wallet_transfer')
-                            OR COALESCE(a.payload->>'tx_hash', a.payload->'evidence'->>'tx_hash') IS NOT NULL
+                            a.opened_at IS NOT NULL
+                            OR (
+                                (a.status IS NULL OR lower(a.status) IN ('', 'open', 'active', 'new', 'created', 'linked', 'detection', 'pending', 'none', 'null'))
+                                AND (
+                                    a.payload->>'rule_key' IN ('strategic_infrastructure_guard_wallet_outbound_transfer', 'smoke_wallet_transfer')
+                                    OR a.module_key = 'strategic_infrastructure_guard'
+                                    OR a.payload->>'detection_type' IN ('strategic_infrastructure_guard_outbound_transfer', 'monitored_wallet_transfer')
+                                    OR COALESCE(a.payload->>'tx_hash', a.payload->'evidence'->>'tx_hash') IS NOT NULL
+                                )
+                            )
                         )
                     )
                   )
@@ -12929,6 +13023,7 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
             item['last_evidence_at'] = item.get('last_evidence_at')
             item['evidence_origin'] = item.get('evidence_origin')
             item['origin'] = item.get('evidence_origin')
+            item['opened_at'] = item.get('opened_at')
             # On-chain transaction fields (coalesced evidence-table → alert payload in SQL).
             # Surfaced top-level so the Alerts page can show tx_hash / from / to / amount /
             # chain_id / block_number for live wallet-transfer alerts that carry their evidence
@@ -12965,13 +13060,13 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
                 logger.info(
                     'alerts_list_wallet_transfer_alert id=%s workspace_id=%s target_id=%s '
                     'status=%s severity=%s rule_key=%s event_type=%s source=%s tx_hash=%s '
-                    'evidence_source=%s detection_id=%s created_at=%s incident_id=%s',
+                    'evidence_source=%s detection_id=%s created_at=%s opened_at=%s incident_id=%s',
                     item.get('id'), workspace_context['workspace_id'], item.get('target_id'),
                     item.get('status'), item.get('severity'), item.get('rule_key'),
                     payload.get('event_type') or item.get('detection_type'),
                     item.get('source'), item.get('tx_hash') or payload.get('tx_hash'),
                     item.get('evidence_source'), item.get('detection_id'),
-                    item.get('created_at'), item.get('incident_id'),
+                    item.get('created_at'), item.get('opened_at'), item.get('incident_id'),
                 )
             serialized_alerts.append(item)
         # Task 7: staged read-path diagnostic — total before filter, per-stage survivors,

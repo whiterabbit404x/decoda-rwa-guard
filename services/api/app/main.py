@@ -239,6 +239,7 @@ from services.api.app.pilot import (
     approve_and_execute_data_deletion_request,
     get_retention_worker_health,
     require_ops_rbac_guard,
+    promote_wallet_transfer_alerts,
 )
 from services.api.app.monitoring_runner import (
     backfill_missing_alerts_for_target,
@@ -3352,7 +3353,17 @@ def ops_monitoring_target_backfill_alerts(target_id: str, request: Request) -> d
     Requires x-workspace-id header.
     """
     enforce_auth_rate_limit(request, 'ops_monitoring_backfill_alerts')
-    return with_auth_schema_json(lambda: backfill_missing_alerts_for_target(request, target_id=target_id))
+
+    def _backfill_and_promote():
+        result = backfill_missing_alerts_for_target(request, target_id=target_id)
+        workspace_id = str(result.get('workspace_id') or '')
+        if workspace_id:
+            with pg_connection() as conn:
+                promoted = promote_wallet_transfer_alerts(conn, workspace_id=workspace_id, target_id=target_id)
+                result['promoted_count'] = promoted
+        return result
+
+    return with_auth_schema_json(_backfill_and_promote)
 
 
 @app.post('/ops/monitoring/targets/{target_id}/import-tx', summary='Import a single transaction by hash for a wallet monitoring target')
