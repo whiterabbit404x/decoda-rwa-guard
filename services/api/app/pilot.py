@@ -12602,6 +12602,94 @@ def get_detection_evidence(detection_id: str, request: Request) -> dict[str, Any
         }
 
 
+# Strategic Infrastructure Guard / smoke wallet-transfer alerts. These are created from
+# live on-chain telemetry (and the worker backfill) and carry their evidence in the alert
+# payload. The Alerts page read path normalises them so they surface as active, critical
+# alerts regardless of which non-terminal status the producer happened to persist.
+_WALLET_TRANSFER_RULE_KEYS = {
+    'strategic_infrastructure_guard_wallet_outbound_transfer',
+    'smoke_wallet_transfer',
+}
+_WALLET_TRANSFER_DETECTION_TYPES = {
+    'strategic_infrastructure_guard_outbound_transfer',
+    'monitored_wallet_transfer',
+}
+_SIG_CANONICAL_ALERT_TITLE = (
+    'Strategic Infrastructure Guard: Treasury RWA Control Wallet Movement Detected'
+)
+# Non-terminal states that all mean "open / not yet triaged". They are mapped to 'open'
+# for wallet-transfer rule alerts so the Alerts page treats them as active. Terminal
+# states (resolved/suppressed/false_positive) and explicit human triage states
+# (acknowledged/investigating) are preserved — a human decision is never overwritten.
+_OPEN_EQUIVALENT_ALERT_STATUSES = {
+    '', 'open', 'active', 'new', 'created', 'linked', 'detection', 'pending', 'none', 'null',
+}
+
+
+def _alert_rule_key(item: dict[str, Any]) -> str | None:
+    """Best-effort rule_key for an alert row from its payload / detection type."""
+    payload = item.get('payload') if isinstance(item.get('payload'), dict) else {}
+    rule_key = str(payload.get('rule_key') or '').strip()
+    if rule_key:
+        return rule_key
+    patterns = payload.get('matched_patterns')
+    if isinstance(patterns, list):
+        for pattern in patterns:
+            if isinstance(pattern, dict):
+                rule_id = str(pattern.get('rule_id') or '').strip()
+                if rule_id:
+                    return rule_id
+    detection_type = str(item.get('detection_type') or '').strip()
+    if detection_type == 'strategic_infrastructure_guard_outbound_transfer':
+        return 'strategic_infrastructure_guard_wallet_outbound_transfer'
+    if detection_type == 'monitored_wallet_transfer':
+        return 'smoke_wallet_transfer'
+    return None
+
+
+def _is_wallet_transfer_rule_alert(item: dict[str, Any], rule_key: str | None) -> bool:
+    return (
+        (rule_key in _WALLET_TRANSFER_RULE_KEYS)
+        or (str(item.get('detection_type') or '') in _WALLET_TRANSFER_DETECTION_TYPES)
+        or (str(item.get('module_key') or '') == 'strategic_infrastructure_guard')
+    )
+
+
+def _normalize_alert_view(item: dict[str, Any]) -> dict[str, Any]:
+    """Normalise an alert row for the Alerts page (read-only — DB is never mutated).
+
+    * status / severity are lower-cased for every alert so the count cards compare
+      consistently ('CRITICAL' -> 'critical').
+    * Wallet-transfer rule alerts additionally have a non-terminal status mapped to
+      'open' and severity set to the rule's declared 'critical', and a missing title
+      filled with the canonical Strategic Infrastructure Guard title.
+
+    Truthfulness: evidence_source is NEVER changed — the payload's own evidence_source
+    (already coalesced in SQL) is preserved, so a simulator alert keeps
+    evidence_source='simulator' and is never relabelled live.
+    """
+    rule_key = _alert_rule_key(item)
+    item['rule_key'] = rule_key
+
+    raw_status = str(item.get('status') or '').strip().lower()
+    raw_severity = str(item.get('severity') or '').strip().lower()
+    if raw_status:
+        item['status'] = raw_status
+    if raw_severity:
+        item['severity'] = raw_severity
+
+    if not _is_wallet_transfer_rule_alert(item, rule_key):
+        return item
+
+    if raw_status in _OPEN_EQUIVALENT_ALERT_STATUSES:
+        item['status'] = 'open'
+    # Both wallet-transfer rules are critical by definition.
+    item['severity'] = 'critical'
+    if not str(item.get('title') or '').strip():
+        item['title'] = _SIG_CANONICAL_ALERT_TITLE
+    return item
+
+
 def list_alerts(request: Request, *, severity: str | None = None, module: str | None = None, target_id: str | None = None, status_value: str | None = None, source: str | None = None, limit: int = 50, offset: int = 0) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
@@ -12719,6 +12807,23 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
                 'incident_id': item.get('linked_incident_id'),
                 'action_id': item.get('linked_action_id'),
             }
+            # Normalise status/severity/title and surface rule_key so wallet-transfer
+            # rule alerts surface as active critical alerts (read-only; DB unchanged).
+            _normalize_alert_view(item)
+            # Diagnostic (task: inspect the two backfilled alert records). Logs the
+            # canonical facts of every wallet-transfer rule alert so the exact stored
+            # state of e39485a5… / 3fe45390… is visible in API logs.
+            if _is_wallet_transfer_rule_alert(item, item.get('rule_key')):
+                payload = item.get('payload') if isinstance(item.get('payload'), dict) else {}
+                logger.info(
+                    'alerts_list_wallet_transfer_alert id=%s workspace_id=%s target_id=%s '
+                    'status=%s severity=%s rule_key=%s source=%s tx_hash=%s evidence_source=%s '
+                    'created_at=%s incident_id=%s',
+                    item.get('id'), workspace_context['workspace_id'], item.get('target_id'),
+                    item.get('status'), item.get('severity'), item.get('rule_key'),
+                    item.get('source'), item.get('tx_hash') or payload.get('tx_hash'),
+                    item.get('evidence_source'), item.get('created_at'), item.get('incident_id'),
+                )
             serialized_alerts.append(item)
         _limit = min(max(1, int(limit)), 200)
         _offset = max(0, int(offset))
