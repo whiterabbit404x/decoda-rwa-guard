@@ -4554,6 +4554,11 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
     incidents_created = 0
     monitored_systems_updated = 0
     runs: list[dict[str, Any]] = []
+    # (workspace_id, target_id) of wallet targets polled this cycle. After the cycle
+    # commits (heartbeat persisted), each gets a scheduler-independent Strategic
+    # Infrastructure Guard backfill so older wallet-transfer rows on a live-polled but
+    # never-selected_for_backfill target still get their alerts.
+    strategic_guard_backfill_targets: set[tuple[str, str]] = set()
     error_message: str | None = None
     cycle_started_at = utc_now()
     logger.info('monitoring cycle started worker=%s limit=%s', worker_name, limit)
@@ -5344,6 +5349,11 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                     result.get('events_ingested', 0),
                     result.get('monitoring_run_id'),
                 )
+                # Queue a post-cycle Strategic Guard backfill for wallet targets only
+                # (wallet_transfer telemetry is wallet-specific). Idempotent + create-only,
+                # so this catches up historical rows the scheduled backfill never selected.
+                if workspace_id and target.get('id') and str(target.get('target_type') or '').lower() == 'wallet':
+                    strategic_guard_backfill_targets.add((workspace_id, str(target['id'])))
                 alerts_generated += int(result['alerts_generated'])
                 if workspace_id:
                     workspace_systems_checked[workspace_id] += 1
@@ -5540,6 +5550,22 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             ),
         )
         connection.commit()
+    # Scheduler-independent Strategic Infrastructure Guard backfill, run AFTER the cycle
+    # committed (heartbeat persisted) on fresh connections — never holding the worker's
+    # connection. The scheduled backfill selects one target per cooldown, so a Base wallet
+    # that is live-polled but has selected_for_backfill=False keeps older wallet-transfer
+    # rows without alerts; this closes that gap. Create-only/idempotent; best-effort so a
+    # backfill error never fails the cycle.
+    for _bf_workspace_id, _bf_target_id in sorted(strategic_guard_backfill_targets):
+        try:
+            _bf_result = backfill_strategic_guard_alerts_for_target(_bf_workspace_id, _bf_target_id)
+            if int(_bf_result.get('created_count') or 0) > 0:
+                alerts_generated += int(_bf_result.get('created_count') or 0)
+        except Exception:
+            logger.warning(
+                'strategic_guard_target_backfill_failed workspace_id=%s target_id=%s',
+                _bf_workspace_id, _bf_target_id, exc_info=True,
+            )
     WORKER_STATE.update(
         {
             'worker_name': worker_name,
@@ -9872,6 +9898,21 @@ def list_target_telemetry(
         if _etf and _etf not in _TELEMETRY_ALLOWED_EVENT_TYPE_FILTERS:
             _etf = None
 
+        # Self-heal before filtering by alert presence: ensure every live wallet-transfer
+        # row for this target has its alert. The scheduled worker backfill may never select
+        # this target (selected_for_backfill=False), which would otherwise hide an older
+        # tx_hash behind this filter. Create-only/idempotent; runs on its own committed
+        # connections, so the new alerts are visible to the queries below (READ COMMITTED).
+        # Best-effort — a backfill failure must never block the read.
+        if _etf == 'alerts_only':
+            try:
+                backfill_strategic_guard_alerts_for_target(str(workspace_id), str(target_id))
+            except Exception:
+                logger.warning(
+                    'strategic_guard_alerts_only_backfill_failed workspace_id=%s target_id=%s',
+                    workspace_id, target_id, exc_info=True,
+                )
+
         _select = '''
             SELECT
                 te.id,
@@ -11079,6 +11120,300 @@ def backfill_missing_alerts_for_target(request: Request, *, target_id: str) -> d
         'status': 'completed',
         'target_id': target_id,
         'workspace_id': workspace_id,
+        'telemetry_processed': len(rows),
+        'alerts_created': len(alerts_created),
+        'created_count': created_count,
+        'deduped_count': deduped_count,
+        'linked_count': linked_count,
+        'skipped_count': skipped_count,
+        'alert_ids': alerts_created,
+    }
+
+
+def backfill_strategic_guard_alerts_for_target(
+    workspace_id: str,
+    target_id: str,
+) -> dict[str, Any]:
+    """Scheduler-independent, per-target Strategic Infrastructure Guard alert backfill.
+
+    The scheduled worker backfill selects at most one target per cooldown window, so a
+    Base target that is live-polled but never ``selected_for_backfill`` keeps its older
+    wallet-transfer rows without alerts — they then stay hidden behind the telemetry
+    "Alerts only" filter even though they carry live tx_hash evidence. This function
+    ignores that scheduler/cooldown entirely and scans the EXACT workspace_id +
+    target_id given:
+
+      * every ``wallet_transfer_detected`` / ``native_transfer`` row,
+      * no recency cutoff, no LIMIT 1, no newest-only collapse — so each distinct
+        tx_hash is processed, not just the latest row.
+
+    A row is backfilled only when it is ``evidence_source='live'``, has a non-null
+    tx_hash, and is on chain 8453; anything else is logged with an explicit
+    ``skipped_reason`` (truthfulness: simulator/replay data is never turned into an
+    alert). For each qualifying row it runs the direction-agnostic smoke rule (one
+    Critical alert per live transfer) and the outbound-only Strategic Infrastructure
+    Guard rule. Both dedupe on workspace_id + target_id + chain_id + tx_hash +
+    rule_key, so a different tx_hash never collapses into an existing alert.
+
+    Create-only / idempotent: the alert rules are invoked only for a tx_hash whose
+    dedupe key is not already present, so re-running this every poll cycle neither
+    duplicates alerts nor leaks ``monitoring_runs`` rows. Worker-callable (no Request /
+    auth): owns backfilled alerts with the target's user, exactly like migration 0114.
+    Never touches freshness / status / banner logic. Never raises on a single row.
+    """
+    require_live_mode()
+    workspace_id = str(workspace_id)
+    target_id = str(target_id)
+    try:
+        uuid.UUID(workspace_id)
+        uuid.UUID(target_id)
+    except (ValueError, AttributeError):
+        logger.warning(
+            'strategic_guard_target_backfill_invalid_ids workspace_id=%s target_id=%s',
+            workspace_id, target_id,
+        )
+        return {
+            'status': 'invalid_ids', 'workspace_id': workspace_id, 'target_id': target_id,
+            'telemetry_processed': 0, 'created_count': 0, 'deduped_count': 0,
+            'linked_count': 0, 'skipped_count': 0, 'alert_ids': [],
+        }
+
+    logger.info(
+        'strategic_guard_target_backfill_started workspace_id=%s target_id=%s',
+        workspace_id, target_id,
+    )
+
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        # Scan EVERY wallet-transfer row for this exact workspace+target (newest first).
+        # No recency cutoff and no LIMIT 1 — older tx_hashes must be fetched too. The high
+        # bound is a safety cap only, never a "newest row" selector. evidence_source and
+        # chain are filtered per-row (below) so non-qualifying rows are still logged.
+        rows = connection.execute(
+            '''
+            SELECT
+                te.id,
+                te.target_id,
+                te.event_type,
+                te.observed_at,
+                te.payload_json,
+                te.evidence_source,
+                COALESCE(t.name, te.target_id::text) AS target_name,
+                t.wallet_address AS target_wallet_address,
+                COALESCE(t.updated_by_user_id, t.created_by_user_id) AS owner_user_id,
+                ms.id AS monitored_system_id,
+                COALESCE(te.asset_id, ms.asset_id) AS protected_asset_id
+            FROM telemetry_events te
+            LEFT JOIN targets t ON t.id = te.target_id
+            LEFT JOIN monitored_systems ms
+                ON ms.target_id = te.target_id
+               AND ms.workspace_id = te.workspace_id
+            WHERE te.workspace_id = %s::uuid
+              AND te.target_id = %s::uuid
+              AND te.event_type IN ('wallet_transfer_detected', 'native_transfer')
+            ORDER BY te.observed_at DESC
+            LIMIT 500
+            ''',
+            (workspace_id, target_id),
+        ).fetchall()
+
+        # Authoritative set of alert dedupe signatures already persisted for this target.
+        # The alert rules are invoked only for a key NOT in this set, which keeps the
+        # backfill create-only (no monitoring_runs leak when re-run every poll cycle) and
+        # lets us report created-vs-deduped truthfully. Tolerant of stub rows in tests.
+        existing_signatures: dict[str, str] = {}
+        try:
+            sig_rows = connection.execute(
+                '''
+                SELECT dedupe_signature, id
+                FROM alerts
+                WHERE workspace_id = %s::uuid AND target_id = %s::uuid
+                  AND dedupe_signature IS NOT NULL
+                ''',
+                (workspace_id, target_id),
+            ).fetchall()
+            for sig_row in sig_rows:
+                _sig = sig_row.get('dedupe_signature') if hasattr(sig_row, 'get') else None
+                if _sig:
+                    existing_signatures[str(_sig)] = str((sig_row.get('id') if hasattr(sig_row, 'get') else '') or '')
+        except Exception:  # pragma: no cover - never block backfill on the accounting query
+            existing_signatures = {}
+
+    # alerts.user_id is NOT NULL: own backfilled alerts with the target's user, matching
+    # migration 0114 (updated_by_user_id, then created_by_user_id).
+    owner_user_id = ''
+    for row in rows:
+        _keys = row.keys() if hasattr(row, 'keys') else []
+        if 'owner_user_id' in _keys and row['owner_user_id']:
+            owner_user_id = str(row['owner_user_id'])
+            break
+
+    created_count = 0
+    deduped_count = 0
+    linked_count = 0
+    skipped_count = 0
+    alerts_created: list[str] = []
+    for row in rows:
+        telemetry_id = str(row['id'])
+        row_target_id = str(row['target_id']) if row['target_id'] else target_id
+        target_name = str(row['target_name'] or row_target_id)
+        target_wallet_address = str(row['target_wallet_address'] or '') if row['target_wallet_address'] else ''
+        payload = dict(row['payload_json'] or {})
+        evidence_source = str(row['evidence_source'] or '').strip().lower()
+        _row_keys = row.keys() if hasattr(row, 'keys') else []
+        event_type = str(row['event_type'] or '') if 'event_type' in _row_keys else ''
+        observed_at = row['observed_at'] if 'observed_at' in _row_keys else None
+        monitored_system_id = str(row['monitored_system_id']) if row['monitored_system_id'] else None
+        protected_asset_id = str(row['protected_asset_id']) if row['protected_asset_id'] else None
+        row_tx_hash = str(payload.get('tx_hash') or payload.get('hash') or '').strip()
+        _raw_chain = payload.get('chain_id')
+        try:
+            row_chain_id = int(_raw_chain) if _raw_chain not in (None, '') else 8453
+        except (ValueError, TypeError):
+            row_chain_id = 8453
+
+        # Canonical dedupe keys: workspace_id + target_id + chain_id + tx_hash + rule_key.
+        # tx_hash is part of each key, so different transactions never share an alert.
+        dedupe_key = _sig_dedupe_signature(
+            workspace_id=workspace_id, target_id=row_target_id, chain_id=row_chain_id, tx_hash=row_tx_hash,
+        ) if row_tx_hash else ''
+        smoke_key = _smoke_dedupe_signature(
+            workspace_id=workspace_id, target_id=row_target_id,
+            chain_id=payload.get('chain_id'), tx_hash=row_tx_hash,
+        ) if row_tx_hash else ''
+
+        logger.info(
+            'strategic_guard_backfill_row_seen workspace_id=%s target_id=%s telemetry_id=%s '
+            'tx_hash=%s chain_id=%s event_type=%s evidence_source=%s observed_at=%s dedupe_key=%s',
+            workspace_id, row_target_id, telemetry_id, row_tx_hash or 'none',
+            row_chain_id, event_type or 'unknown', evidence_source or 'unknown',
+            observed_at if observed_at is not None else 'unknown', dedupe_key or 'none',
+        )
+
+        # Explicit skip reasons so an absent alert (e.g. tx_hash ending a517) is diagnosable.
+        skipped_reason: str | None = None
+        if evidence_source != 'live':
+            skipped_reason = 'evidence_source_not_live'
+        elif not row_tx_hash:
+            skipped_reason = 'missing_tx_hash'
+        elif row_chain_id != 8453:
+            skipped_reason = 'chain_id_not_8453'
+        if skipped_reason:
+            skipped_count += 1
+            logger.info(
+                'strategic_guard_backfill_row_skipped workspace_id=%s target_id=%s telemetry_id=%s '
+                'tx_hash=%s observed_at=%s dedupe_key=%s skipped_reason=%s',
+                workspace_id, row_target_id, telemetry_id, row_tx_hash or 'none',
+                observed_at if observed_at is not None else 'unknown', dedupe_key or 'none', skipped_reason,
+            )
+            continue
+
+        smoke_pre = bool(smoke_key and smoke_key in existing_signatures)
+        sig_pre = bool(dedupe_key and dedupe_key in existing_signatures)
+
+        # Smoke rule (direction-agnostic): one Critical alert per live transfer. Invoke
+        # only when the alert is missing — keeps the pass create-only and idempotent.
+        smoke_alert_id: str | None = None
+        if smoke_pre:
+            smoke_alert_id = existing_signatures.get(smoke_key) or None
+            deduped_count += 1
+            logger.info(
+                'strategic_guard_alert_deduped workspace_id=%s target_id=%s telemetry_id=%s '
+                'tx_hash=%s dedupe_key=%s rule=smoke_wallet_transfer alert_id=%s',
+                workspace_id, row_target_id, telemetry_id, row_tx_hash, smoke_key,
+                smoke_alert_id or 'existing',
+            )
+        else:
+            smoke_alert_id = _wallet_transfer_smoke_alert(
+                workspace_id=workspace_id,
+                user_id=owner_user_id,
+                target_id=row_target_id,
+                target_name=target_name,
+                payload=payload,
+                evidence_source=evidence_source,
+                telemetry_id=telemetry_id,
+                monitored_system_id=monitored_system_id,
+                protected_asset_id=protected_asset_id,
+            )
+            if smoke_alert_id:
+                created_count += 1
+                if smoke_key:
+                    existing_signatures.setdefault(smoke_key, smoke_alert_id)
+                logger.info(
+                    'strategic_guard_alert_created workspace_id=%s target_id=%s telemetry_id=%s '
+                    'tx_hash=%s dedupe_key=%s rule=smoke_wallet_transfer alert_id=%s',
+                    workspace_id, row_target_id, telemetry_id, row_tx_hash, smoke_key, smoke_alert_id,
+                )
+
+        # Strategic Infrastructure Guard rule (outbound-only): returns None for inbound
+        # transfers before any write, so calling it for an inbound row is a cheap no-op.
+        sig_alert_id: str | None = None
+        if sig_pre:
+            sig_alert_id = existing_signatures.get(dedupe_key) or None
+            deduped_count += 1
+            logger.info(
+                'strategic_guard_alert_deduped workspace_id=%s target_id=%s telemetry_id=%s '
+                'tx_hash=%s dedupe_key=%s rule=%s alert_id=%s',
+                workspace_id, row_target_id, telemetry_id, row_tx_hash, dedupe_key,
+                _SIG_RULE_KEY, sig_alert_id or 'existing',
+            )
+        else:
+            sig_alert_id = _strategic_infrastructure_guard_alert(
+                workspace_id=workspace_id,
+                user_id=owner_user_id,
+                target_id=row_target_id,
+                target_name=target_name,
+                target_wallet_address=target_wallet_address,
+                payload=payload,
+                evidence_source=evidence_source,
+                telemetry_id=telemetry_id,
+                monitored_system_id=monitored_system_id,
+                protected_asset_id=protected_asset_id,
+            )
+            if sig_alert_id:
+                created_count += 1
+                if dedupe_key:
+                    existing_signatures.setdefault(dedupe_key, sig_alert_id)
+                logger.info(
+                    'strategic_guard_alert_created workspace_id=%s target_id=%s telemetry_id=%s '
+                    'tx_hash=%s dedupe_key=%s rule=%s alert_id=%s',
+                    workspace_id, row_target_id, telemetry_id, row_tx_hash, dedupe_key,
+                    _SIG_RULE_KEY, sig_alert_id,
+                )
+
+        for _aid in (smoke_alert_id, sig_alert_id):
+            if _aid and _aid not in alerts_created:
+                alerts_created.append(_aid)
+
+        if smoke_alert_id or sig_alert_id:
+            linked_count += 1
+            logger.info(
+                'strategic_guard_telemetry_alert_linked workspace_id=%s target_id=%s telemetry_id=%s '
+                'tx_hash=%s observed_at=%s dedupe_key=%s alert_id=%s',
+                workspace_id, row_target_id, telemetry_id, row_tx_hash,
+                observed_at if observed_at is not None else 'unknown', dedupe_key,
+                sig_alert_id or smoke_alert_id,
+            )
+        else:
+            skipped_count += 1
+            logger.info(
+                'strategic_guard_backfill_row_skipped workspace_id=%s target_id=%s telemetry_id=%s '
+                'tx_hash=%s observed_at=%s dedupe_key=%s skipped_reason=no_alert_returned',
+                workspace_id, row_target_id, telemetry_id, row_tx_hash,
+                observed_at if observed_at is not None else 'unknown', dedupe_key,
+            )
+
+    logger.info(
+        'strategic_guard_target_backfill_completed workspace_id=%s target_id=%s '
+        'row_count=%s created_count=%s deduped_count=%s linked_count=%s skipped_count=%s '
+        'unique_alert_ids=%s alert_ids=%s',
+        workspace_id, target_id, len(rows), created_count, deduped_count, linked_count,
+        skipped_count, len(alerts_created), ','.join(alerts_created) if alerts_created else 'none',
+    )
+    return {
+        'status': 'completed',
+        'workspace_id': workspace_id,
+        'target_id': target_id,
         'telemetry_processed': len(rows),
         'alerts_created': len(alerts_created),
         'created_count': created_count,
