@@ -7034,10 +7034,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             try:
                 legacy_open_alerts_row = connection.execute(
                     f'''
-                    SELECT COUNT(*) AS c
+                    SELECT COUNT(DISTINCT a.id) AS c
                     FROM alerts a
                     JOIN detections d
-                      ON d.id = a.detection_id
+                      ON (d.id = a.detection_id OR d.linked_alert_id = a.id)
                      AND d.workspace_id = a.workspace_id
                     WHERE a.status IN ('open','acknowledged','investigating')
                       AND (
