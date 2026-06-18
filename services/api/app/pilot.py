@@ -12690,12 +12690,130 @@ def _normalize_alert_view(item: dict[str, Any]) -> dict[str, Any]:
     return item
 
 
+def _diag_alert_is_wallet_transfer(diag_row: dict[str, Any]) -> bool:
+    """Mirror of _is_wallet_transfer_rule_alert for the lightweight diagnostic pre-scan row.
+
+    The pre-scan selects only the columns needed to attribute an exclusion reason, so it works
+    off rule_key / module_key / detection_type / tx_hash rather than the full payload object.
+    """
+    rule_key = str(diag_row.get('payload_rule_key') or '').strip()
+    if rule_key in _WALLET_TRANSFER_RULE_KEYS:
+        return True
+    if str(diag_row.get('module_key') or '') == 'strategic_infrastructure_guard':
+        return True
+    if str(diag_row.get('detection_type') or '') in _WALLET_TRANSFER_DETECTION_TYPES:
+        return True
+    return bool(str(diag_row.get('tx_hash') or '').strip())
+
+
+def _diag_status_passes(diag_row: dict[str, Any], status_filter: str | None) -> bool:
+    """Mirror of the list_alerts status WHERE clause (normalisation-aware).
+
+    A telemetry-linked wallet-transfer alert persisted with a non-terminal status
+    (new/active/created/linked/…) is open for triage, so it must surface under the 'open'
+    quick filter even though its raw stored status is not literally 'open'.
+    """
+    if not status_filter:
+        return True
+    requested = status_filter.strip().lower()
+    raw = str(diag_row.get('status') or '').strip().lower()
+    if raw == requested:
+        return True
+    if requested == 'open' and _diag_alert_is_wallet_transfer(diag_row) and raw in _OPEN_EQUIVALENT_ALERT_STATUSES:
+        return True
+    return False
+
+
+def _diag_severity_passes(diag_row: dict[str, Any], severity_filter: str | None) -> bool:
+    """Mirror of the list_alerts severity WHERE clause (case-insensitive)."""
+    if not severity_filter:
+        return True
+    return str(diag_row.get('severity') or '').strip().lower() == severity_filter.strip().lower()
+
+
+def _log_alerts_query_diagnostics(
+    workspace_id: str,
+    diag_rows: list[dict[str, Any]],
+    returned_alerts: list[dict[str, Any]],
+    severity: str | None,
+    status_value: str | None,
+) -> None:
+    """Emit the Alerts read-path diagnostic (best-effort, never raises).
+
+    The main /alerts query is workspace-scoped with no status/rule exclusion, so this records
+    the population at each conceptual filter stage and names every telemetry-linked wallet
+    alert that is NOT in the returned page together with the reason it dropped out — making a
+    production "Active Alerts = 0" / "no alert opened" state reproducible from logs alone.
+    """
+    try:
+        total_before = len(diag_rows)
+        after_status = [d for d in diag_rows if _diag_status_passes(d, status_value)]
+        # /alerts has no dedicated rule filter; severity is the rule-severity gate.
+        after_rule = [d for d in after_status if _diag_severity_passes(d, severity)]
+        # 'opened_at' is not a column in this schema; the open gate is the status filter above,
+        # so the opened stage equals the rule stage (kept for diagnostic field completeness).
+        after_opened = after_rule
+        returned_ids = {str(a.get('id')) for a in returned_alerts}
+        excluded: list[str] = []
+        for d in diag_rows:
+            alert_id = str(d.get('id'))
+            if alert_id in returned_ids:
+                continue
+            if not _diag_alert_is_wallet_transfer(d):
+                continue  # only telemetry-linked wallet alerts are interesting here
+            if not _diag_status_passes(d, status_value):
+                reason = 'status_filter'
+            elif not _diag_severity_passes(d, severity):
+                reason = 'severity_filter'
+            else:
+                reason = 'pagination_window'
+            excluded.append(f'{alert_id}:{reason}')
+        logger.info(
+            'alerts_list_query_diagnostics workspace_id=%s total_alert_rows_before_filter=%s '
+            'rows_after_status_filter=%s rows_after_rule_filter=%s rows_after_opened_filter=%s '
+            'returned_count=%s excluded=%s',
+            workspace_id, total_before, len(after_status), len(after_rule), len(after_opened),
+            len(returned_alerts), ','.join(excluded[:25]) if excluded else 'none',
+        )
+    except Exception:  # diagnostics must never break the read path
+        logger.warning('alerts_list_query_diagnostics_failed workspace_id=%s', workspace_id, exc_info=True)
+
+
 def list_alerts(request: Request, *, severity: str | None = None, module: str | None = None, target_id: str | None = None, status_value: str | None = None, source: str | None = None, limit: int = 50, offset: int = 0) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        # Diagnostic pre-scan (task 7): the workspace + structural-filter-scoped population
+        # BEFORE the severity/status filter, so the staged log below can attribute an exclusion
+        # reason to any telemetry-linked wallet alert missing from the returned page. The
+        # workspace_id is the first parameter (workspace isolation), and this is best-effort —
+        # a diagnostics failure must never break the read. Read-only; no DB mutation.
+        try:
+            # Alias the table 'd' (not 'a') so this pre-scan never collides with the main
+            # 'FROM alerts a' query that other read paths/tests key off.
+            diag_rows = [
+                dict(r) for r in connection.execute(
+                    '''
+                    SELECT d.id, d.status, d.severity, d.target_id, d.incident_id, d.module_key, d.alert_type,
+                           d.payload->>'rule_key' AS payload_rule_key,
+                           d.payload->>'detection_type' AS detection_type,
+                           COALESCE(d.payload->>'tx_hash', d.payload->'evidence'->>'tx_hash') AS tx_hash,
+                           COALESCE(d.payload->>'evidence_source', d.source) AS evidence_source
+                    FROM alerts d
+                    WHERE d.workspace_id = %s
+                      AND (%s::uuid IS NULL OR d.target_id = %s::uuid)
+                      AND (%s::text IS NULL OR d.module_key = %s::text)
+                      AND (%s::text IS NULL OR d.source = %s::text OR d.source_service = %s::text)
+                    ORDER BY d.created_at DESC
+                    LIMIT 500
+                    ''',
+                    (workspace_context['workspace_id'], target_id, target_id, module, module, source, source, source),
+                ).fetchall()
+            ]
+        except Exception:
+            diag_rows = []
         rows = connection.execute(
             '''
             SELECT
@@ -12765,15 +12883,44 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
                 LIMIT 1
             ) ra ON TRUE
             WHERE a.workspace_id = %s
-              AND (%s::text IS NULL OR a.severity = %s::text)
+              -- Severity match is case-insensitive: a wallet-transfer alert persisted as
+              -- 'CRITICAL' must still satisfy the 'critical' quick filter (it is normalised to
+              -- lower-case in the response, but the SQL filter runs against the raw column).
+              AND (%s::text IS NULL OR lower(a.severity) = lower(%s::text))
               AND (%s::text IS NULL OR a.module_key = %s::text)
               AND (%s::uuid IS NULL OR a.target_id = %s::uuid)
-              AND (%s::text IS NULL OR a.status = %s::text)
+              -- Status match is case-insensitive AND, for the 'open' filter, normalisation-aware:
+              -- a telemetry-linked wallet-transfer alert stored with a non-terminal status
+              -- (new/active/created/linked/…) is open for triage, so it must surface under the
+              -- 'Open' quick filter even though its raw stored status is not literally 'open'.
+              -- Terminal/human states (resolved/suppressed/acknowledged/…) are matched exactly.
+              AND (
+                    %s::text IS NULL
+                    OR lower(a.status) = lower(%s::text)
+                    OR (
+                        lower(%s::text) = 'open'
+                        AND (a.status IS NULL OR lower(a.status) IN ('', 'open', 'active', 'new', 'created', 'linked', 'detection', 'pending', 'none', 'null'))
+                        AND (
+                            a.payload->>'rule_key' IN ('strategic_infrastructure_guard_wallet_outbound_transfer', 'smoke_wallet_transfer')
+                            OR a.module_key = 'strategic_infrastructure_guard'
+                            OR a.payload->>'detection_type' IN ('strategic_infrastructure_guard_outbound_transfer', 'monitored_wallet_transfer')
+                            OR COALESCE(a.payload->>'tx_hash', a.payload->'evidence'->>'tx_hash') IS NOT NULL
+                        )
+                    )
+                  )
               AND (%s::text IS NULL OR a.source = %s::text OR a.source_service = %s::text)
             ORDER BY a.created_at DESC
             LIMIT %s OFFSET %s
             ''',
-            (workspace_context['workspace_id'], severity, severity, module, module, target_id, target_id, status_value, status_value, source, source, source, min(max(1, int(limit)), 200), max(0, int(offset))),
+            (
+                workspace_context['workspace_id'],
+                severity, severity,
+                module, module,
+                target_id, target_id,
+                status_value, status_value, status_value,
+                source, source, source,
+                min(max(1, int(limit)), 200), max(0, int(offset)),
+            ),
         ).fetchall()
         serialized_alerts: list[dict[str, Any]] = []
         for row in rows:
@@ -12817,14 +12964,22 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
                 payload = item.get('payload') if isinstance(item.get('payload'), dict) else {}
                 logger.info(
                     'alerts_list_wallet_transfer_alert id=%s workspace_id=%s target_id=%s '
-                    'status=%s severity=%s rule_key=%s source=%s tx_hash=%s evidence_source=%s '
-                    'created_at=%s incident_id=%s',
+                    'status=%s severity=%s rule_key=%s event_type=%s source=%s tx_hash=%s '
+                    'evidence_source=%s detection_id=%s created_at=%s incident_id=%s',
                     item.get('id'), workspace_context['workspace_id'], item.get('target_id'),
                     item.get('status'), item.get('severity'), item.get('rule_key'),
+                    payload.get('event_type') or item.get('detection_type'),
                     item.get('source'), item.get('tx_hash') or payload.get('tx_hash'),
-                    item.get('evidence_source'), item.get('created_at'), item.get('incident_id'),
+                    item.get('evidence_source'), item.get('detection_id'),
+                    item.get('created_at'), item.get('incident_id'),
                 )
             serialized_alerts.append(item)
+        # Task 7: staged read-path diagnostic — total before filter, per-stage survivors,
+        # returned count, and the IDs of any telemetry-linked wallet alert excluded (with
+        # the reason). Read-only; never raises.
+        _log_alerts_query_diagnostics(
+            workspace_context['workspace_id'], diag_rows, serialized_alerts, severity, status_value,
+        )
         _limit = min(max(1, int(limit)), 200)
         _offset = max(0, int(offset))
         return {
