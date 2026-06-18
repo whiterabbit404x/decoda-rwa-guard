@@ -211,6 +211,7 @@ class _FaithfulConn:
                     'detection_type': (r.get('payload') or {}).get('detection_type'),
                     'tx_hash': _payload_tx_hash(r) or None,
                     'evidence_source': (r.get('payload') or {}).get('evidence_source') or r.get('source'),
+                    'opened_at': r.get('opened_at'),
                 }
                 for r in data
             ]
