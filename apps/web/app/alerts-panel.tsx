@@ -168,7 +168,17 @@ export default function AlertsPanel() {
   const workspaceEvidenceSource: string = summary.evidence_source_summary ?? '';
   const telemetryOk = (counts?.telemetry_events ?? 0) > 0 || !!summary.last_telemetry_at;
   const detectionOk = (counts?.detections ?? 0) > 0 || !!(summary as any).last_detection_at;
-  const activeAlerts: number = (counts?.active_alerts as number | undefined) ?? summary.active_alerts_count ?? 0;
+  const runtimeActiveAlerts: number = (counts?.active_alerts as number | undefined) ?? summary.active_alerts_count ?? 0;
+  // Active Alerts reflects the open alerts actually returned by /alerts (canonical alert
+  // rows), maxed with the runtime counter. This surfaces telemetry/backfill-created
+  // wallet-transfer alerts the runtime proof-chain counter has not linked yet; their
+  // status is normalised to 'open' server-side. It never invents alerts — it counts real
+  // rows the API returned, and never drops below the canonical runtime count.
+  const openAlertsInList = alerts.filter((a) => {
+    const s = (a.status ?? '').toLowerCase();
+    return s === 'open' || s === 'acknowledged' || s === 'investigating';
+  }).length;
+  const activeAlerts: number = Math.max(runtimeActiveAlerts, openAlertsInList);
 
   async function fetchAlerts(cancelled: { value: boolean }) {
     try {
