@@ -507,3 +507,86 @@ def test_smoke_and_sig_signatures_are_distinct_rules():
     smoke = monitoring_runner._smoke_dedupe_signature(
         workspace_id=WORKSPACE_ID, target_id=TARGET_ID, chain_id=8453, tx_hash=TX_HASH)
     assert sig != smoke, 'smoke and SIG rules must not share a dedupe key for the same tx'
+
+
+# --- Backfill scan logging: row_count / observed_at / skipped_reason ---
+
+
+def test_backfill_logs_row_count_observed_at_and_skipped_reason(monkeypatch, caplog):
+    """The scan logs must expose row_count, per-row observed_at, and an explicit
+    skipped_reason so an operator can see WHY an older row was (or was not) skipped —
+    e.g. confirm a 5-day-old tx_hash was fetched and processed, not silently dropped."""
+    import logging
+    from services.api.app import monitoring_runner
+
+    live = _make_telemetry_row(
+        telemetry_id=str(uuid.uuid4()), tx_hash='0x' + 'a' * 60 + '90c7', evidence_source='live')
+    live['observed_at'] = '2026-06-16T00:00:00+00:00'
+    sim = _make_telemetry_row(
+        telemetry_id=str(uuid.uuid4()), tx_hash='0x' + 'b' * 60 + 'a517', evidence_source='simulator')
+    sim['observed_at'] = '2026-06-13T00:00:00+00:00'
+
+    conn = _FakeConn([live, sim])
+    monkeypatch.setattr(monitoring_runner, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(monitoring_runner, 'authenticate_with_connection', lambda *_: {'id': USER_ID})
+    monkeypatch.setattr(monitoring_runner, 'resolve_workspace', lambda *_: {'workspace_id': WORKSPACE_ID})
+    monkeypatch.setattr(monitoring_runner, '_wallet_transfer_smoke_alert', lambda **_: str(uuid.uuid4()))
+    monkeypatch.setattr(monitoring_runner, '_strategic_infrastructure_guard_alert', lambda **_: None)
+
+    request = SimpleNamespace(headers={'x-workspace-id': WORKSPACE_ID})
+    with caplog.at_level(logging.INFO, logger='services.api.app.monitoring_runner'):
+        monitoring_runner.backfill_missing_alerts_for_target(request, target_id=TARGET_ID)
+
+    text = '\n'.join(r.getMessage() for r in caplog.records)
+    assert 'strategic_guard_backfill_scan_started' in text
+    assert 'row_count=2' in text                                   # both rows fetched, no recency drop
+    assert 'observed_at=2026-06-13T00:00:00+00:00' in text         # older row's age is visible
+    # the simulator row is the one skipped, and the reason is explicit
+    assert 'skipped_reason=evidence_source_not_live' in text
+    assert 'created_count=' in text and 'linked_count=' in text and 'deduped_count=' in text
+
+
+# --- Contract lock: app deterministic ids/signatures == migration 0114 constants ---
+
+
+def test_deterministic_ids_match_migration_0114_constants():
+    """Migration 0114 (0114_backfill_wallet_transfer_alerts_e785.sql) recreates the
+    missing alerts in pure SQL using the SAME deterministic UUID5 detection ids and
+    dedupe signatures the app computes. If the app's seed format ever changes, the
+    migration would create *duplicate* alerts instead of deduping. These frozen
+    constants (verified equal to the SQL output) lock the two in sync — update both
+    together if the dedupe contract intentionally changes."""
+    import json
+    from services.api.app import monitoring_runner as m
+
+    WID = '1155f479-3e5b-4d90-be6c-fd6c1d6b957d'
+    TID = 'e7851a52-8fb1-48cd-84a3-d033f591c5dd'
+    tx_90c7 = '0x' + 'a' * 60 + '90c7'
+    tx_a517 = '0x' + 'b' * 60 + 'a517'
+
+    # dedupe signatures come straight from the shared helpers.
+    assert m._smoke_dedupe_signature(workspace_id=WID, target_id=TID, chain_id=8453, tx_hash=tx_90c7) \
+        == '9896ce3995c55007b4b668d0159a301d'
+    assert m._sig_dedupe_signature(workspace_id=WID, target_id=TID, chain_id=8453, tx_hash=tx_90c7) \
+        == 'df2d74cbd42a56f98ef77ecedef1e9a0'
+    assert m._smoke_dedupe_signature(workspace_id=WID, target_id=TID, chain_id=8453, tx_hash=tx_a517) \
+        == '79d30f8f95955cceab300155099a725b'
+    assert m._sig_dedupe_signature(workspace_id=WID, target_id=TID, chain_id=8453, tx_hash=tx_a517) \
+        == '784d9760ec105d2fb4297803e6ebd024'
+
+    # detection ids are UUID5 of the same seed the app builds inline.
+    def smoke_det(tx):
+        seed = json.dumps({'target_id': TID, 'tx_hash': tx, 'rule': 'smoke_wallet_transfer'}, sort_keys=True)
+        return str(uuid.uuid5(uuid.NAMESPACE_DNS, 'detection:' + seed))
+
+    def sig_det(tx):
+        seed = json.dumps(
+            {'target_id': TID, 'tx_hash': tx, 'rule': m._SIG_RULE_KEY, 'chain_id': 8453}, sort_keys=True)
+        return str(uuid.uuid5(uuid.NAMESPACE_DNS, 'detection:' + seed))
+
+    assert smoke_det(tx_90c7) == '2287bb8c-b480-594e-b225-0bcb0bceba89'
+    assert sig_det(tx_90c7) == 'fb0dacf4-5099-560f-afbf-346b36e32dd5'
+    assert smoke_det(tx_a517) == 'f57c28eb-f698-566f-9050-55f4b7518679'
+    assert sig_det(tx_a517) == 'aaffb248-3891-57b6-8ba2-cc4922ad4a69'

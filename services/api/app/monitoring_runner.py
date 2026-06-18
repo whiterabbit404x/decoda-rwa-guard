@@ -10904,6 +10904,14 @@ def backfill_missing_alerts_for_target(request: Request, *, target_id: str) -> d
             (workspace_id, target_id),
         ).fetchall()
 
+        # row_count makes the scan size auditable: confirms an older tx_hash was
+        # actually fetched (not dropped by a LIMIT/recency cutoff) before per-row
+        # processing decides whether it is skipped.
+        logger.info(
+            'strategic_guard_backfill_rows_fetched workspace_id=%s target_id=%s row_count=%s',
+            workspace_id, target_id, len(rows),
+        )
+
         # Pre-load existing alert dedupe signatures for this target so we can report
         # created-vs-deduped accurately. Tolerant of fake/stub rows in tests (.get()).
         existing_signatures: dict[str, str] = {}
@@ -10936,7 +10944,9 @@ def backfill_missing_alerts_for_target(request: Request, *, target_id: str) -> d
         target_wallet_address = str(row['target_wallet_address'] or '') if row['target_wallet_address'] else ''
         payload = dict(row['payload_json'] or {})
         evidence_source = str(row['evidence_source'] or '').strip().lower()
-        event_type = str(row['event_type'] or '') if 'event_type' in (row.keys() if hasattr(row, 'keys') else []) else ''
+        _row_keys = row.keys() if hasattr(row, 'keys') else []
+        event_type = str(row['event_type'] or '') if 'event_type' in _row_keys else ''
+        observed_at = row['observed_at'] if 'observed_at' in _row_keys else None
         monitored_system_id = str(row['monitored_system_id']) if row['monitored_system_id'] else None
         protected_asset_id = str(row['protected_asset_id']) if row['protected_asset_id'] else None
         row_tx_hash = str(payload.get('tx_hash') or payload.get('hash') or '').strip()
@@ -10962,9 +10972,10 @@ def backfill_missing_alerts_for_target(request: Request, *, target_id: str) -> d
 
         logger.info(
             'strategic_guard_backfill_row_seen workspace_id=%s target_id=%s telemetry_id=%s '
-            'tx_hash=%s chain_id=%s event_type=%s evidence_source=%s dedupe_key=%s alert_pre_exists=%s',
+            'tx_hash=%s chain_id=%s event_type=%s evidence_source=%s observed_at=%s dedupe_key=%s alert_pre_exists=%s',
             workspace_id, row_target_id, telemetry_id, row_tx_hash or 'none',
             payload.get('chain_id'), event_type or 'unknown', evidence_source or 'unknown',
+            observed_at if observed_at is not None else 'unknown',
             dedupe_key or 'none', str(pre_existing).lower(),
         )
 
@@ -10973,16 +10984,18 @@ def backfill_missing_alerts_for_target(request: Request, *, target_id: str) -> d
             skipped_count += 1
             logger.info(
                 'strategic_guard_backfill_row_skipped workspace_id=%s target_id=%s telemetry_id=%s '
-                'tx_hash=%s dedupe_key=%s skip_reason=evidence_source_not_live',
-                workspace_id, row_target_id, telemetry_id, row_tx_hash or 'none', dedupe_key or 'none',
+                'tx_hash=%s observed_at=%s dedupe_key=%s skipped_reason=evidence_source_not_live',
+                workspace_id, row_target_id, telemetry_id, row_tx_hash or 'none',
+                observed_at if observed_at is not None else 'unknown', dedupe_key or 'none',
             )
             continue
         if not row_tx_hash:
             skipped_count += 1
             logger.info(
                 'strategic_guard_backfill_row_skipped workspace_id=%s target_id=%s telemetry_id=%s '
-                'tx_hash=none dedupe_key=none skip_reason=missing_tx_hash',
+                'tx_hash=none observed_at=%s dedupe_key=none skipped_reason=missing_tx_hash',
                 workspace_id, row_target_id, telemetry_id,
+                observed_at if observed_at is not None else 'unknown',
             )
             continue
 
@@ -11049,15 +11062,16 @@ def backfill_missing_alerts_for_target(request: Request, *, target_id: str) -> d
             skipped_count += 1
             logger.info(
                 'strategic_guard_backfill_row_skipped workspace_id=%s target_id=%s telemetry_id=%s '
-                'tx_hash=%s dedupe_key=%s skip_reason=no_alert_returned',
-                workspace_id, row_target_id, telemetry_id, row_tx_hash, dedupe_key,
+                'tx_hash=%s observed_at=%s dedupe_key=%s skipped_reason=no_alert_returned',
+                workspace_id, row_target_id, telemetry_id, row_tx_hash,
+                observed_at if observed_at is not None else 'unknown', dedupe_key,
             )
 
     logger.info(
         'strategic_guard_backfill_completed workspace_id=%s target_id=%s '
-        'telemetry_processed=%s created_count=%s deduped_count=%s linked_count=%s '
+        'row_count=%s telemetry_processed=%s created_count=%s deduped_count=%s linked_count=%s '
         'skipped_count=%s unique_alert_ids=%s alert_ids=%s',
-        workspace_id, target_id, len(rows), created_count, deduped_count, linked_count,
+        workspace_id, target_id, len(rows), len(rows), created_count, deduped_count, linked_count,
         skipped_count, len(alerts_created),
         ','.join(alerts_created) if alerts_created else 'none',
     )
