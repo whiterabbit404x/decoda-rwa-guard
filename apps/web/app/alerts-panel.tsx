@@ -180,7 +180,7 @@ export default function AlertsPanel() {
   }).length;
   const activeAlerts: number = Math.max(runtimeActiveAlerts, openAlertsInList);
 
-  async function fetchAlerts(cancelled: { value: boolean }) {
+  async function fetchAlerts(cancelled: { value: boolean }): Promise<AlertRow[]> {
     try {
       const params = new URLSearchParams();
       if (severityFilter) params.set('severity', severityFilter);
@@ -189,13 +189,14 @@ export default function AlertsPanel() {
         headers: authHeaders(),
         cache: 'no-store',
       });
-      if (!res.ok || cancelled.value) return;
+      if (!res.ok || cancelled.value) return [];
       const json = (await res.json()) as Record<string, unknown>;
       const rows = (json.alerts ?? []) as AlertRow[];
       if (!cancelled.value) {
         setAlerts(rows);
         if (!selectedId && rows.length > 0) setSelectedId(rows[0].id);
       }
+      return rows;
     } finally {
       if (!cancelled.value) setDataLoading(false);
     }
@@ -255,7 +256,20 @@ export default function AlertsPanel() {
           setMessage('Alert suppressed or already linked. Refreshing list.');
           const noop = { value: false };
           setDataLoading(true);
-          void fetchAlerts(noop);
+          void fetchAlerts(noop).then((rows) => {
+            if (!rows || rows.length === 0) {
+              console.log('existing_alert_not_visible_after_refresh', { alertId: null, filters: { severityFilter, statusFilter } });
+              return;
+            }
+            const target =
+              rows.find(
+                (a) =>
+                  (a.severity ?? '').toLowerCase() === 'critical' &&
+                  ['live', 'live_provider'].includes((a.evidence_source ?? '').toLowerCase()),
+              ) ?? rows[0];
+            setSelectedId(target.id);
+            setMessage('Alert found — opening existing alert.');
+          });
         }
       } else {
         // 500 with exact backend error in `detail` (requirement 6).

@@ -11643,6 +11643,53 @@ def open_alert_from_detection(request: Request) -> dict[str, Any]:
                     workspace_id, detection_id, exc_info=True,
                 )
 
+        # Third fallback: find any live wallet-transfer alert for this target/workspace.
+        # Covers backfill-created alerts whose detection_id and dedupe_signature differ
+        # from what open_alert_from_detection produces (different UUID5 seed paths).
+        if not alert_id:
+            try:
+                _broad_row = connection.execute(
+                    '''
+                    SELECT a.id FROM alerts a
+                    WHERE a.workspace_id = %s
+                      AND a.target_id = %s::uuid
+                      AND (
+                          a.payload->>'rule_key' IN (
+                              'strategic_infrastructure_guard_wallet_outbound_transfer',
+                              'smoke_wallet_transfer'
+                          )
+                          OR a.module_key = 'strategic_infrastructure_guard'
+                          OR a.payload->>'detection_type' IN (
+                              'strategic_infrastructure_guard_outbound_transfer',
+                              'monitored_wallet_transfer'
+                          )
+                          OR COALESCE(
+                              a.payload->>'tx_hash',
+                              a.payload->'evidence'->>'tx_hash'
+                          ) IS NOT NULL
+                      )
+                      AND (
+                          COALESCE(a.payload->>'evidence_source', '') = 'live'
+                          OR a.source IN ('live', 'rpc_polling')
+                          OR a.source_service = 'threat-engine'
+                      )
+                      AND lower(COALESCE(a.status, 'open')) NOT IN ('resolved', 'false_positive')
+                    ORDER BY a.created_at DESC LIMIT 1
+                    ''',
+                    (workspace_id, target_id),
+                ).fetchone()
+                if _broad_row:
+                    alert_id = str(_broad_row['id'])
+                    logger.info(
+                        'open_alert_suppressed_wallet_transfer_fallback_found workspace_id=%s detection_id=%s alert_id=%s',
+                        workspace_id, detection_id, alert_id,
+                    )
+            except Exception:
+                logger.warning(
+                    'open_alert_suppressed_wallet_transfer_fallback_failed workspace_id=%s detection_id=%s',
+                    workspace_id, detection_id, exc_info=True,
+                )
+
         created_new = bool(alert_id) and bool(upsert_out.get('created'))
         if created_new:
             logger.info(
