@@ -12656,11 +12656,18 @@ def _alert_rule_key(item: dict[str, Any]) -> str | None:
 
 
 def _is_wallet_transfer_rule_alert(item: dict[str, Any], rule_key: str | None) -> bool:
-    return (
-        (rule_key in _WALLET_TRANSFER_RULE_KEYS)
-        or (str(item.get('detection_type') or '') in _WALLET_TRANSFER_DETECTION_TYPES)
-        or (str(item.get('module_key') or '') == 'strategic_infrastructure_guard')
-    )
+    if rule_key in _WALLET_TRANSFER_RULE_KEYS:
+        return True
+    if str(item.get('detection_type') or '') in _WALLET_TRANSFER_DETECTION_TYPES:
+        return True
+    if str(item.get('module_key') or '') == 'strategic_infrastructure_guard':
+        return True
+    # Alerts created via the old "Open Alert" button had rule_id='open_from_detection' in
+    # matched_patterns (not a canonical rule key) and no payload.rule_key. They are wallet-transfer
+    # alerts if they also carry a tx_hash (belt-and-braces for pre-migration-0116 rows).
+    if rule_key == 'open_from_detection' and item.get('tx_hash'):
+        return True
+    return False
 
 
 def _normalize_alert_view(item: dict[str, Any]) -> dict[str, Any]:
@@ -12881,6 +12888,24 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        # Self-heal: ensure opened_at column exists (migration 0115). The catalog check is
+        # fast; the ALTER TABLE is only issued when the column is genuinely missing, which
+        # avoids acquiring an ACCESS EXCLUSIVE lock on every request once the migration ran.
+        # Without this column the main SELECT fails with UndefinedColumn → HTTP 500.
+        try:
+            _col_exists = connection.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema='public' AND table_name='alerts' AND column_name='opened_at'"
+            ).fetchone()
+            if not _col_exists:
+                connection.execute('ALTER TABLE alerts ADD COLUMN IF NOT EXISTS opened_at TIMESTAMPTZ NULL')
+                connection.commit()
+            # Auto-promote any live wallet-transfer alerts that haven't been opened yet.
+            # Idempotent: the opened_at IS NULL guard makes this a fast no-op after first run.
+            promote_wallet_transfer_alerts(connection, workspace_id=workspace_context['workspace_id'])
+            connection.commit()
+        except Exception:
+            logger.debug('alerts_schema_self_heal_failed', exc_info=True)
         # Diagnostic pre-scan (task 7): the workspace + structural-filter-scoped population
         # BEFORE the severity/status filter, so the staged log below can attribute an exclusion
         # reason to any telemetry-linked wallet alert missing from the returned page. The
