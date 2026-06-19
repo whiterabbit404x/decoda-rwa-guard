@@ -43,8 +43,8 @@ export function getBuildInfo(env: NodeJS.ProcessEnv = process.env, options?: { h
     vercelEnv: env.VERCEL_ENV ?? env.NEXT_PUBLIC_VERCEL_ENV ?? env.NODE_ENV ?? null,
     host: resolveHost(options?.host ?? env.VERCEL_URL ?? env.NEXT_PUBLIC_VERCEL_URL ?? null),
     branch: env.VERCEL_GIT_COMMIT_REF ?? env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_REF ?? null,
-    commitSha: env.VERCEL_GIT_COMMIT_SHA ?? env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA ?? null,
-    shortCommitSha: (env.VERCEL_GIT_COMMIT_SHA ?? env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA ?? '').slice(0, 7) || null,
+    commitSha: env.RAILWAY_GIT_COMMIT_SHA ?? env.VERCEL_GIT_COMMIT_SHA ?? env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA ?? null,
+    shortCommitSha: (env.RAILWAY_GIT_COMMIT_SHA ?? env.VERCEL_GIT_COMMIT_SHA ?? env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA ?? '').slice(0, 7) || null,
     buildTimestamp: resolveBuildTimestamp(env),
     authMode: AUTH_MODE,
     runtimeConfig: {

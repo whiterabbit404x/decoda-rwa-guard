@@ -732,6 +732,14 @@ def run_startup_migrations_if_enabled(*, process_role: str = 'api') -> dict[str,
                     missing_runtime_columns,
                     ', '.join(MONITORING_RUNTIME_SCHEMA_MIGRATION_HINTS),
                 )
+            try:
+                all_applied = {
+                    row['version']
+                    for row in connection.execute('SELECT version FROM schema_migrations').fetchall()
+                }
+                plan['all_applied_versions'] = sorted(all_applied)
+            except Exception:
+                pass
     except Exception:
         logger.exception(
             'startup_monitoring_runtime_schema_check_failed migration_hints=%s',
@@ -12786,9 +12794,9 @@ def _log_alerts_query_diagnostics(
             excluded.append(f'{alert_id}:{reason}')
         logger.info(
             'alerts_list_query_diagnostics workspace_id=%s total_alert_rows_before_filter=%s '
-            'promoted_alerts_found=%s rows_after_status_filter=%s rows_after_rule_filter=%s '
-            'rows_after_opened_filter=%s returned_count=%s excluded=%s',
-            workspace_id, total_before, len(promoted_alerts),
+            'rows_after_workspace_filter=%s promoted_alerts_found=%s rows_after_status_filter=%s '
+            'rows_after_rule_filter=%s rows_after_opened_filter=%s returned_count=%s excluded=%s',
+            workspace_id, total_before, total_before, len(promoted_alerts),
             len(after_status), len(after_rule), len(after_opened),
             len(returned_alerts), ','.join(excluded[:25]) if excluded else 'none',
         )
