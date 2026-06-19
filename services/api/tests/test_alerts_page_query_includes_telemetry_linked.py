@@ -167,8 +167,12 @@ def _status_match(row: dict[str, Any], status_filter: str | None) -> bool:
     raw = str(row.get('status') or '').strip().lower()
     if raw == requested:
         return True
-    if requested == 'open' and _is_wallet_transferish(row) and raw in OPEN_EQUIVALENT:
-        return True
+    if requested == 'open' and raw in OPEN_EQUIVALENT:
+        if _is_wallet_transferish(row):
+            return True
+        # detection_id IS NOT NULL path added to the list_alerts WHERE clause (task 3).
+        if row.get('detection_id') is not None:
+            return True
     return False
 
 
