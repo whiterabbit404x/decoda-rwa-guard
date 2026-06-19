@@ -90,6 +90,53 @@ class _AlreadyLinkedConn:
         yield
 
 
+DETECTION_ID_FOR_SUPPRESSED = str(uuid.uuid4())
+
+
+class _SuppressedButExistingConn:
+    """Detection found (linked_alert_id IS NULL) but a suppression rule fires.
+    An alert linked to this detection already exists in the DB from a prior backfill run.
+    Open Alert must surface the existing alert_id instead of returning alert_id=None."""
+
+    def __init__(self):
+        self.inserts: list[str] = []
+        self.committed = False
+
+    def execute(self, query: str, params=None):
+        q = ' '.join(str(query).split())
+        # Detection query (linked_alert_id IS NULL found) → detection exists without link
+        if 'FROM detections d' in q and 'LEFT JOIN targets t' in q:
+            return _Result(row={
+                'detection_id': DETECTION_ID_FOR_SUPPRESSED,
+                'target_id': TARGET_ID,
+                'detection_type': 'strategic_infrastructure_guard_outbound_transfer',
+                'severity': 'critical',
+                'title': 'SIG detection',
+                'evidence_summary': 'Outbound movement',
+                'evidence_source': 'live',
+                'raw_evidence_json': {'tx_hash': TX_HASH, 'chain_id': 8453, 'block_number': 100},
+                'monitoring_run_id': None,
+                'target_name': 'Test Target',
+            })
+        # Suppression check in _upsert_alert → rule matched, suppress the insert
+        if 'FROM alert_suppression_rules' in q:
+            return _Result(row={'id': 'suppression-rule-id'})
+        # Post-suppression lookup by detection_id → existing alert found
+        if 'FROM alerts' in q and 'detection_id' in q and not q.startswith('UPDATE') and not q.startswith('INSERT'):
+            return _Result(row={'id': EXISTING_ALERT_ID})
+        if q.startswith('INSERT INTO alerts'):
+            self.inserts.append('alert')
+            return _Result()
+        return _Result()
+
+    def commit(self):
+        self.committed = True
+
+    @contextmanager
+    def transaction(self):
+        yield
+
+
 @contextmanager
 def _fake_pg_mr(conn):
     yield conn
@@ -250,3 +297,74 @@ def test_no_duplicate_on_second_open_alert(monkeypatch):
     assert r2['status'] == 'already_exists'
     assert r1['alert_id'] == r2['alert_id'] == EXISTING_ALERT_ID
     assert 'alert' not in conn.inserts, 'no alert rows must be inserted on repeated Open Alert'
+
+
+# ── Test 3: suppressed-but-existing path returns alert_id (Fix 4) ─────────────
+
+def test_suppressed_returns_existing_alert_id(monkeypatch):
+    """When _upsert_alert returns '' (suppression rule matched), the response must
+    contain the existing alert_id found in the DB — not null — so the frontend can
+    navigate to the existing alert rather than showing a dead-end toast."""
+    conn = _SuppressedButExistingConn()
+    _bootstrap_mr(monkeypatch, conn)
+
+    result = monitoring_runner.open_alert_from_detection(_make_request_mr())
+
+    assert result['alert_id'] == EXISTING_ALERT_ID, (
+        'suppressed path must surface the existing alert_id, not None'
+    )
+    assert result['status'] in ('already_exists', 'created'), (
+        f"expected already_exists/created, got {result['status']!r}"
+    )
+    assert 'alert' not in conn.inserts, 'suppressed path must not insert a new alert row'
+
+
+def test_suppressed_no_insert_on_suppression_rule(monkeypatch):
+    """A suppression rule must never cause a new alert row to be inserted."""
+    conn = _SuppressedButExistingConn()
+    _bootstrap_mr(monkeypatch, conn)
+
+    monitoring_runner.open_alert_from_detection(_make_request_mr())
+
+    assert conn.inserts == [], 'no INSERT INTO alerts must occur when suppression rule fires'
+
+
+# ── Test 4: suppressed-but-linked normalization in list_alerts (Fix 2/3) ──────
+
+def _existing_suppressed_alert_row(workspace_id: str = WS_ID) -> dict:
+    """Alert with status='suppressed' but detection_id set — should normalise to open/critical."""
+    row = _existing_alert_row(workspace_id)
+    row['status'] = 'suppressed'
+    return row
+
+
+def test_suppressed_linked_alert_normalised_to_open():
+    """A wallet-transfer alert with status='suppressed' and a detection_id must be
+    normalised to status='open' for display (it was suppressed as a duplicate, not
+    because a human resolved it)."""
+    alerts = _run_list_alerts([_existing_suppressed_alert_row()], limit=50, offset=0)['alerts']
+    assert len(alerts) == 1
+    assert alerts[0]['status'] == 'open', (
+        f"suppressed+linked wallet-transfer alert must normalise to open, got {alerts[0]['status']!r}"
+    )
+    assert alerts[0]['severity'] == 'critical'
+
+
+def test_suppressed_linked_alert_appears_under_open_filter():
+    """The 'open' status quick-filter must surface suppressed-but-linked wallet-transfer alerts."""
+    alerts = _run_list_alerts(
+        [_existing_suppressed_alert_row()], status_value='open', limit=50, offset=0
+    )['alerts']
+    assert len(alerts) == 1, (
+        'suppressed-but-linked alert must appear under status_value=open filter'
+    )
+
+
+def test_suppressed_linked_alert_counted_as_active():
+    """Count cards must include suppressed-but-linked wallet-transfer alerts."""
+    alerts = _run_list_alerts([_existing_suppressed_alert_row()], limit=50, offset=0)['alerts']
+    active = sum(
+        1 for a in alerts
+        if str(a.get('status') or '').lower() in {'open', 'acknowledged', 'investigating'}
+    )
+    assert active == 1
