@@ -57,6 +57,7 @@ from services.api.app.pilot import (
     evaluate_workspace_monitoring_continuity,
     resolve_response_action_capability,
     normalize_workspace_header_value,
+    promote_wallet_transfer_alerts,
 )
 from services.api.app.threat_payloads import ThreatKind, normalize_threat_payload
 
@@ -11530,20 +11531,30 @@ def open_alert_from_detection(request: Request) -> dict[str, Any]:
         amount_wei = str(raw_evidence.get('amount_wei') or event_block.get('value') or '0')
 
         title = str(row['title'] or f'Alert from detection: {detection_id[:8]}')
+        detection_type_val = str(row['detection_type'] or 'monitored_wallet_transfer')
+        # Derive canonical rule_key from detection_type so _alert_rule_key / _is_wallet_transfer_rule_alert
+        # recognise this alert as a wallet-transfer alert without ambiguity. Previously the payload
+        # only had matched_patterns[0].rule_id='open_from_detection', which is not in the wallet-transfer
+        # rule-key set and caused the Python normalisation layer to skip status/severity normalisation.
+        if detection_type_val == 'strategic_infrastructure_guard_outbound_transfer':
+            _rule_key = 'strategic_infrastructure_guard_wallet_outbound_transfer'
+        else:
+            _rule_key = 'smoke_wallet_transfer'
         response: dict[str, Any] = {
-            'severity': str(row['severity'] or 'low'),
+            'rule_key': _rule_key,
+            'severity': str(row['severity'] or 'critical'),
             'confidence': 'high',
-            'detection_type': str(row['detection_type'] or 'monitored_wallet_transfer'),
+            'detection_type': detection_type_val,
             'recommended_action': 'review_wallet_transfer',
             'explanation': str(row['evidence_summary'] or title),
             'matched_patterns': [
                 {
-                    'label': str(row['detection_type'] or 'wallet_transfer_detected'),
-                    'rule_id': 'open_from_detection',
-                    'severity': str(row['severity'] or 'low'),
+                    'label': detection_type_val,
+                    'rule_id': _rule_key,
+                    'severity': str(row['severity'] or 'critical'),
                 }
             ],
-            'reasons': [str(row['detection_type'] or 'wallet_transfer_detected')],
+            'reasons': [detection_type_val],
             'source': str(row['evidence_source'] or 'live'),
             'degraded': False,
             'evidence_source': str(row['evidence_source'] or 'live'),
@@ -11609,6 +11620,19 @@ def open_alert_from_detection(request: Request) -> dict[str, Any]:
                 'open_alert_already_exists workspace_id=%s detection_id=%s alert_id=%s reason=dedupe',
                 workspace_id, detection_id, alert_id,
             )
+
+        # Promote the alert so opened_at is set and /alerts list shows it as active
+        # without requiring migration re-runs. Idempotent: no-op if already promoted.
+        if alert_id and target_id:
+            try:
+                with pg_connection() as promote_conn:
+                    promote_wallet_transfer_alerts(promote_conn, workspace_id=workspace_id, target_id=target_id)
+                    promote_conn.commit()
+            except Exception:
+                logger.warning(
+                    'open_alert_promote_failed workspace_id=%s alert_id=%s',
+                    workspace_id, alert_id, exc_info=True,
+                )
 
         if alert_id:
             status_value = 'created' if created_new else 'already_exists'

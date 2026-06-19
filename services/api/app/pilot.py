@@ -12729,7 +12729,10 @@ def _diag_status_passes(diag_row: dict[str, Any], status_filter: str | None) -> 
     if requested == 'open':
         if diag_row.get('opened_at') is not None:
             return True
-        if _diag_alert_is_wallet_transfer(diag_row) and raw in _OPEN_EQUIVALENT_ALERT_STATUSES:
+        if raw in _OPEN_EQUIVALENT_ALERT_STATUSES and _diag_alert_is_wallet_transfer(diag_row):
+            return True
+        # detection_id IS NOT NULL path added to the list_alerts WHERE clause (task 3).
+        if diag_row.get('detection_id') is not None and raw in _OPEN_EQUIVALENT_ALERT_STATUSES:
             return True
     return False
 
@@ -12997,6 +13000,9 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
                                     OR a.module_key = 'strategic_infrastructure_guard'
                                     OR a.payload->>'detection_type' IN ('strategic_infrastructure_guard_outbound_transfer', 'monitored_wallet_transfer')
                                     OR COALESCE(a.payload->>'tx_hash', a.payload->'evidence'->>'tx_hash') IS NOT NULL
+                                    -- An alert linked to any detection is open for triage regardless
+                                    -- of which wallet-transfer rule created it.
+                                    OR a.detection_id IS NOT NULL
                                 )
                             )
                         )

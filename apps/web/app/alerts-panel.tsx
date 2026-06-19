@@ -218,22 +218,39 @@ export default function AlertsPanel() {
         json = {};
       }
       // 409 = an alert already exists for this detection (no duplicate created).
+      // Navigate to the existing alert instead of showing only an error message.
       if (res.status === 409) {
-        console.log('open_alert_already_exists', json.alert_id ?? null);
-        setMessage('Alert already exists for this detection.');
+        const existingId = json.alert_id ?? null;
+        console.log('open_alert_already_exists', existingId);
+        if (existingId) setSelectedId(existingId);
+        setMessage('Alert already open — navigating to existing alert.');
         const noop = { value: false };
         setDataLoading(true);
-        void fetchAlerts(noop);
+        void fetchAlerts(noop).then(() => {
+          if (existingId) setSelectedId(existingId);
+        });
       } else if (res.ok) {
         // 201 (created) or 200 (no_detection / suppressed)
         if (json.alert_id && json.status === 'created') {
           console.log('open_alert_created', json.alert_id);
+          setSelectedId(json.alert_id);
           setMessage('Alert opened successfully.');
           const noop = { value: false };
           setDataLoading(true);
-          void fetchAlerts(noop);
+          void fetchAlerts(noop).then(() => {
+            if (json.alert_id) setSelectedId(json.alert_id);
+          });
         } else if (json.status === 'no_detection') {
           setMessage('No open detections found. Run Detection first.');
+        } else if (json.alert_id) {
+          // already_exists path returned via 200 (rare edge case)
+          setSelectedId(json.alert_id);
+          setMessage('Alert already open — navigating to existing alert.');
+          const noop = { value: false };
+          setDataLoading(true);
+          void fetchAlerts(noop).then(() => {
+            if (json.alert_id) setSelectedId(json.alert_id);
+          });
         } else {
           setMessage('Alert already exists for this detection.');
           const noop = { value: false };
