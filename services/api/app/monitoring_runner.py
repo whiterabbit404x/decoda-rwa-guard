@@ -11605,6 +11605,44 @@ def open_alert_from_detection(request: Request) -> dict[str, Any]:
             )
             raise
 
+        # When _upsert_alert returns '' a suppression rule matched.  The suppression rule
+        # prevents new rows but the original alert (created by the backfill or a prior
+        # "Open Alert" click) still exists in the DB.  Look it up so the frontend can
+        # navigate to it instead of showing an unhelpful "suppressed" toast.
+        if not alert_id:
+            try:
+                _sup_row = connection.execute(
+                    '''
+                    SELECT id FROM alerts
+                    WHERE workspace_id = %s
+                      AND detection_id = %s::uuid
+                    ORDER BY created_at DESC LIMIT 1
+                    ''',
+                    (workspace_id, detection_id),
+                ).fetchone()
+                if _sup_row is None:
+                    _sup_row = connection.execute(
+                        '''
+                        SELECT id FROM alerts
+                        WHERE workspace_id = %s
+                          AND target_id = %s::uuid
+                          AND dedupe_signature = %s
+                        ORDER BY created_at DESC LIMIT 1
+                        ''',
+                        (workspace_id, target_id, signature),
+                    ).fetchone()
+                if _sup_row:
+                    alert_id = str(_sup_row['id'])
+                    logger.info(
+                        'open_alert_suppressed_existing_found workspace_id=%s detection_id=%s alert_id=%s',
+                        workspace_id, detection_id, alert_id,
+                    )
+            except Exception:
+                logger.warning(
+                    'open_alert_suppressed_lookup_failed workspace_id=%s detection_id=%s',
+                    workspace_id, detection_id, exc_info=True,
+                )
+
         created_new = bool(alert_id) and bool(upsert_out.get('created'))
         if created_new:
             logger.info(

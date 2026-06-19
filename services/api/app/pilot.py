@@ -12704,6 +12704,10 @@ def _normalize_alert_view(item: dict[str, Any]) -> dict[str, Any]:
 
     if raw_status in _OPEN_EQUIVALENT_ALERT_STATUSES:
         item['status'] = 'open'
+    elif raw_status == 'suppressed' and item.get('detection_id') is not None:
+        # A wallet-transfer alert that was suppressed but still linked to a detection
+        # is open for triage (suppression prevented a duplicate, not the original alert).
+        item['status'] = 'open'
     # Both wallet-transfer rules are critical by definition.
     item['severity'] = 'critical'
     if not str(item.get('title') or '').strip():
@@ -12748,6 +12752,9 @@ def _diag_status_passes(diag_row: dict[str, Any], status_filter: str | None) -> 
             return True
         # detection_id IS NOT NULL path added to the list_alerts WHERE clause (task 3).
         if diag_row.get('detection_id') is not None and raw in _OPEN_EQUIVALENT_ALERT_STATUSES:
+            return True
+        # Mirror the suppressed-but-linked branch in the main SQL WHERE clause.
+        if raw == 'suppressed' and diag_row.get('detection_id') is not None and _diag_alert_is_wallet_transfer(diag_row):
             return True
     return False
 
@@ -12906,6 +12913,16 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
             connection.commit()
         except Exception:
             logger.debug('alerts_schema_self_heal_failed', exc_info=True)
+            # psycopg3 leaves the connection in an aborted-transaction state when a
+            # query inside the try block fails (e.g. ALTER TABLE lock contention).
+            # Without an explicit rollback every subsequent execute() call in the same
+            # connection raises "current transaction is aborted" → HTTP 500 → frontend
+            # silently returns with alerts=[]. Reset the connection state here so the
+            # main SELECT below can always run.
+            try:
+                connection.rollback()
+            except Exception:
+                pass
         # Diagnostic pre-scan (task 7): the workspace + structural-filter-scoped population
         # BEFORE the severity/status filter, so the staged log below can attribute an exclusion
         # reason to any telemetry-linked wallet alert missing from the returned page. The
@@ -13036,6 +13053,20 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
                                     -- An alert linked to any detection is open for triage regardless
                                     -- of which wallet-transfer rule created it.
                                     OR a.detection_id IS NOT NULL
+                                )
+                            )
+                            OR (
+                                -- Suppressed-but-linked: a wallet-transfer alert whose insert was
+                                -- suppressed (duplicate prevention) but is still linked to a
+                                -- detection is open for triage — the suppression prevented a second
+                                -- row, not the original alert.
+                                lower(a.status) = 'suppressed'
+                                AND a.detection_id IS NOT NULL
+                                AND (
+                                    a.payload->>'rule_key' IN ('strategic_infrastructure_guard_wallet_outbound_transfer', 'smoke_wallet_transfer')
+                                    OR a.module_key = 'strategic_infrastructure_guard'
+                                    OR a.payload->>'detection_type' IN ('strategic_infrastructure_guard_outbound_transfer', 'monitored_wallet_transfer')
+                                    OR COALESCE(a.payload->>'tx_hash', a.payload->'evidence'->>'tx_hash') IS NOT NULL
                                 )
                             )
                         )
