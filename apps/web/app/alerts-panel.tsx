@@ -252,7 +252,7 @@ export default function AlertsPanel() {
             if (json.alert_id) setSelectedId(json.alert_id);
           });
         } else {
-          setMessage('Alert already exists for this detection.');
+          setMessage('Alert suppressed or already linked. Refreshing list.');
           const noop = { value: false };
           setDataLoading(true);
           void fetchAlerts(noop);
