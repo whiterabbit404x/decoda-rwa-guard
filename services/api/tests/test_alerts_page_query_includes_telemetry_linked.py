@@ -356,6 +356,7 @@ def test_query_diagnostics_logs_excluded_wallet_alert_with_reason(caplog):
     assert diag, 'expected an alerts_list_query_diagnostics log line'
     line = diag[-1]
     assert 'total_alert_rows_before_filter=2' in line
+    assert 'rows_after_workspace_filter=2' in line
     assert 'rows_after_rule_filter=0' in line
     assert 'returned_count=0' in line
     assert 'e39485a5-2652-4950-9141-2aa6fe79bea1:severity_filter' in line

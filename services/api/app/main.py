@@ -1550,8 +1550,17 @@ def bootstrap_live_pilot() -> dict[str, Any]:
             )
     STARTUP_BOOTSTRAP_STATUS = run_startup_migrations_if_enabled(process_role='api')
     applied_versions = STARTUP_BOOTSTRAP_STATUS.get('applied_versions', [])
+    _all_applied = set(STARTUP_BOOTSTRAP_STATUS.get('all_applied_versions', []))
     if STARTUP_BOOTSTRAP_STATUS.get('ran'):
         logger.info('startup pilot bootstrap ran migrations: %s', ', '.join(applied_versions) or 'none')
+        _MIG_0116 = '0116_normalize_sig_wallet_transfer_alert_payloads.sql'
+        if _MIG_0116 in _all_applied:
+            logger.info('startup_critical_migration_applied migration=%s', _MIG_0116)
+        else:
+            logger.warning(
+                'startup_critical_migration_missing migration=%s action=run_migration_manually',
+                _MIG_0116,
+            )
     else:
         logger.info(
             'startup pilot bootstrap skipped for role=%s: %s',
