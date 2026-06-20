@@ -93,8 +93,8 @@ test('empty state shows incident blocker when alert exists but no incident', () 
 test('empty state shows response blocker when incident exists but no response action', () => {
   const src = pageSource();
   expect(src).toContain('No response action recommended yet');
-  expect(src).toContain('An incident exists, but no response action has been recommended yet.');
-  expect(src).toContain('Recommend Response');
+  expect(src).toContain('Incidents exist, but no response action has been recommended yet.');
+  expect(src).toContain('Go to Incidents');
 });
 
 test('Execute Action is only shown when liveExecutionAllowed is true', () => {
@@ -121,16 +121,21 @@ test('evidence source guard: simulator is never labeled as live_provider', () =>
   expect(src).toContain("{ label: 'live_provider', variant: 'success' }");
 });
 
-test('linked incident is only shown when a valid incident exists in validIncidentIds', () => {
+test('linked incident shows direct DB incident_id authoritatively; validIncidentIds only for inferred IDs', () => {
   const src = pageSource();
+  // directIncidentId from the action's own DB record is always trusted.
+  expect(src).toContain('directIncidentId');
+  // validIncidentIds still used as a secondary check for non-direct IDs.
   expect(src).toContain('validIncidentIds.has(rawIncidentId)');
   expect(src).toContain('Linked incident unavailable');
-  expect(src).toContain('Do not show linked incident unless a valid incident exists in the system');
+  // Trust the action's own incident_id from the backend.
+  expect(src).toContain('Trust the action\'s own incident_id from the backend');
 });
 
 test('correct API endpoints are used', () => {
   const src = pageSource();
-  expect(src).toContain('/response/actions?limit=50');
+  // Actions list goes through the Next.js same-origin proxy.
+  expect(src).toContain('/api/response/actions');
   expect(src).toContain('/history/actions?limit=50');
   expect(src).toContain('/alerts?limit=50');
   expect(src).toContain('/incidents?limit=50');
@@ -161,4 +166,35 @@ test('empty state cases A, B, C are present', () => {
   expect(src).toContain('Run Detection');
   expect(src).toContain('Detections exist, but no alert has been opened yet.');
   expect(src).toContain('Open Alert');
+});
+
+test('Evidence Export uses same-origin proxy route, not direct apiUrl', () => {
+  const src = pageSource();
+  // Must call the Next.js proxy, not the raw backend URL.
+  expect(src).toContain('/api/response/actions/${action.id}/evidence-package');
+  // Must NOT call the backend directly for this mutation.
+  expect(src).not.toContain('`${apiUrl}/response/actions/${action.id}/evidence-package`');
+});
+
+test('Evidence Export navigates to /evidence with package_id, action_id, and incident_id', () => {
+  const src = pageSource();
+  expect(src).toContain('/evidence?');
+  expect(src).toContain('package_id');
+  expect(src).toContain('action_id');
+  expect(src).toContain('incident_id');
+});
+
+test('Evidence Export shows real server error detail instead of generic network message', () => {
+  const src = pageSource();
+  // Must parse JSON separately so a parse error gives a distinct message.
+  expect(src).toContain('server returned an unexpected response');
+  // Must use data.detail for server-returned error messages.
+  expect(src).toContain("data.detail ?? 'Evidence export failed.'");
+});
+
+test('simulateAction calls the backend proxy route, not a no-op', () => {
+  const src = pageSource();
+  expect(src).toContain('/api/response/actions/${action.id}/simulate');
+  // Must refresh after success so the persisted status is reflected.
+  expect(src).toContain('router.refresh()');
 });

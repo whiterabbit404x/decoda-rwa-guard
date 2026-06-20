@@ -171,14 +171,14 @@ test('14: Download and Export buttons are disabled when package is not ready', (
 
 test('15: simulator evidence is labeled simulator, not live_provider', () => {
   const source = read(PANEL);
-  // The evidenceSourcePill function maps simulator/demo/replay to 'simulator'
-  expect(source).toContain("label: 'simulator'");
+  // The evidenceSourcePill function maps simulator/demo/replay to 'Simulator/test evidence'
+  expect(source).toContain("label: 'Simulator/test evidence'");
   // Simulator does NOT map to live_provider
   expect(source).toContain("raw === 'simulator'");
   // The workspaceSource guard prevents simulator from being labeled live_provider
   expect(source).toContain("workspaceSource === 'simulator'");
-  // live_provider is only returned for actual live sources
-  expect(source).toContain("label: 'live_provider'");
+  // live sources are returned as 'Live evidence', not 'live_provider'
+  expect(source).toContain("label: 'Live evidence'");
   expect(source).toContain("raw === 'live_provider'");
 });
 

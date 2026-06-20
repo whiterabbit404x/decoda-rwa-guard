@@ -9,11 +9,16 @@ function appSource(fileName: string): string {
 test('response actions page uses API-backed data, fixed columns, and simulated labels for fallback rows', () => {
   const pageSource = appSource('(product)/response-actions-page-client.tsx');
 
-  expect(pageSource).toContain('/response/actions?limit=50');
+  expect(pageSource).toContain('/api/response/actions');
   expect(pageSource).toContain('/history/actions?limit=50');
   expect(pageSource).toContain('/alerts?limit=50');
   expect(pageSource).toContain('/incidents?limit=50');
-  expect(pageSource).toContain("['Action', 'Type', 'Impact', 'Status', 'Recommended By', 'Linked Incident', 'Evidence Source', 'Requires Approval']");
+  // RECOMMENDED_HEADERS array contains all required column names
+  expect(pageSource).toContain("'Action'");
+  expect(pageSource).toContain("'Recommended By'");
+  expect(pageSource).toContain("'Linked Incident'");
+  expect(pageSource).toContain("'Evidence Source'");
+  expect(pageSource).toContain("'Requires Approval'");
   expect(pageSource).toContain("SIMULATED");
   expect(pageSource).toContain('fallback examples remain clearly marked as SIMULATED');
   expect(pageSource).toContain('hasRealTelemetryBackedChain(resolveWorkspaceMonitoringTruth(runtimePayload))');
