@@ -14703,6 +14703,90 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
         )
 
 
+def recommend_response_action_for_incident(incident_id: str, request: Request) -> dict[str, Any]:
+    """Create or return an existing recommended response action for an incident.
+
+    Unlike create_enforcement_action, this does not require live mode — recommended
+    actions are the planning/triage step before live execution. Deduplicates on
+    (incident_id, action_type, mode='recommended') so clicking twice is safe.
+    """
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(connection, request, 'response.propose')
+        workspace_id = workspace_context['workspace_id']
+        incident_row = connection.execute(
+            'SELECT id, source_alert_id FROM incidents WHERE id = %s::uuid AND workspace_id = %s',
+            (incident_id, workspace_id),
+        ).fetchone()
+        if incident_row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Incident not found.')
+        alert_id = incident_row.get('source_alert_id')
+        action_type = 'notify_team'
+        existing = connection.execute(
+            """SELECT id FROM response_actions
+               WHERE incident_id = %s::uuid AND workspace_id = %s AND action_type = %s AND mode = 'recommended'
+               ORDER BY created_at DESC LIMIT 1""",
+            (incident_id, workspace_id, action_type),
+        ).fetchone()
+        if existing:
+            return {'response_action_id': str(existing['id']), 'incident_id': incident_id, 'created': False}
+        action_id = str(uuid.uuid4())
+        execution_metadata = _json_safe_value({
+            'params': {},
+            'created_via': 'recommend_endpoint',
+            'action_intent': RESPONSE_ACTION_INTENTS.get(action_type, 'Notify Team'),
+            'evidence_source': 'simulator',
+            'chain_linked_ids': {
+                'incident_id': incident_id,
+                'alert_id': str(alert_id) if alert_id else None,
+            },
+        })
+        execution_artifacts = _json_safe_value({
+            'provider': {'receipts': []},
+            'status_transitions': [
+                _json_safe_value({
+                    'at': utc_now_iso(),
+                    'from_status': None,
+                    'to_status': 'pending',
+                    'mode': 'recommended',
+                    'execution_state': 'simulated',
+                    'reason': 'created_via_recommend',
+                })
+            ],
+        })
+        connection.execute(
+            '''INSERT INTO response_actions (
+                id, workspace_id, incident_id, alert_id, action_type, mode, status, result_summary, operator_notes,
+                chain_network, target_wallet, token_contract, spender, calldata,
+                execution_state, execution_metadata, execution_artifacts, provider_receipts, error_code, result_status, tx_hash, created_by_user_id
+            ) VALUES (%s, %s, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s)''',
+            (
+                action_id, workspace_id, incident_id, str(alert_id) if alert_id else None,
+                action_type, 'recommended', 'pending',
+                None, None, None, None, None, None, None,
+                'simulated',
+                _json_dumps(execution_metadata),
+                _json_dumps(execution_artifacts),
+                _json_dumps([]),
+                None, 'pending', None, user['id'],
+            ),
+        )
+        write_action_history(
+            connection, workspace_id=workspace_id, actor_type='user', actor_id=user['id'],
+            object_type='response_action', object_id=action_id,
+            action_type='response_action.created',
+            details={'action_type': action_type, 'mode': 'recommended', 'incident_id': incident_id},
+        )
+        write_action_history(
+            connection, workspace_id=workspace_id, actor_type='user', actor_id=user['id'],
+            object_type='incident', object_id=incident_id,
+            action_type='incident.response_action_created',
+            details={'response_action_id': action_id, 'action_type': action_type, 'mode': 'recommended'},
+        )
+        connection.commit()
+        return {'response_action_id': action_id, 'incident_id': incident_id, 'created': True}
+
+
 def approve_enforcement_action(action_id: str, request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:

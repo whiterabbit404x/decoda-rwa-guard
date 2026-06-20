@@ -189,6 +189,7 @@ from services.api.app.pilot import (
     append_incident_timeline_note,
     create_action_history_entry,
     create_enforcement_action,
+    recommend_response_action_for_incident,
     list_response_action_capabilities,
     approve_enforcement_action,
     execute_enforcement_action,
@@ -4417,6 +4418,11 @@ def enforcement_actions_rollback(action_id: str, request: Request) -> dict[str, 
 @app.post('/response/actions/{action_id}/rollback', summary='Rollback response action by creating a compensating action')
 def response_actions_rollback(action_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: _normalize_action_route_response(rollback_enforcement_action(action_id, request)))
+
+
+@app.post('/incidents/{incident_id}/response-actions/recommend', summary='Create or return a recommended response action for an incident')
+def incident_recommend_response_action(incident_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: recommend_response_action_for_incident(incident_id, request))
 
 
 @app.post('/exports/history', summary='Export analysis history')

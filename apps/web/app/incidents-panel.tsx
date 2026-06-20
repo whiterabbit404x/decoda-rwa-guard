@@ -1,7 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { ReactNode, useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 
 import {
   EmptyStateBlocker,
@@ -189,6 +190,7 @@ type TabKey = typeof DETAIL_TABS[number]['key'];
 export default function IncidentsPanel({ initialSelectedId }: { initialSelectedId?: string } = {}) {
   const { summary, runtime, loading: runtimeLoading } = useRuntimeSummary();
   const { authHeaders } = usePilotAuth();
+  const router = useRouter();
   const apiUrl = API_PROXY_BASE;
 
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
@@ -205,6 +207,8 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
   const [linkedAlert, setLinkedAlert] = useState<AlertRow | null>(null);
   const [evidence, setEvidence] = useState<EvidenceRow[]>([]);
   const [responseActions, setResponseActions] = useState<ResponseActionRow[]>([]);
+  const [recommending, setRecommending] = useState(false);
+  const [recommendError, setRecommendError] = useState('');
 
   const counts = runtime?.counts as Record<string, number> | undefined;
   const workspaceEvidenceSource: string = summary.evidence_source_summary ?? '';
@@ -212,6 +216,39 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
   const detectionOk = (counts?.detections ?? 0) > 0 || !!(summary as any).last_detection_at;
   const activeAlerts: number =
     (counts?.active_alerts as number | undefined) ?? summary.active_alerts_count ?? 0;
+
+  const handleRecommend = useCallback(async () => {
+    if (!selectedId || recommending) return;
+    setRecommending(true);
+    setRecommendError('');
+    try {
+      const res = await fetch(`${apiUrl}/incidents/${encodeURIComponent(selectedId)}/response-actions/recommend`, {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        cache: 'no-store',
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({})) as Record<string, unknown>;
+        setRecommendError(String(err.detail ?? err.message ?? 'Failed to recommend response action.'));
+        return;
+      }
+      const data = await res.json() as { response_action_id?: string; incident_id?: string };
+      // Refresh response actions for the panel
+      const actionsRes = await fetch(`${apiUrl}/response/actions?incident_id=${encodeURIComponent(selectedId)}`, {
+        headers: authHeaders(),
+        cache: 'no-store',
+      });
+      if (actionsRes.ok) {
+        const actionsJson = await actionsRes.json() as Record<string, unknown>;
+        setResponseActions((actionsJson.actions ?? []) as ResponseActionRow[]);
+      }
+      router.push(`/response-actions?incident_id=${encodeURIComponent(selectedId)}${data.response_action_id ? `&action_id=${encodeURIComponent(data.response_action_id)}` : ''}`);
+    } catch {
+      setRecommendError('Network error. Failed to reach the server.');
+    } finally {
+      setRecommending(false);
+    }
+  }, [selectedId, recommending, apiUrl, authHeaders, router]);
 
   useEffect(() => {
     if (runtimeLoading) return;
@@ -525,6 +562,9 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
               onTabChange={(tab) => setActiveTab(tab as TabKey)}
               workspaceEvidenceSource={workspaceEvidenceSource}
               onMessage={setMessage}
+              onRecommend={handleRecommend}
+              recommending={recommending}
+              recommendError={recommendError}
             />
           )}
         </div>
@@ -540,11 +580,13 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
 /* ── Incident detail panel ──────────────────────────────────────── */
 
 function IncidentDetailPanel({ incident, timeline, linkedAlert, evidence, responseActions,
-  activeTab, onTabChange, workspaceEvidenceSource, onMessage: _onMessage }: {
+  activeTab, onTabChange, workspaceEvidenceSource, onMessage: _onMessage,
+  onRecommend, recommending, recommendError }: {
   incident: IncidentRow; timeline: TimelineEntry[]; linkedAlert: AlertRow | null;
   evidence: EvidenceRow[]; responseActions: ResponseActionRow[];
   activeTab: string; onTabChange: (tab: string) => void;
   workspaceEvidenceSource: string; onMessage: (msg: string) => void;
+  onRecommend: () => void; recommending: boolean; recommendError: string;
 }) {
   const sev = severityPill(incident.severity);
   const st  = incidentStatusPill(incidentStatus(incident));
@@ -614,7 +656,15 @@ function IncidentDetailPanel({ incident, timeline, linkedAlert, evidence, respon
         {activeTab === 'timeline' && <TimelineTab timeline={timeline} />}
         {activeTab === 'alerts' && <AlertsTab linkedAlert={linkedAlert} hasLinkedAlert={hasLinkedAlert} workspaceEvidenceSource={workspaceEvidenceSource} />}
         {activeTab === 'evidence' && <EvidenceTab evidence={evidence} workspaceEvidenceSource={workspaceEvidenceSource} />}
-        {activeTab === 'response-actions' && <ResponseActionsTab actions={responseActions} incidentId={incident.id} />}
+        {activeTab === 'response-actions' && (
+          <ResponseActionsTab
+            actions={responseActions}
+            incidentId={incident.id}
+            onRecommend={onRecommend}
+            recommending={recommending}
+            recommendError={recommendError}
+          />
+        )}
       </div>
     </aside>
   );
@@ -789,14 +839,29 @@ function EvidenceTab({ evidence, workspaceEvidenceSource }: { evidence: Evidence
 /* ── Response Actions tab ────────────────────────────────────────── */
 const RESPONSE_HEADERS = ['Action', 'Type', 'Status', 'Requires Approval', 'Evidence Source', 'Action'];
 
-function ResponseActionsTab({ actions, incidentId: _incidentId }: { actions: ResponseActionRow[]; incidentId: string }) {
+function ResponseActionsTab({ actions, incidentId, onRecommend, recommending, recommendError }: {
+  actions: ResponseActionRow[];
+  incidentId: string;
+  onRecommend: () => void;
+  recommending: boolean;
+  recommendError: string;
+}) {
   if (actions.length === 0) {
     return (
       <div>
         <p className="muted" style={{ fontSize: '0.85rem', marginBottom: '0.5rem' }}>No response action recommended yet.</p>
-        <Link href="/response-actions" prefetch={false} className="btn btn-secondary" style={{ fontSize: '0.78rem' }}>
-          Recommend Response
-        </Link>
+        {recommendError && (
+          <p style={{ fontSize: '0.82rem', color: 'var(--danger-fg)', marginBottom: '0.5rem' }}>{recommendError}</p>
+        )}
+        <button
+          type="button"
+          className="btn btn-secondary"
+          style={{ fontSize: '0.78rem' }}
+          onClick={onRecommend}
+          disabled={recommending}
+        >
+          {recommending ? 'Recommending…' : 'Recommend Response'}
+        </button>
       </div>
     );
   }
@@ -813,7 +878,7 @@ function ResponseActionsTab({ actions, incidentId: _incidentId }: { actions: Res
           <td><StatusPill label={action.requires_approval ? 'Yes' : 'No'} variant={action.requires_approval ? 'warning' : 'neutral'} /></td>
           <td style={{ fontSize: '0.75rem' }}>{action.evidence_source ?? '-'}</td>
           <td>
-            <Link href="/response-actions" prefetch={false} className="btn btn-secondary" style={{ fontSize: '0.72rem', padding: '0.15rem 0.4rem' }}>
+            <Link href={`/response-actions?incident_id=${encodeURIComponent(incidentId)}`} prefetch={false} className="btn btn-secondary" style={{ fontSize: '0.72rem', padding: '0.15rem 0.4rem' }}>
               View Response
             </Link>
           </td>
