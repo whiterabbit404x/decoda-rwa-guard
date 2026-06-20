@@ -198,6 +198,7 @@ from services.api.app.pilot import (
     create_export_job,
     create_proof_bundle_export,
     create_incident_report_export,
+    create_evidence_package_from_response_action,
     get_mttd_metrics,
     list_exports,
     get_export,
@@ -4423,6 +4424,11 @@ def response_actions_rollback(action_id: str, request: Request) -> dict[str, Any
 @app.post('/incidents/{incident_id}/response-actions/recommend', summary='Create or return a recommended response action for an incident')
 def incident_recommend_response_action(incident_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: recommend_response_action_for_incident(incident_id, request))
+
+
+@app.post('/response/actions/{action_id}/evidence-package', summary='Create evidence package from response action (idempotent)')
+def response_action_evidence_package(action_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_evidence_package_from_response_action(action_id, request))
 
 
 @app.post('/exports/history', summary='Export analysis history')

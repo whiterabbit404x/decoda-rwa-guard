@@ -15789,6 +15789,112 @@ def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dic
     }
 
 
+def create_evidence_package_from_response_action(action_id: str, request: Request) -> dict[str, Any]:
+    """Create (or return existing) evidence package linked to a response action.
+
+    Idempotent: calling twice returns the same package without creating a duplicate.
+    Self-heals incident_id via linked alert when the action record is missing it.
+    """
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(connection, request, 'evidence.export')
+        workspace_id = workspace_context['workspace_id']
+
+        entitlements = _workspace_plan(connection, workspace_id)
+        if not bool(entitlements.get('exports_enabled')):
+            raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail='Exports are not available on this plan.')
+
+        action_row = connection.execute(
+            'SELECT id, workspace_id, incident_id, alert_id, action_type, mode, status FROM response_actions WHERE id = %s::uuid AND workspace_id = %s',
+            (action_id, workspace_id),
+        ).fetchone()
+        if action_row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Response action not found.')
+
+        incident_id = str(action_row.get('incident_id') or '').strip() or None
+        alert_id = str(action_row.get('alert_id') or '').strip() or None
+
+        # Self-heal: infer incident_id from linked alert when the action record is missing it
+        if not incident_id and alert_id:
+            alert_row = connection.execute(
+                'SELECT incident_id FROM alerts WHERE id = %s::uuid AND workspace_id = %s',
+                (alert_id, workspace_id),
+            ).fetchone()
+            if alert_row and alert_row.get('incident_id'):
+                incident_id = str(alert_row['incident_id'])
+                connection.execute(
+                    'UPDATE response_actions SET incident_id = %s::uuid WHERE id = %s::uuid AND workspace_id = %s',
+                    (incident_id, action_id, workspace_id),
+                )
+
+        # Idempotency: reuse existing package created for this response action
+        existing = connection.execute(
+            """SELECT id FROM export_jobs
+               WHERE workspace_id = %s
+                 AND export_type = 'proof_bundle'
+                 AND filters->>'response_action_id' = %s
+               ORDER BY created_at DESC LIMIT 1""",
+            (workspace_id, action_id),
+        ).fetchone()
+        if existing:
+            pkg_id = str(existing['id'])
+            return {
+                'package_id': pkg_id,
+                'response_action_id': action_id,
+                'incident_id': incident_id,
+                'created': False,
+            }
+
+        if not incident_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail='Response action is not linked to an incident. Cannot create evidence package without an incident_id.',
+            )
+
+        pkg_id = str(uuid.uuid4())
+        fmt = 'json'
+        output_path = f'{workspace_id}/{pkg_id}.{fmt}'
+        filters = {
+            'incident_id': incident_id,
+            'response_action_id': action_id,
+            'include_raw_events': True,
+        }
+        if alert_id:
+            filters['alert_id'] = alert_id
+
+        connection.execute(
+            '''INSERT INTO export_jobs (id, workspace_id, requested_by_user_id, export_type, format, filters, status, output_path, storage_backend, storage_object_key)
+               VALUES (%s, %s, %s, 'proof_bundle', %s, %s::jsonb, 'queued', %s, %s, %s)''',
+            (pkg_id, workspace_id, user['id'], fmt, _json_dumps(filters), output_path, 'pending', output_path),
+        )
+
+        _generate_export_artifact(connection, workspace_id=workspace_id, export_id=pkg_id)
+
+        log_audit(
+            connection,
+            action='evidence_package_created',
+            entity_type='export_job',
+            entity_id=pkg_id,
+            request=request,
+            user_id=user['id'],
+            workspace_id=workspace_id,
+            metadata={
+                'event_type': 'evidence_package_created',
+                'response_action_id': action_id,
+                'incident_id': incident_id,
+                'alert_id': alert_id,
+            },
+        )
+        connection.commit()
+
+        return {
+            'package_id': pkg_id,
+            'response_action_id': action_id,
+            'incident_id': incident_id,
+            'created': True,
+        }
+
+
 def create_incident_report_export(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     export_payload = {
         'format': str(payload.get('format', 'json')).strip().lower(),
@@ -16917,6 +17023,7 @@ def list_exports(request: Request) -> dict[str, Any]:
             filters_val = item.pop('filters', None) or {}
             if isinstance(filters_val, dict):
                 item['incident_id'] = filters_val.get('incident_id')
+                item['response_action_id'] = filters_val.get('response_action_id')
                 if str(item.get('export_type') or '') == 'proof_bundle':
                     for _mf in ('export_status', 'evidence_source_type', 'missing_sections', 'unavailable_sections', 'warnings', 'chain_complete'):
                         if _mf in filters_val:
