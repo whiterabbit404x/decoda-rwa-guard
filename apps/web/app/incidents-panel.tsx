@@ -11,9 +11,16 @@ import {
   TableShell,
   type PillVariant,
 } from './components/ui-primitives';
-import { resolveApiUrl } from './dashboard-data';
 import { usePilotAuth } from './pilot-auth-context';
 import { useRuntimeSummary } from './runtime-summary-context';
+
+// Same-origin proxy base. The Incidents page MUST NOT call the backend directly: the browser
+// only sees NEXT_PUBLIC_API_URL (often unset in production), so a direct fetch never reaches the
+// backend and the list silently renders empty ("No incidents yet") even when escalated incidents
+// exist — which is exactly why /incidents disagreed with the Alerts "Linked Incidents" count.
+// Every backend call below goes through the Next.js /api/* proxy, which resolves the backend URL
+// server-side — the same transport the Alerts list and telemetry/runtime-status already use.
+const API_PROXY_BASE = '/api';
 
 /* ── Types ──────────────────────────────────────────────────────── */
 
@@ -179,13 +186,14 @@ type TabKey = typeof DETAIL_TABS[number]['key'];
 
 /* ── Main panel ─────────────────────────────────────────────────── */
 
-export default function IncidentsPanel() {
+export default function IncidentsPanel({ initialSelectedId }: { initialSelectedId?: string } = {}) {
   const { summary, runtime, loading: runtimeLoading } = useRuntimeSummary();
   const { authHeaders } = usePilotAuth();
-  const apiUrl = resolveApiUrl();
+  const apiUrl = API_PROXY_BASE;
 
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
-  const [selectedId, setSelectedId] = useState('');
+  const [selectedId, setSelectedId] = useState(initialSelectedId ?? '');
+  const [alertsExist, setAlertsExist] = useState(false);
   const [search, setSearch] = useState('');
   const [severityFilter, setSeverityFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
@@ -219,12 +227,41 @@ export default function IncidentsPanel() {
           headers: authHeaders(),
           cache: 'no-store',
         });
-        if (!res.ok || cancelled) return;
-        const json = (await res.json()) as Record<string, unknown>;
+        if (!res.ok || cancelled) {
+          console.log('frontend_incidents_fetch_response_count', { ok: res.ok, status: res.status, count: 0 });
+          return;
+        }
+        const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
         const rows = (json.incidents ?? []) as IncidentRow[];
+        console.log('frontend_incidents_fetch_response_count', {
+          ok: true,
+          status: res.status,
+          count: rows.length,
+          ids: rows.map((r) => r.id),
+        });
+        if (cancelled) return;
+        // Deep link: when /incidents/{id} was opened directly, the target incident may sit
+        // outside the current page or filter. Fetch it explicitly and merge it in so "View
+        // Incident" always loads the persisted row instead of falling through to the empty state.
+        let merged = rows;
+        if (initialSelectedId && !rows.some((r) => r.id === initialSelectedId)) {
+          const detailRes = await fetch(`${apiUrl}/incidents/${encodeURIComponent(initialSelectedId)}`, {
+            headers: authHeaders(),
+            cache: 'no-store',
+          }).catch(() => null);
+          if (detailRes && detailRes.ok) {
+            const detailJson = (await detailRes.json().catch(() => ({}))) as Record<string, unknown>;
+            const detail = ((detailJson.incident as IncidentRow | undefined) ?? (detailJson as IncidentRow));
+            if (detail && detail.id) merged = [detail, ...rows];
+          }
+        }
         if (!cancelled) {
-          setIncidents(rows);
-          if (!selectedId && rows.length > 0) setSelectedId(rows[0].id);
+          setIncidents(merged);
+          if (initialSelectedId && merged.some((r) => r.id === initialSelectedId)) {
+            setSelectedId(initialSelectedId);
+          } else if (!selectedId && merged.length > 0) {
+            setSelectedId(merged[0].id);
+          }
         }
       } finally {
         if (!cancelled) setDataLoading(false);
@@ -232,7 +269,25 @@ export default function IncidentsPanel() {
     }
     void loadIncidents();
     return () => { cancelled = true; };
-  }, [apiUrl, authHeaders, runtimeLoading, severityFilter, statusFilter, assigneeFilter]);
+  }, [apiUrl, authHeaders, runtimeLoading, severityFilter, statusFilter, assigneeFilter, initialSelectedId]);
+
+  // Real "do alerts exist?" signal for the empty-state copy. The runtime counter only reflects
+  // *active* alerts, so a resolved/linked alert would wrongly read as zero and surface the
+  // detection-stage message; this fetch keeps the copy truthful (CLAUDE.md: never claim no alert
+  // when alerts exist). One linked alert is enough to know escalation is the next step.
+  useEffect(() => {
+    if (runtimeLoading) return;
+    let cancelled = false;
+    void fetch(`${apiUrl}/alerts?limit=1`, { headers: authHeaders(), cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((json) => {
+        if (cancelled) return;
+        const rows = ((json as Record<string, unknown> | null)?.alerts ?? []) as unknown[];
+        setAlertsExist(rows.length > 0);
+      })
+      .catch(() => { if (!cancelled) setAlertsExist(false); });
+    return () => { cancelled = true; };
+  }, [apiUrl, authHeaders, runtimeLoading]);
 
   const filteredIncidents = useMemo(() => {
     return incidents.filter((inc) => {
@@ -318,7 +373,23 @@ export default function IncidentsPanel() {
   /* ── Empty state ─────────────────────────────────────────────── */
   type Blocker = { title: string; body: string; ctaHref?: string; ctaLabel?: string };
 
+  // Truthful "alerts exist" signal: a real /alerts probe OR the runtime active-alert counter.
+  const anyAlerts = alertsExist || activeAlerts > 0;
+
   function getBlocker(): Blocker | null {
+    if (incidents.length > 0) return null;
+    // Alerts exist → the next workflow step is opening an incident. This MUST take precedence
+    // over the telemetry/detection-stage copy: an alert proves telemetry and detection already
+    // happened, so we never say "no detection" or "no alert has been opened yet" when alerts
+    // already exist (CLAUDE.md truthfulness: no data must not be shown as a missing earlier stage).
+    if (anyAlerts) {
+      return {
+        title: 'No incidents opened',
+        body: 'Alerts exist, but no incident has been opened yet.',
+        ctaHref: '/alerts',
+        ctaLabel: 'Open Incident',
+      };
+    }
     if (!telemetryOk) {
       return {
         title: 'No incidents yet',
@@ -333,24 +404,27 @@ export default function IncidentsPanel() {
         body: 'Telemetry has been received, but no detection has been generated yet.',
       };
     }
-    if (activeAlerts === 0) {
-      return {
-        title: 'No incidents yet',
-        body: 'Detections exist, but no alert has been opened yet.',
-        ctaHref: '/alerts',
-        ctaLabel: 'Open Alert',
-      };
-    }
-    if (incidents.length === 0) {
-      return {
-        title: 'No incidents opened',
-        body: 'Alerts exist, but no incident has been opened yet.',
-        ctaHref: '/alerts',
-        ctaLabel: 'Open Incident',
-      };
-    }
-    return null;
+    return {
+      title: 'No incidents yet',
+      body: 'Detections exist, but no alert has been opened yet.',
+      ctaHref: '/alerts',
+      ctaLabel: 'Open Alert',
+    };
   }
+
+  // Bug-visible guard: if the API returned incidents but none render (with no active search),
+  // the list is silently dropping linked incidents — surface it loudly in dev instead of
+  // showing a misleading empty state. Never fires in production builds.
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'production') return;
+    if (!dataLoading && incidents.length > 0 && filteredIncidents.length === 0 && !search) {
+      console.error('incidents_list_bug_filtered_out', {
+        api_count: incidents.length,
+        rendered_count: filteredIncidents.length,
+        ids: incidents.map((i) => i.id),
+      });
+    }
+  }, [dataLoading, incidents, filteredIncidents, search]);
 
   const blocker = dataLoading ? null : getBlocker();
 

@@ -671,7 +671,7 @@ export default function AlertsPanel() {
                       <td>
                         {alert.incident_id ? (
                           <Link
-                            href="/incidents"
+                            href={`/incidents/${alert.incident_id}`}
                             prefetch={false}
                             className="btn btn-secondary"
                             style={{ fontSize: '0.73rem', padding: '0.2rem 0.5rem' }}
@@ -779,6 +779,11 @@ function AlertDetailPanel({
   );
 
   async function openIncident() {
+    // Already linked → go straight to the persisted incident.
+    if (alert.incident_id) {
+      window.location.href = `/incidents/${alert.incident_id}`;
+      return;
+    }
     const res = await fetch(`${apiUrl}/alerts/${alert.id}/escalate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -787,7 +792,18 @@ function AlertDetailPanel({
         summary: alert.title ?? alert.id,
       }),
     });
-    onMessage(res.ok ? 'Incident opened.' : 'Unable to open incident.');
+    if (!res.ok) {
+      const errorPayload = await res.json().catch(() => ({}));
+      onMessage(`Unable to open incident: ${(errorPayload as { detail?: string }).detail ?? 'Server error. Please retry.'}`);
+      return;
+    }
+    // Navigate to the incident the backend actually created/linked (idempotent: created or not),
+    // so the operator lands on the real /incidents/{id} row rather than a dead toast.
+    const result = (await res.json().catch(() => ({}))) as { incident_id?: string; created?: boolean };
+    onMessage(result.created ? 'Incident opened.' : 'Incident already open — opening existing incident.');
+    if (result.incident_id) {
+      window.location.href = `/incidents/${result.incident_id}`;
+    }
   }
 
   return (
@@ -875,7 +891,7 @@ function AlertDetailPanel({
         <p className="tableMeta" style={{ marginBottom: '0.2rem' }}>Linked Incident</p>
         {alert.incident_id ? (
           <Link
-            href="/incidents"
+            href={`/incidents/${alert.incident_id}`}
             prefetch={false}
             className="btn btn-secondary"
             style={{ fontSize: '0.75rem', padding: '0.2rem 0.6rem' }}
@@ -946,7 +962,7 @@ function AlertDetailPanel({
           </button>
         ) : (
           <Link
-            href="/incidents"
+            href={`/incidents/${alert.incident_id}`}
             prefetch={false}
             className="btn btn-secondary"
             style={{ fontSize: '0.78rem', marginRight: '0.4rem' }}

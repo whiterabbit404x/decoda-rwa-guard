@@ -13347,9 +13347,36 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
         ).fetchone()
         if alert is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Alert not found or is suppressed.')
-        # Idempotency: if a linked incident already exists, return it without creating a duplicate.
+        # Idempotency (1): if the alert already points at an incident, return it unchanged.
         if alert.get('incident_id'):
             return {'incident_id': str(alert['incident_id']), 'alert_id': alert_id, 'status': str(alert.get('status') or 'open'), 'created': False}
+        # Idempotency (2): an incident may already reference this alert via source_alert_id or
+        # linked_alert_ids even when alerts.incident_id was never set (e.g. a half-applied link).
+        # Re-link the alert to that existing incident instead of creating a duplicate, so the
+        # Alerts "Linked Incidents" count and the /incidents list resolve to the same row.
+        existing_incident = connection.execute(
+            '''
+            SELECT id
+            FROM incidents
+            WHERE workspace_id = %s
+              AND (source_alert_id = %s::uuid OR linked_alert_ids @> to_jsonb(ARRAY[%s::text]))
+            ORDER BY created_at ASC
+            LIMIT 1
+            ''',
+            (workspace_context['workspace_id'], alert_id, alert_id),
+        ).fetchone()
+        if existing_incident is not None and existing_incident.get('id'):
+            existing_incident_id = str(existing_incident['id'])
+            connection.execute(
+                '''
+                UPDATE alerts
+                SET incident_id = %s::uuid, updated_at = NOW()
+                WHERE id = %s::uuid AND workspace_id = %s AND incident_id IS NULL
+                ''',
+                (existing_incident_id, alert_id, workspace_context['workspace_id']),
+            )
+            connection.commit()
+            return {'incident_id': existing_incident_id, 'alert_id': alert_id, 'status': str(alert.get('status') or 'open'), 'created': False}
         latest_evidence = connection.execute(
             '''
             SELECT id, tx_hash, observed_at, raw_payload_json
@@ -13595,7 +13622,7 @@ def list_alert_evidence(alert_id: str, request: Request) -> dict[str, Any]:
         }
 
 
-def list_incidents(request: Request, *, severity: str | None = None, target_id: str | None = None, status_value: str | None = None, assignee_user_id: str | None = None, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+def list_incidents(request: Request, *, severity: str | None = None, target_id: str | None = None, status_value: str | None = None, assignee_user_id: str | None = None, incident_id: str | None = None, limit: int = 50, offset: int = 0) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
@@ -13661,10 +13688,11 @@ def list_incidents(request: Request, *, severity: str | None = None, target_id: 
               AND (%s::uuid IS NULL OR i.target_id = %s::uuid)
               AND (%s::text IS NULL OR i.workflow_status = %s::text OR i.status = %s::text)
               AND (%s::uuid IS NULL OR i.assignee_user_id = %s::uuid)
+              AND (%s::uuid IS NULL OR i.id = %s::uuid)
             ORDER BY i.created_at DESC
             LIMIT %s OFFSET %s
             ''',
-            (workspace_context['workspace_id'], severity, severity, target_id, target_id, status_value, status_value, status_value, assignee_user_id, assignee_user_id, min(max(1, int(limit)), 200), max(0, int(offset))),
+            (workspace_context['workspace_id'], severity, severity, target_id, target_id, status_value, status_value, status_value, assignee_user_id, assignee_user_id, incident_id, incident_id, min(max(1, int(limit)), 200), max(0, int(offset))),
         ).fetchall()
         serialized_incidents: list[dict[str, Any]] = []
         for row in rows:
@@ -13694,6 +13722,23 @@ def list_incidents(request: Request, *, severity: str | None = None, target_id: 
             'incidents': serialized_incidents,
             'pagination': {'limit': _limit, 'offset': _offset, 'has_more': len(serialized_incidents) == _limit},
         }
+
+
+def get_incident(incident_id: str, request: Request) -> dict[str, Any]:
+    """Return a single workspace-scoped incident by id.
+
+    Backs the /incidents/{incident_id} detail route so a linked incident surfaced on the
+    Alerts page ("View Incident") always loads. It reuses list_incidents' canonical SELECT
+    (same joins/serialization) filtered to one id, so detail and list can never disagree. A
+    missing/cross-workspace id raises 404 rather than inventing a placeholder incident.
+    """
+    result = list_incidents(request, incident_id=incident_id, limit=1)
+    incidents = result.get('incidents') or []
+    if not incidents:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Incident not found.')
+    incident = incidents[0]
+    # Expose fields both at the top level and under 'incident' so either client shape resolves.
+    return {'incident': incident, **incident}
 
 
 def patch_incident(incident_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:

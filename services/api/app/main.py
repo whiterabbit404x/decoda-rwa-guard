@@ -182,6 +182,7 @@ from services.api.app.pilot import (
     create_alert_suppression,
     list_alert_evidence,
     list_incidents,
+    get_incident,
     patch_incident,
     list_incident_timeline,
     list_action_history,
@@ -4336,6 +4337,11 @@ def incidents_list(request: Request, severity: str | None = None, target_id: str
     except Exception as exc:
         logger.error('monitoring_list_failed path=/incidents method=%s error_type=%s error=%s', request.method, exc.__class__.__name__, exc)
         raise HTTPException(status_code=500, detail='Unable to list incidents at this time.') from None
+
+
+@app.get('/incidents/{incident_id}', summary='Get incident detail')
+def incidents_get(incident_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_incident(incident_id, request))
 
 
 @app.patch('/incidents/{incident_id}', summary='Update incident status/owner')
