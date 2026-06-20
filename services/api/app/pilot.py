@@ -12895,6 +12895,15 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        # Read-path entry marker (task 3): proves the main alerts-list query actually ran for
+        # this workspace and with which filters, so a production "Active Alerts = 0" state can
+        # be told apart from "the frontend never called the backend".
+        logger.info(
+            'backend_alerts_list_called workspace_id=%s severity=%s status_value=%s '
+            'target_id=%s module=%s source=%s limit=%s offset=%s',
+            workspace_context['workspace_id'], severity, status_value,
+            target_id, module, source, limit, offset,
+        )
         # Self-heal: ensure opened_at column exists (migration 0115). The catalog check is
         # fast; the ALTER TABLE is only issued when the column is genuinely missing, which
         # avoids acquiring an ACCESS EXCLUSIVE lock on every request once the migration ran.
@@ -13144,6 +13153,15 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
         # the reason). Read-only; never raises.
         _log_alerts_query_diagnostics(
             workspace_context['workspace_id'], diag_rows, serialized_alerts, severity, status_value,
+        )
+        # Read-path return marker (task 3): the exact count and ids handed back to the client.
+        # Pairs with frontend_alerts_fetch_response_count so a count mismatch (backend returns N,
+        # UI shows 0) is reproducible from logs across the proxy boundary.
+        returned_alert_ids = [str(item.get('id')) for item in serialized_alerts]
+        logger.info(
+            'backend_alerts_list_returned_count workspace_id=%s returned_count=%s returned_alert_ids=%s',
+            workspace_context['workspace_id'], len(serialized_alerts),
+            ','.join(returned_alert_ids) if returned_alert_ids else 'none',
         )
         _limit = min(max(1, int(limit)), 200)
         _offset = max(0, int(offset))

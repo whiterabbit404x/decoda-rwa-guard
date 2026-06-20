@@ -10,9 +10,15 @@ import {
   TableShell,
   type PillVariant,
 } from './components/ui-primitives';
-import { resolveApiUrl } from './dashboard-data';
 import { usePilotAuth } from './pilot-auth-context';
 import { useRuntimeSummary } from './runtime-summary-context';
+
+// Same-origin proxy base. The Alerts page MUST NOT call the backend directly: the browser
+// only sees NEXT_PUBLIC_API_URL (often unset in production), so a direct fetch never reaches
+// the backend and the list silently renders empty (Active Alerts = 0). Every backend call
+// below goes through the Next.js /api/* proxy, which resolves the backend URL server-side —
+// the same transport telemetry / runtime-status already use.
+const API_PROXY_BASE = '/api';
 
 /* ── Types ──────────────────────────────────────────────────────── */
 
@@ -150,7 +156,7 @@ const ALERT_TABLE_HEADERS = ['Alert ID', 'Severity', 'Title', 'Asset', 'Status',
 export default function AlertsPanel() {
   const { summary, runtime, loading: runtimeLoading } = useRuntimeSummary();
   const { authHeaders } = usePilotAuth();
-  const apiUrl = resolveApiUrl();
+  const apiUrl = API_PROXY_BASE;
 
   const [alerts, setAlerts] = useState<AlertRow[]>([]);
   const [selectedId, setSelectedId] = useState('');
@@ -185,13 +191,24 @@ export default function AlertsPanel() {
       const params = new URLSearchParams();
       if (severityFilter) params.set('severity', severityFilter);
       if (statusFilter) params.set('status_value', statusFilter);
-      const res = await fetch(`${apiUrl}/alerts?${params.toString()}`, {
+      const endpoint = `${apiUrl}/alerts?${params.toString()}`;
+      console.log('frontend_alerts_fetch_started', { endpoint, severityFilter, statusFilter });
+      const res = await fetch(endpoint, {
         headers: authHeaders(),
         cache: 'no-store',
       });
-      if (!res.ok || cancelled.value) return [];
-      const json = (await res.json()) as Record<string, unknown>;
+      if (!res.ok || cancelled.value) {
+        console.log('frontend_alerts_fetch_response_count', { ok: res.ok, status: res.status, count: 0 });
+        return [];
+      }
+      const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
       const rows = (json.alerts ?? []) as AlertRow[];
+      console.log('frontend_alerts_fetch_response_count', {
+        ok: true,
+        status: res.status,
+        count: rows.length,
+        ids: rows.map((row) => row.id),
+      });
       if (!cancelled.value) {
         setAlerts(rows);
         if (!selectedId && rows.length > 0) setSelectedId(rows[0].id);
@@ -218,49 +235,49 @@ export default function AlertsPanel() {
       } catch {
         json = {};
       }
-      // 409 = an alert already exists for this detection (no duplicate created).
-      // Navigate to the existing alert instead of showing only an error message.
-      if (res.status === 409) {
-        const existingId = json.alert_id ?? null;
-        console.log('open_alert_already_exists', existingId);
-        if (existingId) setSelectedId(existingId);
-        setMessage('Alert already open — navigating to existing alert.');
+
+      // Any response that names a concrete alert (201 created, 409 already_exists, or a 200
+      // carrying alert_id) must NAVIGATE to that alert after refreshing the list — never just
+      // a toast. The list now reaches the backend (same-origin proxy), so the alert is
+      // returned and selectable.
+      const namedAlertId = json.alert_id ?? null;
+      if (res.status === 201 || res.status === 409 || namedAlertId) {
+        const created = res.status === 201 || json.status === 'created';
+        console.log(created ? 'open_alert_created' : 'open_alert_already_exists', namedAlertId);
+        if (namedAlertId) setSelectedId(namedAlertId);
+        setMessage(created ? 'Alert opened successfully.' : 'Alert already open — navigating to existing alert.');
         const noop = { value: false };
         setDataLoading(true);
-        void fetchAlerts(noop).then(() => {
-          if (existingId) setSelectedId(existingId);
-        });
+        const rows = await fetchAlerts(noop);
+        if (namedAlertId && rows.some((row) => row.id === namedAlertId)) {
+          setSelectedId(namedAlertId);
+        } else if (namedAlertId) {
+          console.log('existing_alert_not_visible_after_refresh', {
+            alert_id: namedAlertId,
+            filters: { severityFilter, statusFilter },
+            response_count: rows.length,
+            returned_ids: rows.map((row) => row.id),
+          });
+          if (rows.length > 0) setSelectedId(rows[0].id);
+        }
       } else if (res.ok) {
-        // 201 (created) or 200 (no_detection / suppressed)
-        if (json.alert_id && json.status === 'created') {
-          console.log('open_alert_created', json.alert_id);
-          setSelectedId(json.alert_id);
-          setMessage('Alert opened successfully.');
-          const noop = { value: false };
-          setDataLoading(true);
-          void fetchAlerts(noop).then(() => {
-            if (json.alert_id) setSelectedId(json.alert_id);
-          });
-        } else if (json.status === 'no_detection') {
+        if (json.status === 'no_detection') {
           setMessage('No open detections found. Run Detection first.');
-        } else if (json.alert_id) {
-          // already_exists path returned via 200 (rare edge case)
-          setSelectedId(json.alert_id);
-          setMessage('Alert already open — navigating to existing alert.');
-          const noop = { value: false };
-          setDataLoading(true);
-          void fetchAlerts(noop).then(() => {
-            if (json.alert_id) setSelectedId(json.alert_id);
-          });
         } else {
+          // 200 suppressed with no alert_id: refresh and select an existing live/critical
+          // wallet-transfer alert so the operator lands on the real evidence, not a dead toast.
           setMessage('Alert suppressed or already linked. Refreshing list.');
           const noop = { value: false };
           setDataLoading(true);
-          void fetchAlerts(noop).then((rows) => {
-            if (!rows || rows.length === 0) {
-              console.log('existing_alert_not_visible_after_refresh', { alertId: null, filters: { severityFilter, statusFilter } });
-              return;
-            }
+          const rows = await fetchAlerts(noop);
+          if (!rows || rows.length === 0) {
+            console.log('existing_alert_not_visible_after_refresh', {
+              alert_id: null,
+              filters: { severityFilter, statusFilter },
+              response_count: 0,
+              returned_ids: [],
+            });
+          } else {
             const target =
               rows.find(
                 (a) =>
@@ -269,7 +286,7 @@ export default function AlertsPanel() {
               ) ?? rows[0];
             setSelectedId(target.id);
             setMessage('Alert found — opening existing alert.');
-          });
+          }
         }
       } else {
         // 500 with exact backend error in `detail` (requirement 6).
@@ -416,6 +433,18 @@ export default function AlertsPanel() {
     [filteredAlerts, selectedId],
   );
 
+  // Rendered-row diagnostic: the rows actually shown in the table after client-side
+  // search/source filtering. With the empty state suppressed for count > 0, this must match
+  // the count-card population (both derive from the normalised /alerts list).
+  useEffect(() => {
+    console.log('frontend_alerts_render_count', {
+      count: filteredAlerts.length,
+      ids: filteredAlerts.map((a) => a.id),
+    });
+  }, [filteredAlerts]);
+
+  // Count cards are derived from the same normalised /alerts list as the rendered rows, so
+  // they can never disagree with what the operator sees in the table.
   const criticalCount = alerts.filter(
     (a) => (a.severity ?? '').toLowerCase() === 'critical',
   ).length;
