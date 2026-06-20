@@ -29,6 +29,7 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
   const [loadError, setLoadError] = useState('');
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(false);
+  const [hasAlerts, setHasAlerts] = useState<boolean | null>(null);
   const evidenceSectionRef = useRef<HTMLParagraphElement | null>(null);
 
   async function load(pageOffset = 0) {
@@ -61,6 +62,12 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
   const linkedEvidenceCount = Number(selected?.linked_evidence_count || 0);
 
   useEffect(() => { setOffset(0); void load(0); }, [status, owner]);
+  useEffect(() => {
+    void fetch(`${apiUrl}/alerts?limit=1`, { headers: authHeaders(), cache: 'no-store' })
+      .then((r) => r.ok ? r.json() : null)
+      .then((payload) => setHasAlerts(payload != null && Array.isArray(payload.alerts) && payload.alerts.length > 0))
+      .catch(() => setHasAlerts(null));
+  }, [apiUrl, authHeaders]);
   useEffect(() => {
     void fetch(`${apiUrl}/response/action-capabilities`, { headers: authHeaders(), cache: 'no-store' })
       .then((response) => response.ok ? response.json() : null)
@@ -187,7 +194,7 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
             {loadingIncidents ? <p className="muted">Loading incidents…</p> : null}
             {loadError ? <p className="statusLine" role="alert">{loadError}</p> : null}
             {!loadingIncidents && !loadError && !incidents.length ? (
-              <p className="muted">No incidents match the current filters. Open incidents are created when alerts are escalated.</p>
+              <p className="muted">{hasAlerts ? 'Alerts exist, but no incident has been opened yet. Go to Alerts and click "Open incident" to escalate.' : 'No incidents yet. Incidents are created when alerts are escalated from the Alerts page.'}</p>
             ) : null}
             {incidents.map((incident) => <button key={incident.id} type="button" className="overviewListItem" onClick={() => setSelectedId(incident.id)}><strong>{incident.title || incident.event_type}</strong> · {incident.workflow_status || incident.status}</button>)}
             {(offset > 0 || hasMore) && (
