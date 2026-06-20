@@ -5,10 +5,11 @@ export const revalidate = 0;
 
 export async function POST(
   request: Request,
-  { params }: { params: { actionId: string } },
+  { params }: { params: Promise<{ actionId: string }> },
 ): Promise<Response> {
+  const { actionId } = await params;
   return proxyJsonToBackend(request, {
-    backendPath: `/response/actions/${params.actionId}/evidence-package`,
+    backendPath: `/response/actions/${actionId}/evidence-package`,
     method: 'POST',
   });
 }
