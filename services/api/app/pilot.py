@@ -15789,6 +15789,65 @@ def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dic
     }
 
 
+def simulate_response_action(action_id: str, request: Request) -> dict[str, Any]:
+    """Mark a response action as simulated (dry-run). No on-chain effect.
+
+    Works for any action status (recommended, pending, etc.).
+    Updates mode='simulated' and status='simulated', logs audit event.
+    Idempotent: calling twice on an already-simulated action is a no-op.
+    """
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(connection, request, 'response.execute')
+        workspace_id = workspace_context['workspace_id']
+
+        row = connection.execute(
+            'SELECT id, workspace_id, incident_id, alert_id, action_type, mode, status, execution_metadata FROM response_actions WHERE id = %s::uuid AND workspace_id = %s',
+            (action_id, workspace_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Response action not found.')
+
+        current_mode = str(row.get('mode') or 'recommended')
+        current_status = str(row.get('status') or 'recommended')
+
+        # Idempotent: already simulated
+        if current_mode == 'simulated' and current_status == 'simulated':
+            return _response_action_payload(_json_safe_value(dict(row)))
+
+        connection.execute(
+            '''UPDATE response_actions
+               SET mode = 'simulated', status = 'simulated', executed_at = NOW()
+               WHERE id = %s::uuid AND workspace_id = %s''',
+            (action_id, workspace_id),
+        )
+
+        log_audit(
+            connection,
+            action='response_action.simulated',
+            entity_type='response_action',
+            entity_id=action_id,
+            request=request,
+            user_id=user['id'],
+            workspace_id=workspace_id,
+            metadata={
+                'action_id': action_id,
+                'prior_mode': current_mode,
+                'prior_status': current_status,
+                'mode': 'simulated',
+                'status': 'simulated',
+            },
+        )
+        connection.commit()
+
+        updated = connection.execute(
+            'SELECT id, workspace_id, incident_id, alert_id, action_type, mode, status, execution_metadata FROM response_actions WHERE id = %s::uuid AND workspace_id = %s',
+            (action_id, workspace_id),
+        ).fetchone()
+        return _response_action_payload(_json_safe_value(dict(updated or row)))
+
+
 def create_evidence_package_from_response_action(action_id: str, request: Request) -> dict[str, Any]:
     """Create (or return existing) evidence package linked to a response action.
 

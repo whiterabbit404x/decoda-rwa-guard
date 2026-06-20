@@ -155,11 +155,19 @@ function normalizeActionRow(input: any, validIncidentIds: Set<string>): ActionRo
     source === 'replay';
 
   const rawStatus = String(input?.status || input?.workflow_status || 'recommended');
-  const rawIncidentId = String(input?.incident_id || input?.linked_incident_id || input?.chain_linked_ids?.incident_id || '');
+
+  // incident_id directly on the action row is authoritative (from the DB record itself).
+  // chain_linked_ids.incident_id is also from the DB response_action payload.
+  // Only fall back to validIncidentIds cross-check for IDs from other inferred sources.
+  const directIncidentId = String(input?.incident_id || input?.chain_linked_ids?.incident_id || '');
+  const rawIncidentId = directIncidentId || String(input?.linked_incident_id || '');
   const rawAlertId = String(input?.alert_id || input?.chain_linked_ids?.alert_id || '');
 
-  // Do not show linked incident unless a valid incident exists in the system.
-  const linkedIncident = rawIncidentId && validIncidentIds.has(rawIncidentId) ? rawIncidentId : null;
+  // Trust the action's own incident_id from the backend. For IDs inferred from external
+  // sources only, require confirmation via validIncidentIds.
+  const linkedIncident = directIncidentId
+    ? directIncidentId
+    : (rawIncidentId && validIncidentIds.has(rawIncidentId) ? rawIncidentId : null);
   const linkedAlert = rawAlertId || null;
 
   return {
@@ -673,19 +681,46 @@ function ActionDetailPanel({
     !['approved', 'executed'].some((s) => action.status.toLowerCase().includes(s));
 
   async function simulateAction() {
-    onMessage('Simulation initiated. Action marked as SIMULATED.');
+    onMessage('Simulating action…');
+    try {
+      const res = await fetch(`/api/response/actions/${action.id}/simulate`, {
+        method: 'POST',
+        headers: authHeaders(),
+      });
+      const data = (await res.json()) as { id?: string; status?: string; detail?: string };
+      if (res.ok) {
+        onMessage('Action marked as SIMULATED.');
+        // Reload the page to reflect the persisted simulated status.
+        router.refresh();
+      } else {
+        onMessage(data.detail ?? 'Simulate failed.');
+      }
+    } catch {
+      onMessage('Simulate request failed. Check network connection.');
+    }
   }
 
   async function handleEvidenceExport() {
     onMessage('Creating evidence package…');
     try {
-      const res = await fetch(`${apiUrl}/response/actions/${action.id}/evidence-package`, {
+      // Use the same-origin proxy so the request goes through the Next.js server
+      // (which has the correct API_URL) rather than relying on NEXT_PUBLIC_API_URL.
+      const res = await fetch(`/api/response/actions/${action.id}/evidence-package`, {
         method: 'POST',
         headers: authHeaders(),
       });
-      const data = (await res.json()) as { package_id?: string; detail?: string };
+      let data: { package_id?: string; incident_id?: string; response_action_id?: string; detail?: string } = {};
+      try {
+        data = await res.json();
+      } catch {
+        onMessage('Evidence export failed: server returned an unexpected response.');
+        return;
+      }
       if (res.ok && data.package_id) {
-        router.push(`/evidence?package_id=${data.package_id}&action_id=${action.id}`);
+        const params = new URLSearchParams({ package_id: data.package_id, action_id: action.id });
+        const resolvedIncidentId = data.incident_id ?? action.linkedIncident ?? '';
+        if (resolvedIncidentId) params.set('incident_id', resolvedIncidentId);
+        router.push(`/evidence?${params.toString()}`);
       } else {
         onMessage(data.detail ?? 'Evidence export failed.');
       }
