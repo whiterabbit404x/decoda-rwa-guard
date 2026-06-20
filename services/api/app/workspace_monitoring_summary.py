@@ -505,6 +505,7 @@ def build_workspace_monitoring_summary(
     active_alerts_count: int = 0,
     alerts_without_detection_count: int = 0,
     active_incidents_count: int = 0,
+    raw_incidents_count: int | None = None,
     response_actions_count: int = 0,
     evidence_packages_count: int = 0,
     detections_count: int | None = None,
@@ -642,7 +643,8 @@ def build_workspace_monitoring_summary(
         contradiction_flags.append('alert_exists_without_detection')
     if active_incidents_count > 0 and int(active_alerts_count) <= 0:
         contradiction_flags.append('incident_exists_without_alert')
-    if int(response_actions_count) > 0 and int(active_incidents_count) <= 0:
+    _incidents_for_ra_check = raw_incidents_count if raw_incidents_count is not None else active_incidents_count
+    if int(response_actions_count) > 0 and int(_incidents_for_ra_check) <= 0:
         contradiction_flags.append('response_action_exists_without_incident')
     # evidence_packages_count only counts threat-related evidence (clean monitoring health
     # records are excluded at query time). If threat evidence exists without any detection
