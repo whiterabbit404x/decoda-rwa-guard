@@ -2,6 +2,7 @@
 
 // fallback examples remain clearly marked as SIMULATED
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 
 import {
@@ -209,8 +210,11 @@ type Blocker = {
 export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { apiUrl: string }) {
   const { summary, runtime, loading: runtimeLoading } = useRuntimeSummary();
   const { authHeaders } = usePilotAuth();
+  const searchParams = useSearchParams();
 
   const apiUrl = providedApiUrl || resolveApiUrl();
+  // incident_id from URL: when the user clicks "Recommend Response" we navigate here with this param
+  const incidentIdFilter = searchParams.get('incident_id') ?? '';
   const summaryAny = summary as any;
   const counts = runtime?.counts as Record<string, number> | undefined;
 
@@ -244,8 +248,11 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
       try {
         const headers = authHeaders();
 
+        const actionsQs = incidentIdFilter
+          ? `?incident_id=${encodeURIComponent(incidentIdFilter)}&limit=50`
+          : '?limit=50';
         const [actionsRes, historyRes, alertsRes, incidentsRes, runtimePayload] = await Promise.all([
-          fetch(`${apiUrl}/response/actions?limit=50`, { headers, cache: 'no-store' }).catch(() => null),
+          fetch(`/api/response/actions${actionsQs}`, { headers, cache: 'no-store' }).catch(() => null),
           fetch(`${apiUrl}/history/actions?limit=50`, { headers, cache: 'no-store' }).catch(() => null),
           fetch(`${apiUrl}/alerts?limit=50`, { headers, cache: 'no-store' }).catch(() => null),
           fetch(`${apiUrl}/incidents?limit=50`, { headers, cache: 'no-store' }).catch(() => null),
@@ -308,7 +315,7 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
     return () => {
       cancelled = true;
     };
-  }, [apiUrl, authHeaders, runtimeLoading, selectedId]);
+  }, [apiUrl, authHeaders, runtimeLoading, selectedId, incidentIdFilter]);
 
   const filteredRecommended = useMemo(() => {
     return recommendedRows.filter((row) => {
@@ -393,8 +400,11 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
     if (recommendedRows.length === 0) {
       return {
         title: 'No response action recommended yet',
-        body: 'An incident exists, but no response action has been recommended yet.',
-        ctaLabel: 'Recommend Response',
+        body: incidentIdFilter
+          ? 'No response action has been recommended for this incident yet.'
+          : 'Incidents exist, but no response action has been recommended yet.',
+        ctaHref: incidentIdFilter ? `/incidents` : '/incidents',
+        ctaLabel: 'Go to Incidents',
       };
     }
 
