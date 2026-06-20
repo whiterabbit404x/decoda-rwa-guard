@@ -2,7 +2,7 @@
 
 // fallback examples remain clearly marked as SIMULATED
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 
 import {
@@ -627,6 +627,8 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
                 workspaceEvidenceSource={workspaceEvidenceSource}
                 liveExecutionAllowed={liveExecutionAllowed}
                 onMessage={setMessage}
+                apiUrl={apiUrl}
+                authHeaders={authHeaders}
               />
             ) : null}
           </div>
@@ -647,12 +649,17 @@ function ActionDetailPanel({
   workspaceEvidenceSource,
   liveExecutionAllowed,
   onMessage,
+  apiUrl,
+  authHeaders,
 }: {
   action: ActionRow;
   workspaceEvidenceSource: string;
   liveExecutionAllowed: boolean;
   onMessage: (msg: string) => void;
+  apiUrl: string;
+  authHeaders: () => Record<string, string>;
 }) {
+  const router = useRouter();
   const st = actionStatusPill(action.status, action.simulated);
   const imp = impactPill(action.impact);
   const evSrc = evidenceSourcePill(action.evidenceSource, workspaceEvidenceSource);
@@ -667,6 +674,24 @@ function ActionDetailPanel({
 
   async function simulateAction() {
     onMessage('Simulation initiated. Action marked as SIMULATED.');
+  }
+
+  async function handleEvidenceExport() {
+    onMessage('Creating evidence package…');
+    try {
+      const res = await fetch(`${apiUrl}/response/actions/${action.id}/evidence-package`, {
+        method: 'POST',
+        headers: authHeaders(),
+      });
+      const data = (await res.json()) as { package_id?: string; detail?: string };
+      if (res.ok && data.package_id) {
+        router.push(`/evidence?package_id=${data.package_id}&action_id=${action.id}`);
+      } else {
+        onMessage(data.detail ?? 'Evidence export failed.');
+      }
+    } catch {
+      onMessage('Evidence export failed. Check network connection.');
+    }
   }
 
   return (
@@ -804,9 +829,14 @@ function ActionDetailPanel({
           {action.linkedIncident ? 'View Incident' : 'View Incidents'}
         </Link>
 
-        <Link href="/evidence" prefetch={false} className="btn btn-secondary" style={{ fontSize: '0.8rem' }}>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          style={{ fontSize: '0.8rem' }}
+          onClick={() => void handleEvidenceExport()}
+        >
           Evidence Export
-        </Link>
+        </button>
       </div>
     </aside>
   );

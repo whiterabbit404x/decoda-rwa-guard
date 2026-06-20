@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 
 import {
@@ -55,6 +56,7 @@ type EvidencePackage = {
   status?: string;
   created_at?: string;
   incident_id?: string;
+  response_action_id?: string;
   alert_id?: string;
   detection_id?: string;
   asset_id?: string;
@@ -189,11 +191,15 @@ export default function EvidenceAuditPanel() {
   const { summary, runtime, loading: runtimeLoading } = useRuntimeSummary();
   const { authHeaders } = usePilotAuth();
   const apiUrl = resolveApiUrl();
+  const searchParams = useSearchParams();
+
+  const urlPackageId = searchParams.get('package_id') ?? '';
+  const urlActionId = searchParams.get('action_id') ?? '';
 
   const [packages, setPackages] = useState<EvidencePackage[]>([]);
   const [auditRows, setAuditRows] = useState<AuditRow[]>([]);
   const [activeTab, setActiveTab] = useState<'packages' | 'audit'>('packages');
-  const [selectedPkgId, setSelectedPkgId] = useState('');
+  const [selectedPkgId, setSelectedPkgId] = useState(urlPackageId);
   const [selectedAuditId, setSelectedAuditId] = useState('');
   const [message, setMessage] = useState('');
   const [dataLoading, setDataLoading] = useState(false);
@@ -224,12 +230,21 @@ export default function EvidenceAuditPanel() {
         const [pkgRes, auditRes, raRes] = await Promise.allSettled([
           fetch(`${apiUrl}/exports`, { headers: hdrs, cache: 'no-store' }),
           fetch(`${apiUrl}/events`, { headers: hdrs, cache: 'no-store' }),
-          fetch(`${apiUrl}/response-actions`, { headers: hdrs, cache: 'no-store' }),
+          fetch(`${apiUrl}/response/actions?limit=50`, { headers: hdrs, cache: 'no-store' }),
         ]);
 
         if (pkgRes.status === 'fulfilled' && pkgRes.value.ok) {
           const p = (await pkgRes.value.json()) as { exports?: EvidencePackage[] };
-          setPackages(p.exports ?? []);
+          const loaded = p.exports ?? [];
+          setPackages(loaded);
+          // Auto-select package from URL params
+          if (urlPackageId) {
+            const matched = loaded.find((pkg) => pkg.id === urlPackageId);
+            if (matched) setSelectedPkgId(matched.id);
+          } else if (urlActionId) {
+            const matched = loaded.find((pkg) => pkg.response_action_id === urlActionId);
+            if (matched) setSelectedPkgId(matched.id);
+          }
         }
 
         if (auditRes.status === 'fulfilled' && auditRes.value.ok) {
@@ -344,39 +359,42 @@ export default function EvidenceAuditPanel() {
 
   function getBlocker(): Blocker | null {
     if (dataLoading || runtimeLoading) return null;
-    if (!telemetryOk) {
-      return {
-        title: 'No evidence packages yet',
-        body: 'No evidence package can be created because no telemetry has been received.',
-        ctaHref: '/threat',
-        ctaLabel: 'View Threat Monitoring',
-      };
-    }
-    if (!detectionOk) {
-      return {
-        title: 'No evidence packages yet',
-        body: 'Telemetry has been received, but no detection has been generated yet.',
-        ctaHref: '/threat',
-        ctaLabel: 'Run Detection',
-      };
-    }
-    if (!alertOk) {
-      return {
-        title: 'No evidence packages yet',
-        body: 'Detections exist, but no alert has been opened yet.',
-        ctaHref: '/alerts',
-        ctaLabel: 'Open Alert',
-      };
-    }
-    if (!incidentOk) {
-      return {
-        title: 'No evidence packages yet',
-        body: 'Alerts exist, but no incident has been opened yet.',
-        ctaHref: '/incidents',
-        ctaLabel: 'Open Incident',
-      };
-    }
+
+    // When a response action exists the full chain (telemetry → detection → alert → incident → action)
+    // must be present by definition. Skip lower-level blockers to avoid false negatives.
     if (!responseActionOk) {
+      if (!telemetryOk) {
+        return {
+          title: 'No evidence packages yet',
+          body: 'No evidence package can be created because no telemetry has been received.',
+          ctaHref: '/threat',
+          ctaLabel: 'View Threat Monitoring',
+        };
+      }
+      if (!detectionOk) {
+        return {
+          title: 'No evidence packages yet',
+          body: 'Telemetry has been received, but no detection has been generated yet.',
+          ctaHref: '/threat',
+          ctaLabel: 'Run Detection',
+        };
+      }
+      if (!alertOk) {
+        return {
+          title: 'No evidence packages yet',
+          body: 'Detections exist, but no alert has been opened yet.',
+          ctaHref: '/alerts',
+          ctaLabel: 'Open Alert',
+        };
+      }
+      if (!incidentOk) {
+        return {
+          title: 'No evidence packages yet',
+          body: 'Alerts exist, but no incident has been opened yet.',
+          ctaHref: '/incidents',
+          ctaLabel: 'Open Incident',
+        };
+      }
       return {
         title: 'Evidence package not ready',
         body: 'An incident exists, but no response action has been recommended or recorded yet.',
@@ -384,11 +402,13 @@ export default function EvidenceAuditPanel() {
         ctaLabel: 'Recommend Response',
       };
     }
+
     if (!packageExists) {
       return {
-        title: 'Evidence package can be created',
-        body: 'The incident chain is ready for exportable evidence.',
-        ctaLabel: 'Create Evidence Package',
+        title: 'No evidence package exported yet',
+        body: 'A response action exists but no evidence package has been exported yet. Click "Evidence Export" from a response action to create one.',
+        ctaHref: '/response-actions',
+        ctaLabel: 'Go to Response Actions',
       };
     }
     return null;

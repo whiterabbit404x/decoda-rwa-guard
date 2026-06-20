@@ -1,3 +1,5 @@
+import { Suspense } from 'react';
+
 import EvidenceAuditPanel from '../../evidence-audit-panel';
 import RuntimeSummaryPanel from '../../runtime-summary-panel';
 
@@ -10,7 +12,9 @@ export default function EvidencePage() {
   return (
     <main className="productPage">
       <RuntimeSummaryPanel />
-      <EvidenceAuditPanel />
+      <Suspense fallback={null}>
+        <EvidenceAuditPanel />
+      </Suspense>
     </main>
   );
 }
