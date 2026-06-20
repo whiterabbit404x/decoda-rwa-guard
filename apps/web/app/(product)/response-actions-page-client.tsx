@@ -218,10 +218,12 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
   const summaryAny = summary as any;
   const counts = runtime?.counts as Record<string, number> | undefined;
 
+  const actionIdParam = searchParams.get('action_id') ?? '';
+
   const [tab, setTab] = useState<'recommended' | 'history'>('recommended');
   const [recommendedRows, setRecommendedRows] = useState<ActionRow[]>([]);
   const [historyRows, setHistoryRows] = useState<HistoryRow[]>([]);
-  const [selectedId, setSelectedId] = useState('');
+  const [selectedId, setSelectedId] = useState(actionIdParam);
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
@@ -248,9 +250,10 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
       try {
         const headers = authHeaders();
 
-        const actionsQs = incidentIdFilter
-          ? `?incident_id=${encodeURIComponent(incidentIdFilter)}&limit=50`
-          : '?limit=50';
+        const actionsQsParams = new URLSearchParams({ limit: '50' });
+        if (incidentIdFilter) actionsQsParams.set('incident_id', incidentIdFilter);
+        if (actionIdParam) actionsQsParams.set('action_id', actionIdParam);
+        const actionsQs = `?${actionsQsParams.toString()}`;
         const [actionsRes, historyRes, alertsRes, incidentsRes, runtimePayload] = await Promise.all([
           fetch(`/api/response/actions${actionsQs}`, { headers, cache: 'no-store' }).catch(() => null),
           fetch(`${apiUrl}/history/actions?limit=50`, { headers, cache: 'no-store' }).catch(() => null),
@@ -279,6 +282,8 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
         );
 
         const validIncidentIds = new Set<string>([...incidentIds, ...alertIncidentIds]);
+        // Always trust the incident_id that came from the URL — the action was just created against it.
+        if (incidentIdFilter) validIncidentIds.add(incidentIdFilter);
 
         const recommended = (Array.isArray(actionsPayload?.actions) ? actionsPayload.actions : []).map(
           (item: any) => normalizeActionRow(item, validIncidentIds),
@@ -296,8 +301,12 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
           setRecommendedRows(recommended);
           setHistoryRows(history);
 
-          if (!selectedId && recommended.length > 0) {
+          const targetId = actionIdParam || selectedId;
+          const targetExists = targetId && recommended.some((r: ActionRow) => r.id === targetId);
+          if (!targetExists && recommended.length > 0) {
             setSelectedId(recommended[0].id);
+          } else if (targetId && !selectedId) {
+            setSelectedId(targetId);
           }
 
           // Live execution claims are hidden until canonical runtime summary confirms a real telemetry-backed chain.
@@ -315,7 +324,9 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
     return () => {
       cancelled = true;
     };
-  }, [apiUrl, authHeaders, runtimeLoading, selectedId, incidentIdFilter]);
+  // selectedId intentionally omitted: it is set inside load() and must not re-trigger it.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiUrl, authHeaders, runtimeLoading, incidentIdFilter, actionIdParam]);
 
   const filteredRecommended = useMemo(() => {
     return recommendedRows.filter((row) => {
@@ -361,6 +372,10 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
   ).length;
 
   function getBlocker(): Blocker | null {
+    // If actions already exist, never block the table — pipeline checks are only relevant
+    // when there are truly zero actions.
+    if (recommendedRows.length > 0) return null;
+
     if (!telemetryOk) {
       return {
         title: 'No response actions yet',
@@ -397,18 +412,14 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
       };
     }
 
-    if (recommendedRows.length === 0) {
-      return {
-        title: 'No response action recommended yet',
-        body: incidentIdFilter
-          ? 'No response action has been recommended for this incident yet.'
-          : 'Incidents exist, but no response action has been recommended yet.',
-        ctaHref: incidentIdFilter ? `/incidents` : '/incidents',
-        ctaLabel: 'Go to Incidents',
-      };
-    }
-
-    return null;
+    return {
+      title: incidentIdFilter ? 'No response actions for this incident yet' : 'No response action recommended yet',
+      body: incidentIdFilter
+        ? 'No response action has been recommended for this incident yet.'
+        : 'Incidents exist, but no response action has been recommended yet.',
+      ctaHref: '/incidents',
+      ctaLabel: 'Go to Incidents',
+    };
   }
 
   const blocker = dataLoading ? null : getBlocker();

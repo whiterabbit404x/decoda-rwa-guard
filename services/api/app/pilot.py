@@ -15487,6 +15487,7 @@ def list_enforcement_actions(
     request: Request,
     *,
     incident_id: str | None = None,
+    action_id: str | None = None,
     alert_id: str | None = None,
     status_value: str | None = None,
     limit: int = 200,
@@ -15504,13 +15505,14 @@ def list_enforcement_actions(
                  , execution_artifacts, provider_receipts, provider_request_id, provider_response_id, error_reason, error_code
             FROM response_actions
             WHERE workspace_id = %s
+              AND (%s::uuid IS NULL OR id = %s::uuid)
               AND (%s::uuid IS NULL OR incident_id = %s::uuid)
               AND (%s::uuid IS NULL OR alert_id = %s::uuid)
               AND (%s::text IS NULL OR status = %s::text)
             ORDER BY created_at DESC
             LIMIT %s
             ''',
-            (workspace_context['workspace_id'], incident_id, incident_id, alert_id, alert_id, normalized_status, normalized_status, max_limit),
+            (workspace_context['workspace_id'], action_id, action_id, incident_id, incident_id, alert_id, alert_id, normalized_status, normalized_status, max_limit),
         ).fetchall()
         actions: list[dict[str, Any]] = []
         for row in rows:

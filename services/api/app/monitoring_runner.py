@@ -8602,6 +8602,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             )),
             alerts_without_detection_count=int(open_alerts_without_evidence_count),
             active_incidents_count=int((open_incidents or {}).get('c') or 0),
+            raw_incidents_count=int(raw_open_incidents_count),
             response_actions_count=int(response_actions_count),
             evidence_packages_count=int(evidence_count),
             detections_count=int(detections_count),

@@ -2781,7 +2781,7 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
                 'monitored_systems': int(summary_payload.get('monitored_systems') or payload.get('monitored_systems') or payload.get('configured_systems') or 0),
                 'reporting_systems': int(summary_payload.get('reporting_systems') or payload.get('reporting_systems') or 0),
                 'active_alerts': int(summary_payload.get('active_alerts') or payload.get('open_alerts') or 0),
-                'open_incidents': int(summary_payload.get('open_incidents') or payload.get('active_incidents') or 0),
+                'open_incidents': int(summary_payload.get('active_incidents_count') or payload.get('raw_open_incidents') or payload.get('open_incidents') or payload.get('active_incidents') or 0),
             }),
             'timestamps': dict(summary_payload.get('timestamps') or {}),
             'evidence_source': str(summary_payload.get('evidence_source') or payload.get('evidence_source') or 'none'),
@@ -2834,7 +2834,7 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             'workflow_steps': list(summary_payload.get('workflow_steps') or []),
             'current_step': str(summary_payload.get('current_step') or 'asset_created'),
             'active_alerts': int(summary_payload.get('active_alerts') or payload.get('open_alerts') or 0),
-            'open_incidents': int(summary_payload.get('open_incidents') or payload.get('active_incidents') or 0),
+            'open_incidents': int(summary_payload.get('active_incidents_count') or payload.get('raw_open_incidents') or payload.get('open_incidents') or payload.get('active_incidents') or 0),
             'summary_generated_at': payload.get('summary_generated_at') or datetime.now(timezone.utc).isoformat(),
             'provider_health': provider_health if provider_health is not None else [],
             'target_coverage': target_coverage if target_coverage is not None else [],
@@ -4370,13 +4370,13 @@ def history_actions_create(payload: dict[str, Any], request: Request) -> dict[st
 
 
 @app.get('/enforcement/actions', summary='List enforcement actions with capability and execution state details')
-def enforcement_actions_list(request: Request, incident_id: str | None = None, alert_id: str | None = None, status_value: str | None = None, limit: int = 200) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: _normalize_action_list_route_response(list_enforcement_actions(request, incident_id=incident_id, alert_id=alert_id, status_value=status_value, limit=limit)))
+def enforcement_actions_list(request: Request, incident_id: str | None = None, action_id: str | None = None, alert_id: str | None = None, status_value: str | None = None, limit: int = 200) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: _normalize_action_list_route_response(list_enforcement_actions(request, incident_id=incident_id, action_id=action_id, alert_id=alert_id, status_value=status_value, limit=limit)))
 
 
 @app.get('/response/actions', summary='List response actions')
-def response_actions_list(request: Request, incident_id: str | None = None, alert_id: str | None = None, status_value: str | None = None, limit: int = 200) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: _normalize_action_list_route_response(list_enforcement_actions(request, incident_id=incident_id, alert_id=alert_id, status_value=status_value, limit=limit)))
+def response_actions_list(request: Request, incident_id: str | None = None, action_id: str | None = None, alert_id: str | None = None, status_value: str | None = None, limit: int = 200) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: _normalize_action_list_route_response(list_enforcement_actions(request, incident_id=incident_id, action_id=action_id, alert_id=alert_id, status_value=status_value, limit=limit)))
 
 
 @app.get('/response/action-capabilities', summary='List response action capabilities and live execution routing for the active workspace')
