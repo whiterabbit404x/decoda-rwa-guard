@@ -13341,13 +13341,15 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
             FROM alerts
             WHERE id = %s
               AND workspace_id = %s
-              AND status = 'resolved'
-              AND incident_id IS NULL
+              AND status != 'suppressed'
             ''',
             (alert_id, workspace_context['workspace_id']),
         ).fetchone()
         if alert is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Alert not found.')
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Alert not found or is suppressed.')
+        # Idempotency: if a linked incident already exists, return it without creating a duplicate.
+        if alert.get('incident_id'):
+            return {'incident_id': str(alert['incident_id']), 'alert_id': alert_id, 'status': str(alert.get('status') or 'open'), 'created': False}
         latest_evidence = connection.execute(
             '''
             SELECT id, tx_hash, observed_at, raw_payload_json
@@ -13490,7 +13492,7 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
             idempotency_key=f'alert:{alert_id}:escalated:{incident_id}',
         )
         connection.commit()
-        return {'incident_id': incident_id, 'alert_id': alert_id, 'status': 'open'}
+        return {'incident_id': incident_id, 'alert_id': alert_id, 'status': 'open', 'created': True}
 
 
 def create_alert_suppression(payload: dict[str, Any], request: Request) -> dict[str, Any]:

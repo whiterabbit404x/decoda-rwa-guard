@@ -116,6 +116,11 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
 
   async function escalateIncident() {
     if (!selectedAlert) return;
+    // If the alert already has a linked incident, navigate to it.
+    if (selectedAlert.incident_id) {
+      window.location.href = '/incidents';
+      return;
+    }
     const response = await fetch(`${apiUrl}/alerts/${selectedAlert.id}/escalate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -124,11 +129,15 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
         summary: selectedAlert.summary || selectedAlert.title,
       }),
     });
-    setMessage(response.ok ? 'Open incident (SIMULATED workflow prep) completed.' : 'Unable to open incident.');
-    if (response.ok) {
-      await refreshSelectedAlertState(selectedAlert.id);
-      await refetchLinkedIncidentTimeline(selectedAlert.incident_id);
+    if (!response.ok) {
+      const errorPayload = await response.json().catch(() => ({}));
+      setMessage(`Unable to open incident: ${(errorPayload as any).detail || 'Server error. Please retry.'}`);
+      return;
     }
+    const result = await response.json() as { incident_id: string; created: boolean };
+    await refreshSelectedAlertState(selectedAlert.id);
+    await refetchLinkedIncidentTimeline(result.incident_id);
+    window.location.href = '/incidents';
   }
 
   async function runSimulatedAction(actionType: string, label: string) {
@@ -250,7 +259,9 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
               <div className="buttonRow">
                 <button type="button" onClick={() => void patchAlert('acknowledged')}>Acknowledge</button>
                 <button type="button" onClick={() => void patchAlert('resolved')}>Resolve</button>
-                <button type="button" onClick={() => void escalateIncident()}>Open incident</button>
+                {selectedAlert.incident_id
+                  ? <button type="button" onClick={() => { window.location.href = '/incidents'; }}>View incident</button>
+                  : <button type="button" onClick={() => void escalateIncident()}>Open incident</button>}
                 <button type="button" disabled={isActionDisabledInMode(actionCapabilities.freeze_wallet, actionMode)} title={actionDisabledReason(actionCapabilities.freeze_wallet, actionMode) || ''} onClick={() => void runSimulatedAction('freeze_wallet', 'Freeze wallet')}>Freeze wallet ({actionExecutionLabel})</button>
                 <button type="button" disabled={isActionDisabledInMode(actionCapabilities.block_transaction, actionMode)} title={actionDisabledReason(actionCapabilities.block_transaction, actionMode) || ''} onClick={() => void runSimulatedAction('block_transaction', 'Block transaction')}>Block transaction ({actionExecutionLabel})</button>
                 <button type="button" disabled={isActionDisabledInMode(actionCapabilities.revoke_approval, actionMode)} title={actionDisabledReason(actionCapabilities.revoke_approval, actionMode) || ''} onClick={() => void runSimulatedAction('revoke_approval', 'Revoke approval')}>Revoke approval ({actionExecutionLabel})</button>
