@@ -14155,6 +14155,9 @@ def _response_action_payload(action: dict[str, Any]) -> dict[str, Any]:
         result['result_status'] = result.get('status')
     result['dry_run'] = mode != 'live'
     result['is_simulated'] = mode != 'live'
+    _exec_state = str(result.get('execution_state') or '')
+    result['simulated'] = mode == 'simulated' or _exec_state == 'simulated'
+    result['simulation_status'] = 'simulated' if (mode == 'simulated' or _exec_state == 'simulated') else None
     tx_hash = result.get('tx_hash') or result.get('safe_tx_hash')
     execution_provenance = {
         'mode': mode,
@@ -15803,22 +15806,26 @@ def simulate_response_action(action_id: str, request: Request) -> dict[str, Any]
         workspace_id = workspace_context['workspace_id']
 
         row = connection.execute(
-            'SELECT id, workspace_id, incident_id, alert_id, action_type, mode, status, execution_metadata FROM response_actions WHERE id = %s::uuid AND workspace_id = %s',
+            'SELECT id, workspace_id, incident_id, alert_id, action_type, mode, status, execution_state, execution_mode, execution_metadata FROM response_actions WHERE id = %s::uuid AND workspace_id = %s',
             (action_id, workspace_id),
         ).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Response action not found.')
 
         current_mode = str(row.get('mode') or 'recommended')
-        current_status = str(row.get('status') or 'recommended')
+        current_status = str(row.get('status') or 'pending')
+        current_execution_state = str(row.get('execution_state') or '')
 
-        # Idempotent: already simulated
-        if current_mode == 'simulated' and current_status == 'simulated':
+        # Idempotent: already simulated (mode is the canonical simulation marker)
+        if current_mode == 'simulated':
             return _response_action_payload(_json_safe_value(dict(row)))
 
+        # Use execution_state='simulated' and execution_mode='simulation' to record the
+        # simulation. Do NOT touch lifecycle status — it must remain a valid constraint value
+        # ('pending', 'executed', 'failed', 'canceled'); 'simulated' is not permitted there.
         connection.execute(
             '''UPDATE response_actions
-               SET mode = 'simulated', status = 'simulated', executed_at = NOW()
+               SET mode = 'simulated', execution_state = 'simulated', execution_mode = 'simulation', executed_at = NOW()
                WHERE id = %s::uuid AND workspace_id = %s''',
             (action_id, workspace_id),
         )
@@ -15835,14 +15842,16 @@ def simulate_response_action(action_id: str, request: Request) -> dict[str, Any]
                 'action_id': action_id,
                 'prior_mode': current_mode,
                 'prior_status': current_status,
+                'prior_execution_state': current_execution_state,
                 'mode': 'simulated',
-                'status': 'simulated',
+                'execution_state': 'simulated',
+                'execution_mode': 'simulation',
             },
         )
         connection.commit()
 
         updated = connection.execute(
-            'SELECT id, workspace_id, incident_id, alert_id, action_type, mode, status, execution_metadata FROM response_actions WHERE id = %s::uuid AND workspace_id = %s',
+            'SELECT id, workspace_id, incident_id, alert_id, action_type, mode, status, execution_state, execution_mode, execution_metadata FROM response_actions WHERE id = %s::uuid AND workspace_id = %s',
             (action_id, workspace_id),
         ).fetchone()
         return _response_action_payload(_json_safe_value(dict(updated or row)))
@@ -16979,7 +16988,22 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
         case _:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported export type.')
 
-    storage = load_export_storage()
+    try:
+        storage = load_export_storage()
+    except RuntimeError as _storage_exc:
+        # Export storage is not configured (e.g. S3 not set up in production).
+        # Mark the job failed and return a clear 503 so the caller can roll back cleanly.
+        connection.execute(
+            "UPDATE export_jobs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s",
+            (str(_storage_exc), export_id),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                'error': 'export_storage_not_configured',
+                'message': 'Evidence export requires EXPORT_STORAGE_BACKEND=s3 and EXPORT_S3_BUCKET.',
+            },
+        ) from _storage_exc
 
     # P0: Add cryptographic evidence manifest + HMAC seal for evidentiary export types.
     export_type_val = str(job['export_type'])

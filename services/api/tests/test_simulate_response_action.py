@@ -1,12 +1,14 @@
 """Tests for POST /response/actions/{action_id}/simulate endpoint.
 
 Verifies:
-1. Marks an action as simulated (status='simulated', mode='simulated').
+1. Marks an action as simulated via mode='simulated' and execution_state='simulated'.
+   Does NOT set status='simulated' (violates DB constraint).
 2. Works for actions with any starting status (recommended, pending, etc.).
 3. Idempotent: calling on an already-simulated action returns it unchanged.
 4. Logs an audit event with action='response_action.simulated'.
 5. Returns 404 when the action is not found.
-6. After simulation, create_evidence_package_from_response_action succeeds.
+6. Response includes simulation_status='simulated' and simulated=True.
+7. After simulation, create_evidence_package_from_response_action succeeds.
 """
 from __future__ import annotations
 
@@ -62,7 +64,7 @@ def _monkeypatch_simulate(monkeypatch, connection, *, workspace_id: str = 'ws-1'
 # ── Connection stubs ──────────────────────────────────────────────────────────
 
 class _RecommendedActionConnection:
-    """Action with mode='recommended', status='recommended' → should become simulated."""
+    """Action with mode='recommended', status='pending' → should become simulated."""
 
     def __init__(self):
         self.executed: list[tuple[str, object]] = []
@@ -75,9 +77,9 @@ class _RecommendedActionConnection:
         # First SELECT: action lookup
         if 'FROM response_actions WHERE id = %s::uuid AND workspace_id' in normalized and 'UPDATE' not in normalized:
             if self._updated:
-                # Post-update re-fetch
-                return _Row({'id': 'action-1', 'workspace_id': 'ws-1', 'incident_id': 'inc-1', 'alert_id': 'alert-1', 'action_type': 'notify_team', 'mode': 'simulated', 'status': 'simulated', 'execution_metadata': None})
-            return _Row({'id': 'action-1', 'workspace_id': 'ws-1', 'incident_id': 'inc-1', 'alert_id': 'alert-1', 'action_type': 'notify_team', 'mode': 'recommended', 'status': 'recommended', 'execution_metadata': None})
+                # Post-update re-fetch: mode and execution_state are now simulated; status unchanged
+                return _Row({'id': 'action-1', 'workspace_id': 'ws-1', 'incident_id': 'inc-1', 'alert_id': 'alert-1', 'action_type': 'notify_team', 'mode': 'simulated', 'status': 'pending', 'execution_state': 'simulated', 'execution_mode': 'simulation', 'execution_metadata': None})
+            return _Row({'id': 'action-1', 'workspace_id': 'ws-1', 'incident_id': 'inc-1', 'alert_id': 'alert-1', 'action_type': 'notify_team', 'mode': 'recommended', 'status': 'pending', 'execution_state': 'proposed', 'execution_mode': None, 'execution_metadata': None})
         if 'UPDATE response_actions' in normalized:
             self._updated = True
             return _Row(None)
@@ -98,7 +100,7 @@ class _AlreadySimulatedConnection:
         normalized = ' '.join(str(stmt).split())
         self.executed.append((normalized, params))
         if 'FROM response_actions WHERE id = %s::uuid AND workspace_id' in normalized:
-            return _Row({'id': 'action-2', 'workspace_id': 'ws-1', 'incident_id': 'inc-1', 'alert_id': None, 'action_type': 'notify_team', 'mode': 'simulated', 'status': 'simulated', 'execution_metadata': None})
+            return _Row({'id': 'action-2', 'workspace_id': 'ws-1', 'incident_id': 'inc-1', 'alert_id': None, 'action_type': 'notify_team', 'mode': 'simulated', 'status': 'pending', 'execution_state': 'simulated', 'execution_mode': 'simulation', 'execution_metadata': None})
         raise AssertionError(f'unexpected: {normalized!r}')
 
     def commit(self):
@@ -125,20 +127,26 @@ def test_simulate_marks_action_as_simulated(monkeypatch):
     result = pilot.simulate_response_action('action-1', _fake_request())
 
     assert result.get('mode') == 'simulated'
-    assert result.get('status') == 'simulated'
+    assert result.get('simulation_status') == 'simulated'
+    assert result.get('simulated') is True
+    # Lifecycle status must not be 'simulated' (violates DB constraint)
+    assert result.get('status') != 'simulated'
     update_calls = [(s, p) for s, p in conn.executed if 'UPDATE response_actions' in s]
-    assert update_calls, 'Expected UPDATE to set mode/status to simulated'
+    assert update_calls, 'Expected UPDATE to set mode/execution_state to simulated'
+    update_sql = update_calls[0][0]
+    assert 'execution_state' in update_sql, 'UPDATE must set execution_state, not status'
+    assert "status = 'simulated'" not in update_sql, 'Must not write status=simulated (violates DB constraint)'
     assert conn.committed
 
 
-def test_simulate_works_for_recommended_status(monkeypatch):
-    """recommended status must not be blocked like execute_enforcement_action blocks non-pending."""
+def test_simulate_works_for_pending_status(monkeypatch):
+    """Pending status must not block simulate; lifecycle status is preserved."""
     conn = _RecommendedActionConnection()
     _monkeypatch_simulate(monkeypatch, conn)
 
-    # Should not raise, even though status is 'recommended' (not 'pending')
     result = pilot.simulate_response_action('action-1', _fake_request())
-    assert result.get('status') == 'simulated'
+    assert result.get('simulation_status') == 'simulated'
+    assert result.get('simulated') is True
 
 
 def test_simulate_idempotent_for_already_simulated(monkeypatch):
@@ -148,7 +156,8 @@ def test_simulate_idempotent_for_already_simulated(monkeypatch):
     result = pilot.simulate_response_action('action-2', _fake_request())
 
     assert result.get('mode') == 'simulated'
-    assert result.get('status') == 'simulated'
+    assert result.get('simulation_status') == 'simulated'
+    assert result.get('simulated') is True
     update_calls = [s for s, _ in conn.executed if 'UPDATE response_actions' in s]
     assert not update_calls, 'Should not UPDATE an already-simulated action'
 
@@ -161,6 +170,23 @@ def test_simulate_returns_404_when_action_not_found(monkeypatch):
         pilot.simulate_response_action('missing-id', _fake_request())
 
     assert exc_info.value.status_code == 404
+
+
+def test_simulate_update_does_not_set_status_simulated(monkeypatch):
+    """The UPDATE statement must NOT write status='simulated' — that violates the DB constraint."""
+    conn = _RecommendedActionConnection()
+    _monkeypatch_simulate(monkeypatch, conn)
+
+    pilot.simulate_response_action('action-1', _fake_request())
+
+    update_calls = [(s, p) for s, p in conn.executed if 'UPDATE response_actions' in s]
+    assert update_calls
+    update_sql = update_calls[0][0]
+    assert "status = 'simulated'" not in update_sql, (
+        "Setting status='simulated' violates response_actions_status_check constraint"
+    )
+    assert "execution_state = 'simulated'" in update_sql
+    assert "execution_mode = 'simulation'" in update_sql
 
 
 def test_simulate_then_evidence_package_succeeds(monkeypatch):

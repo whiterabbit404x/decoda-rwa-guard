@@ -680,6 +680,15 @@ function ActionDetailPanel({
     action.requiresApproval &&
     !['approved', 'executed'].some((s) => action.status.toLowerCase().includes(s));
 
+  function _extractErrorMessage(detail: unknown, fallback: string): string {
+    if (typeof detail === 'string') return detail;
+    if (detail && typeof detail === 'object') {
+      const d = detail as { message?: string; error?: string };
+      return d.message ?? d.error ?? fallback;
+    }
+    return fallback;
+  }
+
   async function simulateAction() {
     onMessage('Simulating action…');
     try {
@@ -687,13 +696,13 @@ function ActionDetailPanel({
         method: 'POST',
         headers: authHeaders(),
       });
-      const data = (await res.json()) as { id?: string; status?: string; detail?: string };
+      const data = (await res.json()) as { id?: string; status?: string; simulation_status?: string; simulated?: boolean; detail?: unknown };
       if (res.ok) {
         onMessage('Action marked as SIMULATED.');
         // Reload the page to reflect the persisted simulated status.
         router.refresh();
       } else {
-        onMessage(data.detail ?? 'Simulate failed.');
+        onMessage(_extractErrorMessage(data.detail, 'Simulate failed.'));
       }
     } catch {
       onMessage('Simulate request failed. Check network connection.');
@@ -709,7 +718,7 @@ function ActionDetailPanel({
         method: 'POST',
         headers: authHeaders(),
       });
-      let data: { package_id?: string; incident_id?: string; response_action_id?: string; detail?: string } = {};
+      let data: { package_id?: string; incident_id?: string; response_action_id?: string; detail?: unknown } = {};
       try {
         data = await res.json();
       } catch {
@@ -722,7 +731,7 @@ function ActionDetailPanel({
         if (resolvedIncidentId) params.set('incident_id', resolvedIncidentId);
         router.push(`/evidence?${params.toString()}`);
       } else {
-        onMessage(data.detail ?? 'Evidence export failed.');
+        onMessage(_extractErrorMessage(data.detail, 'Evidence export failed.'));
       }
     } catch {
       onMessage('Evidence export failed. Check network connection.');
