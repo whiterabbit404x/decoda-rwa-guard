@@ -273,6 +273,46 @@ def test_422_when_no_incident_and_no_alert(monkeypatch):
     assert exc_info.value.status_code == 422
 
 
+def test_evidence_export_returns_503_when_storage_not_configured(monkeypatch):
+    """When export storage is not configured, must return 503 — not 500."""
+    conn = _FullChainConnection()
+    _monkeypatch_common(monkeypatch, conn)
+
+    def _raise_storage_error():
+        raise RuntimeError(
+            'Local export storage backend is disabled in staging/production. '
+            'Set EXPORT_STORAGE_BACKEND=s3 and configure EXPORT_S3_BUCKET.'
+        )
+
+    monkeypatch.setattr(pilot, 'load_export_storage', _raise_storage_error)
+
+    with pytest.raises(HTTPException) as exc_info:
+        pilot.create_evidence_package_from_response_action('action-1', _fake_request())
+
+    exc = exc_info.value
+    assert exc.status_code == 503
+    assert isinstance(exc.detail, dict)
+    assert exc.detail.get('error') == 'export_storage_not_configured'
+    assert 'EXPORT_STORAGE_BACKEND' in exc.detail.get('message', '')
+
+
+def test_no_fake_package_created_when_storage_not_configured(monkeypatch):
+    """No committed export_job row should result when storage is unavailable."""
+    conn = _FullChainConnection()
+    _monkeypatch_common(monkeypatch, conn)
+
+    def _raise():
+        raise RuntimeError('Local export storage backend is disabled in staging/production.')
+
+    monkeypatch.setattr(pilot, 'load_export_storage', _raise)
+
+    with pytest.raises(HTTPException):
+        pilot.create_evidence_package_from_response_action('action-1', _fake_request())
+
+    # connection.commit() must NOT have been called — the INSERT is rolled back
+    assert not conn.committed, 'Transaction must not be committed when storage fails'
+
+
 def test_list_exports_returns_response_action_id(monkeypatch):
     """list_exports must extract response_action_id from the filters JSONB column."""
 

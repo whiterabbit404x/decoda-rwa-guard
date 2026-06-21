@@ -47,10 +47,13 @@ if 'fastapi' not in sys.modules:
             HTTP_201_CREATED = 201
             HTTP_400_BAD_REQUEST = 400
             HTTP_401_UNAUTHORIZED = 401
+            HTTP_402_PAYMENT_REQUIRED = 402
             HTTP_403_FORBIDDEN = 403
             HTTP_404_NOT_FOUND = 404
+            HTTP_409_CONFLICT = 409
             HTTP_422_UNPROCESSABLE_ENTITY = 422
             HTTP_500_INTERNAL_SERVER_ERROR = 500
+            HTTP_503_SERVICE_UNAVAILABLE = 503
 
         _fastapi = _make_stub(
             'fastapi',
