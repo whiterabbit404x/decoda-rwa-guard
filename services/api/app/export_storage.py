@@ -127,7 +127,12 @@ def load_export_storage() -> ExportStorage:
         bucket = os.getenv('EXPORT_S3_BUCKET', '').strip()
         region = os.getenv('EXPORT_S3_REGION', '').strip() or 'us-east-1'
         prefix = os.getenv('EXPORT_S3_PREFIX', 'decoda-exports').strip()
-        endpoint = os.getenv('EXPORT_S3_ENDPOINT', '').strip() or None
+        # Prefer EXPORT_S3_ENDPOINT_URL (standard name); fall back to legacy EXPORT_S3_ENDPOINT
+        endpoint = (
+            os.getenv('EXPORT_S3_ENDPOINT_URL', '').strip()
+            or os.getenv('EXPORT_S3_ENDPOINT', '').strip()
+            or None
+        )
         if not bucket:
             raise RuntimeError('EXPORT_S3_BUCKET is required when EXPORT_STORAGE_BACKEND=s3.')
         return S3ExportStorage(bucket=bucket, region=region, prefix=prefix, endpoint=endpoint)
