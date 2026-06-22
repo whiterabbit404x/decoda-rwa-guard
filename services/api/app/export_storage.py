@@ -21,6 +21,10 @@ class ExportStorage(Protocol):
     def delete_bytes(self, *, object_key: str) -> None:
         ...
 
+    def get_object_size(self, *, object_key: str) -> int | None:
+        """Return the size in bytes of the stored object, or None if unavailable."""
+        ...
+
     def object_lock_status(self) -> dict[str, Any]:
         """Return object-lock/WORM metadata for this backend."""
         ...
@@ -47,6 +51,12 @@ class LocalExportStorage:
         target = (self.root_dir / object_key).resolve()
         if target.is_file():
             target.unlink()
+
+    def get_object_size(self, *, object_key: str) -> int | None:
+        target = (self.root_dir / object_key).resolve()
+        if target.exists():
+            return target.stat().st_size
+        return None
 
     def object_lock_status(self) -> dict[str, Any]:
         return {
@@ -86,6 +96,14 @@ class S3ExportStorage:
 
     def delete_bytes(self, *, object_key: str) -> None:
         self._client().delete_object(Bucket=self.bucket, Key=object_key)
+
+    def get_object_size(self, *, object_key: str) -> int | None:
+        try:
+            head = self._client().head_object(Bucket=self.bucket, Key=object_key)
+            size = head.get('ContentLength')
+            return int(size) if size is not None else None
+        except Exception:
+            return None
 
     def object_lock_status(self) -> dict[str, Any]:
         # Use env override if available (avoids live S3 call in tests)

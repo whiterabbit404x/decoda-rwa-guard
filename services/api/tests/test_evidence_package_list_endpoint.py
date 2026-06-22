@@ -417,3 +417,116 @@ def test_summary_card_counts_match_returned_rows(monkeypatch):
     assert len(exports) == 2, 'Evidence Packages count must equal returned rows'
     completed = [p for p in exports if p.get('status') == 'completed' and p.get('download_url')]
     assert len(completed) == 2, 'Export Ready count must equal completed rows with download_url'
+
+
+# ── size_bytes backfill tests ─────────────────────────────────────────────────
+
+class _FakeStorageWithSize:
+    """Mock storage that tracks get_object_size calls and returns a fixed size."""
+    backend_name = 'local'
+
+    def __init__(self, size: int | None = 7393):
+        self._size = size
+        self.size_calls: list[str] = []
+
+    def get_object_size(self, *, object_key: str) -> int | None:
+        self.size_calls.append(object_key)
+        return self._size
+
+    def write_bytes(self, *, object_key: str, content: bytes) -> str:
+        return object_key
+
+    def read_bytes(self, *, object_key: str) -> bytes:
+        return b''
+
+    def delete_bytes(self, *, object_key: str) -> None:
+        pass
+
+    def object_lock_status(self) -> dict:
+        return {}
+
+
+def test_size_bytes_backfilled_from_storage_when_null_in_db(monkeypatch):
+    """size_bytes is populated via get_object_size when the DB column is NULL (pre-migration row)."""
+    row = _make_export_row()
+    row['size_bytes'] = None  # Simulate row created before migration 0117
+    fake_storage = _FakeStorageWithSize(size=7393)
+    _monkeypatch_list(monkeypatch, [row])
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+
+    result = pilot.list_exports(_fake_request())
+
+    pkg = result['exports'][0]
+    assert pkg.get('size_bytes') == 7393, 'size_bytes must be backfilled from storage object metadata'
+    assert 'evidence/ws-1/pkg-1.json' in fake_storage.size_calls, 'get_object_size must be called with storage_object_key'
+
+
+def test_size_bytes_not_overwritten_when_already_set_in_db(monkeypatch):
+    """Existing size_bytes in the DB must not be overwritten by storage backfill."""
+    row = _make_export_row(size_bytes=7393)
+    fake_storage = _FakeStorageWithSize(size=9999)
+    _monkeypatch_list(monkeypatch, [row])
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+
+    result = pilot.list_exports(_fake_request())
+
+    assert result['exports'][0].get('size_bytes') == 7393, 'DB size_bytes must be preserved'
+    assert fake_storage.size_calls == [], 'get_object_size must not be called when size_bytes is already set'
+
+
+def test_size_bytes_backfill_skipped_for_non_completed_status(monkeypatch):
+    """get_object_size must not be called for packages that are not completed."""
+    row = _make_export_row(status='queued')
+    row['size_bytes'] = None
+    fake_storage = _FakeStorageWithSize(size=7393)
+    _monkeypatch_list(monkeypatch, [row])
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+
+    result = pilot.list_exports(_fake_request())
+
+    assert fake_storage.size_calls == [], 'get_object_size must not be called for non-completed packages'
+    assert result['exports'][0].get('size_bytes') is None, 'size_bytes must remain None for non-completed package'
+
+
+# ── evidence_source_type tests ────────────────────────────────────────────────
+
+def test_evidence_source_type_returned_when_stored_in_filters(monkeypatch):
+    """evidence_source_type stored in filters (persisted by _generate_export_artifact) is returned."""
+    row = _make_export_row()
+    row['filters'] = {
+        'incident_id': 'inc-1',
+        'response_action_id': 'action-1',
+        'include_raw_events': True,
+        'evidence_source_type': 'missing',
+    }
+    _monkeypatch_list(monkeypatch, [row])
+
+    result = pilot.list_exports(_fake_request())
+
+    assert result['exports'][0].get('evidence_source_type') == 'missing'
+
+
+def test_evidence_source_type_absent_for_legacy_rows_without_it_in_filters(monkeypatch):
+    """Legacy rows without evidence_source_type in filters must not expose a stale value."""
+    row = _make_export_row()
+    # Default filters from _make_export_row() do not include evidence_source_type
+    _monkeypatch_list(monkeypatch, [row])
+
+    result = pilot.list_exports(_fake_request())
+
+    assert not result['exports'][0].get('evidence_source_type'), \
+        'evidence_source_type must not appear when absent from filters'
+
+
+def test_summary_cards_single_completed_package(monkeypatch):
+    """Evidence Packages = 1 and Export Ready = 1 for a single completed response-action package."""
+    row = _make_export_row(status='completed')
+    _monkeypatch_list(monkeypatch, [row])
+
+    result = pilot.list_exports(_fake_request())
+
+    exports = result['exports']
+    assert len(exports) == 1, 'Evidence Packages card must equal 1'
+    assert exports[0].get('download_url') is not None, 'Export Ready card requires download_url'
+    completed_ready = [p for p in exports if p.get('status') == 'completed' and p.get('download_url')]
+    assert len(completed_ready) == 1, 'Export Ready card count must be 1'

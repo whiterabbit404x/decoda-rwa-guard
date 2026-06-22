@@ -17221,9 +17221,18 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 logger.info('evidence_export_head_object_success key=%s size=%d', object_key, _head.get('ContentLength', 0))
             except Exception as _head_exc:
                 logger.info('evidence_export_head_object_failed error=%s', type(_head_exc).__name__)
+        # Persist computed proof_bundle metadata (evidence_source_type, export_status,
+        # missing_sections) back into the filters JSONB so list_exports can return it
+        # without re-deriving it from raw data.
+        _artifact_filters_patch: dict[str, Any] = {}
+        for _mf_key in ('evidence_source_type', 'export_status'):
+            if artifact_meta.get(_mf_key) is not None:
+                _artifact_filters_patch[_mf_key] = artifact_meta[_mf_key]
+        if isinstance(artifact_meta.get('missing_sections'), list):
+            _artifact_filters_patch['missing_sections'] = artifact_meta['missing_sections']
         connection.execute(
-            "UPDATE export_jobs SET status = 'completed', error_message = NULL, storage_backend = %s, storage_object_key = %s, signing_key_id = %s, signing_key_version = %s, size_bytes = %s, updated_at = NOW() WHERE id = %s",
-            (storage.backend_name, object_key, _signing_meta.get('key_id'), _signing_meta.get('key_version'), _content_size, export_id),
+            "UPDATE export_jobs SET status = 'completed', error_message = NULL, storage_backend = %s, storage_object_key = %s, signing_key_id = %s, signing_key_version = %s, size_bytes = %s, filters = filters || %s::jsonb, updated_at = NOW() WHERE id = %s",
+            (storage.backend_name, object_key, _signing_meta.get('key_id'), _signing_meta.get('key_version'), _content_size, _json_dumps(_artifact_filters_patch), export_id),
         )
     except Exception as exc:
         logger.error(
@@ -17290,6 +17299,31 @@ def list_exports(request: Request) -> dict[str, Any]:
                         if _mf in filters_val:
                             item[_mf] = filters_val[_mf]
             exports.append(item)
+        # Lazy-backfill size_bytes for completed packages created before the
+        # size_bytes column existed.  Uses get_object_size (a read-only metadata
+        # fetch) so R2 upload logic is unchanged.
+        _backfill_items = [
+            item for item in exports
+            if item.get('size_bytes') is None
+            and item.get('status') == 'completed'
+            and item.get('storage_object_key')
+        ]
+        if _backfill_items:
+            try:
+                _bf_storage = load_export_storage()
+                for _bf_item in _backfill_items:
+                    try:
+                        _sz = _bf_storage.get_object_size(object_key=_bf_item['storage_object_key'])
+                        if _sz is not None:
+                            _bf_item['size_bytes'] = _sz
+                            connection.execute(
+                                'UPDATE export_jobs SET size_bytes = %s, updated_at = NOW() WHERE id = %s AND workspace_id = %s',
+                                (_sz, _bf_item['id'], workspace_id),
+                            )
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         logger.info('evidence_packages_list_returned_count count=%d', len(exports))
         return {'exports': exports}
 

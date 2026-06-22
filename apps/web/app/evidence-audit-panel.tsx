@@ -132,7 +132,22 @@ function evidenceSourcePill(
   if (raw === 'live' || raw === 'live_provider') {
     return { label: 'Live evidence', variant: 'success' };
   }
+  if (raw === 'response_action' || raw === 'proof_bundle') {
+    return { label: 'Response action export', variant: 'success' };
+  }
   return { label: 'Unknown source', variant: 'neutral' };
+}
+
+// For proof_bundle packages that predate evidence_source_type being persisted to
+// the DB, infer 'response_action' when no source is recorded but a response_action_id
+// is present.  This avoids the misleading "Unknown source" label.
+function resolvePackageEvidenceSource(pkg: EvidencePackage): string | undefined {
+  const explicit = pkg.evidence_source_type ?? pkg.evidence_source;
+  if (explicit) return explicit;
+  if (pkg.export_type === 'proof_bundle' && pkg.response_action_id) {
+    return 'response_action';
+  }
+  return undefined;
 }
 
 function packageStatusPill(status?: string): { label: string; variant: PillVariant } {
@@ -541,7 +556,7 @@ export default function EvidenceAuditPanel() {
                   </tr>
                 ) : (
                   packages.map((pkg) => {
-                    const evSrc = evidenceSourcePill(pkg.evidence_source_type ?? pkg.evidence_source, workspaceEvidenceSource);
+                    const evSrc = evidenceSourcePill(resolvePackageEvidenceSource(pkg), workspaceEvidenceSource);
                     const ready = isPackageReady(pkg);
                     const isSelected = pkg.id === selectedPkgId;
                     return (
@@ -755,7 +770,7 @@ function PackageDetailPanel({
   authHeaders: () => Record<string, string>;
   onExport: (pkg: EvidencePackage, format: 'json' | 'csv') => Promise<void>;
 }) {
-  const evSrc = evidenceSourcePill(pkg.evidence_source_type ?? pkg.evidence_source, workspaceEvidenceSource);
+  const evSrc = evidenceSourcePill(resolvePackageEvidenceSource(pkg), workspaceEvidenceSource);
   const st = packageStatusPill(pkg.status);
   const ready = isPackageReady(pkg);
 
