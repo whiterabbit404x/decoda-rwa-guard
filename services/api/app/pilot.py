@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import csv
+import decimal
+import enum
 import hashlib
 import hmac
 import io
@@ -2272,6 +2274,13 @@ def _json_safe_value(value: Any) -> Any:
         return value
     if isinstance(value, uuid.UUID):
         return str(value)
+    if isinstance(value, decimal.Decimal):
+        return str(value)
+    if isinstance(value, bytes):
+        return base64.b64encode(value).decode('ascii')
+    if isinstance(value, enum.Enum):
+        inner = value.value
+        return inner if isinstance(inner, (str, int, float, bool, type(None))) else str(inner)
     if hasattr(value, 'isoformat'):
         try:
             return value.isoformat()
@@ -17119,6 +17128,11 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
         'yes' if getattr(storage, 'endpoint', None) else 'no',
     )
 
+    # Sanitize all non-JSON-native types (UUID, datetime, Decimal, bytes, enum) before
+    # signing and upload. This prevents TypeError from uuid.UUID or similar objects that
+    # psycopg2 returns natively from UUID/timestamp columns.
+    rows = _json_safe_value(rows)
+
     # P0: Add cryptographic evidence manifest + HMAC seal for evidentiary export types.
     export_type_val = str(job['export_type'])
     _signing_meta: dict[str, Any] = {}
@@ -17179,8 +17193,10 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
     try:
         if str(job['format']) == 'json':
             content = json.dumps({'rows': rows}, indent=2).encode('utf-8')
+            logger.info('evidence_export_payload_serialized package_id=%s key=%s', export_id, _upload_key)
         elif str(job['format']) == 'pdf':
             content = json.dumps({'rows': rows}, indent=2).encode('utf-8')
+            logger.info('evidence_export_payload_serialized package_id=%s key=%s', export_id, _upload_key)
         else:
             headers = sorted({key for row in rows for key in row.keys()})
             buffer = io.StringIO()

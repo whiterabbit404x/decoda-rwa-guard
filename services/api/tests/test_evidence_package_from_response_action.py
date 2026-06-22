@@ -10,10 +10,13 @@ Verifies:
 7. 422 when action has no incident and no linked alert can infer one.
 8. list_exports returns response_action_id from filters.
 9. R2/S3 upload failure cannot return 200 — must return 502.
+10. UUID serialization regression: uuid.UUID in DB rows must not raise TypeError.
 """
 from __future__ import annotations
 
+import datetime
 import json
+import uuid as _uuid_module
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -566,3 +569,254 @@ def test_reuse_stale_row_upload_fails_returns_502(monkeypatch):
     assert exc.status_code == 502, f'Expected 502 on regenerate upload failure, got {exc.status_code}'
     assert isinstance(exc.detail, dict)
     assert exc.detail.get('error') == 'evidence_upload_failed'
+
+
+# ── UUID / datetime serialization regression guards ───────────────────────────
+#
+# psycopg2 returns uuid.UUID objects (not strings) for UUID columns and
+# datetime.datetime objects for timestamp columns. Previously these would cause
+# "Object of type UUID is not JSON serializable" at the json.dumps step.
+
+_FAKE_INCIDENT_UUID = _uuid_module.UUID('11111111-1111-1111-1111-111111111111')
+_FAKE_ALERT_UUID = _uuid_module.UUID('22222222-2222-2222-2222-222222222222')
+_FAKE_METRIC_UUID = _uuid_module.UUID('33333333-3333-3333-3333-333333333333')
+_FAKE_ACTION_UUID = _uuid_module.UUID('44444444-4444-4444-4444-444444444444')
+_FAKE_DET_UUID = _uuid_module.UUID('55555555-5555-5555-5555-555555555555')
+_FAKE_TS = datetime.datetime(2026, 1, 1, 0, 0, 0, tzinfo=datetime.timezone.utc)
+
+
+class _UUIDRowConnection(_BaseConnection):
+    """Simulates psycopg2 rows with native uuid.UUID and datetime objects — the real
+    production types returned by the driver, which previously caused TypeError in
+    json.dumps.  All UUID-typed columns and timestamp columns use native Python objects.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._inserted_pkg_id: str | None = None
+
+    def _handle(self, stmt, params):
+        if 'FROM response_actions WHERE id = %s::uuid AND workspace_id' in stmt:
+            return _Row({
+                'id': _FAKE_ACTION_UUID,
+                'workspace_id': 'ws-uuid',
+                'incident_id': _FAKE_INCIDENT_UUID,
+                'alert_id': _FAKE_ALERT_UUID,
+                'action_type': 'notify_team',
+                'mode': 'recommended',
+                'status': 'pending',
+            })
+        if "filters->>'response_action_id' = %s" in stmt:
+            return _Row(None)
+        if 'INSERT INTO export_jobs' in stmt:
+            self._inserted_pkg_id = params[0] if params else None
+            return _Row(None)
+        if 'FROM export_jobs WHERE id = %s AND workspace_id = %s' in stmt:
+            pkg_id = (params[0] if params else None) or self._inserted_pkg_id or 'pkg-uuid'
+            return _Row({
+                'id': pkg_id,
+                'export_type': 'proof_bundle',
+                'format': 'json',
+                'filters': {
+                    'incident_id': str(_FAKE_INCIDENT_UUID),
+                    'response_action_id': str(_FAKE_ACTION_UUID),
+                    'include_raw_events': True,
+                },
+                'requested_by_user_id': 'user-uuid',
+            })
+        if 'FROM incidents WHERE workspace_id = %s AND id = %s' in stmt:
+            return _Row({
+                'id': _FAKE_INCIDENT_UUID,
+                'workspace_id': 'ws-uuid',
+                'title': 'UUID Incident',
+                'severity': 'high',
+                'status': 'open',
+                'asset_id': _uuid_module.UUID('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
+                'linked_alert_ids': [_FAKE_ALERT_UUID],
+            })
+        if 'FROM alerts a JOIN detection_metrics dm' in stmt:
+            return _Row(rows=[{
+                'id': _FAKE_ALERT_UUID,
+                'severity': 'high',
+                'source': 'simulator',
+                'target_id': _uuid_module.UUID('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'),
+                'created_at': _FAKE_TS,
+            }])
+        if 'FROM detection_metrics WHERE workspace_id = %s AND incident_id = %s' in stmt:
+            return _Row(rows=[{
+                'id': _FAKE_METRIC_UUID,
+                'workspace_id': 'ws-uuid',
+                'incident_id': _FAKE_INCIDENT_UUID,
+                'alert_id': _FAKE_ALERT_UUID,
+                'event_observed_at': _FAKE_TS,
+                'detected_at': _FAKE_TS,
+                'mttd_seconds': 120,
+                'evidence': {'nested_id': _uuid_module.UUID('cccccccc-cccc-cccc-cccc-cccccccccccc')},
+            }])
+        if 'FROM response_actions' in stmt and 'incident_id = %s' in stmt:
+            return _Row(rows=[{
+                'id': _FAKE_ACTION_UUID,
+                'action_type': 'notify_team',
+                'status': 'pending',
+                'mode': 'recommended',
+                'execution_metadata': None,
+                'created_at': _FAKE_TS,
+                'executed_at': None,
+                'rolled_back_at': None,
+            }])
+        if 'FROM detections' in stmt and 'linked_alert_id = ANY' in stmt:
+            return _Row(rows=[{
+                'id': _FAKE_DET_UUID,
+                'detection_type': 'anomaly',
+                'severity': 'high',
+                'confidence': 0.9,
+                'evidence_source': 'simulator',
+                'status': 'open',
+                'detected_at': _FAKE_TS,
+                'title': 'UUID Anomaly',
+            }])
+        if 'FROM audit_logs' in stmt and 'row_hash' not in stmt:
+            return _Row(rows=[])
+        if 'FROM audit_logs' in stmt and 'row_hash' in stmt:
+            return _Row(None)
+        if 'UPDATE export_jobs SET status' in stmt:
+            return _Row(None)
+        if 'SELECT status, error_message FROM export_jobs WHERE id = %s' in stmt:
+            return _Row({'status': 'completed', 'error_message': None})
+        raise AssertionError(f'unexpected: {stmt!r}')
+
+
+def test_uuid_in_db_rows_serializes_without_type_error(monkeypatch):
+    """Regression: uuid.UUID objects from psycopg2 must not raise TypeError in json.dumps.
+
+    This is the exact production failure: evidence_export_upload_failed
+    error_type=TypeError message=Object of type UUID is not JSON serializable.
+    """
+    conn = _UUIDRowConnection()
+    storage = _FakeStorage()
+    _monkeypatch_common(monkeypatch, conn)
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: storage)
+
+    result = pilot.create_evidence_package_from_response_action(
+        str(_FAKE_ACTION_UUID), _fake_request('ws-uuid')
+    )
+
+    assert result['created'] is True
+    assert storage.written, 'R2/S3 upload must have received content'
+
+
+def test_uploaded_json_is_valid_and_parseable(monkeypatch):
+    """The bytes written to R2 must be valid JSON that can be parsed."""
+    conn = _UUIDRowConnection()
+    storage = _FakeStorage()
+    _monkeypatch_common(monkeypatch, conn)
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: storage)
+
+    pilot.create_evidence_package_from_response_action(
+        str(_FAKE_ACTION_UUID), _fake_request('ws-uuid')
+    )
+
+    assert storage.written, 'Expected upload'
+    raw = next(iter(storage.written.values()))
+    parsed = json.loads(raw)
+    assert 'rows' in parsed, 'Uploaded JSON must have "rows" key'
+
+
+def test_nested_uuids_become_strings_in_uploaded_json(monkeypatch):
+    """UUIDs at any nesting depth must serialize as strings, not UUID objects."""
+    conn = _UUIDRowConnection()
+    storage = _FakeStorage()
+    _monkeypatch_common(monkeypatch, conn)
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: storage)
+
+    pilot.create_evidence_package_from_response_action(
+        str(_FAKE_ACTION_UUID), _fake_request('ws-uuid')
+    )
+
+    raw = next(iter(storage.written.values()))
+    text = raw.decode('utf-8')
+    # Canonical UUID string representations must appear, not repr(uuid.UUID(...))
+    assert str(_FAKE_INCIDENT_UUID) in text
+    assert str(_FAKE_ALERT_UUID) in text
+    assert str(_FAKE_METRIC_UUID) in text
+    # uuid.UUID repr must NOT appear in the output
+    assert 'UUID(' not in text
+
+
+def test_datetime_fields_serialize_as_iso_strings(monkeypatch):
+    """datetime.datetime objects from psycopg2 timestamp columns must become ISO strings."""
+    conn = _UUIDRowConnection()
+    storage = _FakeStorage()
+    _monkeypatch_common(monkeypatch, conn)
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: storage)
+
+    pilot.create_evidence_package_from_response_action(
+        str(_FAKE_ACTION_UUID), _fake_request('ws-uuid')
+    )
+
+    raw = next(iter(storage.written.values()))
+    text = raw.decode('utf-8')
+    # datetime objects must appear as ISO 8601 strings, not datetime repr
+    assert '2026-01-01' in text
+    assert 'datetime.datetime' not in text
+
+
+def test_r2_upload_receives_bytes(monkeypatch):
+    """write_bytes must be called with bytes content, not a string or other type."""
+    received: list[bytes] = []
+
+    class _TypeCapture(_FakeStorage):
+        def write_bytes(self, *, object_key: str, content: bytes) -> str:
+            received.append(content)
+            return super().write_bytes(object_key=object_key, content=content)
+
+    conn = _UUIDRowConnection()
+    _monkeypatch_common(monkeypatch, conn)
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: _TypeCapture())
+
+    pilot.create_evidence_package_from_response_action(
+        str(_FAKE_ACTION_UUID), _fake_request('ws-uuid')
+    )
+
+    assert received, 'write_bytes must have been called'
+    assert isinstance(received[0], bytes), f'Expected bytes, got {type(received[0])}'
+
+
+def test_json_safe_value_handles_uuid_directly():
+    """_json_safe_value must convert uuid.UUID to str."""
+    import uuid as _uuid
+
+    val = _uuid.UUID('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+    result = pilot._json_safe_value(val)
+    assert result == 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    assert isinstance(result, str)
+
+
+def test_json_safe_value_handles_nested_uuid():
+    """_json_safe_value must recursively convert UUIDs inside dicts and lists."""
+    import uuid as _uuid
+
+    val = {
+        'id': _uuid.UUID('11111111-1111-1111-1111-111111111111'),
+        'nested': {
+            'child_id': _uuid.UUID('22222222-2222-2222-2222-222222222222'),
+            'items': [_uuid.UUID('33333333-3333-3333-3333-333333333333')],
+        },
+    }
+    result = pilot._json_safe_value(val)
+    assert result['id'] == '11111111-1111-1111-1111-111111111111'
+    assert result['nested']['child_id'] == '22222222-2222-2222-2222-222222222222'
+    assert result['nested']['items'][0] == '33333333-3333-3333-3333-333333333333'
+    # Verify the result is JSON-serializable
+    json.dumps(result)  # must not raise
+
+
+def test_json_safe_value_handles_datetime():
+    """_json_safe_value must convert datetime objects to ISO strings."""
+    import datetime as _dt
+
+    ts = _dt.datetime(2026, 6, 22, 12, 0, 0, tzinfo=_dt.timezone.utc)
+    result = pilot._json_safe_value(ts)
+    assert isinstance(result, str)
+    assert '2026-06-22' in result
+    json.dumps(result)  # must not raise
