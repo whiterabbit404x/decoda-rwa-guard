@@ -15896,9 +15896,14 @@ def create_evidence_package_from_response_action(action_id: str, request: Reques
                     (incident_id, action_id, workspace_id),
                 )
 
-        # Idempotency: reuse existing package created for this response action
+        # Idempotency: reuse existing package created for this response action.
+        # A prior row is only safe to return as success when its artifact was
+        # actually uploaded and is still retrievable from the active storage
+        # backend. Rows created before upload-gating (or written to ephemeral
+        # local storage that vanishes on redeploy) have no object in R2 and must
+        # be regenerated, not returned as a fake 200 with an empty package.
         existing = connection.execute(
-            """SELECT id FROM export_jobs
+            """SELECT id, status, storage_object_key, storage_backend, filters FROM export_jobs
                WHERE workspace_id = %s
                  AND export_type = 'proof_bundle'
                  AND filters->>'response_action_id' = %s
@@ -15907,11 +15912,100 @@ def create_evidence_package_from_response_action(action_id: str, request: Reques
         ).fetchone()
         if existing:
             pkg_id = str(existing['id'])
+            _existing_status = str(existing.get('status') or '')
+            _existing_key = str(existing.get('storage_object_key') or '').strip()
+            _storage_key_present = bool(_existing_key)
+            logger.info(
+                'evidence_export_reuse_found package_id=%s storage_key_present=%s status=%s',
+                pkg_id,
+                'yes' if _storage_key_present else 'no',
+                _existing_status or 'unknown',
+            )
+            # Reuse only when the row completed AND its object is verifiably
+            # present in the current backend. Any other state (queued/pending/
+            # failed, missing key, stale local object) falls through to a
+            # regenerate + re-upload below.
+            if _existing_status == 'completed' and _storage_key_present:
+                try:
+                    storage = load_export_storage()
+                    storage.read_bytes(object_key=_existing_key)
+                except RuntimeError:
+                    # Storage backend not configured — regeneration path raises a
+                    # clean 503 via _generate_export_artifact rather than 200.
+                    pass
+                except Exception:
+                    # Object missing / unreadable in R2 — must re-upload.
+                    pass
+                else:
+                    logger.info(
+                        'evidence_export_storage_config storage_backend=%s bucket_configured=%s endpoint_host_configured=%s',
+                        storage.backend_name,
+                        'yes' if storage.backend_name == 's3' and getattr(storage, 'bucket', None) else 'no',
+                        'yes' if getattr(storage, 'endpoint', None) else 'no',
+                    )
+                    return {
+                        'package_id': pkg_id,
+                        'response_action_id': action_id,
+                        'incident_id': incident_id,
+                        'created': False,
+                    }
+
+            # Stale / incomplete prior row: repair its filters and regenerate the
+            # artifact, then gate the response on a verified upload.
+            _existing_filters = existing.get('filters') if isinstance(existing.get('filters'), dict) else {}
+            _regen_incident = str((_existing_filters or {}).get('incident_id') or '').strip() or incident_id
+            if not _regen_incident:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail='Existing evidence package is not linked to an incident. Cannot regenerate evidence package without an incident_id.',
+                )
+            _repaired_filters = dict(_existing_filters or {})
+            _repaired_filters['incident_id'] = _regen_incident
+            _repaired_filters['response_action_id'] = action_id
+            _repaired_filters.setdefault('include_raw_events', True)
+            if alert_id:
+                _repaired_filters.setdefault('alert_id', alert_id)
+            connection.execute(
+                "UPDATE export_jobs SET filters = %s::jsonb, status = 'queued', error_message = NULL, updated_at = NOW() WHERE id = %s AND workspace_id = %s",
+                (_json_dumps(_repaired_filters), pkg_id, workspace_id),
+            )
+
+            _generate_export_artifact(connection, workspace_id=workspace_id, export_id=pkg_id)
+
+            _pkg_row = connection.execute(
+                'SELECT status, error_message FROM export_jobs WHERE id = %s', (pkg_id,)
+            ).fetchone()
+            _pkg_status_str = str((_pkg_row or {}).get('status') or '')
+            if _pkg_status_str != 'completed':
+                _err = str((_pkg_row or {}).get('error_message') or 'Evidence artifact upload failed')
+                connection.commit()  # persist the failed status so the job record is visible
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail={'error': 'evidence_upload_failed', 'message': _err},
+                )
+
+            log_audit(
+                connection,
+                action='evidence_package_regenerated',
+                entity_type='export_job',
+                entity_id=pkg_id,
+                request=request,
+                user_id=user['id'],
+                workspace_id=workspace_id,
+                metadata={
+                    'event_type': 'evidence_package_regenerated',
+                    'response_action_id': action_id,
+                    'incident_id': _regen_incident,
+                    'alert_id': alert_id,
+                    'reason': 'stale_or_missing_artifact',
+                },
+            )
+            connection.commit()
             return {
                 'package_id': pkg_id,
                 'response_action_id': action_id,
-                'incident_id': incident_id,
-                'created': False,
+                'incident_id': _regen_incident,
+                'created': True,
             }
 
         if not incident_id:
