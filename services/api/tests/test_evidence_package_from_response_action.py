@@ -9,6 +9,7 @@ Verifies:
 6. 404 when action not found.
 7. 422 when action has no incident and no linked alert can infer one.
 8. list_exports returns response_action_id from filters.
+9. R2/S3 upload failure cannot return 200 — must return 502.
 """
 from __future__ import annotations
 
@@ -33,6 +34,14 @@ class _FakeStorage:
     def write_bytes(self, *, object_key: str, content: bytes) -> str:
         self.written[object_key] = content
         return object_key
+
+
+class _FakeStorageUploadFails:
+    """Simulates R2/S3 upload failure (e.g. credentials missing, network timeout)."""
+    backend_name = 's3'
+
+    def write_bytes(self, *, object_key: str, content: bytes) -> str:
+        raise OSError('Connection timeout: cannot reach R2 endpoint')
 
 
 class _Row:
@@ -135,7 +144,19 @@ class _FullChainConnection(_BaseConnection):
         # UPDATE export_jobs
         if 'UPDATE export_jobs SET status' in stmt:
             return _Row(None)
+        # status check in create_evidence_package_from_response_action
+        if 'SELECT status, error_message FROM export_jobs WHERE id = %s' in stmt:
+            return _Row({'status': 'completed', 'error_message': None})
         raise AssertionError(f'unexpected: {stmt!r}')
+
+
+class _UploadFailsConnection(_FullChainConnection):
+    """Upload fails → export_jobs.status stays failed → must return 502, not 200."""
+
+    def _handle(self, stmt, params):
+        if 'SELECT status, error_message FROM export_jobs WHERE id = %s' in stmt:
+            return _Row({'status': 'failed', 'error_message': 'Connection timeout: cannot reach R2 endpoint'})
+        return super()._handle(stmt, params)
 
 
 class _NoIncidentOnActionConnection(_BaseConnection):
@@ -178,6 +199,8 @@ class _NoIncidentOnActionConnection(_BaseConnection):
             return _Row(None)
         if 'UPDATE export_jobs SET status' in stmt:
             return _Row(None)
+        if 'SELECT status, error_message FROM export_jobs WHERE id = %s' in stmt:
+            return _Row({'status': 'completed', 'error_message': None})
         raise AssertionError(f'unexpected: {stmt!r}')
 
 
@@ -350,3 +373,38 @@ def test_list_exports_returns_response_action_id(monkeypatch):
     pkg = result['exports'][0]
     assert pkg['response_action_id'] == 'action-99'
     assert pkg['incident_id'] == 'inc-99'
+
+
+def test_upload_failure_returns_502_not_200(monkeypatch):
+    """R2/S3 upload failure must return HTTP 502 — package_id must never be returned.
+
+    Regression guard: ensures create_evidence_package_from_response_action cannot
+    return 200/package_id when the storage write_bytes call raises.
+    """
+    conn = _UploadFailsConnection()
+    _monkeypatch_common(monkeypatch, conn)
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: _FakeStorageUploadFails())
+
+    with pytest.raises(HTTPException) as exc_info:
+        pilot.create_evidence_package_from_response_action('action-1', _fake_request())
+
+    exc = exc_info.value
+    assert exc.status_code == 502, f'Expected 502 on upload failure, got {exc.status_code}'
+    assert isinstance(exc.detail, dict)
+    assert exc.detail.get('error') == 'evidence_upload_failed'
+
+
+def test_upload_failure_does_not_return_package_id(monkeypatch):
+    """No package_id in response when upload fails — the 502 must carry no package reference."""
+    conn = _UploadFailsConnection()
+    _monkeypatch_common(monkeypatch, conn)
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: _FakeStorageUploadFails())
+
+    raised = False
+    try:
+        result = pilot.create_evidence_package_from_response_action('action-1', _fake_request())
+        assert 'package_id' not in result, 'package_id must not be present when upload fails'
+    except HTTPException:
+        raised = True
+
+    assert raised, 'Must raise HTTPException when upload fails, not silently return'

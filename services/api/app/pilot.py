@@ -15865,6 +15865,7 @@ def create_evidence_package_from_response_action(action_id: str, request: Reques
     """
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
+        logger.info('evidence_export_route_called action_id=%s', action_id)
         user, workspace_context = _require_workspace_permission(connection, request, 'evidence.export')
         workspace_id = workspace_context['workspace_id']
 
@@ -17017,6 +17018,12 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 'message': 'Evidence export requires EXPORT_STORAGE_BACKEND=s3 and EXPORT_S3_BUCKET.',
             },
         ) from _storage_exc
+    logger.info(
+        'evidence_export_storage_config storage_backend=%s bucket_configured=%s endpoint_host_configured=%s',
+        storage.backend_name,
+        'yes' if storage.backend_name == 's3' and getattr(storage, 'bucket', None) else 'no',
+        'yes' if getattr(storage, 'endpoint', None) else 'no',
+    )
 
     # P0: Add cryptographic evidence manifest + HMAC seal for evidentiary export types.
     export_type_val = str(job['export_type'])
@@ -17073,6 +17080,8 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
         except Exception:
             artifact_meta['signing'] = {'signed': False, 'error': 'signing_failed'}
 
+    _upload_key = f"{workspace_id}/{export_id}.{job['format']}"
+    logger.info('evidence_export_upload_start key=%s', _upload_key)
     try:
         if str(job['format']) == 'json':
             content = json.dumps({'rows': rows}, indent=2).encode('utf-8')
@@ -17086,12 +17095,18 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             for row in rows:
                 writer.writerow({key: _json_safe_value(row.get(key)) for key in headers})
             content = buffer.getvalue().encode('utf-8')
-        object_key = storage.write_bytes(object_key=f"{workspace_id}/{export_id}.{job['format']}", content=content)
+        object_key = storage.write_bytes(object_key=_upload_key, content=content)
+        logger.info('evidence_export_upload_success key=%s bytes=%d', object_key, len(content))
         connection.execute(
             "UPDATE export_jobs SET status = 'completed', error_message = NULL, storage_backend = %s, storage_object_key = %s, signing_key_id = %s, signing_key_version = %s, updated_at = NOW() WHERE id = %s",
             (storage.backend_name, object_key, _signing_meta.get('key_id'), _signing_meta.get('key_version'), export_id),
         )
     except Exception as exc:
+        logger.error(
+            'evidence_export_upload_failed error_type=%s message=%s',
+            type(exc).__name__,
+            str(exc),
+        )
         connection.execute("UPDATE export_jobs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s", (str(exc), export_id))
     return artifact_meta
 
