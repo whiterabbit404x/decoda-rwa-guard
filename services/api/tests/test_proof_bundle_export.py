@@ -428,6 +428,140 @@ def test_proof_bundle_dev_mode_with_test_secret_succeeds(monkeypatch: pytest.Mon
     assert meta.get('signing', {}).get('signed') is True
 
 
+# ── Upload-gated persistence tests ────────────────────────────────────────
+
+class _FailingStorage:
+    """Storage backend that always raises on write to simulate S3/R2 upload failure."""
+    backend_name = 's3'
+
+    def write_bytes(self, *, object_key: str, content: bytes) -> str:
+        raise RuntimeError('An error occurred (InvalidAccessKeyId) when calling the PutObject operation: The AWS Access Key Id you provided does not exist in our records.')
+
+    def object_lock_status(self):
+        return {'object_lock_enabled': False}
+
+
+class _StatusTrackingConnection(_CompleteChainConnection):
+    """Extends _CompleteChainConnection to track storage_key and final DB status."""
+
+    def __init__(self):
+        super().__init__()
+        self.final_status: str | None = None
+        self.storage_key_written: str | None = None
+        self.upload_error_message: str | None = None
+
+    def execute(self, query, params=None):
+        normalized = ' '.join(str(query).split())
+        if "UPDATE export_jobs SET status = 'completed'" in normalized:
+            self.storage_update_called = True
+            self.final_status = 'completed'
+            # params order: (backend, object_key, key_id, key_version, export_id)
+            if params and len(params) >= 2:
+                self.storage_key_written = params[1]
+            return _FakeRow(None)
+        if "UPDATE export_jobs SET status = 'failed'" in normalized:
+            self.final_status = 'failed'
+            if params:
+                self.upload_error_message = params[0]
+            return _FakeRow(None)
+        return super().execute(query, params)
+
+
+def test_storage_key_set_only_after_successful_upload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """storage_object_key must only be written to DB when the upload actually succeeds."""
+    fake_storage = _FakeStorage.__new__(_FakeStorage)
+    fake_storage.backend_name = 's3'
+
+    class _SucceedingStorage:
+        backend_name = 's3'
+
+        def write_bytes(self, *, object_key: str, content: bytes) -> str:
+            return object_key
+
+        def object_lock_status(self):
+            return {'object_lock_enabled': True}
+
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: _SucceedingStorage())
+    connection = _StatusTrackingConnection()
+    pilot._generate_export_artifact(connection, workspace_id='ws-live', export_id='exp-1')
+
+    assert connection.final_status == 'completed', 'Status must be completed after successful upload'
+    assert connection.storage_key_written is not None, 'storage_object_key must be set after successful upload'
+    assert 'exp-1' in connection.storage_key_written
+
+
+def test_storage_key_not_set_when_upload_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When S3/R2 upload fails, storage_object_key must NOT be written and status must be failed."""
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: _FailingStorage())
+    connection = _StatusTrackingConnection()
+    pilot._generate_export_artifact(connection, workspace_id='ws-live', export_id='exp-1')
+
+    assert connection.final_status == 'failed', 'Status must be failed when upload raises'
+    assert connection.storage_key_written is None, 'storage_object_key must NOT be set when upload fails'
+    assert connection.upload_error_message is not None, 'error_message must be written to DB'
+    assert 'InvalidAccessKeyId' in (connection.upload_error_message or ''), (
+        'Real upload error must be stored as error_message'
+    )
+
+
+def test_create_export_job_returns_failed_status_without_download_url_on_upload_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """create_export_job must return status=failed and no download_url when upload fails."""
+
+    class _FailingStorageUploadJob:
+        backend_name = 's3'
+
+        def write_bytes(self, *, object_key: str, content: bytes) -> str:
+            raise RuntimeError('An error occurred (NoSuchBucket) when calling the PutObject operation: The specified bucket does not exist')
+
+        def object_lock_status(self):
+            return {'object_lock_enabled': False}
+
+    class _ExportJobConnection(_StatusTrackingConnection):
+        """Simulates the DB queries made inside create_export_job → _generate_export_artifact."""
+
+        def __init__(self):
+            super().__init__()
+            self._statuses: dict[str, str] = {}
+            self._error_messages: dict[str, str] = {}
+
+        def execute(self, query, params=None):
+            normalized = ' '.join(str(query).split())
+            if "INSERT INTO export_jobs" in normalized:
+                return _FakeRow(None)
+            if "SELECT status, error_message FROM export_jobs WHERE id = %s" in normalized:
+                job_id = params[0] if params else 'unknown'
+                return _FakeRow({
+                    'status': self._statuses.get(str(job_id), 'failed'),
+                    'error_message': self._error_messages.get(str(job_id), 'upload failed'),
+                })
+            if "UPDATE export_jobs SET status = 'completed'" in normalized:
+                self.final_status = 'completed'
+                job_id = params[-1] if params else 'unknown'
+                self._statuses[str(job_id)] = 'completed'
+                self.storage_key_written = params[1] if params and len(params) >= 2 else None
+                return _FakeRow(None)
+            if "UPDATE export_jobs SET status = 'failed'" in normalized:
+                self.final_status = 'failed'
+                job_id = params[-1] if params else 'unknown'
+                self._statuses[str(job_id)] = 'failed'
+                self._error_messages[str(job_id)] = params[0] if params else 'error'
+                self.upload_error_message = params[0] if params else None
+                return _FakeRow(None)
+            return super().execute(query, params)
+
+        def commit(self):
+            pass
+
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: _FailingStorageUploadJob())
+    conn = _ExportJobConnection()
+    meta = pilot._generate_export_artifact(conn, workspace_id='ws-live', export_id='exp-1')
+
+    # upload failed → status should be 'failed', no storage_key set
+    assert conn.final_status == 'failed'
+    assert conn.storage_key_written is None
+    assert 'NoSuchBucket' in (conn.upload_error_message or '')
+
+
 def test_incident_report_includes_manifest_and_seal(monkeypatch: pytest.MonkeyPatch) -> None:
     """Incident report export must also include manifest.json and seal.json."""
 

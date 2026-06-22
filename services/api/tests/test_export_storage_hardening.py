@@ -238,3 +238,66 @@ def test_missing_bucket_raises_error(monkeypatch):
     from services.api.app.export_storage import load_export_storage
     with pytest.raises(RuntimeError, match='EXPORT_S3_BUCKET'):
         load_export_storage()
+
+
+# ---------------------------------------------------------------------------
+# Startup log tests
+# ---------------------------------------------------------------------------
+
+def test_s3_startup_log_emitted_without_secrets(monkeypatch, caplog):
+    """load_export_storage with s3 backend logs init details without leaking secrets."""
+    import logging
+    monkeypatch.setenv('EXPORT_STORAGE_BACKEND', 's3')
+    monkeypatch.setenv('EXPORT_S3_BUCKET', 'super-secret-bucket-name')
+    monkeypatch.setenv('EXPORT_S3_REGION', 'auto')
+    monkeypatch.setenv('EXPORT_S3_ENDPOINT_URL', 'https://abc123.r2.cloudflarestorage.com')
+    monkeypatch.delenv('AWS_ACCESS_KEY_ID', raising=False)
+    monkeypatch.delenv('AWS_SECRET_ACCESS_KEY', raising=False)
+
+    with caplog.at_level(logging.INFO, logger='services.api.app.export_storage'):
+        from services.api.app.export_storage import load_export_storage
+        load_export_storage()
+
+    log_text = ' '.join(caplog.messages)
+    assert 'storage_backend=s3' in log_text
+    assert 'bucket_configured=yes' in log_text
+    assert 'endpoint_host_configured=yes' in log_text
+    # Must not log the actual bucket name or endpoint URL
+    assert 'super-secret-bucket-name' not in log_text
+    assert 'abc123.r2.cloudflarestorage.com' not in log_text
+
+
+def test_s3_startup_log_no_endpoint(monkeypatch, caplog):
+    """load_export_storage logs endpoint_host_configured=no when no endpoint is set."""
+    import logging
+    monkeypatch.setenv('EXPORT_STORAGE_BACKEND', 's3')
+    monkeypatch.setenv('EXPORT_S3_BUCKET', 'my-aws-bucket')
+    monkeypatch.setenv('EXPORT_S3_REGION', 'us-east-1')
+    monkeypatch.delenv('EXPORT_S3_ENDPOINT_URL', raising=False)
+    monkeypatch.delenv('EXPORT_S3_ENDPOINT', raising=False)
+
+    with caplog.at_level(logging.INFO, logger='services.api.app.export_storage'):
+        from services.api.app.export_storage import load_export_storage
+        load_export_storage()
+
+    log_text = ' '.join(caplog.messages)
+    assert 'storage_backend=s3' in log_text
+    assert 'bucket_configured=yes' in log_text
+    assert 'endpoint_host_configured=no' in log_text
+
+
+def test_local_startup_log_emitted(monkeypatch, caplog, tmp_path):
+    """load_export_storage with local backend logs init details."""
+    import logging
+    monkeypatch.setenv('APP_MODE', 'local')
+    monkeypatch.setenv('EXPORT_STORAGE_BACKEND', 'local')
+    monkeypatch.setenv('EXPORTS_DIR', str(tmp_path))
+
+    with caplog.at_level(logging.INFO, logger='services.api.app.export_storage'):
+        from services.api.app.export_storage import load_export_storage
+        load_export_storage()
+
+    log_text = ' '.join(caplog.messages)
+    assert 'storage_backend=local' in log_text
+    assert 'bucket_configured=no' in log_text
+    assert 'endpoint_host_configured=no' in log_text

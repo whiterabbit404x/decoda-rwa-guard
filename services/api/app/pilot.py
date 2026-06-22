@@ -15938,6 +15938,19 @@ def create_evidence_package_from_response_action(action_id: str, request: Reques
 
         _generate_export_artifact(connection, workspace_id=workspace_id, export_id=pkg_id)
 
+        # Only return package_id if the artifact was actually uploaded to storage.
+        _pkg_row = connection.execute(
+            'SELECT status, error_message FROM export_jobs WHERE id = %s', (pkg_id,)
+        ).fetchone()
+        _pkg_status_str = str((_pkg_row or {}).get('status') or '')
+        if _pkg_status_str != 'completed':
+            _err = str((_pkg_row or {}).get('error_message') or 'Evidence artifact upload failed')
+            connection.commit()  # persist the failed status so the job record is visible
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={'error': 'evidence_upload_failed', 'message': _err},
+            )
+
         log_audit(
             connection,
             action='evidence_package_created',
