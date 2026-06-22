@@ -89,8 +89,13 @@ class _Row:
         return self._rows if self._rows else ([] if self._row is None else [self._row])
 
 
+class _EmptyQueryParams:
+    def get(self, key, default=None):
+        return default
+
+
 def _fake_request(workspace_id: str = 'ws-1') -> SimpleNamespace:
-    return SimpleNamespace(headers={'x-workspace-id': workspace_id})
+    return SimpleNamespace(headers={'x-workspace-id': workspace_id}, query_params=_EmptyQueryParams())
 
 
 def _monkeypatch_common(monkeypatch, connection, *, workspace_id: str = 'ws-1', user_id: str = 'user-1') -> None:
@@ -408,6 +413,7 @@ def test_list_exports_returns_response_action_id(monkeypatch):
                     'storage_object_key': 'ws-1/pkg-99.json',
                     'error_message': None,
                     'filters': {'incident_id': 'inc-99', 'response_action_id': 'action-99'},
+                    'size_bytes': None,
                     'created_at': '2026-01-01T00:00:00Z',
                     'updated_at': '2026-01-01T00:01:00Z',
                 }])

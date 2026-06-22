@@ -202,6 +202,7 @@ from services.api.app.pilot import (
     create_evidence_package_from_response_action,
     get_mttd_metrics,
     list_exports,
+    list_audit_events,
     get_export,
     get_export_artifact_content,
     get_history_item,
@@ -4470,6 +4471,11 @@ def exports_proof_bundle(payload: dict[str, Any], request: Request) -> dict[str,
 @app.post('/exports/incident-report', summary='Export incident investigation report')
 def exports_incident_report(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: create_incident_report_export(payload, request))
+
+
+@app.get('/events', summary='List workspace audit events')
+def events_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_audit_events(request))
 
 
 @app.get('/exports', summary='List workspace exports')
