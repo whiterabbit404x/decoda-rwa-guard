@@ -53,6 +53,7 @@ if 'fastapi' not in sys.modules:
             HTTP_409_CONFLICT = 409
             HTTP_422_UNPROCESSABLE_ENTITY = 422
             HTTP_500_INTERNAL_SERVER_ERROR = 500
+            HTTP_502_BAD_GATEWAY = 502
             HTTP_503_SERVICE_UNAVAILABLE = 503
 
         _fastapi = _make_stub(
