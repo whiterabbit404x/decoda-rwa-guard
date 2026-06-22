@@ -188,8 +188,8 @@ test('Evidence Export shows real server error detail instead of generic network 
   const src = pageSource();
   // Must parse JSON separately so a parse error gives a distinct message.
   expect(src).toContain('server returned an unexpected response');
-  // Must use data.detail for server-returned error messages.
-  expect(src).toContain("data.detail ?? 'Evidence export failed.'");
+  // Must use data.detail for server-returned error messages (via _extractErrorMessage helper).
+  expect(src).toContain("_extractErrorMessage(data.detail, 'Evidence export failed.')");
 });
 
 test('simulateAction calls the backend proxy route, not a no-op', () => {
@@ -197,4 +197,45 @@ test('simulateAction calls the backend proxy route, not a no-op', () => {
   expect(src).toContain('/api/response/actions/${action.id}/simulate');
   // Must refresh after success so the persisted status is reflected.
   expect(src).toContain('router.refresh()');
+});
+
+test('Evidence Export sends X-CSRF-Token via authHeaders', () => {
+  const src = pageSource();
+  // authHeaders() includes X-CSRF-Token from auth context state.
+  expect(src).toContain("'X-CSRF-Token'");
+  // authHeaders must be called before the POST.
+  expect(src).toContain('authHeaders()');
+});
+
+test('Evidence Export sends X-Workspace-Id via authHeaders passed to ActionDetailPanel', () => {
+  const src = pageSource();
+  // authHeaders() encapsulates X-Workspace-Id (and X-CSRF-Token) from pilot-auth-context.
+  // The page must pass authHeaders down to ActionDetailPanel, which uses it for all mutations.
+  expect(src).toContain('authHeaders={authHeaders}');
+  // authHeaders is sourced from usePilotAuth which includes workspace header logic.
+  expect(src).toContain('usePilotAuth');
+  // The retry path must also use authHeaders() to ensure workspace is always included.
+  expect(src).toContain('retryHeaders = { ...authHeaders()');
+});
+
+test('403 csrf_missing_or_invalid triggers one token refresh and retry', () => {
+  const src = pageSource();
+  // Must detect the CSRF error code from backend.
+  expect(src).toContain("'csrf_missing_or_invalid'");
+  // Must call refreshCsrfToken to obtain a fresh token.
+  expect(src).toContain('refreshCsrfToken()');
+  // Must include the fresh token in the retry request headers.
+  expect(src).toContain("'X-CSRF-Token': freshToken");
+  // refreshCsrfToken must be passed down to ActionDetailPanel.
+  expect(src).toContain('refreshCsrfToken={refreshCsrfToken}');
+});
+
+test('successful Evidence Export retry navigates to /evidence with package_id', () => {
+  const src = pageSource();
+  // Must navigate to the evidence page on success.
+  expect(src).toContain('/evidence?');
+  expect(src).toContain('package_id: data.package_id');
+  expect(src).toContain('action_id: action.id');
+  // CSRF retry result must also use the same navigation path.
+  expect(src).toContain('router.push(`/evidence?${params.toString()}`');
 });

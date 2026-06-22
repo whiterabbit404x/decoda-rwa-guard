@@ -217,7 +217,7 @@ type Blocker = {
 
 export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { apiUrl: string }) {
   const { summary, runtime, loading: runtimeLoading } = useRuntimeSummary();
-  const { authHeaders } = usePilotAuth();
+  const { authHeaders, refreshCsrfToken } = usePilotAuth();
   const searchParams = useSearchParams();
 
   const apiUrl = providedApiUrl || resolveApiUrl();
@@ -637,6 +637,7 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
                 onMessage={setMessage}
                 apiUrl={apiUrl}
                 authHeaders={authHeaders}
+                refreshCsrfToken={refreshCsrfToken}
               />
             ) : null}
           </div>
@@ -659,6 +660,7 @@ function ActionDetailPanel({
   onMessage,
   apiUrl,
   authHeaders,
+  refreshCsrfToken,
 }: {
   action: ActionRow;
   workspaceEvidenceSource: string;
@@ -666,6 +668,7 @@ function ActionDetailPanel({
   onMessage: (msg: string) => void;
   apiUrl: string;
   authHeaders: () => Record<string, string>;
+  refreshCsrfToken: () => Promise<string | null>;
 }) {
   const router = useRouter();
   const st = actionStatusPill(action.status, action.simulated);
@@ -711,20 +714,58 @@ function ActionDetailPanel({
 
   async function handleEvidenceExport() {
     onMessage('Creating evidence package…');
-    try {
+
+    type EvidencePackageData = {
+      package_id?: string;
+      incident_id?: string;
+      response_action_id?: string;
+      detail?: unknown;
+      code?: string;
+    };
+
+    async function postEvidencePackage(
+      headers: Record<string, string>,
+    ): Promise<{ res: Response; data: EvidencePackageData; parseError: boolean }> {
       // Use the same-origin proxy so the request goes through the Next.js server
       // (which has the correct API_URL) rather than relying on NEXT_PUBLIC_API_URL.
       const res = await fetch(`/api/response/actions/${action.id}/evidence-package`, {
         method: 'POST',
-        headers: authHeaders(),
+        headers,
       });
-      let data: { package_id?: string; incident_id?: string; response_action_id?: string; detail?: unknown } = {};
+      let data: EvidencePackageData = {};
+      let parseError = false;
       try {
         data = await res.json();
       } catch {
+        parseError = true;
+      }
+      return { res, data, parseError };
+    }
+
+    try {
+      let { res, data, parseError } = await postEvidencePackage(authHeaders());
+
+      // On CSRF error, fetch a fresh token and retry once with the new token included.
+      if (
+        res.status === 403 &&
+        (data.code === 'csrf_missing_or_invalid' ||
+          (typeof data.detail === 'string' && data.detail.toLowerCase().includes('csrf')))
+      ) {
+        const freshToken = await refreshCsrfToken();
+        if (freshToken) {
+          const retryHeaders = { ...authHeaders(), 'X-CSRF-Token': freshToken };
+          const retryResult = await postEvidencePackage(retryHeaders);
+          res = retryResult.res;
+          data = retryResult.data;
+          parseError = retryResult.parseError;
+        }
+      }
+
+      if (parseError) {
         onMessage('Evidence export failed: server returned an unexpected response.');
         return;
       }
+
       if (res.ok && data.package_id) {
         const params = new URLSearchParams({ package_id: data.package_id, action_id: action.id });
         const resolvedIncidentId = data.incident_id ?? action.linkedIncident ?? '';
