@@ -233,12 +233,12 @@ export default function EvidenceAuditPanel() {
       if (urlActionId) exportsParams.set('action_id', urlActionId);
       if (urlIncidentId) exportsParams.set('incident_id', urlIncidentId);
       const exportsParamStr = exportsParams.toString();
-      const exportsUrl = exportsParamStr ? `${apiUrl}/exports?${exportsParamStr}` : `${apiUrl}/exports`;
+      const exportsUrl = exportsParamStr ? `/api/exports?${exportsParamStr}` : '/api/exports';
 
       const [pkgRes, auditRes, raRes] = await Promise.allSettled([
           fetch(exportsUrl, { headers: hdrs, cache: 'no-store' }),
-          fetch(`${apiUrl}/events`, { headers: hdrs, cache: 'no-store' }),
-          fetch(`${apiUrl}/response/actions?limit=50`, { headers: hdrs, cache: 'no-store' }),
+          fetch('/api/events', { headers: hdrs, cache: 'no-store' }),
+          fetch(`/api/response/actions?limit=50`, { headers: hdrs, cache: 'no-store' }),
         ]);
 
         if (pkgRes.status === 'fulfilled' && pkgRes.value.ok) {
@@ -321,7 +321,7 @@ export default function EvidenceAuditPanel() {
         : (payload.detail ?? 'Export failed.'),
     );
     if (res.ok) {
-      const pkgRes = await fetch(`${apiUrl}/exports`, {
+      const pkgRes = await fetch('/api/exports', {
         headers: authHeaders(),
         cache: 'no-store',
       });

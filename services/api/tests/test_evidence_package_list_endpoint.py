@@ -44,6 +44,7 @@ def _make_export_row(
 ) -> dict:
     return {
         'id': pkg_id,
+        'workspace_id': workspace_id,
         'export_type': 'proof_bundle',
         'format': 'json',
         'status': status,
@@ -303,3 +304,116 @@ def test_logging_called_with_workspace_id(monkeypatch, caplog):
     assert 'evidence_packages_list_called' in log_text
     assert 'evidence_packages_list_returned_count' in log_text
     assert 'count=1' in log_text
+
+
+def test_list_includes_workspace_id(monkeypatch):
+    """workspace_id must be returned for each package row."""
+    row = _make_export_row(workspace_id='ws-99')
+    _monkeypatch_list(monkeypatch, [row], workspace_id='ws-99')
+
+    req = _fake_request(workspace_id='ws-99')
+    result = pilot.list_exports(req)
+
+    pkg = result['exports'][0]
+    assert pkg.get('workspace_id') == 'ws-99'
+
+
+def test_list_includes_storage_key_alias(monkeypatch):
+    """storage_key must be an alias of storage_object_key in the list response."""
+    row = _make_export_row()
+    _monkeypatch_list(monkeypatch, [row])
+
+    req = _fake_request()
+    result = pilot.list_exports(req)
+
+    pkg = result['exports'][0]
+    assert 'storage_key' in pkg
+    assert pkg['storage_key'] == pkg.get('storage_object_key')
+
+
+def test_list_exports_does_not_require_live_mode(monkeypatch):
+    """list_exports must work without require_live_mode — same env as create_evidence_package."""
+    row = _make_export_row()
+
+    @contextmanager
+    def _fake_pg():
+        yield _ListConnection([row])
+
+    # Deliberately do NOT patch require_live_mode so we confirm it is not called.
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(pilot, 'authenticate_with_connection', lambda *_: {'id': 'user-1'})
+    monkeypatch.setattr(pilot, 'resolve_workspace', lambda *_: {'workspace_id': 'ws-1'})
+
+    req = _fake_request()
+    # Must not raise even though require_live_mode is not patched to a no-op.
+    result = pilot.list_exports(req)
+
+    assert len(result['exports']) == 1
+
+
+def test_package_id_url_param_selects_exact_package(monkeypatch):
+    """?package_id=X must cause the query to use id = %s::uuid, selecting only that package."""
+    row = _make_export_row(pkg_id='pkg-exact')
+    conn = _monkeypatch_filtering(monkeypatch, [row])
+
+    req = SimpleNamespace(
+        headers={'x-workspace-id': 'ws-1'},
+        query_params=_make_query_params(package_id='pkg-exact'),
+    )
+    result = pilot.list_exports(req)
+
+    assert 'id = %s::uuid' in conn.last_stmt
+    assert 'pkg-exact' in conn.last_params
+    assert result['exports'][0]['id'] == 'pkg-exact'
+
+
+def test_action_id_url_param_selects_response_action_package(monkeypatch):
+    """?action_id=X must filter by filters->>'response_action_id' and return the matching package."""
+    row = _make_export_row(response_action_id='action-target')
+    conn = _monkeypatch_filtering(monkeypatch, [row])
+
+    req = SimpleNamespace(
+        headers={'x-workspace-id': 'ws-1'},
+        query_params=_make_query_params(action_id='action-target'),
+    )
+    result = pilot.list_exports(req)
+
+    assert "filters->>'response_action_id' = %s" in conn.last_stmt
+    assert 'action-target' in conn.last_params
+    pkg = result['exports'][0]
+    assert pkg['response_action_id'] == 'action-target'
+
+
+def test_incident_id_url_param_selects_incident_package(monkeypatch):
+    """?incident_id=X must filter by filters->>'incident_id' and return the matching package."""
+    row = _make_export_row(incident_id='inc-target')
+    conn = _monkeypatch_filtering(monkeypatch, [row])
+
+    req = SimpleNamespace(
+        headers={'x-workspace-id': 'ws-1'},
+        query_params=_make_query_params(incident_id='inc-target'),
+    )
+    result = pilot.list_exports(req)
+
+    assert "filters->>'incident_id' = %s" in conn.last_stmt
+    assert 'inc-target' in conn.last_params
+    pkg = result['exports'][0]
+    assert pkg['incident_id'] == 'inc-target'
+
+
+def test_summary_card_counts_match_returned_rows(monkeypatch):
+    """packages.length and exportReadyCount are derived from the same exports list — no synthetic rows."""
+    rows = [
+        _make_export_row(pkg_id='pkg-1', status='completed'),
+        _make_export_row(pkg_id='pkg-2', status='completed'),
+    ]
+    _monkeypatch_list(monkeypatch, rows)
+
+    req = _fake_request()
+    result = pilot.list_exports(req)
+
+    exports = result['exports']
+    assert len(exports) == 2, 'Evidence Packages count must equal returned rows'
+    completed = [p for p in exports if p.get('status') == 'completed' and p.get('download_url')]
+    assert len(completed) == 2, 'Export Ready count must equal completed rows with download_url'

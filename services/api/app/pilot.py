@@ -17236,7 +17236,8 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
 
 
 def list_exports(request: Request) -> dict[str, Any]:
-    require_live_mode()
+    # No require_live_mode() here — create_evidence_package_from_response_action also
+    # omits it, so listing must work in the same environment where creation succeeds.
     filter_package_id = str(request.query_params.get('package_id') or '').strip() or None
     filter_action_id = str(request.query_params.get('action_id') or '').strip() or None
     filter_incident_id = str(request.query_params.get('incident_id') or '').strip() or None
@@ -17267,7 +17268,7 @@ def list_exports(request: Request) -> dict[str, Any]:
         where_sql = ' AND '.join(where_clauses)
         rows = connection.execute(
             f'''
-            SELECT id, export_type, format, status, output_path, storage_backend, storage_object_key, error_message, filters, size_bytes, created_at, updated_at
+            SELECT id, workspace_id, export_type, format, status, output_path, storage_backend, storage_object_key, error_message, filters, size_bytes, created_at, updated_at
             FROM export_jobs
             WHERE {where_sql}
             ORDER BY created_at DESC
@@ -17279,6 +17280,7 @@ def list_exports(request: Request) -> dict[str, Any]:
         for row in rows:
             item = _json_safe_value(dict(row))
             item['download_url'] = f"/exports/{item['id']}/download" if item.get('status') == 'completed' else None
+            item['storage_key'] = item.get('storage_object_key')
             filters_val = item.pop('filters', None) or {}
             if isinstance(filters_val, dict):
                 item['incident_id'] = filters_val.get('incident_id')
