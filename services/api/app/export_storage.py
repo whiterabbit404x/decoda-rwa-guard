@@ -135,6 +135,11 @@ def load_export_storage() -> ExportStorage:
         )
         if not bucket:
             raise RuntimeError('EXPORT_S3_BUCKET is required when EXPORT_STORAGE_BACKEND=s3.')
+        _log.info(
+            'export_storage_init storage_backend=s3 bucket_configured=%s endpoint_host_configured=%s',
+            'yes',
+            'yes' if endpoint else 'no',
+        )
         return S3ExportStorage(bucket=bucket, region=region, prefix=prefix, endpoint=endpoint)
 
     if is_production_like:
@@ -156,6 +161,7 @@ def load_export_storage() -> ExportStorage:
         )
 
     export_root = Path(os.getenv('EXPORTS_DIR', '/tmp/decoda-exports')).resolve()
+    _log.info('export_storage_init storage_backend=local bucket_configured=no endpoint_host_configured=no')
     return LocalExportStorage(root_dir=export_root)
 
 
