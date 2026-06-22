@@ -195,6 +195,7 @@ export default function EvidenceAuditPanel() {
 
   const urlPackageId = searchParams.get('package_id') ?? '';
   const urlActionId = searchParams.get('action_id') ?? '';
+  const urlIncidentId = searchParams.get('incident_id') ?? '';
 
   const [packages, setPackages] = useState<EvidencePackage[]>([]);
   const [auditRows, setAuditRows] = useState<AuditRow[]>([]);
@@ -227,8 +228,15 @@ export default function EvidenceAuditPanel() {
 
     async function loadAll() {
       try {
-        const [pkgRes, auditRes, raRes] = await Promise.allSettled([
-          fetch(`${apiUrl}/exports`, { headers: hdrs, cache: 'no-store' }),
+        const exportsParams = new URLSearchParams();
+      if (urlPackageId) exportsParams.set('package_id', urlPackageId);
+      if (urlActionId) exportsParams.set('action_id', urlActionId);
+      if (urlIncidentId) exportsParams.set('incident_id', urlIncidentId);
+      const exportsParamStr = exportsParams.toString();
+      const exportsUrl = exportsParamStr ? `${apiUrl}/exports?${exportsParamStr}` : `${apiUrl}/exports`;
+
+      const [pkgRes, auditRes, raRes] = await Promise.allSettled([
+          fetch(exportsUrl, { headers: hdrs, cache: 'no-store' }),
           fetch(`${apiUrl}/events`, { headers: hdrs, cache: 'no-store' }),
           fetch(`${apiUrl}/response/actions?limit=50`, { headers: hdrs, cache: 'no-store' }),
         ]);
@@ -243,6 +251,9 @@ export default function EvidenceAuditPanel() {
             if (matched) setSelectedPkgId(matched.id);
           } else if (urlActionId) {
             const matched = loaded.find((pkg) => pkg.response_action_id === urlActionId);
+            if (matched) setSelectedPkgId(matched.id);
+          } else if (urlIncidentId) {
+            const matched = loaded.find((pkg) => pkg.incident_id === urlIncidentId);
             if (matched) setSelectedPkgId(matched.id);
           }
         }
@@ -274,7 +285,7 @@ export default function EvidenceAuditPanel() {
     }
 
     void loadAll();
-  }, [apiUrl, authHeaders, runtimeLoading]);
+  }, [apiUrl, authHeaders, runtimeLoading, urlPackageId, urlActionId, urlIncidentId]);
 
   async function createPackage() {
     setMessage('');
@@ -337,7 +348,9 @@ export default function EvidenceAuditPanel() {
 
   /* ── Derived metrics ─────────────────────────────────────────── */
   const exportReadyCount = packages.filter(isPackageReady).length;
-  const retentionStatus = packages.length > 0 ? 'Compliant' : 'No packages';
+  const retentionStatus = packages.length > 0
+    ? (exportReadyCount > 0 ? 'Compliant' : 'Pending')
+    : 'No packages';
 
   /* ── Selected rows ───────────────────────────────────────────── */
   const selectedPkg = useMemo(
@@ -359,6 +372,15 @@ export default function EvidenceAuditPanel() {
 
   function getBlocker(): Blocker | null {
     if (dataLoading || runtimeLoading) return null;
+
+    // A completed package means the full chain succeeded. Never show a chain-step
+    // blocker when evidence already exists — the chain state counters (active alerts,
+    // active incidents) may be zero after resolution even though the package is real.
+    if (packageExists) return null;
+
+    // When a URL param identifies a specific package/action/incident but it hasn't
+    // loaded yet (e.g. first load before fetch completes), don't show a blocker.
+    if (urlPackageId || urlActionId || urlIncidentId) return null;
 
     // When a response action exists the full chain (telemetry → detection → alert → incident → action)
     // must be present by definition. Skip lower-level blockers to avoid false negatives.
@@ -403,15 +425,12 @@ export default function EvidenceAuditPanel() {
       };
     }
 
-    if (!packageExists) {
-      return {
-        title: 'No evidence package exported yet',
-        body: 'A response action exists but no evidence package has been exported yet. Click "Evidence Export" from a response action to create one.',
-        ctaHref: '/response-actions',
-        ctaLabel: 'Go to Response Actions',
-      };
-    }
-    return null;
+    return {
+      title: 'No evidence package exported yet',
+      body: 'A response action exists but no evidence package has been exported yet. Click "Evidence Export" from a response action to create one.',
+      ctaHref: '/response-actions',
+      ctaLabel: 'Go to Response Actions',
+    };
   }
 
   const blocker = getBlocker();

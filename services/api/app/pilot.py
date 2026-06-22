@@ -17206,10 +17206,24 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 writer.writerow({key: _json_safe_value(row.get(key)) for key in headers})
             content = buffer.getvalue().encode('utf-8')
         object_key = storage.write_bytes(object_key=_upload_key, content=content)
-        logger.info('evidence_export_upload_success key=%s bytes=%d', object_key, len(content))
+        _content_size = len(content)
+        logger.info('evidence_export_upload_success key=%s bytes=%d', object_key, _content_size)
+        if storage.backend_name == 's3':
+            _endpoint_host = getattr(storage, 'endpoint', None)
+            if _endpoint_host:
+                try:
+                    from urllib.parse import urlparse as _urlparse
+                    logger.info('evidence_export_r2_endpoint_host=%s', _urlparse(_endpoint_host).netloc)
+                except Exception:
+                    pass
+            try:
+                _head = storage._client().head_object(Bucket=getattr(storage, 'bucket', ''), Key=object_key)
+                logger.info('evidence_export_head_object_success key=%s size=%d', object_key, _head.get('ContentLength', 0))
+            except Exception as _head_exc:
+                logger.info('evidence_export_head_object_failed error=%s', type(_head_exc).__name__)
         connection.execute(
-            "UPDATE export_jobs SET status = 'completed', error_message = NULL, storage_backend = %s, storage_object_key = %s, signing_key_id = %s, signing_key_version = %s, updated_at = NOW() WHERE id = %s",
-            (storage.backend_name, object_key, _signing_meta.get('key_id'), _signing_meta.get('key_version'), export_id),
+            "UPDATE export_jobs SET status = 'completed', error_message = NULL, storage_backend = %s, storage_object_key = %s, signing_key_id = %s, signing_key_version = %s, size_bytes = %s, updated_at = NOW() WHERE id = %s",
+            (storage.backend_name, object_key, _signing_meta.get('key_id'), _signing_meta.get('key_version'), _content_size, export_id),
         )
     except Exception as exc:
         logger.error(
@@ -17223,19 +17237,43 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
 
 def list_exports(request: Request) -> dict[str, Any]:
     require_live_mode()
+    filter_package_id = str(request.query_params.get('package_id') or '').strip() or None
+    filter_action_id = str(request.query_params.get('action_id') or '').strip() or None
+    filter_incident_id = str(request.query_params.get('incident_id') or '').strip() or None
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        workspace_id = workspace_context['workspace_id']
+        logger.info(
+            'evidence_packages_list_called workspace_id=%s package_id=%s action_id=%s incident_id=%s',
+            workspace_id,
+            filter_package_id or 'none',
+            filter_action_id or 'none',
+            filter_incident_id or 'none',
+        )
+        # Build dynamic WHERE clause based on optional URL filters
+        where_clauses = ['workspace_id = %s']
+        params: list[Any] = [workspace_id]
+        if filter_package_id:
+            where_clauses.append('id = %s::uuid')
+            params.append(filter_package_id)
+        if filter_action_id:
+            where_clauses.append("filters->>'response_action_id' = %s")
+            params.append(filter_action_id)
+        if filter_incident_id:
+            where_clauses.append("filters->>'incident_id' = %s")
+            params.append(filter_incident_id)
+        where_sql = ' AND '.join(where_clauses)
         rows = connection.execute(
-            '''
-            SELECT id, export_type, format, status, output_path, storage_backend, storage_object_key, error_message, filters, created_at, updated_at
+            f'''
+            SELECT id, export_type, format, status, output_path, storage_backend, storage_object_key, error_message, filters, size_bytes, created_at, updated_at
             FROM export_jobs
-            WHERE workspace_id = %s
+            WHERE {where_sql}
             ORDER BY created_at DESC
             LIMIT 200
             ''',
-            (workspace_context['workspace_id'],),
+            tuple(params),
         ).fetchall()
         exports = []
         for row in rows:
@@ -17250,7 +17288,40 @@ def list_exports(request: Request) -> dict[str, Any]:
                         if _mf in filters_val:
                             item[_mf] = filters_val[_mf]
             exports.append(item)
+        logger.info('evidence_packages_list_returned_count count=%d', len(exports))
         return {'exports': exports}
+
+
+def list_audit_events(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        workspace_id = workspace_context['workspace_id']
+        rows = connection.execute(
+            '''
+            SELECT id, action, entity_type, entity_id, user_id, ip_address, metadata, created_at
+            FROM audit_logs
+            WHERE workspace_id = %s
+            ORDER BY created_at DESC
+            LIMIT 500
+            ''',
+            (workspace_id,),
+        ).fetchall()
+        events = []
+        for row in rows:
+            item = _json_safe_value(dict(row))
+            meta = item.get('metadata') if isinstance(item.get('metadata'), dict) else {}
+            item['event_type'] = meta.get('event_type') or item.get('action')
+            item['actor'] = meta.get('actor') or meta.get('user_email') or item.get('user_id') or 'system'
+            item['target'] = item.get('entity_id')
+            item['object_type'] = item.get('entity_type')
+            item['result'] = meta.get('result') or 'success'
+            item['source_ip'] = item.get('ip_address')
+            item['timestamp'] = item.get('created_at')
+            events.append(item)
+        return {'events': events}
 
 
 def get_export(export_id: str, request: Request) -> dict[str, Any]:
