@@ -26,7 +26,9 @@ from services.api.app import pilot
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 class _FakeStorage:
-    backend_name = 'local'
+    backend_name = 's3'
+    bucket = 'decoda-rwa-guard-evidence'
+    endpoint = 'https://example.r2.cloudflarestorage.com'
 
     def __init__(self):
         self.written: dict[str, bytes] = {}
@@ -35,13 +37,41 @@ class _FakeStorage:
         self.written[object_key] = content
         return object_key
 
+    def read_bytes(self, *, object_key: str) -> bytes:
+        # Reuse verification reads the prior object back; a healthy package's
+        # object is retrievable, so treat any key as present.
+        return self.written.get(object_key, b'{}')
+
+
+class _FakeStorageObjectMissing:
+    """Storage where the prior object key is gone (e.g. ephemeral local lost on
+    redeploy, or never really uploaded) but a fresh upload can still succeed."""
+    backend_name = 's3'
+    bucket = 'decoda-rwa-guard-evidence'
+    endpoint = None
+
+    def __init__(self):
+        self.written: dict[str, bytes] = {}
+
+    def write_bytes(self, *, object_key: str, content: bytes) -> str:
+        self.written[object_key] = content
+        return object_key
+
+    def read_bytes(self, *, object_key: str) -> bytes:
+        raise FileNotFoundError(f'Export object missing for key {object_key}')
+
 
 class _FakeStorageUploadFails:
     """Simulates R2/S3 upload failure (e.g. credentials missing, network timeout)."""
     backend_name = 's3'
+    bucket = 'decoda-rwa-guard-evidence'
+    endpoint = None
 
     def write_bytes(self, *, object_key: str, content: bytes) -> str:
         raise OSError('Connection timeout: cannot reach R2 endpoint')
+
+    def read_bytes(self, *, object_key: str) -> bytes:
+        raise FileNotFoundError(f'Export object missing for key {object_key}')
 
 
 class _Row:
@@ -98,10 +128,23 @@ class _BaseConnection:
 class _FullChainConnection(_BaseConnection):
     """Action has incident_id; full chain of alerts/detections/response_actions."""
 
-    def __init__(self, *, existing_package_id: str | None = None):
+    def __init__(
+        self,
+        *,
+        existing_package_id: str | None = None,
+        existing_status: str = 'completed',
+        existing_storage_key: str | None = 'ws-1/pkg-existing.json',
+        existing_filters: dict | None = None,
+    ):
         super().__init__()
         self._existing_package_id = existing_package_id
+        self._existing_status = existing_status
+        self._existing_storage_key = existing_storage_key
+        self._existing_filters = existing_filters if existing_filters is not None else {
+            'incident_id': 'inc-1', 'response_action_id': 'action-1', 'include_raw_events': True,
+        }
         self._inserted_pkg_id: str | None = None
+        self.filters_repaired = False
 
     def _handle(self, stmt, params):
         # response action lookup
@@ -110,7 +153,17 @@ class _FullChainConnection(_BaseConnection):
         # idempotency check
         if "filters->>'response_action_id' = %s" in stmt:
             if self._existing_package_id:
-                return _Row({'id': self._existing_package_id})
+                return _Row({
+                    'id': self._existing_package_id,
+                    'status': self._existing_status,
+                    'storage_object_key': self._existing_storage_key,
+                    'storage_backend': 's3' if self._existing_status == 'completed' else 'pending',
+                    'filters': self._existing_filters,
+                })
+            return _Row(None)
+        # repair filters on a stale row before regeneration
+        if 'UPDATE export_jobs SET filters' in stmt:
+            self.filters_repaired = True
             return _Row(None)
         # INSERT export_job
         if 'INSERT INTO export_jobs' in stmt:
@@ -118,7 +171,7 @@ class _FullChainConnection(_BaseConnection):
             return _Row(None)
         # _generate_export_artifact: fetch job
         if 'FROM export_jobs WHERE id = %s AND workspace_id = %s' in stmt:
-            pkg_id = self._inserted_pkg_id or 'pkg-1'
+            pkg_id = (params[0] if params else None) or self._inserted_pkg_id or 'pkg-1'
             return _Row({'id': pkg_id, 'export_type': 'proof_bundle', 'format': 'json', 'filters': {'incident_id': 'inc-1', 'response_action_id': 'action-1', 'include_raw_events': True}, 'requested_by_user_id': 'user-1'})
         # incident
         if 'FROM incidents WHERE workspace_id = %s AND id = %s' in stmt:
@@ -408,3 +461,108 @@ def test_upload_failure_does_not_return_package_id(monkeypatch):
         raised = True
 
     assert raised, 'Must raise HTTPException when upload fails, not silently return'
+
+
+# ── Reuse-path regression guards (stale rows must not return a fake 200) ───────
+
+def test_idempotent_reuse_does_not_regenerate_when_object_present(monkeypatch):
+    """Healthy completed row whose object is retrievable is reused as-is."""
+    conn = _FullChainConnection(existing_package_id='pkg-existing')
+    storage = _FakeStorage()
+    _monkeypatch_common(monkeypatch, conn)
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: storage)
+
+    result = pilot.create_evidence_package_from_response_action('action-1', _fake_request())
+
+    assert result['package_id'] == 'pkg-existing'
+    assert result['created'] is False
+    assert not conn.filters_repaired, 'Healthy reuse must not repair/regenerate'
+    assert storage.written == {}, 'Healthy reuse must not re-upload an artifact'
+
+
+def test_reuse_missing_storage_key_regenerates_and_uploads(monkeypatch):
+    """Existing row with NO storage_object_key must not return 200 without an upload.
+
+    This is the production bug: a pre-upload-gating row had no real R2 object, yet
+    the idempotent path returned 200. The fix must regenerate and upload.
+    """
+    conn = _FullChainConnection(
+        existing_package_id='pkg-stale',
+        existing_status='completed',
+        existing_storage_key=None,
+    )
+    storage = _FakeStorage()
+    _monkeypatch_common(monkeypatch, conn)
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: storage)
+
+    result = pilot.create_evidence_package_from_response_action('action-1', _fake_request())
+
+    assert result['package_id'] == 'pkg-stale', 'Reuses the same row id, not a duplicate'
+    assert result['created'] is True, 'Regeneration counts as a (re)created artifact'
+    assert conn.filters_repaired, 'Stale row filters must be repaired before regeneration'
+    assert storage.written, 'Artifact must actually be uploaded to storage'
+    insert_calls = [s for s, _ in conn.executed if 'INSERT INTO export_jobs' in s]
+    assert not insert_calls, 'Must not insert a duplicate package row'
+
+
+def test_reuse_failed_status_regenerates_and_uploads(monkeypatch):
+    """Existing row with status=failed must regenerate + upload, not return 200 stale."""
+    conn = _FullChainConnection(
+        existing_package_id='pkg-failed',
+        existing_status='failed',
+        existing_storage_key='ws-1/pkg-failed.json',
+    )
+    storage = _FakeStorage()
+    _monkeypatch_common(monkeypatch, conn)
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: storage)
+
+    result = pilot.create_evidence_package_from_response_action('action-1', _fake_request())
+
+    assert result['created'] is True
+    assert result['package_id'] == 'pkg-failed'
+    assert storage.written, 'Artifact must be uploaded before returning success'
+
+
+def test_reuse_completed_but_object_missing_regenerates(monkeypatch):
+    """status=completed + storage_key present but object gone from R2 → regenerate.
+
+    Covers ephemeral local storage lost on redeploy, or an object deleted out of band.
+    """
+    conn = _FullChainConnection(
+        existing_package_id='pkg-gone',
+        existing_status='completed',
+        existing_storage_key='ws-1/pkg-gone.json',
+    )
+    storage = _FakeStorageObjectMissing()
+    _monkeypatch_common(monkeypatch, conn)
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: storage)
+
+    result = pilot.create_evidence_package_from_response_action('action-1', _fake_request())
+
+    assert result['created'] is True, 'Unreadable prior object must trigger regeneration'
+    assert result['package_id'] == 'pkg-gone'
+    assert conn.filters_repaired
+    assert storage.written, 'Artifact must be re-uploaded when the prior object is missing'
+
+
+def test_reuse_stale_row_upload_fails_returns_502(monkeypatch):
+    """Regenerating a stale row whose upload fails must return 502 — never a stale 200.
+
+    Regression guard for task item #10: a missing-storage_key row must regenerate or
+    fail clearly, and 200 is only allowed after a verified upload.
+    """
+    conn = _UploadFailsConnection(
+        existing_package_id='pkg-stale',
+        existing_status='failed',
+        existing_storage_key=None,
+    )
+    _monkeypatch_common(monkeypatch, conn)
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: _FakeStorageUploadFails())
+
+    with pytest.raises(HTTPException) as exc_info:
+        pilot.create_evidence_package_from_response_action('action-1', _fake_request())
+
+    exc = exc_info.value
+    assert exc.status_code == 502, f'Expected 502 on regenerate upload failure, got {exc.status_code}'
+    assert isinstance(exc.detail, dict)
+    assert exc.detail.get('error') == 'evidence_upload_failed'
