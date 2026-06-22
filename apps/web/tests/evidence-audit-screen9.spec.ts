@@ -240,3 +240,98 @@ test('status pills: audit result values are mapped', () => {
   expect(source).toContain("label: 'Success'");
   expect(source).toContain("label: 'Denied'");
 });
+
+/* ── Proxy-route transport (NEXT_PUBLIC_API_URL may be unset in production) ── */
+
+test('proxy: /api/exports route file exists and uses proxyJsonToBackend', () => {
+  const source = read('app/api/exports/route.ts');
+  expect(source).toContain('proxyJsonToBackend');
+  expect(source).toContain("backendPath: '/exports'");
+  expect(source).toContain("method: 'GET'");
+  expect(source).toContain('searchParams');
+});
+
+test('proxy: /api/events route file exists and uses proxyJsonToBackend', () => {
+  const source = read('app/api/events/route.ts');
+  expect(source).toContain('proxyJsonToBackend');
+  expect(source).toContain("backendPath: '/events'");
+  expect(source).toContain("method: 'GET'");
+});
+
+test('proxy: panel fetches exports via /api/exports not direct backend URL', () => {
+  const source = read(PANEL);
+  // Must use same-origin proxy so listing works when NEXT_PUBLIC_API_URL is unset
+  expect(source).toContain("'/api/exports'");
+  expect(source).toContain('`/api/exports?');
+  // Must not call backend directly for the list fetch
+  expect(source).not.toContain('`${apiUrl}/exports`');
+  expect(source).not.toContain('`${apiUrl}/exports?');
+});
+
+test('proxy: panel fetches audit events via /api/events not direct backend URL', () => {
+  const source = read(PANEL);
+  expect(source).toContain("'/api/events'");
+  expect(source).not.toContain('`${apiUrl}/events`');
+});
+
+/* ── URL search param handling ──────────────────────────────────────────────── */
+
+test('url-params: panel reads package_id, action_id, incident_id from search params', () => {
+  const source = read(PANEL);
+  expect(source).toContain("searchParams.get('package_id')");
+  expect(source).toContain("searchParams.get('action_id')");
+  expect(source).toContain("searchParams.get('incident_id')");
+});
+
+test('url-params: package_id is passed to /api/exports query string', () => {
+  const source = read(PANEL);
+  expect(source).toContain("exportsParams.set('package_id', urlPackageId)");
+  expect(source).toContain("exportsParams.set('action_id', urlActionId)");
+  expect(source).toContain("exportsParams.set('incident_id', urlIncidentId)");
+});
+
+test('url-params: blocker is suppressed when any URL param is present', () => {
+  const source = read(PANEL);
+  // When package_id / action_id / incident_id is in URL, we must not show a chain-step blocker
+  // even if packages haven't loaded yet (to avoid false "no packages" state on first render).
+  expect(source).toContain('urlPackageId || urlActionId || urlIncidentId');
+});
+
+test('url-params: blocker is suppressed when packageExists is true', () => {
+  const source = read(PANEL);
+  // Once a package is loaded the chain-step blockers must disappear permanently.
+  expect(source).toContain('if (packageExists) return null');
+});
+
+/* ── Summary cards ─────────────────────────────────────────────────────────── */
+
+test('summary: Evidence Packages card counts packages.length (all returned rows)', () => {
+  const source = read(PANEL);
+  // The metric tile value must be packages.length — not a hard-coded number.
+  expect(source).toContain('label="Evidence Packages" value={packages.length}');
+});
+
+test('summary: Export Ready card counts isPackageReady rows (completed packages with download_url)', () => {
+  const source = read(PANEL);
+  expect(source).toContain('label="Export Ready"');
+  expect(source).toContain('value={exportReadyCount}');
+  // exportReadyCount is derived from packages filtered by isPackageReady
+  expect(source).toContain('packages.filter(isPackageReady).length');
+});
+
+test('summary: Retention Status is not "No packages" when a completed package exists', () => {
+  const source = read(PANEL);
+  // retentionStatus logic: 'No packages' only when packages.length === 0
+  expect(source).toContain("'No packages'");
+  expect(source).toContain('packages.length > 0');
+});
+
+/* ── No fake evidence ───────────────────────────────────────────────────────── */
+
+test('no-fake: panel never injects hardcoded mock packages into the packages array', () => {
+  const source = read(PANEL);
+  // packages state is only populated from the /api/exports API response
+  expect(source).toContain('setPackages(loaded)');
+  // There must be no literal fake package objects pushed into state
+  expect(source).not.toMatch(/setPackages\s*\(\s*\[.*id.*package/s);
+});
