@@ -160,11 +160,37 @@ test('13: Export Ready metric uses isPackageReady guard and does not show ready 
   expect(source).toContain('pkg.download_url');
 });
 
-/* ── 14. Download/Export disabled when no package ───────────────── */
+/* ── 14. Download JSON button ───────────────────────────────────── */
 
-test('14: Download and Export buttons are disabled when package is not ready', () => {
+test('14a: single Download JSON button is disabled when package is not ready', () => {
   const source = read(PANEL);
   expect(source).toContain('disabled={!ready}');
+  expect(source).toContain('Download JSON');
+});
+
+test('14b: button label is "Download JSON" not a bare "Download" that could imply ZIP', () => {
+  const source = read(PANEL);
+  // No button should be labelled just "Download" — that would imply a ZIP bundle
+  // which is not currently produced. Only "Download JSON" is permitted.
+  const buttonDownloadOnly = />\s*Download\s*<\/button>/.test(source);
+  expect(buttonDownloadOnly).toBe(false);
+});
+
+test('14c: download filename extension matches button label (both JSON)', () => {
+  const source = read(PANEL);
+  // The button says "Download JSON" and the anchor download attr must end in .json
+  expect(source).toContain('Download JSON');
+  expect(source).toMatch(/a\.download\s*=\s*`[^`]*\.json`/);
+});
+
+test('14d: there is exactly one Download JSON action per table row (no duplicate button)', () => {
+  const source = read(PANEL);
+  // Ensure the old duplicate "Export JSON" / "Download" pair is gone
+  expect(source).not.toContain('Export JSON');
+  // And there is at most one download handler per row — the marginRight removal
+  // from the old pair is a reliable structural signal.
+  const exportJsonCount = (source.match(/Export JSON/g) ?? []).length;
+  expect(exportJsonCount).toBe(0);
 });
 
 /* ── 15. Simulator evidence not labeled as live_provider ─────────── */
