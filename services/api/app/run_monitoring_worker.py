@@ -207,6 +207,48 @@ def _log_startup_provider_status(logger: logging.Logger) -> dict:
         interval_seconds,
         provider_mode,
     )
+
+    # Base (chain 8453) is the canonical monitored chain. Log the resolution the
+    # worker actually uses for Base targets (resolve_chain_rpc — the same resolver
+    # the polling loop and /ops/system-health use) so operators can confirm, from
+    # logs alone, that Base polling is wired to a real endpoint. Only the host is
+    # ever printed — never the URL path, key, query, or credentials.
+    try:
+        from services.api.app.evm_activity_provider import resolve_chain_rpc as _resolve_chain
+        _base_resolved = _resolve_chain('base')
+        base_rpc_url = (_base_resolved.get('rpc_url') or '').strip()
+        base_rpc_env = _base_resolved.get('rpc_url_env') or 'none'
+    except Exception:
+        base_rpc_url = ''
+        base_rpc_env = 'none'
+    base_rpc_configured = bool(base_rpc_url)
+    try:
+        base_rpc_host = _urlparse(base_rpc_url).hostname or 'unconfigured'
+    except Exception:
+        base_rpc_host = 'unconfigured'
+    logger.info(
+        'startup_base_rpc service_role=worker rpc_configured=%s rpc_host=%s rpc_url_env=%s '
+        'chain_id=%s worker_enabled=%s polling_interval_seconds=%s',
+        base_rpc_configured,
+        base_rpc_host,
+        base_rpc_env,
+        _BASE_CHAIN_ID,
+        worker_enabled,
+        interval_seconds,
+    )
+    if base_rpc_configured and worker_enabled:
+        logger.info(
+            'startup_base_polling_active chain_id=%s rpc_host=%s polling_interval_seconds=%s',
+            _BASE_CHAIN_ID,
+            base_rpc_host,
+            interval_seconds,
+        )
+    elif not base_rpc_configured:
+        logger.warning(
+            'worker_startup_base_rpc_missing '
+            'Base RPC URL is missing in worker service. Set EVM_RPC_URL or STAGING_EVM_RPC_URL.'
+        )
+
     if not db_url_configured:
         logger.warning(
             'worker_startup_no_database_url '
