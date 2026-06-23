@@ -623,29 +623,13 @@ export default function EvidenceAuditPanel() {
                             type="button"
                             disabled={!ready}
                             className="btn btn-secondary"
-                            style={{
-                              fontSize: '0.72rem',
-                              padding: '0.15rem 0.45rem',
-                              marginRight: '0.3rem',
-                            }}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void downloadPackage(pkg);
-                            }}
-                          >
-                            Export JSON
-                          </button>
-                          <button
-                            type="button"
-                            disabled={!ready}
-                            className="btn btn-secondary"
                             style={{ fontSize: '0.72rem', padding: '0.15rem 0.45rem' }}
                             onClick={(e) => {
                               e.stopPropagation();
                               void downloadPackage(pkg);
                             }}
                           >
-                            Download
+                            Download JSON
                           </button>
                         </td>
                       </tr>
@@ -1070,7 +1054,7 @@ function PackageDetailPanel({
           style={{ fontSize: '0.75rem' }}
           onClick={() => void onDownload(pkg)}
         >
-          Export JSON
+          Download JSON
         </button>
         {pkg.incident_id ? (
           <Link
