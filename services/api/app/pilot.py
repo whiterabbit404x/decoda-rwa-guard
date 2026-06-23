@@ -17393,7 +17393,10 @@ def get_export_artifact_content(export_id: str, request: Request) -> tuple[bytes
         try:
             content = storage.read_bytes(object_key=object_key)
         except FileNotFoundError as exc:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Export artifact missing.') from exc
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={'error': 'evidence_object_not_found', 'detail': 'Export artifact not found in storage.'},
+            ) from exc
         return content, f"{row['id']}.{row['format']}"
 
 
