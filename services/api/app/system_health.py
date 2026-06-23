@@ -12,6 +12,7 @@ Status vocabulary:
 """
 from __future__ import annotations
 
+import logging
 import os
 import time
 from datetime import datetime, timezone
@@ -27,6 +28,21 @@ WORKER_HEARTBEAT_STALE_SECONDS = int(os.getenv('WORKER_HEARTBEAT_TTL_SECONDS', '
 TELEMETRY_STALE_SECONDS = 3600        # 1 hour  → degraded
 DETECTION_STALE_SECONDS = 86400 * 2   # 48 hours → degraded
 POLL_INTERVAL_SECONDS = max(10, int(os.getenv('MONITOR_POLL_INTERVAL_SECONDS', '30')))
+
+# Base mainnet chain id — the canonical monitored chain for the RPC probe.
+BASE_CHAIN_ID = 8453
+# Safe, bounded timeout for the on-chain eth_blockNumber probe (seconds). A
+# slow/rate-limited provider must never block the whole snapshot request.
+RPC_PROBE_TIMEOUT_SECONDS = max(1, int(os.getenv('SYSTEM_HEALTH_RPC_TIMEOUT_SECONDS', '8')))
+# Cache the Base RPC probe for a short TTL so repeated /ops/system-health page
+# refreshes reuse one probe instead of calling the provider on every request.
+RPC_HEALTH_CACHE_TTL_SECONDS = max(0, int(os.getenv('SYSTEM_HEALTH_RPC_TTL_SECONDS', '45')))
+
+logger = logging.getLogger(__name__)
+
+# Process-local cache for the Base RPC health probe. Keyed by the resolved RPC
+# URL so an env change invalidates it; stores the monotonic time of the probe.
+_RPC_HEALTH_CACHE: dict[str, Any] = {}
 
 
 def _age_seconds(ts: str | None) -> float | None:
@@ -170,9 +186,9 @@ def _rpc_failure_action(reason: str) -> str:
     if 'unauthorized' in r or '401' in r or '403' in r:
         return 'Provider rejected the API key. Verify the key embedded in EVM_RPC_URL / EVM_RPC_URL_8453.'
     if 'rate' in r or '429' in r:
-        return 'Provider is rate-limiting. Reduce polling frequency or raise the provider quota.'
+        return 'Provider is rate-limiting. Increase RPC quota or reduce polling frequency.'
     if 'timeout' in r:
-        return 'RPC endpoint did not respond within 8s. Check provider availability.'
+        return f'RPC endpoint did not respond within {RPC_PROBE_TIMEOUT_SECONDS}s. Check provider availability.'
     if 'hostname' in r or 'bad_url' in r:
         return 'RPC hostname cannot be resolved. Verify the EVM_RPC_URL hostname.'
     if 'refused' in r:
@@ -190,12 +206,49 @@ def _rpc_failed(rpc_host: str, reason: str) -> dict[str, Any]:
     )
 
 
+def _rpc_status_class(reason: str) -> str:
+    """Map a categorized failure reason to a coarse status label for structured logs."""
+    r = (reason or '').lower()
+    if 'rate' in r or '429' in r:
+        return 'rate_limited'
+    return 'failing'
+
+
+def _log_rpc_probe(
+    *,
+    rpc_configured: bool,
+    rpc_host: str,
+    rpc_status: str,
+    response_time_ms: int,
+    last_error_class: str | None,
+) -> None:
+    """Emit one structured, secret-free log line for the Base RPC probe.
+
+    Only the host is ever logged — never the URL path, key, query, or credentials.
+    """
+    logger.info(
+        'rpc_probe rpc_configured=%s rpc_host=%s chain_id=%s rpc_status=%s '
+        'response_time_ms=%s last_error_class=%s polling_interval_seconds=%s',
+        rpc_configured,
+        rpc_host,
+        BASE_CHAIN_ID,
+        rpc_status,
+        response_time_ms,
+        last_error_class or 'none',
+        POLL_INTERVAL_SECONDS,
+    )
+
+
 def _check_rpc() -> dict[str, Any]:
     # Resolve the Base RPC endpoint the SAME way the worker resolves a Base target
     # so System Health and the worker always agree on which endpoint serves Base.
     rpc_url = _resolve_base_rpc_url()
 
     if not rpc_url:
+        _log_rpc_probe(
+            rpc_configured=False, rpc_host='unconfigured', rpc_status='unavailable',
+            response_time_ms=0, last_error_class='rpc_url_not_configured',
+        )
         return _component(
             'unavailable',
             'Base RPC URL is missing in worker service. Set EVM_RPC_URL or STAGING_EVM_RPC_URL.',
@@ -212,6 +265,19 @@ def _check_rpc() -> dict[str, Any]:
     except Exception:
         rpc_host = 'configured'
 
+    started = time.monotonic()
+
+    def _elapsed_ms() -> int:
+        return int((time.monotonic() - started) * 1000)
+
+    def _failed(reason: str) -> dict[str, Any]:
+        # One blocking on-chain call per probe — classify, log (host only), return.
+        _log_rpc_probe(
+            rpc_configured=True, rpc_host=rpc_host, rpc_status=_rpc_status_class(reason),
+            response_time_ms=_elapsed_ms(), last_error_class=reason,
+        )
+        return _rpc_failed(rpc_host, reason)
+
     payload = b'{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
     try:
         req = UrlRequest(
@@ -220,7 +286,7 @@ def _check_rpc() -> dict[str, Any]:
             headers={'Content-Type': 'application/json'},
             method='POST',
         )
-        with urlopen(req, timeout=8) as resp:
+        with urlopen(req, timeout=RPC_PROBE_TIMEOUT_SECONDS) as resp:
             import json as _json
             body = _json.loads(resp.read())
             if isinstance(body, dict) and body.get('error'):
@@ -229,18 +295,29 @@ def _check_rpc() -> dict[str, Any]:
                 err_code = rpc_err.get('code', 0) if isinstance(rpc_err, dict) else 0
                 if err_code in (-32000, -32003) or 'unauthorized' in err_msg.lower() or 'invalid key' in err_msg.lower():
                     reason = 'unauthorized_key'
+                elif err_code == 429 or 'rate' in err_msg.lower() or 'too many' in err_msg.lower():
+                    reason = 'rate_limited'
                 else:
                     reason = 'provider_error'
-                return _rpc_failed(rpc_host, reason)
+                return _failed(reason)
             block_hex = body.get('result')
             if block_hex:
                 block_num = int(block_hex, 16)
+                elapsed_ms = _elapsed_ms()
+                checked_at = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+                _log_rpc_probe(
+                    rpc_configured=True, rpc_host=rpc_host, rpc_status='healthy',
+                    response_time_ms=elapsed_ms, last_error_class=None,
+                )
+                # metric carries latest block + response time; last_event is the
+                # timestamp of this successful check (rendered by the SaaS page).
                 return _component(
                     'healthy',
                     f'eth_blockNumber succeeded (host: {rpc_host}).',
-                    metric=f'block #{block_num}',
+                    metric=f'block #{block_num} · {elapsed_ms}ms',
+                    last_event=checked_at,
                 )
-            return _rpc_failed(rpc_host, 'empty_result')
+            return _failed('empty_result')
     except HTTPError as exc:
         if exc.code in (401, 403):
             reason = f'unauthorized_key (HTTP {exc.code})'
@@ -248,7 +325,7 @@ def _check_rpc() -> dict[str, Any]:
             reason = f'rate_limited (HTTP {exc.code})'
         else:
             reason = f'http_{exc.code}'
-        return _rpc_failed(rpc_host, reason)
+        return _failed(reason)
     except (URLError, OSError) as exc:
         err_str = str(getattr(exc, 'reason', exc)).lower()
         if 'timed out' in err_str or 'timeout' in err_str:
@@ -259,9 +336,41 @@ def _check_rpc() -> dict[str, Any]:
             reason = 'connection_refused'
         else:
             reason = 'network_error'
-        return _rpc_failed(rpc_host, reason)
+        return _failed(reason)
     except Exception as exc:
-        return _rpc_failed(rpc_host, _sanitize_error(exc))
+        return _failed(_sanitize_error(exc))
+
+
+def _reset_rpc_health_cache() -> None:
+    """Clear the cached Base RPC health probe (used by tests/ops)."""
+    _RPC_HEALTH_CACHE.clear()
+
+
+def _cached_base_rpc_health(force: bool = False) -> dict[str, Any]:
+    """Return the Base RPC health probe, cached for ``RPC_HEALTH_CACHE_TTL_SECONDS``.
+
+    The /ops/system-health page is refreshed frequently; without caching, every
+    refresh fires a live ``eth_blockNumber`` call which — combined with worker
+    polling — pushed the provider over its rate limit and made Base RPC flap to
+    "failing". Caching one probe for a short TTL keeps the page truthful (the
+    cached result is a real probe, never simulated) without hammering the
+    provider. The cache key is the resolved RPC URL so an env change invalidates
+    it immediately. Pass ``force=True`` to bypass the cache.
+    """
+    key = _resolve_base_rpc_url() or '<unconfigured>'
+    now_mono = time.monotonic()
+    entry = _RPC_HEALTH_CACHE.get('entry')
+    if (
+        not force
+        and RPC_HEALTH_CACHE_TTL_SECONDS > 0
+        and entry is not None
+        and entry.get('key') == key
+        and (now_mono - float(entry.get('monotonic', 0.0))) < RPC_HEALTH_CACHE_TTL_SECONDS
+    ):
+        return dict(entry['result'])
+    result = _check_rpc()
+    _RPC_HEALTH_CACHE['entry'] = {'key': key, 'monotonic': now_mono, 'result': result}
+    return dict(result)
 
 
 def _check_worker(connection: Any, workspace_id: str | None) -> dict[str, Any]:
@@ -977,7 +1086,9 @@ def build_system_health_snapshot(request: Any = None) -> dict[str, Any]:
             components['worker'] = _check_worker(connection, workspace_id)
             # Compute the Base RPC probe once and reuse it everywhere it is needed
             # (component, live chain monitoring, providers) to keep the endpoint fast.
-            base_rpc_check = _check_rpc()
+            # The probe is cached for a short TTL so repeated page refreshes do not
+            # re-hit the provider on every request.
+            base_rpc_check = _cached_base_rpc_health()
             components['base_rpc'] = base_rpc_check
             components['live_polling'] = _check_live_polling(connection, workspace_id)
             components['telemetry'] = _check_telemetry(connection, workspace_id)
@@ -997,7 +1108,7 @@ def build_system_health_snapshot(request: Any = None) -> dict[str, Any]:
         )
         components.setdefault('redis', _check_redis())
         components.setdefault('worker', _component('unavailable', 'Cannot check worker: database unavailable.'))
-        components.setdefault('base_rpc', _check_rpc())
+        components.setdefault('base_rpc', _cached_base_rpc_health())
         components.setdefault('live_polling', _component('unavailable', 'Cannot check polling: database unavailable.'))
         components.setdefault('telemetry', _component('unavailable', 'Cannot check telemetry: database unavailable.'))
         components.setdefault('detection', _component('unavailable', 'Cannot check detection: database unavailable.'))
