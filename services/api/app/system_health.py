@@ -132,26 +132,80 @@ def _check_redis() -> dict[str, Any]:
         )
 
 
-def _check_rpc() -> dict[str, Any]:
-    # Use the same URL resolution as the worker so System Health and the worker
-    # always agree on which env var supplies the RPC endpoint.
+# Operator-facing sentence shown when Base RPC is configured but the on-chain
+# call fails. The leading sentence is intentionally stable; a sanitized host and
+# a categorized reason are appended so operators can act without reading logs.
+_BASE_RPC_FAILED_MESSAGE = 'Base RPC request failed. Check provider key, network, or rate limit.'
+
+
+def _resolve_base_rpc_url() -> str:
+    """Resolve the Base (chain 8453) RPC URL exactly as the worker does for a Base
+    target: ``EVM_RPC_URL_8453`` → ``BASE_EVM_RPC_URL``/``EVM_BASE_RPC_URL`` →
+    global ``STAGING_EVM_RPC_URL``/``EVM_RPC_URL``.
+
+    Using the worker's own per-chain resolver (``resolve_chain_rpc('base')``)
+    guarantees System Health and the worker never disagree about which endpoint
+    serves Base — regardless of ``EVM_CHAIN_ID``/``STAGING_EVM_CHAIN_ID``. The
+    legacy global resolver keyed Base lookups off ``EVM_CHAIN_ID``, so a worker
+    polling Base via ``EVM_RPC_URL_8453`` while ``EVM_CHAIN_ID`` was unset/``1``
+    showed "Base RPC failing" here even though polling was healthy.
+    """
     try:
-        from services.api.app.evm_activity_provider import _resolve_evm_rpc_url as _resolve_url
-        rpc_url = _resolve_url()
+        from services.api.app.evm_activity_provider import resolve_chain_rpc as _resolve_chain
+        return (_resolve_chain('base').get('rpc_url') or '').strip()
     except Exception:
-        rpc_url = (os.getenv('STAGING_EVM_RPC_URL') or os.getenv('EVM_RPC_URL') or '').strip()
+        return (
+            os.getenv('EVM_RPC_URL_8453')
+            or os.getenv('BASE_EVM_RPC_URL')
+            or os.getenv('EVM_BASE_RPC_URL')
+            or os.getenv('STAGING_EVM_RPC_URL')
+            or os.getenv('EVM_RPC_URL')
+            or ''
+        ).strip()
+
+
+def _rpc_failure_action(reason: str) -> str:
+    """Map a categorized failure reason to a secret-free remediation hint."""
+    r = reason.lower()
+    if 'unauthorized' in r or '401' in r or '403' in r:
+        return 'Provider rejected the API key. Verify the key embedded in EVM_RPC_URL / EVM_RPC_URL_8453.'
+    if 'rate' in r or '429' in r:
+        return 'Provider is rate-limiting. Reduce polling frequency or raise the provider quota.'
+    if 'timeout' in r:
+        return 'RPC endpoint did not respond within 8s. Check provider availability.'
+    if 'hostname' in r or 'bad_url' in r:
+        return 'RPC hostname cannot be resolved. Verify the EVM_RPC_URL hostname.'
+    if 'refused' in r:
+        return 'RPC connection refused. Check provider availability.'
+    return 'Check EVM_RPC_URL connectivity, provider key, and quota in the worker service.'
+
+
+def _rpc_failed(rpc_host: str, reason: str) -> dict[str, Any]:
+    # Lead with the mandated operator sentence, then append the sanitized host and
+    # categorized reason. Never includes the URL path, key, query, or credentials.
+    return _component(
+        'failing',
+        f'{_BASE_RPC_FAILED_MESSAGE} (host: {rpc_host}, reason: {reason})',
+        action=_rpc_failure_action(reason),
+    )
+
+
+def _check_rpc() -> dict[str, Any]:
+    # Resolve the Base RPC endpoint the SAME way the worker resolves a Base target
+    # so System Health and the worker always agree on which endpoint serves Base.
+    rpc_url = _resolve_base_rpc_url()
 
     if not rpc_url:
         return _component(
             'unavailable',
-            'Base RPC URL is not configured.',
+            'Base RPC URL is missing in worker service. Set EVM_RPC_URL or STAGING_EVM_RPC_URL.',
             action=(
-                'Set EVM_RPC_URL or STAGING_EVM_RPC_URL in the worker service. '
-                'For Base mainnet also set EVM_RPC_URL_8453 (or BASE_EVM_RPC_URL) and EVM_CHAIN_ID=8453.'
+                'Set EVM_RPC_URL or STAGING_EVM_RPC_URL in the Railway worker service. '
+                'For Base mainnet you may instead set EVM_RPC_URL_8453 (or BASE_EVM_RPC_URL).'
             ),
         )
 
-    # Sanitize: only show the host portion, never the path/key.
+    # Sanitize: only the host is ever surfaced — never the path/key/query/credentials.
     try:
         from urllib.parse import urlparse as _up
         rpc_host = _up(rpc_url).hostname or 'unconfigured'
@@ -175,15 +229,9 @@ def _check_rpc() -> dict[str, Any]:
                 err_code = rpc_err.get('code', 0) if isinstance(rpc_err, dict) else 0
                 if err_code in (-32000, -32003) or 'unauthorized' in err_msg.lower() or 'invalid key' in err_msg.lower():
                     reason = 'unauthorized_key'
-                    action = 'Provider rejected the API key. Check EVM_RPC_URL includes a valid key.'
                 else:
                     reason = 'provider_error'
-                    action = 'Check EVM_RPC_URL and provider status.'
-                return _component(
-                    'failing',
-                    f'eth_blockNumber provider error on {rpc_host}: {reason}.',
-                    action=action,
-                )
+                return _rpc_failed(rpc_host, reason)
             block_hex = body.get('result')
             if block_hex:
                 block_num = int(block_hex, 16)
@@ -192,51 +240,28 @@ def _check_rpc() -> dict[str, Any]:
                     f'eth_blockNumber succeeded (host: {rpc_host}).',
                     metric=f'block #{block_num}',
                 )
-            return _component(
-                'failing',
-                f'eth_blockNumber returned no result (host: {rpc_host}).',
-                action='Check EVM_RPC_URL and provider quota.',
-            )
+            return _rpc_failed(rpc_host, 'empty_result')
     except HTTPError as exc:
         if exc.code in (401, 403):
             reason = f'unauthorized_key (HTTP {exc.code})'
-            action = f'Provider returned HTTP {exc.code}. Check EVM_RPC_URL includes a valid API key.'
         elif exc.code == 429:
             reason = f'rate_limited (HTTP {exc.code})'
-            action = 'Provider is rate-limiting. Check EVM_RPC_URL quota or reduce polling frequency.'
         else:
             reason = f'http_{exc.code}'
-            action = f'Provider returned HTTP {exc.code}. Check EVM_RPC_URL and provider status.'
-        return _component(
-            'failing',
-            f'eth_blockNumber failed on {rpc_host}: {reason}.',
-            action=action,
-        )
+        return _rpc_failed(rpc_host, reason)
     except (URLError, OSError) as exc:
         err_str = str(getattr(exc, 'reason', exc)).lower()
         if 'timed out' in err_str or 'timeout' in err_str:
             reason = 'timeout'
-            action = 'RPC endpoint did not respond within 8s. Check EVM_RPC_URL and provider availability.'
         elif any(s in err_str for s in ('name or service not known', 'nodename nor servname', 'getaddrinfo failed', 'name resolution')):
             reason = 'bad_url_or_hostname'
-            action = 'RPC hostname cannot be resolved. Verify EVM_RPC_URL hostname is correct.'
         elif 'connection refused' in err_str:
             reason = 'connection_refused'
-            action = 'RPC connection refused. Check EVM_RPC_URL and provider availability.'
         else:
             reason = 'network_error'
-            action = 'Check EVM_RPC_URL connectivity in the Railway worker service.'
-        return _component(
-            'failing',
-            f'eth_blockNumber failed on {rpc_host}: {reason}.',
-            action=action,
-        )
+        return _rpc_failed(rpc_host, reason)
     except Exception as exc:
-        return _component(
-            'failing',
-            f'RPC probe error on {rpc_host}: {_sanitize_error(exc)}.',
-            action='Check EVM_RPC_URL in the worker service.',
-        )
+        return _rpc_failed(rpc_host, _sanitize_error(exc))
 
 
 def _check_worker(connection: Any, workspace_id: str | None) -> dict[str, Any]:
@@ -457,11 +482,9 @@ def _build_live_chain_monitoring(
     connection: Any, workspace_id: str | None, rpc_check: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     worker_enabled = os.getenv('WORKER_ENABLED', 'true').strip().lower() not in {'0', 'false', 'no', 'off'}
-    try:
-        from services.api.app.evm_activity_provider import _resolve_evm_rpc_url as _resolve_url
-        rpc_url = _resolve_url()
-    except Exception:
-        rpc_url = (os.getenv('STAGING_EVM_RPC_URL') or os.getenv('EVM_RPC_URL') or '').strip()
+    # Use the same Base resolver as _check_rpc and the worker so rpc_configured
+    # reflects the endpoint the worker actually polls Base with.
+    rpc_url = _resolve_base_rpc_url()
     rpc_configured = bool(rpc_url)
     chain_id_str = (os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or '').strip()
     expected_chain_id = int(chain_id_str) if chain_id_str.isdigit() else 8453
@@ -981,7 +1004,7 @@ def build_system_health_snapshot(request: Any = None) -> dict[str, Any]:
         components.setdefault('alert_delivery', _check_alert_delivery())
         chain_monitoring = {
             'expected_chain_id': 8453,
-            'rpc_configured': bool((os.getenv('STAGING_EVM_RPC_URL') or os.getenv('EVM_RPC_URL') or '').strip()),
+            'rpc_configured': bool(_resolve_base_rpc_url()),
             'latest_rpc_block': None,
             'worker_enabled': os.getenv('WORKER_ENABLED', 'true').strip().lower() not in {'0', 'false', 'no', 'off'},
             'last_heartbeat_at': None,

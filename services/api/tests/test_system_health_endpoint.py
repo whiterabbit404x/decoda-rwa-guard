@@ -171,9 +171,15 @@ class TestRpcMissingUrl:
         monkeypatch.delenv('EVM_RPC_URL', raising=False)
         monkeypatch.delenv('STAGING_EVM_RPC_URL', raising=False)
 
+        monkeypatch.delenv('EVM_RPC_URL_8453', raising=False)
+        monkeypatch.delenv('BASE_EVM_RPC_URL', raising=False)
+        monkeypatch.delenv('EVM_BASE_RPC_URL', raising=False)
+
         result = sh._check_rpc()
         assert result['status'] == 'unavailable', f'Expected unavailable, got {result["status"]}'
-        assert 'not configured' in result['message'].lower(), f'Expected "not configured" in message: {result["message"]}'
+        assert result['message'] == (
+            'Base RPC URL is missing in worker service. Set EVM_RPC_URL or STAGING_EVM_RPC_URL.'
+        ), f'Unexpected missing-RPC message: {result["message"]}'
 
 
 # ---------------------------------------------------------------------------
