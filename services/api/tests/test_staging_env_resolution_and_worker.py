@@ -128,6 +128,82 @@ def test_resolve_worker_does_not_override_existing_live_mode(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# B2. Shared worker-enabled resolver (single source of truth)
+# ---------------------------------------------------------------------------
+
+_WORKER_ENABLE_VARS = ('STAGING_WORKER_ENABLED', 'WORKER_ENABLED', 'MONITORING_WORKER_ENABLED', 'LIVE_MODE_ENABLED')
+
+
+def _clear_worker_enable_vars(monkeypatch):
+    for var in (*_WORKER_ENABLE_VARS, 'LIVE_MONITORING_ENABLED'):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_resolve_worker_enabled_fail_closed_default(monkeypatch):
+    """No enabling var set → disabled, source 'none' (fail-closed)."""
+    _clear_worker_enable_vars(monkeypatch)
+    from services.api.app.worker_enable import resolve_worker_enabled
+    state = resolve_worker_enabled()
+    assert state['enabled'] is False
+    assert state['source'] == 'none'
+    assert state['env_var'] is None
+
+
+@pytest.mark.parametrize('var', _WORKER_ENABLE_VARS)
+def test_resolve_worker_enabled_each_var_enables(monkeypatch, var):
+    """Any one of the four enabling vars set to true → enabled, with that var as the source."""
+    _clear_worker_enable_vars(monkeypatch)
+    monkeypatch.setenv(var, 'true')
+    from services.api.app.worker_enable import resolve_worker_enabled
+    state = resolve_worker_enabled()
+    assert state['enabled'] is True
+    assert state['env_var'] == var
+    assert state['source'] == f'{var}=true'
+
+
+def test_resolve_worker_enabled_priority_order(monkeypatch):
+    """STAGING_WORKER_ENABLED wins the source attribution over WORKER_ENABLED."""
+    _clear_worker_enable_vars(monkeypatch)
+    monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
+    monkeypatch.setenv('WORKER_ENABLED', 'true')
+    from services.api.app.worker_enable import resolve_worker_enabled
+    assert resolve_worker_enabled()['env_var'] == 'STAGING_WORKER_ENABLED'
+
+
+def test_resolve_worker_enabled_ignores_live_monitoring_enabled(monkeypatch):
+    """LIVE_MONITORING_ENABLED controls provider mode, not the worker loop — must not enable."""
+    _clear_worker_enable_vars(monkeypatch)
+    monkeypatch.setenv('LIVE_MONITORING_ENABLED', 'true')
+    from services.api.app.worker_enable import resolve_worker_enabled
+    assert resolve_worker_enabled()['enabled'] is False
+
+
+def test_system_health_worker_enabled_matches_resolver(monkeypatch):
+    """System Health's Live Chain Monitoring reports the SAME enabled value the
+    worker uses — enabled via STAGING_WORKER_ENABLED must show worker_enabled=True."""
+    _clear_worker_enable_vars(monkeypatch)
+    monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
+    from services.api.app import system_health
+    from services.api.app.worker_enable import resolve_worker_enabled
+
+    class _FakeCursor:
+        def fetchone(self):
+            return None
+
+        def fetchall(self):
+            return []
+
+    class _FakeConn:
+        def execute(self, *_a, **_k):
+            return _FakeCursor()
+
+    rpc_ok = system_health._component('healthy', 'ok', metric='block #1')
+    chain = system_health._build_live_chain_monitoring(_FakeConn(), None, rpc_check=rpc_ok)
+    assert chain['worker_enabled'] is resolve_worker_enabled()['enabled'] is True
+    assert chain['worker_enabled_source'] == 'STAGING_WORKER_ENABLED=true'
+
+
+# ---------------------------------------------------------------------------
 # C. probe_rpc_health
 # ---------------------------------------------------------------------------
 

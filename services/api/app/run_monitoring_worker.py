@@ -104,12 +104,12 @@ def _resolve_worker_enabled_env() -> None:
     Honor STAGING_WORKER_ENABLED, WORKER_ENABLED, and MONITORING_WORKER_ENABLED
     as aliases for LIVE_MODE_ENABLED so Railway workers start correctly without
     requiring a separate LIVE_MODE_ENABLED variable.
+
+    Uses the shared worker_enable.resolve_worker_enabled() so the worker and
+    System Health agree, byte-for-byte, on which flags enable live monitoring.
     """
-    _truthy = {'1', 'true', 'yes', 'on'}
-    staging_flag = (os.getenv('STAGING_WORKER_ENABLED') or '').strip().lower()
-    base_flag = (os.getenv('WORKER_ENABLED') or '').strip().lower()
-    monitoring_flag = (os.getenv('MONITORING_WORKER_ENABLED') or '').strip().lower()
-    if staging_flag in _truthy or base_flag in _truthy or monitoring_flag in _truthy:
+    from services.api.app.worker_enable import resolve_worker_enabled
+    if resolve_worker_enabled()['enabled']:
         os.environ.setdefault('LIVE_MODE_ENABLED', 'true')
 
 
@@ -205,6 +205,7 @@ def _log_startup_provider_status(logger: logging.Logger) -> dict:
     """
     from services.api.app.evm_activity_provider import _resolve_evm_rpc_url, probe_rpc_health
     from services.api.app.pilot import live_mode_enabled as _live_mode_enabled
+    from services.api.app.worker_enable import resolve_worker_enabled
     from urllib.parse import urlparse as _urlparse
     rpc_url = _resolve_evm_rpc_url()
     evm_rpc_configured = bool(rpc_url)
@@ -213,25 +214,12 @@ def _log_startup_provider_status(logger: logging.Logger) -> dict:
         rpc_host = _urlparse(rpc_url).hostname or 'unconfigured'
     except Exception:
         rpc_host = 'unconfigured'
-    _truthy = {'1', 'true', 'yes', 'on'}
-    staging_worker_enabled = (os.getenv('STAGING_WORKER_ENABLED') or '').strip().lower() in _truthy
-    base_worker_enabled = (os.getenv('WORKER_ENABLED') or '').strip().lower() in _truthy
-    monitoring_worker_enabled = (os.getenv('MONITORING_WORKER_ENABLED') or '').strip().lower() in _truthy
-    live_mode_env = (os.getenv('LIVE_MODE_ENABLED') or '').strip().lower() in _truthy
-    worker_enabled = staging_worker_enabled or base_worker_enabled or monitoring_worker_enabled or live_mode_env
+    # Shared resolver — the SAME one System Health uses — so logs and the status
+    # page never disagree about whether live monitoring is enabled.
+    _worker_state = resolve_worker_enabled()
+    worker_enabled = _worker_state['enabled']
+    enabled_reason = _worker_state['source'] if worker_enabled else 'none_set — worker loop WILL NOT run'
     live_mode_active = _live_mode_enabled()
-
-    # Compute the enabling reason (which env var triggered it)
-    if staging_worker_enabled:
-        enabled_reason = 'STAGING_WORKER_ENABLED=true'
-    elif base_worker_enabled:
-        enabled_reason = 'WORKER_ENABLED=true'
-    elif monitoring_worker_enabled:
-        enabled_reason = 'MONITORING_WORKER_ENABLED=true'
-    elif live_mode_env:
-        enabled_reason = 'LIVE_MODE_ENABLED=true'
-    else:
-        enabled_reason = 'none_set — worker loop WILL NOT run'
 
     chain_id_raw = (os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or '').strip()
     chain_id_configured = int(chain_id_raw) if chain_id_raw.isdigit() else None
@@ -436,9 +424,13 @@ def main() -> int:
         args.limit,
         args.once,
     )
+    from services.api.app.worker_enable import resolve_worker_enabled
+    _worker_enabled_state = resolve_worker_enabled()
     logger.info(
-        'worker_startup worker_name=%s service_role=worker WORKER_ENABLED=true app_mode=%s live_mode=%s interval_seconds=%s limit=%s',
+        'worker_startup worker_name=%s service_role=worker worker_enabled=%s enabled_reason=%s app_mode=%s live_mode=%s interval_seconds=%s limit=%s',
         args.worker_name,
+        _worker_enabled_state['enabled'],
+        _worker_enabled_state['source'] if _worker_enabled_state['enabled'] else 'none_set',
         identity.get('app_mode'),
         identity.get('live_mode_enabled'),
         args.interval_seconds,
