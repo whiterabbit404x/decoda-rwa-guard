@@ -28,7 +28,7 @@
     "build": "npm run build --workspace apps/web"
   },
   "devDependencies": {
-    "@playwright/test": "1.55.1",
+    "@playwright/test": "^1.55.1",
     "playwright": "1.55.1",
     "postcss": ">=8.5.10"
   },
