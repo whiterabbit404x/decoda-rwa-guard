@@ -453,7 +453,9 @@ def _check_alert_delivery() -> dict[str, Any]:
 # Live chain monitoring section
 # ---------------------------------------------------------------------------
 
-def _build_live_chain_monitoring(connection: Any, workspace_id: str | None) -> dict[str, Any]:
+def _build_live_chain_monitoring(
+    connection: Any, workspace_id: str | None, rpc_check: dict[str, Any] | None = None
+) -> dict[str, Any]:
     worker_enabled = os.getenv('WORKER_ENABLED', 'true').strip().lower() not in {'0', 'false', 'no', 'off'}
     try:
         from services.api.app.evm_activity_provider import _resolve_evm_rpc_url as _resolve_url
@@ -601,7 +603,11 @@ def _build_live_chain_monitoring(connection: Any, workspace_id: str | None) -> d
     tel_age = _age_seconds(last_telemetry_at)
     tel_fresh = tel_age is not None and tel_age <= TELEMETRY_STALE_SECONDS
 
-    rpc_check = _check_rpc()
+    # Reuse the already-computed Base RPC probe when provided. The probe makes a
+    # blocking on-chain call (up to 8s); recomputing it here would multiply the
+    # endpoint's response time and is the main reason the client used to time out.
+    if rpc_check is None:
+        rpc_check = _check_rpc()
     rpc_healthy = rpc_check['status'] == 'healthy'
 
     if not worker_enabled:
@@ -655,11 +661,14 @@ def _build_live_chain_monitoring(connection: Any, workspace_id: str | None) -> d
 # Provider health section
 # ---------------------------------------------------------------------------
 
-def _build_providers(connection: Any, workspace_id: str | None) -> list[dict[str, Any]]:
+def _build_providers(
+    connection: Any, workspace_id: str | None, rpc_check: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
     providers: list[dict[str, Any]] = []
 
-    # Base RPC provider
-    rpc = _check_rpc()
+    # Base RPC provider — reuse the already-computed probe to avoid a third
+    # blocking on-chain call per request.
+    rpc = rpc_check if rpc_check is not None else _check_rpc()
     providers.append({
         'name': 'Base RPC (EVM)',
         'type': 'rpc',
@@ -943,15 +952,18 @@ def build_system_health_snapshot(request: Any = None) -> dict[str, Any]:
             components['database'] = _check_database(connection)
             components['redis'] = _check_redis()
             components['worker'] = _check_worker(connection, workspace_id)
-            components['base_rpc'] = _check_rpc()
+            # Compute the Base RPC probe once and reuse it everywhere it is needed
+            # (component, live chain monitoring, providers) to keep the endpoint fast.
+            base_rpc_check = _check_rpc()
+            components['base_rpc'] = base_rpc_check
             components['live_polling'] = _check_live_polling(connection, workspace_id)
             components['telemetry'] = _check_telemetry(connection, workspace_id)
             components['detection'] = _check_detection(connection, workspace_id)
             components['alert_delivery'] = _check_alert_delivery()
 
-            chain_monitoring = _build_live_chain_monitoring(connection, workspace_id)
+            chain_monitoring = _build_live_chain_monitoring(connection, workspace_id, rpc_check=base_rpc_check)
             events = _build_events(connection, workspace_id)
-            providers = _build_providers(connection, workspace_id)
+            providers = _build_providers(connection, workspace_id, rpc_check=base_rpc_check)
             reliability = _build_reliability(connection, workspace_id)
     except Exception as exc:
         # DB connection failed entirely

@@ -324,3 +324,71 @@ class TestNoSecretsInSnapshot:
         assert 's3cr3tpassword' not in message, f'Password found in message: {message}'
         assert 's3cr3t-key' not in message, f'API key found in message: {message}'
         assert 's3cr3tpassword' not in action, f'Password found in action: {action}'
+
+
+# ---------------------------------------------------------------------------
+# 11. RPC probe is computed once and reused (endpoint latency / reachability)
+# ---------------------------------------------------------------------------
+
+class TestRpcProbeReuse:
+    """The on-chain RPC probe blocks for up to 8s. Computing it three times per
+    request was the main reason the frontend timed out and showed everything as
+    unavailable. The probe must now be computed once and threaded through.
+    """
+
+    def test_build_providers_reuses_precomputed_rpc(self, sh, monkeypatch):
+        monkeypatch.delenv('REDIS_URL', raising=False)
+        monkeypatch.delenv('UPSTASH_REDIS_REST_URL', raising=False)
+        precomputed = sh._component('healthy', 'eth_blockNumber succeeded (host: base.example).', metric='block #123')
+
+        with patch.object(sh, '_check_rpc') as mock_rpc:
+            providers = sh._build_providers(_fake_connection(), None, rpc_check=precomputed)
+
+        mock_rpc.assert_not_called()
+        base_rpc_provider = next(p for p in providers if p['name'] == 'Base RPC (EVM)')
+        assert base_rpc_provider['status'] == 'healthy'
+        assert 'eth_blockNumber succeeded' in base_rpc_provider['message']
+
+    def test_build_live_chain_monitoring_reuses_precomputed_rpc(self, sh, monkeypatch):
+        monkeypatch.delenv('EVM_RPC_URL', raising=False)
+        monkeypatch.delenv('STAGING_EVM_RPC_URL', raising=False)
+        precomputed = sh._component('healthy', 'eth_blockNumber succeeded.', metric='block #123')
+
+        with patch.object(sh, '_check_rpc') as mock_rpc:
+            chain = sh._build_live_chain_monitoring(_fake_connection(), None, rpc_check=precomputed)
+
+        mock_rpc.assert_not_called()
+        assert chain['latest_rpc_block'] == 'block #123'
+        # A healthy RPC must not be diagnosed as "Base RPC is failing".
+        assert 'Base RPC is failing' not in chain['diagnosis']
+
+    def test_builders_still_probe_when_no_precomputed_value(self, sh):
+        """Backward compatibility: callers that omit rpc_check still get a probe."""
+        sentinel = sh._component('failing', 'probe ran', action=None)
+        with patch.object(sh, '_check_rpc', return_value=sentinel) as mock_rpc:
+            providers = sh._build_providers(_fake_connection(), None)
+        assert mock_rpc.called
+        base_rpc_provider = next(p for p in providers if p['name'] == 'Base RPC (EVM)')
+        assert base_rpc_provider['status'] == 'failing'
+
+
+# ---------------------------------------------------------------------------
+# 12. Response shape matches the frontend contract (keys the page reads)
+# ---------------------------------------------------------------------------
+
+class TestComponentContractShape:
+    """Every component dict must expose the keys the frontend renders so the
+    SaaS page can show per-component status instead of a blanket 'unavailable'.
+    """
+
+    def test_component_dicts_expose_frontend_keys(self, sh):
+        comp = sh._component('degraded', 'Telemetry is stale.', age='2h ago', action='Check RPC.')
+        for key in ('status', 'message', 'age', 'last_event', 'metric', 'action'):
+            assert key in comp, f'Component contract missing key: {key}'
+
+    def test_status_values_are_within_frontend_vocabulary(self, sh):
+        # helpers.statusLabel maps exactly these four states; anything else would
+        # silently render as 'Unavailable' on the frontend.
+        for status in ('healthy', 'degraded', 'failing', 'unavailable'):
+            comp = sh._component(status, 'msg')
+            assert comp['status'] in ('healthy', 'degraded', 'failing', 'unavailable')
