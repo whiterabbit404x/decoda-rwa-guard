@@ -42,7 +42,7 @@ CHAIN_ID=8453                               # Base mainnet; use 84532 for Base S
 EVM_CHAIN_NETWORK=base
 DEMO_MODE=false
 ALLOW_DEMO_MODE=false
-MONITORING_WORKER_INTERVAL_SECONDS=15
+MONITORING_WORKER_INTERVAL_SECONDS=60   # default 60s; lower only if your RPC quota allows
 MONITORING_WORKER_HEARTBEAT_TTL_SECONDS=180
 ```
 

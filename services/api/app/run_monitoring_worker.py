@@ -36,7 +36,9 @@ def _default_worker_name() -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Run Decoda monitoring worker loop.')
     parser.add_argument('--worker-name', default=os.getenv('MONITORING_WORKER_NAME') or _default_worker_name())
-    parser.add_argument('--interval-seconds', type=float, default=float(os.getenv('MONITORING_WORKER_INTERVAL_SECONDS', '15')))
+    # Default 60s (was 15s) so the worker does not hammer the RPC provider. Override
+    # with MONITORING_WORKER_INTERVAL_SECONDS or --interval-seconds when explicitly tuned.
+    parser.add_argument('--interval-seconds', type=float, default=float(os.getenv('MONITORING_WORKER_INTERVAL_SECONDS', '60')))
     parser.add_argument('--limit', type=int, default=int(os.getenv('MONITORING_WORKER_LIMIT', '50')))
     parser.add_argument('--once', action='store_true')
     return parser.parse_args()
@@ -62,6 +64,41 @@ def _compute_next_sleep_seconds(
     return min(max_sleep_seconds, next_sleep_seconds)
 
 
+def _rpc_recheck_backoff_seconds() -> float:
+    """Initial backoff between RPC health rechecks while the worker is unhealthy.
+
+    The per-cycle "am I healthy yet?" probe is a *redundant* eth_chainId +
+    eth_blockNumber call on top of normal polling. Rechecking every cycle while
+    the provider is rate-limiting only deepens the rate limit, so rechecks back
+    off exponentially. Configurable via MONITORING_RPC_RECHECK_BACKOFF_SECONDS.
+    """
+    try:
+        return max(1.0, float(os.getenv('MONITORING_RPC_RECHECK_BACKOFF_SECONDS', '60')))
+    except (TypeError, ValueError):
+        return 60.0
+
+
+def _rpc_recheck_max_backoff_seconds() -> float:
+    """Upper bound for the exponential RPC recheck backoff."""
+    try:
+        return max(
+            _rpc_recheck_backoff_seconds(),
+            float(os.getenv('MONITORING_RPC_RECHECK_MAX_BACKOFF_SECONDS', '600')),
+        )
+    except (TypeError, ValueError):
+        return max(_rpc_recheck_backoff_seconds(), 600.0)
+
+
+def _rpc_recheck_due(seconds_since_last_recheck: float, backoff_seconds: float) -> bool:
+    """True when enough time has elapsed to attempt another RPC health recheck."""
+    return seconds_since_last_recheck >= backoff_seconds
+
+
+def _next_rpc_recheck_backoff(current_backoff: float, max_backoff: float) -> float:
+    """Double the recheck backoff, capped at ``max_backoff`` (respects rate limits)."""
+    return min(max_backoff, max(1.0, current_backoff) * 2)
+
+
 def _resolve_worker_enabled_env() -> None:
     """
     Honor STAGING_WORKER_ENABLED, WORKER_ENABLED, and MONITORING_WORKER_ENABLED
@@ -85,14 +122,20 @@ _PER_CHAIN_VALIDATIONS = [
 ]
 
 
-def _validate_per_chain_rpcs(logger: logging.Logger) -> None:
+def _validate_per_chain_rpcs(logger: logging.Logger, probe_cache: dict[str, dict] | None = None) -> None:
     """Probe each configured per-chain RPC and warn when the returned chainId doesn't match.
 
     Runs at worker startup so misrouted RPC URLs surface immediately in logs
     rather than silently writing wrong-chain block numbers to telemetry.
+
+    ``probe_cache`` lets this reuse a probe the global startup check already made
+    for the same URL, so the worker never fires two identical eth_blockNumber
+    calls at boot (a "duplicate provider health check").
     """
     from services.api.app.evm_activity_provider import probe_rpc_health
     from urllib.parse import urlparse as _urlparse
+
+    probe_cache = probe_cache or {}
 
     for chain_name, expected_chain_id, env_vars in _PER_CHAIN_VALIDATIONS:
         rpc_url = ''
@@ -110,7 +153,15 @@ def _validate_per_chain_rpcs(logger: logging.Logger) -> None:
         except Exception:
             rpc_host = 'unknown'
         try:
-            health = probe_rpc_health(rpc_url)
+            if rpc_url in probe_cache:
+                health = probe_cache[rpc_url]
+                logger.info(
+                    'startup_per_chain_rpc_probe_reused chain=%s rpc_url_env=%s rpc_host=%s '
+                    'reason=already_probed_by_global_startup_check',
+                    chain_name, rpc_url_env, rpc_host,
+                )
+            else:
+                health = probe_rpc_health(rpc_url)
         except Exception as exc:
             logger.error(
                 'startup_per_chain_rpc_probe_failed chain=%s expected_chain_id=%s '
@@ -188,7 +239,7 @@ def _log_startup_provider_status(logger: logging.Logger) -> dict:
         'STAGING_EVM_CHAIN_ID' if (os.getenv('STAGING_EVM_CHAIN_ID') or '').strip().isdigit()
         else ('EVM_CHAIN_ID' if (os.getenv('EVM_CHAIN_ID') or '').strip().isdigit() else 'not_set')
     )
-    interval_seconds = float(os.getenv('MONITORING_WORKER_INTERVAL_SECONDS', '15'))
+    interval_seconds = float(os.getenv('MONITORING_WORKER_INTERVAL_SECONDS', '60'))
     provider_mode = 'live' if (evm_rpc_configured and worker_enabled) else 'disabled'
 
     db_url_configured = bool((os.getenv('DATABASE_URL') or '').strip())
@@ -275,11 +326,16 @@ def _log_startup_provider_status(logger: logging.Logger) -> dict:
     # Always perform an RPC health check at startup to surface connectivity issues
     # immediately in logs rather than waiting for the first monitoring cycle.
     rpc_health_ok: bool | None = None
+    # Reuse the global probe for per-chain validation when the URLs match, so the
+    # worker never fires two identical eth_blockNumber calls at boot.
+    _startup_probe_cache: dict[str, dict] = {}
     if evm_rpc_configured:
         try:
             health = probe_rpc_health()
         except Exception as exc:
             health = {'ok': False, 'error': str(exc)[:200], 'block_number_hex': None, 'block_number_int': None, 'chain_id_int': None}
+        if rpc_url:
+            _startup_probe_cache[rpc_url] = health
         rpc_health_ok = bool(health.get('ok'))
         if health.get('ok'):
             logger.info(
@@ -314,7 +370,8 @@ def _log_startup_provider_status(logger: logging.Logger) -> dict:
 
     # Validate per-chain RPC endpoints at startup — Base mainnet (chain_id=8453) must serve
     # chain 8453, not Ethereum. A misconfigured URL silently produces wrong block numbers.
-    _validate_per_chain_rpcs(logger)
+    # Reuse the global probe when it already hit the same URL (avoids a duplicate call).
+    _validate_per_chain_rpcs(logger, probe_cache=_startup_probe_cache)
 
     return {'rpc_health_ok': rpc_health_ok, 'database_url_configured': db_url_configured}
 
@@ -397,6 +454,11 @@ def main() -> int:
     # Initialize before the loop so `if not rpc_healthy` (re-check below) can never hit
     # an UnboundLocalError, even on the very first iteration or an early-failing cycle.
     rpc_healthy = rpc_healthy_at_startup or False
+    # RPC recheck backoff state. The startup probe already ran, so seed the clock now
+    # to avoid an immediate redundant recheck on the first cycle.
+    _rpc_recheck_backoff = _rpc_recheck_backoff_seconds()
+    _rpc_recheck_max_backoff = _rpc_recheck_max_backoff_seconds()
+    _last_rpc_recheck_monotonic = time.monotonic()
     if not rpc_healthy_at_startup:
         gauge('decoda_monitoring_worker_healthy', 0, worker=args.worker_name)
         logger.warning(
@@ -422,23 +484,36 @@ def main() -> int:
             )
             observe('decoda_monitoring_cycle_duration_seconds', time.monotonic() - cycle_started, worker=args.worker_name)
             if not rpc_healthy:
-                from services.api.app.evm_activity_provider import probe_rpc_health
-                try:
-                    recheck = probe_rpc_health()
-                except Exception as recheck_exc:
-                    recheck = {'ok': False, 'error': str(recheck_exc)[:200], 'block_number_hex': None, 'block_number_int': None}
-                rpc_healthy = bool(recheck.get('ok'))
-                if rpc_healthy:
-                    logger.info(
-                        'rpc_health_recovered eth_blockNumber_hex=%s block_number_decimal=%s',
-                        recheck.get('block_number_hex') or 'missing',
-                        recheck.get('block_number_int'),
-                    )
+                _seconds_since_recheck = time.monotonic() - _last_rpc_recheck_monotonic
+                if _rpc_recheck_due(_seconds_since_recheck, _rpc_recheck_backoff):
+                    _last_rpc_recheck_monotonic = time.monotonic()
+                    from services.api.app.evm_activity_provider import probe_rpc_health
+                    try:
+                        recheck = probe_rpc_health()
+                    except Exception as recheck_exc:
+                        recheck = {'ok': False, 'error': str(recheck_exc)[:200], 'block_number_hex': None, 'block_number_int': None}
+                    rpc_healthy = bool(recheck.get('ok'))
+                    if rpc_healthy:
+                        _rpc_recheck_backoff = _rpc_recheck_backoff_seconds()  # reset on recovery
+                        logger.info(
+                            'rpc_health_recovered eth_blockNumber_hex=%s block_number_decimal=%s',
+                            recheck.get('block_number_hex') or 'missing',
+                            recheck.get('block_number_int'),
+                        )
+                    else:
+                        # Back off the redundant probe so we never compound a rate limit.
+                        _rpc_recheck_backoff = _next_rpc_recheck_backoff(_rpc_recheck_backoff, _rpc_recheck_max_backoff)
+                        logger.warning(
+                            'worker_not_marked_healthy reason=eth_blockNumber_not_succeeded rpc_error=%s '
+                            'next_recheck_backoff_seconds=%s '
+                            'worker stays unhealthy until the RPC health check passes',
+                            recheck.get('error') or 'unknown',
+                            _rpc_recheck_backoff,
+                        )
                 else:
-                    logger.warning(
-                        'worker_not_marked_healthy reason=eth_blockNumber_not_succeeded rpc_error=%s '
-                        'worker stays unhealthy until the RPC health check passes',
-                        recheck.get('error') or 'unknown',
+                    logger.debug(
+                        'rpc_recheck_skipped reason=backoff seconds_since_recheck=%.1f backoff_seconds=%s',
+                        _seconds_since_recheck, _rpc_recheck_backoff,
                     )
             gauge('decoda_monitoring_worker_healthy', 1 if rpc_healthy else 0, worker=args.worker_name)
             increment('decoda_monitoring_targets_checked_total', int(summary.get('checked', 0) or 0), worker=args.worker_name)

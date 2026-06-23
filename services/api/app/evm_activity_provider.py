@@ -29,6 +29,48 @@ logger = logging.getLogger(__name__)
 _EVM_ADDRESS_RE = re.compile(r'^0x[0-9a-f]{40}$')
 
 
+def _rpc_timeout_seconds() -> float:
+    """Bounded per-request RPC timeout (seconds). Configurable via EVM_RPC_TIMEOUT_SECONDS."""
+    try:
+        return max(1.0, float(os.getenv('EVM_RPC_TIMEOUT_SECONDS', '10')))
+    except (TypeError, ValueError):
+        return 10.0
+
+
+def _rpc_max_attempts() -> int:
+    """Total attempts per call = 1 + EVM_RPC_MAX_RETRIES (default 3 retries → 4 attempts)."""
+    try:
+        return max(1, int(os.getenv('EVM_RPC_MAX_RETRIES', '3')) + 1)
+    except (TypeError, ValueError):
+        return 4
+
+
+def _rpc_backoff_base_seconds() -> float:
+    """Initial exponential backoff between RPC retries. Configurable via EVM_RPC_BACKOFF_SECONDS."""
+    try:
+        return max(0.0, float(os.getenv('EVM_RPC_BACKOFF_SECONDS', '1')))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def _retry_after_seconds(exc: _urllib_error.HTTPError, fallback: float) -> float:
+    """Honor a numeric Retry-After header on 429 responses; otherwise use ``fallback``.
+
+    Respecting Retry-After means a rate-limited provider tells us how long to wait,
+    so retries never compound the rate limit.
+    """
+    try:
+        raw = exc.headers.get('Retry-After') if getattr(exc, 'headers', None) else None
+    except Exception:
+        raw = None
+    if raw:
+        try:
+            return max(0.0, min(60.0, float(str(raw).strip())))
+        except (TypeError, ValueError):
+            return fallback
+    return fallback
+
+
 class MonitoredWalletNotConfigured(Exception):
     """Raised when a wallet-type target has no resolvable monitored wallet address.
 
@@ -291,17 +333,23 @@ class JsonRpcClient:
     def call(self, method: str, params: list[Any]) -> Any:
         payload = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params}).encode('utf-8')
         req = request.Request(self.rpc_url, data=payload, headers={'Content-Type': 'application/json'})
-        backoff = 1.0
-        for attempt in range(4):
+        timeout = _rpc_timeout_seconds()
+        max_attempts = _rpc_max_attempts()
+        backoff = _rpc_backoff_base_seconds()
+        for attempt in range(max_attempts):
             try:
-                with request.urlopen(req, timeout=10) as resp:  # nosec B310
+                with request.urlopen(req, timeout=timeout) as resp:  # nosec B310
                     body = json.loads(resp.read().decode('utf-8'))
                 if body.get('error'):
                     raise RuntimeError(f"json-rpc error: {body['error']}")
                 return body.get('result')
             except _urllib_error.HTTPError as exc:
-                if exc.code in (429, 500, 502, 503, 504) and attempt < 3:
-                    time.sleep(backoff)
+                # Retry transient/rate-limit responses with exponential backoff. On a
+                # 429 we respect the provider's Retry-After header when present so
+                # retries never compound the rate limit.
+                if exc.code in (429, 500, 502, 503, 504) and attempt < max_attempts - 1:
+                    sleep_for = _retry_after_seconds(exc, backoff) if exc.code == 429 else backoff
+                    time.sleep(sleep_for)
                     backoff = min(30.0, backoff * 2)
                     continue
                 raise
