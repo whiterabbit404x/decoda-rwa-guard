@@ -3331,6 +3331,12 @@ def ops_monitoring_investigation_timeline(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_monitoring_investigation_timeline(request))
 
 
+@app.get('/ops/system-health', summary='SaaS-grade system health snapshot', description='Returns component-level infrastructure health, live chain monitoring status, events, providers, and reliability metrics.')
+def ops_system_health(request: Request) -> dict[str, Any]:
+    from services.api.app.system_health import build_system_health_snapshot
+    return with_auth_schema_json(lambda: build_system_health_snapshot(request))
+
+
 @app.get('/ops/monitoring/heartbeats', summary='Latest monitoring heartbeat rows')
 def ops_monitoring_heartbeats(request: Request, limit: int = 50) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_monitoring_heartbeats(request, limit=limit))
