@@ -347,18 +347,34 @@ export default function EvidenceAuditPanel() {
     }
   }
 
-  async function exportPackage(pkg: EvidencePackage, format: 'json' | 'csv') {
-    const res = await fetch(`${apiUrl}/exports/${pkg.id ?? 'report'}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ format }),
-    });
-    const payload = (await res.json()) as { status?: string; detail?: string };
-    setMessage(
-      res.ok
-        ? `Export ${payload.status ?? 'queued'}.`
-        : (payload.detail ?? 'Export failed.'),
-    );
+  async function downloadPackage(pkg: EvidencePackage) {
+    setMessage('');
+    if (!pkg.id) return;
+    let resp: Response;
+    try {
+      resp = await fetch(`/api/exports/${pkg.id}/download`, {
+        headers: authHeaders(),
+        cache: 'no-store',
+      });
+    } catch {
+      setMessage('Download failed: network error.');
+      return;
+    }
+    if (!resp.ok) {
+      const errBody = await resp.json().catch(() => ({})) as Record<string, unknown>;
+      const msg = String(errBody.detail ?? errBody.error ?? 'Download failed.');
+      setMessage(`Download failed: ${msg}`);
+      return;
+    }
+    const blob = await resp.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = `evidence-package-${pkg.id}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(blobUrl);
   }
 
   /* ── Derived metrics ─────────────────────────────────────────── */
@@ -614,37 +630,23 @@ export default function EvidenceAuditPanel() {
                             }}
                             onClick={(e) => {
                               e.stopPropagation();
-                              void exportPackage(pkg, 'json');
+                              void downloadPackage(pkg);
                             }}
                           >
                             Export JSON
                           </button>
-                          {pkg.download_url ? (
-                            <a
-                              href={`${apiUrl}${pkg.download_url}`}
-                              onClick={(e) => {
-                                if (!ready) e.preventDefault();
-                              }}
-                            >
-                              <button
-                                type="button"
-                                disabled={!ready}
-                                className="btn btn-secondary"
-                                style={{ fontSize: '0.72rem', padding: '0.15rem 0.45rem' }}
-                              >
-                                Download
-                              </button>
-                            </a>
-                          ) : (
-                            <button
-                              type="button"
-                              disabled={!ready}
-                              className="btn btn-secondary"
-                              style={{ fontSize: '0.72rem', padding: '0.15rem 0.45rem' }}
-                            >
-                              Download
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            disabled={!ready}
+                            className="btn btn-secondary"
+                            style={{ fontSize: '0.72rem', padding: '0.15rem 0.45rem' }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void downloadPackage(pkg);
+                            }}
+                          >
+                            Download
+                          </button>
                         </td>
                       </tr>
                     );
@@ -657,9 +659,7 @@ export default function EvidenceAuditPanel() {
               <PackageDetailPanel
                 pkg={selectedPkg}
                 workspaceEvidenceSource={workspaceEvidenceSource}
-                apiUrl={apiUrl}
-                authHeaders={authHeaders}
-                onExport={exportPackage}
+                onDownload={downloadPackage}
               />
             )}
           </div>
@@ -760,15 +760,11 @@ export default function EvidenceAuditPanel() {
 function PackageDetailPanel({
   pkg,
   workspaceEvidenceSource,
-  apiUrl,
-  authHeaders,
-  onExport,
+  onDownload,
 }: {
   pkg: EvidencePackage;
   workspaceEvidenceSource: string;
-  apiUrl: string;
-  authHeaders: () => Record<string, string>;
-  onExport: (pkg: EvidencePackage, format: 'json' | 'csv') => Promise<void>;
+  onDownload: (pkg: EvidencePackage) => Promise<void>;
 }) {
   const evSrc = evidenceSourcePill(resolvePackageEvidenceSource(pkg), workspaceEvidenceSource);
   const st = packageStatusPill(pkg.status);
@@ -1072,18 +1068,9 @@ function PackageDetailPanel({
           className="btn btn-primary"
           disabled={!ready}
           style={{ fontSize: '0.75rem' }}
-          onClick={() => void onExport(pkg, 'json')}
+          onClick={() => void onDownload(pkg)}
         >
           Export JSON
-        </button>
-        <button
-          type="button"
-          className="btn btn-secondary"
-          disabled={!ready}
-          style={{ fontSize: '0.75rem' }}
-          onClick={() => void onExport(pkg, 'csv')}
-        >
-          Export CSV
         </button>
         {pkg.incident_id ? (
           <Link
