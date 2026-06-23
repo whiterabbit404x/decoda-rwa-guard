@@ -27,7 +27,7 @@ export function LiveChainMonitoringPanel({ chainMonitoring }: Props) {
         <div className="shEmptyState">
           <div className="shEmptyIcon">!</div>
           <p className="shEmptyText">Live chain monitoring data unavailable.</p>
-          <p className="shEmptySubtext">Backend health endpoint could not be reached.</p>
+          <p className="shEmptySubtext">Component check missing from backend response.</p>
         </div>
       </section>
     );

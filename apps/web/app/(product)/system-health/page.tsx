@@ -1,8 +1,9 @@
 import { normalizeMonitoringPresentation } from '../../monitoring-status-presentation';
 import RuntimeSummaryPanel from '../../runtime-summary-panel';
-import { fetchDashboardPageData, fetchJson, resolveApiUrl } from '../../dashboard-data';
+import { fetchDashboardPageData, resolveApiUrl } from '../../dashboard-data';
 import { resolveWorkspaceMonitoringTruthFromSummary } from '../../workspace-monitoring-truth';
-import { type SystemHealthPayload } from './_components/types';
+import { fetchSystemHealth } from './_components/fetch-system-health';
+import { SystemHealthEndpointError } from './_components/system-health-endpoint-error';
 import { SystemHealthHero } from './_components/system-health-hero';
 import { HealthSummaryCards } from './_components/health-summary-cards';
 import { OperationalOverview } from './_components/operational-overview';
@@ -15,16 +16,17 @@ import { StatusOverviewPanel } from './_components/status-overview-panel';
 export const dynamic = 'force-dynamic';
 export const fetchCache = 'force-no-store';
 
-async function fetchSystemHealth(apiUrl: string): Promise<SystemHealthPayload | null> {
-  return fetchJson<SystemHealthPayload>('/ops/system-health', apiUrl);
-}
-
 export default async function SystemHealthPage() {
   const apiUrl = resolveApiUrl();
-  const [data, systemHealth] = await Promise.all([
+  const [data, healthResult] = await Promise.all([
     fetchDashboardPageData(undefined, { featureFeeds: ['resilienceDashboard'] }),
     fetchSystemHealth(apiUrl),
   ]);
+
+  // Preserve *why* the health endpoint failed instead of collapsing it into a
+  // null payload that gets mis-rendered as "every component is down".
+  const systemHealth = healthResult.ok ? healthResult.data : null;
+  const endpointReachable = healthResult.ok;
 
   const summaryMissing = data.workspaceMonitoringSummary == null;
   const truth = resolveWorkspaceMonitoringTruthFromSummary(data.workspaceMonitoringSummary) as any;
@@ -75,8 +77,6 @@ export default async function SystemHealthPage() {
   const environment = systemHealth?.environment ?? null;
   const gitCommit = systemHealth?.git_commit ? systemHealth.git_commit.slice(0, 8) : null;
 
-  const noSystemHealthData = systemHealth == null;
-
   return (
     <main className="productPage">
       <RuntimeSummaryPanel />
@@ -105,21 +105,27 @@ export default async function SystemHealthPage() {
         </div>
       </section>
 
-      <SystemHealthHero
-        overallStatus={overallStatus}
-        summaryText={summaryText}
-        primaryAction={primaryAction}
-        contradictionFlags={contradictionFlags}
-        environment={environment}
-        gitCommit={gitCommit}
-        generatedAt={generatedAt}
-      />
+      {healthResult.ok ? (
+        <>
+          <SystemHealthHero
+            overallStatus={overallStatus}
+            summaryText={summaryText}
+            primaryAction={primaryAction}
+            contradictionFlags={contradictionFlags}
+            environment={environment}
+            gitCommit={gitCommit}
+            generatedAt={generatedAt}
+          />
 
-      <HealthSummaryCards components={components} noSystemHealthData={noSystemHealthData} />
+          <HealthSummaryCards components={components} />
 
-      <OperationalOverview components={components} noSystemHealthData={noSystemHealthData} />
+          <OperationalOverview components={components} />
 
-      <LiveChainMonitoringPanel chainMonitoring={chainMonitoring} />
+          <LiveChainMonitoringPanel chainMonitoring={chainMonitoring} />
+        </>
+      ) : (
+        <SystemHealthEndpointError result={healthResult} />
+      )}
 
       <div className="twoColumnSection" style={{ marginTop: '1rem' }}>
         <StatusOverviewPanel
@@ -136,7 +142,7 @@ export default async function SystemHealthPage() {
         <ReliabilitySnapshot reliability={reliability} truth={truth} />
       </div>
 
-      <HealthTimeline events={events} noSystemHealthData={noSystemHealthData} />
+      {endpointReachable && <HealthTimeline events={events} />}
 
       <ProviderHealthCards
         providers={providers}

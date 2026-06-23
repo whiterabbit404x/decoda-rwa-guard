@@ -3,10 +3,10 @@ import { formatShortTime, statusBadgeClass, statusLabel } from './helpers';
 
 type Props = {
   components: Record<string, ComponentDetail>;
-  noSystemHealthData: boolean;
 };
 
-export function OperationalOverview({ components, noSystemHealthData }: Props) {
+export function OperationalOverview({ components }: Props) {
+  const missingComponents = Object.keys(COMPONENT_META).filter((key) => components[key] == null);
   return (
     <section className="dataCard featureSection" style={{ marginTop: '1rem' }}>
       <div className="sectionHeader compact">
@@ -47,7 +47,7 @@ export function OperationalOverview({ components, noSystemHealthData }: Props) {
                   </td>
                   <td>
                     <span className="shOpsSignal">
-                      {comp?.message ?? (noSystemHealthData ? 'Endpoint unreachable' : 'Unavailable')}
+                      {comp?.message ?? 'Component check missing from backend response.'}
                     </span>
                   </td>
                   <td>
@@ -71,9 +71,10 @@ export function OperationalOverview({ components, noSystemHealthData }: Props) {
           </tbody>
         </table>
       </div>
-      {noSystemHealthData && (
+      {missingComponents.length > 0 && (
         <p className="explanation small" style={{ marginTop: '0.75rem' }}>
-          <strong>Health data unavailable.</strong> The backend health endpoint could not be reached.{' '}
+          <strong>Partial data.</strong> {missingComponents.length} component check
+          {missingComponents.length === 1 ? '' : 's'} missing from the backend response.{' '}
           <a href="/system-health">Refresh</a>
         </p>
       )}

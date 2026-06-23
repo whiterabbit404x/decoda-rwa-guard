@@ -19,6 +19,8 @@ const reliabilitySource = readFileSync(join(componentsDir, 'reliability-snapshot
 const statusOverviewSource = readFileSync(join(componentsDir, 'status-overview-panel.tsx'), 'utf8');
 const typesSource = readFileSync(join(componentsDir, 'types.ts'), 'utf8');
 const helpersSource = readFileSync(join(componentsDir, 'helpers.ts'), 'utf8');
+const fetchSource = readFileSync(join(componentsDir, 'fetch-system-health.ts'), 'utf8');
+const endpointErrorSource = readFileSync(join(componentsDir, 'system-health-endpoint-error.tsx'), 'utf8');
 
 const resilienceSource = readFileSync(
   join(process.cwd(), 'app/(product)/resilience/page.tsx'),
@@ -53,7 +55,48 @@ test('/system-health renders the System Health screen', () => {
 test('page fetches both dashboard data and system health endpoint', () => {
   expect(pageSource).toContain('fetchDashboardPageData');
   expect(pageSource).toContain('fetchSystemHealth');
-  expect(pageSource).toContain('/ops/system-health');
+  expect(fetchSource).toContain('/ops/system-health');
+});
+
+test('system-health fetch preserves the failure reason instead of returning bare null', () => {
+  // The endpoint can fail in several distinct ways; each must be captured so the
+  // page can distinguish "unreachable" from "reachable but a component failed".
+  ['not_configured', 'timeout', 'network_error', 'http_error', 'invalid_contract'].forEach((reason) => {
+    expect(fetchSource).toContain(reason);
+  });
+  expect(fetchSource).toContain('SystemHealthFetchResult');
+  expect(fetchSource).toContain('diagnoseSystemHealthFailure');
+  // Dedicated, longer timeout because the backend runs blocking RPC probes.
+  expect(fetchSource).toContain('SYSTEM_HEALTH_TIMEOUT_MS');
+});
+
+test('endpoint failure renders one diagnostic panel, not eight unavailable cards', () => {
+  // The page must branch: reachable → component sections, unreachable → error panel.
+  expect(pageSource).toContain('healthResult.ok');
+  expect(pageSource).toContain('SystemHealthEndpointError');
+  expect(pageSource).toContain('endpointReachable');
+  // The "unreachable" headline is produced by the diagnosis and rendered dynamically.
+  expect(fetchSource).toContain('System health API is unreachable');
+  expect(endpointErrorSource).toContain('diagnosis.headline');
+  // The error panel surfaces operator diagnostics.
+  expect(endpointErrorSource).toContain('Endpoint unreachable');
+  expect(endpointErrorSource).toContain('Requested endpoint');
+  expect(endpointErrorSource).toContain('HTTP status');
+  expect(endpointErrorSource).toContain('Retry');
+  expect(endpointErrorSource).toContain('Suggested action');
+});
+
+test('endpoint failure is classified for the operator (auth vs backend vs unreachable)', () => {
+  expect(fetchSource).toContain("category: 'auth'");
+  expect(fetchSource).toContain("category: 'backend_error'");
+  expect(fetchSource).toContain("category: 'endpoint_unreachable'");
+  expect(fetchSource).toContain('401');
+  expect(fetchSource).toContain('403');
+});
+
+test('debug logging is development-only and never runs in production', () => {
+  expect(fetchSource).toContain("process.env.NODE_ENV !== 'production'");
+  expect(fetchSource).toContain('console.debug');
 });
 
 // ── Hero ────────────────────────────────────────────────────────────────────
@@ -209,7 +252,7 @@ test('no data shown as healthy — truth-closed status derivation', () => {
   expect(pageSource).toContain('isOffline');
   expect(pageSource).toContain('!summaryMissing');
   expect(pageSource).toContain('summaryMissing');
-  expect(pageSource).toContain('noSystemHealthData');
+  expect(pageSource).toContain('endpointReachable');
 });
 
 test('no fake healthy text when degraded or failing — statusLabel driven by live status', () => {
@@ -219,10 +262,14 @@ test('no fake healthy text when degraded or failing — statusLabel driven by li
 });
 
 test('page handles missing data without showing everything as Unavailable', () => {
-  expect(pageSource).toContain('noSystemHealthData');
+  // Endpoint failure is handled by a single error panel (see dedicated test),
+  // never by mapping the failure onto every component card.
+  expect(pageSource).toContain('endpointReachable');
   expect(summaryCardsSource).toContain('comp?.message');
   expect(opsOverviewSource).toContain('comp?.message');
-  expect(summaryCardsSource).toContain('noSystemHealthData ?');
+  // Partial data (endpoint OK, one component missing) is labelled truthfully.
+  expect(summaryCardsSource).toContain('Component check missing from backend response.');
+  expect(opsOverviewSource).toContain('missing from the backend response');
 });
 
 // ── Secrets / security ──────────────────────────────────────────────────────

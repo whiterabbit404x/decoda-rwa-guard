@@ -3,7 +3,6 @@ import { formatDateTime, severityBadgeClass } from './helpers';
 
 type Props = {
   events: HealthEvent[];
-  noSystemHealthData: boolean;
 };
 
 const SEVERITY_COLORS: Record<string, string> = {
@@ -12,7 +11,7 @@ const SEVERITY_COLORS: Record<string, string> = {
   medium: '#fbbf24',
 };
 
-export function HealthTimeline({ events, noSystemHealthData }: Props) {
+export function HealthTimeline({ events }: Props) {
   return (
     <section className="dataCard featureSection" style={{ marginTop: '1rem' }}>
       <div className="sectionHeader compact">
@@ -53,9 +52,7 @@ export function HealthTimeline({ events, noSystemHealthData }: Props) {
           <div className="shEmptyIcon shEmptyIcon-ok">✓</div>
           <p className="shEmptyText">No recent health events.</p>
           <p className="shEmptySubtext">
-            {noSystemHealthData
-              ? 'Backend health endpoint could not be reached.'
-              : 'The system has been operating without recorded health events.'}
+            The system has been operating without recorded health events.
           </p>
         </div>
       )}
