@@ -4,9 +4,30 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 API_ROOT = Path(__file__).resolve().parents[1]
 if str(API_ROOT) not in sys.path:
     sys.path.insert(0, str(API_ROOT))
+
+
+@pytest.fixture(autouse=True)
+def _reset_rpc_provider_state():
+    """Clear the process-local Base RPC provider backoff/health between tests.
+
+    The 429 backoff state is module-level (shared by the worker, coverage probe,
+    probe_rpc_health, and /system-health), so a test that arms it must not bleed
+    into the next. Reset before and after every test.
+    """
+    def _reset():
+        try:
+            from services.api.app.evm_activity_provider import reset_rpc_provider_state
+            reset_rpc_provider_state()
+        except Exception:
+            pass
+    _reset()
+    yield
+    _reset()
 
 
 # ---------------------------------------------------------------------------

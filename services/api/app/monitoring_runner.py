@@ -20,7 +20,11 @@ from services.api.app.activity_providers import (
     fetch_target_activity_result,
     monitoring_ingestion_runtime,
 )
-from services.api.app.evm_activity_provider import JsonRpcClient, resolve_monitored_wallet
+from services.api.app.evm_activity_provider import (
+    JsonRpcClient,
+    resolve_monitored_wallet,
+    rpc_provider_backoff_active,
+)
 from services.api.app.monitoring_truth import ui_evidence_state, ui_truthfulness_state
 from services.api.app.monitoring_reliability import MonitoringSLOs, evaluate_monitoring_slos, monitoring_slo_snapshot
 from services.api.app.monitorable_target_types import (
@@ -67,6 +71,19 @@ ALERT_DEDUPE_WINDOW_SECONDS = int(
 )
 WORKER_HEARTBEAT_TTL_SECONDS = int(os.getenv('MONITORING_WORKER_HEARTBEAT_TTL_SECONDS', '180'))
 MONITOR_POLL_INTERVAL_SECONDS = int(os.getenv('MONITOR_POLL_INTERVAL_SECONDS', '30'))
+
+
+def _min_monitoring_interval_seconds() -> int:
+    """Minimum effective per-target poll interval (seconds). Default 60.
+
+    Production targets configured below this floor are capped to it so a worker
+    never polls a Base target — and re-hits eth_blockNumber — more often than once
+    per minute. Configurable via MIN_EVM_POLLING_INTERVAL_SECONDS.
+    """
+    try:
+        return max(1, int(os.getenv('MIN_EVM_POLLING_INTERVAL_SECONDS', '60')))
+    except (TypeError, ValueError):
+        return 60
 MONITORED_SYSTEM_HEARTBEAT_TOUCH_SECONDS = max(15, int(os.getenv('MONITORED_SYSTEM_HEARTBEAT_TOUCH_SECONDS', '60')))
 MONITORING_DUE_SELECTION_BACKFILL_COOLDOWN_SECONDS = max(
     120,
@@ -4845,6 +4862,10 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         skipped_not_due_oldest_checked_at: datetime | None = None
         skipped_null_handling = 0
         interval_capped_targets = 0
+        # Production floor: a target configured below this is polled no more often
+        # than once per _min_interval, so the worker never re-hits eth_blockNumber
+        # for it every ~30s. interval_capped_targets counts how many were capped.
+        _min_interval = _min_monitoring_interval_seconds()
         due_selection_workspace_snapshot: dict[str, list[dict[str, Any]]] = defaultdict(list)
         soonest_next_due_at: datetime | None = None
         soonest_due_in_seconds: int | None = None
@@ -4873,20 +4894,20 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 continue
             last_checked_at = _parse_ts(system.get('last_checked_at'))
             interval_raw = system.get('monitoring_interval_seconds')
-            interval_seconds = 30
+            interval_seconds = _min_interval
             if interval_raw is None:
                 if last_checked_at is not None:
                     skipped_null_handling += 1
             else:
                 try:
                     parsed_interval_seconds = int(interval_raw)
-                    if parsed_interval_seconds < 30:
+                    if parsed_interval_seconds < _min_interval:
                         interval_capped_targets += 1
-                    interval_seconds = max(30, parsed_interval_seconds)
+                    interval_seconds = max(_min_interval, parsed_interval_seconds)
                 except (TypeError, ValueError):
                     if last_checked_at is not None:
                         skipped_null_handling += 1
-                    interval_seconds = 30
+                    interval_seconds = _min_interval
             next_due_at = (
                 last_checked_at + timedelta(seconds=interval_seconds)
                 if last_checked_at is not None
@@ -5007,6 +5028,14 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             # responsible for returning them to normal due-selection.
             if system.get('monitoring_dead_lettered_at') is not None:
                 continue
+            # Backfill candidate must be on this worker's chain. Never pick an
+            # Ethereum target as the Base worker's backfill fallback — it would
+            # only hard-skip with no RPC and burn the backfill cooldown.
+            if _rpc_chain_id is not None:
+                _cand_chain = str(system.get('chain_network') or '').lower()
+                _cand_chain_id = _known_chain_ids.get(_cand_chain) if _cand_chain else None
+                if _cand_chain_id is not None and _cand_chain_id != _rpc_chain_id:
+                    continue
             parsed_checked = _parse_ts(system.get('last_checked_at'))
             if parsed_checked is None:
                 continue
@@ -5017,12 +5046,12 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         fallback_system_id = str((oldest_candidate or {}).get('monitored_system_id') or '').strip()
         fallback_workspace_id = str((oldest_candidate or {}).get('workspace_id') or '').strip()
         fallback_interval_raw = (oldest_candidate or {}).get('monitoring_interval_seconds')
-        fallback_interval_seconds = 30
+        fallback_interval_seconds = _min_interval
         if fallback_interval_raw is not None:
             try:
-                fallback_interval_seconds = max(30, int(fallback_interval_raw))
+                fallback_interval_seconds = max(_min_interval, int(fallback_interval_raw))
             except (TypeError, ValueError):
-                fallback_interval_seconds = 30
+                fallback_interval_seconds = _min_interval
         fallback_next_due_at = (
             oldest_checked_at + timedelta(seconds=fallback_interval_seconds)
             if oldest_checked_at is not None
@@ -5047,11 +5076,20 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         )
         no_due_targets = not due_target_ids
         workspace_live_mode = live_mode_enabled()
+        # During a provider 429 backoff we do not run live backfill — polling the
+        # fallback target would only hard-skip (no RPC) and burn the cooldown.
+        _provider_backoff = rpc_provider_backoff_active()
         should_consider_backfill = bool(
             no_due_targets
             and workspace_live_mode
             and fallback_is_due
+            and not _provider_backoff
         )
+        if no_due_targets and workspace_live_mode and fallback_is_due and _provider_backoff:
+            logger.warning(
+                'due_selection_backfill_suspended reason=provider_rate_limited worker=%s',
+                worker_name,
+            )
         has_backfill_candidate = bool(
             fallback_target_id
             and fallback_system_id
@@ -5557,6 +5595,14 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
     # that is live-polled but has selected_for_backfill=False keeps older wallet-transfer
     # rows without alerts; this closes that gap. Create-only/idempotent; best-effort so a
     # backfill error never fails the cycle.
+    # During a provider 429 backoff we suspend it: do not turn old stale rows into
+    # fresh-looking alerts while live monitoring is rate-limited.
+    if strategic_guard_backfill_targets and rpc_provider_backoff_active():
+        logger.warning(
+            'strategic_guard_backfill_suspended reason=provider_rate_limited count=%s',
+            len(strategic_guard_backfill_targets),
+        )
+        strategic_guard_backfill_targets = set()
     for _bf_workspace_id, _bf_target_id in sorted(strategic_guard_backfill_targets):
         try:
             _bf_result = backfill_strategic_guard_alerts_for_target(_bf_workspace_id, _bf_target_id)

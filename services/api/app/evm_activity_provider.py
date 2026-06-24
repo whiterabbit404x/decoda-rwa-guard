@@ -7,9 +7,10 @@ import os
 import re
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 import time
+import threading
 from urllib import error as _urllib_error, parse, request
 
 
@@ -69,6 +70,165 @@ def _retry_after_seconds(exc: _urllib_error.HTTPError, fallback: float) -> float
         except (TypeError, ValueError):
             return fallback
     return fallback
+
+
+# ---------------------------------------------------------------------------
+# Shared Base RPC provider backoff + last-known health (process-local).
+#
+# One worker process polls Base, so this state is intentionally process-local
+# (not distributed). It lets the poll loop, the coverage probe, probe_rpc_health,
+# and /ops/system-health all honor a single HTTP 429 backoff instead of each
+# firing its own eth_blockNumber call and compounding the rate limit. No secrets
+# are ever stored — only timing, a coarse error class, and the last health dict.
+# ---------------------------------------------------------------------------
+_RPC_PROVIDER_LOCK = threading.Lock()
+_RPC_PROVIDER_STATE: dict[str, Any] = {
+    'backoff_until_monotonic': 0.0,
+    'backoff_until_wall': None,        # ISO-8601 wall clock for operator messages
+    'backoff_error_class': None,
+    'last_health': None,               # last probe_rpc_health() result dict
+    'last_health_at_monotonic': 0.0,
+}
+
+
+def _rpc_backoff_min_seconds() -> float:
+    """Minimum provider backoff after an HTTP 429 (seconds). Default 120.
+
+    Configurable via RPC_PROVIDER_BACKOFF_MIN_SECONDS. A 429 means the provider
+    is rate-limiting, so we wait at least this long before any RPC call.
+    """
+    try:
+        return max(1.0, float(os.getenv('RPC_PROVIDER_BACKOFF_MIN_SECONDS', '120')))
+    except (TypeError, ValueError):
+        return 120.0
+
+
+def _retry_after_for_backoff(exc: _urllib_error.HTTPError) -> float | None:
+    """Numeric Retry-After (seconds) for the provider backoff window, or None.
+
+    Unlike :func:`_retry_after_seconds` (clamped to 60s for an inline retry), the
+    provider backoff honors a larger window so a provider asking for minutes is
+    respected. Clamped to 1 hour so a hostile header cannot pin us forever.
+    """
+    try:
+        raw = exc.headers.get('Retry-After') if getattr(exc, 'headers', None) else None
+    except Exception:
+        raw = None
+    if not raw:
+        return None
+    try:
+        return max(0.0, min(3600.0, float(str(raw).strip())))
+    except (TypeError, ValueError):
+        return None
+
+
+def record_rpc_rate_limited(retry_after_seconds: float | None = None) -> float:
+    """Record an HTTP 429 from the Base RPC provider and arm a process-wide backoff.
+
+    The backoff is at least ``RPC_PROVIDER_BACKOFF_MIN_SECONDS`` (120s) and honors
+    a larger ``Retry-After`` when the provider sent one. While it is active,
+    probe_rpc_health and live polling skip RPC calls so we never compound the
+    rate limit. Returns the effective backoff in seconds.
+    """
+    backoff = _rpc_backoff_min_seconds()
+    if retry_after_seconds is not None and float(retry_after_seconds) > backoff:
+        backoff = float(retry_after_seconds)
+    now_mono = time.monotonic()
+    until_wall = (datetime.now(timezone.utc) + timedelta(seconds=backoff)).isoformat()
+    with _RPC_PROVIDER_LOCK:
+        _RPC_PROVIDER_STATE['backoff_until_monotonic'] = now_mono + backoff
+        _RPC_PROVIDER_STATE['backoff_until_wall'] = until_wall
+        _RPC_PROVIDER_STATE['backoff_error_class'] = 'rate_limited'
+    logger.warning(
+        'rpc_provider_backoff_set error_class=rate_limited backoff_seconds=%s '
+        'retry_after_seconds=%s backoff_until=%s',
+        int(backoff),
+        'none' if retry_after_seconds is None else int(retry_after_seconds),
+        until_wall,
+    )
+    return backoff
+
+
+def rpc_provider_backoff_active() -> bool:
+    """True while a recorded HTTP 429 backoff window has not yet elapsed."""
+    with _RPC_PROVIDER_LOCK:
+        return time.monotonic() < float(_RPC_PROVIDER_STATE['backoff_until_monotonic'])
+
+
+def rpc_provider_backoff_status() -> dict[str, Any]:
+    """Snapshot of the provider backoff: active flag, remaining seconds, until-wall."""
+    with _RPC_PROVIDER_LOCK:
+        remaining = float(_RPC_PROVIDER_STATE['backoff_until_monotonic']) - time.monotonic()
+        return {
+            'active': remaining > 0,
+            'remaining_seconds': max(0.0, remaining),
+            'backoff_until': _RPC_PROVIDER_STATE['backoff_until_wall'],
+            'error_class': _RPC_PROVIDER_STATE['backoff_error_class'],
+        }
+
+
+def clear_rpc_provider_backoff() -> None:
+    """Clear the provider backoff (called on a confirmed-healthy probe)."""
+    with _RPC_PROVIDER_LOCK:
+        _RPC_PROVIDER_STATE['backoff_until_monotonic'] = 0.0
+        _RPC_PROVIDER_STATE['backoff_until_wall'] = None
+        _RPC_PROVIDER_STATE['backoff_error_class'] = None
+
+
+def _store_rpc_health(result: dict[str, Any]) -> None:
+    """Remember the last probe result so a backoff window can replay it (cache_hit)."""
+    with _RPC_PROVIDER_LOCK:
+        _RPC_PROVIDER_STATE['last_health'] = dict(result)
+        _RPC_PROVIDER_STATE['last_health_at_monotonic'] = time.monotonic()
+
+
+def last_rpc_health() -> dict[str, Any] | None:
+    """Last probe_rpc_health() result, if any (used to replay during backoff)."""
+    with _RPC_PROVIDER_LOCK:
+        last = _RPC_PROVIDER_STATE['last_health']
+        return dict(last) if isinstance(last, dict) else None
+
+
+def reset_rpc_provider_state() -> None:
+    """Reset all process-local provider backoff/health state (tests/ops)."""
+    with _RPC_PROVIDER_LOCK:
+        _RPC_PROVIDER_STATE.update(
+            backoff_until_monotonic=0.0,
+            backoff_until_wall=None,
+            backoff_error_class=None,
+            last_health=None,
+            last_health_at_monotonic=0.0,
+        )
+
+
+def worker_rpc_chain_id() -> int | None:
+    """Chain id this worker's RPC is configured for (EVM_CHAIN_ID / STAGING_EVM_CHAIN_ID)."""
+    raw = (os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or '').strip()
+    return int(raw) if raw.isdigit() else None
+
+
+def target_chain_id_for(network: str | None) -> int | None:
+    """Canonical chain id for a target's labeled network, or None when unknown."""
+    return (CHAIN_MAP.get(str(network or '').strip().lower()) or {}).get('chain_id')
+
+
+def evaluate_chain_mismatch(network: str | None) -> tuple[bool, int | None, int | None]:
+    """Return ``(hard_skip, target_chain_id, rpc_chain_id)`` for a target's network.
+
+    ``hard_skip`` is True only when BOTH the worker's configured RPC chain id and
+    the target's chain id are known and differ. An unknown/unset id never forces a
+    skip — this preserves single-chain deployments and injected unit-test clients
+    that do not set EVM_CHAIN_ID. A Base worker (8453) therefore hard-skips an
+    Ethereum-labeled (1) target before any RPC call is made.
+    """
+    rpc_chain_id = worker_rpc_chain_id()
+    target_chain_id = target_chain_id_for(network)
+    hard_skip = bool(
+        rpc_chain_id is not None
+        and target_chain_id is not None
+        and target_chain_id != rpc_chain_id
+    )
+    return hard_skip, target_chain_id, rpc_chain_id
 
 
 class MonitoredWalletNotConfigured(Exception):
@@ -207,12 +367,38 @@ def probe_rpc_health(rpc_url: str | None = None) -> dict[str, Any]:
     url = (rpc_url or _resolve_evm_rpc_url()).strip()
     if not url:
         return {'ok': False, 'chain_id_hex': None, 'chain_id_int': None, 'block_number_hex': None, 'block_number_int': None, 'error': 'rpc_url_not_configured'}
+    # Provider backoff short-circuit: a recent HTTP 429 armed a process-wide
+    # backoff. Skip the live eth_blockNumber call so we never compound the rate
+    # limit; replay the last known health (cache_hit) if we have it, else return a
+    # backoff failure. This is what keeps the worker recheck, the coverage probe,
+    # and /system-health from each hitting Alchemy again inside the same window.
+    if rpc_provider_backoff_active():
+        _bo = rpc_provider_backoff_status()
+        cached = last_rpc_health()
+        logger.info(
+            'rpc_health_probe cache_hit=true reason=provider_backoff_active '
+            'backoff_until=%s backoff_remaining_seconds=%s',
+            _bo.get('backoff_until') or 'unknown',
+            int(_bo.get('remaining_seconds') or 0),
+        )
+        if cached is not None:
+            result = dict(cached)
+            result['provider_backoff_active'] = True
+            result['cache_hit'] = True
+            return result
+        return {
+            'ok': False, 'chain_id_hex': None, 'chain_id_int': None,
+            'block_number_hex': None, 'block_number_int': None,
+            'error': 'provider_backoff_active', 'provider_backoff_active': True, 'cache_hit': True,
+        }
     client = FailoverJsonRpcClient(_resolve_evm_rpc_urls()) if rpc_url is None else JsonRpcClient(url)
     try:
         chain_hex = str(client.call('eth_chainId', []) or '')
         block_hex = str(client.call('eth_blockNumber', []) or '')
     except Exception as exc:
-        return {'ok': False, 'chain_id_hex': None, 'chain_id_int': None, 'block_number_hex': None, 'block_number_int': None, 'error': str(exc)[:200]}
+        result = {'ok': False, 'chain_id_hex': None, 'chain_id_int': None, 'block_number_hex': None, 'block_number_int': None, 'error': str(exc)[:200], 'cache_hit': False}
+        _store_rpc_health(result)
+        return result
     try:
         chain_int = int(chain_hex, 16)
         block_int = int(block_hex, 16)
@@ -220,14 +406,20 @@ def probe_rpc_health(rpc_url: str | None = None) -> dict[str, Any]:
         chain_int = _hex_to_int(chain_hex)
         block_int = None
     logger.info(
-        'rpc_eth_blockNumber_result chain_id=%s raw_eth_blockNumber_hex=%s parsed_block_number_decimal=%s',
+        'rpc_eth_blockNumber_result chain_id=%s raw_eth_blockNumber_hex=%s parsed_block_number_decimal=%s cache_hit=false',
         chain_int,
         block_hex or 'missing',
         block_int,
     )
     if chain_int is None or block_int is None:
-        return {'ok': False, 'chain_id_hex': chain_hex or None, 'chain_id_int': chain_int, 'block_number_hex': block_hex or None, 'block_number_int': block_int, 'error': 'invalid_rpc_response'}
-    return {'ok': True, 'chain_id_hex': chain_hex, 'chain_id_int': chain_int, 'block_number_hex': block_hex, 'block_number_int': block_int, 'error': None}
+        result = {'ok': False, 'chain_id_hex': chain_hex or None, 'chain_id_int': chain_int, 'block_number_hex': block_hex or None, 'block_number_int': block_int, 'error': 'invalid_rpc_response', 'cache_hit': False}
+        _store_rpc_health(result)
+        return result
+    # A successful probe means the provider recovered — clear any lingering backoff.
+    clear_rpc_provider_backoff()
+    result = {'ok': True, 'chain_id_hex': chain_hex, 'chain_id_int': chain_int, 'block_number_hex': block_hex, 'block_number_int': block_int, 'error': None, 'cache_hit': False}
+    _store_rpc_health(result)
+    return result
 
 
 TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
@@ -352,6 +544,11 @@ class JsonRpcClient:
                     time.sleep(sleep_for)
                     backoff = min(30.0, backoff * 2)
                     continue
+                if exc.code == 429:
+                    # Final 429 (retries exhausted): arm a process-wide provider
+                    # backoff so later cycles/probes skip RPC instead of compounding
+                    # the rate limit. Honors a (larger) Retry-After when present.
+                    record_rpc_rate_limited(_retry_after_for_backoff(exc))
                 raise
         return None  # unreachable
 
@@ -575,6 +772,40 @@ async def _ws_subscribe_new_head(ws_url: str, timeout_seconds: float = 1.0) -> i
 
 def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc_client: RpcClient | None = None) -> list[ActivityEvent]:
     network = str(target.get('chain_network') or 'ethereum').strip().lower()
+
+    # --- Hard skip: chain mismatch (no RPC, no backfill, no coverage) ---
+    # A worker configured for chain_id=X must not run ANY RPC work for a target on
+    # a different chain. This fires before eth_chainId/eth_blockNumber so a
+    # mismatched (e.g. Ethereum) target never touches the Base provider.
+    _hard_skip, _t_chain_id, _rpc_chain_id = evaluate_chain_mismatch(network)
+    if _hard_skip:
+        target['_evm_chain_mismatch'] = True
+        target['_evm_chain_mismatch_reason'] = (
+            f'chain_mismatch target_chain_id={_t_chain_id} rpc_chain_id={_rpc_chain_id}'
+        )
+        target['_evm_skip_reason'] = 'chain_mismatch'
+        logger.warning(
+            'evm_chain_mismatch_hard_skip target_id=%s configured_chain=%s '
+            'target_chain_id=%s rpc_chain_id=%s action=hard_skip_no_rpc',
+            target.get('id'), network, _t_chain_id, _rpc_chain_id,
+        )
+        return []
+
+    # --- Skip while the provider is in a 429 backoff window (no RPC) ---
+    # A recent HTTP 429 armed a process-wide backoff; skip live polling so we never
+    # call eth_blockNumber again and compound the rate limit.
+    if rpc_provider_backoff_active():
+        _bo = rpc_provider_backoff_status()
+        target['_evm_provider_backoff'] = True
+        target['_evm_skip_reason'] = 'provider_backoff_active'
+        logger.warning(
+            'evm_poll_skipped_provider_backoff target_id=%s chain=%s reason=provider_backoff_active '
+            'backoff_until=%s backoff_remaining_seconds=%s action=skip_no_rpc',
+            target.get('id'), network,
+            _bo.get('backoff_until') or 'unknown', int(_bo.get('remaining_seconds') or 0),
+        )
+        return []
+
     # Route to the RPC endpoint that serves this target's labeled chain. A single
     # global Base RPC must never silently serve an Ethereum-labeled target.
     _chain_rpc = resolve_chain_rpc(network)

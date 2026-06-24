@@ -662,6 +662,42 @@ def test_monitoring_cycle_reports_zero_interval_capped_targets(monkeypatch, capl
     assert any('interval_capped_targets=0' in message for message in caplog.messages)
 
 
+def test_monitoring_cycle_caps_subminute_interval_targets(monkeypatch, caplog):
+    """A production target configured below the 60s floor is capped and counted.
+
+    The target is recently checked (10s ago) so under the 60s floor it is NOT due
+    this cycle — proving the cap raised the effective interval — while still being
+    reported in interval_capped_targets."""
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': 'subminute-target',
+            'name': 'Sub-minute Target',
+            'asset_id': 'asset-1',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-1',
+            'last_checked_at': now - timedelta(seconds=10),
+            'monitoring_interval_seconds': 30,
+            'created_at': now,
+        }
+    ]
+    connection = _FakeConnection(due_targets)
+
+    monkeypatch.setenv('MIN_EVM_POLLING_INTERVAL_SECONDS', '60')
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+
+    with caplog.at_level('INFO'):
+        summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10, trigger_type='scheduler')
+
+    assert any('interval_capped_targets=1' in message for message in caplog.messages)
+    # Capped to 60s and last checked 10s ago → not due this cycle (floor took effect).
+    assert summary.get('effective_due_count', summary.get('due_targets', 0)) == 0
+
+
 def test_monitoring_cycle_does_not_backfill_until_cooldown_satisfied(monkeypatch):
     now = datetime.now(timezone.utc)
     due_targets = [
