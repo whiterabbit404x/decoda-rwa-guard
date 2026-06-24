@@ -74,12 +74,35 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _is_production_like_runtime() -> bool:
+    """True for production/prod/staging runtimes (APP_ENV, then APP_MODE)."""
+    return os.getenv('APP_ENV', os.getenv('APP_MODE', 'development')).strip().lower() in {
+        'production', 'prod', 'staging'
+    }
+
+
+def _min_worker_sleep_seconds() -> float:
+    """Minimum seconds the worker loop sleeps between cycles.
+
+    Production-like runtimes floor at 60s (MIN_WORKER_SLEEP_SECONDS) so the loop
+    never busy-polls — and never re-hits the RPC provider — more than once a minute,
+    even when a target's interval is shorter or no work is due. Non-production keeps a
+    1s floor for fast local iteration / --once runs. MIN_WORKER_SLEEP_SECONDS overrides.
+    """
+    _default = 60.0 if _is_production_like_runtime() else 1.0
+    try:
+        return max(1.0, float(os.getenv('MIN_WORKER_SLEEP_SECONDS', str(_default))))
+    except (TypeError, ValueError):
+        return _default
+
+
 def _compute_next_sleep_seconds(
     *,
     worker_interval_seconds: float,
     effective_due_count: int,
     soonest_due_in_seconds: int | None,
     max_sleep_seconds: float = 30.0,
+    min_sleep_seconds: float = 1.0,
 ) -> float:
     base_sleep_seconds = max(1.0, float(worker_interval_seconds))
     next_sleep_seconds = base_sleep_seconds
@@ -91,7 +114,13 @@ def _compute_next_sleep_seconds(
         )
     if effective_due_count == 0 and sleep_override_seconds is not None:
         next_sleep_seconds = sleep_override_seconds
-    return min(max_sleep_seconds, next_sleep_seconds)
+    # Bound the liveness cadence with the cap, but never below the production floor:
+    # raise the cap to at least min_sleep_seconds so a 60s floor is not squashed to the
+    # 30s liveness cap, then floor the result. In production this keeps the worker from
+    # ever sleeping 1s or 30s under a 60s interval — it sleeps the full 60s.
+    effective_cap = max(float(max_sleep_seconds), float(min_sleep_seconds))
+    next_sleep_seconds = min(effective_cap, next_sleep_seconds)
+    return max(float(min_sleep_seconds), next_sleep_seconds)
 
 
 def _rpc_recheck_backoff_seconds() -> float:
@@ -510,6 +539,7 @@ def main() -> int:
                 worker_interval_seconds=args.interval_seconds,
                 effective_due_count=effective_due_count,
                 soonest_due_in_seconds=soonest_due_in_seconds,
+                min_sleep_seconds=_min_worker_sleep_seconds(),
             )
             observe('decoda_monitoring_cycle_duration_seconds', time.monotonic() - cycle_started, worker=args.worker_name)
             if not rpc_healthy:
@@ -567,7 +597,12 @@ def main() -> int:
             increment('decoda_monitoring_worker_failures_total', worker=args.worker_name)
             send_external_oncall_alert('missing_heartbeat', 'Monitoring worker cycle failed; heartbeat is at risk.', worker=args.worker_name, error_type=type(exc).__name__)
             logger.exception('monitoring worker cycle error')
-            next_sleep_seconds = min(30.0, max(1.0, float(args.interval_seconds)))
+            # Floor at the production minimum so a failing cycle does not busy-retry
+            # the RPC provider faster than once per MIN_WORKER_SLEEP_SECONDS.
+            next_sleep_seconds = max(
+                _min_worker_sleep_seconds(),
+                min(30.0, max(1.0, float(args.interval_seconds))),
+            )
         if args.once:
             logger.info('monitoring worker exiting after one cycle')
             return 0

@@ -307,6 +307,85 @@ def test_no_secret_in_backoff_logs_or_status(monkeypatch, caplog):
 
     text = '\n'.join(r.getMessage() for r in caplog.records)
     assert 'rpc_provider_backoff_set' in text, 'the backoff must be logged'
+    assert 'rpc_status=rate_limited' in text
+    assert 'rpc_call_skipped=true' in text
     assert secret not in text
     assert '/v2/' not in text
     assert secret not in str(eap.rpc_provider_backoff_status())
+
+
+# ---------------------------------------------------------------------------
+# A. Production backoff floor (10 minutes) + jitter
+# ---------------------------------------------------------------------------
+
+def test_production_backoff_minimum_is_ten_minutes(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.delenv('RPC_PROVIDER_BACKOFF_MIN_SECONDS', raising=False)
+    monkeypatch.setenv('RPC_PROVIDER_BACKOFF_JITTER_SECONDS', '0')  # deterministic
+    eap.reset_rpc_provider_state()
+
+    backoff = eap.record_rpc_rate_limited(None)
+    assert backoff >= 600, 'production must back off at least 10 minutes after a 429'
+    assert eap.rpc_provider_backoff_active() is True
+
+
+def test_non_production_backoff_minimum_stays_120s(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.delenv('APP_ENV', raising=False)
+    monkeypatch.delenv('APP_MODE', raising=False)
+    monkeypatch.delenv('RPC_PROVIDER_BACKOFF_MIN_SECONDS', raising=False)
+    monkeypatch.setenv('RPC_PROVIDER_BACKOFF_JITTER_SECONDS', '0')
+    eap.reset_rpc_provider_state()
+
+    backoff = eap.record_rpc_rate_limited(None)
+    assert 120 <= backoff < 600, 'non-production keeps the shorter 120s floor'
+
+
+def test_backoff_adds_jitter_on_top_of_minimum(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.delenv('APP_ENV', raising=False)
+    monkeypatch.delenv('APP_MODE', raising=False)
+    monkeypatch.delenv('RPC_PROVIDER_BACKOFF_MIN_SECONDS', raising=False)
+    monkeypatch.setenv('RPC_PROVIDER_BACKOFF_JITTER_SECONDS', '30')
+    # Pin the random jitter so the assertion is deterministic.
+    monkeypatch.setattr(eap.random, 'uniform', lambda _lo, _hi: 25.0)
+    eap.reset_rpc_provider_state()
+
+    backoff = eap.record_rpc_rate_limited(None)
+    assert backoff == pytest.approx(120 + 25), 'jitter must extend the backoff window'
+
+
+# ---------------------------------------------------------------------------
+# 7. provider_observation is not success after chain mismatch / provider backoff
+# ---------------------------------------------------------------------------
+
+def test_provider_observation_outcome_not_success_on_backoff_or_mismatch():
+    from services.api.app.monitoring_runner import _provider_observation_outcome
+
+    class _PR:
+        def __init__(self, status, reason_code):
+            self.status = status
+            self.reason_code = reason_code
+
+    # Provider 429 backoff returns status=degraded — it must NOT be success.
+    assert _provider_observation_outcome(
+        _PR('degraded', 'PROVIDER_BACKOFF_ACTIVE'), chain_mismatch=False
+    ) == 'skipped'
+    # Chain mismatch via reason code.
+    assert _provider_observation_outcome(
+        _PR('failed', 'CHAIN_RPC_MISMATCH'), chain_mismatch=False
+    ) == 'skipped'
+    # Chain mismatch detected mid-fetch (target flag) — even a 'degraded' result is skipped.
+    assert _provider_observation_outcome(
+        _PR('degraded', None), chain_mismatch=True
+    ) == 'skipped'
+    # A genuine reachable provider is still success.
+    assert _provider_observation_outcome(_PR('live', None), chain_mismatch=False) == 'success'
+    assert _provider_observation_outcome(
+        _PR('no_evidence', 'NO_PROVIDER_EVIDENCE'), chain_mismatch=False
+    ) == 'success'
+    # A hard provider failure is failure.
+    assert _provider_observation_outcome(
+        _PR('failed', 'PROVIDER_FAILED'), chain_mismatch=False
+    ) == 'failure'

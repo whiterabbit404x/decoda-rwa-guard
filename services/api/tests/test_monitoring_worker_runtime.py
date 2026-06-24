@@ -2166,6 +2166,58 @@ def test_dead_lettered_only_target_does_not_burn_backfill_cooldown(monkeypatch, 
     assert _E785_WORKSPACE_ID not in monitoring_runner._LAST_MONITORING_DUE_SELECTION_BACKFILL_AT
 
 
+def test_chain_mismatch_target_cannot_be_selected_for_backfill(monkeypatch, caplog):
+    """Requirement D/H6: an Ethereum target (chain_id=1) under a Base worker
+    (rpc_chain_id=8453) is the oldest, very overdue candidate — exactly what the
+    backfill fallback would otherwise pick — but a chain mismatch must keep it out of
+    BOTH live-poll and backfill selection. selected_for_backfill must never be True."""
+    monkeypatch.setenv('EVM_CHAIN_ID', '8453')  # worker serves Base
+    monitoring_runner._LAST_MONITORING_DUE_SELECTION_BACKFILL_AT.pop(_E785_WORKSPACE_ID, None)
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': _E785_TARGET_ID,
+            'name': 'Ethereum-mainnet target',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': _E785_WORKSPACE_ID,
+            'chain_network': 'ethereum',  # chain_id=1 — mismatched vs the Base worker
+            'last_checked_at': now - timedelta(hours=3),  # very overdue: would-be backfill pick
+            'monitoring_interval_seconds': 60,
+            'monitoring_dead_lettered_at': None,
+            'created_at': now,
+        }
+    ]
+    connection = _FakeConnection(due_targets)
+    _make_basic_cycle_env(monkeypatch, connection)
+    monkeypatch.setattr(
+        monitoring_runner,
+        'process_monitoring_target',
+        lambda *_a, **_k: {'alerts_generated': 0, 'status': 'completed'},
+    )
+
+    with caplog.at_level('INFO'):
+        summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10)
+
+    # The mismatched target consumes neither a live-poll slot nor the backfill fallback.
+    assert summary['effective_due_count'] == 0
+    assert summary['checked'] == 0
+
+    sel_line = next(
+        (m for m in caplog.messages if 'monitoring target-selection' in m and _E785_TARGET_ID in m),
+        None,
+    )
+    assert sel_line is not None
+    assert 'selected_for_backfill=False' in sel_line
+    assert 'selected_for_live_poll=False' in sel_line
+    # The chain-mismatch exclusion was logged for this target.
+    assert any(
+        'monitoring_chain_mismatch_excluded' in m and _E785_TARGET_ID in m
+        for m in caplog.messages
+    )
+
+
 def test_status_payload_exposes_worker_alive_and_dead_lettered_targets():
     """Task 7: the status surface must carry worker_alive (heartbeat-derived) and a
     dead_lettered_targets count, and attribute a blocked target to 'targets_blocked'

@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import re
 import asyncio
 from dataclasses import dataclass
@@ -91,16 +92,46 @@ _RPC_PROVIDER_STATE: dict[str, Any] = {
 }
 
 
-def _rpc_backoff_min_seconds() -> float:
-    """Minimum provider backoff after an HTTP 429 (seconds). Default 120.
+def _is_production_like_runtime() -> bool:
+    """True for production/prod/staging runtimes (APP_ENV, then APP_MODE).
 
-    Configurable via RPC_PROVIDER_BACKOFF_MIN_SECONDS. A 429 means the provider
-    is rate-limiting, so we wait at least this long before any RPC call.
+    Defined locally (not imported) so this low-level provider module stays free of
+    circular imports. Mirrors the production gate used elsewhere in the codebase.
+    """
+    return os.getenv('APP_ENV', os.getenv('APP_MODE', 'development')).strip().lower() in {
+        'production', 'prod', 'staging'
+    }
+
+
+def _rpc_backoff_min_seconds() -> float:
+    """Minimum provider backoff after an HTTP 429 (seconds).
+
+    A 429 means the provider is rate-limiting, so we wait at least this long before
+    any RPC call. Production-like runtimes (APP_ENV in production/prod/staging) wait
+    at least 10 minutes so a throttled Alchemy quota is given real time to recover
+    and the worker never re-hits the provider in a tight loop; non-production keeps
+    a shorter 120s floor for fast local iteration. RPC_PROVIDER_BACKOFF_MIN_SECONDS
+    overrides both.
+    """
+    _default = 600.0 if _is_production_like_runtime() else 120.0
+    try:
+        return max(1.0, float(os.getenv('RPC_PROVIDER_BACKOFF_MIN_SECONDS', str(_default))))
+    except (TypeError, ValueError):
+        return _default
+
+
+def _rpc_backoff_jitter_seconds() -> float:
+    """Max random seconds added on top of the backoff window (default 30).
+
+    Jitter de-synchronizes the resume instant across the poll loop, coverage probe,
+    and /system-health so they do not all dial the provider the moment the window
+    expires and immediately re-trip the rate limit. Jitter only ever *extends* the
+    window, so the configured minimum is always honored. Set to 0 to disable.
     """
     try:
-        return max(1.0, float(os.getenv('RPC_PROVIDER_BACKOFF_MIN_SECONDS', '120')))
+        return max(0.0, float(os.getenv('RPC_PROVIDER_BACKOFF_JITTER_SECONDS', '30')))
     except (TypeError, ValueError):
-        return 120.0
+        return 30.0
 
 
 def _retry_after_for_backoff(exc: _urllib_error.HTTPError) -> float | None:
@@ -125,14 +156,20 @@ def _retry_after_for_backoff(exc: _urllib_error.HTTPError) -> float | None:
 def record_rpc_rate_limited(retry_after_seconds: float | None = None) -> float:
     """Record an HTTP 429 from the Base RPC provider and arm a process-wide backoff.
 
-    The backoff is at least ``RPC_PROVIDER_BACKOFF_MIN_SECONDS`` (120s) and honors
-    a larger ``Retry-After`` when the provider sent one. While it is active,
-    probe_rpc_health and live polling skip RPC calls so we never compound the
-    rate limit. Returns the effective backoff in seconds.
+    The backoff is at least ``RPC_PROVIDER_BACKOFF_MIN_SECONDS`` (10 minutes in
+    production, 120s otherwise) and honors a larger ``Retry-After`` when the
+    provider sent one, plus bounded jitter so call sites do not all resume at the
+    same instant. While it is active, probe_rpc_health and live polling skip RPC
+    calls so we never compound the rate limit. Returns the effective backoff in
+    seconds.
     """
     backoff = _rpc_backoff_min_seconds()
     if retry_after_seconds is not None and float(retry_after_seconds) > backoff:
         backoff = float(retry_after_seconds)
+    # Jitter only extends the window, so the minimum / Retry-After floor still holds.
+    jitter = _rpc_backoff_jitter_seconds()
+    if jitter > 0:
+        backoff += random.uniform(0.0, jitter)
     now_mono = time.monotonic()
     until_wall = (datetime.now(timezone.utc) + timedelta(seconds=backoff)).isoformat()
     with _RPC_PROVIDER_LOCK:
@@ -140,8 +177,8 @@ def record_rpc_rate_limited(retry_after_seconds: float | None = None) -> float:
         _RPC_PROVIDER_STATE['backoff_until_wall'] = until_wall
         _RPC_PROVIDER_STATE['backoff_error_class'] = 'rate_limited'
     logger.warning(
-        'rpc_provider_backoff_set error_class=rate_limited backoff_seconds=%s '
-        'retry_after_seconds=%s backoff_until=%s',
+        'rpc_provider_backoff_set error_class=rate_limited rpc_status=rate_limited '
+        'backoff_seconds=%s retry_after_seconds=%s backoff_until=%s rpc_call_skipped=true',
         int(backoff),
         'none' if retry_after_seconds is None else int(retry_after_seconds),
         until_wall,
