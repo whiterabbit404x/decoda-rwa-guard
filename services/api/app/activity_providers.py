@@ -10,8 +10,11 @@ import os
 
 from services.api.app.evm_activity_provider import (
     MonitoredWalletNotConfigured,
+    evaluate_chain_mismatch,
     fetch_evm_activity,
     probe_rpc_health,
+    rpc_provider_backoff_active,
+    rpc_provider_backoff_status,
     _resolve_evm_rpc_url,
 )
 from services.api.app.monitoring_mode import (
@@ -166,6 +169,74 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
     mode = runtime['mode']
     can_use_live = (not runtime['degraded']) and is_monitorable_target_type(target_type)
     if mode in {'live', 'hybrid'} and can_use_live:
+        # Hard skip: a target on a different chain than this worker's RPC must not
+        # trigger ANY RPC/backfill/coverage work. Return a non-claim-safe failed
+        # result (never a success) so the runner marks it misconfigured — and we
+        # never call fetch_evm_activity, eth_blockNumber, or the coverage probe.
+        _hard_skip, _t_chain, _rpc_chain = evaluate_chain_mismatch(target.get('chain_network'))
+        if _hard_skip:
+            target['_evm_chain_mismatch'] = True
+            target['_evm_chain_mismatch_reason'] = (
+                f'chain_mismatch target_chain_id={_t_chain} rpc_chain_id={_rpc_chain}'
+            )
+            logger.warning(
+                'chain_mismatch_hard_skip target_id=%s configured_chain=%s '
+                'target_chain_id=%s rpc_chain_id=%s action=hard_skip_no_rpc',
+                target.get('id'), str(target.get('chain_network') or '').strip().lower(),
+                _t_chain, _rpc_chain,
+            )
+            return ActivityProviderResult(
+                mode=mode,
+                status='failed',
+                evidence_state='FAILED_EVIDENCE',
+                truthfulness_state='UNKNOWN_RISK',
+                synthetic=False,
+                provider_name='evm_activity_provider',
+                provider_kind='rpc',
+                evidence_present=False,
+                recent_real_event_count=0,
+                last_real_event_at=None,
+                events=[],
+                latest_block=None,
+                checkpoint=None,
+                checkpoint_age_seconds=None,
+                degraded_reason='chain_mismatch',
+                error_code='ChainRpcMismatch',
+                source_type='unknown',
+                reason_code='CHAIN_RPC_MISMATCH',
+                claim_safe=False,
+                detection_outcome='MONITORING_DEGRADED',
+            )
+        # Provider 429 backoff: skip live RPC entirely this cycle so we never
+        # re-hit eth_blockNumber while the provider is rate-limiting.
+        if rpc_provider_backoff_active():
+            _bo = rpc_provider_backoff_status()
+            logger.warning(
+                'provider_backoff_skip target_id=%s reason=provider_backoff_active backoff_until=%s',
+                target.get('id'), _bo.get('backoff_until') or 'unknown',
+            )
+            return ActivityProviderResult(
+                mode=mode,
+                status='degraded',
+                evidence_state='DEGRADED_EVIDENCE',
+                truthfulness_state='UNKNOWN_RISK',
+                synthetic=False,
+                provider_name='evm_activity_provider',
+                provider_kind='rpc',
+                evidence_present=False,
+                recent_real_event_count=0,
+                last_real_event_at=None,
+                events=[],
+                latest_block=None,
+                checkpoint=None,
+                checkpoint_age_seconds=None,
+                degraded_reason='provider_backoff_active',
+                error_code=None,
+                source_type='rpc_polling',
+                reason_code='PROVIDER_BACKOFF_ACTIVE',
+                claim_safe=False,
+                detection_outcome='MONITORING_DEGRADED',
+            )
         try:
             live_events = fetch_evm_activity(target, since_ts)
         except MonitoredWalletNotConfigured:
@@ -275,6 +346,37 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
         if coverage_evidence_present:
             # No blockchain events found, but RPC is reachable (fetch_evm_activity succeeded).
             # Probe eth_chainId + eth_blockNumber to get the real current block for telemetry.
+            if latest_block is None and rpc_provider_backoff_active():
+                # Provider is rate-limiting: the coverage probe must not call RPC
+                # again. Return a degraded result (never a coverage "success" with a
+                # null block) so we stay truthful while the backoff is active.
+                _bo = rpc_provider_backoff_status()
+                logger.warning(
+                    'coverage_rpc_probe_skipped target_id=%s reason=provider_backoff_active backoff_until=%s',
+                    target.get('id'), _bo.get('backoff_until') or 'unknown',
+                )
+                return ActivityProviderResult(
+                    mode=mode,
+                    status='degraded',
+                    evidence_state='DEGRADED_EVIDENCE',
+                    truthfulness_state='UNKNOWN_RISK',
+                    synthetic=False,
+                    provider_name='evm_activity_provider',
+                    provider_kind='rpc',
+                    evidence_present=False,
+                    recent_real_event_count=0,
+                    last_real_event_at=None,
+                    events=[],
+                    latest_block=None,
+                    checkpoint=None,
+                    checkpoint_age_seconds=None,
+                    degraded_reason='provider_backoff_active',
+                    error_code=None,
+                    source_type='rpc_polling',
+                    reason_code='PROVIDER_BACKOFF_ACTIVE',
+                    claim_safe=False,
+                    detection_outcome='MONITORING_DEGRADED',
+                )
             if latest_block is None:
                 rpc_probe = probe_rpc_health()
                 if rpc_probe['ok']:

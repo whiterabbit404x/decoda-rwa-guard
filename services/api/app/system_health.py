@@ -336,6 +336,14 @@ def _check_rpc() -> dict[str, Any]:
             response_time_ms=_elapsed_ms(), last_error_class=reason,
             retry_after_seconds=retry_after,
         )
+        if _rpc_status_class(reason) == 'rate_limited':
+            # Arm the shared provider backoff so the worker and later page refreshes
+            # both skip RPC instead of re-probing into the rate limit.
+            try:
+                from services.api.app.evm_activity_provider import record_rpc_rate_limited
+                record_rpc_rate_limited(retry_after)
+            except Exception:
+                pass
         result = _rpc_failed(rpc_host, reason)
         if retry_after is not None:
             # Non-rendered hint consumed by _cached_base_rpc_health to back off.
@@ -413,6 +421,20 @@ def _reset_rpc_health_cache() -> None:
     _RPC_HEALTH_CACHE.clear()
 
 
+def _rpc_backoff_component(status: dict[str, Any], rpc_host: str) -> dict[str, Any]:
+    """Failing Base RPC component shown while a provider HTTP 429 backoff is active.
+
+    Surfaces the backoff window so operators see the probe was intentionally
+    skipped (not a fresh failure) and when it will retry. Host only — no secrets.
+    """
+    until = status.get('backoff_until') or 'shortly'
+    return _component(
+        'failing',
+        f'Base RPC: Failing. RPC provider is in backoff until {until} after HTTP 429. (host: {rpc_host})',
+        action='Provider is rate-limiting. Increase RPC quota or reduce polling frequency.',
+    )
+
+
 def _cached_base_rpc_health(force: bool = False) -> dict[str, Any]:
     """Return the Base RPC health probe, cached for ``RPC_HEALTH_CACHE_TTL_SECONDS``.
 
@@ -425,6 +447,28 @@ def _cached_base_rpc_health(force: bool = False) -> dict[str, Any]:
     it immediately. Pass ``force=True`` to bypass the cache.
     """
     key = _resolve_base_rpc_url() or '<unconfigured>'
+    # A recorded HTTP 429 backoff (armed by the worker or a prior probe) means we
+    # must NOT call the provider again — surface the backoff window truthfully and
+    # skip the live eth_blockNumber call. cache_hit=true: this is a replayed state.
+    try:
+        from services.api.app.evm_activity_provider import (
+            rpc_provider_backoff_active as _bo_active,
+            rpc_provider_backoff_status as _bo_status,
+        )
+        if not force and _bo_active():
+            _st = _bo_status()
+            try:
+                from urllib.parse import urlparse as _up
+                _host = _up(key).hostname or 'configured'
+            except Exception:
+                _host = 'configured'
+            _log_rpc_probe(
+                rpc_configured=True, rpc_host=_host, rpc_status='rate_limited',
+                response_time_ms=0, last_error_class='provider_backoff_active', cache_hit=True,
+            )
+            return _rpc_backoff_component(_st, _host)
+    except Exception:
+        pass
     now_mono = time.monotonic()
     entry = _RPC_HEALTH_CACHE.get('entry')
     if (
