@@ -298,3 +298,55 @@ def test_rpc_recheck_max_backoff_never_below_initial(monkeypatch):
     monkeypatch.setenv('MONITORING_RPC_RECHECK_MAX_BACKOFF_SECONDS', '60')
     # max must not drop below the initial backoff
     assert run_monitoring_worker._rpc_recheck_max_backoff_seconds() == 120.0
+
+
+# ---------------------------------------------------------------------------
+# 9. Retry-After is respected on a 429 (status page backs off, never hammers)
+# ---------------------------------------------------------------------------
+
+def test_rpc_429_with_retry_after_header_records_retry_after(sh, monkeypatch):
+    _clear_rpc_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', 'https://base-mainnet.g.alchemy.com/v2/secret-key')
+    err = urllib.error.HTTPError(
+        'https://base-mainnet.g.alchemy.com/v2/secret-key', 429, 'Too Many Requests',
+        {'Retry-After': '30'}, None,
+    )
+    with patch.object(sh, 'urlopen', side_effect=err):
+        result = sh._check_rpc()
+    assert result['status'] == 'failing'
+    assert result.get('retry_after') == 30.0
+    # The Retry-After value is metadata, not a rendered secret.
+    assert 'secret-key' not in str(result)
+
+
+def test_retry_after_extends_cache_beyond_base_ttl(sh, monkeypatch):
+    """A rate-limited probe with Retry-After must hold the cache for at least that
+    long, even past the base TTL — so refreshes honor the provider's backoff."""
+    sh._reset_rpc_health_cache()
+    _clear_rpc_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', 'https://base.example.com/v2/key')
+    monkeypatch.setattr(sh, 'RPC_HEALTH_CACHE_TTL_SECONDS', 10)
+
+    clock = {'t': 1000.0}
+    monkeypatch.setattr(sh.time, 'monotonic', lambda: clock['t'])
+
+    calls = {'n': 0}
+
+    def _probe():
+        calls['n'] += 1
+        if calls['n'] == 1:
+            r = sh._component('failing', 'rate_limited (HTTP 429)')
+            r['retry_after'] = 120.0
+            return r
+        return sh._component('healthy', 'ok', metric='block #2')
+
+    monkeypatch.setattr(sh, '_check_rpc', _probe)
+
+    sh._cached_base_rpc_health()             # probe #1: 429, retry_after=120 → cached until t+120
+    clock['t'] += 11.0                        # past the 10s base TTL, before the 120s Retry-After
+    sh._cached_base_rpc_health()
+    assert calls['n'] == 1, 'Retry-After must extend the cache beyond the base TTL'
+
+    clock['t'] += 110.0                       # now past the Retry-After window
+    sh._cached_base_rpc_health()
+    assert calls['n'] == 2, 'after Retry-After elapses, the probe must run again'

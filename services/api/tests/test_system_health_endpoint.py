@@ -213,12 +213,31 @@ class TestRpcFailure:
 # ---------------------------------------------------------------------------
 
 class TestWorkerFreshHeartbeat:
-    def test_worker_fresh_heartbeat_returns_healthy(self, sh):
+    def test_worker_fresh_heartbeat_when_enabled_returns_healthy(self, sh, monkeypatch):
+        # A fresh heartbeat is only "healthy" when live monitoring is actually
+        # enabled. Enable it via STAGING_WORKER_ENABLED (the documented switch).
+        monkeypatch.delenv('WORKER_ENABLED', raising=False)
+        monkeypatch.delenv('MONITORING_WORKER_ENABLED', raising=False)
+        monkeypatch.delenv('LIVE_MODE_ENABLED', raising=False)
+        monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
         fresh_ts = datetime.now(timezone.utc) - timedelta(seconds=10)
         conn = _fake_connection(heartbeat_ts=fresh_ts)
 
         result = sh._check_worker(conn, None)
         assert result['status'] == 'healthy', f'Expected healthy, got {result["status"]}: {result["message"]}'
+
+    def test_worker_fresh_heartbeat_but_disabled_is_degraded_with_running_message(self, sh, monkeypatch):
+        # Reported symptom: worker process alive (fresh heartbeat) but no enable
+        # flag set. Must NOT be Operational — it must say it is running but
+        # live monitoring is disabled.
+        for var in ('STAGING_WORKER_ENABLED', 'WORKER_ENABLED', 'MONITORING_WORKER_ENABLED', 'LIVE_MODE_ENABLED'):
+            monkeypatch.delenv(var, raising=False)
+        fresh_ts = datetime.now(timezone.utc) - timedelta(seconds=10)
+        conn = _fake_connection(heartbeat_ts=fresh_ts)
+
+        result = sh._check_worker(conn, None)
+        assert result['status'] == 'degraded', f'Expected degraded, got {result["status"]}'
+        assert result['message'] == 'Worker process is running, but live monitoring is disabled.'
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +260,39 @@ class TestWorkerStaleHeartbeat:
         result = sh._check_worker(conn, None)
         assert result['status'] in ('failing', 'degraded'), \
             f'Expected failing for missing heartbeat, got {result["status"]}'
+
+
+# ---------------------------------------------------------------------------
+# 7b. Live Chain Monitoring agrees with the Worker card on enabled state
+# ---------------------------------------------------------------------------
+
+class TestLiveChainMonitoringWorkerAgreement:
+    def test_fresh_heartbeat_but_disabled_diagnosis_says_running_disabled(self, sh, monkeypatch):
+        for var in ('STAGING_WORKER_ENABLED', 'WORKER_ENABLED', 'MONITORING_WORKER_ENABLED', 'LIVE_MODE_ENABLED'):
+            monkeypatch.delenv(var, raising=False)
+        fresh_ts = datetime.now(timezone.utc) - timedelta(seconds=10)
+        conn = _fake_connection(heartbeat_ts=fresh_ts)
+        rpc_ok = sh._component('healthy', 'ok', metric='block #1')
+
+        chain = sh._build_live_chain_monitoring(conn, None, rpc_check=rpc_ok)
+        assert chain['worker_enabled'] is False
+        assert chain['worker_enabled_source'] == 'none'
+        assert chain['diagnosis'].startswith('Worker process is running, but live monitoring is disabled.')
+
+    def test_enabled_worker_reports_yes_and_source(self, sh, monkeypatch):
+        for var in ('WORKER_ENABLED', 'MONITORING_WORKER_ENABLED', 'LIVE_MODE_ENABLED'):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
+        fresh_ts = datetime.now(timezone.utc) - timedelta(seconds=10)
+        conn = _fake_connection(heartbeat_ts=fresh_ts)
+        rpc_ok = sh._component('healthy', 'ok', metric='block #1')
+
+        chain = sh._build_live_chain_monitoring(conn, None, rpc_check=rpc_ok)
+        worker = sh._check_worker(conn, None)
+        # Worker card and Live Chain Monitoring agree, and System Health says Yes.
+        assert chain['worker_enabled'] is True
+        assert chain['worker_enabled_source'] == 'STAGING_WORKER_ENABLED=true'
+        assert worker['status'] == 'healthy'
 
 
 # ---------------------------------------------------------------------------

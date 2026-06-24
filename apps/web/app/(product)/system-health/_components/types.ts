@@ -14,6 +14,7 @@ export type LiveChainMonitoring = {
   rpc_configured: boolean;
   latest_rpc_block: string | null;
   worker_enabled: boolean;
+  worker_enabled_source?: string | null;
   last_heartbeat_at: string | null;
   heartbeat_age_seconds: number | null;
   heartbeat_age_human: string | null;

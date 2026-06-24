@@ -378,6 +378,15 @@ def live_mode_enabled() -> bool:
     return bool(runtime_mode_config_summary()['live_mode_enabled'])
 
 
+# Worker-enabled resolution lives in the dependency-free worker_enable module so
+# both the worker and System Health can share it. Re-exported here for callers
+# that already import from pilot.
+from services.api.app.worker_enable import (  # noqa: E402
+    WORKER_ENABLED_ENV_VARS,
+    resolve_worker_enabled,
+)
+
+
 def pilot_mode() -> str:
     return str(runtime_mode_config_summary()['resolved_app_mode'])
 

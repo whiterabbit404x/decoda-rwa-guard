@@ -61,6 +61,10 @@ export function LiveChainMonitoringPanel({ chainMonitoring }: Props) {
               label="Worker enabled"
               value={chainMonitoring.worker_enabled ? 'Yes' : 'No'}
             />
+            {chainMonitoring.worker_enabled && chainMonitoring.worker_enabled_source &&
+              chainMonitoring.worker_enabled_source !== 'none' && (
+                <MetricRow label="Enabled via" value={chainMonitoring.worker_enabled_source} />
+              )}
             <MetricRow
               label="RPC configured"
               value={chainMonitoring.rpc_configured ? 'Yes' : 'No'}

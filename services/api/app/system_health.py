@@ -36,7 +36,8 @@ BASE_CHAIN_ID = 8453
 RPC_PROBE_TIMEOUT_SECONDS = max(1, int(os.getenv('SYSTEM_HEALTH_RPC_TIMEOUT_SECONDS', '8')))
 # Cache the Base RPC probe for a short TTL so repeated /ops/system-health page
 # refreshes reuse one probe instead of calling the provider on every request.
-RPC_HEALTH_CACHE_TTL_SECONDS = max(0, int(os.getenv('SYSTEM_HEALTH_RPC_TTL_SECONDS', '45')))
+# Default 60s so the status page never out-paces the worker's 60s poll cadence.
+RPC_HEALTH_CACHE_TTL_SECONDS = max(0, int(os.getenv('SYSTEM_HEALTH_RPC_TTL_SECONDS', '60')))
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +215,27 @@ def _rpc_status_class(reason: str) -> str:
     return 'failing'
 
 
+def _parse_retry_after(headers: Any) -> float | None:
+    """Return the numeric Retry-After value (seconds), bounded, or None.
+
+    Respecting Retry-After lets a rate-limited provider tell us how long to wait;
+    System Health uses it to extend the probe cache so refreshes never compound a
+    429. Only the standard numeric-seconds form is honored (HTTP-date is rare for
+    JSON-RPC providers). The value is clamped so a hostile header cannot pin the
+    status page on a stale probe indefinitely.
+    """
+    try:
+        raw = headers.get('Retry-After') if headers is not None else None
+    except Exception:
+        raw = None
+    if not raw:
+        return None
+    try:
+        return max(0.0, min(300.0, float(str(raw).strip())))
+    except (TypeError, ValueError):
+        return None
+
+
 def _log_rpc_probe(
     *,
     rpc_configured: bool,
@@ -270,13 +292,17 @@ def _check_rpc() -> dict[str, Any]:
     def _elapsed_ms() -> int:
         return int((time.monotonic() - started) * 1000)
 
-    def _failed(reason: str) -> dict[str, Any]:
+    def _failed(reason: str, retry_after: float | None = None) -> dict[str, Any]:
         # One blocking on-chain call per probe — classify, log (host only), return.
         _log_rpc_probe(
             rpc_configured=True, rpc_host=rpc_host, rpc_status=_rpc_status_class(reason),
             response_time_ms=_elapsed_ms(), last_error_class=reason,
         )
-        return _rpc_failed(rpc_host, reason)
+        result = _rpc_failed(rpc_host, reason)
+        if retry_after is not None:
+            # Non-rendered hint consumed by _cached_base_rpc_health to back off.
+            result['retry_after'] = retry_after
+        return result
 
     payload = b'{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
     try:
@@ -323,6 +349,9 @@ def _check_rpc() -> dict[str, Any]:
             reason = f'unauthorized_key (HTTP {exc.code})'
         elif exc.code == 429:
             reason = f'rate_limited (HTTP {exc.code})'
+            # Honor Retry-After so repeated page refreshes back off for as long as
+            # the provider asked, instead of re-probing into the rate limit.
+            return _failed(reason, retry_after=_parse_retry_after(getattr(exc, 'headers', None)))
         else:
             reason = f'http_{exc.code}'
         return _failed(reason)
@@ -365,16 +394,41 @@ def _cached_base_rpc_health(force: bool = False) -> dict[str, Any]:
         and RPC_HEALTH_CACHE_TTL_SECONDS > 0
         and entry is not None
         and entry.get('key') == key
-        and (now_mono - float(entry.get('monotonic', 0.0))) < RPC_HEALTH_CACHE_TTL_SECONDS
+        and now_mono < float(entry.get('expires_monotonic', 0.0))
     ):
         return dict(entry['result'])
     result = _check_rpc()
-    _RPC_HEALTH_CACHE['entry'] = {'key': key, 'monotonic': now_mono, 'result': result}
+    # A rate-limited probe may carry a Retry-After hint; cache it for at least that
+    # long so the status page honors the provider's backoff instead of hammering it.
+    ttl = float(RPC_HEALTH_CACHE_TTL_SECONDS)
+    retry_after = result.get('retry_after') if isinstance(result, dict) else None
+    if isinstance(retry_after, (int, float)) and retry_after > ttl:
+        ttl = float(retry_after)
+    _RPC_HEALTH_CACHE['entry'] = {'key': key, 'expires_monotonic': now_mono + ttl, 'result': result}
     return dict(result)
 
 
+def _worker_enabled_state() -> dict[str, Any]:
+    """Resolve worker-enabled exactly as the worker does (shared resolver).
+
+    Falls back to a fail-closed disabled state if the import is unavailable so the
+    status page never claims live monitoring is running when it cannot confirm it.
+    """
+    try:
+        from services.api.app.worker_enable import resolve_worker_enabled
+        return resolve_worker_enabled()
+    except Exception:
+        return {'enabled': False, 'source': 'none', 'env_var': None}
+
+
+_WORKER_ENABLE_HINT = (
+    'Set STAGING_WORKER_ENABLED=true (or WORKER_ENABLED / MONITORING_WORKER_ENABLED / '
+    'LIVE_MODE_ENABLED) in the worker service to enable live monitoring.'
+)
+
+
 def _check_worker(connection: Any, workspace_id: str | None) -> dict[str, Any]:
-    worker_enabled = os.getenv('WORKER_ENABLED', 'true').strip().lower() not in {'0', 'false', 'no', 'off'}
+    worker_enabled = _worker_enabled_state()['enabled']
     try:
         if workspace_id:
             row = connection.execute(
@@ -402,11 +456,26 @@ def _check_worker(connection: Any, workspace_id: str | None) -> dict[str, Any]:
             return _component(
                 'failing',
                 'Worker heartbeat not received. Worker is configured but not reporting.',
-                action='Check the worker service is running and WORKER_ENABLED=true.',
+                action='Check the worker service is running and that a worker-enable flag is set (e.g. STAGING_WORKER_ENABLED=true).',
             )
-        return _component('unavailable', 'Worker is disabled (WORKER_ENABLED=false).')
+        return _component(
+            'unavailable',
+            'Live monitoring is disabled (no worker-enable flag set).',
+            action=_WORKER_ENABLE_HINT,
+        )
 
     if age is not None and age <= POLL_INTERVAL_SECONDS * 2:
+        # Fresh heartbeat proves the process is alive — but "alive" is not "monitoring".
+        # When no enable flag is set, the loop runs no live polling, so we must not
+        # render the worker as healthy/Operational (that would imply live monitoring).
+        if not worker_enabled:
+            return _component(
+                'degraded',
+                'Worker process is running, but live monitoring is disabled.',
+                age=_human_age(last_hb),
+                last_event=last_hb,
+                action=_WORKER_ENABLE_HINT,
+            )
         return _component(
             'healthy',
             f'Worker heartbeat is fresh ({_human_age(last_hb)}).',
@@ -590,7 +659,9 @@ def _check_alert_delivery() -> dict[str, Any]:
 def _build_live_chain_monitoring(
     connection: Any, workspace_id: str | None, rpc_check: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    worker_enabled = os.getenv('WORKER_ENABLED', 'true').strip().lower() not in {'0', 'false', 'no', 'off'}
+    _worker_state = _worker_enabled_state()
+    worker_enabled = _worker_state['enabled']
+    worker_enabled_source = _worker_state['source']
     # Use the same Base resolver as _check_rpc and the worker so rpc_configured
     # reflects the endpoint the worker actually polls Base with.
     rpc_url = _resolve_base_rpc_url()
@@ -743,7 +814,13 @@ def _build_live_chain_monitoring(
     rpc_healthy = rpc_check['status'] == 'healthy'
 
     if not worker_enabled:
-        diagnosis = 'Worker is disabled (WORKER_ENABLED=false). Live monitoring is inactive.'
+        if hb_fresh:
+            # The process is alive (fresh heartbeat) but no enable flag is set, so
+            # the loop runs no live polling. State that plainly — never "disabled"
+            # alone when the worker is demonstrably running.
+            diagnosis = 'Worker process is running, but live monitoring is disabled. ' + _WORKER_ENABLE_HINT
+        else:
+            diagnosis = 'Live monitoring is disabled (no worker-enable flag set). ' + _WORKER_ENABLE_HINT
     elif not rpc_configured:
         diagnosis = (
             'EVM RPC URL is not configured. Set EVM_RPC_URL (or EVM_RPC_URL_8453 / BASE_EVM_RPC_URL '
@@ -772,6 +849,7 @@ def _build_live_chain_monitoring(
         'rpc_configured': rpc_configured,
         'latest_rpc_block': rpc_check.get('metric'),
         'worker_enabled': worker_enabled,
+        'worker_enabled_source': worker_enabled_source,
         'last_heartbeat_at': last_heartbeat_at,
         'heartbeat_age_seconds': int(heartbeat_age) if heartbeat_age is not None else None,
         'heartbeat_age_human': _human_age(last_heartbeat_at),
@@ -1113,11 +1191,13 @@ def build_system_health_snapshot(request: Any = None) -> dict[str, Any]:
         components.setdefault('telemetry', _component('unavailable', 'Cannot check telemetry: database unavailable.'))
         components.setdefault('detection', _component('unavailable', 'Cannot check detection: database unavailable.'))
         components.setdefault('alert_delivery', _check_alert_delivery())
+        _fallback_worker_state = _worker_enabled_state()
         chain_monitoring = {
             'expected_chain_id': 8453,
             'rpc_configured': bool(_resolve_base_rpc_url()),
             'latest_rpc_block': None,
-            'worker_enabled': os.getenv('WORKER_ENABLED', 'true').strip().lower() not in {'0', 'false', 'no', 'off'},
+            'worker_enabled': _fallback_worker_state['enabled'],
+            'worker_enabled_source': _fallback_worker_state['source'],
             'last_heartbeat_at': None,
             'heartbeat_age_seconds': None,
             'heartbeat_age_human': 'unavailable',
