@@ -3712,6 +3712,74 @@ def process_monitoring_target(
         live_source_eligible,
         len(events),
     )
+    # Provider 429 backoff: fetch_target_activity_result returned a degraded result
+    # because the process-wide RPC backoff is active — NO RPC poll happened this cycle.
+    # Short-circuit before any poll-shaped work so we never present a poll that did not
+    # occur. Specifically we do NOT: log polling_cycle_start, advance/persist the scan
+    # cursor, write a receipt checkpoint or coverage telemetry, mark the target checked,
+    # touch latest_processed_block, or count it as checked (run_monitoring_cycle treats a
+    # provider_poll_skipped result as skipped_provider_backoff, not checked). Only release
+    # the worker's claim so the next cycle can re-poll once the backoff clears — the target
+    # stays "due" because last_checked_at is deliberately left unchanged.
+    if provider_result.reason_code == 'PROVIDER_BACKOFF_ACTIVE':
+        try:
+            _backoff_until = rpc_provider_backoff_status().get('backoff_until')
+        except Exception:
+            _backoff_until = None
+        logger.warning(
+            'provider_poll_skipped target_id=%s reason=provider_backoff_active backoff_until=%s',
+            target.get('id'), _backoff_until or 'unknown',
+        )
+        connection.execute(
+            '''
+            UPDATE targets
+            SET watcher_source_status = 'degraded',
+                watcher_degraded_reason = 'provider_backoff_active',
+                monitoring_claimed_by = NULL,
+                monitoring_claimed_at = NULL,
+                monitoring_lease_token = NULL,
+                monitoring_lease_expires_at = NULL,
+                updated_at = NOW()
+            WHERE id = %s
+              AND workspace_id = %s
+            ''',
+            (target['id'], target['workspace_id']),
+        )
+        return {
+            'target_id': str(target['id']),
+            'target_type': str(target.get('target_type') or ''),
+            'monitoring_run_id': monitoring_run_id,
+            'runs': [],
+            'alerts_generated': 0,
+            'incidents_created': 0,
+            'detections_created': 0,
+            'events_ingested': 0,
+            'real_events_detected': 0,
+            'real_event_count': 0,
+            'coverage_heartbeat_updates': 0,
+            'coverage_heartbeat_count': 0,
+            'telemetry_records_seen': 0,
+            'evaluated_no_threat_marker_id': None,
+            'stale_open_alerts_closed': 0,
+            'status': 'provider_backoff_skipped',
+            'status_reason_code': 'provider_backoff_active',
+            'provider_poll_skipped': True,
+            'provider_backoff_active': True,
+            'backoff_until': _backoff_until,
+            'latest_processed_block': int(target.get('watcher_last_observed_block') or 0),
+            'source_status': 'degraded',
+            'degraded_reason': 'provider_backoff_active',
+            'provider_status': provider_result.status,
+            'provider_source_type': provider_result.source_type,
+            'synthetic': False,
+            'recent_evidence_state': ui_evidence_state(provider_result.evidence_state),
+            'recent_truthfulness_state': ui_truthfulness_state(provider_result.truthfulness_state),
+            'recent_real_event_count': 0,
+            'last_event_at': None,
+            'last_real_event_at': None,
+            'live_coverage_telemetry_at': None,
+            'protected_asset_coverage_record': {},
+        }
     evaluation_id = str(uuid.uuid4())
     connection.execute(
         '''
@@ -4585,6 +4653,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
 
     checked = 0
     due_count = 0
+    skipped_provider_backoff = 0
     alerts_generated = 0
     live_targets_checked = 0
     events_ingested = 0
@@ -5343,6 +5412,18 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                         target,
                         monitoring_run_id=workspace_run_ids.get(workspace_id),
                     )
+                if result.get('provider_poll_skipped'):
+                    # Provider 429 backoff: no RPC poll happened. Record the poll as
+                    # skipped (never 'completed'), count it as skipped_provider_backoff
+                    # (not checked), and skip the monitored-systems heartbeat update and
+                    # the poll_completed log. The target's claim was released inside
+                    # process_monitoring_target so it is re-evaluated on the next cycle.
+                    connection.execute(
+                        "UPDATE monitoring_polls SET poll_finished_at = NOW(), status = 'skipped', error_message = NULL WHERE id = %s::uuid",
+                        (poll_id,),
+                    )
+                    skipped_provider_backoff += 1
+                    continue
                 monitored_system_id = due_system_ids.get(str(target['id']))
                 if monitored_system_id:
                     runtime_status, freshness_status, confidence_status, coverage_reason = _derive_system_runtime_state(
@@ -5657,7 +5738,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         backfill_cycle_state = 'normal_no_due_cycle'
     logger.info(
         'monitoring cycle summary worker=%s cycle_state=%s total_candidate_targets=%s base_due_count=%s '
-        'effective_due_count=%s due=%s checked=%s '
+        'effective_due_count=%s due=%s checked=%s skipped_provider_backoff=%s '
         'skipped_disabled=%s skipped_inactive=%s skipped_dead_lettered=%s skipped_missing_workspace=%s skipped_not_due=%s '
         'oldest_not_due_age_seconds=%s skipped_null_handling=%s interval_capped_targets=%s backfill_attempted=%s backfill_evaluated=%s backfill_executed=%s '
         'backfill_blocked_not_yet_due=%s backfill_blocked_by_cooldown=%s backfill_blocked_missing_candidate=%s '
@@ -5670,6 +5751,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         effective_due_count if 'effective_due_count' in locals() else due_count,
         effective_due_count if 'effective_due_count' in locals() else due_count,
         checked,
+        skipped_provider_backoff,
         skipped_disabled if 'skipped_disabled' in locals() else 0,
         skipped_inactive if 'skipped_inactive' in locals() else 0,
         skipped_dead_lettered if 'skipped_dead_lettered' in locals() else 0,
@@ -5702,6 +5784,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
     return {
         'due_targets': due_count,
         'checked': checked,
+        'skipped_provider_backoff': skipped_provider_backoff,
         'live_targets_checked': live_targets_checked,
         'events_ingested': events_ingested,
         'real_events_detected': real_events_detected,
