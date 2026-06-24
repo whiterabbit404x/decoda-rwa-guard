@@ -6448,6 +6448,14 @@ def run_background_jobs(*, worker_id: str = 'worker', limit: int = 20) -> dict[s
     return {'processed': processed, 'failed': failed, **notification_summary}
 
 
+# In-process throttle for repeated external self-monitoring alerts. Keyed by
+# (alert_type, fingerprint) where the fingerprint already encodes workspace_id:target_id,
+# i.e. the workspace_id + target_id + alert_type throttle contract. Stops a single
+# persistently-stale target from emitting one external alert (and one
+# self_monitoring_alert_unrouted WARNING) per worker cycle.
+_SELF_MONITORING_ALERT_LAST_SENT: dict[tuple[str, str], float] = {}
+
+
 def evaluate_monitoring_system_alerts(*, stale_after_seconds: int = 120) -> dict[str, int]:
     """Persist and externally route failures in the monitoring system itself."""
     counts = {'missing_heartbeats': 0, 'stale_telemetry': 0, 'proof_chain_failures': 0, 'exhausted_retries': 0}
@@ -6498,7 +6506,23 @@ def evaluate_monitoring_system_alerts(*, stale_after_seconds: int = 120) -> dict
                 )
                 delivered = bool(existing_alert and existing_alert.get('external_delivery_status') == 'delivered')
                 if not delivered:
-                    delivered = send_external_oncall_alert(alert_type, summary, fingerprint=fingerprint, details=row.get('details') or {})
+                    # Throttle external self-monitoring alerts (including the unrouted-config
+                    # WARNING log emitted by send_external_oncall_alert) so a single
+                    # persistently-stale target does not fire one alert every worker cycle.
+                    # Default window is 15 minutes (MONITORING_SELF_ALERT_THROTTLE_SECONDS).
+                    _throttle_seconds = max(0, int(os.getenv('MONITORING_SELF_ALERT_THROTTLE_SECONDS', '900')))
+                    _throttle_key = (alert_type, fingerprint)
+                    _now_mono = monotonic()
+                    _last_sent = _SELF_MONITORING_ALERT_LAST_SENT.get(_throttle_key)
+                    if _throttle_seconds and _last_sent is not None and (_now_mono - _last_sent) < _throttle_seconds:
+                        logger.info(
+                            'self_monitoring_alert_throttled alert_type=%s fingerprint=%s '
+                            'throttle_seconds=%s seconds_since_last=%s',
+                            alert_type, fingerprint, _throttle_seconds, int(_now_mono - _last_sent),
+                        )
+                    else:
+                        _SELF_MONITORING_ALERT_LAST_SENT[_throttle_key] = _now_mono
+                        delivered = send_external_oncall_alert(alert_type, summary, fingerprint=fingerprint, details=row.get('details') or {})
                 if delivered:
                     connection.execute("UPDATE monitoring_system_alerts SET external_delivery_status='delivered',updated_at=NOW() WHERE alert_type=%s AND fingerprint=%s", (alert_type, fingerprint))
                 counts[count_key] += 1
