@@ -284,3 +284,67 @@ def test_target_backfill_emits_required_log_taxonomy(monkeypatch, caplog):
     assert TX_A517 in text  # a517 row was seen, not silently dropped
     for fragment in ('created_count=', 'deduped_count=', 'linked_count=', 'skipped_count='):
         assert fragment in text
+
+
+# ---------------------------------------------------------------------------
+# Requirement E: backfill must NOT mint alerts from old telemetry during an RPC
+# failure (provider 429 backoff) or for a wrong-chain target. The guard lives in
+# the function so every call site is covered (worker cycle AND the telemetry
+# "alerts only" read path which would otherwise create alerts on demand mid-backoff).
+# ---------------------------------------------------------------------------
+
+class _ChainConn(_FakeConn):
+    """_FakeConn that also answers the chain_network lookup the guard performs."""
+
+    def __init__(self, telemetry_rows, chain_network, alert_sig_rows=None):
+        super().__init__(telemetry_rows, alert_sig_rows)
+        self._chain_network = chain_network
+
+    def execute(self, query, params=None):
+        lowered = str(query or '').lower()
+        if 'chain_network' in lowered and 'from targets' in lowered:
+            self.captured_queries.append(str(query or ''))
+            return _Result(rows=[{'chain_network': self._chain_network}])
+        return super().execute(query, params)
+
+
+def test_target_backfill_skipped_during_provider_backoff(monkeypatch, caplog):
+    from services.api.app import evm_activity_provider as eap
+    conn = _FakeConn([_row(tx_hash=TX_90C7, evidence_source='live')])
+    m = _patch_common(monkeypatch, conn)
+    called = {'smoke': 0}
+    monkeypatch.setattr(m, '_wallet_transfer_smoke_alert',
+                        lambda **_: called.__setitem__('smoke', called['smoke'] + 1) or str(uuid.uuid4()))
+    monkeypatch.setattr(m, '_strategic_infrastructure_guard_alert', lambda **_: None)
+
+    eap.record_rpc_rate_limited(None)  # a prior cycle hit HTTP 429 — backoff is armed
+
+    with caplog.at_level(logging.WARNING, logger='services.api.app.monitoring_runner'):
+        result = m.backfill_strategic_guard_alerts_for_target(WORKSPACE_ID, TARGET_ID)
+
+    assert result['status'] == 'skipped_provider_backoff_active'
+    assert result['created_count'] == 0 and result['linked_count'] == 0
+    assert called['smoke'] == 0, 'no alert may be created from old telemetry during a 429 backoff'
+    # The telemetry scan must not even run while the provider is rate-limited.
+    assert not any('telemetry_events' in q.lower() for q in conn.captured_queries)
+    text = '\n'.join(r.getMessage() for r in caplog.records)
+    assert 'strategic_guard_backfill_skipped reason=provider_backoff_active' in text
+
+
+def test_target_backfill_skipped_on_chain_mismatch(monkeypatch, caplog):
+    monkeypatch.setenv('EVM_CHAIN_ID', '8453')  # worker serves Base
+    conn = _ChainConn([_row(tx_hash=TX_90C7, evidence_source='live')], chain_network='ethereum')
+    m = _patch_common(monkeypatch, conn)
+    called = {'smoke': 0}
+    monkeypatch.setattr(m, '_wallet_transfer_smoke_alert',
+                        lambda **_: called.__setitem__('smoke', called['smoke'] + 1) or str(uuid.uuid4()))
+    monkeypatch.setattr(m, '_strategic_infrastructure_guard_alert', lambda **_: None)
+
+    with caplog.at_level(logging.WARNING, logger='services.api.app.monitoring_runner'):
+        result = m.backfill_strategic_guard_alerts_for_target(WORKSPACE_ID, TARGET_ID)
+
+    assert result['status'] == 'skipped_chain_mismatch'
+    assert called['smoke'] == 0, 'a wrong-chain target must never have its telemetry turned into alerts'
+    assert not any('telemetry_events' in q.lower() for q in conn.captured_queries)
+    text = '\n'.join(r.getMessage() for r in caplog.records)
+    assert 'strategic_guard_backfill_skipped reason=chain_mismatch' in text

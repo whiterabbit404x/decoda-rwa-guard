@@ -22,8 +22,10 @@ from services.api.app.activity_providers import (
 )
 from services.api.app.evm_activity_provider import (
     JsonRpcClient,
+    evaluate_chain_mismatch,
     resolve_monitored_wallet,
     rpc_provider_backoff_active,
+    rpc_provider_backoff_status,
 )
 from services.api.app.monitoring_truth import ui_evidence_state, ui_truthfulness_state
 from services.api.app.monitoring_reliability import MonitoringSLOs, evaluate_monitoring_slos, monitoring_slo_snapshot
@@ -3559,6 +3561,23 @@ def _persist_detection_evaluation_checkpoint(
     )
 
 
+def _provider_observation_outcome(provider_result: Any, *, chain_mismatch: bool) -> str:
+    """Map a provider result to a truthful ``provider_observation`` outcome.
+
+    A chain mismatch or an active provider 429 backoff means NO real provider
+    observation happened this cycle — no RPC call was made — so it is reported as
+    ``skipped``, never ``success`` (which would let a rate-limited or wrong-chain
+    target masquerade as a healthy live observation). Otherwise a reachable provider
+    (live / no_evidence / degraded) is ``success`` and a hard failure is ``failure``.
+    """
+    reason_code = getattr(provider_result, 'reason_code', None)
+    if chain_mismatch or reason_code in {'CHAIN_RPC_MISMATCH', 'PROVIDER_BACKOFF_ACTIVE'}:
+        return 'skipped'
+    if getattr(provider_result, 'status', None) in {'live', 'no_evidence', 'degraded'}:
+        return 'success'
+    return 'failure'
+
+
 def process_monitoring_target(
     connection: Any,
     target: dict[str, Any],
@@ -3668,10 +3687,12 @@ def process_monitoring_target(
     events = provider_result.events
     source_type = str(provider_result.source_type or '').strip().lower()
     live_source_eligible = _provider_source_is_live(source_type)
-    provider_observation_outcome = (
-        'success'
-        if provider_result.status in {'live', 'no_evidence', 'degraded'}
-        else 'failure'
+    # Truthfulness: a chain mismatch or an active provider 429 backoff means NO real
+    # provider observation happened this cycle — no RPC call was made. It must never be
+    # recorded as result=success (that would let a rate-limited / wrong-chain target look
+    # like a healthy live observation). Surface it as result=skipped with the reason.
+    provider_observation_outcome = _provider_observation_outcome(
+        provider_result, chain_mismatch=bool(target.get('_evm_chain_mismatch'))
     )
     logger.info(
         'provider_observation workspace_id=%s target_id=%s result=%s source_type=%s status_reason=%s',
@@ -11226,6 +11247,28 @@ def backfill_strategic_guard_alerts_for_target(
             'linked_count': 0, 'skipped_count': 0, 'alert_ids': [],
         }
 
+    def _backfill_skip_result(reason: str) -> dict[str, Any]:
+        return {
+            'status': f'skipped_{reason}', 'workspace_id': workspace_id, 'target_id': target_id,
+            'telemetry_processed': 0, 'created_count': 0, 'deduped_count': 0,
+            'linked_count': 0, 'skipped_count': 0, 'alert_ids': [],
+        }
+
+    # --- Provider 429 backoff hard stop -------------------------------------------
+    # While the provider is rate-limiting, live monitoring is paused. Backfilling now
+    # would mint fresh alerts from OLD telemetry during an RPC failure — exactly what
+    # requirement E forbids. This guard lives in the function (not just the worker
+    # cycle) so EVERY call site is covered, including the telemetry "alerts only" read
+    # path which would otherwise create alerts on demand mid-backoff.
+    if rpc_provider_backoff_active():
+        _bo = rpc_provider_backoff_status()
+        logger.warning(
+            'strategic_guard_backfill_skipped reason=provider_backoff_active '
+            'workspace_id=%s target_id=%s backoff_until=%s',
+            workspace_id, target_id, _bo.get('backoff_until') or 'unknown',
+        )
+        return _backfill_skip_result('provider_backoff_active')
+
     logger.info(
         'strategic_guard_target_backfill_started workspace_id=%s target_id=%s',
         workspace_id, target_id,
@@ -11233,6 +11276,26 @@ def backfill_strategic_guard_alerts_for_target(
 
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
+        # --- Chain mismatch hard stop ---------------------------------------------
+        # Never turn a wrong-chain target's telemetry into alerts (e.g. an Ethereum
+        # target under a Base worker). Resolve the target's labeled chain and compare
+        # to the worker's configured RPC chain id; on a definite mismatch, skip before
+        # scanning any rows.
+        _net_row = connection.execute(
+            'SELECT chain_network FROM targets WHERE id = %s::uuid LIMIT 1',
+            (target_id,),
+        ).fetchone()
+        _network = None
+        if _net_row is not None:
+            _network = _net_row.get('chain_network') if hasattr(_net_row, 'get') else _net_row[0]
+        _hard_skip, _t_chain, _rpc_chain = evaluate_chain_mismatch(_network)
+        if _hard_skip:
+            logger.warning(
+                'strategic_guard_backfill_skipped reason=chain_mismatch workspace_id=%s '
+                'target_id=%s configured_chain=%s target_chain_id=%s rpc_chain_id=%s',
+                workspace_id, target_id, _network, _t_chain, _rpc_chain,
+            )
+            return _backfill_skip_result('chain_mismatch')
         # Scan EVERY wallet-transfer row for this exact workspace+target (newest first).
         # No recency cutoff and no LIMIT 1 — older tx_hashes must be fetched too. The high
         # bound is a safety cap only, never a "newest row" selector. evidence_source and

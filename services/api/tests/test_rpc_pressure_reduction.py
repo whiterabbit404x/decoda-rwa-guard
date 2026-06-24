@@ -235,6 +235,45 @@ def test_invalid_interval_falls_back_to_next_source(monkeypatch):
     assert run_monitoring_worker._resolve_polling_interval_seconds() == 45.0
 
 
+# ---------------------------------------------------------------------------
+# Production worker sleep floor: never sleep 1s or 30s when the interval is 60s.
+# ---------------------------------------------------------------------------
+
+def test_min_worker_sleep_is_60_in_production(monkeypatch):
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.delenv('MIN_WORKER_SLEEP_SECONDS', raising=False)
+    assert run_monitoring_worker._min_worker_sleep_seconds() == 60.0
+
+
+def test_min_worker_sleep_is_1_in_development(monkeypatch):
+    monkeypatch.delenv('APP_ENV', raising=False)
+    monkeypatch.delenv('APP_MODE', raising=False)
+    monkeypatch.delenv('MIN_WORKER_SLEEP_SECONDS', raising=False)
+    assert run_monitoring_worker._min_worker_sleep_seconds() == 1.0
+
+
+def test_production_sleep_never_below_60_when_no_due_work():
+    # No due work and the next target is "due in 1s" — production must NOT sleep 1s.
+    next_sleep = run_monitoring_worker._compute_next_sleep_seconds(
+        worker_interval_seconds=60,
+        effective_due_count=0,
+        soonest_due_in_seconds=1,
+        min_sleep_seconds=60.0,
+    )
+    assert next_sleep == 60.0
+
+
+def test_production_sleep_is_full_interval_not_30s_cap_with_due_work():
+    # Due work present under a 60s interval — production must sleep 60s, not the 30s cap.
+    next_sleep = run_monitoring_worker._compute_next_sleep_seconds(
+        worker_interval_seconds=60,
+        effective_due_count=3,
+        soonest_due_in_seconds=None,
+        min_sleep_seconds=60.0,
+    )
+    assert next_sleep == 60.0
+
+
 def test_startup_logs_effective_polling_interval_and_source(monkeypatch, caplog):
     """The worker must log the effective poll cadence and its source at startup,
     secret-free, so operators can verify it from logs after deploy."""
