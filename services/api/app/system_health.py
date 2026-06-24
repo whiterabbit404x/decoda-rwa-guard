@@ -45,6 +45,11 @@ logger = logging.getLogger(__name__)
 # URL so an env change invalidates it; stores the monotonic time of the probe.
 _RPC_HEALTH_CACHE: dict[str, Any] = {}
 
+# Structured-log fields from the most recent *live* probe. A cache hit replays
+# these (with cache_hit=true) so every served /system-health response is
+# observable in logs without re-running a live RPC call. Host only — no secrets.
+_LAST_RPC_PROBE_LOG: dict[str, Any] = {}
+
 
 def _age_seconds(ts: str | None) -> float | None:
     if not ts:
@@ -184,8 +189,8 @@ def _resolve_base_rpc_url() -> str:
 def _rpc_failure_action(reason: str) -> str:
     """Map a categorized failure reason to a secret-free remediation hint."""
     r = reason.lower()
-    if 'unauthorized' in r or '401' in r or '403' in r:
-        return 'Provider rejected the API key. Verify the key embedded in EVM_RPC_URL / EVM_RPC_URL_8453.'
+    if 'unauthorized' in r or '401' in r or '403' in r or 'forbidden' in r:
+        return 'RPC provider rejected the request. Check provider key or endpoint.'
     if 'rate' in r or '429' in r:
         return 'Provider is rate-limiting. Increase RPC quota or reduce polling frequency.'
     if 'timeout' in r:
@@ -197,12 +202,27 @@ def _rpc_failure_action(reason: str) -> str:
     return 'Check EVM_RPC_URL connectivity, provider key, and quota in the worker service.'
 
 
+def _rpc_failure_lead(reason: str) -> str:
+    """Reason-specific operator sentence for a failed Base RPC probe.
+
+    A timeout leads with its own mandated sentence so operators can act without
+    reading logs; every other failure keeps the stable generic lead, with
+    rate-limit and invalid-key remediation surfaced via the action. The sanitized
+    host and categorized reason are appended by the caller — never the URL path,
+    key, query, or credentials.
+    """
+    r = (reason or '').lower()
+    if 'timeout' in r:
+        return 'Base RPC request timed out.'
+    return _BASE_RPC_FAILED_MESSAGE
+
+
 def _rpc_failed(rpc_host: str, reason: str) -> dict[str, Any]:
     # Lead with the mandated operator sentence, then append the sanitized host and
     # categorized reason. Never includes the URL path, key, query, or credentials.
     return _component(
         'failing',
-        f'{_BASE_RPC_FAILED_MESSAGE} (host: {rpc_host}, reason: {reason})',
+        f'{_rpc_failure_lead(reason)} (host: {rpc_host}, reason: {reason})',
         action=_rpc_failure_action(reason),
     )
 
@@ -243,14 +263,29 @@ def _log_rpc_probe(
     rpc_status: str,
     response_time_ms: int,
     last_error_class: str | None,
+    retry_after_seconds: float | None = None,
+    cache_hit: bool = False,
 ) -> None:
     """Emit one structured, secret-free log line for the Base RPC probe.
 
     Only the host is ever logged — never the URL path, key, query, or credentials.
+    A live probe (``cache_hit=False``) records its fields so a later cache hit can
+    replay the same line marked ``cache_hit=true`` without re-hitting the provider.
     """
+    if not cache_hit:
+        _LAST_RPC_PROBE_LOG.clear()
+        _LAST_RPC_PROBE_LOG.update(
+            rpc_configured=rpc_configured,
+            rpc_host=rpc_host,
+            rpc_status=rpc_status,
+            response_time_ms=response_time_ms,
+            last_error_class=last_error_class,
+            retry_after_seconds=retry_after_seconds,
+        )
     logger.info(
         'rpc_probe rpc_configured=%s rpc_host=%s chain_id=%s rpc_status=%s '
-        'response_time_ms=%s last_error_class=%s polling_interval_seconds=%s',
+        'response_time_ms=%s last_error_class=%s polling_interval_seconds=%s '
+        'retry_after_seconds=%s cache_hit=%s',
         rpc_configured,
         rpc_host,
         BASE_CHAIN_ID,
@@ -258,6 +293,8 @@ def _log_rpc_probe(
         response_time_ms,
         last_error_class or 'none',
         POLL_INTERVAL_SECONDS,
+        'none' if retry_after_seconds is None else retry_after_seconds,
+        str(bool(cache_hit)).lower(),
     )
 
 
@@ -297,6 +334,7 @@ def _check_rpc() -> dict[str, Any]:
         _log_rpc_probe(
             rpc_configured=True, rpc_host=rpc_host, rpc_status=_rpc_status_class(reason),
             response_time_ms=_elapsed_ms(), last_error_class=reason,
+            retry_after_seconds=retry_after,
         )
         result = _rpc_failed(rpc_host, reason)
         if retry_after is not None:
@@ -396,6 +434,12 @@ def _cached_base_rpc_health(force: bool = False) -> dict[str, Any]:
         and entry.get('key') == key
         and now_mono < float(entry.get('expires_monotonic', 0.0))
     ):
+        # Serve the cached probe (no live RPC call). Replay the original probe's
+        # structured log line marked cache_hit=true so the served response stays
+        # observable without re-hitting the provider.
+        log_fields = entry.get('log_fields')
+        if log_fields:
+            _log_rpc_probe(cache_hit=True, **log_fields)
         return dict(entry['result'])
     result = _check_rpc()
     # A rate-limited probe may carry a Retry-After hint; cache it for at least that
@@ -404,7 +448,13 @@ def _cached_base_rpc_health(force: bool = False) -> dict[str, Any]:
     retry_after = result.get('retry_after') if isinstance(result, dict) else None
     if isinstance(retry_after, (int, float)) and retry_after > ttl:
         ttl = float(retry_after)
-    _RPC_HEALTH_CACHE['entry'] = {'key': key, 'expires_monotonic': now_mono + ttl, 'result': result}
+    _RPC_HEALTH_CACHE['entry'] = {
+        'key': key,
+        'expires_monotonic': now_mono + ttl,
+        'result': result,
+        # Captured from this live probe so a later cache hit replays the same line.
+        'log_fields': dict(_LAST_RPC_PROBE_LOG),
+    }
     return dict(result)
 
 

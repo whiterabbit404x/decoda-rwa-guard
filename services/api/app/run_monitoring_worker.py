@@ -33,12 +33,42 @@ def _default_worker_name() -> str:
     return f'monitoring-worker-{instance[:80]}'
 
 
+# Default 60s so the worker never hammers the RPC provider. EVM_POLLING_INTERVAL_SECONDS
+# is the documented override; MONITORING_WORKER_INTERVAL_SECONDS is kept as a legacy alias.
+DEFAULT_POLLING_INTERVAL_SECONDS = 60.0
+_POLLING_INTERVAL_ENV_VARS = ('EVM_POLLING_INTERVAL_SECONDS', 'MONITORING_WORKER_INTERVAL_SECONDS')
+
+
+def _resolve_polling_interval() -> tuple[float, str]:
+    """Resolve the effective worker poll cadence and the source that set it.
+
+    Precedence: EVM_POLLING_INTERVAL_SECONDS → MONITORING_WORKER_INTERVAL_SECONDS →
+    DEFAULT_POLLING_INTERVAL_SECONDS (60s). A larger interval reduces RPC pressure;
+    the value is floored at 1s so a misconfiguration can never busy-loop the
+    provider. A set-but-non-numeric override is skipped (it never sets the source).
+    """
+    for env_var in _POLLING_INTERVAL_ENV_VARS:
+        raw = (os.getenv(env_var) or '').strip()
+        if raw:
+            try:
+                return max(1.0, float(raw)), env_var
+            except (TypeError, ValueError):
+                continue
+    return DEFAULT_POLLING_INTERVAL_SECONDS, 'default'
+
+
+def _resolve_polling_interval_seconds() -> float:
+    """Effective worker poll cadence in seconds (see _resolve_polling_interval)."""
+    return _resolve_polling_interval()[0]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Run Decoda monitoring worker loop.')
     parser.add_argument('--worker-name', default=os.getenv('MONITORING_WORKER_NAME') or _default_worker_name())
     # Default 60s (was 15s) so the worker does not hammer the RPC provider. Override
-    # with MONITORING_WORKER_INTERVAL_SECONDS or --interval-seconds when explicitly tuned.
-    parser.add_argument('--interval-seconds', type=float, default=float(os.getenv('MONITORING_WORKER_INTERVAL_SECONDS', '60')))
+    # with EVM_POLLING_INTERVAL_SECONDS (or the legacy MONITORING_WORKER_INTERVAL_SECONDS)
+    # or --interval-seconds when explicitly tuned.
+    parser.add_argument('--interval-seconds', type=float, default=_resolve_polling_interval_seconds())
     parser.add_argument('--limit', type=int, default=int(os.getenv('MONITORING_WORKER_LIMIT', '50')))
     parser.add_argument('--once', action='store_true')
     return parser.parse_args()
@@ -227,7 +257,14 @@ def _log_startup_provider_status(logger: logging.Logger) -> dict:
         'STAGING_EVM_CHAIN_ID' if (os.getenv('STAGING_EVM_CHAIN_ID') or '').strip().isdigit()
         else ('EVM_CHAIN_ID' if (os.getenv('EVM_CHAIN_ID') or '').strip().isdigit() else 'not_set')
     )
-    interval_seconds = float(os.getenv('MONITORING_WORKER_INTERVAL_SECONDS', '60'))
+    interval_seconds, interval_source = _resolve_polling_interval()
+    # Explicit, greppable line so operators can confirm the effective poll cadence
+    # (and which env var set it) straight from worker startup logs.
+    logger.info(
+        'startup_polling_interval polling_interval_seconds=%s source=%s',
+        interval_seconds,
+        interval_source,
+    )
     provider_mode = 'live' if (evm_rpc_configured and worker_enabled) else 'disabled'
 
     db_url_configured = bool((os.getenv('DATABASE_URL') or '').strip())
