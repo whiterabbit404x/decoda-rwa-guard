@@ -3561,6 +3561,33 @@ def _persist_detection_evaluation_checkpoint(
     )
 
 
+def _provider_backoff_skip_active(provider_result: Any) -> bool:
+    """True when this cycle's target poll must be SKIPPED because the Base RPC 429
+    backoff is active — no real RPC poll happened, so no poll-shaped work may run.
+
+    Detects the backoff three ways so a rate-limited poll can never be presented as a
+    completed poll (and its partial scan ceiling can never be persisted as the cursor):
+
+      * the provider result is explicitly tagged ``PROVIDER_BACKOFF_ACTIVE``; or
+      * it is ``degraded`` with ``degraded_reason='provider_backoff_active'``; or
+      * the process-wide RPC backoff is active right now. A 429 received *during* this
+        fetch arms the backoff after ``fetch_target_activity_result`` has already shaped
+        a partial 'live'/coverage result (e.g. PROVIDER_COVERAGE_VERIFIED, or even
+        REAL_EVIDENCE from blocks scanned before the 429). Such a result is not tagged
+        as backoff, so we fall back to the canonical global backoff fact here.
+    """
+    reason_code = getattr(provider_result, 'reason_code', None)
+    if reason_code == 'PROVIDER_BACKOFF_ACTIVE':
+        return True
+    degraded_reason = str(getattr(provider_result, 'degraded_reason', '') or '').strip().lower()
+    if getattr(provider_result, 'status', None) == 'degraded' and degraded_reason == 'provider_backoff_active':
+        return True
+    try:
+        return bool(rpc_provider_backoff_active())
+    except Exception:
+        return False
+
+
 def _provider_observation_outcome(provider_result: Any, *, chain_mismatch: bool) -> str:
     """Map a provider result to a truthful ``provider_observation`` outcome.
 
@@ -3572,6 +3599,10 @@ def _provider_observation_outcome(provider_result: Any, *, chain_mismatch: bool)
     """
     reason_code = getattr(provider_result, 'reason_code', None)
     if chain_mismatch or reason_code in {'CHAIN_RPC_MISMATCH', 'PROVIDER_BACKOFF_ACTIVE'}:
+        return 'skipped'
+    # An active process-wide RPC backoff means no real observation happened this cycle,
+    # even when a 429 mid-fetch left the result shaped as live/coverage — report skipped.
+    if _provider_backoff_skip_active(provider_result):
         return 'skipped'
     if getattr(provider_result, 'status', None) in {'live', 'no_evidence', 'degraded'}:
         return 'success'
@@ -3712,16 +3743,19 @@ def process_monitoring_target(
         live_source_eligible,
         len(events),
     )
-    # Provider 429 backoff: fetch_target_activity_result returned a degraded result
-    # because the process-wide RPC backoff is active — NO RPC poll happened this cycle.
-    # Short-circuit before any poll-shaped work so we never present a poll that did not
-    # occur. Specifically we do NOT: log polling_cycle_start, advance/persist the scan
-    # cursor, write a receipt checkpoint or coverage telemetry, mark the target checked,
-    # touch latest_processed_block, or count it as checked (run_monitoring_cycle treats a
+    # Provider 429 backoff: the process-wide RPC backoff is active, so NO RPC poll
+    # happened this cycle. This is detected via _provider_backoff_skip_active, which
+    # catches both an explicitly backoff-tagged provider result AND the case where a 429
+    # armed the backoff *during* this fetch (leaving a partial 'live'/coverage-verified
+    # result whose advanced scan ceiling must never be persisted). Short-circuit before
+    # any poll-shaped work so we never present a poll that did not occur. Specifically we
+    # do NOT: log polling_cycle_start, advance/persist the scan cursor, write a receipt
+    # checkpoint or coverage telemetry, mark the target checked, touch
+    # latest_processed_block, or count it as checked (run_monitoring_cycle treats a
     # provider_poll_skipped result as skipped_provider_backoff, not checked). Only release
     # the worker's claim so the next cycle can re-poll once the backoff clears — the target
     # stays "due" because last_checked_at is deliberately left unchanged.
-    if provider_result.reason_code == 'PROVIDER_BACKOFF_ACTIVE':
+    if _provider_backoff_skip_active(provider_result):
         try:
             _backoff_until = rpc_provider_backoff_status().get('backoff_until')
         except Exception:
@@ -3769,11 +3803,15 @@ def process_monitoring_target(
             'latest_processed_block': int(target.get('watcher_last_observed_block') or 0),
             'source_status': 'degraded',
             'degraded_reason': 'provider_backoff_active',
-            'provider_status': provider_result.status,
+            # A backoff-skipped poll is never 'live' and never carries real evidence, even
+            # when a 429 mid-fetch left provider_result shaped as live/REAL_EVIDENCE. Pin
+            # these to truthful degraded/unknown values so a skipped poll cannot surface as
+            # healthy live customer evidence anywhere this result is consumed.
+            'provider_status': 'degraded',
             'provider_source_type': provider_result.source_type,
             'synthetic': False,
-            'recent_evidence_state': ui_evidence_state(provider_result.evidence_state),
-            'recent_truthfulness_state': ui_truthfulness_state(provider_result.truthfulness_state),
+            'recent_evidence_state': ui_evidence_state('DEGRADED_EVIDENCE'),
+            'recent_truthfulness_state': ui_truthfulness_state('UNKNOWN_RISK'),
             'recent_real_event_count': 0,
             'last_event_at': None,
             'last_real_event_at': None,

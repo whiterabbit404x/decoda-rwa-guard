@@ -346,10 +346,15 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
         if coverage_evidence_present:
             # No blockchain events found, but RPC is reachable (fetch_evm_activity succeeded).
             # Probe eth_chainId + eth_blockNumber to get the real current block for telemetry.
-            if latest_block is None and rpc_provider_backoff_active():
-                # Provider is rate-limiting: the coverage probe must not call RPC
-                # again. Return a degraded result (never a coverage "success" with a
-                # null block) so we stay truthful while the backoff is active.
+            if rpc_provider_backoff_active():
+                # Provider is rate-limiting. This fires both when no scan happened
+                # (latest_block is None) AND when fetch_evm_activity advanced the scan
+                # ceiling for a few chunks before a 429 armed the backoff mid-scan.
+                # In the latter case latest_block is set but the scan was cut short, so
+                # we must NOT present it as verified coverage — that partial ceiling
+                # would otherwise be persisted as the cursor and skip the unscanned
+                # blocks. Return a backoff-degraded result (never a coverage "success")
+                # so the runner skips the poll and re-scans once the backoff clears.
                 _bo = rpc_provider_backoff_status()
                 logger.warning(
                     'coverage_rpc_probe_skipped target_id=%s reason=provider_backoff_active backoff_until=%s',

@@ -26,7 +26,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from services.api.app import monitoring_runner
-from services.api.app.activity_providers import ActivityProviderResult
+from services.api.app.activity_providers import ActivityEvent, ActivityProviderResult
 
 WALLET = '0x5f6f35fd8b10c5576089f99c7c8c351deb851d1f'
 RUNNER_LOGGER = 'services.api.app.monitoring_runner'
@@ -499,3 +499,228 @@ def test_no_rpc_call_during_provider_backoff(monkeypatch):
     assert result.status == 'degraded'
     assert result.evidence_present is False
     assert result.events == []
+
+
+# ---------------------------------------------------------------------------
+# 7. The real gap: a 429 that arms the backoff *during* the fetch leaves a
+#    partial 'live'/coverage-verified result (NOT tagged PROVIDER_BACKOFF_ACTIVE).
+#    The runner must still skip the whole poll path — driven by the canonical
+#    global backoff fact, not just the result's reason_code.
+# ---------------------------------------------------------------------------
+
+def _coverage_verified_result() -> ActivityProviderResult:
+    """fetch_evm_activity advanced the scan ceiling, found no events, then a 429
+    armed the backoff — older code shaped this as PROVIDER_COVERAGE_VERIFIED/live."""
+    return ActivityProviderResult(
+        mode='live', status='live', evidence_state='REAL_EVIDENCE',
+        truthfulness_state='NOT_CLAIM_SAFE', synthetic=False,
+        provider_name='evm_activity_provider', provider_kind='rpc',
+        evidence_present=True, recent_real_event_count=0, last_real_event_at=None,
+        events=[], latest_block=47_000_123, checkpoint='coverage:47000123',
+        checkpoint_age_seconds=0, degraded_reason=None, error_code=None,
+        source_type='rpc_polling', reason_code='PROVIDER_COVERAGE_VERIFIED',
+        claim_safe=False, detection_outcome='NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE',
+    )
+
+
+def _real_events_result() -> ActivityProviderResult:
+    """fetch_evm_activity found real events in early chunks, then a 429 armed the
+    backoff mid-scan — older code returned status=live REAL_EVIDENCE reason_code=None."""
+    ev = ActivityEvent(
+        event_id='e1', kind='wallet_transfer', observed_at=datetime.now(timezone.utc),
+        ingestion_source='real', cursor='47000010:0', payload={'metadata': {}},
+    )
+    return ActivityProviderResult(
+        mode='live', status='live', evidence_state='REAL_EVIDENCE',
+        truthfulness_state='NOT_CLAIM_SAFE', synthetic=False,
+        provider_name='evm_activity_provider', provider_kind='rpc',
+        evidence_present=True, recent_real_event_count=1, last_real_event_at=ev.observed_at,
+        events=[ev], latest_block=47_000_050, checkpoint='47000010:0',
+        checkpoint_age_seconds=0, degraded_reason=None, error_code=None,
+        source_type='rpc_polling', reason_code=None,
+        claim_safe=False, detection_outcome='NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE',
+    )
+
+
+@contextmanager
+def _run_target_with_result(conn, target, caplog, provider_result, *, arm_backoff=True):
+    """Drive process_monitoring_target with an arbitrary provider result while the
+    process-wide RPC backoff is (optionally) armed, with persistence helpers neutered."""
+    from services.api.app import evm_activity_provider as eap
+    if arm_backoff:
+        eap.reset_rpc_provider_state()
+        eap.record_rpc_rate_limited(None)
+        assert eap.rpc_provider_backoff_active() is True
+    with (
+        patch.object(monitoring_runner, 'fetch_target_activity_result', return_value=provider_result),
+        patch.object(monitoring_runner, '_upsert_checkpoint', MagicMock()) as upsert,
+        patch.object(monitoring_runner, '_persist_live_coverage_telemetry', MagicMock()) as cov,
+        patch.object(monitoring_runner, '_persist_detection_evaluation_checkpoint', MagicMock()) as det_ckpt,
+        patch.object(monitoring_runner, '_persist_no_threat_evaluation_marker', MagicMock()) as no_threat,
+        patch.object(monitoring_runner, '_resolve_coverage_asset_id', MagicMock(return_value=None)),
+    ):
+        with caplog.at_level(logging.INFO, logger=RUNNER_LOGGER):
+            result = monitoring_runner.process_monitoring_target(conn, target)
+        yield result, {'upsert': upsert, 'cov': cov, 'det_ckpt': det_ckpt, 'no_threat': no_threat}
+
+
+def _assert_backoff_skipped(result, mocks, conn, caplog, target):
+    """Shared assertions: the poll path was fully skipped and nothing was persisted."""
+    assert result['provider_poll_skipped'] is True
+    assert result['status'] == 'provider_backoff_skipped'
+    assert result['degraded_reason'] == 'provider_backoff_active'
+    # The partial scan ceiling (47_000_123 / 47_000_050) must NOT become the cursor;
+    # latest_processed_block stays at the target's last observed block.
+    assert result['latest_processed_block'] == target['watcher_last_observed_block']
+    # A skipped poll never surfaces as live / real customer evidence.
+    assert result['provider_status'] == 'degraded'
+    assert result['recent_evidence_state'] == 'degraded'
+    assert result['recent_truthfulness_state'] == 'unknown_risk'
+    assert result['recent_real_event_count'] == 0
+    text = caplog.text
+    assert 'provider_poll_skipped' in text
+    assert 'reason=provider_backoff_active' in text
+    # None of the misleading "real poll" lines may appear.
+    assert 'polling_cycle_start' not in text
+    assert 'scan_cursor_persist' not in text
+    assert 'receipt_persist_checkpoint' not in text
+    assert 'poll_completed' not in text
+    assert 'checked target' not in text
+    # No poll-shaped persistence ran.
+    assert mocks['upsert'].call_count == 0, 'scan cursor must not be persisted'
+    assert mocks['cov'].call_count == 0, 'coverage telemetry must not be persisted'
+    assert not [s for s, _ in conn.executed if 'update targets' in s.lower() and 'monitoring_checkpoint_cursor' in s.lower()]
+    assert not [s for s, _ in conn.executed if 'update targets' in s.lower() and 'last_checked_at' in s.lower()]
+    # The worker claim/lease IS released so the next cycle re-polls once backoff clears.
+    assert [s for s, _ in conn.executed if 'update targets' in s.lower() and 'monitoring_lease_token = null' in s.lower()]
+
+
+def test_coverage_verified_result_during_backoff_is_skipped(caplog):
+    target = _backoff_target()
+    conn = _RecordingConn(workspace_id=target['workspace_id'], target_id=target['id'])
+    with _run_target_with_result(conn, target, caplog, _coverage_verified_result()) as (result, mocks):
+        _assert_backoff_skipped(result, mocks, conn, caplog, target)
+
+
+def test_real_events_result_during_backoff_is_skipped(caplog):
+    target = _backoff_target()
+    conn = _RecordingConn(workspace_id=target['workspace_id'], target_id=target['id'])
+    with _run_target_with_result(conn, target, caplog, _real_events_result()) as (result, mocks):
+        _assert_backoff_skipped(result, mocks, conn, caplog, target)
+
+
+def test_provider_observation_outcome_skipped_when_global_backoff_active():
+    """A live/coverage-shaped result reports observation=skipped (never success) the
+    moment the process-wide RPC backoff is active — no real observation happened."""
+    from services.api.app import evm_activity_provider as eap
+    result = _coverage_verified_result()
+    eap.reset_rpc_provider_state()
+    assert monitoring_runner._provider_observation_outcome(result, chain_mismatch=False) == 'success'
+    eap.record_rpc_rate_limited(None)  # a 429 armed the backoff mid-fetch
+    assert monitoring_runner._provider_observation_outcome(result, chain_mismatch=False) == 'skipped'
+
+
+def test_provider_backoff_skip_active_helper():
+    """The helper recognizes all three backoff signals and stays false otherwise."""
+    from services.api.app import evm_activity_provider as eap
+    eap.reset_rpc_provider_state()
+    # 1. explicit reason_code, even with the global backoff inactive.
+    assert monitoring_runner._provider_backoff_skip_active(_backoff_provider_result()) is True
+    # 2. degraded with degraded_reason='provider_backoff_active'.
+    degraded = _coverage_verified_result()
+    degraded.status = 'degraded'
+    degraded.degraded_reason = 'provider_backoff_active'
+    assert monitoring_runner._provider_backoff_skip_active(degraded) is True
+    # 3. a non-backoff live result is NOT a skip while the global backoff is inactive...
+    assert monitoring_runner._provider_backoff_skip_active(_coverage_verified_result()) is False
+    # ...but becomes a skip the moment the global backoff is armed.
+    eap.record_rpc_rate_limited(None)
+    assert monitoring_runner._provider_backoff_skip_active(_coverage_verified_result()) is True
+
+
+def test_fetch_result_during_mid_scan_backoff_returns_backoff_not_coverage(monkeypatch):
+    """Provider layer: a 429 that arms the backoff after the scan ceiling advanced must
+    yield a backoff-degraded result, never a fabricated PROVIDER_COVERAGE_VERIFIED."""
+    from services.api.app import activity_providers as ap
+    from services.api.app import evm_activity_provider as eap
+
+    for name in ('EVM_RPC_URL', 'STAGING_EVM_RPC_URL', 'LIVE_MONITORING_CHAINS', 'EVM_CHAIN_ID', 'EVM_WS_URL'):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv('MONITORING_INGESTION_MODE', 'live')
+    monkeypatch.setenv('LIVE_MONITORING_ENABLED', 'true')
+    monkeypatch.setenv('STAGING_EVM_RPC_URL', 'https://staging.rpc/v2/key')
+    monkeypatch.setenv('EVM_CHAIN_ID', '8453')
+    monkeypatch.setenv('LIVE_MONITORING_CHAINS', 'base')
+
+    eap.reset_rpc_provider_state()
+    assert eap.rpc_provider_backoff_active() is False
+
+    def _fetch(t, since, **kw):
+        # Scanned a few chunks (advanced the ceiling), then hit a 429 mid-scan.
+        t['_evm_scan_to_block'] = 47_000_123
+        eap.record_rpc_rate_limited(None)
+        return []
+
+    def _no_probe(*_a, **_k):
+        raise AssertionError('coverage RPC probe must not run while the backoff is active')
+
+    monkeypatch.setattr(ap, 'fetch_evm_activity', _fetch)
+    monkeypatch.setattr(ap, 'probe_rpc_health', _no_probe)
+
+    target = {
+        'id': str(uuid.uuid4()), 'workspace_id': str(uuid.uuid4()),
+        'chain_network': 'base', 'target_type': 'wallet', 'wallet_address': WALLET,
+    }
+    res = ap.fetch_target_activity_result(target, None)
+
+    assert res.reason_code == 'PROVIDER_BACKOFF_ACTIVE'
+    assert res.status == 'degraded'
+    assert res.evidence_present is False
+    assert res.latest_block is None, 'partial scan ceiling must not be surfaced as coverage'
+
+
+# ---------------------------------------------------------------------------
+# 8. The stale-telemetry self_monitoring_alert_unrouted WARNING itself is
+#    throttled per workspace_id + target_id + alert_type (not just the send call).
+# ---------------------------------------------------------------------------
+
+def test_stale_telemetry_unrouted_warning_is_throttled(monkeypatch, caplog):
+    from services.api.app import pilot
+
+    class _PilotConn:
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split()).lower()
+            if 'from telemetry_events' in q and 'group by workspace_id' in q:
+                return _CycleResult(rows=[{
+                    'fingerprint': 'ws-1:tgt-1',
+                    'details': {'workspace_id': 'ws-1', 'target_id': 'tgt-1', 'latest_telemetry_at': None},
+                }])
+            if q.startswith('select external_delivery_status'):
+                return _CycleResult(row=None)
+            return _CycleResult(rows=[], row=None)
+
+        def commit(self):
+            pass
+
+    # No external oncall URL configured → send_external_oncall_alert takes the
+    # unrouted-config branch and logs the self_monitoring_alert_unrouted WARNING.
+    monkeypatch.delenv('MONITORING_ONCALL_URL', raising=False)
+    monkeypatch.setenv('MONITORING_SELF_ALERT_THROTTLE_SECONDS', '900')
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(_PilotConn()))
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    pilot._SELF_MONITORING_ALERT_LAST_SENT.clear()
+
+    with caplog.at_level(logging.WARNING, logger='services.api.app.observability'):
+        # Three consecutive worker cycles see the same persistently-stale target.
+        pilot.evaluate_monitoring_system_alerts(stale_after_seconds=120)
+        pilot.evaluate_monitoring_system_alerts(stale_after_seconds=120)
+        pilot.evaluate_monitoring_system_alerts(stale_after_seconds=120)
+
+    unrouted = [
+        r for r in caplog.records
+        if 'self_monitoring_alert_unrouted' in r.getMessage() and 'stale_telemetry' in r.getMessage()
+    ]
+    assert len(unrouted) == 1, (
+        f'self_monitoring_alert_unrouted WARNING for stale_telemetry must fire at most '
+        f'once per throttle window, got {len(unrouted)}'
+    )
