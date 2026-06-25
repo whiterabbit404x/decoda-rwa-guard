@@ -320,6 +320,60 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
             checkpoint = live_events[-1].cursor
             if any(event.ingestion_source == 'demo' for event in live_events):
                 raise MonitoringModeError('synthetic event leaked into live/hybrid provider stream')
+        # Log-scan coverage truthfulness (fail-closed): eth_blockNumber succeeded (the
+        # provider is reachable) but the eth_getLogs scan did NOT fully cover this cycle's
+        # range — either a 413 stayed too large at the minimum chunk ('degraded' /
+        # query_too_large) or a non-413 error stopped the scan ('failed' /
+        # logs_fetch_failed). This must be reported as DEGRADED, never a live success:
+        # provider_observation -> degraded, provider_fetch_checkpoint status -> degraded,
+        # and the cursor must not advance past the last fully-scanned block (which
+        # fetch_evm_activity already enforced via _evm_scan_to_block).
+        _logs_fetch_status = str(target.get('_evm_logs_fetch_status') or 'ok').strip().lower()
+        _logs_status_reason = str(target.get('_evm_logs_status_reason') or '').strip() or None
+        if _logs_fetch_status in {'failed', 'degraded'}:
+            if _logs_fetch_status == 'failed':
+                # Hard non-413 failure: fail closed. Emit no events and do NOT advance the
+                # cursor (latest_block=None) so the whole range is re-scanned next cycle.
+                _deg_events: list[ActivityEvent] = []
+                _deg_latest: int | None = None
+                _deg_reason = _logs_status_reason or 'logs_fetch_failed'
+                _deg_code = 'LOG_SCAN_FAILED'
+            else:
+                # 413 query-too-large at the min chunk: blocks up to _evm_scan_to_block were
+                # fully scanned, so advance only to there and keep the real events found in
+                # that covered window (re-emitted idempotently if re-scanned next cycle).
+                _deg_events = live_events
+                _deg_latest = target.get('_evm_scan_to_block')
+                _deg_reason = _logs_status_reason or 'query_too_large'
+                _deg_code = 'LOG_SCAN_DEGRADED'
+            logger.warning(
+                'provider_log_scan_degraded target_id=%s logs_fetch_status=%s status_reason=%s '
+                'events_emitted=%s scan_to_block=%s action=degraded_not_live_success',
+                target.get('id'), _logs_fetch_status, _deg_reason, len(_deg_events),
+                _deg_latest if _deg_latest is not None else 'no_advance',
+            )
+            return ActivityProviderResult(
+                mode=mode,
+                status='degraded',
+                evidence_state='DEGRADED_EVIDENCE',
+                truthfulness_state='UNKNOWN_RISK',
+                synthetic=False,
+                provider_name='evm_activity_provider',
+                provider_kind='rpc',
+                evidence_present=bool(_deg_events),
+                recent_real_event_count=len(_deg_events),
+                last_real_event_at=_deg_events[-1].observed_at if _deg_events else None,
+                events=_deg_events,
+                latest_block=_deg_latest,
+                checkpoint=(_deg_events[-1].cursor if _deg_events else None),
+                checkpoint_age_seconds=0 if _deg_events else None,
+                degraded_reason=_deg_reason,
+                error_code=None,
+                source_type='websocket' if bool((os.getenv('EVM_WS_URL') or '').strip()) else 'rpc_polling',
+                reason_code=_deg_code,
+                claim_safe=False,
+                detection_outcome='MONITORING_DEGRADED',
+            )
         if has_evidence:
             return ActivityProviderResult(
                 mode=mode,

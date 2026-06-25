@@ -3594,8 +3594,12 @@ def _provider_observation_outcome(provider_result: Any, *, chain_mismatch: bool)
     A chain mismatch or an active provider 429 backoff means NO real provider
     observation happened this cycle — no RPC call was made — so it is reported as
     ``skipped``, never ``success`` (which would let a rate-limited or wrong-chain
-    target masquerade as a healthy live observation). Otherwise a reachable provider
-    (live / no_evidence / degraded) is ``success`` and a hard failure is ``failure``.
+    target masquerade as a healthy live observation). A reachable provider whose
+    eth_getLogs scan failed or was reduced for a 413 (``LOG_SCAN_FAILED`` /
+    ``LOG_SCAN_DEGRADED``) is ``degraded`` — the provider answered but did not deliver
+    verified log coverage, so it must never be ``success``. Otherwise a reachable
+    provider (live / no_evidence / degraded) is ``success`` and a hard failure is
+    ``failure``.
     """
     reason_code = getattr(provider_result, 'reason_code', None)
     if chain_mismatch or reason_code in {'CHAIN_RPC_MISMATCH', 'PROVIDER_BACKOFF_ACTIVE'}:
@@ -3604,6 +3608,16 @@ def _provider_observation_outcome(provider_result: Any, *, chain_mismatch: bool)
     # even when a 429 mid-fetch left the result shaped as live/coverage — report skipped.
     if _provider_backoff_skip_active(provider_result):
         return 'skipped'
+    # Log-scan coverage degraded/failed (eth_blockNumber works, but eth_getLogs returned
+    # 413 query-too-large or a non-413 error): the provider is REACHABLE but did not deliver
+    # verified log coverage. Report 'degraded' — never 'success' — so a failed/partial log
+    # scan can never masquerade as a healthy live observation (status_reason carries
+    # query_too_large / logs_fetch_failed on the provider_observation log line below).
+    if reason_code in {'LOG_SCAN_FAILED', 'LOG_SCAN_DEGRADED'}:
+        return 'degraded'
+    _degraded_reason = str(getattr(provider_result, 'degraded_reason', '') or '').strip().lower()
+    if reason_code is None and _degraded_reason in {'logs_fetch_failed', 'query_too_large'}:
+        return 'degraded'
     if getattr(provider_result, 'status', None) in {'live', 'no_evidence', 'degraded'}:
         return 'success'
     return 'failure'
