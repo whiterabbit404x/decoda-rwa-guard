@@ -7,7 +7,7 @@ import os
 import random
 import re
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 import time
@@ -74,22 +74,48 @@ def _retry_after_seconds(exc: _urllib_error.HTTPError, fallback: float) -> float
 
 
 # ---------------------------------------------------------------------------
-# Shared Base RPC provider backoff + last-known health (process-local).
+# Per-provider-host Base RPC backoff + last-known health (process-local).
 #
 # One worker process polls Base, so this state is intentionally process-local
-# (not distributed). It lets the poll loop, the coverage probe, probe_rpc_health,
-# and /ops/system-health all honor a single HTTP 429 backoff instead of each
-# firing its own eth_blockNumber call and compounding the rate limit. No secrets
-# are ever stored — only timing, a coarse error class, and the last health dict.
+# (not distributed). Backoff is tracked PER PROVIDER HOST: a single rate-limited
+# provider (e.g. Alchemy HTTP 429) is benched on its own while the other configured
+# Base RPC providers (e.g. QuickNode) keep serving the poll loop. rpc_provider_backoff_active()
+# stays True only when EVERY configured provider host is benched — that is the one
+# condition under which the poll loop, coverage probe, probe_rpc_health, and
+# /ops/system-health skip RPC entirely. No secrets are ever stored — only host
+# strings, timing, a coarse error class, and the last health dict.
 # ---------------------------------------------------------------------------
 _RPC_PROVIDER_LOCK = threading.Lock()
+
+# Sentinel host benched when a 429 is recorded without a resolvable provider host
+# (legacy callers / no URL configured). It backs off "the provider" globally so
+# single-provider deployments behave exactly as before per-host tracking landed.
+_GLOBAL_BACKOFF_HOST = '*'
+
+# host -> {'until_monotonic': float, 'until_wall': str | None, 'error_class': str}
+_RPC_HOST_BACKOFF: dict[str, dict[str, Any]] = {}
+
 _RPC_PROVIDER_STATE: dict[str, Any] = {
-    'backoff_until_monotonic': 0.0,
-    'backoff_until_wall': None,        # ISO-8601 wall clock for operator messages
-    'backoff_error_class': None,
     'last_health': None,               # last probe_rpc_health() result dict
     'last_health_at_monotonic': 0.0,
 }
+
+# Snapshot of the most recent FailoverJsonRpcClient.call() outcome, for host-only
+# structured logging and /system-health observability. Never holds a URL or secret.
+_RPC_FAILOVER_SNAPSHOT: dict[str, Any] = {
+    'rpc_provider_count': 0,
+    'active_rpc_host': None,
+    'failed_rpc_hosts': [],
+    'rpc_failover_used': False,
+}
+
+
+def _host_of(url: str | None) -> str:
+    """Return the lowercase hostname of an RPC URL, or 'unknown'. Never the path/key."""
+    try:
+        return (parse.urlparse(str(url or '')).hostname or 'unknown').lower()
+    except Exception:
+        return 'unknown'
 
 
 def _is_production_like_runtime() -> bool:
@@ -153,15 +179,52 @@ def _retry_after_for_backoff(exc: _urllib_error.HTTPError) -> float | None:
         return None
 
 
-def record_rpc_rate_limited(retry_after_seconds: float | None = None) -> float:
-    """Record an HTTP 429 from the Base RPC provider and arm a process-wide backoff.
+def _arm_host_backoff(host: str, backoff_seconds: float, error_class: str = 'rate_limited') -> str:
+    """Arm a backoff window for a single provider host. Returns the until-wall ISO string."""
+    now_mono = time.monotonic()
+    until_wall = (datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds)).isoformat()
+    with _RPC_PROVIDER_LOCK:
+        _RPC_HOST_BACKOFF[host] = {
+            'until_monotonic': now_mono + backoff_seconds,
+            'until_wall': until_wall,
+            'error_class': error_class,
+        }
+    return until_wall
 
-    The backoff is at least ``RPC_PROVIDER_BACKOFF_MIN_SECONDS`` (10 minutes in
-    production, 120s otherwise) and honors a larger ``Retry-After`` when the
-    provider sent one, plus bounded jitter so call sites do not all resume at the
-    same instant. While it is active, probe_rpc_health and live polling skip RPC
-    calls so we never compound the rate limit. Returns the effective backoff in
-    seconds.
+
+def _active_backoff_hosts() -> set[str]:
+    """Set of provider hosts whose backoff window has not yet elapsed."""
+    now_mono = time.monotonic()
+    with _RPC_PROVIDER_LOCK:
+        return {
+            host for host, st in _RPC_HOST_BACKOFF.items()
+            if now_mono < float(st.get('until_monotonic') or 0.0)
+        }
+
+
+def _configured_provider_hosts() -> list[str]:
+    """Hosts of the currently-configured Base/global RPC providers (deduped, ordered)."""
+    hosts: list[str] = []
+    for url in _resolve_evm_rpc_urls():
+        host = _host_of(url)
+        if host and host not in hosts:
+            hosts.append(host)
+    return hosts
+
+
+def record_rpc_rate_limited(retry_after_seconds: float | None = None, *, host: str | None = None) -> float:
+    """Record an HTTP 429 from a Base RPC provider and arm a PER-HOST backoff.
+
+    When ``host`` is given, only that provider host is benched — the other configured
+    providers keep serving the poll loop (Alchemy 429 → Alchemy backoff, QuickNode
+    still polled). When ``host`` is omitted, every currently-configured provider host
+    is benched (legacy whole-provider behavior); with no configured providers a global
+    sentinel host is benched so single-provider deployments back off exactly as before.
+
+    The window is at least ``RPC_PROVIDER_BACKOFF_MIN_SECONDS`` (10 minutes in
+    production, 120s otherwise), honors a larger ``Retry-After`` when present, and adds
+    bounded jitter so providers do not all resume at the same instant. Returns the
+    effective backoff in seconds.
     """
     backoff = _rpc_backoff_min_seconds()
     if retry_after_seconds is not None and float(retry_after_seconds) > backoff:
@@ -170,15 +233,17 @@ def record_rpc_rate_limited(retry_after_seconds: float | None = None) -> float:
     jitter = _rpc_backoff_jitter_seconds()
     if jitter > 0:
         backoff += random.uniform(0.0, jitter)
-    now_mono = time.monotonic()
-    until_wall = (datetime.now(timezone.utc) + timedelta(seconds=backoff)).isoformat()
-    with _RPC_PROVIDER_LOCK:
-        _RPC_PROVIDER_STATE['backoff_until_monotonic'] = now_mono + backoff
-        _RPC_PROVIDER_STATE['backoff_until_wall'] = until_wall
-        _RPC_PROVIDER_STATE['backoff_error_class'] = 'rate_limited'
+    if host is not None:
+        hosts = [host]
+    else:
+        hosts = _configured_provider_hosts() or [_GLOBAL_BACKOFF_HOST]
+    until_wall = ''
+    for entry in hosts:
+        until_wall = _arm_host_backoff(entry, backoff, 'rate_limited')
     logger.warning(
         'rpc_provider_backoff_set error_class=rate_limited rpc_status=rate_limited '
-        'backoff_seconds=%s retry_after_seconds=%s backoff_until=%s rpc_call_skipped=true',
+        'rpc_host=%s backoff_seconds=%s retry_after_seconds=%s backoff_until=%s rpc_call_skipped=true',
+        ','.join(hosts),
         int(backoff),
         'none' if retry_after_seconds is None else int(retry_after_seconds),
         until_wall,
@@ -187,29 +252,112 @@ def record_rpc_rate_limited(retry_after_seconds: float | None = None) -> float:
 
 
 def rpc_provider_backoff_active() -> bool:
-    """True while a recorded HTTP 429 backoff window has not yet elapsed."""
-    with _RPC_PROVIDER_LOCK:
-        return time.monotonic() < float(_RPC_PROVIDER_STATE['backoff_until_monotonic'])
+    """True only when EVERY configured Base RPC provider host is in backoff.
+
+    This is the one condition under which the poll loop, coverage probe, and
+    /system-health skip RPC entirely. While at least one configured provider is
+    still outside its backoff window, polling continues via that provider (failover).
+    """
+    active = _active_backoff_hosts()
+    if not active:
+        return False
+    if _GLOBAL_BACKOFF_HOST in active:
+        return True
+    configured = _configured_provider_hosts()
+    if not configured:
+        # No provider list to compare against — any active host backoff means skip
+        # (preserves legacy behavior when a 429 was recorded for an ad-hoc URL).
+        return True
+    return all(host in active for host in configured)
+
+
+def host_backoff_active(host: str) -> bool:
+    """True while the given provider host's backoff window has not elapsed."""
+    return host in _active_backoff_hosts()
+
+
+def backoff_hosts() -> list[str]:
+    """Sorted list of provider hosts currently in backoff (host-only, no secrets)."""
+    return sorted(_active_backoff_hosts())
 
 
 def rpc_provider_backoff_status() -> dict[str, Any]:
-    """Snapshot of the provider backoff: active flag, remaining seconds, until-wall."""
+    """Aggregate snapshot of provider backoff across hosts (operator messages/logs)."""
+    now_mono = time.monotonic()
     with _RPC_PROVIDER_LOCK:
-        remaining = float(_RPC_PROVIDER_STATE['backoff_until_monotonic']) - time.monotonic()
-        return {
-            'active': remaining > 0,
-            'remaining_seconds': max(0.0, remaining),
-            'backoff_until': _RPC_PROVIDER_STATE['backoff_until_wall'],
-            'error_class': _RPC_PROVIDER_STATE['backoff_error_class'],
+        live = {
+            host: dict(st) for host, st in _RPC_HOST_BACKOFF.items()
+            if now_mono < float(st.get('until_monotonic') or 0.0)
         }
+    remaining = 0.0
+    until_wall = None
+    error_class = None
+    for st in live.values():
+        rem = float(st.get('until_monotonic') or 0.0) - now_mono
+        if rem > remaining:
+            remaining = rem
+            until_wall = st.get('until_wall')
+            error_class = st.get('error_class')
+    return {
+        'active': rpc_provider_backoff_active(),
+        'remaining_seconds': max(0.0, remaining),
+        'backoff_until': until_wall,
+        'error_class': error_class,
+        'backoff_hosts': sorted(live.keys()),
+    }
 
 
-def clear_rpc_provider_backoff() -> None:
-    """Clear the provider backoff (called on a confirmed-healthy probe)."""
+def clear_rpc_provider_backoff(host: str | None = None) -> None:
+    """Clear a single provider host's backoff, or all hosts when ``host`` is None.
+
+    Clearing a specific host also clears the global sentinel: a confirmed-healthy
+    provider means the whole-provider rate limit recorded without a host is over.
+    """
     with _RPC_PROVIDER_LOCK:
-        _RPC_PROVIDER_STATE['backoff_until_monotonic'] = 0.0
-        _RPC_PROVIDER_STATE['backoff_until_wall'] = None
-        _RPC_PROVIDER_STATE['backoff_error_class'] = None
+        if host is None:
+            _RPC_HOST_BACKOFF.clear()
+        else:
+            _RPC_HOST_BACKOFF.pop(host, None)
+            _RPC_HOST_BACKOFF.pop(_GLOBAL_BACKOFF_HOST, None)
+
+
+def record_rpc_provider_success(
+    host: str,
+    *,
+    provider_count: int | None = None,
+    failed_hosts: list[str] | None = None,
+    failover_used: bool = False,
+) -> None:
+    """A provider host served a call: clear its backoff and update the failover snapshot."""
+    clear_rpc_provider_backoff(host)
+    with _RPC_PROVIDER_LOCK:
+        if provider_count is not None:
+            _RPC_FAILOVER_SNAPSHOT['rpc_provider_count'] = int(provider_count)
+        _RPC_FAILOVER_SNAPSHOT['active_rpc_host'] = host
+        _RPC_FAILOVER_SNAPSHOT['failed_rpc_hosts'] = list(failed_hosts or [])
+        _RPC_FAILOVER_SNAPSHOT['rpc_failover_used'] = bool(failover_used)
+
+
+def _record_failover_unavailable(provider_count: int, failed_hosts: list[str]) -> None:
+    """Record that every provider was skipped/failed (no provider served the call)."""
+    with _RPC_PROVIDER_LOCK:
+        _RPC_FAILOVER_SNAPSHOT['rpc_provider_count'] = int(provider_count)
+        _RPC_FAILOVER_SNAPSHOT['active_rpc_host'] = None
+        _RPC_FAILOVER_SNAPSHOT['failed_rpc_hosts'] = list(failed_hosts)
+        _RPC_FAILOVER_SNAPSHOT['rpc_failover_used'] = True
+
+
+def rpc_provider_log_fields() -> dict[str, Any]:
+    """Host-only structured-log fields describing the current provider/failover state."""
+    with _RPC_PROVIDER_LOCK:
+        snap = dict(_RPC_FAILOVER_SNAPSHOT)
+    return {
+        'rpc_provider_count': snap.get('rpc_provider_count', 0),
+        'active_rpc_host': snap.get('active_rpc_host'),
+        'failed_rpc_hosts': list(snap.get('failed_rpc_hosts') or []),
+        'backoff_hosts': backoff_hosts(),
+        'rpc_failover_used': bool(snap.get('rpc_failover_used', False)),
+    }
 
 
 def _store_rpc_health(result: dict[str, Any]) -> None:
@@ -227,14 +375,15 @@ def last_rpc_health() -> dict[str, Any] | None:
 
 
 def reset_rpc_provider_state() -> None:
-    """Reset all process-local provider backoff/health state (tests/ops)."""
+    """Reset all process-local provider backoff/health/failover state (tests/ops)."""
     with _RPC_PROVIDER_LOCK:
-        _RPC_PROVIDER_STATE.update(
-            backoff_until_monotonic=0.0,
-            backoff_until_wall=None,
-            backoff_error_class=None,
-            last_health=None,
-            last_health_at_monotonic=0.0,
+        _RPC_HOST_BACKOFF.clear()
+        _RPC_PROVIDER_STATE.update(last_health=None, last_health_at_monotonic=0.0)
+        _RPC_FAILOVER_SNAPSHOT.update(
+            rpc_provider_count=0,
+            active_rpc_host=None,
+            failed_rpc_hosts=[],
+            rpc_failover_used=False,
         )
 
 
@@ -356,14 +505,20 @@ def explain_wallet_transfer_match(monitored_wallet: str | None, tx: dict[str, An
     }
 
 
+def _split_rpc_urls(raw: str | None) -> list[str]:
+    """Split a comma-separated RPC URL list into trimmed, non-empty entries."""
+    return [part.strip() for part in str(raw or '').split(',') if part.strip()]
+
+
 def _resolve_evm_rpc_url() -> str:
     """Resolve the global EVM RPC URL for health checks and legacy single-chain deployments.
 
     Resolution order:
       1. EVM_RPC_URL_<chain_id>  (e.g. EVM_RPC_URL_8453 for Base when EVM_CHAIN_ID=8453)
       2. Named chain alias       (e.g. BASE_EVM_RPC_URL when EVM_CHAIN_ID=8453)
-      3. STAGING_EVM_RPC_URL
-      4. EVM_RPC_URL
+      3. EVM_RPC_URLS            (first of the comma-separated multi-provider list)
+      4. STAGING_EVM_RPC_URL
+      5. EVM_RPC_URL
     """
     chain_id_raw = (os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or '').strip()
     if chain_id_raw.isdigit():
@@ -379,13 +534,26 @@ def _resolve_evm_rpc_url() -> str:
             value = (os.getenv(alias) or '').strip()
             if value:
                 return value
+    # EVM_RPC_URLS (multi-provider) takes precedence over the single global vars.
+    multi = _split_rpc_urls(os.getenv('EVM_RPC_URLS'))
+    if multi:
+        return multi[0]
     return (os.getenv('STAGING_EVM_RPC_URL') or os.getenv('EVM_RPC_URL') or '').strip()
 
 
 def _resolve_evm_rpc_urls() -> list[str]:
-    """Return ordered primary/failover endpoints without exposing them in health payloads."""
-    values = [_resolve_evm_rpc_url()]
-    values.extend(part.strip() for part in os.getenv('EVM_RPC_FAILOVER_URLS', '').split(','))
+    """Ordered Base/global RPC endpoints (primary + failover) for the failover client.
+
+    ``EVM_RPC_URLS`` (comma-separated) is the canonical multi-provider list and, when
+    set, defines the full provider order. When it is absent the single resolver
+    (EVM_RPC_URL_<chain> / alias / STAGING_EVM_RPC_URL / EVM_RPC_URL) is used for
+    backward compatibility. Legacy ``EVM_RPC_FAILOVER_URLS`` are appended either way.
+    The endpoints are returned to the dialing client only — never exposed in health
+    payloads, where only provider hosts are surfaced.
+    """
+    multi = _split_rpc_urls(os.getenv('EVM_RPC_URLS'))
+    values = list(multi) if multi else [_resolve_evm_rpc_url()]
+    values.extend(_split_rpc_urls(os.getenv('EVM_RPC_FAILOVER_URLS')))
     return list(dict.fromkeys(value for value in values if value))
 
 
@@ -452,8 +620,27 @@ def probe_rpc_health(rpc_url: str | None = None) -> dict[str, Any]:
         result = {'ok': False, 'chain_id_hex': chain_hex or None, 'chain_id_int': chain_int, 'block_number_hex': block_hex or None, 'block_number_int': block_int, 'error': 'invalid_rpc_response', 'cache_hit': False}
         _store_rpc_health(result)
         return result
-    # A successful probe means the provider recovered — clear any lingering backoff.
-    clear_rpc_provider_backoff()
+    # A successful probe means this provider recovered — clear its host backoff.
+    # The failover client already cleared the serving host on success; clear the
+    # explicitly probed host too for the single-URL path so a recovered provider
+    # resumes. Resolve the served host from rpc_url (single) or the client's
+    # active_host (failover) without an isinstance check, so a patched/mocked client
+    # in tests never breaks the probe.
+    served_host = _host_of(url) if rpc_url is not None else getattr(client, 'active_host', None)
+    clear_rpc_provider_backoff(served_host)
+    # Host-only provider/failover observability (no URL or key). Emitted for the
+    # canonical multi-provider probe so logs show which provider served and whether
+    # failover was used. Low-frequency: startup + unhealthy rechecks only.
+    if rpc_url is None:
+        _fields = rpc_provider_log_fields()
+        logger.info(
+            'rpc_provider_health rpc_provider_count=%s active_rpc_host=%s failed_rpc_hosts=%s '
+            'backoff_hosts=%s rpc_failover_used=%s',
+            _fields['rpc_provider_count'], _fields['active_rpc_host'] or 'none',
+            ','.join(_fields['failed_rpc_hosts']) or 'none',
+            ','.join(_fields['backoff_hosts']) or 'none',
+            str(_fields['rpc_failover_used']).lower(),
+        )
     result = {'ok': True, 'chain_id_hex': chain_hex, 'chain_id_int': chain_int, 'block_number_hex': block_hex, 'block_number_int': block_int, 'error': None, 'cache_hit': False}
     _store_rpc_health(result)
     return result
@@ -531,8 +718,15 @@ def resolve_chain_rpc(network: str | None) -> dict[str, Any]:
     if not rpc_url:
         rpc_url = _resolve_evm_rpc_url()
         if rpc_url:
-            rpc_url_env = 'STAGING_EVM_RPC_URL' if (os.getenv('STAGING_EVM_RPC_URL') or '').strip() else 'EVM_RPC_URL'
-    if rpc_url_env in ('STAGING_EVM_RPC_URL', 'EVM_RPC_URL'):
+            # Label the env that actually supplied the URL, matching _resolve_evm_rpc_url's
+            # precedence (EVM_RPC_URLS → STAGING_EVM_RPC_URL → EVM_RPC_URL) so logs are truthful.
+            if _split_rpc_urls(os.getenv('EVM_RPC_URLS')):
+                rpc_url_env = 'EVM_RPC_URLS'
+            elif (os.getenv('STAGING_EVM_RPC_URL') or '').strip():
+                rpc_url_env = 'STAGING_EVM_RPC_URL'
+            else:
+                rpc_url_env = 'EVM_RPC_URL'
+    if rpc_url_env in ('STAGING_EVM_RPC_URL', 'EVM_RPC_URL', 'EVM_RPC_URLS'):
         rpc_urls = _resolve_evm_rpc_urls()
     else:
         ordered = [rpc_url] if rpc_url else []
@@ -582,32 +776,84 @@ class JsonRpcClient:
                     backoff = min(30.0, backoff * 2)
                     continue
                 if exc.code == 429:
-                    # Final 429 (retries exhausted): arm a process-wide provider
-                    # backoff so later cycles/probes skip RPC instead of compounding
-                    # the rate limit. Honors a (larger) Retry-After when present.
-                    record_rpc_rate_limited(_retry_after_for_backoff(exc))
+                    # Final 429 (retries exhausted): arm a PER-HOST provider backoff so
+                    # later cycles/probes skip THIS provider instead of compounding the
+                    # rate limit, while other configured providers keep serving. Honors a
+                    # (larger) Retry-After when present.
+                    record_rpc_rate_limited(_retry_after_for_backoff(exc), host=_host_of(self.rpc_url))
                 raise
         return None  # unreachable
 
 
 @dataclass
 class FailoverJsonRpcClient:
+    """Try each configured provider in order with PER-HOST failover.
+
+    A provider whose host is in an active 429 backoff window is skipped (so a
+    rate-limited Alchemy is not re-dialed during its window). On a successful call the
+    serving provider becomes sticky (``active_index``) and its host backoff is cleared;
+    on a 429 the underlying ``JsonRpcClient`` arms that host's backoff and we move to the
+    next provider. When every provider is skipped or fails, raises
+    ``all_rpc_providers_unavailable``. Only provider hosts are ever logged — never the
+    URL path, key, or credentials.
+    """
+
     rpc_urls: list[str]
     active_index: int = 0
+    active_host: str | None = field(default=None, init=False)
+    _logged_failover: bool = field(default=False, init=False)
 
     def call(self, method: str, params: list[Any]) -> Any:
         if not self.rpc_urls:
-            raise RuntimeError('rpc_url_not_configured')
+            raise RuntimeError('all_rpc_providers_unavailable:rpc_url_not_configured')
+        count = len(self.rpc_urls)
         errors: list[str] = []
-        for offset in range(len(self.rpc_urls)):
-            index = (self.active_index + offset) % len(self.rpc_urls)
+        failed_hosts: list[str] = []
+        skipped_hosts: list[str] = []
+        for offset in range(count):
+            index = (self.active_index + offset) % count
+            url = self.rpc_urls[index]
+            host = _host_of(url)
+            # Skip a provider whose 429 backoff window is still open. Only when more than
+            # one provider exists — a lone provider is always tried so its own recovery
+            # is detected rather than being benched forever.
+            if count > 1 and host_backoff_active(host):
+                if host not in skipped_hosts:
+                    skipped_hosts.append(host)
+                continue
             try:
-                result = JsonRpcClient(self.rpc_urls[index]).call(method, params)
-                self.active_index = index
-                return result
+                result = JsonRpcClient(url).call(method, params)
             except Exception as exc:
                 errors.append(str(exc)[:160] or exc.__class__.__name__)
-        raise RuntimeError(f"all_rpc_providers_unavailable:{','.join(errors)}")
+                if host not in failed_hosts:
+                    failed_hosts.append(host)
+                continue
+            self.active_index = index
+            self.active_host = host
+            failover_used = bool(offset != 0 or failed_hosts or skipped_hosts)
+            record_rpc_provider_success(
+                host, provider_count=count, failed_hosts=failed_hosts, failover_used=failover_used,
+            )
+            # Log the failover at most once per client instance so a multi-call poll
+            # cycle does not flood the log. Host-only — never the URL/key.
+            if failover_used and not self._logged_failover:
+                self._logged_failover = True
+                logger.warning(
+                    'rpc_failover rpc_provider_count=%s active_rpc_host=%s failed_rpc_hosts=%s '
+                    'backoff_hosts=%s rpc_failover_used=true',
+                    count, host, ','.join(failed_hosts + skipped_hosts) or 'none',
+                    ','.join(backoff_hosts()) or 'none',
+                )
+            return result
+        # Every provider was skipped (in backoff) or failed this call.
+        _record_failover_unavailable(count, failed_hosts or skipped_hosts)
+        logger.error(
+            'rpc_all_providers_unavailable rpc_provider_count=%s active_rpc_host=none '
+            'failed_rpc_hosts=%s backoff_hosts=%s rpc_failover_used=true',
+            count, ','.join(failed_hosts + skipped_hosts) or 'none',
+            ','.join(backoff_hosts()) or 'none',
+        )
+        raise RuntimeError(f"all_rpc_providers_unavailable:{','.join(errors) or 'all_hosts_in_backoff'}")
 
 
 @dataclass
