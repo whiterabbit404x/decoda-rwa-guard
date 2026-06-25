@@ -27,6 +27,19 @@ class ActivityEvent:
 
 logger = logging.getLogger(__name__)
 
+
+class RpcRequestTooLargeError(RuntimeError):
+    """An RPC request (e.g. eth_getLogs) was rejected as too large (HTTP 413).
+
+    This is a QUERY-SIZE problem, not a provider outage or a rate limit: the
+    provider is reachable and healthy, the requested block range simply returned
+    too much data. Classified distinctly (``error_class=request_too_large``,
+    ``status_reason=query_too_large``) so callers REDUCE the scan window instead of
+    benching the provider or failing the whole poll. Never arms a provider backoff
+    and never marks the provider globally unavailable.
+    """
+
+
 # An EVM address is exactly 20 bytes rendered as 40 lowercase hex chars with a 0x prefix.
 _EVM_ADDRESS_RE = re.compile(r'^0x[0-9a-f]{40}$')
 
@@ -107,6 +120,19 @@ _RPC_FAILOVER_SNAPSHOT: dict[str, Any] = {
     'active_rpc_host': None,
     'failed_rpc_hosts': [],
     'rpc_failover_used': False,
+}
+
+# Process-local "eth_getLogs query too large" signal (HTTP 413). Set by the poll
+# loop when a log scan request was rejected as too large and the scan window had to
+# be reduced; read by /system-health so it reports "provider reachable, log scan
+# reduced" instead of a generic provider outage. Cleared when a full (un-reduced)
+# log scan later succeeds. Host-only — never a URL or secret. This is deliberately
+# SEPARATE from provider backoff: a 413 must never bench the provider.
+_RPC_QUERY_TOO_LARGE: dict[str, Any] = {
+    'active': False,
+    'host': None,
+    'reduced_chunk_size': None,
+    'at_wall': None,
 }
 
 
@@ -360,6 +386,35 @@ def rpc_provider_log_fields() -> dict[str, Any]:
     }
 
 
+def record_rpc_query_too_large(host: str | None, *, reduced_chunk_size: int) -> None:
+    """Record that an eth_getLogs request was rejected as too large (HTTP 413).
+
+    Marks the process-local query-too-large signal active so /system-health can
+    truthfully report "provider reachable, log scan query too large, scan window
+    reduced" rather than a generic outage. Never arms a provider backoff and never
+    benches the host — a 413 is a query-size problem, not a provider failure.
+    """
+    with _RPC_PROVIDER_LOCK:
+        _RPC_QUERY_TOO_LARGE.update(
+            active=True,
+            host=(host or 'unknown'),
+            reduced_chunk_size=int(reduced_chunk_size),
+            at_wall=datetime.now(timezone.utc).isoformat(),
+        )
+
+
+def clear_rpc_query_too_large() -> None:
+    """Clear the query-too-large signal (a full, un-reduced log scan succeeded)."""
+    with _RPC_PROVIDER_LOCK:
+        _RPC_QUERY_TOO_LARGE.update(active=False, host=None, reduced_chunk_size=None, at_wall=None)
+
+
+def rpc_query_too_large_status() -> dict[str, Any]:
+    """Snapshot of the query-too-large signal (host-only, no secrets)."""
+    with _RPC_PROVIDER_LOCK:
+        return dict(_RPC_QUERY_TOO_LARGE)
+
+
 def _store_rpc_health(result: dict[str, Any]) -> None:
     """Remember the last probe result so a backoff window can replay it (cache_hit)."""
     with _RPC_PROVIDER_LOCK:
@@ -385,6 +440,7 @@ def reset_rpc_provider_state() -> None:
             failed_rpc_hosts=[],
             rpc_failover_used=False,
         )
+        _RPC_QUERY_TOO_LARGE.update(active=False, host=None, reduced_chunk_size=None, at_wall=None)
 
 
 def worker_rpc_chain_id() -> int | None:
@@ -767,6 +823,15 @@ class JsonRpcClient:
                     raise RuntimeError(f"json-rpc error: {body['error']}")
                 return body.get('result')
             except _urllib_error.HTTPError as exc:
+                # HTTP 413 (request/response too large): a QUERY-SIZE problem, not a
+                # provider outage or rate limit. Classify distinctly so the caller
+                # reduces the block range — never retried (an identical large query
+                # fails the same way) and never arms a provider backoff. The message
+                # carries the host only (no URL/key) for string-based classification.
+                if exc.code == 413:
+                    raise RpcRequestTooLargeError(
+                        f'request_too_large:HTTP Error 413 (host {_host_of(self.rpc_url)})'
+                    ) from exc
                 # Retry transient/rate-limit responses with exponential backoff. On a
                 # 429 we respect the provider's Retry-After header when present so
                 # retries never compound the rate limit.
@@ -793,9 +858,13 @@ class FailoverJsonRpcClient:
     rate-limited Alchemy is not re-dialed during its window). On a successful call the
     serving provider becomes sticky (``active_index``) and its host backoff is cleared;
     on a 429 the underlying ``JsonRpcClient`` arms that host's backoff and we move to the
-    next provider. When every provider is skipped or fails, raises
-    ``all_rpc_providers_unavailable``. Only provider hosts are ever logged — never the
-    URL path, key, or credentials.
+    next provider. An HTTP 413 (``RpcRequestTooLargeError``) is a query-size problem,
+    NOT a provider outage: the host is never benched, never counted toward
+    ``all_rpc_providers_unavailable``, and the failover snapshot is left untouched so
+    System Health keeps reporting the provider reachable — the size error is re-raised
+    so the caller reduces the block range. When every provider is skipped or fails for
+    a non-size reason, raises ``all_rpc_providers_unavailable``. Only provider hosts are
+    ever logged — never the URL path, key, or credentials.
     """
 
     rpc_urls: list[str]
@@ -810,6 +879,7 @@ class FailoverJsonRpcClient:
         errors: list[str] = []
         failed_hosts: list[str] = []
         skipped_hosts: list[str] = []
+        too_large_errors: list[str] = []   # hosts that returned HTTP 413 (query too large)
         for offset in range(count):
             index = (self.active_index + offset) % count
             url = self.rpc_urls[index]
@@ -823,6 +893,13 @@ class FailoverJsonRpcClient:
                 continue
             try:
                 result = JsonRpcClient(url).call(method, params)
+            except RpcRequestTooLargeError as exc:
+                # 413: the query is too large for this provider. Do NOT bench the host
+                # and do NOT count it toward all_providers_unavailable. Remember it and
+                # try the remaining providers (one may have a higher limit); if none
+                # succeed we re-raise a size error so the caller reduces the range.
+                too_large_errors.append(str(exc)[:160] or exc.__class__.__name__)
+                continue
             except Exception as exc:
                 errors.append(str(exc)[:160] or exc.__class__.__name__)
                 if host not in failed_hosts:
@@ -845,6 +922,22 @@ class FailoverJsonRpcClient:
                     ','.join(backoff_hosts()) or 'none',
                 )
             return result
+        # No provider returned a result this call.
+        if too_large_errors:
+            # At least one provider rejected the request as too large and none answered.
+            # Recoverable by reducing the block range — re-raise a size error instead of
+            # marking providers unavailable. The failover snapshot is intentionally left
+            # untouched (no _record_failover_unavailable) so a reachable provider is not
+            # reported as a generic outage.
+            logger.warning(
+                'rpc_query_too_large_all_providers rpc_provider_count=%s active_rpc_host=%s '
+                'too_large_count=%s failed_rpc_hosts=%s backoff_hosts=%s '
+                'error_class=request_too_large status_reason=query_too_large',
+                count, self.active_host or 'none', len(too_large_errors),
+                ','.join(failed_hosts + skipped_hosts) or 'none',
+                ','.join(backoff_hosts()) or 'none',
+            )
+            raise RpcRequestTooLargeError(f"request_too_large:{','.join(too_large_errors)}")
         # Every provider was skipped (in backoff) or failed this call.
         _record_failover_unavailable(count, failed_hosts or skipped_hosts)
         logger.error(
@@ -1025,11 +1118,180 @@ def _fetch_logs(client: RpcClient, address: str, from_block: int, to_block: int)
 def _iter_block_ranges(from_block: int, to_block: int, chunk_size: int) -> list[tuple[int, int]]:
     ranges: list[tuple[int, int]] = []
     cursor = from_block
+    chunk_size = max(1, chunk_size)
     while cursor <= to_block:
         end = min(to_block, cursor + chunk_size - 1)
         ranges.append((cursor, end))
         cursor = end + 1
     return ranges
+
+
+def _http_status_from_exc(exc: Exception) -> int | None:
+    """Best-effort HTTP status for an RPC error (no secret read).
+
+    Handles a real ``HTTPError``, our ``RpcRequestTooLargeError`` (→ 413), and a
+    failover/stub ``RuntimeError`` whose message embeds ``HTTP Error NNN`` (so
+    injected unit-test stubs that raise ``RuntimeError('HTTP Error 413: ...')`` are
+    classified too). 413 is checked first so a combined message still reduces size.
+    """
+    if isinstance(exc, RpcRequestTooLargeError):
+        return 413
+    if isinstance(exc, _urllib_error.HTTPError):
+        return int(getattr(exc, 'code', 0)) or None
+    text = str(exc)
+    for code in (413, 429, 400):
+        for sentinel in (f'HTTP Error {code}', f'status {code}', f'code {code}'):
+            if sentinel in text:
+                return code
+    return None
+
+
+def _wallet_logs_block_range(network: str, default_chunk: int) -> tuple[int, int]:
+    """(max, min) block range per eth_getLogs request.
+
+    Base caps the per-request range at ``BASE_MAX_LOGS_BLOCK_RANGE`` (default 100) and
+    never drops below ``BASE_MIN_LOGS_BLOCK_RANGE`` (default 10), DECOUPLED from the
+    block-by-block scan chunk so a heavy/busy Base wallet never issues a 1000-block
+    eth_getLogs request that providers reject with HTTP 413. Non-Base chains keep the
+    historical single-size behavior (no adaptive halving).
+    """
+    def _int_env(name: str, fallback: int) -> int:
+        try:
+            return max(1, int(os.getenv(name, str(fallback))))
+        except (TypeError, ValueError):
+            return fallback
+
+    if network in {'base', 'base-mainnet'}:
+        max_range = _int_env('BASE_MAX_LOGS_BLOCK_RANGE', 100)
+        min_range = min(_int_env('BASE_MIN_LOGS_BLOCK_RANGE', 10), max_range)
+        return max_range, min_range
+    size = max(1, default_chunk)
+    return size, size
+
+
+def _provider_host_for_log(client: RpcClient) -> str:
+    """Best-effort provider host for structured logs (failover active_host, else unknown)."""
+    host = getattr(client, 'active_host', None)
+    return str(host) if host else 'unknown'
+
+
+def _fetch_wallet_logs_adaptive(
+    client: RpcClient,
+    address: str,
+    from_block: int,
+    to_block: int,
+    *,
+    network: str,
+    target_id: Any,
+    max_range: int,
+    min_range: int,
+) -> dict[str, Any]:
+    """Fetch ERC-20 transfer/approval logs, halving the block range on HTTP 413.
+
+    Scans ``[from_block, to_block]`` in chunks of at most ``max_range`` blocks. When a
+    chunk is rejected as too large (HTTP 413 / ``RpcRequestTooLargeError``) the range
+    is halved and retried, down to ``min_range`` blocks — so a single oversized query
+    reduces the scan window instead of failing the whole poll, and the provider is
+    never marked unavailable for a 413. Any non-413 failure (429/400/unreachable)
+    stops the log scan for this cycle (the block-by-block scan still runs), preserving
+    prior behavior.
+
+    Returns a dict: ``logs``, ``last_complete_block`` (highest block fully covered by a
+    SUCCESSFUL eth_getLogs scan; ``from_block - 1`` if even the first chunk failed),
+    ``status`` (``ok``/``degraded``/``failed``), ``error_count``, ``too_large_count``,
+    and ``min_chunk_size`` (smallest chunk size attempted).
+    """
+    logs: list[dict[str, Any]] = []
+    last_complete = from_block - 1
+    status = 'ok'
+    error_count = 0
+    too_large_count = 0
+    min_chunk_size = max_range
+    logged_failure = False
+    # Stack of (lo, hi) ranges to scan; ascending lo pops first so last_complete
+    # advances monotonically and a failed chunk never skips earlier unscanned blocks.
+    pending: list[tuple[int, int]] = list(reversed(_iter_block_ranges(from_block, to_block, max_range)))
+    while pending:
+        lo, hi = pending.pop()
+        span = hi - lo + 1
+        try:
+            logs.extend(_fetch_logs(client, address, lo, hi))
+            last_complete = hi
+            continue
+        except Exception as exc:
+            code = _http_status_from_exc(exc)
+            host = _provider_host_for_log(client)
+            if code == 413:
+                too_large_count += 1
+                if span > min_range:
+                    new_size = max(min_range, span // 2)
+                    min_chunk_size = min(min_chunk_size, new_size)
+                    logger.warning(
+                        'rpc_query_too_large target_id=%s chain=%s provider_host=%s '
+                        'original_from_block=%s original_to_block=%s reduced_chunk_size=%s '
+                        'chunk_from_block=%s chunk_to_block=%s retry_count=%s '
+                        'error_class=request_too_large status_reason=query_too_large '
+                        'message="RPC query was too large. Reducing scan window."',
+                        target_id, network, host,
+                        lo, hi, new_size, lo, hi, too_large_count,
+                    )
+                    record_rpc_query_too_large(host, reduced_chunk_size=new_size)
+                    # Re-queue the smaller sub-ranges (push reversed so the lowest lo pops first).
+                    for srange in reversed(_iter_block_ranges(lo, hi, new_size)):
+                        pending.append(srange)
+                    continue
+                # Already at the minimum range and still too large: stop here so the
+                # cursor is NOT advanced past these unscanned blocks. Provider stays
+                # usable (no long backoff); the block-by-block scan still runs.
+                status = 'degraded'
+                min_chunk_size = min(min_chunk_size, span)
+                record_rpc_query_too_large(host, reduced_chunk_size=min_range)
+                if not logged_failure:
+                    logged_failure = True
+                    logger.warning(
+                        'rpc_query_too_large_min_reached target_id=%s chain=%s provider_host=%s '
+                        'chunk_from_block=%s chunk_to_block=%s min_chunk_size=%s retry_count=%s '
+                        'error_class=request_too_large status_reason=query_too_large '
+                        'action=stop_logs_cursor_capped',
+                        target_id, network, host, lo, hi, min_range, too_large_count,
+                    )
+                break
+            # Non-413 failure: log once (host/status only) and stop the log scan for
+            # this cycle. The block-by-block scan below still detects native transfers.
+            error_count += 1
+            if status == 'ok':
+                status = 'failed'
+            if not logged_failure:
+                logged_failure = True
+                logger.warning(
+                    'evm_logs_fetch_failed target_id=%s chain=%s from_block=%s to_block=%s '
+                    'error_type=%s http_status=%s error=%s action=continue_with_block_scan',
+                    target_id, network, lo, hi,
+                    type(exc).__name__, code, str(exc)[:300],
+                )
+                if code == 400 and isinstance(exc, _urllib_error.HTTPError):
+                    try:
+                        _body = exc.read().decode('utf-8', errors='replace')[:500]
+                        if _body:
+                            logger.warning(
+                                'evm_logs_fetch_failed_400_body target_id=%s chain=%s http_body=%s',
+                                target_id, network, _body,
+                            )
+                    except Exception:
+                        pass
+            break
+    # A full, un-reduced scan succeeded → clear the process-wide query-too-large
+    # signal so System Health stops reporting a reduced scan window.
+    if too_large_count == 0 and status == 'ok':
+        clear_rpc_query_too_large()
+    return {
+        'logs': logs,
+        'last_complete_block': last_complete,
+        'status': status,
+        'error_count': error_count,
+        'too_large_count': too_large_count,
+        'min_chunk_size': min_chunk_size,
+    }
 
 
 async def _ws_subscribe_new_head(ws_url: str, timeout_seconds: float = 1.0) -> int | None:
@@ -1269,15 +1531,29 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         from_block = max(0, last_block - replay_blocks)
 
     # Cap blocks scanned per cycle to avoid overwhelming RPCs during catch-up
-    # (e.g. after downtime a worker can be 60k+ blocks behind on Base).
+    # (e.g. after downtime a worker can be 160k+ blocks behind on Base). A very old
+    # cursor must catch up GRADUALLY over many cycles, not in one heavy poll.
     # Initial backfill (no cursor) is bounded by safe_backfill_window (≤2000 for Base).
-    # Cursor-based catch-up could be unbounded, so we cap it here and advance the
-    # cursor incrementally each cycle until fully caught up.
-    _CHAIN_MAX_BLOCKS_PER_CYCLE: dict[str, int] = {'base': 1000, 'base-mainnet': 1000}
-    max_blocks_per_cycle: int = max(
-        block_scan_chunk,
-        int(os.getenv('MAX_BLOCKS_PER_CYCLE', str(_CHAIN_MAX_BLOCKS_PER_CYCLE.get(network, 5000)))),
-    )
+    # Cursor-based catch-up is capped here; the cursor advances incrementally each
+    # cycle (plus the live-tail window) until fully caught up. The Base default is
+    # BASE_CATCHUP_MAX_BLOCKS_PER_CYCLE (100); the generic MAX_BLOCKS_PER_CYCLE still
+    # overrides it when explicitly set.
+    _CHAIN_MAX_BLOCKS_PER_CYCLE: dict[str, int] = {'base': 100, 'base-mainnet': 100}
+    _chain_default_max = _CHAIN_MAX_BLOCKS_PER_CYCLE.get(network, 5000)
+    if network in {'base', 'base-mainnet'}:
+        try:
+            _chain_default_max = max(1, int(os.getenv('BASE_CATCHUP_MAX_BLOCKS_PER_CYCLE', str(_chain_default_max))))
+        except (TypeError, ValueError):
+            _chain_default_max = 100
+    try:
+        max_blocks_per_cycle = max(1, int(os.getenv('MAX_BLOCKS_PER_CYCLE', str(_chain_default_max))))
+    except (TypeError, ValueError):
+        max_blocks_per_cycle = _chain_default_max
+    # On Base the catch-up cap is authoritative: a large block-scan batch size
+    # (MONITOR_BATCH_BLOCKS) must NOT reinflate it into a heavy 1000-block catch-up
+    # poll. Other chains keep the historical "at least one batch" floor.
+    if network not in {'base', 'base-mainnet'}:
+        max_blocks_per_cycle = max(block_scan_chunk, max_blocks_per_cycle)
     if last_block is not None:
         scan_ceiling = min(from_block + max_blocks_per_cycle - 1, safe_to)
     else:
@@ -1312,64 +1588,43 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     logs: list[dict[str, Any]] = []
     _logs_fetch_status = 'ok'
     _logs_fetch_error_count = 0
+    # Highest block whose ERC-20 logs were fully scanned. Only set below scan_ceiling
+    # when a 413 stayed too large even at the minimum chunk size, so the cursor is not
+    # advanced past blocks whose logs were never scanned (fail-closed).
+    _logs_last_complete_block: int | None = None
     target_type = str(target.get('target_type') or '').lower()
     if target_type == 'wallet':
-        for chunk_from, chunk_to in _iter_block_ranges(from_block, scan_ceiling, block_scan_chunk):
-            # eth_getLogs is best-effort enrichment for ERC-20 transfer/approval logs.
-            # Many public Base RPC endpoints reject the multi-topic OR filter or large
-            # ranges; a failure here must NOT collapse the whole scan into provider_error.
-            # The block-by-block transaction scan below still detects native wallet
-            # transfers, so we log the failure with detail and continue.
-            try:
-                logs.extend(_fetch_logs(client, target_address, chunk_from, chunk_to))
-            except Exception as logs_exc:
-                _logs_fetch_status = 'failed'
-                _logs_fetch_error_count += 1
-                error_str = str(logs_exc)[:300]
-                # Detect HTTP status from direct HTTPError or from FailoverJsonRpcClient RuntimeError message.
-                _http_code: int | None = getattr(logs_exc, 'code', None) if isinstance(logs_exc, _urllib_error.HTTPError) else None
-                if _http_code is None:
-                    for _sentinel in ('HTTP Error 400', 'status 400', 'code 400'):
-                        if _sentinel in error_str:
-                            _http_code = 400
-                            break
-                    if _http_code is None:
-                        for _sentinel in ('HTTP Error 429', 'status 429', 'code 429'):
-                            if _sentinel in error_str:
-                                _http_code = 429
-                                break
-                # Log full details only on the first failure per cycle to avoid log floods.
-                # Subsequent chunk failures are counted and surfaced in evm_block_scan_summary.
-                if _logs_fetch_error_count == 1:
-                    logger.warning(
-                        'evm_logs_fetch_failed target_id=%s chain=%s from_block=%s to_block=%s '
-                        'error_type=%s http_status=%s error=%s action=continue_with_block_scan',
-                        target.get('id'), network, chunk_from, chunk_to,
-                        type(logs_exc).__name__, _http_code, error_str,
-                    )
-                    # On HTTP 400, log the raw response body once to help diagnose
-                    # whether it is a filter format issue, address encoding, or range limit.
-                    if _http_code == 400 and isinstance(logs_exc, _urllib_error.HTTPError):
-                        try:
-                            _body = logs_exc.read().decode('utf-8', errors='replace')[:500]
-                            if _body:
-                                logger.warning(
-                                    'evm_logs_fetch_failed_400_body target_id=%s chain=%s http_body=%s',
-                                    target.get('id'), network, _body,
-                                )
-                        except Exception:
-                            pass
-                # HTTP 400 means the RPC permanently rejected the filter (wrong format, too many
-                # topics, address encoding error, or unsupported range). Do not retry remaining
-                # chunks — they will fail identically. HTTP 429 means rate-limited; also stop
-                # chunking for this cycle to avoid compounding the rate limit.
-                if _http_code in (400, 429):
-                    break
+        # eth_getLogs is best-effort enrichment for ERC-20 transfer/approval logs and
+        # is fetched in ADAPTIVE chunks: a 413 (too large) halves the block range and
+        # retries instead of failing the whole poll, and never benches the provider.
+        # The block-by-block transaction scan below still detects native wallet
+        # transfers if logs cannot be fetched at all.
+        _logs_max_range, _logs_min_range = _wallet_logs_block_range(network, block_scan_chunk)
+        _adaptive = _fetch_wallet_logs_adaptive(
+            client, target_address, from_block, scan_ceiling,
+            network=network, target_id=target.get('id'),
+            max_range=_logs_max_range, min_range=_logs_min_range,
+        )
+        logs = _adaptive['logs']
+        _logs_fetch_status = _adaptive['status']
+        _logs_fetch_error_count = _adaptive['error_count']
+        if _adaptive['too_large_count'] > 0 and _adaptive['status'] == 'degraded':
+            # A logs chunk stayed too large even at the minimum range. Cap the cursor
+            # at the last fully-scanned block so the unscanned blocks are re-scanned
+            # next cycle rather than skipped.
+            _logs_last_complete_block = _adaptive['last_complete_block']
 
     # Live-tail window: when catchup_mode, also scan the most recent blocks so new
-    # transactions are detected immediately without waiting for backfill to complete.
+    # transactions are detected immediately without waiting for the gradual backfill to
+    # complete. Configurable via BASE_LIVE_TAIL_BLOCKS (Base) or the generic
+    # EVM_LIVE_TAIL_BLOCKS; defaults to 300 recent blocks on Base.
     _live_tail_default = '300' if network in {'base', 'base-mainnet'} else '0'
-    live_tail_blocks = max(0, int(os.getenv('EVM_LIVE_TAIL_BLOCKS', _live_tail_default)))
+    if network in {'base', 'base-mainnet'}:
+        _live_tail_default = os.getenv('BASE_LIVE_TAIL_BLOCKS', _live_tail_default)
+    try:
+        live_tail_blocks = max(0, int(os.getenv('EVM_LIVE_TAIL_BLOCKS', _live_tail_default)))
+    except (TypeError, ValueError):
+        live_tail_blocks = 300 if network in {'base', 'base-mainnet'} else 0
     live_tail_from: int | None = None
     if catchup_mode and live_tail_blocks > 0:
         _lt_candidate = max(scan_ceiling + 1, safe_to - live_tail_blocks)
@@ -1518,12 +1773,28 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         len(deduped),
         catchup_mode, blocks_deferred,
     )
+    # Cursor advancement target. Normally the full block-scan ceiling, BUT when an
+    # eth_getLogs chunk stayed too large even at the minimum range we cap the cursor at
+    # the last block whose logs were fully scanned — never advancing past unscanned
+    # blocks and never moving the cursor backward (max with the prior cursor floor).
+    _scan_to_block = scan_ceiling
+    if _logs_last_complete_block is not None and _logs_last_complete_block < scan_ceiling:
+        _cursor_floor = last_block if last_block is not None else (from_block - 1)
+        _scan_to_block = min(scan_ceiling, max(_cursor_floor, _logs_last_complete_block))
+        logger.warning(
+            'evm_cursor_capped_query_too_large target_id=%s chain=%s scan_ceiling=%s '
+            'logs_last_complete_block=%s capped_scan_to_block=%s '
+            'error_class=request_too_large status_reason=query_too_large '
+            'action=do_not_advance_past_unscanned_blocks',
+            target.get('id'), network, scan_ceiling,
+            _logs_last_complete_block, _scan_to_block,
+        )
     # Canonical end-of-scan summary. evm_block_scan_start must always be followed by
     # this line (never a bare provider_error): it proves the scan loop ran to completion
     # and reports exactly what was inspected, what failed, and what was detected.
     # When in catchup_mode the cursor advances only to scan_ceiling (not the chain head)
     # so the next cycle picks up the next chunk automatically.
-    _persisted_cursor = f"{scan_ceiling}:checkpoint:-1"
+    _persisted_cursor = f"{_scan_to_block}:checkpoint:-1"
     logger.info(
         'evm_block_scan_summary target_id=%s monitored_wallet=%s chain=%s chain_id=%s '
         'source_type=rpc_polling from_block=%s to_block=%s blocks_scanned=%s failed_blocks=%s '
@@ -1549,8 +1820,9 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     # Expose the exact block we scanned up to so the runner can advance the cursor
     # even on empty scans (no events), preventing repeated small-window polling.
     # In catchup_mode this is scan_ceiling (not the chain head), so the next cycle
-    # starts from here and advances another max_blocks_per_cycle until caught up.
-    target['_evm_scan_to_block'] = scan_ceiling
+    # starts from here and advances another max_blocks_per_cycle until caught up. When a
+    # 413 capped the scan, this is the last fully-scanned block (≤ scan_ceiling).
+    target['_evm_scan_to_block'] = _scan_to_block
     return deduped
 
 

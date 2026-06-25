@@ -136,13 +136,18 @@ class _RpcLogsErrorWithNativeTransfer(_RpcWithNativeTransfer):
 # ---------------------------------------------------------------------------
 
 def test_far_behind_cursor_capped_to_max_blocks_per_cycle(monkeypatch):
-    """When the cursor is 67k blocks behind, each cycle must scan at most
-    MAX_BLOCKS_PER_CYCLE blocks (default 1000 for Base), not 67k+."""
+    """When the cursor is 67k blocks behind, the catch-up backfill must scan at most
+    BASE_CATCHUP_MAX_BLOCKS_PER_CYCLE blocks (default 100 for Base), not 67k+.
+
+    The live-tail window is disabled here so the measurement isolates the catch-up
+    backfill cap (the live-tail scans recent blocks in a separate range)."""
     monkeypatch.setenv('EVM_RPC_URL', 'http://rpc')
     monkeypatch.setenv('LIVE_MONITORING_CHAINS', 'base')
     monkeypatch.setenv('EVM_CONFIRMATIONS_REQUIRED', str(BASE_CONFIRMATIONS))
     monkeypatch.setenv('MONITOR_REPLAY_BLOCKS', '25')
+    monkeypatch.setenv('EVM_LIVE_TAIL_BLOCKS', '0')
     monkeypatch.delenv('MAX_BLOCKS_PER_CYCLE', raising=False)
+    monkeypatch.delenv('BASE_CATCHUP_MAX_BLOCKS_PER_CYCLE', raising=False)
 
     from services.api.app.evm_activity_provider import fetch_evm_activity
 
@@ -154,19 +159,20 @@ def test_far_behind_cursor_capped_to_max_blocks_per_cycle(monkeypatch):
     assert block_calls, 'scan must call eth_getBlockByNumber'
     blocks_scanned = max(block_calls) - min(block_calls) + 1
 
-    assert blocks_scanned <= 1000, (
-        f'Far-behind cursor must scan at most 1000 blocks per cycle (Base default); '
+    assert blocks_scanned <= 100, (
+        f'Far-behind cursor must scan at most 100 blocks per catch-up cycle (Base default); '
         f'got {blocks_scanned} (min={min(block_calls)}, max={max(block_calls)}). '
         f'blocks_behind={(CHAIN_SAFE_TO - CURSOR_BLOCK)}'
     )
 
 
 def test_max_blocks_per_cycle_env_var_respected(monkeypatch):
-    """MAX_BLOCKS_PER_CYCLE=500 must limit scan to 500 blocks on catch-up."""
+    """MAX_BLOCKS_PER_CYCLE=500 must limit the catch-up backfill to 500 blocks."""
     monkeypatch.setenv('EVM_RPC_URL', 'http://rpc')
     monkeypatch.setenv('LIVE_MONITORING_CHAINS', 'base')
     monkeypatch.setenv('EVM_CONFIRMATIONS_REQUIRED', str(BASE_CONFIRMATIONS))
     monkeypatch.setenv('MONITOR_REPLAY_BLOCKS', '25')
+    monkeypatch.setenv('EVM_LIVE_TAIL_BLOCKS', '0')
     monkeypatch.setenv('MAX_BLOCKS_PER_CYCLE', '500')
 
     from services.api.app.evm_activity_provider import fetch_evm_activity
