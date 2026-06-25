@@ -355,8 +355,43 @@ def _check_rpc() -> dict[str, Any]:
     if len(urls) == 1:
         comp = _probe_one_rpc(urls[0])
         comp.pop('_rpc_reason', None)
+    else:
+        comp = _check_rpc_failover(urls)
+    return _apply_query_too_large(comp)
+
+
+def _apply_query_too_large(comp: dict[str, Any]) -> dict[str, Any]:
+    """Surface an eth_getLogs HTTP 413 (scan window reduced) when the provider is reachable.
+
+    When eth_blockNumber works (the RPC probe is healthy/degraded) but the worker had
+    to reduce the eth_getLogs scan window after an HTTP 413, report that specifically
+    instead of a generic provider outage — telemetry is degraded only until the
+    reduced scan catches up. A genuinely unreachable provider (failing/unavailable) is
+    left untouched. Host-only — never a URL path or key.
+    """
+    if comp.get('status') not in ('healthy', 'degraded'):
         return comp
-    return _check_rpc_failover(urls)
+    try:
+        from services.api.app.evm_activity_provider import rpc_query_too_large_status
+        status = rpc_query_too_large_status()
+    except Exception:
+        return comp
+    if not status.get('active'):
+        return comp
+    host = status.get('host') or 'configured'
+    reduced = status.get('reduced_chunk_size')
+    reduced_txt = f' to {reduced} blocks' if reduced else ''
+    return _component(
+        'degraded',
+        f'Base RPC: Degraded. RPC provider reachable, but log scan query is too large. '
+        f'Scan window reduced{reduced_txt} (host: {host}).',
+        metric=comp.get('metric'),
+        last_event=comp.get('last_event'),
+        action=(
+            'eth_getLogs exceeded the provider response limit; the worker reduced the '
+            'scan window and continues. Telemetry recovers as smaller chunks succeed.'
+        ),
+    )
 
 
 def _check_rpc_failover(urls: list[str]) -> dict[str, Any]:
