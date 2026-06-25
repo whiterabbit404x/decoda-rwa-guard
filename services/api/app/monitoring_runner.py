@@ -3761,8 +3761,8 @@ def process_monitoring_target(
         except Exception:
             _backoff_until = None
         logger.warning(
-            'provider_poll_skipped target_id=%s reason=provider_backoff_active backoff_until=%s',
-            target.get('id'), _backoff_until or 'unknown',
+            'provider_poll_skipped target_id=%s workspace_id=%s reason=provider_backoff_active backoff_until=%s',
+            target.get('id'), target.get('workspace_id'), _backoff_until or 'unknown',
         )
         connection.execute(
             '''

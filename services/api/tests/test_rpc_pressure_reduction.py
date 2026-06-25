@@ -274,6 +274,39 @@ def test_production_sleep_is_full_interval_not_30s_cap_with_due_work():
     assert next_sleep == 60.0
 
 
+def test_min_worker_sleep_rises_to_min_evm_polling_interval_in_production(monkeypatch):
+    # Production must never wake more often than the per-target minimum poll interval:
+    # MIN_EVM_POLLING_INTERVAL_SECONDS=120 raises the worker sleep floor to 120s.
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.delenv('MIN_WORKER_SLEEP_SECONDS', raising=False)
+    monkeypatch.setenv('MIN_EVM_POLLING_INTERVAL_SECONDS', '120')
+    assert run_monitoring_worker._min_worker_sleep_seconds() == 120.0
+
+
+def test_min_evm_polling_interval_floor_not_applied_in_development(monkeypatch):
+    # Local/dev keeps the fast 1s cadence (for --once runs / quick iteration) even when
+    # MIN_EVM_POLLING_INTERVAL_SECONDS is high — the floor is production-only.
+    monkeypatch.delenv('APP_ENV', raising=False)
+    monkeypatch.delenv('APP_MODE', raising=False)
+    monkeypatch.delenv('MIN_WORKER_SLEEP_SECONDS', raising=False)
+    monkeypatch.setenv('MIN_EVM_POLLING_INTERVAL_SECONDS', '120')
+    assert run_monitoring_worker._min_worker_sleep_seconds() == 1.0
+
+
+def test_production_next_sleep_never_below_min_evm_polling_interval(monkeypatch):
+    # End to end: a 60s worker interval with a 120s per-target minimum must sleep >= 120s.
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.delenv('MIN_WORKER_SLEEP_SECONDS', raising=False)
+    monkeypatch.setenv('MIN_EVM_POLLING_INTERVAL_SECONDS', '120')
+    next_sleep = run_monitoring_worker._compute_next_sleep_seconds(
+        worker_interval_seconds=60,
+        effective_due_count=3,
+        soonest_due_in_seconds=None,
+        min_sleep_seconds=run_monitoring_worker._min_worker_sleep_seconds(),
+    )
+    assert next_sleep == 120.0
+
+
 def test_startup_logs_effective_polling_interval_and_source(monkeypatch, caplog):
     """The worker must log the effective poll cadence and its source at startup,
     secret-free, so operators can verify it from logs after deploy."""

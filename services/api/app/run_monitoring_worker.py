@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from services.api.app.activity_providers import validate_monitoring_config_or_raise
 from services.api.app.pilot import evaluate_monitoring_system_alerts
-from services.api.app.monitoring_runner import run_monitoring_cycle
+from services.api.app.monitoring_runner import _min_monitoring_interval_seconds, run_monitoring_cycle
 from services.api.app.observability import increment, gauge, observe, span, send_external_oncall_alert
 from services.api.app.pilot import runtime_environment_identity, startup_schema_init_plan
 
@@ -88,12 +88,20 @@ def _min_worker_sleep_seconds() -> float:
     never busy-polls — and never re-hits the RPC provider — more than once a minute,
     even when a target's interval is shorter or no work is due. Non-production keeps a
     1s floor for fast local iteration / --once runs. MIN_WORKER_SLEEP_SECONDS overrides.
+
+    In production the floor is additionally raised to MIN_EVM_POLLING_INTERVAL_SECONDS
+    (the same minimum used to cap per-target poll intervals): waking more often than the
+    minimum any target can be polled only produces no-op selection cycles, so next_sleep
+    must never drop below it (e.g. 120s when MIN_EVM_POLLING_INTERVAL_SECONDS=120).
     """
     _default = 60.0 if _is_production_like_runtime() else 1.0
     try:
-        return max(1.0, float(os.getenv('MIN_WORKER_SLEEP_SECONDS', str(_default))))
+        floor = max(1.0, float(os.getenv('MIN_WORKER_SLEEP_SECONDS', str(_default))))
     except (TypeError, ValueError):
-        return _default
+        floor = _default
+    if _is_production_like_runtime():
+        floor = max(floor, float(_min_monitoring_interval_seconds()))
+    return floor
 
 
 def _compute_next_sleep_seconds(

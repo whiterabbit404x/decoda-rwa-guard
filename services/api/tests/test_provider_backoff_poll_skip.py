@@ -361,7 +361,10 @@ def test_provider_backoff_logs_provider_poll_skipped(caplog):
     text = caplog.text
     assert 'provider_poll_skipped' in text
     assert f"target_id={target['id']}" in text
+    # The skip line carries the workspace id so operators can scope it per tenant.
+    assert f"workspace_id={target['workspace_id']}" in text
     assert 'reason=provider_backoff_active' in text
+    assert 'backoff_until=' in text
     # The misleading "real poll" lines must NOT appear.
     assert 'polling_cycle_start' not in text
     assert 'poll_completed' not in text
@@ -724,3 +727,72 @@ def test_stale_telemetry_unrouted_warning_is_throttled(monkeypatch, caplog):
         f'self_monitoring_alert_unrouted WARNING for stale_telemetry must fire at most '
         f'once per throttle window, got {len(unrouted)}'
     )
+
+
+# ---------------------------------------------------------------------------
+# 9. No full RPC URL or API key is logged or returned while the poll is skipped
+#    during an active provider backoff. The backoff is itself the consequence of
+#    a rate-limited credentialed provider, so its skip path must never leak that
+#    endpoint (or its key) into worker logs or the returned poll result.
+# ---------------------------------------------------------------------------
+
+_SECRET_RPC_KEY = 'SUPER-SECRET-KEY-abc123'
+_SECRET_RPC_URL = f'https://base-mainnet.example.com/v2/{_SECRET_RPC_KEY}'
+
+
+def test_provider_backoff_skip_does_not_leak_rpc_url_or_key(monkeypatch, caplog):
+    """During an active backoff the real provider skip path runs end to end (it is
+    not stubbed) so it knows the credentialed RPC URL — yet neither the URL, its key,
+    nor the '/v2/' fragment may appear in logs, the result, or any SQL parameter."""
+    from services.api.app import evm_activity_provider as eap
+
+    for name in ('EVM_RPC_URL', 'STAGING_EVM_RPC_URL', 'LIVE_MONITORING_CHAINS', 'EVM_CHAIN_ID', 'EVM_WS_URL'):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv('MONITORING_INGESTION_MODE', 'live')
+    monkeypatch.setenv('LIVE_MONITORING_ENABLED', 'true')
+    monkeypatch.setenv('STAGING_EVM_RPC_URL', _SECRET_RPC_URL)
+    monkeypatch.setenv('EVM_CHAIN_ID', '8453')
+    monkeypatch.setenv('LIVE_MONITORING_CHAINS', 'base')
+
+    # Arm the process-wide backoff (a prior cycle hit HTTP 429) so the REAL
+    # fetch_target_activity_result short-circuits and the runner skips the poll.
+    eap.reset_rpc_provider_state()
+    eap.record_rpc_rate_limited(None)
+    assert eap.rpc_provider_backoff_active() is True
+
+    target = _backoff_target()
+    conn = _RecordingConn(workspace_id=target['workspace_id'], target_id=target['id'])
+
+    # fetch_target_activity_result is deliberately NOT patched here.
+    with (
+        patch.object(monitoring_runner, '_upsert_checkpoint', MagicMock()),
+        patch.object(monitoring_runner, '_persist_live_coverage_telemetry', MagicMock()),
+        patch.object(monitoring_runner, '_persist_detection_evaluation_checkpoint', MagicMock()),
+        patch.object(monitoring_runner, '_persist_no_threat_evaluation_marker', MagicMock()),
+        patch.object(monitoring_runner, '_resolve_coverage_asset_id', MagicMock(return_value=None)),
+    ):
+        with caplog.at_level(logging.DEBUG):
+            result = monitoring_runner.process_monitoring_target(conn, target)
+
+    # The poll was skipped via the real backoff path.
+    assert result['provider_poll_skipped'] is True
+    assert result['status'] == 'provider_backoff_skipped'
+
+    _secrets = (_SECRET_RPC_URL, _SECRET_RPC_KEY, '/v2/')
+
+    # 1. Logs must not leak the URL, key, or credentialed path fragment.
+    text = caplog.text
+    assert 'provider_poll_skipped' in text, 'the real backoff skip path must have run'
+    for secret in _secrets:
+        assert secret not in text, f'secret/url fragment {secret!r} leaked into logs'
+
+    # 2. The returned poll result must not carry the URL or key anywhere.
+    result_repr = repr(result)
+    for secret in _secrets:
+        assert secret not in result_repr, f'secret {secret!r} leaked into the poll result'
+
+    # 3. No SQL the skip path executed may carry the URL or key in its parameters.
+    for _sql, params in conn.executed:
+        flat = repr(params)
+        for secret in _secrets:
+            assert secret not in flat, f'secret {secret!r} leaked into a SQL parameter'
