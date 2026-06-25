@@ -298,12 +298,47 @@ def _log_rpc_probe(
     )
 
 
-def _check_rpc() -> dict[str, Any]:
-    # Resolve the Base RPC endpoint the SAME way the worker resolves a Base target
-    # so System Health and the worker always agree on which endpoint serves Base.
-    rpc_url = _resolve_base_rpc_url()
+def _resolve_base_rpc_urls() -> list[str]:
+    """Resolve the ordered Base (chain 8453) RPC provider list the worker would use.
 
-    if not rpc_url:
+    Mirrors ``_resolve_base_rpc_url`` but returns the full primary + failover list
+    (EVM_RPC_URLS / EVM_RPC_FAILOVER_URLS / per-chain failover) so System Health can
+    report provider failover (Operational / Degraded / Failing) the same way the
+    worker polls Base.
+    """
+    try:
+        from services.api.app.evm_activity_provider import resolve_chain_rpc as _resolve_chain
+        urls = _resolve_chain('base').get('rpc_urls') or []
+        deduped = list(dict.fromkeys(u for u in urls if u))
+        if deduped:
+            return deduped
+    except Exception:
+        pass
+    single = _resolve_base_rpc_url()
+    return [single] if single else []
+
+
+def _host_of_rpc(rpc_url: str) -> str:
+    """Lowercase hostname for a provider URL (never the path/key/query/credentials)."""
+    try:
+        from urllib.parse import urlparse as _up
+        return (_up(rpc_url).hostname or 'configured')
+    except Exception:
+        return 'configured'
+
+
+def _check_rpc() -> dict[str, Any]:
+    """Probe the Base RPC provider(s) and report a SaaS-grade status.
+
+    With a single configured provider this behaves exactly as before. With multiple
+    Base providers (EVM_RPC_URLS) it reports provider failover truthfully:
+      * Operational — the first reachable provider answered.
+      * Degraded    — a provider failed or is in 429 backoff but another answered.
+      * Failing     — every provider failed/was benched.
+    Only provider hosts are ever surfaced — never the URL path, key, or credentials.
+    """
+    urls = _resolve_base_rpc_urls()
+    if not urls:
         _log_rpc_probe(
             rpc_configured=False, rpc_host='unconfigured', rpc_status='unavailable',
             response_time_ms=0, last_error_class='rpc_url_not_configured',
@@ -313,10 +348,93 @@ def _check_rpc() -> dict[str, Any]:
             'Base RPC URL is missing in worker service. Set EVM_RPC_URL or STAGING_EVM_RPC_URL.',
             action=(
                 'Set EVM_RPC_URL or STAGING_EVM_RPC_URL in the Railway worker service. '
-                'For Base mainnet you may instead set EVM_RPC_URL_8453 (or BASE_EVM_RPC_URL).'
+                'For Base mainnet you may instead set EVM_RPC_URL_8453 (or BASE_EVM_RPC_URL) '
+                'or EVM_RPC_URLS for multiple providers.'
             ),
         )
+    if len(urls) == 1:
+        comp = _probe_one_rpc(urls[0])
+        comp.pop('_rpc_reason', None)
+        return comp
+    return _check_rpc_failover(urls)
 
+
+def _check_rpc_failover(urls: list[str]) -> dict[str, Any]:
+    """Probe multiple Base providers in order; report Operational/Degraded/Failing.
+
+    Providers whose host is in an active 429 backoff window are skipped (never
+    re-dialed during their window). The first reachable provider wins; if any earlier
+    provider failed or was benched, the result is Degraded (failover active) rather
+    than Operational. If no provider answers, the result is Failing. Host-only.
+    """
+    try:
+        from services.api.app.evm_activity_provider import host_backoff_active as _host_bo
+    except Exception:
+        def _host_bo(_host: str) -> bool:  # pragma: no cover - defensive
+            return False
+
+    failed: list[tuple[str, str]] = []   # (host, reason)
+    benched: list[str] = []              # hosts skipped due to active backoff
+    for rpc_url in urls:
+        host = _host_of_rpc(rpc_url)
+        if _host_bo(host):
+            if host not in benched:
+                benched.append(host)
+            continue
+        comp = _probe_one_rpc(rpc_url)
+        reason = comp.pop('_rpc_reason', None)
+        if comp.get('status') == 'healthy':
+            if not failed and not benched:
+                return comp  # primary reachable → Operational
+            return _rpc_failover_degraded(host, comp, failed, benched)
+        failed.append((host, reason or 'failing'))
+    return _rpc_all_failing(failed, benched)
+
+
+def _describe_host_reasons(failed: list[tuple[str, str]], benched: list[str]) -> str:
+    parts: list[str] = []
+    if failed:
+        parts.append('failing: ' + ', '.join(f'{host} ({reason})' for host, reason in failed))
+    if benched:
+        parts.append('in backoff: ' + ', '.join(benched))
+    return '; '.join(parts)
+
+
+def _rpc_failover_degraded(
+    active_host: str, comp: dict[str, Any], failed: list[tuple[str, str]], benched: list[str]
+) -> dict[str, Any]:
+    """Degraded Base RPC component: one provider failed/benched but another answered."""
+    return _component(
+        'degraded',
+        f'Base RPC: Degraded. Provider failover active — serving via {active_host} '
+        f'({_describe_host_reasons(failed, benched)}).',
+        metric=comp.get('metric'),
+        last_event=comp.get('last_event'),
+        action=(
+            'A Base RPC provider is rate-limited or failing; monitoring continues via a '
+            'healthy provider. Add RPC quota or check the affected provider.'
+        ),
+    )
+
+
+def _rpc_all_failing(failed: list[tuple[str, str]], benched: list[str]) -> dict[str, Any]:
+    """Failing Base RPC component: every configured provider failed or is benched."""
+    detail = _describe_host_reasons(failed, benched) or 'all providers unavailable'
+    reason = failed[0][1] if failed else 'rate_limited'
+    return _component(
+        'failing',
+        f'Base RPC: Failing. All providers unavailable ({detail}).',
+        action=_rpc_failure_action(reason),
+    )
+
+
+def _probe_one_rpc(rpc_url: str) -> dict[str, Any]:
+    """Make one blocking on-chain probe against a single provider URL.
+
+    Returns a status component. A failure component carries a private ``_rpc_reason``
+    key (stripped by callers before rendering) so the failover orchestrator can
+    describe which provider failed and why. Only the host is ever surfaced.
+    """
     # Sanitize: only the host is ever surfaced — never the path/key/query/credentials.
     try:
         from urllib.parse import urlparse as _up
@@ -337,17 +455,20 @@ def _check_rpc() -> dict[str, Any]:
             retry_after_seconds=retry_after,
         )
         if _rpc_status_class(reason) == 'rate_limited':
-            # Arm the shared provider backoff so the worker and later page refreshes
-            # both skip RPC instead of re-probing into the rate limit.
+            # Arm THIS provider host's backoff so the worker and later page refreshes
+            # skip only the rate-limited provider, not the healthy ones, instead of
+            # re-probing into the rate limit.
             try:
                 from services.api.app.evm_activity_provider import record_rpc_rate_limited
-                record_rpc_rate_limited(retry_after)
+                record_rpc_rate_limited(retry_after, host=rpc_host)
             except Exception:
                 pass
         result = _rpc_failed(rpc_host, reason)
         if retry_after is not None:
             # Non-rendered hint consumed by _cached_base_rpc_health to back off.
             result['retry_after'] = retry_after
+        # Private hint for the failover orchestrator (stripped before rendering).
+        result['_rpc_reason'] = reason
         return result
 
     payload = b'{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
@@ -906,6 +1027,11 @@ def _build_live_chain_monitoring(
     if rpc_check is None:
         rpc_check = _check_rpc()
     rpc_healthy = rpc_check['status'] == 'healthy'
+    # A 'degraded' Base RPC means provider failover is active — a provider is
+    # rate-limited/failing but another is still serving chain data, so monitoring is
+    # NOT blocked. Treat it as usable so the diagnosis does not claim chain data
+    # cannot be fetched.
+    rpc_usable = rpc_check['status'] in ('healthy', 'degraded')
 
     if not worker_enabled:
         if hb_fresh:
@@ -920,9 +1046,13 @@ def _build_live_chain_monitoring(
             'EVM RPC URL is not configured. Set EVM_RPC_URL (or EVM_RPC_URL_8453 / BASE_EVM_RPC_URL '
             'with EVM_CHAIN_ID=8453) in the worker service.'
         )
-    elif not rpc_healthy:
+    elif not rpc_usable:
         rpc_msg = rpc_check.get('message', 'RPC probe failed.')
         diagnosis = f'Base RPC is failing: {rpc_msg} Chain data cannot be fetched.'
+    elif not rpc_healthy:
+        # Degraded: provider failover is active. Surface it without claiming an outage.
+        rpc_msg = rpc_check.get('message', 'Base RPC provider failover active.')
+        diagnosis = f'Base RPC provider failover active: {rpc_msg} Monitoring continues via a healthy provider.'
     elif last_heartbeat_at is None:
         diagnosis = 'RPC is configured but no worker heartbeat received. Worker may not be running.'
     elif not hb_fresh:
