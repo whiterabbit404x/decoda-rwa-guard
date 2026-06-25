@@ -465,6 +465,61 @@ def test_self_monitoring_alert_fires_again_after_throttle_window(monkeypatch):
     assert len(stale_sends) == 1, 'alert must fire again once the throttle window has elapsed'
 
 
+def test_stale_telemetry_throttle_is_per_target(monkeypatch):
+    """The throttle key is workspace_id + target_id + alert_type, so two distinct
+    stale targets each fire once. Throttling one persistently-stale target must
+    never suppress a *different* target's first stale_telemetry alert — the guard
+    against over-suppression. Same-target duplicates inside the window are dropped.
+    """
+    from services.api.app import pilot
+
+    class _PilotConn:
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split()).lower()
+            if 'from telemetry_events' in q and 'group by workspace_id' in q:
+                return _CycleResult(rows=[
+                    {
+                        'fingerprint': 'ws-1:tgt-1',
+                        'details': {'workspace_id': 'ws-1', 'target_id': 'tgt-1', 'latest_telemetry_at': None},
+                    },
+                    {
+                        'fingerprint': 'ws-1:tgt-2',
+                        'details': {'workspace_id': 'ws-1', 'target_id': 'tgt-2', 'latest_telemetry_at': None},
+                    },
+                ])
+            if q.startswith('select external_delivery_status'):
+                return _CycleResult(row=None)
+            return _CycleResult(rows=[], row=None)
+
+        def commit(self):
+            pass
+
+    monkeypatch.setenv('MONITORING_SELF_ALERT_THROTTLE_SECONDS', '900')
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(_PilotConn()))
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    pilot._SELF_MONITORING_ALERT_LAST_SENT.clear()
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        pilot, 'send_external_oncall_alert',
+        lambda *a, **kw: (calls.append((a, kw)), False)[1],
+    )
+
+    # First cycle: both distinct stale targets fire exactly once each.
+    pilot.evaluate_monitoring_system_alerts(stale_after_seconds=120)
+    first = sorted(kw.get('fingerprint') for a, kw in calls if a and a[0] == 'stale_telemetry')
+    assert first == ['ws-1:tgt-1', 'ws-1:tgt-2'], (
+        f'each distinct target must log once on the first cycle (per-target throttle key), got {first}'
+    )
+
+    # Second cycle inside the window: every target is now throttled — no new sends.
+    pilot.evaluate_monitoring_system_alerts(stale_after_seconds=120)
+    after = sorted(kw.get('fingerprint') for a, kw in calls if a and a[0] == 'stale_telemetry')
+    assert after == ['ws-1:tgt-1', 'ws-1:tgt-2'], (
+        f'same-target duplicates inside the window must be suppressed, got {after}'
+    )
+
+
 # ---------------------------------------------------------------------------
 # 6. no RPC call is made while the provider backoff is active
 # ---------------------------------------------------------------------------
