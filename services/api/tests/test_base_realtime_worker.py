@@ -694,3 +694,163 @@ def test_startup_emits_env_check_log(monkeypatch):
     assert 'selected_ws_rpc_env_name=BASE_WS_RPC_URL' in env_log
     assert 'base_ws_rpc_url_scheme=wss' in env_log
     assert 'SECRETKEY' not in env_log, 'secret must not appear in log'
+
+
+# ---------------------------------------------------------------------------
+# 20. _parse_workspace_target_count: dict row does not KeyError
+# ---------------------------------------------------------------------------
+
+def test_parse_workspace_target_count_dict_row():
+    from services.api.app.run_realtime_worker import _parse_workspace_target_count
+
+    assert _parse_workspace_target_count({'cnt': 5}) == 5
+    assert _parse_workspace_target_count({'cnt': '3'}) == 3
+    # 0 targets: this was the exact bug – row.get('cnt') == 0 (falsy) triggered row[0] on a dict
+    assert _parse_workspace_target_count({'cnt': 0}) == 0
+    assert _parse_workspace_target_count({'cnt': None}) == 0
+    assert _parse_workspace_target_count({}) == 0
+
+
+# ---------------------------------------------------------------------------
+# 21. _parse_workspace_target_count: tuple row still works
+# ---------------------------------------------------------------------------
+
+def test_parse_workspace_target_count_tuple_row():
+    from services.api.app.run_realtime_worker import _parse_workspace_target_count
+
+    assert _parse_workspace_target_count((7,)) == 7
+    assert _parse_workspace_target_count((0,)) == 0
+    assert _parse_workspace_target_count(None) == 0
+
+
+# ---------------------------------------------------------------------------
+# 22. WebSocket 1001 (clean close) triggers reconnect, not crash
+# ---------------------------------------------------------------------------
+
+def test_ws_1001_triggers_reconnect():
+    """A clean WebSocket close (simulating ConnectionClosedOK / 1001) must reconnect."""
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    calls = [0]
+
+    async def _mock_ws_subscribe():
+        calls[0] += 1
+        if calls[0] == 1:
+            # Simulate a ConnectionClosedOK-like exception the first time
+            raise Exception('ConnectionClosedOK: code=1001 going away')
+        raise asyncio.CancelledError()
+
+    async def _mock_backfill(from_b, to_b):
+        return 0
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    # Provide a fresh newHeads value so _throttled_block_number skips RPC
+    import time as _time
+    ingestor.state['last_head_block'] = 100
+    ingestor._last_head_block_at = _time.monotonic()
+
+    ingestor._ws_subscribe = _mock_ws_subscribe  # type: ignore[method-assign]
+    ingestor._backfill = _mock_backfill  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(ingestor.run_forever())
+
+    assert calls[0] >= 2, 'Worker must attempt reconnect after close'
+    assert ingestor.state['metrics']['ws_reconnects'] >= 1
+
+
+# ---------------------------------------------------------------------------
+# 23. _compute_reconnect_sleep: 429 uses 60-120 s backoff
+# ---------------------------------------------------------------------------
+
+def test_compute_reconnect_sleep_429_long_backoff():
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+
+    exc_429 = RuntimeError('rpc_http_error:429 method=eth_blockNumber')
+    for _ in range(10):  # random component – check across several samples
+        sleep_for = ingestor._compute_reconnect_sleep(exc_429, retry=1.0)
+        assert sleep_for >= 60.0, f'Expected >= 60 s for 429, got {sleep_for}'
+        assert sleep_for <= 121.0, f'Expected <= 121 s for 429, got {sleep_for}'
+
+    exc_other = RuntimeError('ws connection refused')
+    sleep_for_other = ingestor._compute_reconnect_sleep(exc_other, retry=1.0)
+    assert sleep_for_other < 10.0, f'Normal errors must use short backoff, got {sleep_for_other}'
+
+
+# ---------------------------------------------------------------------------
+# 24. _throttled_block_number uses newHeads without an RPC call
+# ---------------------------------------------------------------------------
+
+def test_throttled_block_number_uses_newheads_without_rpc():
+    import time as _time
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    rpc_called = [0]
+
+    def _mock_rpc(method, params):
+        rpc_called[0] += 1
+        return None
+
+    ingestor._rpc_call = _mock_rpc  # type: ignore[method-assign]
+
+    # Simulate newHeads having just set last_head_block
+    ingestor.state['last_head_block'] = 5000
+    ingestor._last_head_block_at = _time.monotonic()
+
+    result = ingestor._throttled_block_number()
+
+    assert result == 5000
+    assert rpc_called[0] == 0, 'eth_blockNumber RPC must not be called when newHeads data is fresh'
+
+
+# ---------------------------------------------------------------------------
+# 25. Health server responds OK while ingestor is marked degraded
+# ---------------------------------------------------------------------------
+
+def test_health_server_responds_ok_while_degraded():
+    """Health server HTTP endpoint returns 200 regardless of ingestor degraded state."""
+    import importlib
+    import time as _time
+    import urllib.request
+    import services.api.app.run_realtime_worker as rw
+    importlib.reload(rw)
+
+    rw._start_health_server(18097)
+    _time.sleep(0.1)  # let daemon thread bind
+
+    with urllib.request.urlopen('http://127.0.0.1:18097/health', timeout=3) as resp:
+        assert resp.status == 200
+        body = resp.read()
+        assert b'"status":"ok"' in body
+
+
+# ---------------------------------------------------------------------------
+# 26. No RPC URL path or API key appears in any logged config field
+# ---------------------------------------------------------------------------
+
+def test_no_rpc_path_or_key_in_logged_fields(monkeypatch):
+    monkeypatch.setenv('BASE_REALTIME_ENABLED', 'true')
+    monkeypatch.setenv('BASE_WS_RPC_URL', 'wss://nd-123.p2pify.com/SECRETTOKEN')
+    monkeypatch.delenv('EVM_RPC_URL_8453', raising=False)
+    monkeypatch.delenv('BASE_EVM_RPC_URL', raising=False)
+    monkeypatch.delenv('EVM_RPC_URL', raising=False)
+
+    import importlib
+    import services.api.app.run_realtime_worker as rw
+    importlib.reload(rw)
+
+    config = rw._resolve_config()
+    safe_fields = {k: v for k, v in config.items() if k not in ('ws_url', 'rpc_url')}
+    for field, value in safe_fields.items():
+        assert 'SECRETTOKEN' not in str(value), f'Secret leaked in field {field}'
+        assert '/SECRETTOKEN' not in str(value), f'Secret path leaked in field {field}'
