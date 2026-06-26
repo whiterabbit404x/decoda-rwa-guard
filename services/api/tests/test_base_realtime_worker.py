@@ -854,3 +854,292 @@ def test_no_rpc_path_or_key_in_logged_fields(monkeypatch):
     for field, value in safe_fields.items():
         assert 'SECRETTOKEN' not in str(value), f'Secret leaked in field {field}'
         assert '/SECRETTOKEN' not in str(value), f'Secret path leaked in field {field}'
+
+
+# ---------------------------------------------------------------------------
+# 27. _watched_targets SQL must include 'base-mainnet' in the chain_network filter
+# ---------------------------------------------------------------------------
+
+def test_watched_targets_query_accepts_base_mainnet():
+    """The SQL in _watched_targets must include 'base-mainnet' so targets with
+    chain_network='base-mainnet' are not silently dropped."""
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+
+    executed_sql: list[str] = []
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = []
+    mock_conn = MagicMock()
+    mock_conn.execute.side_effect = (
+        lambda sql, *a, **k: (executed_sql.append(str(sql)), mock_cursor)[1]
+    )
+    mock_conn.__enter__ = lambda s: s
+    mock_conn.__exit__ = MagicMock(return_value=False)
+
+    with (
+        patch('services.api.app.base_realtime_ingestor.pg_connection', return_value=mock_conn),
+        patch('services.api.app.base_realtime_ingestor.ensure_pilot_schema', lambda c: None),
+    ):
+        ingestor._watched_targets()
+
+    assert executed_sql, '_watched_targets must call conn.execute'
+    query = executed_sql[0].lower()
+    assert 'base-mainnet' in query, (
+        f"_watched_targets SQL must include 'base-mainnet'; got: {query}"
+    )
+    assert 'in' in query, (
+        f"_watched_targets SQL must use IN clause for chain_network aliases; got: {query}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 28. Startup count in run_realtime_worker also accepts 'base-mainnet'
+# ---------------------------------------------------------------------------
+
+def test_startup_count_query_accepts_base_mainnet():
+    """The startup count query in _run_ingestor must include 'base-mainnet'
+    so workspace_target_count reflects targets with chain_network='base-mainnet'."""
+    import importlib
+    import services.api.app.run_realtime_worker as rw
+    importlib.reload(rw)
+
+    import inspect
+    source = inspect.getsource(rw._run_ingestor)
+    assert 'base-mainnet' in source, (
+        "run_realtime_worker._run_ingestor count query must include 'base-mainnet'"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 29. No-close-frame reconnect (ConnectionClosedError) does not crash worker
+# ---------------------------------------------------------------------------
+
+def test_no_close_frame_reconnect_does_not_crash():
+    """ConnectionClosedError (no close frame) triggers a reconnect, not a crash."""
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    calls = [0]
+
+    async def _mock_ws_subscribe():
+        calls[0] += 1
+        if calls[0] == 1:
+            raise Exception('ConnectionClosedError: no close frame received or sent')
+        raise asyncio.CancelledError()
+
+    async def _mock_backfill(a, b):
+        return 0
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    import time as _time
+    ingestor.state['last_head_block'] = 100
+    ingestor._last_head_block_at = _time.monotonic()
+    ingestor.state['last_processed_block'] = 100
+
+    ingestor._ws_subscribe = _mock_ws_subscribe  # type: ignore[method-assign]
+    ingestor._backfill = _mock_backfill  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(ingestor.run_forever())
+
+    assert calls[0] >= 2, f'Worker must reconnect after ConnectionClosedError, calls={calls[0]}'
+    assert ingestor.state['metrics']['ws_reconnects'] >= 1
+
+
+# ---------------------------------------------------------------------------
+# 30. degraded=True switches back to degraded=False after stable reconnect
+# ---------------------------------------------------------------------------
+
+def test_degraded_clears_after_stable_reconnect():
+    """After a disconnect (degraded=True) and a subsequent stable connection window
+    (full heartbeat period without error), degraded becomes False and
+    realtime_recovered is logged."""
+    import logging as _logging
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    ingestor.heartbeat_seconds = 1  # speed up the test
+
+    calls = [0]
+
+    async def _mock_backfill(a, b):
+        return 0
+
+    async def _mock_ws_subscribe():
+        calls[0] += 1
+        if calls[0] == 1:
+            raise RuntimeError('ws_disconnected_first_attempt')
+        # Second call: simulate what the real _ws_subscribe does — clear degraded on
+        # successful connection, then block long enough to trigger the TimeoutError path.
+        ingestor.state['degraded'] = False
+        ingestor.state['degraded_reason'] = None
+        await asyncio.sleep(5.0)
+
+    ingestor._ws_subscribe = _mock_ws_subscribe  # type: ignore[method-assign]
+    ingestor._backfill = _mock_backfill  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+
+    import time as _time
+    ingestor.state['last_head_block'] = 100
+    ingestor._last_head_block_at = _time.monotonic()
+    ingestor.state['last_processed_block'] = 100
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+
+    try:
+        async def _run() -> None:
+            task = asyncio.ensure_future(ingestor.run_forever())
+            await asyncio.sleep(5.0)  # disconnect + backoff (~1s) + stable window (1s timeout)
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        asyncio.run(_run())
+    finally:
+        mod.logger.removeHandler(handler)
+
+    assert calls[0] >= 2, f'ws_subscribe must be called at least twice, got {calls[0]}'
+    assert not ingestor.state.get('degraded'), 'degraded must be False after stable reconnect'
+    recovery_logged = any('realtime_recovered' in m for m in log_records)
+    assert recovery_logged, (
+        f'realtime_recovered must be logged after stable reconnect. Got logs: {log_records}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# 31. BASE_REALTIME_SUBSCRIPTIONS=newHeads_only is parsed from env
+# ---------------------------------------------------------------------------
+
+def test_newheads_only_mode_resolves_from_env(monkeypatch):
+    """BASE_REALTIME_SUBSCRIPTIONS=newHeads_only must set ingestor.subscriptions."""
+    monkeypatch.setenv('BASE_REALTIME_SUBSCRIPTIONS', 'newHeads_only')
+
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    assert ingestor.subscriptions == 'newHeads_only'
+
+
+def test_newheads_logs_mode_is_default(monkeypatch):
+    """When BASE_REALTIME_SUBSCRIPTIONS is not set, mode defaults to newHeads,logs."""
+    monkeypatch.delenv('BASE_REALTIME_SUBSCRIPTIONS', raising=False)
+
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    assert ingestor.subscriptions == 'newHeads,logs'
+
+
+# ---------------------------------------------------------------------------
+# 32. newHeads_only mode sends only newHeads subscription (not logs)
+# ---------------------------------------------------------------------------
+
+def _make_fake_websockets(sent: list) -> MagicMock:
+    """Build a fake websockets module that captures eth_subscribe send calls."""
+    import json as _json
+    from unittest.mock import AsyncMock
+
+    async def _fake_recv():
+        raise asyncio.CancelledError()
+
+    mock_ws = MagicMock()
+    mock_ws.send = AsyncMock(side_effect=lambda msg: sent.append(_json.loads(msg)))
+    mock_ws.recv = AsyncMock(side_effect=_fake_recv)
+
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=mock_ws)
+    cm.__aexit__ = AsyncMock(return_value=False)
+
+    fake_ws_module = MagicMock()
+    fake_ws_module.connect.return_value = cm
+    return fake_ws_module
+
+
+def test_newheads_only_mode_skips_logs_subscription():
+    """In newHeads_only mode, eth_subscribe for logs must NOT be sent."""
+    import sys
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+        subscriptions='newHeads_only',
+    )
+
+    sent: list[dict] = []
+
+    async def run_test() -> None:
+        fake_ws_module = _make_fake_websockets(sent)
+        with (
+            patch.dict(sys.modules, {'websockets': fake_ws_module}),
+            patch.object(ingestor, '_watched_targets', return_value=[]),
+        ):
+            try:
+                await ingestor._ws_subscribe()
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(run_test())
+
+    eth_subscribe_params = [
+        msg['params'][0]
+        for msg in sent
+        if msg.get('method') == 'eth_subscribe'
+    ]
+    assert 'newHeads' in eth_subscribe_params, 'newHeads must be subscribed in newHeads_only mode'
+    assert 'logs' not in eth_subscribe_params, (
+        'logs must NOT be subscribed in newHeads_only mode'
+    )
+
+
+def test_newheads_logs_mode_sends_both_subscriptions():
+    """In default newHeads,logs mode, both eth_subscribe calls must be sent."""
+    import sys
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+        subscriptions='newHeads,logs',
+    )
+
+    sent: list[dict] = []
+
+    async def run_test() -> None:
+        fake_ws_module = _make_fake_websockets(sent)
+        with (
+            patch.dict(sys.modules, {'websockets': fake_ws_module}),
+            patch.object(ingestor, '_watched_targets', return_value=[]),
+        ):
+            try:
+                await ingestor._ws_subscribe()
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(run_test())
+
+    eth_subscribe_params = [
+        msg['params'][0]
+        for msg in sent
+        if msg.get('method') == 'eth_subscribe'
+    ]
+    assert 'newHeads' in eth_subscribe_params, 'newHeads must be subscribed'
+    assert 'logs' in eth_subscribe_params, 'logs must be subscribed in newHeads,logs mode'
