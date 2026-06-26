@@ -9,6 +9,20 @@ export type ComponentDetail = {
   action?: string | null;
 };
 
+export type RealtimeIngestionPath = {
+  status: 'active' | 'degraded' | 'disabled';
+  enabled: boolean;
+  ws_configured: boolean;
+  provider_mode: string;
+  last_event_at: string | null;
+  events_processed: number | null;
+  reconnect_count: number | null;
+  watcher_name: string | null;
+  heartbeat_age_seconds?: number | null;
+  degraded_reason?: string | null;
+  label: string;
+};
+
 export type LiveChainMonitoring = {
   expected_chain_id: number;
   rpc_configured: boolean;
@@ -29,6 +43,7 @@ export type LiveChainMonitoring = {
   recent_detections_1h: number;
   recent_detections_24h: number;
   diagnosis: string;
+  realtime_ingestion_path?: RealtimeIngestionPath | null;
 };
 
 export type HealthEvent = {
@@ -74,6 +89,7 @@ export const COMPONENT_META: Record<string, { label: string; what: string }> = {
   telemetry: { label: 'Telemetry Ingestion', what: 'Last telemetry event age' },
   detection: { label: 'Detection', what: 'Last wallet_transfer_detected' },
   alert_delivery: { label: 'Alert Delivery', what: 'Outbox + stream health' },
+  realtime_path: { label: 'Realtime Ingestion', what: 'Base WebSocket real-time event path' },
 };
 
 export const COMPONENT_ORDER = [
