@@ -116,6 +116,9 @@ class BaseRealtimeIngestor:
             _resolve_int_env('EVM_BACKFILL_GAP_THRESHOLD_BLOCKS', _DEFAULT_GAP_THRESHOLD_BLOCKS),
         )
 
+        # Tracks consecutive clean-close (code=1001) errors to auto-downgrade from logs sub.
+        self._consecutive_1001_closes: int = 0
+
         # Sliding-window rate limiter: stores monotonic timestamps of recent events.
         self._event_timestamps: deque[float] = deque()
 
@@ -229,12 +232,12 @@ class BaseRealtimeIngestor:
         exc_str = str(exc)
         if '429' in exc_str:
             return 60.0 + random.random() * 60.0
-        # WebSocket close (clean 1001 or no-frame drop): use a moderate minimum
-        # backoff so that a provider that keeps closing immediately doesn't spin.
+        # WebSocket close (clean 1001 or no-frame drop): exponential from 5s floor up to 120s.
+        # Jitter is ±25% to spread reconnect storms without overly padding each sleep.
         if 'ConnectionClosed' in type(exc).__name__ or '1001' in exc_str:
-            effective = max(5.0, min(30.0, retry))
-            return effective + random.random() * 3.0
-        return min(30.0, retry) + random.random()
+            effective = max(5.0, min(120.0, retry))
+            return effective + random.random() * max(1.0, effective * 0.25)
+        return min(120.0, retry) + random.random() * max(1.0, min(10.0, retry * 0.5))
 
     # ------------------------------------------------------------------
     # Target loading (workspace-scoped)
@@ -260,7 +263,10 @@ class BaseRealtimeIngestor:
                   AND monitoring_enabled = TRUE
                   AND enabled = TRUE
                   AND is_active = TRUE
-                  AND LOWER(COALESCE(chain_network, 'base')) IN ('base', 'base-mainnet')
+                  AND (
+                    LOWER(COALESCE(chain_network, 'base')) IN ('base', 'base-mainnet')
+                    OR chain_id = 8453
+                  )
                 ''',
             ).fetchall()
             return [dict(r) for r in rows]
@@ -486,11 +492,13 @@ class BaseRealtimeIngestor:
                 _startup_targets = self._watched_targets()
                 _target_count = len(_startup_targets)
                 _workspace_count = len({str(t.get('workspace_id')) for t in _startup_targets})
+                _target_ids = [str(t.get('id', '')) for t in _startup_targets]
                 logger.info(
                     'realtime_targets_loaded count=%s chain_id=%s chain_network=%s '
-                    'workspace_count=%s watcher=%s',
+                    'workspace_count=%s watcher=%s target_ids=%s',
                     _target_count, self.chain_id, self.chain_network,
                     _workspace_count, self.watcher_name,
+                    ','.join(_target_ids[:20]),  # IDs only — no addresses or secrets
                 )
                 if _target_count == 0:
                     logger.warning(
@@ -646,6 +654,30 @@ class BaseRealtimeIngestor:
                     _ConnectionClosedOK is not None
                     and isinstance(exc, _ConnectionClosedOK)
                 )
+                # Broader 1001 check: catches ConnectionClosedOK instances AND
+                # exceptions that carry '1001' in their string representation.
+                is_1001_close = (
+                    is_clean_close
+                    or '1001' in exc_str
+                    or 'ConnectionClosedOK' in type(exc).__name__
+                )
+
+                # Auto-downgrade from newHeads,logs → newHeads_only after 3
+                # consecutive 1001 closes. Prevents infinite reconnect loops when the
+                # provider (e.g. QuickNode) rejects the logs subscription immediately.
+                if is_1001_close and self.subscriptions == 'newHeads,logs':
+                    self._consecutive_1001_closes += 1
+                    if self._consecutive_1001_closes >= 3:
+                        self.subscriptions = 'newHeads_only'
+                        self._consecutive_1001_closes = 0
+                        logger.warning(
+                            'realtime_subscription_downgraded '
+                            'reason=provider_closed_logs_subscription '
+                            'chain=%s watcher=%s new_subscriptions=%s',
+                            self.chain_network, self.watcher_name, self.subscriptions,
+                        )
+                elif not is_1001_close:
+                    self._consecutive_1001_closes = 0
 
                 increment(
                     'decoda_realtime_provider_failures_total',
@@ -655,12 +687,14 @@ class BaseRealtimeIngestor:
 
                 now_log = time.monotonic()
                 if error_key != _last_error_key or now_log - _last_error_logged_at >= _ERROR_LOG_WINDOW:
-                    if is_clean_close:
+                    if is_clean_close or is_1001_close:
                         logger.info(
                             'realtime_ws_closed_cleanly chain=%s watcher=%s '
-                            'code=1001 reconnecting reconnect_count=%s',
+                            'code=1001 reconnecting reconnect_count=%s '
+                            'consecutive_1001=%s subscriptions=%s',
                             self.chain_network, self.watcher_name,
                             self.state['metrics']['ws_reconnects'],
+                            self._consecutive_1001_closes, self.subscriptions,
                         )
                     elif is_rate_limit:
                         logger.warning(
@@ -674,7 +708,7 @@ class BaseRealtimeIngestor:
                             'realtime_ingestor_error chain=%s chain_id=%s '
                             'error_type=%s error=%s retry_in=%.1fs reconnect_count=%s',
                             self.chain_network, self.chain_id,
-                            type(exc).__name__, exc_str[:200], min(30.0, retry),
+                            type(exc).__name__, exc_str[:200], min(120.0, retry),
                             self.state['metrics']['ws_reconnects'],
                         )
                     _last_error_key = error_key
@@ -702,4 +736,4 @@ class BaseRealtimeIngestor:
                 sleep_for = self._compute_reconnect_sleep(exc, retry)
                 await asyncio.sleep(sleep_for)
                 if not is_rate_limit:
-                    retry = min(30.0, retry * 2)
+                    retry = min(120.0, retry * 2)
