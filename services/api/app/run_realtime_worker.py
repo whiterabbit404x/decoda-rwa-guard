@@ -60,28 +60,75 @@ def _safe_rpc_host(url: str) -> str:
         return 'unknown'
 
 
+def _strip_env_value(raw: str) -> str:
+    """Strip whitespace and surrounding single/double quotes from env values."""
+    v = raw.strip()
+    if len(v) >= 2 and v[0] in ('"', "'") and v[-1] == v[0]:
+        v = v[1:-1].strip()
+    return v
+
+
+def _normalize_ws_scheme(url: str) -> str:
+    """Normalize WebSocket URL scheme to lowercase (wss:// or ws://)."""
+    lower = url.lower()
+    if lower.startswith('wss://'):
+        return 'wss://' + url[6:]
+    if lower.startswith('ws://'):
+        return 'ws://' + url[5:]
+    return url
+
+
+def _ws_url_to_http(ws_url: str) -> str:
+    """Derive HTTP RPC URL from WebSocket URL for JSON-RPC calls (eth_blockNumber, eth_getLogs)."""
+    norm = ws_url.lower()
+    if norm.startswith('wss://'):
+        return 'https://' + ws_url[6:]
+    if norm.startswith('ws://'):
+        return 'http://' + ws_url[5:]
+    return ws_url
+
+
 def _resolve_config() -> dict[str, object]:
     """Return resolved config dict. Never exposes secrets or full URLs in logs."""
     enabled = _resolve_bool_env('BASE_REALTIME_ENABLED', default=False)
-    provider_mode = (os.getenv('BASE_REALTIME_PROVIDER') or 'websocket').strip().lower()
-    ws_url = (os.getenv('BASE_WS_RPC_URL') or '').strip()
+    provider_mode = _strip_env_value(os.getenv('BASE_REALTIME_PROVIDER') or 'websocket').lower()
+
+    # Accept BASE_WS_RPC_URL or BASE_WS_RPC_URL_8453; prefer primary.
+    _ws_raw_primary = _strip_env_value(os.getenv('BASE_WS_RPC_URL') or '')
+    _ws_raw_8453 = _strip_env_value(os.getenv('BASE_WS_RPC_URL_8453') or '')
+    if _ws_raw_primary:
+        ws_url = _normalize_ws_scheme(_ws_raw_primary)
+        _selected_ws_env: str | None = 'BASE_WS_RPC_URL'
+    elif _ws_raw_8453:
+        ws_url = _normalize_ws_scheme(_ws_raw_8453)
+        _selected_ws_env = 'BASE_WS_RPC_URL_8453'
+    else:
+        ws_url = ''
+        _selected_ws_env = None
+
+    # HTTP RPC URL: explicit env vars first, then derive from WS URL.
     rpc_url = (
-        os.getenv('EVM_RPC_URL_8453')
-        or os.getenv('BASE_EVM_RPC_URL')
-        or os.getenv('EVM_RPC_URL')
-        or ''
-    ).strip()
-    webhook_secret_set = bool((os.getenv('BASE_WEBHOOK_SECRET') or '').strip())
+        _strip_env_value(os.getenv('EVM_RPC_URL_8453') or '')
+        or _strip_env_value(os.getenv('BASE_EVM_RPC_URL') or '')
+        or _strip_env_value(os.getenv('EVM_RPC_URL') or '')
+    )
+    if not rpc_url and ws_url:
+        rpc_url = _ws_url_to_http(ws_url)
+
+    webhook_secret_set = bool(_strip_env_value(os.getenv('BASE_WEBHOOK_SECRET') or ''))
     confirmations = _resolve_int_env('BASE_REALTIME_CONFIRMATIONS', 1)
     max_events_per_minute = _resolve_int_env('BASE_REALTIME_MAX_EVENTS_PER_MINUTE', 1000)
     fallback_to_polling = _resolve_bool_env('BASE_REALTIME_FALLBACK_TO_POLLING', default=True)
-    watcher_name = (os.getenv('BASE_REALTIME_WATCHER_NAME') or _default_watcher_name()).strip()
+    watcher_name = _strip_env_value(os.getenv('BASE_REALTIME_WATCHER_NAME') or _default_watcher_name())
+
+    _ws_scheme = _urlparse(ws_url).scheme.lower() if ws_url else 'not_configured'
 
     return {
         'enabled': enabled,
         'provider_mode': provider_mode,
         'ws_url': ws_url,
         'ws_url_host': _safe_rpc_host(ws_url) if ws_url else 'not_configured',
+        'ws_url_scheme': _ws_scheme,
         'rpc_url': rpc_url,
         'rpc_url_host': _safe_rpc_host(rpc_url) if rpc_url else 'not_configured',
         'webhook_secret_set': webhook_secret_set,
@@ -89,6 +136,11 @@ def _resolve_config() -> dict[str, object]:
         'max_events_per_minute': max_events_per_minute,
         'fallback_to_polling': fallback_to_polling,
         'watcher_name': watcher_name,
+        # Diagnostic presence flags — never secret values.
+        'base_realtime_enabled_present': bool(_strip_env_value(os.getenv('BASE_REALTIME_ENABLED') or '')),
+        'base_ws_rpc_url_present': bool(_ws_raw_primary),
+        'base_ws_rpc_url_8453_present': bool(_ws_raw_8453),
+        'selected_ws_rpc_env_name': _selected_ws_env or 'none',
     }
 
 
@@ -97,11 +149,15 @@ def _check_realtime_config(config: dict[str, object]) -> tuple[bool, str]:
     if not config['enabled']:
         return False, 'BASE_REALTIME_ENABLED_not_true'
     if config['provider_mode'] == 'websocket' and not config['ws_url']:
-        return False, 'missing_BASE_WS_RPC_URL'
+        return False, 'missing_ws_url checked_env_names=BASE_WS_RPC_URL,BASE_WS_RPC_URL_8453'
     if config['provider_mode'] == 'webhook' and not config['webhook_secret_set']:
         return False, 'missing_BASE_WEBHOOK_SECRET'
     if not config['rpc_url']:
-        return False, 'missing_rpc_url_for_Base'
+        return False, (
+            'missing_rpc_url_for_Base '
+            'checked_env_names=BASE_WS_RPC_URL,BASE_WS_RPC_URL_8453,'
+            'EVM_RPC_URL_8453,BASE_EVM_RPC_URL,EVM_RPC_URL'
+        )
     return True, 'ok'
 
 
@@ -193,6 +249,23 @@ def main() -> int:
     _start_health_server(_health_port)
 
     config = _resolve_config()
+
+    logger.info(
+        'base_realtime_env_check '
+        'base_realtime_enabled_present=%s '
+        'base_ws_rpc_url_present=%s '
+        'base_ws_rpc_url_scheme=%s '
+        'base_ws_rpc_url_host=%s '
+        'base_ws_rpc_url_8453_present=%s '
+        'selected_ws_rpc_env_name=%s',
+        config['base_realtime_enabled_present'],
+        config['base_ws_rpc_url_present'],
+        config['ws_url_scheme'],
+        config['ws_url_host'],
+        config['base_ws_rpc_url_8453_present'],
+        config['selected_ws_rpc_env_name'],
+    )
+
     can_start, reason = _check_realtime_config(config)
 
     if not can_start:
