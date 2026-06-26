@@ -1,9 +1,39 @@
-import { type LiveChainMonitoring } from './types';
+import { type LiveChainMonitoring, type RealtimeIngestionPath } from './types';
 import { diagnosisVariant, formatDateTime, statusBadgeClass, statusLabel } from './helpers';
 
 type Props = {
   chainMonitoring: LiveChainMonitoring | null;
 };
+
+function realtimeVariant(status: RealtimeIngestionPath['status']): string {
+  if (status === 'active') return 'healthy';
+  if (status === 'degraded') return 'degraded';
+  return 'unavailable';
+}
+
+function RealtimePathRow({ realtime }: { realtime: RealtimeIngestionPath }) {
+  const variant = realtimeVariant(realtime.status);
+  return (
+    <div className="shMetricRow" style={{ alignItems: 'flex-start', marginTop: '0.5rem' }}>
+      <span className="shMetricLabel">Realtime path</span>
+      <span style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem', textAlign: 'right' }}>
+        <span className={statusBadgeClass(variant)} style={{ fontSize: '0.7rem' }}>
+          {realtime.label}
+        </span>
+        {realtime.status !== 'disabled' && realtime.events_processed != null && (
+          <span className="shMetricValue" style={{ fontSize: '0.75rem' }}>
+            {realtime.events_processed.toLocaleString()} events &middot; {realtime.reconnect_count ?? 0} reconnects
+          </span>
+        )}
+        {realtime.degraded_reason && (
+          <span className="shMetricValue" style={{ fontSize: '0.7rem', color: 'var(--color-warning, #c09020)' }}>
+            {realtime.degraded_reason}
+          </span>
+        )}
+      </span>
+    </div>
+  );
+}
 
 function MetricRow({ label, value }: { label: string; value: string }) {
   return (
@@ -86,7 +116,7 @@ export function LiveChainMonitoringPanel({ chainMonitoring }: Props) {
               value={chainMonitoring.heartbeat_age_human ?? '—'}
             />
             <MetricRow
-              label="Poll interval"
+              label="Poll interval (backup)"
               value={`${chainMonitoring.polling_interval_seconds}s`}
             />
             <MetricRow
@@ -134,6 +164,18 @@ export function LiveChainMonitoringPanel({ chainMonitoring }: Props) {
               value={`${chainMonitoring.recent_detections_1h} / ${chainMonitoring.recent_detections_24h}`}
             />
           </div>
+          {chainMonitoring.realtime_ingestion_path && (
+            <div style={{ marginTop: '0.75rem', borderTop: '1px solid var(--border-subtle, #e5e7eb)', paddingTop: '0.5rem' }}>
+              <p className="sectionEyebrow" style={{ marginBottom: '0.25rem', fontSize: '0.7rem' }}>
+                Ingestion Paths
+              </p>
+              <div className="shMetricsGrid">
+                <MetricRow label="Polling backup" value="Active" />
+                <MetricRow label="Backfill" value="Active" />
+              </div>
+              <RealtimePathRow realtime={chainMonitoring.realtime_ingestion_path} />
+            </div>
+          )}
         </div>
       </div>
     </section>

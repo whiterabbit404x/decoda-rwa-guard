@@ -4599,7 +4599,10 @@ def process_ingested_event(connection: Any, *, target: dict[str, Any], event: Ac
     ingestion_source = str(event.ingestion_source or '').strip().lower()
     is_live_ingestion = (
         str(ingestion_mode or 'live').strip().lower() in {'live', 'hybrid'}
-        and ingestion_source in {'rpc_backfill', 'polling', 'websocket', 'real', 'evm_rpc'}
+        and ingestion_source in {
+            'rpc_backfill', 'polling', 'websocket', 'real', 'evm_rpc',
+            'realtime_websocket',  # Base real-time worker
+        }
     )
     live_coverage_telemetry_at = event.observed_at if is_live_ingestion else None
     connection.execute(

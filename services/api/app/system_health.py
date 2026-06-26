@@ -903,6 +903,96 @@ def _check_alert_delivery() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Real-time ingestion path status
+# ---------------------------------------------------------------------------
+
+def _build_realtime_ingestion_status(connection: Any) -> dict[str, Any]:
+    """Return status of the BASE_REALTIME_ENABLED ingestion path.
+
+    Status values:
+      disabled  - BASE_REALTIME_ENABLED is false (default)
+      active    - realtime worker is running and its watcher heartbeat is fresh
+      degraded  - realtime worker row exists but is marked degraded or heartbeat is stale
+    """
+    enabled = (os.getenv('BASE_REALTIME_ENABLED') or '').strip().lower() in ('1', 'true', 'yes')
+    ws_configured = bool((os.getenv('BASE_WS_RPC_URL') or '').strip())
+    provider_mode = (os.getenv('BASE_REALTIME_PROVIDER') or 'websocket').strip().lower()
+
+    if not enabled:
+        return {
+            'status': 'disabled',
+            'enabled': False,
+            'ws_configured': ws_configured,
+            'provider_mode': provider_mode,
+            'last_event_at': None,
+            'events_processed': None,
+            'reconnect_count': None,
+            'watcher_name': None,
+            'label': 'Realtime: Disabled',
+        }
+
+    # Look for the watcher heartbeat in monitoring_watcher_state
+    try:
+        row = connection.execute(
+            '''
+            SELECT watcher_name, source_status, degraded, degraded_reason,
+                   last_heartbeat_at, metrics
+            FROM monitoring_watcher_state
+            WHERE ingestion_mode = 'realtime'
+            ORDER BY COALESCE(last_heartbeat_at, updated_at) DESC
+            LIMIT 1
+            '''
+        ).fetchone()
+    except Exception:
+        row = None
+
+    stale_threshold = WORKER_HEARTBEAT_STALE_SECONDS
+    if row is not None:
+        w = dict(row) if hasattr(row, 'keys') else {}
+        hb = w.get('last_heartbeat_at')
+        hb_str = hb.isoformat() if isinstance(hb, datetime) else str(hb) if hb else None
+        hb_age = _age_seconds(hb_str)
+        hb_fresh = hb_age is not None and hb_age <= stale_threshold
+        metrics = w.get('metrics') or {}
+        if isinstance(metrics, str):
+            try:
+                import json as _json
+                metrics = _json.loads(metrics)
+            except Exception:
+                metrics = {}
+
+        degraded = bool(w.get('degraded')) or not hb_fresh
+        status = 'active' if not degraded else 'degraded'
+        return {
+            'status': status,
+            'enabled': True,
+            'ws_configured': ws_configured,
+            'provider_mode': provider_mode,
+            'last_event_at': None,
+            'events_processed': metrics.get('events_ingested'),
+            'reconnect_count': metrics.get('ws_reconnects'),
+            'watcher_name': w.get('watcher_name'),
+            'heartbeat_age_seconds': int(hb_age) if hb_age is not None else None,
+            'degraded_reason': w.get('degraded_reason'),
+            'label': f'Realtime: {status.capitalize()}',
+        }
+
+    # Worker is enabled but no heartbeat row found yet
+    return {
+        'status': 'degraded',
+        'enabled': True,
+        'ws_configured': ws_configured,
+        'provider_mode': provider_mode,
+        'last_event_at': None,
+        'events_processed': None,
+        'reconnect_count': None,
+        'watcher_name': None,
+        'degraded_reason': 'no_realtime_heartbeat_received',
+        'label': 'Realtime: Degraded',
+    }
+
+
+# ---------------------------------------------------------------------------
 # Live chain monitoring section
 # ---------------------------------------------------------------------------
 
@@ -1103,6 +1193,8 @@ def _build_live_chain_monitoring(
     else:
         diagnosis = 'All monitored systems are operational. Worker is healthy, RPC is reachable, telemetry is flowing, detections are running.'
 
+    realtime_path = _build_realtime_ingestion_status(connection)
+
     return {
         'expected_chain_id': expected_chain_id,
         'rpc_configured': rpc_configured,
@@ -1123,6 +1215,7 @@ def _build_live_chain_monitoring(
         'recent_detections_1h': recent_detections_1h,
         'recent_detections_24h': recent_detections_24h,
         'diagnosis': diagnosis,
+        'realtime_ingestion_path': realtime_path,
     }
 
 
