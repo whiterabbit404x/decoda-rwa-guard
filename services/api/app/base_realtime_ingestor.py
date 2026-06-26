@@ -38,6 +38,10 @@ BASE_CHAIN_ID = 8453
 BASE_CHAIN_NETWORK = 'base'
 REALTIME_INGESTION_SOURCE = 'realtime_websocket'
 
+# All chain_network values that map to Base (chain_id=8453).
+# Must stay in sync with CHAIN_MAP in evm_activity_provider.py.
+_BASE_NETWORK_ALIASES: tuple[str, ...] = ('base', 'base-mainnet')
+
 # Env vars read at ingestor construction time (not module load) so tests can monkeypatch.
 _DEFAULT_CONFIRMATIONS = 1
 _DEFAULT_MAX_EVENTS_PER_MINUTE = 1000
@@ -45,6 +49,7 @@ _DEFAULT_HEARTBEAT_SECONDS = 10
 _DEFAULT_BACKFILL_CHUNK = 2000
 _DEFAULT_GAP_THRESHOLD_BLOCKS = 24
 _BLOCK_NUMBER_MIN_INTERVAL = 60.0  # min seconds between eth_blockNumber RPC calls
+_DEFAULT_SUBSCRIPTIONS = 'newHeads,logs'
 
 
 def _resolve_int_env(name: str, default: int) -> int:
@@ -53,6 +58,14 @@ def _resolve_int_env(name: str, default: int) -> int:
         return max(0, int(raw)) if raw else default
     except (TypeError, ValueError):
         return default
+
+
+def _resolve_subscriptions_mode(raw: str) -> str:
+    """Normalise BASE_REALTIME_SUBSCRIPTIONS. Unknown values fall back to full mode."""
+    mode = (raw or '').strip().lower().replace('-', '_').replace(' ', '')
+    if mode in ('newheads_only',):
+        return 'newHeads_only'
+    return 'newHeads,logs'
 
 
 class BaseRealtimeIngestor:
@@ -74,6 +87,7 @@ class BaseRealtimeIngestor:
         watcher_name: str,
         confirmations_required: int | None = None,
         max_events_per_minute: int | None = None,
+        subscriptions: str | None = None,
     ) -> None:
         self.rpc_url = rpc_url
         self.ws_url = ws_url
@@ -92,6 +106,10 @@ class BaseRealtimeIngestor:
             else _resolve_int_env('BASE_REALTIME_MAX_EVENTS_PER_MINUTE', _DEFAULT_MAX_EVENTS_PER_MINUTE)
         )
         self.heartbeat_seconds = _resolve_int_env('EVENT_WATCHER_HEARTBEAT_SECONDS', _DEFAULT_HEARTBEAT_SECONDS)
+        self.subscriptions = _resolve_subscriptions_mode(
+            subscriptions if subscriptions is not None
+            else (os.getenv('BASE_REALTIME_SUBSCRIPTIONS') or _DEFAULT_SUBSCRIPTIONS)
+        )
         self.backfill_chunk = max(1, _resolve_int_env('EVM_BACKFILL_MAX_BLOCK_RANGE', _DEFAULT_BACKFILL_CHUNK))
         self.gap_threshold_blocks = max(
             self.confirmations_required + 1,
@@ -204,10 +222,18 @@ class BaseRealtimeIngestor:
         """Return seconds to sleep before the next reconnect attempt.
 
         HTTP 429 (rate-limited) uses a much longer backoff (60-120 s) to let the
-        provider recover.  All other errors use the standard exponential backoff.
+        provider recover.  ConnectionClosed errors (code 1001 / no close frame)
+        start at a moderate floor of 5 s to reduce reconnect spam.  All other
+        errors use the standard exponential backoff.
         """
-        if '429' in str(exc):
+        exc_str = str(exc)
+        if '429' in exc_str:
             return 60.0 + random.random() * 60.0
+        # WebSocket close (clean 1001 or no-frame drop): use a moderate minimum
+        # backoff so that a provider that keeps closing immediately doesn't spin.
+        if 'ConnectionClosed' in type(exc).__name__ or '1001' in exc_str:
+            effective = max(5.0, min(30.0, retry))
+            return effective + random.random() * 3.0
         return min(30.0, retry) + random.random()
 
     # ------------------------------------------------------------------
@@ -234,9 +260,8 @@ class BaseRealtimeIngestor:
                   AND monitoring_enabled = TRUE
                   AND enabled = TRUE
                   AND is_active = TRUE
-                  AND COALESCE(chain_network, 'base') = %s
+                  AND LOWER(COALESCE(chain_network, 'base')) IN ('base', 'base-mainnet')
                 ''',
-                (self.chain_network,),
             ).fetchall()
             return [dict(r) for r in rows]
 
@@ -436,22 +461,48 @@ class BaseRealtimeIngestor:
     async def _ws_subscribe(self) -> None:
         import websockets  # type: ignore[import]
 
+        _include_logs = (self.subscriptions == 'newHeads,logs')
+
         async with websockets.connect(self.ws_url, ping_interval=20, ping_timeout=20) as ws:
             await ws.send(json.dumps({
                 'jsonrpc': '2.0', 'id': 1, 'method': 'eth_subscribe', 'params': ['newHeads'],
             }))
-            await ws.send(json.dumps({
-                'jsonrpc': '2.0', 'id': 2, 'method': 'eth_subscribe',
-                'params': ['logs', {'topics': [[TRANSFER_TOPIC, APPROVAL_TOPIC]]}],
-            }))
+            if _include_logs:
+                await ws.send(json.dumps({
+                    'jsonrpc': '2.0', 'id': 2, 'method': 'eth_subscribe',
+                    'params': ['logs', {'topics': [[TRANSFER_TOPIC, APPROVAL_TOPIC]]}],
+                }))
             logger.info(
-                'realtime_ws_connected chain=%s chain_id=%s watcher=%s subscriptions=newHeads,logs',
-                self.chain_network, self.chain_id, self.watcher_name,
+                'realtime_ws_connected chain=%s chain_id=%s watcher=%s subscriptions=%s',
+                self.chain_network, self.chain_id, self.watcher_name, self.subscriptions,
             )
             self.state['source_status'] = 'realtime_websocket'
             self.state['degraded'] = False
             self.state['degraded_reason'] = None
             sub_ids: dict[str, str] = {}
+
+            # Log target count at connection time; events are still matched per-message.
+            try:
+                _startup_targets = self._watched_targets()
+                _target_count = len(_startup_targets)
+                _workspace_count = len({str(t.get('workspace_id')) for t in _startup_targets})
+                logger.info(
+                    'realtime_targets_loaded count=%s chain_id=%s chain_network=%s '
+                    'workspace_count=%s watcher=%s',
+                    _target_count, self.chain_id, self.chain_network,
+                    _workspace_count, self.watcher_name,
+                )
+                if _target_count == 0:
+                    logger.warning(
+                        'realtime_no_targets_loaded chain_id=%s chain_network=%s watcher=%s '
+                        'worker_healthy_but_no_events_will_be_processed',
+                        self.chain_id, self.chain_network, self.watcher_name,
+                    )
+            except Exception as _load_exc:
+                logger.warning(
+                    'realtime_targets_load_failed watcher=%s error=%s',
+                    self.watcher_name, str(_load_exc)[:200],
+                )
 
             while True:
                 msg = json.loads(await ws.recv())

@@ -120,6 +120,8 @@ def _resolve_config() -> dict[str, object]:
     max_events_per_minute = _resolve_int_env('BASE_REALTIME_MAX_EVENTS_PER_MINUTE', 1000)
     fallback_to_polling = _resolve_bool_env('BASE_REALTIME_FALLBACK_TO_POLLING', default=True)
     watcher_name = _strip_env_value(os.getenv('BASE_REALTIME_WATCHER_NAME') or _default_watcher_name())
+    _subs_raw = _strip_env_value(os.getenv('BASE_REALTIME_SUBSCRIPTIONS') or '').lower()
+    subscriptions = 'newHeads_only' if _subs_raw in ('newheads_only', 'newheads-only') else 'newHeads,logs'
 
     _ws_scheme = _urlparse(ws_url).scheme.lower() if ws_url else 'not_configured'
 
@@ -136,6 +138,7 @@ def _resolve_config() -> dict[str, object]:
         'max_events_per_minute': max_events_per_minute,
         'fallback_to_polling': fallback_to_polling,
         'watcher_name': watcher_name,
+        'subscriptions': subscriptions,
         # Diagnostic presence flags — never secret values.
         'base_realtime_enabled_present': bool(_strip_env_value(os.getenv('BASE_REALTIME_ENABLED') or '')),
         'base_ws_rpc_url_present': bool(_ws_raw_primary),
@@ -206,7 +209,8 @@ async def _run_ingestor(config: dict[str, object]) -> None:
     """Async entry point for the WebSocket ingestor loop."""
     from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
 
-    # Count monitored targets at startup for the startup log
+    # Count monitored targets at startup for the startup log.
+    # Accept both 'base' and 'base-mainnet' to match _watched_targets in the ingestor.
     workspace_target_count: int = 0
     try:
         from services.api.app.pilot import ensure_pilot_schema, pg_connection
@@ -216,7 +220,7 @@ async def _run_ingestor(config: dict[str, object]) -> None:
                 "SELECT COUNT(*) AS cnt FROM targets "
                 "WHERE deleted_at IS NULL AND monitoring_enabled = TRUE "
                 "AND enabled = TRUE AND is_active = TRUE "
-                "AND COALESCE(chain_network, 'base') = 'base'"
+                "AND LOWER(COALESCE(chain_network, 'base')) IN ('base', 'base-mainnet')"
             ).fetchone()
             workspace_target_count = _parse_workspace_target_count(row)
     except Exception:
@@ -235,6 +239,12 @@ async def _run_ingestor(config: dict[str, object]) -> None:
         workspace_target_count,
         config['watcher_name'],
     )
+    if workspace_target_count == 0:
+        logger.warning(
+            'realtime_no_base_targets chain_id=%s '
+            'hint=check_targets_have_chain_network_base_or_base_mainnet',
+            _BASE_CHAIN_ID,
+        )
 
     ingestor = BaseRealtimeIngestor(
         rpc_url=str(config['rpc_url']),
@@ -242,6 +252,7 @@ async def _run_ingestor(config: dict[str, object]) -> None:
         watcher_name=str(config['watcher_name']),
         confirmations_required=int(config['confirmations']),
         max_events_per_minute=int(config['max_events_per_minute']),
+        subscriptions=str(config.get('subscriptions') or ''),
     )
 
     await ingestor.run_forever()
