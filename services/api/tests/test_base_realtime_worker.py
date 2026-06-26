@@ -506,3 +506,191 @@ def test_no_secrets_in_logs(monkeypatch):
     for field_value in safe_fields.values():
         assert 'SECRET_API_KEY' not in str(field_value)
         assert '/v2/' not in str(field_value)
+
+
+# ---------------------------------------------------------------------------
+# 13. BASE_WS_RPC_URL_8453 accepted as fallback for WebSocket URL
+# ---------------------------------------------------------------------------
+
+def test_base_ws_rpc_url_8453_used_as_fallback(monkeypatch):
+    monkeypatch.setenv('BASE_REALTIME_ENABLED', 'true')
+    monkeypatch.delenv('BASE_WS_RPC_URL', raising=False)
+    monkeypatch.setenv('BASE_WS_RPC_URL_8453', 'wss://rpc8453.example.com/ws')
+    monkeypatch.delenv('EVM_RPC_URL_8453', raising=False)
+    monkeypatch.delenv('BASE_EVM_RPC_URL', raising=False)
+    monkeypatch.delenv('EVM_RPC_URL', raising=False)
+
+    import importlib
+    import services.api.app.run_realtime_worker as rw
+    importlib.reload(rw)
+
+    config = rw._resolve_config()
+    can_start, reason = rw._check_realtime_config(config)
+
+    assert config['selected_ws_rpc_env_name'] == 'BASE_WS_RPC_URL_8453'
+    assert config['ws_url'] == 'wss://rpc8453.example.com/ws'
+    assert config['base_ws_rpc_url_8453_present'] is True
+    assert config['base_ws_rpc_url_present'] is False
+    assert can_start is True, f'should start but got reason={reason}'
+
+
+# ---------------------------------------------------------------------------
+# 14. WS scheme normalization: WSS:// is treated same as wss://
+# ---------------------------------------------------------------------------
+
+def test_ws_scheme_uppercase_normalized(monkeypatch):
+    monkeypatch.setenv('BASE_REALTIME_ENABLED', 'true')
+    monkeypatch.setenv('BASE_WS_RPC_URL', 'WSS://rpc.example.com/ws')
+    monkeypatch.delenv('EVM_RPC_URL_8453', raising=False)
+    monkeypatch.delenv('BASE_EVM_RPC_URL', raising=False)
+    monkeypatch.delenv('EVM_RPC_URL', raising=False)
+
+    import importlib
+    import services.api.app.run_realtime_worker as rw
+    importlib.reload(rw)
+
+    config = rw._resolve_config()
+    can_start, reason = rw._check_realtime_config(config)
+
+    assert config['ws_url'].startswith('wss://'), f'scheme not normalized: {config["ws_url"]}'
+    assert config['ws_url_scheme'] == 'wss'
+    assert can_start is True, f'should start but got reason={reason}'
+
+
+# ---------------------------------------------------------------------------
+# 15. Surrounding quotes are stripped from env values
+# ---------------------------------------------------------------------------
+
+def test_env_value_quotes_stripped(monkeypatch):
+    monkeypatch.setenv('BASE_REALTIME_ENABLED', 'true')
+    monkeypatch.setenv('BASE_WS_RPC_URL', '"wss://rpc.example.com/ws"')
+    monkeypatch.delenv('EVM_RPC_URL_8453', raising=False)
+    monkeypatch.delenv('BASE_EVM_RPC_URL', raising=False)
+    monkeypatch.delenv('EVM_RPC_URL', raising=False)
+
+    import importlib
+    import services.api.app.run_realtime_worker as rw
+    importlib.reload(rw)
+
+    config = rw._resolve_config()
+
+    assert not config['ws_url'].startswith('"'), 'leading quote not stripped'
+    assert not config['ws_url'].endswith('"'), 'trailing quote not stripped'
+    assert config['ws_url'] == 'wss://rpc.example.com/ws'
+    assert config['ws_url_host'] == 'rpc.example.com'
+
+
+# ---------------------------------------------------------------------------
+# 16. HTTP RPC URL derived from WebSocket URL when no explicit HTTP URL set
+# ---------------------------------------------------------------------------
+
+def test_rpc_url_derived_from_ws_url(monkeypatch):
+    monkeypatch.setenv('BASE_REALTIME_ENABLED', 'true')
+    monkeypatch.setenv('BASE_WS_RPC_URL', 'wss://rpc.example.com/ws')
+    monkeypatch.delenv('EVM_RPC_URL_8453', raising=False)
+    monkeypatch.delenv('BASE_EVM_RPC_URL', raising=False)
+    monkeypatch.delenv('EVM_RPC_URL', raising=False)
+
+    import importlib
+    import services.api.app.run_realtime_worker as rw
+    importlib.reload(rw)
+
+    config = rw._resolve_config()
+    can_start, reason = rw._check_realtime_config(config)
+
+    assert can_start is True, f'should start with derived rpc_url but got reason={reason}'
+    assert config['rpc_url'] == 'https://rpc.example.com/ws'
+    assert config['rpc_url_host'] == 'rpc.example.com'
+
+
+# ---------------------------------------------------------------------------
+# 17. Missing WS URL failure includes env names that were checked
+# ---------------------------------------------------------------------------
+
+def test_missing_ws_url_failure_includes_checked_env_names(monkeypatch):
+    monkeypatch.setenv('BASE_REALTIME_ENABLED', 'true')
+    monkeypatch.delenv('BASE_WS_RPC_URL', raising=False)
+    monkeypatch.delenv('BASE_WS_RPC_URL_8453', raising=False)
+
+    import importlib
+    import services.api.app.run_realtime_worker as rw
+    importlib.reload(rw)
+
+    config = rw._resolve_config()
+    can_start, reason = rw._check_realtime_config(config)
+
+    assert can_start is False
+    assert 'BASE_WS_RPC_URL' in reason
+    assert 'BASE_WS_RPC_URL_8453' in reason
+
+
+# ---------------------------------------------------------------------------
+# 18. Env presence flags in config dict
+# ---------------------------------------------------------------------------
+
+def test_env_presence_flags_in_config(monkeypatch):
+    monkeypatch.setenv('BASE_REALTIME_ENABLED', 'true')
+    monkeypatch.setenv('BASE_WS_RPC_URL', 'wss://rpc.example.com/ws')
+    monkeypatch.delenv('BASE_WS_RPC_URL_8453', raising=False)
+
+    import importlib
+    import services.api.app.run_realtime_worker as rw
+    importlib.reload(rw)
+
+    config = rw._resolve_config()
+
+    assert config['base_realtime_enabled_present'] is True
+    assert config['base_ws_rpc_url_present'] is True
+    assert config['base_ws_rpc_url_8453_present'] is False
+    assert config['selected_ws_rpc_env_name'] == 'BASE_WS_RPC_URL'
+    assert config['ws_url_scheme'] == 'wss'
+    assert config['ws_url_host'] == 'rpc.example.com'
+
+
+# ---------------------------------------------------------------------------
+# 19. Startup logs base_realtime_env_check line with required fields
+# ---------------------------------------------------------------------------
+
+def test_startup_emits_env_check_log(monkeypatch):
+    """base_realtime_env_check is logged before the config gate; test via disabled path."""
+    import importlib
+    import logging as _logging
+
+    # Set BASE_REALTIME_ENABLED=false so main() stays in the idle loop (hits time.sleep → KI).
+    monkeypatch.setenv('BASE_REALTIME_ENABLED', 'false')
+    monkeypatch.setenv('BASE_WS_RPC_URL', 'wss://rpc.example.com/v2/SECRETKEY')
+    monkeypatch.delenv('BASE_WS_RPC_URL_8453', raising=False)
+
+    import services.api.app.run_realtime_worker as rw
+    importlib.reload(rw)
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    rw.logger.addHandler(handler)
+    rw.logger.setLevel(_logging.INFO)
+    try:
+        with (
+            patch.object(rw, '_start_health_server', lambda p: None),
+            patch('services.api.app.run_realtime_worker.time.sleep', side_effect=KeyboardInterrupt),
+        ):
+            try:
+                rw.main()
+            except (KeyboardInterrupt, SystemExit):
+                pass
+    finally:
+        rw.logger.removeHandler(handler)
+
+    env_log = next((m for m in log_records if 'base_realtime_env_check' in m), None)
+    assert env_log is not None, 'base_realtime_env_check log line must be emitted'
+    # BASE_REALTIME_ENABLED=false means the key is present (truthy string) even though disabled
+    assert 'base_realtime_enabled_present=True' in env_log
+    assert 'base_ws_rpc_url_present=True' in env_log
+    assert 'base_ws_rpc_url_8453_present=False' in env_log
+    assert 'selected_ws_rpc_env_name=BASE_WS_RPC_URL' in env_log
+    assert 'base_ws_rpc_url_scheme=wss' in env_log
+    assert 'SECRETKEY' not in env_log, 'secret must not appear in log'
