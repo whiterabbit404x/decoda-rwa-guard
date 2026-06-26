@@ -44,6 +44,7 @@ _DEFAULT_MAX_EVENTS_PER_MINUTE = 1000
 _DEFAULT_HEARTBEAT_SECONDS = 10
 _DEFAULT_BACKFILL_CHUNK = 2000
 _DEFAULT_GAP_THRESHOLD_BLOCKS = 24
+_BLOCK_NUMBER_MIN_INTERVAL = 60.0  # min seconds between eth_blockNumber RPC calls
 
 
 def _resolve_int_env(name: str, default: int) -> int:
@@ -99,6 +100,13 @@ class BaseRealtimeIngestor:
 
         # Sliding-window rate limiter: stores monotonic timestamps of recent events.
         self._event_timestamps: deque[float] = deque()
+
+        # Block-number cache: avoids calling eth_blockNumber more than once per
+        # _BLOCK_NUMBER_MIN_INTERVAL seconds.  Updated both from newHeads subscription
+        # messages and from direct RPC calls.
+        self._block_number_cache: int | None = None
+        self._block_number_fetched_at: float = 0.0
+        self._last_head_block_at: float = 0.0  # monotonic time of last newHeads update
 
         self.state: dict[str, Any] = {
             'source_status': 'degraded',
@@ -158,6 +166,49 @@ class BaseRealtimeIngestor:
             return True
         self._event_timestamps.append(now)
         return False
+
+    def _throttled_block_number(self) -> int | None:
+        """Return the latest block number without spamming eth_blockNumber.
+
+        Priority order (cheapest first):
+        1. last_head_block already tracked via a recent newHeads message (zero RPC cost).
+        2. Cached eth_blockNumber result if fetched within _BLOCK_NUMBER_MIN_INTERVAL seconds.
+        3. Fresh eth_blockNumber RPC call (updates the cache); on failure returns stale cache.
+        """
+        now = time.monotonic()
+        # Use newHeads-derived value if it arrived within the last 30 s
+        if (
+            self.state.get('last_head_block') is not None
+            and now - self._last_head_block_at < 30.0
+        ):
+            return int(self.state['last_head_block'])
+
+        # Use cached RPC result if still fresh
+        if (
+            self._block_number_cache is not None
+            and now - self._block_number_fetched_at < _BLOCK_NUMBER_MIN_INTERVAL
+        ):
+            return self._block_number_cache
+
+        # Fall back to a real RPC call, caching the result
+        try:
+            result = _hex_to_int(self._rpc_call('eth_blockNumber', []))
+        except Exception:
+            return self._block_number_cache  # stale cache beats None
+        if result is not None:
+            self._block_number_cache = result
+            self._block_number_fetched_at = now
+        return result
+
+    def _compute_reconnect_sleep(self, exc: Exception, retry: float) -> float:
+        """Return seconds to sleep before the next reconnect attempt.
+
+        HTTP 429 (rate-limited) uses a much longer backoff (60-120 s) to let the
+        provider recover.  All other errors use the standard exponential backoff.
+        """
+        if '429' in str(exc):
+            return 60.0 + random.random() * 60.0
+        return min(30.0, retry) + random.random()
 
     # ------------------------------------------------------------------
     # Target loading (workspace-scoped)
@@ -398,6 +449,8 @@ class BaseRealtimeIngestor:
                 self.chain_network, self.chain_id, self.watcher_name,
             )
             self.state['source_status'] = 'realtime_websocket'
+            self.state['degraded'] = False
+            self.state['degraded_reason'] = None
             sub_ids: dict[str, str] = {}
 
             while True:
@@ -420,6 +473,7 @@ class BaseRealtimeIngestor:
                     head = _hex_to_int(result.get('number'))
                     if head is not None:
                         self.state['last_head_block'] = head
+                        self._last_head_block_at = time.monotonic()
                         last = self.state.get('last_processed_block')
                         if last is not None and head - int(last) > self.gap_threshold_blocks:
                             logger.warning(
@@ -483,6 +537,13 @@ class BaseRealtimeIngestor:
         _last_error_logged_at = 0.0
         _ERROR_LOG_WINDOW = 60.0
         _next_heartbeat = time.monotonic()
+        _was_degraded = True  # start as degraded; cleared after first stable heartbeat
+
+        # Optional: detect clean WebSocket closes (code 1001 "going away") separately
+        try:
+            from websockets.exceptions import ConnectionClosedOK as _ConnectionClosedOK  # type: ignore[import]
+        except Exception:
+            _ConnectionClosedOK = None  # type: ignore[assignment,misc]
 
         while True:
             # Periodic heartbeat regardless of whether WebSocket is up
@@ -492,12 +553,14 @@ class BaseRealtimeIngestor:
                 _next_heartbeat = time.monotonic() + self.heartbeat_seconds
 
             try:
-                self.state['degraded'] = False
-                self.state['degraded_reason'] = None
-                head = _hex_to_int(self._rpc_call('eth_blockNumber', []))
-                self.state['last_head_block'] = head
-                if self.state.get('last_processed_block') is None and head is not None:
-                    self.state['last_processed_block'] = max(0, int(head) - self.confirmations_required)
+                # Throttled block number: prefers newHeads, falls back to cached/RPC.
+                # Avoids calling eth_blockNumber on every 10-second reconnect cycle.
+                head = self._throttled_block_number()
+                if head is not None:
+                    self.state['last_head_block'] = head
+                    if self.state.get('last_processed_block') is None:
+                        self.state['last_processed_block'] = max(0, int(head) - self.confirmations_required)
+
                 self._record_heartbeat()
                 _next_heartbeat = time.monotonic() + self.heartbeat_seconds
 
@@ -506,7 +569,14 @@ class BaseRealtimeIngestor:
                 _last_error_key = None
 
             except asyncio.TimeoutError:
-                # Normal: WebSocket was quiet for heartbeat_seconds; loop back
+                # Normal: heartbeat interval elapsed; WebSocket is alive
+                if _was_degraded and not self.state.get('degraded'):
+                    logger.info(
+                        'realtime_recovered chain=%s watcher=%s events_processed=%s',
+                        self.chain_network, self.watcher_name,
+                        self.state['metrics'].get('events_ingested', 0),
+                    )
+                    _was_degraded = False
                 self._record_heartbeat()
                 _next_heartbeat = time.monotonic() + self.heartbeat_seconds
                 continue
@@ -514,9 +584,17 @@ class BaseRealtimeIngestor:
             except Exception as exc:
                 self.state['metrics']['ws_reconnects'] += 1
                 self.state['degraded'] = True
-                error_key = f'{type(exc).__name__}:{str(exc)[:80]}'
-                self.state['degraded_reason'] = str(exc)[:160]
+                _was_degraded = True
+                exc_str = str(exc)
+                error_key = f'{type(exc).__name__}:{exc_str[:80]}'
+                self.state['degraded_reason'] = exc_str[:160]
                 self.state['source_status'] = 'degraded'
+
+                is_rate_limit = '429' in exc_str
+                is_clean_close = (
+                    _ConnectionClosedOK is not None
+                    and isinstance(exc, _ConnectionClosedOK)
+                )
 
                 increment(
                     'decoda_realtime_provider_failures_total',
@@ -526,34 +604,51 @@ class BaseRealtimeIngestor:
 
                 now_log = time.monotonic()
                 if error_key != _last_error_key or now_log - _last_error_logged_at >= _ERROR_LOG_WINDOW:
-                    logger.warning(
-                        'realtime_ingestor_error chain=%s chain_id=%s '
-                        'error_type=%s error=%s retry_in=%.1fs reconnect_count=%s',
-                        self.chain_network, self.chain_id,
-                        type(exc).__name__, str(exc)[:200], min(30.0, retry),
-                        self.state['metrics']['ws_reconnects'],
-                    )
+                    if is_clean_close:
+                        logger.info(
+                            'realtime_ws_closed_cleanly chain=%s watcher=%s '
+                            'code=1001 reconnecting reconnect_count=%s',
+                            self.chain_network, self.watcher_name,
+                            self.state['metrics']['ws_reconnects'],
+                        )
+                    elif is_rate_limit:
+                        logger.warning(
+                            'realtime_rpc_rate_limited chain=%s watcher=%s '
+                            'backing_off_min=60s reconnect_count=%s',
+                            self.chain_network, self.watcher_name,
+                            self.state['metrics']['ws_reconnects'],
+                        )
+                    else:
+                        logger.warning(
+                            'realtime_ingestor_error chain=%s chain_id=%s '
+                            'error_type=%s error=%s retry_in=%.1fs reconnect_count=%s',
+                            self.chain_network, self.chain_id,
+                            type(exc).__name__, exc_str[:200], min(30.0, retry),
+                            self.state['metrics']['ws_reconnects'],
+                        )
                     _last_error_key = error_key
                     _last_error_logged_at = now_log
 
-                # Attempt backfill for blocks we may have missed during disconnect
-                try:
-                    head = _hex_to_int(self._rpc_call('eth_blockNumber', [])) if self.rpc_url else None
-                except Exception:
-                    head = None
-                last = int(
-                    self.state.get('last_processed_block')
-                    or max(0, (head or 0) - self.confirmations_required)
-                )
-                if head is not None and head >= last:
-                    logger.warning(
-                        'realtime_reconnect_backfill from_block=%s to_block=%s watcher=%s',
-                        last, head, self.watcher_name,
+                # Backfill blocks missed during disconnect.
+                # Skip on rate-limit: eth_getLogs would also get 429.
+                if not is_rate_limit:
+                    head = self._throttled_block_number()
+                    last = int(
+                        self.state.get('last_processed_block')
+                        or max(0, (head or 0) - self.confirmations_required)
                     )
-                    await self._backfill(last, head)
+                    if head is not None and head >= last:
+                        logger.warning(
+                            'realtime_reconnect_backfill from_block=%s to_block=%s watcher=%s',
+                            last, head, self.watcher_name,
+                        )
+                        await self._backfill(last, head)
 
                 self._record_heartbeat()
                 _next_heartbeat = time.monotonic() + self.heartbeat_seconds
                 gauge('decoda_realtime_worker_healthy', 0, watcher=self.watcher_name)
-                await asyncio.sleep(min(30.0, retry) + random.random())
-                retry = min(30.0, retry * 2)
+
+                sleep_for = self._compute_reconnect_sleep(exc, retry)
+                await asyncio.sleep(sleep_for)
+                if not is_rate_limit:
+                    retry = min(30.0, retry * 2)

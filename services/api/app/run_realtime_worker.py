@@ -184,6 +184,24 @@ def _start_health_server(port: int) -> None:
     logger.info('realtime_health_server_started host=0.0.0.0 port=%s path=/health', port)
 
 
+def _parse_workspace_target_count(row: object) -> int:
+    """Parse COUNT(*) row from DB without KeyError on dict rows.
+
+    sqlite3.Row, psycopg2 DictRow, and plain dicts all have .get(); tuples
+    and lists are indexed by position.  The previous inline expression used
+    ``row[0]`` as a fallback even when row was a dict, which raises KeyError: 0
+    when the count is 0.
+    """
+    if row is None:
+        return 0
+    if hasattr(row, 'get'):  # dict-like (sqlite3.Row, psycopg2 DictRow, dict)
+        return int(row.get('cnt') or 0)
+    try:
+        return int(row[0] or 0)  # tuple / list
+    except (IndexError, TypeError):
+        return 0
+
+
 async def _run_ingestor(config: dict[str, object]) -> None:
     """Async entry point for the WebSocket ingestor loop."""
     from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
@@ -200,9 +218,9 @@ async def _run_ingestor(config: dict[str, object]) -> None:
                 "AND enabled = TRUE AND is_active = TRUE "
                 "AND COALESCE(chain_network, 'base') = 'base'"
             ).fetchone()
-            workspace_target_count = int((row or {}).get('cnt') or (row[0] if row else 0) or 0)
+            workspace_target_count = _parse_workspace_target_count(row)
     except Exception:
-        workspace_target_count = -1  # unknown
+        workspace_target_count = -1  # unknown; logged below, not re-raised
 
     logger.info(
         'realtime_worker_started chain_id=%s provider_mode=%s '
