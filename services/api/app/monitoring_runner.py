@@ -1680,6 +1680,133 @@ def _safe_error_message(exc: Exception) -> str:
     return text[:240]
 
 
+# Substrings that indicate the DB connection itself is dead and must not be reused.
+# Covers psycopg's post-mortem messages after an idle-in-transaction termination or a
+# server-side socket close, plus the raw server notice that triggers them.
+_CONNECTION_LOST_MESSAGE_MARKERS: tuple[str, ...] = (
+    'idle-in-transaction',
+    'idle in transaction',
+    'terminating connection',
+    'connection is closed',
+    'connection already closed',
+    'the connection was closed',
+    'connection not open',
+    'server closed the connection',
+    'consuming input failed',
+    'ssl connection has been closed',
+    'ssl syscall',
+    'lost synchronization',
+)
+
+
+def _is_connection_lost_error(exc: BaseException | None) -> bool:
+    """Return True when ``exc`` proves the DB connection is dead/closed.
+
+    A dead connection must never be reused for recovery work: issuing another
+    statement on a socket the server already tore down raises
+    ``the connection is closed`` again. When this returns True the caller opens a
+    *fresh* connection for error logging/heartbeat/coverage retries instead.
+
+    Detection combines the shared ``classify_db_error`` classifier with an explicit
+    walk of the exception cause/context chain for idle-in-transaction markers (the
+    classifier does not key on the idle-in-transaction notice directly).
+    """
+    if exc is None:
+        return False
+    if isinstance(exc, Exception):
+        try:
+            if classify_db_error(exc) in {'connection_closed', 'db_unavailable', 'network_unreachable'}:
+                return True
+        except Exception:
+            pass
+    seen: set[int] = set()
+    stack: list[BaseException | None] = [exc]
+    while stack:
+        current = stack.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        text = ' '.join(str(current).strip().lower().split())
+        if any(marker in text for marker in _CONNECTION_LOST_MESSAGE_MARKERS):
+            return True
+        stack.append(getattr(current, '__cause__', None))
+        stack.append(getattr(current, '__context__', None))
+    return False
+
+
+def _persist_live_coverage_telemetry_resilient(
+    connection: Any,
+    *,
+    target: dict[str, Any],
+    provider_result: ActivityProviderResult,
+    observed_at: datetime,
+) -> bool:
+    """Persist live coverage telemetry, isolating its failures from the target poll.
+
+    A coverage-telemetry write must never sink an already-successful event
+    detection/alert for the same target (those are committed on their own
+    connections before this runs). The primary attempt uses the live worker
+    ``connection``. If that connection has been torn down — idle-in-transaction
+    timeout, server-side close — the write is retried exactly once on a fresh
+    autocommit connection. Any remaining failure is logged as
+    ``coverage_telemetry_write_failed`` and swallowed so the caller still returns a
+    truthful degraded/partial summary instead of crashing the cycle.
+
+    Returns True only when the coverage write completed (so the caller can keep the
+    coverage timestamp truthful and avoid reporting a heartbeat that did not persist).
+    """
+    try:
+        _persist_live_coverage_telemetry(
+            connection,
+            target=target,
+            provider_result=provider_result,
+            observed_at=observed_at,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 - coverage write must never crash the poll
+        connection_lost = _is_connection_lost_error(exc)
+        logger.warning(
+            'coverage_telemetry_write_primary_failed workspace_id=%s target_id=%s '
+            'connection_lost=%s error=%s action=%s',
+            target.get('workspace_id'), target.get('id'),
+            str(connection_lost).lower(), _safe_error_message(exc),
+            'retry_fresh_connection' if connection_lost else 'skip_isolated',
+        )
+        if not connection_lost:
+            logger.warning(
+                'coverage_telemetry_write_failed workspace_id=%s target_id=%s '
+                'reason=non_connection_error error=%s action=continue_target_poll',
+                target.get('workspace_id'), target.get('id'), _safe_error_message(exc),
+            )
+            return False
+    # Dead-connection case only: reconnect once on a fresh autocommit connection.
+    try:
+        with pg_connection() as _fresh_conn:
+            try:
+                _fresh_conn.autocommit = True
+            except Exception:
+                pass
+            _persist_live_coverage_telemetry(
+                _fresh_conn,
+                target=target,
+                provider_result=provider_result,
+                observed_at=observed_at,
+            )
+        logger.info(
+            'coverage_telemetry_write_recovered workspace_id=%s target_id=%s '
+            'action=persisted_on_fresh_connection',
+            target.get('workspace_id'), target.get('id'),
+        )
+        return True
+    except Exception as retry_exc:  # noqa: BLE001
+        logger.warning(
+            'coverage_telemetry_write_failed workspace_id=%s target_id=%s '
+            'reason=retry_fresh_connection_failed error=%s action=continue_target_poll',
+            target.get('workspace_id'), target.get('id'), _safe_error_message(retry_exc),
+        )
+        return False
+
+
 def _derive_system_runtime_state(result: dict[str, Any], *, is_enabled: bool) -> tuple[str, str, str, str | None]:
     if not is_enabled:
         return 'disabled', 'unavailable', 'unavailable', 'monitoring_disabled'
@@ -4015,6 +4142,19 @@ def process_monitoring_target(
             )
         except Exception as _single_event_exc:
             _tx_hash_for_log = str(_ev_payload.get('tx_hash') or _ev_payload.get('hash') or 'unknown')
+            # A dead connection must fail the whole target fast: never fall through to the
+            # per-event "continue" path, which would compute a cursor advance and then try
+            # to persist it on a closed socket. The wallet-transfer telemetry/alert for this
+            # event were already committed on their own connections, so a retry next cycle is
+            # idempotent (dedupe keys) and the cursor stays put until it persists cleanly.
+            if _is_connection_lost_error(_single_event_exc):
+                logger.warning(
+                    'event_processing_failed target_id=%s tx_hash=%s monitoring_run_id=%s '
+                    'error=%s action=fail_target_connection_lost',
+                    target.get('id'), _tx_hash_for_log, monitoring_run_id,
+                    _safe_error_message(_single_event_exc),
+                )
+                raise
             logger.warning(
                 'event_processing_failed target_id=%s tx_hash=%s monitoring_run_id=%s '
                 'error=%s action=skip_event_continue_cursor',
@@ -4154,13 +4294,22 @@ def process_monitoring_target(
             provider_result.status,
             source_type or 'unknown',
         )
-        _persist_live_coverage_telemetry(
+        # Coverage telemetry runs AFTER any wallet-transfer detection/alert for this
+        # target has already been committed (on its own connection). It must never sink
+        # that successful detection: a dead worker connection is retried once on a fresh
+        # connection, and a final failure is isolated (logged coverage_telemetry_write_failed)
+        # so the target poll still returns a truthful degraded/partial summary.
+        coverage_persisted = _persist_live_coverage_telemetry_resilient(
             connection,
             target=target,
             provider_result=provider_result,
             observed_at=live_coverage_telemetry_at,
         )
-        coverage_persisted = True
+        if not coverage_persisted:
+            # Truthfulness: a failed coverage write must not surface as live coverage.
+            # Drop the coverage timestamp/heartbeat for this cycle and record the reason.
+            coverage_skip_reason = 'coverage_telemetry_write_failed'
+            live_coverage_telemetry_at = None
     else:
         if provider_result.mode not in {'live', 'hybrid'}:
             coverage_skip_reason = f"mode_{provider_result.mode or 'unknown'}"
@@ -4723,6 +4872,20 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
     cycle_started_at = utc_now()
     logger.info('monitoring cycle started worker=%s limit=%s', worker_name, limit)
     with pg_connection() as connection:
+        # DB-safety: run the whole cycle in autocommit so the worker connection is never
+        # held idle-in-transaction across slow RPC scans, threat-engine calls, or long
+        # loops (the idle-in-transaction timeout that previously killed the connection
+        # right after a successful detection). Each standalone statement commits
+        # immediately; multi-statement write groups use explicit
+        # `with connection.transaction()` blocks, which become real short transactions here.
+        try:
+            connection.autocommit = True
+        except Exception:
+            logger.warning(
+                'monitoring_cycle_autocommit_unavailable worker=%s '
+                'action=continue_default_isolation',
+                worker_name,
+            )
         ensure_pilot_schema(connection)
         _verify_monitoring_fk_alignment(connection)
         if not _telemetry_idempotency_index_guard(connection):
@@ -5447,6 +5610,12 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                             )
                     except Exception:
                         pass
+                # Short transaction: persist the poll record + claim the target, then
+                # COMMIT before the RPC scan. process_monitoring_target performs slow
+                # RPC + threat-engine I/O and must run with NO open DB transaction so the
+                # worker connection is never idle-in-transaction during the scan (autocommit
+                # commits each subsequent write group on its own). The persisted lease — not
+                # an open row lock — is what keeps a second worker from double-claiming.
                 with connection.transaction():
                     connection.execute(
                         """
@@ -5459,11 +5628,11 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                         'UPDATE targets SET monitoring_claimed_by = %s, monitoring_claimed_at = NOW() WHERE id = %s AND workspace_id = %s',
                         (worker_name, target['id'], target['workspace_id']),
                     )
-                    result = process_monitoring_target(
-                        connection,
-                        target,
-                        monitoring_run_id=workspace_run_ids.get(workspace_id),
-                    )
+                result = process_monitoring_target(
+                    connection,
+                    target,
+                    monitoring_run_id=workspace_run_ids.get(workspace_id),
+                )
                 if result.get('provider_poll_skipped'):
                     # Provider 429 backoff: no RPC poll happened. Record the poll as
                     # skipped (never 'completed'), count it as skipped_provider_backoff
@@ -5576,12 +5745,25 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 if workspace_id:
                     workspace_errors[workspace_id] = str(exc)
                 logger.exception('monitoring target failed target=%s name=%s', target.get('id'), target.get('name'))
-                # Wrap error-status updates in a new savepoint so that a rolled-back poll
-                # savepoint (InFailedSqlTransaction) cannot prevent last_run_status recording.
-                try:
-                    with connection.transaction():
+                # If the failure tore down the worker connection (idle-in-transaction
+                # timeout / server close), the same connection must NOT be reused for the
+                # error bookkeeping — issuing more statements on a closed socket just raises
+                # "the connection is closed" again. In that case open ONE fresh autocommit
+                # connection for the error-status writes; for ordinary errors keep using the
+                # live connection (a new short transaction isolates any InFailedSqlTransaction).
+                _conn_lost = _is_connection_lost_error(exc)
+                if _conn_lost:
+                    logger.warning(
+                        'monitoring_worker_connection_lost target_id=%s workspace_id=%s '
+                        'action=record_error_on_fresh_connection',
+                        target.get('id'), workspace_id,
+                    )
+
+                def _record_target_error(_err_conn: Any) -> None:
+                    nonlocal monitored_systems_updated
+                    with _err_conn.transaction():
                         max_target_attempts = max(1, int(os.getenv('MONITORING_TARGET_MAX_ATTEMPTS', '5')))
-                        connection.execute(
+                        _err_conn.execute(
                             '''
                             UPDATE targets SET
                                 last_checked_at = NOW(),
@@ -5600,14 +5782,30 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                         if monitored_system_id and not isinstance(exc, psycopg_errors.DeadlockDetected):
                             # Keep explicit status transition text stable for regression checks:
                             # 'error', status = 'error'
-                            connection.execute(
+                            _err_conn.execute(
                                 "UPDATE monitored_systems SET runtime_status = 'failed', status = 'error', freshness_status = 'unavailable', confidence_status = 'low', coverage_reason = 'monitoring_worker_error', last_error_text = %s, last_heartbeat = NOW() WHERE id = %s::uuid AND workspace_id = %s::uuid",
                                 (error_message, monitored_system_id, str(target['workspace_id'])),
                             )
                             monitored_systems_updated += 1
-                        connection.execute("UPDATE monitoring_polls SET poll_finished_at = NOW(), status = 'degraded', error_message = %s WHERE id = %s::uuid", (error_message, poll_id))
-                except Exception:
-                    logger.exception('error_handler_failed target=%s', target.get('id'))
+                        _err_conn.execute("UPDATE monitoring_polls SET poll_finished_at = NOW(), status = 'degraded', error_message = %s WHERE id = %s::uuid", (error_message, poll_id))
+
+                try:
+                    if _conn_lost:
+                        with pg_connection() as _err_conn:
+                            try:
+                                _err_conn.autocommit = True
+                            except Exception:
+                                pass
+                            _record_target_error(_err_conn)
+                    else:
+                        _record_target_error(connection)
+                except Exception as _err_handler_exc:
+                    # Even the fresh connection failed — log once and keep shutting the cycle
+                    # down safely instead of raising out of the error handler.
+                    logger.warning(
+                        'error_handler_failed target=%s connection_lost=%s error=%s action=continue_cycle',
+                        target.get('id'), str(_conn_lost).lower(), _safe_error_message(_err_handler_exc),
+                    )
         for workspace_id, monitoring_run_id in workspace_run_ids.items():
             workspace_note = f'worker_name={worker_name}'
             workspace_error = workspace_errors.get(workspace_id)
@@ -5989,6 +6187,13 @@ def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Re
 
 def run_monitoring_once(target_id: str, request: Request) -> dict[str, Any]:
     with pg_connection() as connection:
+        # Same DB-safety contract as the worker cycle: the manual run also performs slow
+        # RPC + threat-engine I/O inside process_monitoring_target, so run in autocommit to
+        # avoid holding the connection idle-in-transaction across the scan.
+        try:
+            connection.autocommit = True
+        except Exception:
+            logger.warning('manual_run_once_autocommit_unavailable action=continue_default_isolation')
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
         row = connection.execute(
