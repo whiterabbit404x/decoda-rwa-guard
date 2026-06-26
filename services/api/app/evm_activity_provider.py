@@ -1149,10 +1149,13 @@ def _http_status_from_exc(exc: Exception) -> int | None:
 def _wallet_logs_block_range(network: str, default_chunk: int) -> tuple[int, int]:
     """(max, min) block range per eth_getLogs request.
 
-    Base caps the per-request range at ``BASE_MAX_LOGS_BLOCK_RANGE`` (default 100) and
-    never drops below ``BASE_MIN_LOGS_BLOCK_RANGE`` (default 10), DECOUPLED from the
+    Base caps the per-request range at ``BASE_MAX_LOGS_BLOCK_RANGE`` (default 25) and
+    never drops below ``BASE_MIN_LOGS_BLOCK_RANGE`` (default 5), DECOUPLED from the
     block-by-block scan chunk so a heavy/busy Base wallet never issues a 1000-block
-    eth_getLogs request that providers reject with HTTP 413. Non-Base chains keep the
+    eth_getLogs request that providers reject with HTTP 413. The conservative 25-block
+    default keeps QuickNode under its response-size limit on the first attempt; the
+    adaptive halving in :func:`_fetch_wallet_logs_adaptive` reduces further toward the
+    5-block minimum when a busy wallet still returns 413. Non-Base chains keep the
     historical single-size behavior (no adaptive halving).
     """
     def _int_env(name: str, fallback: int) -> int:
@@ -1162,8 +1165,8 @@ def _wallet_logs_block_range(network: str, default_chunk: int) -> tuple[int, int
             return fallback
 
     if network in {'base', 'base-mainnet'}:
-        max_range = _int_env('BASE_MAX_LOGS_BLOCK_RANGE', 100)
-        min_range = min(_int_env('BASE_MIN_LOGS_BLOCK_RANGE', 10), max_range)
+        max_range = _int_env('BASE_MAX_LOGS_BLOCK_RANGE', 25)
+        min_range = min(_int_env('BASE_MIN_LOGS_BLOCK_RANGE', 5), max_range)
         return max_range, min_range
     size = max(1, default_chunk)
     return size, size
@@ -1541,10 +1544,17 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     _CHAIN_MAX_BLOCKS_PER_CYCLE: dict[str, int] = {'base': 100, 'base-mainnet': 100}
     _chain_default_max = _CHAIN_MAX_BLOCKS_PER_CYCLE.get(network, 5000)
     if network in {'base', 'base-mainnet'}:
-        try:
-            _chain_default_max = max(1, int(os.getenv('BASE_CATCHUP_MAX_BLOCKS_PER_CYCLE', str(_chain_default_max))))
-        except (TypeError, ValueError):
-            _chain_default_max = 100
+        # Base per-cycle block cap. BASE_MAX_BLOCKS_PER_CYCLE (default 100) is the general
+        # Base ceiling; BASE_CATCHUP_MAX_BLOCKS_PER_CYCLE overrides it for cursor-based
+        # catch-up and falls back to it. Both default to 100 so a deep Base backlog catches
+        # up gradually and never reinflates into a heavy 1000-block poll.
+        def _base_int_env(name: str, fallback: int) -> int:
+            try:
+                return max(1, int(os.getenv(name, str(fallback))))
+            except (TypeError, ValueError):
+                return fallback
+        _base_default = _base_int_env('BASE_MAX_BLOCKS_PER_CYCLE', _chain_default_max)
+        _chain_default_max = _base_int_env('BASE_CATCHUP_MAX_BLOCKS_PER_CYCLE', _base_default)
     try:
         max_blocks_per_cycle = max(1, int(os.getenv('MAX_BLOCKS_PER_CYCLE', str(_chain_default_max))))
     except (TypeError, ValueError):
@@ -1588,9 +1598,11 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     logs: list[dict[str, Any]] = []
     _logs_fetch_status = 'ok'
     _logs_fetch_error_count = 0
-    # Highest block whose ERC-20 logs were fully scanned. Only set below scan_ceiling
-    # when a 413 stayed too large even at the minimum chunk size, so the cursor is not
-    # advanced past blocks whose logs were never scanned (fail-closed).
+    # Highest block whose ERC-20 logs were fully scanned. Set below scan_ceiling whenever
+    # the log scan did NOT fully cover the range — a 413 that stayed too large even at the
+    # minimum chunk size ('degraded'), OR a non-413 failure like 429/400/unreachable
+    # ('failed') — so the cursor is never advanced past blocks whose logs were never
+    # scanned (fail-closed). For a first-chunk failure this equals from_block-1 (no advance).
     _logs_last_complete_block: int | None = None
     target_type = str(target.get('target_type') or '').lower()
     if target_type == 'wallet':
@@ -1608,23 +1620,27 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         logs = _adaptive['logs']
         _logs_fetch_status = _adaptive['status']
         _logs_fetch_error_count = _adaptive['error_count']
-        if _adaptive['too_large_count'] > 0 and _adaptive['status'] == 'degraded':
-            # A logs chunk stayed too large even at the minimum range. Cap the cursor
-            # at the last fully-scanned block so the unscanned blocks are re-scanned
-            # next cycle rather than skipped.
+        if _adaptive['status'] in {'degraded', 'failed'}:
+            # The log scan did not fully cover [from_block, scan_ceiling] — either a 413
+            # chunk stayed too large at the minimum range ('degraded'/query_too_large) or a
+            # non-413 error stopped the scan ('failed'/logs_fetch_failed). Cap the cursor at
+            # the last fully-scanned block so the unscanned blocks are re-scanned next cycle
+            # rather than skipped. On a first-chunk failure last_complete_block == from_block-1,
+            # which holds the cursor at the previous checkpoint (no forward advance).
             _logs_last_complete_block = _adaptive['last_complete_block']
 
     # Live-tail window: when catchup_mode, also scan the most recent blocks so new
     # transactions are detected immediately without waiting for the gradual backfill to
     # complete. Configurable via BASE_LIVE_TAIL_BLOCKS (Base) or the generic
-    # EVM_LIVE_TAIL_BLOCKS; defaults to 300 recent blocks on Base.
-    _live_tail_default = '300' if network in {'base', 'base-mainnet'} else '0'
+    # EVM_LIVE_TAIL_BLOCKS; defaults to 100 recent blocks on Base so the live-tail
+    # eth_getLogs window stays within the per-request size that providers accept.
+    _live_tail_default = '100' if network in {'base', 'base-mainnet'} else '0'
     if network in {'base', 'base-mainnet'}:
         _live_tail_default = os.getenv('BASE_LIVE_TAIL_BLOCKS', _live_tail_default)
     try:
         live_tail_blocks = max(0, int(os.getenv('EVM_LIVE_TAIL_BLOCKS', _live_tail_default)))
     except (TypeError, ValueError):
-        live_tail_blocks = 300 if network in {'base', 'base-mainnet'} else 0
+        live_tail_blocks = 100 if network in {'base', 'base-mainnet'} else 0
     live_tail_from: int | None = None
     if catchup_mode and live_tail_blocks > 0:
         _lt_candidate = max(scan_ceiling + 1, safe_to - live_tail_blocks)
@@ -1773,21 +1789,36 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         len(deduped),
         catchup_mode, blocks_deferred,
     )
-    # Cursor advancement target. Normally the full block-scan ceiling, BUT when an
-    # eth_getLogs chunk stayed too large even at the minimum range we cap the cursor at
-    # the last block whose logs were fully scanned — never advancing past unscanned
-    # blocks and never moving the cursor backward (max with the prior cursor floor).
+    # Canonical reason for an incomplete log scan, surfaced to the provider-result layer
+    # so the cycle is reported as degraded (never live-success): query_too_large for a 413
+    # that stayed too large at the min chunk, logs_fetch_failed for a non-413 error.
+    _logs_status_reason: str | None = (
+        'query_too_large' if _logs_fetch_status == 'degraded'
+        else ('logs_fetch_failed' if _logs_fetch_status == 'failed' else None)
+    )
+    # Cursor advancement target. Normally the full block-scan ceiling, BUT when the
+    # eth_getLogs scan did not fully cover the range (413 too large at min, or a non-413
+    # failure) we cap the cursor at the last block whose logs were fully scanned — never
+    # advancing past unscanned blocks and never moving the cursor backward (max with the
+    # prior cursor floor).
     _scan_to_block = scan_ceiling
     if _logs_last_complete_block is not None and _logs_last_complete_block < scan_ceiling:
         _cursor_floor = last_block if last_block is not None else (from_block - 1)
         _scan_to_block = min(scan_ceiling, max(_cursor_floor, _logs_last_complete_block))
+        _cursor_reason = _logs_status_reason or 'logs_fetch_failed'
+        _cursor_error_class = 'request_too_large' if _logs_fetch_status == 'degraded' else 'logs_fetch_failed'
+        # Fail-closed cursor guard: the log scan did not cover (capped, scan_ceiling], so the
+        # cursor is held at the last fully-scanned block and that range is re-scanned next
+        # cycle instead of being skipped without log coverage.
         logger.warning(
-            'evm_cursor_capped_query_too_large target_id=%s chain=%s scan_ceiling=%s '
-            'logs_last_complete_block=%s capped_scan_to_block=%s '
-            'error_class=request_too_large status_reason=query_too_large '
-            'action=do_not_advance_past_unscanned_blocks',
-            target.get('id'), network, scan_ceiling,
-            _logs_last_complete_block, _scan_to_block,
+            'cursor_not_advanced target_id=%s chain=%s reason=%s '
+            'failed_from_block=%s failed_to_block=%s previous_cursor=%s '
+            'last_complete_block=%s capped_scan_to_block=%s scan_ceiling=%s '
+            'error_class=%s status_reason=%s action=do_not_advance_past_unscanned_blocks',
+            target.get('id'), network, _cursor_reason,
+            _scan_to_block + 1, scan_ceiling, cursor or 'none',
+            _logs_last_complete_block, _scan_to_block, scan_ceiling,
+            _cursor_error_class, _cursor_reason,
         )
     # Canonical end-of-scan summary. evm_block_scan_start must always be followed by
     # this line (never a bare provider_error): it proves the scan loop ran to completion
@@ -1823,6 +1854,12 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     # starts from here and advances another max_blocks_per_cycle until caught up. When a
     # 413 capped the scan, this is the last fully-scanned block (≤ scan_ceiling).
     target['_evm_scan_to_block'] = _scan_to_block
+    # Expose the log-scan coverage status so the provider-result layer can report a
+    # degraded (not live-success) observation and so a failed/partial log scan never
+    # advances the cursor past unscanned blocks. 'ok' | 'degraded' | 'failed' and a
+    # canonical reason (None | 'query_too_large' | 'logs_fetch_failed').
+    target['_evm_logs_fetch_status'] = _logs_fetch_status
+    target['_evm_logs_status_reason'] = _logs_status_reason
     return deduped
 
 
