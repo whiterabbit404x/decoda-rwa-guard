@@ -1,6 +1,6 @@
 """Tests for the Base real-time ingestion worker.
 
-Covers the 11 acceptance criteria:
+Covers the 12 acceptance criteria:
 1.  Realtime worker disabled by default (BASE_REALTIME_ENABLED not set).
 2.  Missing BASE_WS_RPC_URL disables realtime safely.
 3.  WebSocket event for monitored wallet creates telemetry.
@@ -12,6 +12,7 @@ Covers the 11 acceptance criteria:
 9.  Workspace isolation: event for workspace A cannot create alert in workspace B.
 10. System Health shows realtime degraded if realtime worker fails but polling remains active.
 11. No secrets or full RPC URLs in logs.
+12. PORT env var overrides REALTIME_WORKER_PORT for Railway healthcheck binding.
 """
 from __future__ import annotations
 
@@ -436,6 +437,53 @@ def test_system_health_realtime_degraded_when_worker_fails(monkeypatch):
 # ---------------------------------------------------------------------------
 # 11. No secrets or full RPC URLs in logs
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 12. PORT env var overrides REALTIME_WORKER_PORT for Railway healthcheck binding
+# ---------------------------------------------------------------------------
+
+def test_port_env_overrides_realtime_worker_port(monkeypatch):
+    """Railway injects PORT; it must win over REALTIME_WORKER_PORT."""
+    import importlib
+    import logging as _logging
+
+    monkeypatch.setenv('PORT', '9999')
+    monkeypatch.setenv('REALTIME_WORKER_PORT', '8006')
+    monkeypatch.delenv('BASE_REALTIME_ENABLED', raising=False)
+
+    import services.api.app.run_realtime_worker as rw
+    importlib.reload(rw)
+
+    started: list[int] = []
+    log_records: list[str] = []
+
+    class _CapHandler(_logging.Handler):
+        def emit(self, record: _logging.LogRecord) -> None:
+            log_records.append(record.getMessage())
+
+    handler = _CapHandler()
+    rw.logger.addHandler(handler)
+    rw.logger.setLevel(_logging.INFO)
+    try:
+        with (
+            patch.object(rw, '_start_health_server', lambda p: started.append(p)),
+            patch('services.api.app.run_realtime_worker.time.sleep', side_effect=KeyboardInterrupt),
+        ):
+            try:
+                rw.main()
+            except (KeyboardInterrupt, SystemExit):
+                pass
+    finally:
+        rw.logger.removeHandler(handler)
+
+    assert started, 'health server must have been started'
+    assert started[0] == 9999, f'expected PORT=9999 to win, got {started[0]}'
+
+    port_log = next((m for m in log_records if 'realtime_port_resolution' in m), None)
+    assert port_log is not None, 'realtime_port_resolution log line must be emitted'
+    assert 'railway_port_env=9999' in port_log, f'expected railway_port_env=9999 in log: {port_log}'
+    assert 'realtime_worker_port=8006' in port_log, f'expected realtime_worker_port=8006 in log: {port_log}'
+
 
 def test_no_secrets_in_logs(monkeypatch):
     monkeypatch.setenv('BASE_REALTIME_ENABLED', 'true')

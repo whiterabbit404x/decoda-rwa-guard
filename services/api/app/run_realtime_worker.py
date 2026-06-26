@@ -180,8 +180,16 @@ def main() -> int:
     )
     logger.info('base_realtime_worker starting')
 
-    _health_port_raw = (os.getenv('REALTIME_WORKER_PORT') or os.getenv('PORT') or '').strip()
-    _health_port = int(_health_port_raw) if _health_port_raw.isdigit() else 8006
+    _railway_port_env = (os.getenv('PORT') or '').strip()
+    _realtime_worker_port = (os.getenv('REALTIME_WORKER_PORT') or '').strip()
+    _port_raw = _railway_port_env or _realtime_worker_port
+    _health_port = int(_port_raw) if _port_raw.isdigit() else 8006
+    logger.info(
+        'realtime_port_resolution railway_port_env=%s realtime_worker_port=%s selected_port=%s',
+        _railway_port_env or 'not_set',
+        _realtime_worker_port or 'not_set',
+        _health_port,
+    )
     _start_health_server(_health_port)
 
     config = _resolve_config()
