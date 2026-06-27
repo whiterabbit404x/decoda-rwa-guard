@@ -1718,3 +1718,172 @@ def test_events_processed_in_heartbeat_includes_heads_received():
     assert 'heads_received=12' in heartbeat_log, (
         f'heads_received=12 must appear in heartbeat; got: {heartbeat_log}'
     )
+
+
+# ---------------------------------------------------------------------------
+# 43. Heartbeat log includes active_provider_host (hostname only, no API key)
+# ---------------------------------------------------------------------------
+
+def test_heartbeat_active_provider_host_safe():
+    """Heartbeat log must include active_provider_host=<hostname>, never the full URL."""
+    import logging as _logging
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc',
+        ws_url='wss://api.quicknode.com/ws/v1/abc123secret',
+        watcher_name='test-watcher',
+    )
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+
+    try:
+        with (
+            patch('services.api.app.base_realtime_ingestor.pg_connection') as mock_pg,
+            patch('services.api.app.base_realtime_ingestor.ensure_pilot_schema', lambda c: None),
+        ):
+            mock_conn = MagicMock()
+            mock_conn.__enter__ = lambda s: s
+            mock_conn.__exit__ = MagicMock(return_value=False)
+            mock_pg.return_value = mock_conn
+            ingestor._record_heartbeat()
+    finally:
+        mod.logger.removeHandler(handler)
+
+    heartbeat_log = next((m for m in log_records if 'realtime_worker_heartbeat' in m), None)
+    assert heartbeat_log is not None, 'realtime_worker_heartbeat must be logged'
+    assert 'active_provider_host=api.quicknode.com' in heartbeat_log, (
+        f'active_provider_host must show hostname only; got: {heartbeat_log}'
+    )
+    assert 'abc123secret' not in heartbeat_log, (
+        f'API key must not appear in heartbeat log; got: {heartbeat_log}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# 44. Failover counter resets when messages received before 1001 close
+# ---------------------------------------------------------------------------
+
+def test_failover_counter_resets_when_session_had_messages():
+    """If the session received messages before the 1001 close, consecutive counter resets."""
+    import time as _time
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc',
+        ws_url='ws://primary.example.com/ws',
+        watcher_name='test-watcher',
+        subscriptions='newHeads_only',
+        ws_url_secondary='ws://secondary.example.com/ws',
+    )
+    ingestor.state['last_head_block'] = 100
+    ingestor._last_head_block_at = _time.monotonic()
+    ingestor.state['last_processed_block'] = 100
+
+    calls = [0]
+
+    async def _mock_ws_subscribe():
+        calls[0] += 1
+        if calls[0] <= 2:
+            # Simulate close before first event
+            ingestor._session_messages_received = 0
+            raise Exception('ConnectionClosedOK: code=1001 going away')
+        if calls[0] == 3:
+            # Simulate session with messages received (subscription confirmation came through)
+            ingestor._session_messages_received = 1
+            raise Exception('ConnectionClosedOK: code=1001 going away')
+        raise asyncio.CancelledError()
+
+    async def _mock_backfill_noop(a: int, b: int) -> int:
+        return 0
+
+    ingestor._ws_subscribe = _mock_ws_subscribe  # type: ignore[method-assign]
+    ingestor._backfill = _mock_backfill_noop  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(ingestor.run_forever())
+
+    # After 2 "before first event" closes then 1 "with messages" close, counter resets to 0.
+    # Failover must NOT have triggered (would need 3 consecutive before-first-event closes).
+    assert ingestor._current_ws_url == 'ws://primary.example.com/ws', (
+        f'Failover must not trigger after a session with messages reset the counter; '
+        f'got: {ingestor._current_ws_url}'
+    )
+    assert ingestor._consecutive_1001_closes == 0, (
+        f'Counter must reset when a session received messages; '
+        f'got: {ingestor._consecutive_1001_closes}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# 45. No secondary URL → warning logged after 3 × 1001 before first event
+# ---------------------------------------------------------------------------
+
+def test_no_secondary_warning_after_repeated_1001_before_first_event():
+    """When secondary is not configured, log realtime_no_secondary_provider after 3 × 1001."""
+    import logging as _logging
+    import time as _time
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc',
+        ws_url='ws://primary.example.com/ws',
+        watcher_name='test-watcher',
+        subscriptions='newHeads_only',
+        ws_url_secondary=None,
+    )
+    ingestor.state['last_head_block'] = 100
+    ingestor._last_head_block_at = _time.monotonic()
+    ingestor.state['last_processed_block'] = 100
+
+    calls = [0]
+
+    async def _mock_ws_subscribe():
+        calls[0] += 1
+        ingestor._session_messages_received = 0
+        if calls[0] <= 3:
+            raise Exception('ConnectionClosedOK: code=1001 going away')
+        raise asyncio.CancelledError()
+
+    async def _mock_backfill_noop2(a: int, b: int) -> int:
+        return 0
+
+    ingestor._ws_subscribe = _mock_ws_subscribe  # type: ignore[method-assign]
+    ingestor._backfill = _mock_backfill_noop2  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(ingestor.run_forever())
+    finally:
+        mod.logger.removeHandler(handler)
+
+    # Still on primary (no failover possible)
+    assert ingestor._current_ws_url == 'ws://primary.example.com/ws'
+    # Warning must have been emitted
+    warning_logged = any('realtime_no_secondary_provider' in m for m in log_records)
+    assert warning_logged, (
+        f'realtime_no_secondary_provider warning must be logged when secondary is not set. '
+        f'Got: {log_records}'
+    )
