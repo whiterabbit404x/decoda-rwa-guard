@@ -132,6 +132,10 @@ class BaseRealtimeIngestor:
         self._current_ws_url: str = ws_url
         # Messages received in the current WS session (reset at start of each _ws_subscribe call).
         self._session_messages_received: int = 0
+        # Set True after 3 × 1001 closes before first event with no secondary; switches to HTTP fast-tail.
+        self._wss_permanently_disabled: bool = False
+        # Current ingestion mode: 'realtime' (WSS) or 'http_fast_tail'.
+        self._ingestion_mode: str = 'realtime'
 
         # Tracks consecutive clean-close (code=1001) errors; used for downgrade and failover.
         self._consecutive_1001_closes: int = 0
@@ -415,7 +419,7 @@ class BaseRealtimeIngestor:
                         last_processed_block, metrics, updated_at
                     )
                     VALUES (
-                        %s, TRUE, 'running', %s, 'realtime',
+                        %s, TRUE, 'running', %s, %s,
                         %s, %s,
                         COALESCE(
                             (SELECT last_started_at FROM monitoring_watcher_state WHERE watcher_name = %s),
@@ -428,6 +432,7 @@ class BaseRealtimeIngestor:
                         running = TRUE,
                         status = 'running',
                         source_status = EXCLUDED.source_status,
+                        ingestion_mode = EXCLUDED.ingestion_mode,
                         degraded = EXCLUDED.degraded,
                         degraded_reason = EXCLUDED.degraded_reason,
                         last_heartbeat_at = NOW(),
@@ -439,6 +444,7 @@ class BaseRealtimeIngestor:
                     (
                         self.watcher_name,
                         self.state.get('source_status') or 'realtime_websocket',
+                        self._ingestion_mode,
                         bool(self.state.get('degraded')),
                         self.state.get('degraded_reason'),
                         self.watcher_name,
@@ -510,10 +516,18 @@ class BaseRealtimeIngestor:
             ping_timeout=self._ws_ping_timeout,
             open_timeout=self._ws_open_timeout,
         ) as ws:
+            logger.info(
+                'realtime_subscription_request_sent subscription_type=newHeads watcher=%s',
+                self.watcher_name,
+            )
             await ws.send(json.dumps({
                 'jsonrpc': '2.0', 'id': 1, 'method': 'eth_subscribe', 'params': ['newHeads'],
             }))
             if _include_logs:
+                logger.info(
+                    'realtime_subscription_request_sent subscription_type=logs watcher=%s',
+                    self.watcher_name,
+                )
                 await ws.send(json.dumps({
                     'jsonrpc': '2.0', 'id': 2, 'method': 'eth_subscribe',
                     'params': ['logs', {'topics': [[TRANSFER_TOPIC, APPROVAL_TOPIC]]}],
@@ -641,6 +655,143 @@ class BaseRealtimeIngestor:
                             increment('decoda_realtime_events_total', chain=self.chain_network)
 
     # ------------------------------------------------------------------
+    # HTTP fast-tail fallback (QuickNode WSS permanently disabled)
+    # ------------------------------------------------------------------
+
+    async def _run_http_fast_tail(self) -> None:
+        """HTTP polling fallback when WSS is permanently disabled for the provider.
+
+        Polls QuickNode HTTP RPC every 30-60 s, scans eth_getLogs for active Base
+        watched wallet targets.  Uses the same process_ingested_event path so
+        deduplication with the stable 300-s polling worker is automatic.
+
+        Cursor is only advanced when all target scans succeed — failed scans retry
+        the same block range on the next poll so no events are missed.
+        """
+        self._ingestion_mode = 'http_fast_tail'
+        self.state['source_status'] = 'quicknode_http_fast_tail'
+        self.state['degraded'] = True
+        self.state['degraded_reason'] = 'provider_closes_before_first_event'
+
+        _poll_interval = float(
+            max(30, min(60, _resolve_int_env('REALTIME_HTTP_FAST_TAIL_INTERVAL_SECONDS', 45)))
+        )
+
+        logger.warning(
+            'realtime_http_fast_tail_started watcher=%s rpc_host=%s poll_interval=%.0fs',
+            self.watcher_name,
+            _ws_url_host(self.rpc_url),
+            _poll_interval,
+        )
+
+        _next_heartbeat = time.monotonic()
+
+        while True:
+            now = time.monotonic()
+            if now >= _next_heartbeat:
+                self._record_heartbeat()
+                _next_heartbeat = now + self.heartbeat_seconds
+
+            try:
+                head_raw = self._rpc_call('eth_blockNumber', [])
+                head_num = _hex_to_int(head_raw)
+                if head_num is None:
+                    logger.warning(
+                        'http_fast_tail_no_block_number watcher=%s', self.watcher_name,
+                    )
+                    await asyncio.sleep(_poll_interval)
+                    continue
+
+                self.state['last_head_block'] = head_num
+                self._last_head_block_at = time.monotonic()
+
+                last = int(
+                    self.state.get('last_processed_block')
+                    or max(0, head_num - self.confirmations_required - 1)
+                )
+                if last >= head_num:
+                    await asyncio.sleep(_poll_interval)
+                    continue
+
+                from_block = last + 1
+                to_block = head_num
+
+                logger.info(
+                    'realtime_http_fast_tail_scan watcher=%s from_block=%s to_block=%s',
+                    self.watcher_name, from_block, to_block,
+                )
+
+                targets = self._watched_targets()
+                scan_all_ok = True
+
+                for target in targets:
+                    watched = str(
+                        target.get('wallet_address') or target.get('contract_identifier') or ''
+                    ).lower()
+                    if not watched.startswith('0x'):
+                        continue
+
+                    try:
+                        logs = self._rpc_call(
+                            'eth_getLogs',
+                            [{
+                                'fromBlock': hex(from_block),
+                                'toBlock': hex(to_block),
+                                'topics': [[TRANSFER_TOPIC, APPROVAL_TOPIC]],
+                            }],
+                        ) or []
+
+                        for log in logs:
+                            if bool(log.get('removed')):
+                                continue
+                            topics = [str(t).lower() for t in (log.get('topics') or [])]
+                            addr = str(log.get('address') or '').lower()
+                            if watched not in topics and watched != addr:
+                                continue
+
+                            if self._is_rate_limited():
+                                logger.warning(
+                                    'http_fast_tail_rate_limited watcher=%s', self.watcher_name,
+                                )
+                                continue
+
+                            event = self._build_event_from_log(target, log)
+                            result = self._persist_event(target, event)
+
+                            if result.get('status') == 'duplicate_suppressed':
+                                logger.debug(
+                                    'http_fast_tail_deduped watcher=%s event_id=%s',
+                                    self.watcher_name, event.event_id,
+                                )
+                            elif result.get('status') != 'persist_failed':
+                                self.state['metrics']['events_ingested'] += 1
+                                self.state['last_event_at'] = datetime.now(timezone.utc).isoformat()
+                                increment('decoda_realtime_events_total', chain=self.chain_network)
+
+                    except Exception as scan_exc:
+                        logger.warning(
+                            'http_fast_tail_scan_failed watcher=%s target=%s error=%s',
+                            self.watcher_name, target.get('id'), str(scan_exc)[:200],
+                        )
+                        scan_all_ok = False
+
+                if scan_all_ok:
+                    self.state['last_processed_block'] = to_block
+                    self.state['metrics']['heads_received'] = (
+                        self.state['metrics'].get('heads_received', 0) + 1
+                    )
+
+            except Exception as exc:
+                logger.warning(
+                    'http_fast_tail_error watcher=%s error=%s',
+                    self.watcher_name, str(exc)[:200],
+                )
+
+            self._record_heartbeat()
+            _next_heartbeat = time.monotonic() + self.heartbeat_seconds
+            await asyncio.sleep(_poll_interval)
+
+    # ------------------------------------------------------------------
     # Main loop
     # ------------------------------------------------------------------
 
@@ -659,7 +810,7 @@ class BaseRealtimeIngestor:
         except Exception:
             _ConnectionClosedOK = None  # type: ignore[assignment,misc]
 
-        while True:
+        while not self._wss_permanently_disabled:
             # Periodic heartbeat regardless of whether WebSocket is up
             now = time.monotonic()
             if now >= _next_heartbeat:
@@ -755,13 +906,17 @@ class BaseRealtimeIngestor:
                                 self.watcher_name,
                             )
                         else:
+                            self._wss_permanently_disabled = True
+                            self._ingestion_mode = 'http_fast_tail'
+                            self.state['source_status'] = 'quicknode_http_fast_tail'
+                            self.state['degraded'] = True
+                            self.state['degraded_reason'] = 'provider_closes_before_first_event'
                             logger.warning(
-                                'realtime_no_secondary_provider '
-                                'consecutive_1001_before_first_event=%s '
-                                'hint=set BASE_WS_RPC_URL_SECONDARY to enable failover '
-                                'watcher=%s',
-                                self._consecutive_1001_closes,
+                                'realtime_ws_disabled_for_provider '
+                                'reason=provider_closes_before_first_event '
+                                'watcher=%s consecutive_1001=%s',
                                 self.watcher_name,
+                                self._consecutive_1001_closes,
                             )
                 elif not is_1001_close:
                     self._consecutive_1001_closes = 0
@@ -825,7 +980,13 @@ class BaseRealtimeIngestor:
                 _next_heartbeat = time.monotonic() + self.heartbeat_seconds
                 gauge('decoda_realtime_worker_healthy', 0, watcher=self.watcher_name)
 
+                if self._wss_permanently_disabled:
+                    break
+
                 sleep_for = self._compute_reconnect_sleep(exc, retry)
                 await asyncio.sleep(sleep_for)
                 if not is_rate_limit:
                     retry = min(120.0, retry * 2)
+
+        if self._wss_permanently_disabled:
+            await self._run_http_fast_tail()
