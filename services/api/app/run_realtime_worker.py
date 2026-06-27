@@ -93,18 +93,26 @@ def _resolve_config() -> dict[str, object]:
     enabled = _resolve_bool_env('BASE_REALTIME_ENABLED', default=False)
     provider_mode = _strip_env_value(os.getenv('BASE_REALTIME_PROVIDER') or 'websocket').lower()
 
-    # Accept BASE_WS_RPC_URL or BASE_WS_RPC_URL_8453; prefer primary.
+    # Accept BASE_WS_RPC_URL_PRIMARY (explicit) > BASE_WS_RPC_URL > BASE_WS_RPC_URL_8453.
+    _ws_raw_named_primary = _strip_env_value(os.getenv('BASE_WS_RPC_URL_PRIMARY') or '')
     _ws_raw_primary = _strip_env_value(os.getenv('BASE_WS_RPC_URL') or '')
     _ws_raw_8453 = _strip_env_value(os.getenv('BASE_WS_RPC_URL_8453') or '')
-    if _ws_raw_primary:
+    _ws_raw_secondary = _strip_env_value(os.getenv('BASE_WS_RPC_URL_SECONDARY') or '')
+
+    if _ws_raw_named_primary:
+        ws_url = _normalize_ws_scheme(_ws_raw_named_primary)
+        _selected_ws_env: str | None = 'BASE_WS_RPC_URL_PRIMARY'
+    elif _ws_raw_primary:
         ws_url = _normalize_ws_scheme(_ws_raw_primary)
-        _selected_ws_env: str | None = 'BASE_WS_RPC_URL'
+        _selected_ws_env = 'BASE_WS_RPC_URL'
     elif _ws_raw_8453:
         ws_url = _normalize_ws_scheme(_ws_raw_8453)
         _selected_ws_env = 'BASE_WS_RPC_URL_8453'
     else:
         ws_url = ''
         _selected_ws_env = None
+
+    ws_url_secondary = _normalize_ws_scheme(_ws_raw_secondary) if _ws_raw_secondary else ''
 
     # HTTP RPC URL: explicit env vars first, then derive from WS URL.
     rpc_url = (
@@ -131,6 +139,8 @@ def _resolve_config() -> dict[str, object]:
         'ws_url': ws_url,
         'ws_url_host': _safe_rpc_host(ws_url) if ws_url else 'not_configured',
         'ws_url_scheme': _ws_scheme,
+        'ws_url_secondary': ws_url_secondary,
+        'ws_url_secondary_host': _safe_rpc_host(ws_url_secondary) if ws_url_secondary else 'not_configured',
         'rpc_url': rpc_url,
         'rpc_url_host': _safe_rpc_host(rpc_url) if rpc_url else 'not_configured',
         'webhook_secret_set': webhook_secret_set,
@@ -141,8 +151,10 @@ def _resolve_config() -> dict[str, object]:
         'subscriptions': subscriptions,
         # Diagnostic presence flags — never secret values.
         'base_realtime_enabled_present': bool(_strip_env_value(os.getenv('BASE_REALTIME_ENABLED') or '')),
-        'base_ws_rpc_url_present': bool(_ws_raw_primary),
+        'base_ws_rpc_url_present': bool(_ws_raw_named_primary or _ws_raw_primary),
         'base_ws_rpc_url_8453_present': bool(_ws_raw_8453),
+        'base_ws_rpc_url_primary_present': bool(_ws_raw_named_primary),
+        'base_ws_rpc_url_secondary_present': bool(_ws_raw_secondary),
         'selected_ws_rpc_env_name': _selected_ws_env or 'none',
     }
 
@@ -258,7 +270,8 @@ async def _run_ingestor(config: dict[str, object]) -> None:
     logger.info(
         'realtime_worker_started chain_id=%s provider_mode=%s '
         'ws_host=%s rpc_host=%s confirmations=%s '
-        'max_events_per_minute=%s workspace_target_count=%s watcher=%s',
+        'max_events_per_minute=%s workspace_target_count=%s '
+        'subscriptions=%s ws_secondary_host=%s watcher=%s',
         _BASE_CHAIN_ID,
         config['provider_mode'],
         config['ws_url_host'],
@@ -266,6 +279,8 @@ async def _run_ingestor(config: dict[str, object]) -> None:
         config['confirmations'],
         config['max_events_per_minute'],
         workspace_target_count,
+        config.get('subscriptions', 'newHeads,logs'),
+        config.get('ws_url_secondary_host', 'not_configured'),
         config['watcher_name'],
     )
     if workspace_target_count == 0:
@@ -275,6 +290,7 @@ async def _run_ingestor(config: dict[str, object]) -> None:
             _BASE_CHAIN_ID,
         )
 
+    _ws_secondary = str(config.get('ws_url_secondary') or '') or None
     ingestor = BaseRealtimeIngestor(
         rpc_url=str(config['rpc_url']),
         ws_url=str(config['ws_url']),
@@ -282,6 +298,7 @@ async def _run_ingestor(config: dict[str, object]) -> None:
         confirmations_required=int(config['confirmations']),
         max_events_per_minute=int(config['max_events_per_minute']),
         subscriptions=str(config.get('subscriptions') or ''),
+        ws_url_secondary=_ws_secondary,
     )
 
     await ingestor.run_forever()
