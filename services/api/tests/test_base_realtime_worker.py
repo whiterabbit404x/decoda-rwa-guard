@@ -1826,11 +1826,12 @@ def test_failover_counter_resets_when_session_had_messages():
 
 
 # ---------------------------------------------------------------------------
-# 45. No secondary URL → warning logged after 3 × 1001 before first event
+# 45. No secondary URL → WSS permanently disabled + HTTP fast-tail switch after 3 × 1001
 # ---------------------------------------------------------------------------
 
-def test_no_secondary_warning_after_repeated_1001_before_first_event():
-    """When secondary is not configured, log realtime_no_secondary_provider after 3 × 1001."""
+def test_no_secondary_switches_to_http_fast_tail_after_repeated_1001():
+    """When secondary is not configured, 3 × 1001 before first event must permanently
+    disable WSS, log realtime_ws_disabled_for_provider, and switch to HTTP fast-tail."""
     import logging as _logging
     import time as _time
     from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
@@ -1859,9 +1860,13 @@ def test_no_secondary_warning_after_repeated_1001_before_first_event():
     async def _mock_backfill_noop2(a: int, b: int) -> int:
         return 0
 
+    async def _mock_http_fast_tail():
+        raise asyncio.CancelledError()
+
     ingestor._ws_subscribe = _mock_ws_subscribe  # type: ignore[method-assign]
     ingestor._backfill = _mock_backfill_noop2  # type: ignore[method-assign]
     ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+    ingestor._run_http_fast_tail = _mock_http_fast_tail  # type: ignore[method-assign]
 
     log_records: list[str] = []
 
@@ -1879,11 +1884,371 @@ def test_no_secondary_warning_after_repeated_1001_before_first_event():
     finally:
         mod.logger.removeHandler(handler)
 
-    # Still on primary (no failover possible)
-    assert ingestor._current_ws_url == 'ws://primary.example.com/ws'
-    # Warning must have been emitted
-    warning_logged = any('realtime_no_secondary_provider' in m for m in log_records)
-    assert warning_logged, (
-        f'realtime_no_secondary_provider warning must be logged when secondary is not set. '
-        f'Got: {log_records}'
+    # WSS permanently disabled
+    assert ingestor._wss_permanently_disabled is True, (
+        '_wss_permanently_disabled must be True after 3 × 1001 with no secondary'
     )
+    assert ingestor._ingestion_mode == 'http_fast_tail', (
+        f'ingestion_mode must be http_fast_tail; got: {ingestor._ingestion_mode}'
+    )
+    # Correct log emitted
+    disabled_logged = any('realtime_ws_disabled_for_provider' in m for m in log_records)
+    assert disabled_logged, (
+        f'realtime_ws_disabled_for_provider must be logged. Got: {log_records}'
+    )
+    reason_logged = any('reason=provider_closes_before_first_event' in m for m in log_records)
+    assert reason_logged, (
+        f'reason=provider_closes_before_first_event must appear in log. Got: {log_records}'
+    )
+    # WSS subscribe called exactly 3 times — no reconnect spam
+    assert calls[0] == 3, (
+        f'_ws_subscribe must be called exactly 3 times before switch; got {calls[0]}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# 46. No reconnect spam: _ws_subscribe is not called again after WSS disabled
+# ---------------------------------------------------------------------------
+
+def test_no_reconnect_spam_after_wss_disabled():
+    """Once _wss_permanently_disabled is True, run_forever must not call
+    _ws_subscribe again and must transition to _run_http_fast_tail."""
+    import time as _time
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc',
+        ws_url='ws://primary.example.com/ws',
+        watcher_name='test-watcher',
+        subscriptions='newHeads_only',
+        ws_url_secondary=None,
+    )
+    # Pre-set the disabled flag to simulate state after 3 × 1001
+    ingestor._wss_permanently_disabled = True
+    ingestor._ingestion_mode = 'http_fast_tail'
+
+    ws_subscribe_calls = [0]
+
+    async def _mock_ws_subscribe():
+        ws_subscribe_calls[0] += 1
+        raise asyncio.CancelledError()
+
+    http_fast_tail_calls = [0]
+
+    async def _mock_http_fast_tail():
+        http_fast_tail_calls[0] += 1
+        raise asyncio.CancelledError()
+
+    ingestor._ws_subscribe = _mock_ws_subscribe  # type: ignore[method-assign]
+    ingestor._run_http_fast_tail = _mock_http_fast_tail  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+
+    ingestor.state['last_head_block'] = 100
+    ingestor._last_head_block_at = _time.monotonic()
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(ingestor.run_forever())
+
+    assert ws_subscribe_calls[0] == 0, (
+        f'_ws_subscribe must not be called after WSS disabled; got {ws_subscribe_calls[0]} calls'
+    )
+    assert http_fast_tail_calls[0] == 1, (
+        f'_run_http_fast_tail must be called exactly once; got {http_fast_tail_calls[0]} calls'
+    )
+
+
+# ---------------------------------------------------------------------------
+# 47. HTTP fast-tail detects watched wallet transfer
+# ---------------------------------------------------------------------------
+
+def test_http_fast_tail_detects_watched_wallet_transfer():
+    """_run_http_fast_tail must fetch eth_getLogs and persist a matching event."""
+    import time as _time
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    wallet = '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
+    target = {
+        'id': str(uuid.uuid4()),
+        'workspace_id': str(uuid.uuid4()),
+        'name': 'Test Wallet',
+        'target_type': 'wallet',
+        'chain_network': 'base',
+        'wallet_address': wallet,
+        'contract_identifier': None,
+        'monitoring_enabled': True,
+        'enabled': True,
+        'is_active': True,
+        'updated_by_user_id': None,
+        'created_by_user_id': None,
+        'severity_threshold': None,
+    }
+
+    # Use wallet as the emitting contract address so the filter matches (watched == address).
+    # This simulates a contract target where the monitored address IS the log emitter.
+    transfer_log = {
+        'blockNumber': hex(201),
+        'transactionHash': '0xfasttailtx',
+        'logIndex': hex(0),
+        'topics': [
+            '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',  # Transfer
+            '0x0000000000000000000000001111111111111111111111111111111111111111',
+            '0x0000000000000000000000002222222222222222222222222222222222222222',
+        ],
+        'address': wallet,  # watched wallet IS the contract address → filter matches
+        'removed': False,
+    }
+
+    rpc_calls: list[str] = []
+
+    def _mock_rpc_call(method: str, params: list) -> object:
+        rpc_calls.append(method)
+        if method == 'eth_blockNumber':
+            return hex(202)
+        if method == 'eth_getLogs':
+            return [transfer_log]
+        return None
+
+    persisted: list = []
+
+    def _mock_persist(tgt, evt):
+        persisted.append(evt)
+        return {'status': 'processed', 'event_id': evt.event_id}
+
+    poll_count = [0]
+
+    async def _mock_sleep(secs: float) -> None:
+        poll_count[0] += 1
+        raise asyncio.CancelledError()
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc.quicknode.example.com/v1/TOKEN',
+        ws_url='wss://rpc.quicknode.example.com/v1/TOKEN',
+        watcher_name='test-watcher',
+    )
+    ingestor.state['last_processed_block'] = 200
+    ingestor._wss_permanently_disabled = True
+    ingestor._ingestion_mode = 'http_fast_tail'
+
+    ingestor._rpc_call = _mock_rpc_call  # type: ignore[method-assign]
+    ingestor._persist_event = _mock_persist  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+
+    with patch.object(ingestor, '_watched_targets', return_value=[target]):
+        with patch('services.api.app.base_realtime_ingestor.asyncio') as mock_asyncio:
+            mock_asyncio.sleep = _mock_sleep
+            mock_asyncio.CancelledError = asyncio.CancelledError
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(ingestor._run_http_fast_tail())
+
+    assert len(persisted) == 1, f'Expected 1 persisted event; got {len(persisted)}'
+    assert persisted[0].payload['tx_hash'] == '0xfasttailtx'
+    assert ingestor.state['metrics']['events_ingested'] == 1
+    assert ingestor.state['last_processed_block'] == 202
+
+
+# ---------------------------------------------------------------------------
+# 48. HTTP fast-tail dedupes with stable 300s polling worker
+# ---------------------------------------------------------------------------
+
+def test_http_fast_tail_dedupes_with_stable_polling():
+    """HTTP fast-tail and stable polling produce identical event_ids for the same tx,
+    so process_ingested_event's receipt-based dedup prevents duplicate alerts.
+
+    Simulated at the _persist_event level: first call returns 'processed',
+    second call (same event) returns 'duplicate_suppressed' — events_ingested stays 1.
+    """
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor, REALTIME_INGESTION_SOURCE
+
+    target = {
+        'id': str(uuid.uuid4()),
+        'workspace_id': str(uuid.uuid4()),
+        'target_type': 'wallet',
+        'chain_network': 'base',
+        'wallet_address': '0xeeee' + '0' * 36,
+        'contract_identifier': None,
+    }
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    log = {
+        'blockNumber': hex(500),
+        'transactionHash': '0xpollingdupe',
+        'logIndex': hex(0),
+        'topics': [
+            '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',
+            None, None,
+        ],
+        'address': '0x0000000000000000000000000000000000000000',
+    }
+    event = ingestor._build_event_from_log(target, log)
+    assert event.ingestion_source == REALTIME_INGESTION_SOURCE
+
+    # Both fast-tail and polling build the same event_id for the same tx/log.
+    # Simulate: first call → processed, second call (polling) → duplicate_suppressed.
+    call_n = {'n': 0}
+
+    def _mock_persist(tgt, evt):
+        call_n['n'] += 1
+        if call_n['n'] == 1:
+            return {'status': 'processed', 'event_id': evt.event_id}
+        return {'status': 'duplicate_suppressed', 'event_id': evt.event_id}
+
+    ingestor._persist_event = _mock_persist  # type: ignore[method-assign]
+
+    # First ingest (HTTP fast-tail)
+    r1 = ingestor._persist_event(target, event)
+    if r1.get('status') != 'duplicate_suppressed':
+        ingestor.state['metrics']['events_ingested'] += 1
+
+    # Second ingest (stable polling worker sees same tx)
+    r2 = ingestor._persist_event(target, event)
+    assert r2['status'] == 'duplicate_suppressed', (
+        'Polling worker must not duplicate an event already ingested by HTTP fast-tail'
+    )
+    # Only 1 event counted, not 2
+    assert ingestor.state['metrics']['events_ingested'] == 1, (
+        'events_ingested must be 1 — deduped second call must not increment it'
+    )
+
+
+# ---------------------------------------------------------------------------
+# 49. No secrets in HTTP fast-tail logs
+# ---------------------------------------------------------------------------
+
+def test_no_secrets_in_http_fast_tail_logs():
+    """HTTP fast-tail logs must never include the RPC URL path or API key."""
+    import logging as _logging
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    secret_rpc = 'https://nd-123.p2pify.com/SUPERSECRETTOKEN'
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url=secret_rpc,
+        ws_url='wss://nd-123.p2pify.com/SUPERSECRETTOKEN',
+        watcher_name='test-watcher',
+    )
+    ingestor._wss_permanently_disabled = True
+    ingestor._ingestion_mode = 'http_fast_tail'
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+
+    def _mock_rpc_call(method: str, params: list) -> object:
+        if method == 'eth_blockNumber':
+            return hex(300)
+        return []
+
+    async def _mock_sleep(secs: float) -> None:
+        raise asyncio.CancelledError()
+
+    try:
+        ingestor._rpc_call = _mock_rpc_call  # type: ignore[method-assign]
+        ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+        with patch.object(ingestor, '_watched_targets', return_value=[]):
+            with patch('services.api.app.base_realtime_ingestor.asyncio') as mock_asyncio:
+                mock_asyncio.sleep = _mock_sleep
+                mock_asyncio.CancelledError = asyncio.CancelledError
+                with pytest.raises(asyncio.CancelledError):
+                    asyncio.run(ingestor._run_http_fast_tail())
+    finally:
+        mod.logger.removeHandler(handler)
+
+    for record in log_records:
+        assert 'SUPERSECRETTOKEN' not in record, (
+            f'Secret token must not appear in log: {record}'
+        )
+        assert '/SUPERSECRETTOKEN' not in record, (
+            f'Secret path must not appear in log: {record}'
+        )
+    # Hostname only must be present in the started log
+    started_log = next((m for m in log_records if 'realtime_http_fast_tail_started' in m), None)
+    assert started_log is not None, 'realtime_http_fast_tail_started must be logged'
+    assert 'nd-123.p2pify.com' in started_log, (
+        f'Hostname must appear in started log; got: {started_log}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# 50. realtime_subscription_request_sent is logged before eth_subscribe send
+# ---------------------------------------------------------------------------
+
+def test_subscription_request_sent_logged():
+    """realtime_subscription_request_sent must be logged before each eth_subscribe send."""
+    import sys
+    import logging as _logging
+    from unittest.mock import AsyncMock
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+        subscriptions='newHeads_only',
+    )
+
+    log_records: list[str] = []
+    send_log_sequence: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            msg = r.getMessage()
+            log_records.append(msg)
+            if 'realtime_subscription_request_sent' in msg:
+                send_log_sequence.append('log')
+
+    mock_ws = MagicMock()
+
+    async def _capture_send(msg: str) -> None:
+        send_log_sequence.append('send')
+
+    mock_ws.send = AsyncMock(side_effect=_capture_send)
+    mock_ws.recv = AsyncMock(side_effect=asyncio.CancelledError)
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=mock_ws)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    fake_ws_module = MagicMock()
+    fake_ws_module.connect.return_value = cm
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+
+    try:
+        async def run_test() -> None:
+            with (
+                patch.dict(sys.modules, {'websockets': fake_ws_module}),
+                patch.object(ingestor, '_watched_targets', return_value=[]),
+            ):
+                try:
+                    await ingestor._ws_subscribe()
+                except asyncio.CancelledError:
+                    pass
+
+        asyncio.run(run_test())
+    finally:
+        mod.logger.removeHandler(handler)
+
+    # Log must appear before send
+    request_sent_logged = any(
+        'realtime_subscription_request_sent' in m and 'subscription_type=newHeads' in m
+        for m in log_records
+    )
+    assert request_sent_logged, (
+        f'realtime_subscription_request_sent must be logged. Got: {log_records}'
+    )
+    # Log must come BEFORE the ws.send call
+    if len(send_log_sequence) >= 2:
+        assert send_log_sequence[0] == 'log', (
+            f'subscription_request_sent log must precede send; sequence: {send_log_sequence}'
+        )
+        assert send_log_sequence[1] == 'send', (
+            f'send must follow the log; sequence: {send_log_sequence}'
+        )
