@@ -386,10 +386,11 @@ class BaseRealtimeIngestor:
             self.state['metrics'].get('events_ingested', 0)
             + self.state['metrics'].get('heads_received', 0)
         )
+        _active_host = _ws_url_host(self._current_ws_url)
         logger.info(
             'realtime_worker_heartbeat watcher_name=%s chain_id=%s chain=%s '
             'last_event_at=%s reconnect_count=%s events_processed=%s '
-            'heads_received=%s lag_blocks=%s degraded=%s',
+            'heads_received=%s lag_blocks=%s degraded=%s active_provider_host=%s',
             self.watcher_name,
             self.chain_id,
             self.chain_network,
@@ -399,6 +400,7 @@ class BaseRealtimeIngestor:
             self.state['metrics'].get('heads_received', 0),
             lag,
             bool(self.state.get('degraded')),
+            _active_host,
         )
 
         try:
@@ -441,7 +443,7 @@ class BaseRealtimeIngestor:
                         self.state.get('degraded_reason'),
                         self.watcher_name,
                         self.state.get('last_processed_block'),
-                        json.dumps({**self.state['metrics'], 'lag_blocks': lag}),
+                        json.dumps({**self.state['metrics'], 'lag_blocks': lag, 'active_provider_host': _active_host}),
                     ),
                 )
                 conn.commit()
@@ -728,23 +730,39 @@ class BaseRealtimeIngestor:
                             'chain=%s watcher=%s new_subscriptions=%s',
                             self.chain_network, self.watcher_name, self.subscriptions,
                         )
-                elif is_1001_close and self.subscriptions == 'newHeads_only' and self.ws_url_secondary:
-                    self._consecutive_1001_closes += 1
-                    if self._consecutive_1001_closes >= 3:
-                        _failover_old_host = _ws_url_host(self._current_ws_url)
-                        self._current_ws_url = (
-                            self.ws_url_secondary
-                            if self._current_ws_url != self.ws_url_secondary
-                            else self.ws_url
-                        )
+                elif is_1001_close and self.subscriptions == 'newHeads_only':
+                    # Only count closes that fired before any message was received.
+                    # If the provider did respond (subscription confirmation arrived),
+                    # give it a clean slate rather than penalising transient instability.
+                    if self._session_messages_received == 0:
+                        self._consecutive_1001_closes += 1
+                    else:
                         self._consecutive_1001_closes = 0
-                        logger.warning(
-                            'realtime_provider_failover '
-                            'old_host=%s new_host=%s watcher=%s',
-                            _failover_old_host,
-                            _ws_url_host(self._current_ws_url),
-                            self.watcher_name,
-                        )
+                    if self._consecutive_1001_closes >= 3:
+                        if self.ws_url_secondary:
+                            _failover_old_host = _ws_url_host(self._current_ws_url)
+                            self._current_ws_url = (
+                                self.ws_url_secondary
+                                if self._current_ws_url != self.ws_url_secondary
+                                else self.ws_url
+                            )
+                            self._consecutive_1001_closes = 0
+                            logger.warning(
+                                'realtime_provider_failover '
+                                'old_host=%s new_host=%s watcher=%s',
+                                _failover_old_host,
+                                _ws_url_host(self._current_ws_url),
+                                self.watcher_name,
+                            )
+                        else:
+                            logger.warning(
+                                'realtime_no_secondary_provider '
+                                'consecutive_1001_before_first_event=%s '
+                                'hint=set BASE_WS_RPC_URL_SECONDARY to enable failover '
+                                'watcher=%s',
+                                self._consecutive_1001_closes,
+                                self.watcher_name,
+                            )
                 elif not is_1001_close:
                     self._consecutive_1001_closes = 0
 
