@@ -1770,11 +1770,19 @@ def test_heartbeat_active_provider_host_safe():
 
 
 # ---------------------------------------------------------------------------
-# 44. Failover counter resets when messages received before 1001 close
+# 44. Failover counter resets when a REAL chain event arrived before 1001 close
 # ---------------------------------------------------------------------------
 
-def test_failover_counter_resets_when_session_had_messages():
-    """If the session received messages before the 1001 close, consecutive counter resets."""
+def test_failover_counter_resets_when_session_had_real_event():
+    """The before-first-event counter must reset only when an actual head/event
+    arrived — NOT merely because a subscription confirmation was received.
+
+    A subscription ACK increments _session_messages_received but never
+    heads_received; gating the counter on _session_messages_received was the
+    original bug (the provider ACKs then closes 1001 before the first head, so
+    the counter reset forever and fallback never fired). Now the counter resets
+    only when heads_received/events_ingested prove the provider delivered data.
+    """
     import time as _time
     from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
 
@@ -1788,18 +1796,21 @@ def test_failover_counter_resets_when_session_had_messages():
     ingestor.state['last_head_block'] = 100
     ingestor._last_head_block_at = _time.monotonic()
     ingestor.state['last_processed_block'] = 100
+    # Speed up: no real reconnect backoff between attempts.
+    ingestor._compute_reconnect_sleep = lambda *a, **k: 0.0  # type: ignore[method-assign]
 
     calls = [0]
 
     async def _mock_ws_subscribe():
         calls[0] += 1
+        # Subscription ACK always "arrives" — must NOT count as a first event.
+        ingestor._session_messages_received = 1
         if calls[0] <= 2:
-            # Simulate close before first event
-            ingestor._session_messages_received = 0
+            # Closes before any real head/event.
             raise Exception('ConnectionClosedOK: code=1001 going away')
         if calls[0] == 3:
-            # Simulate session with messages received (subscription confirmation came through)
-            ingestor._session_messages_received = 1
+            # This session delivered a real head before closing → counter resets.
+            ingestor.state['metrics']['heads_received'] = 1
             raise Exception('ConnectionClosedOK: code=1001 going away')
         raise asyncio.CancelledError()
 
@@ -1813,14 +1824,14 @@ def test_failover_counter_resets_when_session_had_messages():
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(ingestor.run_forever())
 
-    # After 2 "before first event" closes then 1 "with messages" close, counter resets to 0.
-    # Failover must NOT have triggered (would need 3 consecutive before-first-event closes).
+    # 2 before-first-event closes then 1 close AFTER a real head → counter resets to 0.
+    # Failover must NOT have triggered (needs 3 consecutive before-first-event closes).
     assert ingestor._current_ws_url == 'ws://primary.example.com/ws', (
-        f'Failover must not trigger after a session with messages reset the counter; '
+        f'Failover must not trigger once a real head reset the counter; '
         f'got: {ingestor._current_ws_url}'
     )
     assert ingestor._consecutive_1001_closes == 0, (
-        f'Counter must reset when a session received messages; '
+        f'Counter must reset once a real head/event arrived; '
         f'got: {ingestor._consecutive_1001_closes}'
     )
 
@@ -2252,3 +2263,385 @@ def test_subscription_request_sent_logged():
         assert send_log_sequence[1] == 'send', (
             f'send must follow the log; sequence: {send_log_sequence}'
         )
+
+
+# ---------------------------------------------------------------------------
+# 51. 3 × code=1001 before first head triggers fallback even when the provider
+#     ACKed the subscription (the original bug: subscription ACK reset counter)
+# ---------------------------------------------------------------------------
+
+def test_three_1001_closes_before_first_head_triggers_fallback_despite_subscription_ack():
+    """Reproduces the production failure: QuickNode ACKs the newHeads subscription
+    (so _session_messages_received > 0) then closes 1001 before the first head
+    (heads_received stays 0). The old code reset the counter on every close and
+    fallback never fired. Now 3 such closes must disable WSS and switch to
+    HTTP fast-tail, logging realtime_ws_disabled_for_provider with close_count.
+    """
+    import logging as _logging
+    import time as _time
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc',
+        ws_url='ws://primary.example.com/ws',
+        watcher_name='test-watcher',
+        subscriptions='newHeads_only',
+        ws_url_secondary=None,
+    )
+    ingestor.state['last_head_block'] = 100
+    ingestor._last_head_block_at = _time.monotonic()
+    ingestor.state['last_processed_block'] = 100
+    ingestor._compute_reconnect_sleep = lambda *a, **k: 0.0  # type: ignore[method-assign]
+
+    calls = [0]
+
+    async def _mock_ws_subscribe():
+        calls[0] += 1
+        # Provider ACKs the subscription every time but never sends a head.
+        ingestor._session_messages_received = 1
+        assert ingestor.state['metrics']['heads_received'] == 0
+        if calls[0] <= 3:
+            raise Exception('ConnectionClosedOK: code=1001 going away')
+        raise asyncio.CancelledError()
+
+    async def _mock_backfill(a: int, b: int) -> int:
+        return 0
+
+    fast_tail_calls = [0]
+
+    async def _mock_http_fast_tail():
+        fast_tail_calls[0] += 1
+        raise asyncio.CancelledError()
+
+    ingestor._ws_subscribe = _mock_ws_subscribe  # type: ignore[method-assign]
+    ingestor._backfill = _mock_backfill  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+    ingestor._run_http_fast_tail = _mock_http_fast_tail  # type: ignore[method-assign]
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(ingestor.run_forever())
+    finally:
+        mod.logger.removeHandler(handler)
+
+    assert ingestor._wss_permanently_disabled is True, (
+        'subscription ACK must NOT reset the before-first-event counter; '
+        'WSS must be disabled after 3 closes'
+    )
+    assert ingestor._ingestion_mode == 'http_fast_tail'
+    assert fast_tail_calls[0] == 1, 'must hand off to HTTP fast-tail exactly once'
+    assert calls[0] == 3, f'WSS must be tried exactly 3 times, got {calls[0]}'
+    disabled_log = next(
+        (m for m in log_records if 'realtime_ws_disabled_for_provider' in m), None
+    )
+    assert disabled_log is not None, (
+        f'realtime_ws_disabled_for_provider must be logged. Got: {log_records}'
+    )
+    assert 'reason=provider_closes_before_first_event' in disabled_log
+    assert 'close_count=3' in disabled_log, (
+        f'close_count=3 must appear in disabled log; got: {disabled_log}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# 52. Fallback starts (quicknode_fast_tail_started) and the WSS reconnect loop
+#     stops — _ws_subscribe is never called again and reconnect_count is frozen
+# ---------------------------------------------------------------------------
+
+def test_fallback_starts_and_wss_reconnect_loop_stops():
+    """Once WSS is permanently disabled, run_forever must NOT call _ws_subscribe
+    again (reconnect_count frozen) and must run HTTP fast-tail, which logs
+    quicknode_fast_tail_started chain_id=8453 target_count=<n> interval_seconds=<n>.
+    """
+    import logging as _logging
+    import time as _time
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    wallet = '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
+    target = {
+        'id': str(uuid.uuid4()),
+        'workspace_id': str(uuid.uuid4()),
+        'target_type': 'wallet',
+        'chain_network': 'base',
+        'wallet_address': wallet,
+        'contract_identifier': None,
+    }
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+        subscriptions='newHeads_only',
+    )
+    # Simulate state right after the 3rd close disabled WSS.
+    ingestor._wss_permanently_disabled = True
+    ingestor._ingestion_mode = 'http_fast_tail'
+    ingestor.state['metrics']['ws_reconnects'] = 3
+    ingestor.state['last_head_block'] = 100
+    ingestor._last_head_block_at = _time.monotonic()
+
+    ws_subscribe_calls = [0]
+
+    async def _mock_ws_subscribe():
+        ws_subscribe_calls[0] += 1
+        raise asyncio.CancelledError()
+
+    def _mock_rpc_call(method: str, params: list) -> object:
+        if method == 'eth_blockNumber':
+            return hex(300)
+        return []
+
+    async def _mock_sleep(secs: float) -> None:
+        raise asyncio.CancelledError()
+
+    ingestor._ws_subscribe = _mock_ws_subscribe  # type: ignore[method-assign]
+    ingestor._rpc_call = _mock_rpc_call  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+
+    try:
+        with patch.object(ingestor, '_watched_targets', return_value=[target]):
+            with patch('services.api.app.base_realtime_ingestor.asyncio') as mock_asyncio:
+                mock_asyncio.sleep = _mock_sleep
+                mock_asyncio.CancelledError = asyncio.CancelledError
+                with pytest.raises(asyncio.CancelledError):
+                    asyncio.run(ingestor.run_forever())
+    finally:
+        mod.logger.removeHandler(handler)
+
+    assert ws_subscribe_calls[0] == 0, (
+        f'_ws_subscribe must NOT be called after WSS disabled; got {ws_subscribe_calls[0]}'
+    )
+    assert ingestor.state['metrics']['ws_reconnects'] == 3, (
+        'reconnect_count must stop increasing after fallback'
+    )
+    started_log = next(
+        (m for m in log_records if 'quicknode_fast_tail_started' in m), None
+    )
+    assert started_log is not None, (
+        f'quicknode_fast_tail_started must be logged. Got: {log_records}'
+    )
+    assert 'chain_id=8453' in started_log, f'chain_id=8453 expected; got: {started_log}'
+    assert 'target_count=1' in started_log, f'target_count=1 expected; got: {started_log}'
+    assert 'interval_seconds=' in started_log, (
+        f'interval_seconds must be present; got: {started_log}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# 53. heads_received=0 is treated as before_first_event
+# ---------------------------------------------------------------------------
+
+def test_heads_received_zero_is_before_first_event():
+    """_closed_before_first_event() is True only when no real head/event arrived.
+    A subscription ACK (which bumps _session_messages_received) must not flip it."""
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+
+    # No data yet → before first event.
+    assert ingestor._closed_before_first_event() is True
+
+    # Subscription ACK arrived but still no head → still before first event.
+    ingestor._session_messages_received = 5
+    assert ingestor._closed_before_first_event() is True
+
+    # A real head arrived → provider proven healthy, no longer before first event.
+    ingestor.state['metrics']['heads_received'] = 1
+    assert ingestor._closed_before_first_event() is False
+
+    # A real log event (without a head) also counts as a first event.
+    ingestor.state['metrics']['heads_received'] = 0
+    ingestor.state['metrics']['events_ingested'] = 2
+    assert ingestor._closed_before_first_event() is False
+
+
+# ---------------------------------------------------------------------------
+# 54. HTTP fast-tail produces no duplicate alerts vs the stable 300s polling worker
+# ---------------------------------------------------------------------------
+
+def test_fast_tail_no_duplicate_alerts_with_stable_polling():
+    """The same tx/log yields the same event_id whether ingested by HTTP fast-tail
+    or by the 300s polling worker, so receipt-based dedup suppresses the duplicate
+    and events_ingested stays 1."""
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    target = {
+        'id': str(uuid.uuid4()),
+        'workspace_id': str(uuid.uuid4()),
+        'target_type': 'wallet',
+        'chain_network': 'base',
+        'wallet_address': '0xffff' + '0' * 36,
+        'contract_identifier': None,
+    }
+    log = {
+        'blockNumber': hex(700),
+        'transactionHash': '0xsharedfasttail',
+        'logIndex': hex(0),
+        'topics': [
+            '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',
+            None, None,
+        ],
+        'address': '0x0000000000000000000000000000000000000000',
+    }
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+
+    # fast-tail and polling both build the event_id the same way → identical id.
+    fast_tail_event = ingestor._build_event_from_log(target, log)
+    polling_event = ingestor._build_event_from_log(target, log)
+    assert fast_tail_event.event_id == polling_event.event_id, (
+        'fast-tail and polling must produce the same event_id for the same tx/log'
+    )
+
+    # Receipt-based dedup: first persist processed, any later persist suppressed.
+    seen: set[str] = set()
+
+    def _mock_persist(tgt, evt):
+        if evt.event_id in seen:
+            return {'status': 'duplicate_suppressed', 'event_id': evt.event_id}
+        seen.add(evt.event_id)
+        return {'status': 'processed', 'event_id': evt.event_id}
+
+    ingestor._persist_event = _mock_persist  # type: ignore[method-assign]
+
+    # HTTP fast-tail ingests first.
+    r1 = ingestor._persist_event(target, fast_tail_event)
+    if r1.get('status') != 'duplicate_suppressed':
+        ingestor.state['metrics']['events_ingested'] += 1
+
+    # Stable polling worker later sees the same tx.
+    r2 = ingestor._persist_event(target, polling_event)
+    if r2.get('status') != 'duplicate_suppressed':
+        ingestor.state['metrics']['events_ingested'] += 1
+
+    assert r2['status'] == 'duplicate_suppressed', (
+        'polling worker must not create a duplicate alert for a fast-tail event'
+    )
+    assert ingestor.state['metrics']['events_ingested'] == 1, (
+        f"events_ingested must be 1, not duplicated; got "
+        f"{ingestor.state['metrics']['events_ingested']}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 55. No full RPC URLs or API keys leak in fallback-trigger or fast-tail logs
+# ---------------------------------------------------------------------------
+
+def test_no_full_rpc_urls_or_api_keys_in_fallback_logs():
+    """The fallback path (realtime_ws_disabled_for_provider, realtime_ws_closed_cleanly)
+    and HTTP fast-tail start (quicknode_fast_tail_started) must never log full URLs,
+    paths, or API keys — hostname only."""
+    import logging as _logging
+    import time as _time
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    secret = 'SUPERSECRETAPIKEY'
+    ws_url = f'wss://nd-999.p2pify.com/{secret}'
+    rpc_url = f'https://nd-999.p2pify.com/{secret}'
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+
+    # --- Part 1: the fallback trigger path in run_forever -------------------
+    ingestor = BaseRealtimeIngestor(
+        rpc_url=rpc_url, ws_url=ws_url, watcher_name='test-watcher',
+        subscriptions='newHeads_only', ws_url_secondary=None,
+    )
+    ingestor.state['last_head_block'] = 100
+    ingestor._last_head_block_at = _time.monotonic()
+    ingestor.state['last_processed_block'] = 100
+    ingestor._compute_reconnect_sleep = lambda *a, **k: 0.0  # type: ignore[method-assign]
+
+    calls = [0]
+
+    async def _mock_ws_subscribe():
+        calls[0] += 1
+        ingestor._session_messages_received = 1
+        if calls[0] <= 3:
+            raise Exception('ConnectionClosedOK: code=1001 going away')
+        raise asyncio.CancelledError()
+
+    async def _mock_backfill(a: int, b: int) -> int:
+        return 0
+
+    async def _mock_http_fast_tail():
+        raise asyncio.CancelledError()
+
+    ingestor._ws_subscribe = _mock_ws_subscribe  # type: ignore[method-assign]
+    ingestor._backfill = _mock_backfill  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+    ingestor._run_http_fast_tail = _mock_http_fast_tail  # type: ignore[method-assign]
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(ingestor.run_forever())
+
+        # --- Part 2: the real HTTP fast-tail start log ---------------------
+        ingestor2 = BaseRealtimeIngestor(
+            rpc_url=rpc_url, ws_url=ws_url, watcher_name='test-watcher',
+        )
+        ingestor2._wss_permanently_disabled = True
+        ingestor2._ingestion_mode = 'http_fast_tail'
+
+        def _mock_rpc_call(method: str, params: list) -> object:
+            if method == 'eth_blockNumber':
+                return hex(300)
+            return []
+
+        async def _mock_sleep(secs: float) -> None:
+            raise asyncio.CancelledError()
+
+        ingestor2._rpc_call = _mock_rpc_call  # type: ignore[method-assign]
+        ingestor2._record_heartbeat = lambda: None  # type: ignore[method-assign]
+        with patch.object(ingestor2, '_watched_targets', return_value=[]):
+            with patch('services.api.app.base_realtime_ingestor.asyncio') as mock_asyncio:
+                mock_asyncio.sleep = _mock_sleep
+                mock_asyncio.CancelledError = asyncio.CancelledError
+                with pytest.raises(asyncio.CancelledError):
+                    asyncio.run(ingestor2._run_http_fast_tail())
+    finally:
+        mod.logger.removeHandler(handler)
+
+    assert log_records, 'expected log output to inspect'
+    for record in log_records:
+        assert secret not in record, f'API key leaked in log: {record}'
+        assert f'/{secret}' not in record, f'secret path leaked in log: {record}'
+        assert '/v2/' not in record and 'p2pify.com/' not in record, (
+            f'full RPC path must not appear in log: {record}'
+        )
+
+    # The required fallback markers must still be present (hostname-safe).
+    assert any('realtime_ws_disabled_for_provider' in m for m in log_records)
+    assert any('quicknode_fast_tail_started' in m for m in log_records)

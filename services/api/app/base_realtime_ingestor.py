@@ -269,6 +269,28 @@ class BaseRealtimeIngestor:
             return effective + random.random() * max(1.0, effective * 0.25)
         return min(120.0, retry) + random.random() * max(1.0, min(10.0, retry * 0.5))
 
+    def _closed_before_first_event(self) -> bool:
+        """True when no real chain data (a head or an event) has arrived yet.
+
+        A subscription confirmation (``eth_subscribe`` ACK) is NOT a chain event:
+        it increments ``_session_messages_received`` but never ``heads_received``
+        or ``events_ingested``.  A provider that ACKs the subscription and then
+        closes (code=1001) before delivering the first head is still
+        "before first event", so the close must count toward HTTP fast-tail
+        fallback.  Once any head or event has arrived the provider is proven to
+        work and this returns False (resetting the fallback counter), so a
+        healthy WSS session is never downgraded.
+
+        Equivalent to ``heads_received == 0`` because ``events_processed`` in the
+        heartbeat is ``events_ingested + heads_received``; "heads_received=0 or
+        events_processed=0" reduces to no real data at all.
+        """
+        metrics = self.state['metrics']
+        return (
+            metrics.get('heads_received', 0) == 0
+            and metrics.get('events_ingested', 0) == 0
+        )
+
     # ------------------------------------------------------------------
     # Target loading (workspace-scoped)
     # ------------------------------------------------------------------
@@ -391,10 +413,17 @@ class BaseRealtimeIngestor:
             + self.state['metrics'].get('heads_received', 0)
         )
         _active_host = _ws_url_host(self._current_ws_url)
+        # provider_mode is a canonical fact: the active source_status string
+        # (e.g. 'quicknode_http_fast_tail' once WSS is disabled). fallback_active
+        # reflects the permanent WSS-disabled flag so health checks can tell that
+        # the worker switched off WSS without inferring it from log scraping.
+        _provider_mode = self.state.get('source_status') or self._ingestion_mode
+        _fallback_active = bool(self._wss_permanently_disabled)
         logger.info(
             'realtime_worker_heartbeat watcher_name=%s chain_id=%s chain=%s '
             'last_event_at=%s reconnect_count=%s events_processed=%s '
-            'heads_received=%s lag_blocks=%s degraded=%s active_provider_host=%s',
+            'heads_received=%s lag_blocks=%s degraded=%s active_provider_host=%s '
+            'provider_mode=%s fallback_active=%s',
             self.watcher_name,
             self.chain_id,
             self.chain_network,
@@ -405,6 +434,8 @@ class BaseRealtimeIngestor:
             lag,
             bool(self.state.get('degraded')),
             _active_host,
+            _provider_mode,
+            _fallback_active,
         )
 
         try:
@@ -677,6 +708,19 @@ class BaseRealtimeIngestor:
             max(30, min(60, _resolve_int_env('REALTIME_HTTP_FAST_TAIL_INTERVAL_SECONDS', 45)))
         )
 
+        # Count active watched targets for the start log. Never logs IDs/addresses.
+        try:
+            _ft_target_count = len(self._watched_targets())
+        except Exception:
+            _ft_target_count = -1
+
+        # Canonical fallback-started marker — heartbeat/health derive provider_mode
+        # from this transition. Uses the HTTPS QuickNode RPC env (self.rpc_url),
+        # never the WSS endpoint.
+        logger.warning(
+            'quicknode_fast_tail_started chain_id=%s target_count=%s interval_seconds=%.0f',
+            self.chain_id, _ft_target_count, _poll_interval,
+        )
         logger.warning(
             'realtime_http_fast_tail_started watcher=%s rpc_host=%s poll_interval=%.0fs',
             self.watcher_name,
@@ -882,10 +926,14 @@ class BaseRealtimeIngestor:
                             self.chain_network, self.watcher_name, self.subscriptions,
                         )
                 elif is_1001_close and self.subscriptions == 'newHeads_only':
-                    # Only count closes that fired before any message was received.
-                    # If the provider did respond (subscription confirmation arrived),
-                    # give it a clean slate rather than penalising transient instability.
-                    if self._session_messages_received == 0:
+                    # Only count closes that fired before the provider delivered the
+                    # first real chain event (a head or a log).  A subscription
+                    # confirmation does NOT count — QuickNode ACKs the newHeads
+                    # subscription and then closes 1001 before the first head, so
+                    # gating on _session_messages_received would reset the counter
+                    # forever and the fallback would never fire.  Once a head/event
+                    # arrives the provider is proven healthy and the counter resets.
+                    if self._closed_before_first_event():
                         self._consecutive_1001_closes += 1
                     else:
                         self._consecutive_1001_closes = 0
@@ -914,9 +962,9 @@ class BaseRealtimeIngestor:
                             logger.warning(
                                 'realtime_ws_disabled_for_provider '
                                 'reason=provider_closes_before_first_event '
-                                'watcher=%s consecutive_1001=%s',
-                                self.watcher_name,
+                                'close_count=%s watcher=%s',
                                 self._consecutive_1001_closes,
+                                self.watcher_name,
                             )
                 elif not is_1001_close:
                     self._consecutive_1001_closes = 0
@@ -932,7 +980,7 @@ class BaseRealtimeIngestor:
                     if is_clean_close or is_1001_close:
                         _before_first_flag = (
                             ' provider_closed_before_first_event=True'
-                            if self._session_messages_received == 0 else ''
+                            if self._closed_before_first_event() else ''
                         )
                         logger.info(
                             'realtime_ws_closed_cleanly chain=%s watcher=%s '
