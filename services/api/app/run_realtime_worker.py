@@ -209,22 +209,51 @@ async def _run_ingestor(config: dict[str, object]) -> None:
     """Async entry point for the WebSocket ingestor loop."""
     from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
 
-    # Count monitored targets at startup for the startup log.
-    # Accept both 'base' and 'base-mainnet' to match _watched_targets in the ingestor.
+    # Load monitored targets at startup for the startup log.
+    # Mirrors the _watched_targets query in the ingestor (same filter, same chain_id fallback).
     workspace_target_count: int = 0
+    _startup_target_ids: list[str] = []
+    _startup_workspace_count: int = 0
     try:
         from services.api.app.pilot import ensure_pilot_schema, pg_connection
         with pg_connection() as conn:
             ensure_pilot_schema(conn)
-            row = conn.execute(
-                "SELECT COUNT(*) AS cnt FROM targets "
-                "WHERE deleted_at IS NULL AND monitoring_enabled = TRUE "
+            rows = conn.execute(
+                "SELECT id, workspace_id FROM targets "
+                "WHERE deleted_at IS NULL "
+                "AND target_type IN ('wallet', 'contract') "
+                "AND monitoring_enabled = TRUE "
                 "AND enabled = TRUE AND is_active = TRUE "
-                "AND LOWER(COALESCE(chain_network, 'base')) IN ('base', 'base-mainnet')"
-            ).fetchone()
-            workspace_target_count = _parse_workspace_target_count(row)
+                "AND ("
+                "  LOWER(COALESCE(chain_network, 'base')) IN ('base', 'base-mainnet')"
+                "  OR chain_id = 8453"
+                ")"
+            ).fetchall()
+            workspace_target_count = len(rows)
+            _ws_ids: set[str] = set()
+            for r in rows:
+                if hasattr(r, 'get'):
+                    _startup_target_ids.append(str(r.get('id', '')))
+                    _ws_ids.add(str(r.get('workspace_id', '')))
+                else:
+                    try:
+                        _startup_target_ids.append(str(r[0]))
+                        _ws_ids.add(str(r[1]))
+                    except (IndexError, TypeError):
+                        pass
+            _startup_workspace_count = len(_ws_ids)
     except Exception:
         workspace_target_count = -1  # unknown; logged below, not re-raised
+
+    logger.info(
+        'realtime_targets_loaded count=%s workspace_count=%s chain_id=%s '
+        'target_ids=%s watcher=%s',
+        workspace_target_count,
+        _startup_workspace_count,
+        _BASE_CHAIN_ID,
+        ','.join(_startup_target_ids[:20]),  # IDs only — no addresses or secrets
+        config['watcher_name'],
+    )
 
     logger.info(
         'realtime_worker_started chain_id=%s provider_mode=%s '
@@ -242,7 +271,7 @@ async def _run_ingestor(config: dict[str, object]) -> None:
     if workspace_target_count == 0:
         logger.warning(
             'realtime_no_base_targets chain_id=%s '
-            'hint=check_targets_have_chain_network_base_or_base_mainnet',
+            'hint=check_targets_have_chain_network_base_or_base_mainnet_or_chain_id_8453',
             _BASE_CHAIN_ID,
         )
 

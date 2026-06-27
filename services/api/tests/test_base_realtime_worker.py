@@ -1143,3 +1143,217 @@ def test_newheads_logs_mode_sends_both_subscriptions():
     ]
     assert 'newHeads' in eth_subscribe_params, 'newHeads must be subscribed'
     assert 'logs' in eth_subscribe_params, 'logs must be subscribed in newHeads,logs mode'
+
+
+# ---------------------------------------------------------------------------
+# 33. _watched_targets SQL must include OR chain_id = 8453 fallback
+# ---------------------------------------------------------------------------
+
+def test_watched_targets_query_accepts_chain_id_8453():
+    """The SQL in _watched_targets must fall back to chain_id=8453 so targets
+    whose chain_network hasn't been repaired yet are still loaded."""
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+
+    executed_sql: list[str] = []
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = []
+    mock_conn = MagicMock()
+    mock_conn.execute.side_effect = (
+        lambda sql, *a, **k: (executed_sql.append(str(sql)), mock_cursor)[1]
+    )
+    mock_conn.__enter__ = lambda s: s
+    mock_conn.__exit__ = MagicMock(return_value=False)
+
+    with (
+        patch('services.api.app.base_realtime_ingestor.pg_connection', return_value=mock_conn),
+        patch('services.api.app.base_realtime_ingestor.ensure_pilot_schema', lambda c: None),
+    ):
+        ingestor._watched_targets()
+
+    assert executed_sql, '_watched_targets must call conn.execute'
+    query = executed_sql[0].lower()
+    assert 'chain_id' in query and '8453' in query, (
+        f"_watched_targets SQL must include 'chain_id = 8453' fallback; got: {query}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 34. Repeated code=1001 auto-downgrades subscription from logs to newHeads_only
+# ---------------------------------------------------------------------------
+
+def test_repeated_1001_downgrades_subscription_to_newheads_only():
+    """After 3 consecutive code=1001 closes in newHeads,logs mode, the worker
+    must automatically switch to newHeads_only and log realtime_subscription_downgraded."""
+    import logging as _logging
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+        subscriptions='newHeads,logs',
+    )
+    assert ingestor.subscriptions == 'newHeads,logs'
+
+    calls = [0]
+
+    async def _mock_ws_subscribe():
+        calls[0] += 1
+        if calls[0] <= 3:
+            raise Exception('ConnectionClosedOK: code=1001 going away')
+        raise asyncio.CancelledError()
+
+    async def _mock_backfill(a, b):
+        return 0
+
+    import time as _time
+    ingestor.state['last_head_block'] = 100
+    ingestor._last_head_block_at = _time.monotonic()
+    ingestor.state['last_processed_block'] = 100
+
+    ingestor._ws_subscribe = _mock_ws_subscribe  # type: ignore[method-assign]
+    ingestor._backfill = _mock_backfill  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(ingestor.run_forever())
+    finally:
+        mod.logger.removeHandler(handler)
+
+    assert ingestor.subscriptions == 'newHeads_only', (
+        f'subscriptions must downgrade to newHeads_only after 3 × 1001, got: {ingestor.subscriptions}'
+    )
+    downgrade_logged = any('realtime_subscription_downgraded' in m for m in log_records)
+    assert downgrade_logged, (
+        f'realtime_subscription_downgraded must be logged. Got: {log_records}'
+    )
+    provider_closed_logged = any('provider_closed_logs_subscription' in m for m in log_records)
+    assert provider_closed_logged, (
+        f'reason=provider_closed_logs_subscription must appear in logs. Got: {log_records}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# 35. Max reconnect backoff is 120 s (not capped at 30 s)
+# ---------------------------------------------------------------------------
+
+def test_max_reconnect_backoff_is_120s():
+    """Exponential backoff must reach 120 s ceiling, not the old 30 s cap."""
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    exc_other = RuntimeError('ws disconnected')
+
+    # Simulate enough doublings to hit the ceiling
+    retry = 1.0
+    max_seen = 0.0
+    for _ in range(15):
+        sleep_for = ingestor._compute_reconnect_sleep(exc_other, retry)
+        max_seen = max(max_seen, sleep_for)
+        retry = min(120.0, retry * 2)
+
+    assert max_seen >= 60.0, f'backoff must reach at least 60 s after doubling; got {max_seen}'
+    # Backoff must not climb beyond 120 s + jitter (allow generous ceiling for jitter)
+    assert max_seen < 200.0, f'backoff must be bounded; got {max_seen}'
+
+
+# ---------------------------------------------------------------------------
+# 36. Startup count log includes target_ids (no secrets) when active target exists
+# ---------------------------------------------------------------------------
+
+def test_startup_realtime_targets_loaded_log_includes_target_ids():
+    """realtime_targets_loaded must log target_ids and not include wallet addresses."""
+    import importlib
+    import logging as _logging
+
+    import services.api.app.run_realtime_worker as rw
+    importlib.reload(rw)
+
+    fake_row = {'id': 'e7851a52-8fb1-48cd-84a3-d033f591c5dd', 'workspace_id': 'ws-111'}
+    # wallet_address is NOT one of the selected columns in the startup query,
+    # but add it to confirm it never leaks into logs even if present in row dict.
+    fake_row_dict = dict(fake_row)
+    fake_row_dict['wallet_address'] = '0xSECRET_WALLET'
+
+    class _FakeRow(dict):
+        pass
+
+    fake_db_row = _FakeRow(fake_row_dict)
+
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [fake_db_row]
+    mock_conn = MagicMock()
+    mock_conn.execute.return_value = mock_cursor
+    mock_conn.__enter__ = lambda s: s
+    mock_conn.__exit__ = MagicMock(return_value=False)
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    rw.logger.addHandler(handler)
+    rw.logger.setLevel(_logging.INFO)
+
+    async def _run():
+        # Patch pg_connection where _run_ingestor imports it from
+        with patch('services.api.app.pilot.pg_connection', return_value=mock_conn):
+            with patch('services.api.app.pilot.ensure_pilot_schema', lambda c: None):
+                with patch('services.api.app.base_realtime_ingestor.BaseRealtimeIngestor') as _MockCls:
+                    async def _noop_run_forever(): pass
+                    mock_inst = MagicMock()
+                    mock_inst.run_forever = _noop_run_forever
+                    _MockCls.return_value = mock_inst
+                    config = {
+                        'rpc_url': 'http://rpc',
+                        'ws_url': 'ws://ws',
+                        'watcher_name': 'test-watcher',
+                        'confirmations': 1,
+                        'max_events_per_minute': 1000,
+                        'subscriptions': 'newHeads_only',
+                        'provider_mode': 'websocket',
+                        'ws_url_host': 'ws.example.com',
+                        'rpc_url_host': 'rpc.example.com',
+                    }
+                    try:
+                        from services.api.app.run_realtime_worker import _run_ingestor
+                        await _run_ingestor(config)
+                    except (asyncio.CancelledError, StopIteration, RuntimeError, Exception):
+                        pass
+
+    try:
+        asyncio.run(_run())
+    finally:
+        rw.logger.removeHandler(handler)
+
+    loaded_log = next((m for m in log_records if 'realtime_targets_loaded' in m), None)
+    assert loaded_log is not None, (
+        f'realtime_targets_loaded log must be emitted. Got logs: {log_records}'
+    )
+    assert 'e7851a52' in loaded_log, (
+        f'target_id must appear in realtime_targets_loaded log. Got: {loaded_log}'
+    )
+    assert '0xSECRET_WALLET' not in loaded_log, (
+        f'wallet address must NOT appear in realtime_targets_loaded log. Got: {loaded_log}'
+    )
+    assert 'count=1' in loaded_log, (
+        f'count=1 must appear in log. Got: {loaded_log}'
+    )
