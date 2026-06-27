@@ -1357,3 +1357,364 @@ def test_startup_realtime_targets_loaded_log_includes_target_ids():
     assert 'count=1' in loaded_log, (
         f'count=1 must appear in log. Got: {loaded_log}'
     )
+
+
+# ---------------------------------------------------------------------------
+# 37. BASE_WS_RPC_URL_PRIMARY takes priority over BASE_WS_RPC_URL
+# ---------------------------------------------------------------------------
+
+def test_base_ws_rpc_url_primary_takes_priority(monkeypatch):
+    """BASE_WS_RPC_URL_PRIMARY must override BASE_WS_RPC_URL as the selected URL."""
+    import importlib
+    import services.api.app.run_realtime_worker as rw
+    importlib.reload(rw)
+
+    monkeypatch.setenv('BASE_WS_RPC_URL_PRIMARY', 'wss://primary.example.com/ws')
+    monkeypatch.setenv('BASE_WS_RPC_URL', 'wss://fallback.example.com/ws')
+    monkeypatch.setenv('BASE_REALTIME_ENABLED', 'true')
+
+    config = rw._resolve_config()
+
+    assert 'primary.example.com' in config['ws_url_host'], (
+        f"ws_url_host must use PRIMARY; got {config['ws_url_host']}"
+    )
+    assert config['selected_ws_rpc_env_name'] == 'BASE_WS_RPC_URL_PRIMARY'
+    assert config['base_ws_rpc_url_primary_present'] is True
+
+
+def test_base_ws_rpc_url_secondary_in_config(monkeypatch):
+    """BASE_WS_RPC_URL_SECONDARY must be stored in config and its host exposed safely."""
+    import importlib
+    import services.api.app.run_realtime_worker as rw
+    importlib.reload(rw)
+
+    monkeypatch.setenv('BASE_WS_RPC_URL', 'wss://primary.example.com/ws')
+    monkeypatch.setenv('BASE_WS_RPC_URL_SECONDARY', 'wss://secondary.example.com/ws')
+
+    config = rw._resolve_config()
+
+    assert 'secondary.example.com' in config['ws_url_secondary_host'], (
+        f"ws_url_secondary_host must reflect SECONDARY env; got {config['ws_url_secondary_host']}"
+    )
+    assert config['base_ws_rpc_url_secondary_present'] is True
+
+
+# ---------------------------------------------------------------------------
+# 38. provider_closed_before_first_event logged when 1001 fires before any message
+# ---------------------------------------------------------------------------
+
+def test_provider_closed_before_first_event_logged():
+    """When a 1001 close happens before any WebSocket message, log the flag."""
+    import logging as _logging
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+    import time as _time
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+        subscriptions='newHeads_only',
+    )
+
+    calls = [0]
+
+    async def _mock_ws_subscribe_no_messages():
+        calls[0] += 1
+        # Simulate 0 messages received (session_messages_received stays 0)
+        ingestor._session_messages_received = 0
+        if calls[0] <= 1:
+            raise Exception('ConnectionClosedOK: code=1001 going away')
+        raise asyncio.CancelledError()
+
+    ingestor.state['last_head_block'] = 100
+    ingestor._last_head_block_at = _time.monotonic()
+    ingestor.state['last_processed_block'] = 100
+
+    async def _mock_backfill_noop(a: int, b: int) -> int:
+        return 0
+
+    ingestor._ws_subscribe = _mock_ws_subscribe_no_messages  # type: ignore[method-assign]
+    ingestor._backfill = _mock_backfill_noop  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(ingestor.run_forever())
+    finally:
+        mod.logger.removeHandler(handler)
+
+    before_first_logged = any('provider_closed_before_first_event=True' in m for m in log_records)
+    assert before_first_logged, (
+        f'provider_closed_before_first_event=True must be logged on 1001 with no messages. '
+        f'Got: {log_records}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# 39. Subscription created log is emitted with subscription_id_present flag
+# ---------------------------------------------------------------------------
+
+def test_subscription_created_log_emitted():
+    """After receiving a newHeads subscription confirmation, log subscription_id_present=True."""
+    import sys
+    import logging as _logging
+    from unittest.mock import AsyncMock
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+    import json as _json
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+        subscriptions='newHeads_only',
+    )
+
+    recv_responses = [
+        # First recv: subscription confirmation for newHeads
+        _json.dumps({'jsonrpc': '2.0', 'id': 1, 'result': '0xsub1'}),
+        # Second recv: cancel so the test exits
+    ]
+    recv_call = [0]
+
+    async def _fake_recv():
+        if recv_call[0] < len(recv_responses):
+            msg = recv_responses[recv_call[0]]
+            recv_call[0] += 1
+            return msg
+        raise asyncio.CancelledError()
+
+    mock_ws = MagicMock()
+    mock_ws.send = AsyncMock()
+    mock_ws.recv = AsyncMock(side_effect=_fake_recv)
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=mock_ws)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    fake_ws_module = MagicMock()
+    fake_ws_module.connect.return_value = cm
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+
+    try:
+        async def run_test() -> None:
+            with (
+                patch.dict(sys.modules, {'websockets': fake_ws_module}),
+                patch.object(ingestor, '_watched_targets', return_value=[]),
+            ):
+                try:
+                    await ingestor._ws_subscribe()
+                except asyncio.CancelledError:
+                    pass
+
+        asyncio.run(run_test())
+    finally:
+        mod.logger.removeHandler(handler)
+
+    sub_created_logged = any(
+        'realtime_subscription_created' in m and 'subscription_type=newHeads' in m
+        and 'subscription_id_present=True' in m
+        for m in log_records
+    )
+    assert sub_created_logged, (
+        f'realtime_subscription_created with subscription_id_present=True must be logged. '
+        f'Got: {log_records}'
+    )
+    # The actual subscription ID value must NOT appear in logs
+    assert '0xsub1' not in ' '.join(log_records), (
+        'Subscription ID value must NOT appear in logs'
+    )
+
+
+# ---------------------------------------------------------------------------
+# 40. heads_received increments on each newHeads message
+# ---------------------------------------------------------------------------
+
+def test_heads_received_increments_on_newheads():
+    """Each newHeads message must increment state['metrics']['heads_received']."""
+    import sys
+    from unittest.mock import AsyncMock
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    import json as _json
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+        subscriptions='newHeads_only',
+    )
+    assert ingestor.state['metrics']['heads_received'] == 0
+
+    sub_id = '0xdeadbeef'
+    recv_responses = [
+        # Sub confirmation
+        _json.dumps({'jsonrpc': '2.0', 'id': 1, 'result': sub_id}),
+        # Two newHeads messages
+        _json.dumps({'jsonrpc': '2.0', 'method': 'eth_subscription',
+                     'params': {'subscription': sub_id, 'result': {'number': '0x1'}}}),
+        _json.dumps({'jsonrpc': '2.0', 'method': 'eth_subscription',
+                     'params': {'subscription': sub_id, 'result': {'number': '0x2'}}}),
+    ]
+    recv_call = [0]
+
+    async def _fake_recv():
+        if recv_call[0] < len(recv_responses):
+            msg = recv_responses[recv_call[0]]
+            recv_call[0] += 1
+            return msg
+        raise asyncio.CancelledError()
+
+    mock_ws = MagicMock()
+    from unittest.mock import AsyncMock
+    mock_ws.send = AsyncMock()
+    mock_ws.recv = AsyncMock(side_effect=_fake_recv)
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=mock_ws)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    fake_ws_module = MagicMock()
+    fake_ws_module.connect.return_value = cm
+
+    async def run_test() -> None:
+        with (
+            patch.dict(sys.modules, {'websockets': fake_ws_module}),
+            patch.object(ingestor, '_watched_targets', return_value=[]),
+            patch.object(ingestor, '_backfill', return_value=0),
+        ):
+            try:
+                await ingestor._ws_subscribe()
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(run_test())
+
+    assert ingestor.state['metrics']['heads_received'] == 2, (
+        f"heads_received must be 2 after two newHeads messages; "
+        f"got {ingestor.state['metrics']['heads_received']}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 41. Provider failover after repeated 1001 closes in newHeads_only mode
+# ---------------------------------------------------------------------------
+
+def test_provider_failover_after_repeated_1001_in_newheads_only():
+    """After 3 consecutive 1001 closes in newHeads_only mode, switch to secondary URL."""
+    import logging as _logging
+    import time as _time
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc',
+        ws_url='ws://primary.example.com/ws',
+        watcher_name='test-watcher',
+        subscriptions='newHeads_only',
+        ws_url_secondary='ws://secondary.example.com/ws',
+    )
+    assert ingestor._current_ws_url == 'ws://primary.example.com/ws'
+
+    calls = [0]
+
+    async def _mock_ws_subscribe():
+        calls[0] += 1
+        ingestor._session_messages_received = 0
+        if calls[0] <= 3:
+            raise Exception('ConnectionClosedOK: code=1001 going away')
+        raise asyncio.CancelledError()
+
+    ingestor.state['last_head_block'] = 100
+    ingestor._last_head_block_at = _time.monotonic()
+    ingestor.state['last_processed_block'] = 100
+
+    async def _mock_backfill_noop2(a: int, b: int) -> int:
+        return 0
+
+    ingestor._ws_subscribe = _mock_ws_subscribe  # type: ignore[method-assign]
+    ingestor._backfill = _mock_backfill_noop2  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(ingestor.run_forever())
+    finally:
+        mod.logger.removeHandler(handler)
+
+    assert ingestor._current_ws_url == 'ws://secondary.example.com/ws', (
+        f'_current_ws_url must switch to secondary after 3 × 1001 in newHeads_only; '
+        f'got: {ingestor._current_ws_url}'
+    )
+    failover_logged = any('realtime_provider_failover' in m for m in log_records)
+    assert failover_logged, (
+        f'realtime_provider_failover must be logged. Got: {log_records}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# 42. events_processed in heartbeat log includes heads_received
+# ---------------------------------------------------------------------------
+
+def test_events_processed_in_heartbeat_includes_heads_received():
+    """Heartbeat log events_processed must equal events_ingested + heads_received."""
+    import logging as _logging
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    ingestor.state['metrics']['events_ingested'] = 5
+    ingestor.state['metrics']['heads_received'] = 12
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+
+    try:
+        with (
+            patch('services.api.app.base_realtime_ingestor.pg_connection') as mock_pg,
+            patch('services.api.app.base_realtime_ingestor.ensure_pilot_schema', lambda c: None),
+        ):
+            mock_conn = MagicMock()
+            mock_conn.__enter__ = lambda s: s
+            mock_conn.__exit__ = MagicMock(return_value=False)
+            mock_pg.return_value = mock_conn
+            ingestor._record_heartbeat()
+    finally:
+        mod.logger.removeHandler(handler)
+
+    heartbeat_log = next((m for m in log_records if 'realtime_worker_heartbeat' in m), None)
+    assert heartbeat_log is not None, 'realtime_worker_heartbeat must be logged'
+    assert 'events_processed=17' in heartbeat_log, (
+        f'events_processed must be 5+12=17; got: {heartbeat_log}'
+    )
+    assert 'heads_received=12' in heartbeat_log, (
+        f'heads_received=12 must appear in heartbeat; got: {heartbeat_log}'
+    )

@@ -19,6 +19,7 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 from urllib import error as _urllib_error, request
+from urllib.parse import urlparse as _urlparse
 
 from services.api.app.evm_activity_provider import (
     APPROVAL_TOPIC,
@@ -68,6 +69,14 @@ def _resolve_subscriptions_mode(raw: str) -> str:
     return 'newHeads,logs'
 
 
+def _ws_url_host(url: str) -> str:
+    """Return hostname only — never the path, key, or credentials."""
+    try:
+        return _urlparse(url).hostname or 'unknown'
+    except Exception:
+        return 'unknown'
+
+
 class BaseRealtimeIngestor:
     """WebSocket-driven Base chain ingestion worker.
 
@@ -88,6 +97,7 @@ class BaseRealtimeIngestor:
         confirmations_required: int | None = None,
         max_events_per_minute: int | None = None,
         subscriptions: str | None = None,
+        ws_url_secondary: str | None = None,
     ) -> None:
         self.rpc_url = rpc_url
         self.ws_url = ws_url
@@ -116,8 +126,23 @@ class BaseRealtimeIngestor:
             _resolve_int_env('EVM_BACKFILL_GAP_THRESHOLD_BLOCKS', _DEFAULT_GAP_THRESHOLD_BLOCKS),
         )
 
-        # Tracks consecutive clean-close (code=1001) errors to auto-downgrade from logs sub.
+        # Secondary WS URL for failover after repeated 1001 closes on primary.
+        self.ws_url_secondary: str | None = ws_url_secondary or None
+        # Active URL — may be swapped to secondary on failover.
+        self._current_ws_url: str = ws_url
+        # Messages received in the current WS session (reset at start of each _ws_subscribe call).
+        self._session_messages_received: int = 0
+
+        # Tracks consecutive clean-close (code=1001) errors; used for downgrade and failover.
         self._consecutive_1001_closes: int = 0
+
+        # WebSocket keepalive settings — configurable via env vars.
+        _ping_iv = _resolve_int_env('BASE_WS_PING_INTERVAL', 30)
+        self._ws_ping_interval: float | None = float(_ping_iv) if _ping_iv > 0 else None
+        _ping_to = _resolve_int_env('BASE_WS_PING_TIMEOUT', 30)
+        self._ws_ping_timeout: float | None = float(_ping_to) if _ping_to > 0 else None
+        _open_to = _resolve_int_env('BASE_WS_OPEN_TIMEOUT', 30)
+        self._ws_open_timeout: float | None = float(_open_to) if _open_to > 0 else None
 
         # Sliding-window rate limiter: stores monotonic timestamps of recent events.
         self._event_timestamps: deque[float] = deque()
@@ -139,6 +164,7 @@ class BaseRealtimeIngestor:
             'last_event_at': None,
             'metrics': {
                 'events_ingested': 0,
+                'heads_received': 0,
                 'ws_reconnects': 0,
                 'rpc_backfills': 0,
                 'rate_limited_dropped': 0,
@@ -356,15 +382,21 @@ class BaseRealtimeIngestor:
         if self.state.get('last_head_block') is not None and self.state.get('last_processed_block') is not None:
             lag = max(0, int(self.state['last_head_block']) - int(self.state['last_processed_block']))
 
+        _events_processed = (
+            self.state['metrics'].get('events_ingested', 0)
+            + self.state['metrics'].get('heads_received', 0)
+        )
         logger.info(
             'realtime_worker_heartbeat watcher_name=%s chain_id=%s chain=%s '
-            'last_event_at=%s reconnect_count=%s events_processed=%s lag_blocks=%s degraded=%s',
+            'last_event_at=%s reconnect_count=%s events_processed=%s '
+            'heads_received=%s lag_blocks=%s degraded=%s',
             self.watcher_name,
             self.chain_id,
             self.chain_network,
             self.state.get('last_event_at') or 'none',
             self.state['metrics'].get('ws_reconnects', 0),
-            self.state['metrics'].get('events_ingested', 0),
+            _events_processed,
+            self.state['metrics'].get('heads_received', 0),
             lag,
             bool(self.state.get('degraded')),
         )
@@ -467,9 +499,15 @@ class BaseRealtimeIngestor:
     async def _ws_subscribe(self) -> None:
         import websockets  # type: ignore[import]
 
+        self._session_messages_received = 0  # reset per connection
         _include_logs = (self.subscriptions == 'newHeads,logs')
 
-        async with websockets.connect(self.ws_url, ping_interval=20, ping_timeout=20) as ws:
+        async with websockets.connect(
+            self._current_ws_url,
+            ping_interval=self._ws_ping_interval,
+            ping_timeout=self._ws_ping_timeout,
+            open_timeout=self._ws_open_timeout,
+        ) as ws:
             await ws.send(json.dumps({
                 'jsonrpc': '2.0', 'id': 1, 'method': 'eth_subscribe', 'params': ['newHeads'],
             }))
@@ -514,13 +552,24 @@ class BaseRealtimeIngestor:
 
             while True:
                 msg = json.loads(await ws.recv())
+                self._session_messages_received += 1
 
-                # Subscription confirmation
+                # Subscription confirmation — log presence of ID, never the ID value itself.
                 if msg.get('id') == 1 and msg.get('result'):
                     sub_ids['newHeads'] = str(msg['result'])
+                    logger.info(
+                        'realtime_subscription_created subscription_type=newHeads '
+                        'subscription_id_present=%s watcher=%s',
+                        bool(msg['result']), self.watcher_name,
+                    )
                     continue
                 if msg.get('id') == 2 and msg.get('result'):
                     sub_ids['logs'] = str(msg['result'])
+                    logger.info(
+                        'realtime_subscription_created subscription_type=logs '
+                        'subscription_id_present=%s watcher=%s',
+                        bool(msg['result']), self.watcher_name,
+                    )
                     continue
 
                 params = msg.get('params') or {}
@@ -528,11 +577,15 @@ class BaseRealtimeIngestor:
                 sub = params.get('subscription')
 
                 if sub == sub_ids.get('newHeads'):
-                    # Track chain head to enforce confirmation safety
+                    # Track chain head to enforce confirmation safety and count block activity.
                     head = _hex_to_int(result.get('number'))
                     if head is not None:
                         self.state['last_head_block'] = head
                         self._last_head_block_at = time.monotonic()
+                        self.state['metrics']['heads_received'] = (
+                            self.state['metrics'].get('heads_received', 0) + 1
+                        )
+                        self.state['last_event_at'] = datetime.now(timezone.utc).isoformat()
                         last = self.state.get('last_processed_block')
                         if last is not None and head - int(last) > self.gap_threshold_blocks:
                             logger.warning(
@@ -662,9 +715,8 @@ class BaseRealtimeIngestor:
                     or 'ConnectionClosedOK' in type(exc).__name__
                 )
 
-                # Auto-downgrade from newHeads,logs → newHeads_only after 3
-                # consecutive 1001 closes. Prevents infinite reconnect loops when the
-                # provider (e.g. QuickNode) rejects the logs subscription immediately.
+                # Auto-downgrade from newHeads,logs → newHeads_only after 3 consecutive
+                # 1001 closes. After downgrade, fail over to secondary URL if configured.
                 if is_1001_close and self.subscriptions == 'newHeads,logs':
                     self._consecutive_1001_closes += 1
                     if self._consecutive_1001_closes >= 3:
@@ -675,6 +727,23 @@ class BaseRealtimeIngestor:
                             'reason=provider_closed_logs_subscription '
                             'chain=%s watcher=%s new_subscriptions=%s',
                             self.chain_network, self.watcher_name, self.subscriptions,
+                        )
+                elif is_1001_close and self.subscriptions == 'newHeads_only' and self.ws_url_secondary:
+                    self._consecutive_1001_closes += 1
+                    if self._consecutive_1001_closes >= 3:
+                        _failover_old_host = _ws_url_host(self._current_ws_url)
+                        self._current_ws_url = (
+                            self.ws_url_secondary
+                            if self._current_ws_url != self.ws_url_secondary
+                            else self.ws_url
+                        )
+                        self._consecutive_1001_closes = 0
+                        logger.warning(
+                            'realtime_provider_failover '
+                            'old_host=%s new_host=%s watcher=%s',
+                            _failover_old_host,
+                            _ws_url_host(self._current_ws_url),
+                            self.watcher_name,
                         )
                 elif not is_1001_close:
                     self._consecutive_1001_closes = 0
@@ -688,13 +757,18 @@ class BaseRealtimeIngestor:
                 now_log = time.monotonic()
                 if error_key != _last_error_key or now_log - _last_error_logged_at >= _ERROR_LOG_WINDOW:
                     if is_clean_close or is_1001_close:
+                        _before_first_flag = (
+                            ' provider_closed_before_first_event=True'
+                            if self._session_messages_received == 0 else ''
+                        )
                         logger.info(
                             'realtime_ws_closed_cleanly chain=%s watcher=%s '
                             'code=1001 reconnecting reconnect_count=%s '
-                            'consecutive_1001=%s subscriptions=%s',
+                            'consecutive_1001=%s subscriptions=%s%s',
                             self.chain_network, self.watcher_name,
                             self.state['metrics']['ws_reconnects'],
                             self._consecutive_1001_closes, self.subscriptions,
+                            _before_first_flag,
                         )
                     elif is_rate_limit:
                         logger.warning(
