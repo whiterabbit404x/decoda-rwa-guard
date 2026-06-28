@@ -2645,3 +2645,336 @@ def test_no_full_rpc_urls_or_api_keys_in_fallback_logs():
     # The required fallback markers must still be present (hostname-safe).
     assert any('realtime_ws_disabled_for_provider' in m for m in log_records)
     assert any('quicknode_fast_tail_started' in m for m in log_records)
+
+
+# ---------------------------------------------------------------------------
+# 50. Realtime gap/backfill cursor behaviour (bounded chunks, checkpoint,
+#     rate-limit pause, start-at-latest bootstrap, dedupe with polling)
+# ---------------------------------------------------------------------------
+
+def _wallet_target(addr: str | None = None) -> dict:
+    return {
+        'id': str(uuid.uuid4()),
+        'workspace_id': str(uuid.uuid4()),
+        'target_type': 'wallet',
+        'chain_network': 'base',
+        'wallet_address': addr or ('0x' + 'a' * 40),
+        'contract_identifier': None,
+        'updated_by_user_id': None,
+        'created_by_user_id': None,
+    }
+
+
+def test_backfill_chunk_advances_checkpoint_even_with_zero_events(monkeypatch):
+    """A successfully-scanned chunk advances and persists the checkpoint to the
+    chunk end, even when no matching events are found."""
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    ingestor.backfill_chunk_size = 50
+    ingestor.state['last_processed_block'] = 1000
+
+    persisted: list[int] = []
+    monkeypatch.setattr(ingestor, '_watched_targets', lambda: [_wallet_target()])
+    monkeypatch.setattr(ingestor, '_persist_checkpoint', lambda b: persisted.append(b))
+    # eth_getLogs returns no matching logs for the watched wallet.
+    monkeypatch.setattr(ingestor, '_rpc_call', lambda m, p: [])
+
+    processed = asyncio.run(ingestor._backfill(1001, 5000))
+
+    assert processed == 0
+    # Only one bounded chunk processed: 1001..1050.
+    assert ingestor.state['last_processed_block'] == 1050, (
+        f'checkpoint must advance to chunk end; got {ingestor.state["last_processed_block"]}'
+    )
+    assert persisted == [1050], f'checkpoint must be persisted once at chunk end; got {persisted}'
+    assert ingestor.state['metrics']['backfill_chunks'] == 1
+
+
+def test_repeated_gap_does_not_rescan_same_from_block(monkeypatch):
+    """Across successive heads the per-head backfill advances from_block by one
+    chunk each time — it never re-scans the same old from_block forever."""
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    ingestor.backfill_chunk_size = 50
+    ingestor.state['last_processed_block'] = 1000
+
+    scanned_from: list[int] = []
+
+    def _mock_rpc(method, params):
+        if method == 'eth_getLogs':
+            scanned_from.append(int(params[0]['fromBlock'], 16))
+            return []
+        return None
+
+    monkeypatch.setattr(ingestor, '_watched_targets', lambda: [_wallet_target()])
+    monkeypatch.setattr(ingestor, '_rpc_call', _mock_rpc)
+    monkeypatch.setattr(ingestor, '_persist_checkpoint', lambda b: None)
+
+    head = 47935857  # far behind: a 47k+ gap
+    for _ in range(3):
+        last = int(ingestor.state['last_processed_block'])
+        asyncio.run(ingestor._backfill(last + 1, head))
+
+    assert scanned_from == [1001, 1051, 1101], (
+        f'from_block must advance one chunk per cycle; got {scanned_from}'
+    )
+    assert len(set(scanned_from)) == len(scanned_from), 'no from_block may repeat'
+    assert ingestor.state['last_processed_block'] == 1150
+
+
+def test_rate_limit_pauses_backfill_and_does_not_advance_checkpoint(monkeypatch):
+    """A QuickNode 429 during a scan pauses backfill (60-120s) and must NOT
+    advance the checkpoint; a follow-up call while paused does not re-scan."""
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    ingestor.backfill_chunk_size = 50
+    ingestor.state['last_processed_block'] = 1000
+
+    rpc_calls = [0]
+
+    def _mock_rpc(method, params):
+        rpc_calls[0] += 1
+        raise RuntimeError('rpc_http_error:429 method=eth_getLogs')
+
+    persisted: list[int] = []
+    monkeypatch.setattr(ingestor, '_watched_targets', lambda: [_wallet_target()])
+    monkeypatch.setattr(ingestor, '_rpc_call', _mock_rpc)
+    monkeypatch.setattr(ingestor, '_persist_checkpoint', lambda b: persisted.append(b))
+
+    processed = asyncio.run(ingestor._backfill(1001, 5000))
+
+    assert processed == 0
+    assert ingestor.state['last_processed_block'] == 1000, 'checkpoint must NOT advance on 429'
+    assert persisted == [], 'checkpoint must not be persisted on a rate-limited scan'
+    assert ingestor._backfill_paused() is True, 'backfill must be paused after 429'
+    assert 60.0 <= (ingestor._backfill_paused_until - __import__('time').monotonic()) <= 121.0
+    assert ingestor.state['metrics']['backfill_rate_limited'] == 1
+
+    calls_after_first = rpc_calls[0]
+    result2 = asyncio.run(ingestor._backfill(1001, 5000))
+    assert result2 == 0
+    assert rpc_calls[0] == calls_after_first, 'paused backfill must not issue more RPC calls'
+    assert ingestor.state['last_processed_block'] == 1000
+
+
+def test_rate_limit_pause_logged(monkeypatch):
+    """realtime_backfill_paused reason=rate_limited must be logged on a 429."""
+    import logging as _logging
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    ingestor.state['last_processed_block'] = 1000
+    monkeypatch.setattr(ingestor, '_watched_targets', lambda: [_wallet_target()])
+    monkeypatch.setattr(ingestor, '_rpc_call', lambda m, p: (_ for _ in ()).throw(
+        RuntimeError('rpc_http_error:429')))
+    monkeypatch.setattr(ingestor, '_persist_checkpoint', lambda b: None)
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+    try:
+        asyncio.run(ingestor._backfill(1001, 5000))
+    finally:
+        mod.logger.removeHandler(handler)
+
+    assert any('realtime_backfill_paused' in m and 'reason=rate_limited' in m for m in log_records), (
+        f'realtime_backfill_paused reason=rate_limited must be logged; got {log_records}'
+    )
+
+
+def test_backfill_emits_chunk_started_and_completed_logs(monkeypatch):
+    """The required chunk lifecycle logs are emitted on a successful scan."""
+    import logging as _logging
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    ingestor.backfill_chunk_size = 25
+    ingestor.state['last_processed_block'] = 2000
+    monkeypatch.setattr(ingestor, '_watched_targets', lambda: [_wallet_target()])
+    monkeypatch.setattr(ingestor, '_rpc_call', lambda m, p: [])
+    monkeypatch.setattr(ingestor, '_persist_checkpoint', lambda b: None)
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+    try:
+        asyncio.run(ingestor._backfill(2001, 9000))
+    finally:
+        mod.logger.removeHandler(handler)
+
+    assert any('realtime_backfill_chunk_started' in m and 'from_block=2001' in m and 'to_block=2025' in m
+               for m in log_records), f'chunk_started log missing/wrong; got {log_records}'
+    assert any('realtime_backfill_chunk_completed' in m and 'last_scanned_block=2025' in m
+               for m in log_records), f'chunk_completed log missing/wrong; got {log_records}'
+
+
+def test_persist_checkpoint_logs_checkpoint_updated(monkeypatch):
+    """_persist_checkpoint logs realtime_checkpoint_updated block=<n> (DB failure
+    is tolerated — no DATABASE_URL in the test env)."""
+    import logging as _logging
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+    try:
+        ingestor._persist_checkpoint(123456)
+    finally:
+        mod.logger.removeHandler(handler)
+
+    assert any('realtime_checkpoint_updated' in m and 'block=123456' in m for m in log_records), (
+        f'realtime_checkpoint_updated must be logged; got {log_records}'
+    )
+
+
+def test_start_at_latest_skips_huge_historical_gap(monkeypatch):
+    """BASE_REALTIME_START_AT_LATEST=true starts from latest-confirmations when the
+    persisted checkpoint is a huge historical gap behind the head."""
+    monkeypatch.setenv('BASE_REALTIME_START_AT_LATEST', 'true')
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+        confirmations_required=2,
+    )
+    assert ingestor.start_at_latest is True
+
+    # A very old checkpoint (47M blocks behind) must be skipped.
+    monkeypatch.setattr(ingestor, '_load_persisted_checkpoint', lambda: 100000)
+    head = 47933858
+    start = ingestor._bootstrap_checkpoint(head)
+    assert start == head - 2, f'must jump to head - confirmations, got {start}'
+
+    # No checkpoint at all → also start at latest.
+    monkeypatch.setattr(ingestor, '_load_persisted_checkpoint', lambda: None)
+    assert ingestor._bootstrap_checkpoint(head) == head - 2
+
+
+def test_start_at_latest_resumes_recent_checkpoint(monkeypatch):
+    """A recent checkpoint (within the reliable lag window) is resumed, not skipped,
+    even when start-at-latest is enabled — so no recent blocks are missed."""
+    monkeypatch.setenv('BASE_REALTIME_START_AT_LATEST', 'true')
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+        confirmations_required=1,
+    )
+    head = 1000
+    monkeypatch.setattr(ingestor, '_load_persisted_checkpoint', lambda: 990)
+    start = ingestor._bootstrap_checkpoint(head)
+    # 10 blocks behind: reliable → resume from min(990, head-1=999) = 990.
+    assert start == 990
+
+
+def test_start_at_latest_disabled_resumes_stale_checkpoint(monkeypatch):
+    """With start-at-latest disabled, a stale checkpoint is resumed (bounded backfill
+    closes the gap gradually) rather than jumping to latest."""
+    monkeypatch.delenv('BASE_REALTIME_START_AT_LATEST', raising=False)
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+        confirmations_required=1,
+    )
+    assert ingestor.start_at_latest is False
+    monkeypatch.setattr(ingestor, '_load_persisted_checkpoint', lambda: 100000)
+    start = ingestor._bootstrap_checkpoint(47933858)
+    assert start == 100000, 'stale checkpoint must be resumed when start-at-latest is off'
+
+
+def test_backfill_event_dedupes_against_stable_polling():
+    """A backfilled event for a tx shares the exact event_id of the polling path,
+    so the stable 300s polling worker seeing the same tx produces no duplicate
+    alert (process_ingested_event returns duplicate_suppressed)."""
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app.evm_activity_provider import _make_event_id, _event_cursor
+    from services.api.app.monitoring_runner import process_ingested_event
+
+    target = _wallet_target('0xbeef' + '0' * 36)
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    log = {
+        'blockNumber': hex(700),
+        'transactionHash': '0xstabletx',
+        'logIndex': hex(2),
+        'topics': [
+            '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',
+            None, None,
+        ],
+        'address': '0x0000000000000000000000000000000000000000',
+    }
+    event = ingestor._build_event_from_log(target, log)
+
+    # The polling path computes the same event_id for the same (target, block, tx, log).
+    polling_cursor = _event_cursor(700, '0xstabletx', 2)
+    polling_event_id = _make_event_id(str(target['id']), polling_cursor, 'transaction')
+    assert event.event_id == polling_event_id, (
+        'backfill and polling must produce identical event_id for dedupe'
+    )
+
+    # Receipt already exists (e.g. polling persisted it) → duplicate_suppressed.
+    conn_mock = MagicMock()
+    conn_mock.execute.return_value.fetchone.return_value = {'id': 'existing-receipt'}
+    conn_mock.__enter__ = lambda s: s
+    conn_mock.__exit__ = MagicMock(return_value=False)
+
+    result = process_ingested_event(conn_mock, target=target, event=event, ingestion_mode='live')
+    assert result['status'] == 'duplicate_suppressed'
+
+
+def test_backfill_chunk_size_env_clamped(monkeypatch):
+    """BASE_REALTIME_BACKFILL_CHUNK_SIZE configures the per-cycle chunk; invalid or
+    zero values fall back to a safe minimum of 1."""
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    monkeypatch.setenv('BASE_REALTIME_BACKFILL_CHUNK_SIZE', '25')
+    i1 = BaseRealtimeIngestor(rpc_url='http://rpc', ws_url='ws://ws', watcher_name='t')
+    assert i1.backfill_chunk_size == 25
+
+    monkeypatch.setenv('BASE_REALTIME_BACKFILL_CHUNK_SIZE', '0')
+    i2 = BaseRealtimeIngestor(rpc_url='http://rpc', ws_url='ws://ws', watcher_name='t')
+    assert i2.backfill_chunk_size == 1
+
+    monkeypatch.delenv('BASE_REALTIME_BACKFILL_CHUNK_SIZE', raising=False)
+    i3 = BaseRealtimeIngestor(rpc_url='http://rpc', ws_url='ws://ws', watcher_name='t')
+    assert i3.backfill_chunk_size == 50
