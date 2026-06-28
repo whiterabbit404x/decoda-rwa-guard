@@ -52,6 +52,15 @@ _DEFAULT_GAP_THRESHOLD_BLOCKS = 24
 _BLOCK_NUMBER_MIN_INTERVAL = 60.0  # min seconds between eth_blockNumber RPC calls
 _DEFAULT_SUBSCRIPTIONS = 'newHeads,logs'
 
+# Bounded realtime gap backfill: at most this many blocks are scanned per cycle
+# so a large gap is closed gradually over successive heads instead of in one
+# giant scan that burns provider rate limits. Configurable via
+# BASE_REALTIME_BACKFILL_CHUNK_SIZE.
+_DEFAULT_BACKFILL_CHUNK_SIZE = 50
+# A persisted checkpoint more than this many blocks behind the chain head is
+# treated as stale ("no reliable checkpoint") for start-at-latest bootstrap.
+_DEFAULT_CHECKPOINT_RELIABLE_MAX_LAG = 50_000
+
 
 def _resolve_int_env(name: str, default: int) -> int:
     raw = (os.getenv(name) or '').strip()
@@ -59,6 +68,15 @@ def _resolve_int_env(name: str, default: int) -> int:
         return max(0, int(raw)) if raw else default
     except (TypeError, ValueError):
         return default
+
+
+def _resolve_bool_env(name: str, default: bool = False) -> bool:
+    raw = (os.getenv(name) or '').strip().lower()
+    if raw in ('1', 'true', 'yes'):
+        return True
+    if raw in ('0', 'false', 'no'):
+        return False
+    return default
 
 
 def _resolve_subscriptions_mode(raw: str) -> str:
@@ -125,6 +143,19 @@ class BaseRealtimeIngestor:
             self.confirmations_required + 1,
             _resolve_int_env('EVM_BACKFILL_GAP_THRESHOLD_BLOCKS', _DEFAULT_GAP_THRESHOLD_BLOCKS),
         )
+        # Bounded gap backfill: scan at most this many blocks per cycle so a large
+        # gap never triggers a single full-range scan on every head.
+        self.backfill_chunk_size = max(
+            1, _resolve_int_env('BASE_REALTIME_BACKFILL_CHUNK_SIZE', _DEFAULT_BACKFILL_CHUNK_SIZE)
+        )
+        # Safe bootstrap: when no reliable checkpoint exists, start at the latest
+        # block minus confirmations instead of replaying a huge historical gap.
+        self.start_at_latest = _resolve_bool_env('BASE_REALTIME_START_AT_LATEST', default=False)
+        # Monotonic deadline; while time.monotonic() < this, gap backfill is paused
+        # (set after a provider rate-limit so we do not re-trigger every block).
+        self._backfill_paused_until: float = 0.0
+        # Guards the one-time checkpoint bootstrap (DB load) on cold start.
+        self._checkpoint_bootstrapped: bool = False
 
         # Secondary WS URL for failover after repeated 1001 closes on primary.
         self.ws_url_secondary: str | None = ws_url_secondary or None
@@ -171,6 +202,8 @@ class BaseRealtimeIngestor:
                 'heads_received': 0,
                 'ws_reconnects': 0,
                 'rpc_backfills': 0,
+                'backfill_chunks': 0,
+                'backfill_rate_limited': 0,
                 'rate_limited_dropped': 0,
                 'persist_retried': 0,
                 'persist_failed': 0,
@@ -493,25 +526,107 @@ class BaseRealtimeIngestor:
     # Backfill (gap-fill after reconnect / gap detected)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _is_rate_limit_error(exc: Exception) -> bool:
+        """True when an RPC error string indicates provider throttling (HTTP 429)."""
+        s = str(exc).lower()
+        return '429' in s or 'rate limit' in s or 'rate_limit' in s or 'too many requests' in s
+
+    def _pause_backfill_for_rate_limit(self) -> None:
+        """Back off gap backfill for 60-120 s after a provider rate-limit.
+
+        Sets a monotonic deadline so the per-head gap detector does not re-trigger
+        a scan on every block while the provider is throttling.
+        """
+        cooldown = 60.0 + random.random() * 60.0
+        self._backfill_paused_until = time.monotonic() + cooldown
+        self.state['metrics']['backfill_rate_limited'] = (
+            self.state['metrics'].get('backfill_rate_limited', 0) + 1
+        )
+        logger.warning(
+            'realtime_backfill_paused reason=rate_limited cooldown_seconds=%.0f watcher=%s',
+            cooldown, self.watcher_name,
+        )
+
+    def _backfill_paused(self) -> bool:
+        """True while the rate-limit cooldown window is still active."""
+        return time.monotonic() < self._backfill_paused_until
+
+    def _persist_checkpoint(self, block: int) -> None:
+        """Persist the realtime backfill checkpoint immediately after a successful chunk.
+
+        Best-effort: a DB failure here is logged but never stops ingestion (the
+        next heartbeat re-persists last_processed_block).
+        """
+        logger.info(
+            'realtime_checkpoint_updated block=%s watcher=%s',
+            block, self.watcher_name,
+        )
+        try:
+            with pg_connection() as conn:
+                ensure_pilot_schema(conn)
+                conn.execute(
+                    '''
+                    UPDATE monitoring_watcher_state
+                       SET last_processed_block = %s, updated_at = NOW()
+                     WHERE watcher_name = %s
+                    ''',
+                    (int(block), self.watcher_name),
+                )
+                conn.commit()
+        except Exception as exc:
+            logger.warning(
+                'realtime_checkpoint_persist_failed block=%s watcher=%s error=%s',
+                block, self.watcher_name, str(exc)[:200],
+            )
+
     async def _backfill(self, from_block: int, to_block: int) -> int:
+        """Close a block gap one bounded chunk at a time, advancing the checkpoint.
+
+        Behaviour (fixes the realtime_gap_detected loop):
+        - Scans at most ``backfill_chunk_size`` blocks per call, so a large gap is
+          closed gradually across successive heads instead of in a single
+          full-range scan that burns provider rate limits.
+        - Advances ``last_processed_block`` to the last scanned block even when the
+          chunk contained zero matching events, so ``from_block`` always moves
+          forward and the same gap is never re-scanned forever.
+        - On a rate-limited or failed scan the checkpoint is NOT advanced and
+          backfill is paused for a 60-120 s cooldown (no per-block retry storm).
+        """
         if to_block < from_block:
             return 0
-        targets = self._watched_targets()
+        if self._backfill_paused():
+            # In rate-limit cooldown: do not scan or advance the checkpoint.
+            return 0
+
+        # One bounded chunk per call.
+        end = min(int(to_block), int(from_block) + self.backfill_chunk_size - 1)
+
+        watched: list[tuple[dict[str, Any], str]] = []
+        for target in self._watched_targets():
+            addr = str(target.get('wallet_address') or target.get('contract_identifier') or '').lower()
+            if addr.startswith('0x'):
+                watched.append((target, addr))
+
+        logger.info(
+            'realtime_backfill_chunk_started from_block=%s to_block=%s lag_blocks=%s watcher=%s',
+            from_block, end, max(0, int(to_block) - int(from_block)), self.watcher_name,
+        )
+
         processed = 0
-        for target in targets:
-            watched = str(target.get('wallet_address') or target.get('contract_identifier') or '').lower()
-            if not watched.startswith('0x'):
-                continue
-            for start in range(from_block, to_block + 1, self.backfill_chunk):
-                end = min(to_block, start + self.backfill_chunk - 1)
+        try:
+            for target, addr in watched:
                 logs = self._rpc_call(
                     'eth_getLogs',
-                    [{'fromBlock': hex(start), 'toBlock': hex(end), 'topics': [[TRANSFER_TOPIC, APPROVAL_TOPIC]]}],
+                    [{'fromBlock': hex(int(from_block)), 'toBlock': hex(end),
+                      'topics': [[TRANSFER_TOPIC, APPROVAL_TOPIC]]}],
                 ) or []
                 for log in logs:
+                    if bool(log.get('removed')):
+                        continue
                     topics = [str(t).lower() for t in (log.get('topics') or [])]
-                    addr = str(log.get('address') or '').lower()
-                    if watched not in topics and watched != addr:
+                    log_addr = str(log.get('address') or '').lower()
+                    if addr not in topics and addr != log_addr:
                         continue
                     if self._is_rate_limited():
                         logger.warning(
@@ -522,14 +637,115 @@ class BaseRealtimeIngestor:
                     event = self._build_event_from_log(target, log)
                     self._persist_event(target, event)
                     processed += 1
-                    self.state['last_processed_block'] = max(
-                        int(self.state.get('last_processed_block') or 0),
-                        int(event.payload.get('block_number') or 0),
-                    )
+        except Exception as exc:
+            if self._is_rate_limit_error(exc):
+                self._pause_backfill_for_rate_limit()
+            else:
+                logger.warning(
+                    'realtime_backfill_scan_failed from_block=%s to_block=%s watcher=%s error=%s',
+                    from_block, end, self.watcher_name, str(exc)[:200],
+                )
+            # Failed/throttled scan — do NOT advance the checkpoint.
+            return processed
+
+        # Chunk fully scanned: advance and persist the checkpoint to the chunk end,
+        # even when zero matching events were found.
+        self.state['last_processed_block'] = max(
+            int(self.state.get('last_processed_block') or 0), int(end),
+        )
+        self.state['metrics']['backfill_chunks'] = (
+            self.state['metrics'].get('backfill_chunks', 0) + 1
+        )
+        logger.info(
+            'realtime_backfill_chunk_completed last_scanned_block=%s events=%s watcher=%s',
+            end, processed, self.watcher_name,
+        )
+        self._persist_checkpoint(int(end))
+
         if processed:
             self.state['metrics']['rpc_backfills'] += 1
             increment('decoda_realtime_backfills_total', chain=self.chain_network)
         return processed
+
+    # ------------------------------------------------------------------
+    # Checkpoint bootstrap (cold start / start-at-latest)
+    # ------------------------------------------------------------------
+
+    def _load_persisted_checkpoint(self) -> int | None:
+        """Return this watcher's persisted last_processed_block, or None.
+
+        Best-effort: any DB error (including no DATABASE_URL configured) returns
+        None so the caller falls back to start-at-latest / latest-confirmations.
+        """
+        try:
+            with pg_connection() as conn:
+                ensure_pilot_schema(conn)
+                row = conn.execute(
+                    'SELECT last_processed_block FROM monitoring_watcher_state WHERE watcher_name = %s',
+                    (self.watcher_name,),
+                ).fetchone()
+        except Exception as exc:
+            logger.warning(
+                'realtime_checkpoint_load_failed watcher=%s error=%s',
+                self.watcher_name, str(exc)[:200],
+            )
+            return None
+        if not row:
+            return None
+        val = row.get('last_processed_block') if hasattr(row, 'get') else row[0]
+        if val is None:
+            return None
+        try:
+            block = int(val)
+        except (TypeError, ValueError):
+            return None
+        return block if block > 0 else None
+
+    def _bootstrap_checkpoint(self, head: int) -> int:
+        """Resolve the starting last_processed_block exactly once on cold start.
+
+        Priority:
+        1. A persisted checkpoint within ``_DEFAULT_CHECKPOINT_RELIABLE_MAX_LAG`` of
+           head is reliable -> resume from it so no blocks are missed.
+        2. Otherwise, when BASE_REALTIME_START_AT_LATEST is enabled, skip the huge
+           historical gap and start from head - confirmations.
+        3. Otherwise resume from the (stale) checkpoint if present, else start from
+           head - confirmations. The bounded chunk backfill closes any gap
+           gradually, so even this path never loops on one old block.
+        """
+        latest_start = max(0, int(head) - self.confirmations_required)
+        checkpoint = self._load_persisted_checkpoint()
+
+        if checkpoint is not None and (int(head) - checkpoint) <= _DEFAULT_CHECKPOINT_RELIABLE_MAX_LAG:
+            logger.info(
+                'realtime_checkpoint_resumed block=%s head=%s watcher=%s',
+                checkpoint, head, self.watcher_name,
+            )
+            return min(checkpoint, latest_start)
+
+        if self.start_at_latest:
+            logger.warning(
+                'realtime_start_at_latest_bootstrap start_block=%s head=%s '
+                'skipped_checkpoint=%s watcher=%s',
+                latest_start, head,
+                checkpoint if checkpoint is not None else 'none',
+                self.watcher_name,
+            )
+            return latest_start
+
+        if checkpoint is not None:
+            logger.info(
+                'realtime_checkpoint_resumed_stale block=%s head=%s watcher=%s '
+                'hint=set_BASE_REALTIME_START_AT_LATEST_true_to_skip_large_gaps',
+                checkpoint, head, self.watcher_name,
+            )
+            return checkpoint
+
+        logger.info(
+            'realtime_checkpoint_cold_start start_block=%s head=%s watcher=%s',
+            latest_start, head, self.watcher_name,
+        )
+        return latest_start
 
     # ------------------------------------------------------------------
     # WebSocket subscription loop
@@ -635,11 +851,20 @@ class BaseRealtimeIngestor:
                         self.state['last_event_at'] = datetime.now(timezone.utc).isoformat()
                         last = self.state.get('last_processed_block')
                         if last is not None and head - int(last) > self.gap_threshold_blocks:
-                            logger.warning(
-                                'realtime_gap_detected chain=%s from_block=%s to_block=%s triggering_backfill',
-                                self.chain_network, int(last) + 1, head,
-                            )
-                            await self._backfill(int(last) + 1, head)
+                            if self._backfill_paused():
+                                # Provider is rate-limited: do not re-trigger gap
+                                # backfill on every head. The cooldown clears itself.
+                                pass
+                            else:
+                                logger.warning(
+                                    'realtime_gap_detected chain=%s from_block=%s to_block=%s '
+                                    'lag_blocks=%s bounded_chunk=%s',
+                                    self.chain_network, int(last) + 1, head,
+                                    head - int(last), self.backfill_chunk_size,
+                                )
+                                # Bounded: advances the checkpoint by one chunk per
+                                # head, so from_block never sticks on one old block.
+                                await self._backfill(int(last) + 1, head)
 
                 elif sub == sub_ids.get('logs'):
                     # Skip reorg-removed logs in the realtime path
@@ -867,8 +1092,9 @@ class BaseRealtimeIngestor:
                 head = self._throttled_block_number()
                 if head is not None:
                     self.state['last_head_block'] = head
-                    if self.state.get('last_processed_block') is None:
-                        self.state['last_processed_block'] = max(0, int(head) - self.confirmations_required)
+                    if self.state.get('last_processed_block') is None and not self._checkpoint_bootstrapped:
+                        self.state['last_processed_block'] = self._bootstrap_checkpoint(int(head))
+                        self._checkpoint_bootstrapped = True
 
                 self._record_heartbeat()
                 _next_heartbeat = time.monotonic() + self.heartbeat_seconds
