@@ -55,8 +55,11 @@ _DEFAULT_SUBSCRIPTIONS = 'newHeads,logs'
 # Bounded realtime gap backfill: at most this many blocks are scanned per cycle
 # so a large gap is closed gradually over successive heads instead of in one
 # giant scan that burns provider rate limits. Configurable via
-# BASE_REALTIME_BACKFILL_CHUNK_SIZE.
-_DEFAULT_BACKFILL_CHUNK_SIZE = 50
+# BASE_REALTIME_BACKFILL_CHUNK_SIZE, but hard-capped at _MAX_BACKFILL_CHUNK_SIZE.
+_DEFAULT_BACKFILL_CHUNK_SIZE = 25
+# Hard upper bound on the per-cycle backfill chunk. A chunk wider than this is
+# rejected so a single eth_getLogs scan can never blow the provider rate limit.
+_MAX_BACKFILL_CHUNK_SIZE = 25
 # A persisted checkpoint more than this many blocks behind the chain head is
 # treated as stale ("no reliable checkpoint") for start-at-latest bootstrap.
 _DEFAULT_CHECKPOINT_RELIABLE_MAX_LAG = 50_000
@@ -144,9 +147,12 @@ class BaseRealtimeIngestor:
             _resolve_int_env('EVM_BACKFILL_GAP_THRESHOLD_BLOCKS', _DEFAULT_GAP_THRESHOLD_BLOCKS),
         )
         # Bounded gap backfill: scan at most this many blocks per cycle so a large
-        # gap never triggers a single full-range scan on every head.
-        self.backfill_chunk_size = max(
-            1, _resolve_int_env('BASE_REALTIME_BACKFILL_CHUNK_SIZE', _DEFAULT_BACKFILL_CHUNK_SIZE)
+        # gap never triggers a single full-range scan on every head. Clamped to
+        # [1, _MAX_BACKFILL_CHUNK_SIZE] so an over-large env value cannot widen the
+        # per-scan range past the safe maximum.
+        self.backfill_chunk_size = min(
+            _MAX_BACKFILL_CHUNK_SIZE,
+            max(1, _resolve_int_env('BASE_REALTIME_BACKFILL_CHUNK_SIZE', _DEFAULT_BACKFILL_CHUNK_SIZE)),
         )
         # Safe bootstrap: when no reliable checkpoint exists, start at the latest
         # block minus confirmations instead of replaying a huge historical gap.
@@ -532,21 +538,25 @@ class BaseRealtimeIngestor:
         s = str(exc).lower()
         return '429' in s or 'rate limit' in s or 'rate_limit' in s or 'too many requests' in s
 
-    def _pause_backfill_for_rate_limit(self) -> None:
-        """Back off gap backfill for 60-120 s after a provider rate-limit.
+    def _pause_backfill(self, reason: str, cooldown: float) -> None:
+        """Pause gap backfill for ``cooldown`` seconds.
 
         Sets a monotonic deadline so the per-head gap detector does not re-trigger
-        a scan on every block while the provider is throttling.
+        a scan on every block from the same from_block while the provider is
+        unhealthy (throttling or returning errors).
         """
-        cooldown = 60.0 + random.random() * 60.0
         self._backfill_paused_until = time.monotonic() + cooldown
+        logger.warning(
+            'realtime_backfill_paused reason=%s cooldown_seconds=%.0f watcher=%s',
+            reason, cooldown, self.watcher_name,
+        )
+
+    def _pause_backfill_for_rate_limit(self) -> None:
+        """Back off gap backfill for 60-120 s after a provider rate-limit."""
         self.state['metrics']['backfill_rate_limited'] = (
             self.state['metrics'].get('backfill_rate_limited', 0) + 1
         )
-        logger.warning(
-            'realtime_backfill_paused reason=rate_limited cooldown_seconds=%.0f watcher=%s',
-            cooldown, self.watcher_name,
-        )
+        self._pause_backfill('rate_limited', 60.0 + random.random() * 60.0)
 
     def _backfill_paused(self) -> bool:
         """True while the rate-limit cooldown window is still active."""
@@ -645,6 +655,9 @@ class BaseRealtimeIngestor:
                     'realtime_backfill_scan_failed from_block=%s to_block=%s watcher=%s error=%s',
                     from_block, end, self.watcher_name, str(exc)[:200],
                 )
+                # Pause briefly so a failing chunk is not re-attempted from the
+                # same from_block on every new head (no per-block retry storm).
+                self._pause_backfill('scan_failed', 15.0 + random.random() * 15.0)
             # Failed/throttled scan — do NOT advance the checkpoint.
             return processed
 
@@ -705,33 +718,42 @@ class BaseRealtimeIngestor:
         """Resolve the starting last_processed_block exactly once on cold start.
 
         Priority:
-        1. A persisted checkpoint within ``_DEFAULT_CHECKPOINT_RELIABLE_MAX_LAG`` of
-           head is reliable -> resume from it so no blocks are missed.
-        2. Otherwise, when BASE_REALTIME_START_AT_LATEST is enabled, skip the huge
-           historical gap and start from head - confirmations.
-        3. Otherwise resume from the (stale) checkpoint if present, else start from
-           head - confirmations. The bounded chunk backfill closes any gap
+        1. When BASE_REALTIME_START_AT_LATEST is enabled and there is a real
+           historical gap (checkpoint more than ``gap_threshold_blocks`` behind
+           head, or no checkpoint at all), skip the old gap and start from
+           head - confirmations. This is the fix for the realtime_gap_detected
+           loop where from_block stuck on one old block forever.
+        2. Otherwise, a persisted checkpoint within
+           ``_DEFAULT_CHECKPOINT_RELIABLE_MAX_LAG`` of head is reliable -> resume
+           from it so no blocks are missed.
+        3. Otherwise resume from the (stale) checkpoint if present, else start
+           from head - confirmations. The bounded chunk backfill closes any gap
            gradually, so even this path never loops on one old block.
         """
         latest_start = max(0, int(head) - self.confirmations_required)
         checkpoint = self._load_persisted_checkpoint()
+        gap = (int(head) - checkpoint) if checkpoint is not None else None
 
-        if checkpoint is not None and (int(head) - checkpoint) <= _DEFAULT_CHECKPOINT_RELIABLE_MAX_LAG:
+        # Start-at-latest takes priority over a stale checkpoint: when enabled and
+        # there is a real gap to skip, jump straight to head - confirmations and
+        # never replay the old history. A checkpoint within gap_threshold_blocks of
+        # head is effectively current, so it is resumed (no recent blocks missed).
+        if self.start_at_latest and (gap is None or gap > self.gap_threshold_blocks):
+            old_from_block = (checkpoint + 1) if checkpoint is not None else latest_start
+            logger.warning(
+                'realtime_start_at_latest_applied old_from_block=%s new_checkpoint=%s '
+                'head=%s skipped_gap_blocks=%s watcher=%s',
+                old_from_block, latest_start, head,
+                gap if gap is not None else 'none', self.watcher_name,
+            )
+            return latest_start
+
+        if checkpoint is not None and gap is not None and gap <= _DEFAULT_CHECKPOINT_RELIABLE_MAX_LAG:
             logger.info(
                 'realtime_checkpoint_resumed block=%s head=%s watcher=%s',
                 checkpoint, head, self.watcher_name,
             )
             return min(checkpoint, latest_start)
-
-        if self.start_at_latest:
-            logger.warning(
-                'realtime_start_at_latest_bootstrap start_block=%s head=%s '
-                'skipped_checkpoint=%s watcher=%s',
-                latest_start, head,
-                checkpoint if checkpoint is not None else 'none',
-                self.watcher_name,
-            )
-            return latest_start
 
         if checkpoint is not None:
             logger.info(
