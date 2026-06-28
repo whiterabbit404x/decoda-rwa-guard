@@ -2766,6 +2766,59 @@ def test_rate_limit_pauses_backfill_and_does_not_advance_checkpoint(monkeypatch)
     assert ingestor.state['last_processed_block'] == 1000
 
 
+def test_scan_failure_pauses_backfill_and_does_not_advance_checkpoint(monkeypatch):
+    """A non-rate-limit eth_getLogs failure must pause backfill (so the same
+    from_block is not re-scanned every head) and must NOT advance the checkpoint."""
+    import logging as _logging
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    ingestor.state['last_processed_block'] = 1000
+
+    rpc_calls = [0]
+
+    def _mock_rpc(method, params):
+        rpc_calls[0] += 1
+        raise RuntimeError('eth_getLogs boom: upstream 500')
+
+    persisted: list[int] = []
+    monkeypatch.setattr(ingestor, '_watched_targets', lambda: [_wallet_target()])
+    monkeypatch.setattr(ingestor, '_rpc_call', _mock_rpc)
+    monkeypatch.setattr(ingestor, '_persist_checkpoint', lambda b: persisted.append(b))
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+    try:
+        processed = asyncio.run(ingestor._backfill(1001, 5000))
+        assert processed == 0
+        assert ingestor.state['last_processed_block'] == 1000, 'checkpoint must NOT advance on failure'
+        assert persisted == [], 'checkpoint must not be persisted on a failed scan'
+        assert ingestor._backfill_paused() is True, 'backfill must pause after a scan failure'
+
+        # A follow-up call while paused must not issue another RPC scan.
+        calls_after_first = rpc_calls[0]
+        assert asyncio.run(ingestor._backfill(1001, 5000)) == 0
+        assert rpc_calls[0] == calls_after_first, 'paused backfill must not re-scan'
+    finally:
+        mod.logger.removeHandler(handler)
+
+    assert any('realtime_backfill_paused' in m and 'reason=scan_failed' in m for m in log_records), (
+        f'realtime_backfill_paused reason=scan_failed must be logged; got {log_records}'
+    )
+    # A non-rate-limit failure must not be miscounted as a provider rate limit.
+    assert ingestor.state['metrics']['backfill_rate_limited'] == 0
+
+
 def test_rate_limit_pause_logged(monkeypatch):
     """realtime_backfill_paused reason=rate_limited must be logged on a 429."""
     import logging as _logging
@@ -2888,6 +2941,46 @@ def test_start_at_latest_skips_huge_historical_gap(monkeypatch):
     assert ingestor._bootstrap_checkpoint(head) == head - 2
 
 
+def test_start_at_latest_applied_for_production_gap(monkeypatch):
+    """Reproduces the stuck-cursor production incident: a ~3k-block-behind
+    checkpoint (under the 50k 'reliable' window) is skipped when start-at-latest
+    is enabled, and realtime_start_at_latest_applied is logged with the exact
+    old_from_block / new_checkpoint values so the gap loop stops."""
+    import logging as _logging
+    monkeypatch.setenv('BASE_REALTIME_START_AT_LATEST', 'true')
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='base-realtime-worker',
+        confirmations_required=1,
+    )
+    # Production numbers: from_block was stuck at 47933857 == checkpoint + 1.
+    stuck_checkpoint = 47933856
+    head = stuck_checkpoint + 3246  # within the 50k reliable window, but a real gap
+    monkeypatch.setattr(ingestor, '_load_persisted_checkpoint', lambda: stuck_checkpoint)
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+    try:
+        start = ingestor._bootstrap_checkpoint(head)
+    finally:
+        mod.logger.removeHandler(handler)
+
+    assert start == head - 1, f'must jump to head - confirmations, got {start}'
+    applied = next((m for m in log_records if 'realtime_start_at_latest_applied' in m), None)
+    assert applied is not None, f'realtime_start_at_latest_applied must be logged; got {log_records}'
+    assert 'old_from_block=47933857' in applied, applied
+    assert f'new_checkpoint={head - 1}' in applied, applied
+
+
 def test_start_at_latest_resumes_recent_checkpoint(monkeypatch):
     """A recent checkpoint (within the reliable lag window) is resumed, not skipped,
     even when start-at-latest is enabled — so no recent blocks are missed."""
@@ -2963,8 +3056,9 @@ def test_backfill_event_dedupes_against_stable_polling():
 
 
 def test_backfill_chunk_size_env_clamped(monkeypatch):
-    """BASE_REALTIME_BACKFILL_CHUNK_SIZE configures the per-cycle chunk; invalid or
-    zero values fall back to a safe minimum of 1."""
+    """BASE_REALTIME_BACKFILL_CHUNK_SIZE configures the per-cycle chunk; it is
+    clamped to [1, 25] so a chunk can never exceed the 25-block hard cap and a
+    zero/invalid value falls back to a safe minimum of 1."""
     from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
 
     monkeypatch.setenv('BASE_REALTIME_BACKFILL_CHUNK_SIZE', '25')
@@ -2975,6 +3069,11 @@ def test_backfill_chunk_size_env_clamped(monkeypatch):
     i2 = BaseRealtimeIngestor(rpc_url='http://rpc', ws_url='ws://ws', watcher_name='t')
     assert i2.backfill_chunk_size == 1
 
+    # Values above the hard cap are clamped down to 25, never wider.
+    monkeypatch.setenv('BASE_REALTIME_BACKFILL_CHUNK_SIZE', '2000')
+    i_capped = BaseRealtimeIngestor(rpc_url='http://rpc', ws_url='ws://ws', watcher_name='t')
+    assert i_capped.backfill_chunk_size == 25
+
     monkeypatch.delenv('BASE_REALTIME_BACKFILL_CHUNK_SIZE', raising=False)
     i3 = BaseRealtimeIngestor(rpc_url='http://rpc', ws_url='ws://ws', watcher_name='t')
-    assert i3.backfill_chunk_size == 50
+    assert i3.backfill_chunk_size == 25
