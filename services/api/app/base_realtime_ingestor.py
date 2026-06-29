@@ -24,10 +24,13 @@ from urllib.parse import urlparse as _urlparse
 from services.api.app.evm_activity_provider import (
     APPROVAL_TOPIC,
     TRANSFER_TOPIC,
+    _build_base_payload,
     _extract_selector,
     _hex_to_int,
+    _iso_from_block_ts,
     _make_event_id,
     _topic_to_address,
+    native_transfer_direction,
 )
 from services.api.app.monitoring_runner import ActivityEvent, process_ingested_event
 from services.api.app.observability import increment, gauge
@@ -96,6 +99,19 @@ def _ws_url_host(url: str) -> str:
         return _urlparse(url).hostname or 'unknown'
     except Exception:
         return 'unknown'
+
+
+def _short_addr(addr: Any) -> str:
+    """Truncate an address for noisy candidate logs (e.g. 0x5f6f…1d1f).
+
+    Full addresses are emitted separately by ``realtime_target_diagnostics`` so an
+    operator always has the exact monitored address; per-transaction candidate logs
+    stay readable with the short form.
+    """
+    s = str(addr or '')
+    if len(s) <= 12 or not s.startswith('0x'):
+        return s or 'none'
+    return f'{s[:6]}…{s[-4:]}'
 
 
 class BaseRealtimeIngestor:
@@ -410,6 +426,159 @@ class BaseRealtimeIngestor:
             payload=payload,
         )
 
+    def _build_native_transfer_event(
+        self,
+        target: dict[str, Any],
+        tx: dict[str, Any],
+        *,
+        block_number: int,
+        block_hash: str | None,
+        observed_at: datetime,
+        direction: str,
+        source_type: str = 'realtime_backfill',
+    ) -> ActivityEvent:
+        """Build a wallet-transfer ActivityEvent from a native ETH transaction.
+
+        Uses the same cursor shape (``block:tx_hash:-1``) and ``_build_base_payload``
+        as the 300 s polling worker so the two paths produce an identical
+        idempotency key for the same tx — ON CONFLICT then dedupes them.
+        """
+        tx_hash = str(tx.get('hash') or '')
+        cursor = f"{block_number}:{tx_hash}:-1"
+        _provider_mode = self.state.get('source_status') or self._ingestion_mode or source_type
+        payload = _build_base_payload(
+            target=target,
+            network=self.chain_network,
+            chain_id=self.chain_id,
+            block_number=block_number,
+            block_hash=block_hash,
+            tx=tx,
+            tx_hash=tx_hash,
+            raw_reference=f'{self.chain_network}:{tx_hash}',
+        )
+        payload['observed_at'] = observed_at.isoformat()
+        payload['event_type'] = 'transaction'
+        payload['wallet_transfer_direction'] = direction
+        payload['ingestion_source'] = source_type
+        payload['evidence_source'] = 'live'
+        payload['source_type'] = source_type
+        payload['detected_by'] = source_type
+        payload['provider_mode'] = _provider_mode
+        payload['observed_latency_seconds'] = round(
+            (datetime.now(timezone.utc) - observed_at).total_seconds(), 2
+        )
+        return ActivityEvent(
+            event_id=_make_event_id(str(target['id']), cursor, 'transaction'),
+            kind='transaction',
+            observed_at=observed_at,
+            ingestion_source=source_type,
+            cursor=cursor,
+            payload=payload,
+        )
+
+    def _scan_native_transfers(
+        self,
+        from_block: int,
+        to_block: int,
+        watched: list[tuple[dict[str, Any], str]],
+        *,
+        source_type: str = 'realtime_backfill',
+    ) -> int:
+        """Detect native ETH transfers to/from watched wallets in a block range.
+
+        Native ETH transfers carry NO logs, so ``eth_getLogs`` can never see them.
+        The only way to detect them is to fetch each block's full transaction list
+        and match ``tx.from`` / ``tx.to`` against the watched wallet via the shared
+        :func:`native_transfer_direction` matcher (same one the polling worker uses).
+
+        Returns the number of matched transfers persisted. Raises on RPC failure so
+        the caller's rate-limit / pause handling applies (the checkpoint is then not
+        advanced and the range is re-scanned next cycle).
+        """
+        if to_block < from_block or not watched:
+            return 0
+        logger.info(
+            'native_transfer_scan_started chain_id=%s from_block=%s to_block=%s '
+            'watched_targets=%s watcher=%s',
+            self.chain_id, from_block, to_block, len(watched), self.watcher_name,
+        )
+        processed = 0
+        for block_number in range(int(from_block), int(to_block) + 1):
+            block = self._rpc_call('eth_getBlockByNumber', [hex(block_number), True]) or {}
+            block_hash = str(block.get('hash') or '') or None
+            observed_at = _iso_from_block_ts(block.get('timestamp'))
+            for tx in (block.get('transactions') or []):
+                if not isinstance(tx, dict):
+                    continue
+                tx_hash = str(tx.get('hash') or '')
+                matched_any = False
+                for target, addr in watched:
+                    direction = native_transfer_direction(addr, tx)
+                    if direction is None:
+                        continue
+                    matched_any = True
+                    value_wei = _hex_to_int(tx.get('value')) or 0
+                    logger.info(
+                        'native_transfer_candidate tx_hash=%s from=%s to=%s value_wei=%s',
+                        tx_hash, _short_addr(tx.get('from')), _short_addr(tx.get('to')), value_wei,
+                    )
+                    logger.info(
+                        'native_transfer_match target_id=%s direction=%s tx_hash=%s',
+                        target.get('id'), direction, tx_hash,
+                    )
+                    if self._is_rate_limited():
+                        logger.warning(
+                            'realtime_rate_limit_exceeded watcher=%s during_native_scan',
+                            self.watcher_name,
+                        )
+                        continue
+                    event = self._build_native_transfer_event(
+                        target, tx,
+                        block_number=block_number, block_hash=block_hash,
+                        observed_at=observed_at, direction=direction, source_type=source_type,
+                    )
+                    result = self._persist_event(target, event)
+                    if result.get('status') == 'duplicate_suppressed':
+                        logger.debug(
+                            'realtime_event_deduped watcher=%s event_id=%s',
+                            self.watcher_name, event.event_id,
+                        )
+                        continue
+                    if result.get('status') != 'persist_failed':
+                        processed += 1
+                        self.state['metrics']['events_ingested'] += 1
+                        self.state['last_event_at'] = datetime.now(timezone.utc).isoformat()
+                        logger.info(
+                            'wallet_transfer_detected tx_hash=%s detected_by=%s',
+                            tx_hash, source_type,
+                        )
+                        logger.info('realtime_event_persisted tx_hash=%s', tx_hash)
+                        increment('decoda_realtime_events_total', chain=self.chain_network)
+                if not matched_any and tx_hash:
+                    logger.debug(
+                        'native_transfer_no_match tx_hash=%s reason=address_not_watched',
+                        tx_hash,
+                    )
+        return processed
+
+    def _log_target_diagnostics(self, targets: list[dict[str, Any]]) -> None:
+        """Emit one full-address diagnostic line per watched target.
+
+        Addresses are NOT secrets — operators need the exact monitored address to
+        confirm a MetaMask wallet matches what Decoda watches. Truncated forms like
+        ``0x5f6f…1d1f`` hide the very mismatch this is meant to catch.
+        """
+        for target in targets:
+            raw_addr = str(
+                target.get('wallet_address') or target.get('contract_identifier') or ''
+            )
+            logger.info(
+                'realtime_target_diagnostics target_id=%s workspace_id=%s chain_id=%s '
+                'monitored_address_full=%s normalized_address_lowercase=%s watcher=%s',
+                target.get('id'), target.get('workspace_id'), self.chain_id,
+                raw_addr or 'none', raw_addr.lower() or 'none', self.watcher_name,
+            )
+
     # ------------------------------------------------------------------
     # Persistence (short transaction per event)
     # ------------------------------------------------------------------
@@ -656,6 +825,14 @@ class BaseRealtimeIngestor:
                     event = self._build_event_from_log(target, log, source_type='realtime_backfill')
                     self._persist_event(target, event)
                     processed += 1
+
+            # Native ETH transfers emit NO logs, so the eth_getLogs scan above can
+            # never see them. Scan the same block range's full transactions so a
+            # plain ETH send to/from a watched wallet is detected here instead of
+            # only by the 300 s polling worker minutes later.
+            processed += self._scan_native_transfers(
+                int(from_block), int(end), watched, source_type='realtime_backfill',
+            )
         except Exception as exc:
             if self._is_rate_limit_error(exc):
                 self._pause_backfill_for_rate_limit()
@@ -838,6 +1015,9 @@ class BaseRealtimeIngestor:
                         'worker_healthy_but_no_events_will_be_processed',
                         self.chain_id, self.chain_network, self.watcher_name,
                     )
+                # Full monitored address per target so an operator can confirm the
+                # watched address matches their MetaMask wallet exactly.
+                self._log_target_diagnostics(_startup_targets)
             except Exception as _load_exc:
                 logger.warning(
                     'realtime_targets_load_failed watcher=%s error=%s',
@@ -1072,6 +1252,35 @@ class BaseRealtimeIngestor:
                         logger.warning(
                             'http_fast_tail_scan_failed watcher=%s target=%s error=%s',
                             self.watcher_name, target.get('id'), str(scan_exc)[:200],
+                        )
+                        scan_all_ok = False
+
+                # Native ETH transfers (no logs) for the recent tail. Bounded to the
+                # most recent blocks so a stale checkpoint can never trigger a giant
+                # block-by-block fetch in one poll; the 300 s polling worker's own
+                # bounded backfill covers any deeper history. Only advance the cursor
+                # below when this also succeeds, so a failed native scan re-scans next
+                # poll rather than skipping transfers.
+                if scan_all_ok:
+                    _ft_watched = [
+                        (
+                            t,
+                            str(t.get('wallet_address') or t.get('contract_identifier') or '').lower(),
+                        )
+                        for t in targets
+                        if str(t.get('wallet_address') or t.get('contract_identifier') or '')
+                        .lower().startswith('0x')
+                    ]
+                    _native_from = max(int(from_block), int(to_block) - _MAX_BACKFILL_CHUNK_SIZE + 1)
+                    try:
+                        self._scan_native_transfers(
+                            _native_from, to_block, _ft_watched,
+                            source_type='realtime_http_fast_tail',
+                        )
+                    except Exception as native_exc:
+                        logger.warning(
+                            'http_fast_tail_native_scan_failed watcher=%s error=%s',
+                            self.watcher_name, str(native_exc)[:200],
                         )
                         scan_all_ok = False
 

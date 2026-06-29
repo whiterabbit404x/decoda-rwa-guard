@@ -561,6 +561,31 @@ def explain_wallet_transfer_match(monitored_wallet: str | None, tx: dict[str, An
     }
 
 
+def native_transfer_direction(watched_address: Any, tx: dict[str, Any] | None) -> str | None:
+    """Canonical native ETH transfer matcher shared by stable polling and the
+    real-time worker.
+
+    Returns ``'outbound'`` when the watched wallet is ``tx.from``, ``'inbound'``
+    when it is ``tx.to``, otherwise ``None``. Both the watched address and the
+    transaction's ``from``/``to`` are normalised to lowercase 0x form, so a
+    checksum-cased address from MetaMask and a lowercase address in the DB never
+    cause a miss. A native ETH transfer carries no logs, so this transaction-level
+    match is the only way it can be detected — both the realtime backfill and the
+    300 s polling worker MUST use this function so their behaviour cannot drift.
+    """
+    watched = _normalize_evm_address(watched_address)
+    if not watched:
+        return None
+    tx = tx if isinstance(tx, dict) else {}
+    tx_from = _normalize_evm_address(tx.get('from'))
+    tx_to = _normalize_evm_address(tx.get('to'))
+    if watched == tx_from:
+        return 'outbound'
+    if watched == tx_to:
+        return 'inbound'
+    return None
+
+
 def _split_rpc_urls(raw: str | None) -> list[str]:
     """Split a comma-separated RPC URL list into trimmed, non-empty entries."""
     return [part.strip() for part in str(raw or '').split(',') if part.strip()]
@@ -1711,11 +1736,15 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
                     payload['provider_mode'] = 'stable_rpc_polling'
                     _latency = round((datetime.now(timezone.utc) - observed_at).total_seconds(), 2) if isinstance(observed_at, datetime) else None
                     payload['observed_latency_seconds'] = _latency
-                    if target_type == 'wallet' and target_address in {tx_to, tx_from}:
-                        payload['wallet_transfer_direction'] = 'outbound' if tx_from == target_address else 'inbound'
-                        _wallet_transfers_detected += 1
-                        if tx_hash:
-                            _detected_tx_hashes.append(tx_hash)
+                    if target_type == 'wallet':
+                        # Shared native-ETH matcher (also used by the realtime worker)
+                        # so both detection paths normalise addresses identically.
+                        _native_direction = native_transfer_direction(target_address, tx)
+                        if _native_direction is not None:
+                            payload['wallet_transfer_direction'] = _native_direction
+                            _wallet_transfers_detected += 1
+                            if tx_hash:
+                                _detected_tx_hashes.append(tx_hash)
                     kind = 'transaction' if target_type == 'wallet' else 'contract'
                     events.append(ActivityEvent(event_id=_make_event_id(str(target['id']), cursor_value, kind), kind=kind, observed_at=observed_at, ingestion_source=preferred_source, cursor=cursor_value, payload=payload))
 
