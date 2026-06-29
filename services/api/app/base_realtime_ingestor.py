@@ -498,9 +498,9 @@ class BaseRealtimeIngestor:
         if to_block < from_block or not watched:
             return 0
         logger.info(
-            'native_transfer_scan_started chain_id=%s from_block=%s to_block=%s '
-            'watched_targets=%s watcher=%s',
-            self.chain_id, from_block, to_block, len(watched), self.watcher_name,
+            'realtime_native_transfer_scan_started chain_id=%s from_block=%s to_block=%s '
+            'watched_targets=%s detected_by=%s watcher=%s',
+            self.chain_id, from_block, to_block, len(watched), source_type, self.watcher_name,
         )
         processed = 0
         for block_number in range(int(from_block), int(to_block) + 1):
@@ -519,12 +519,15 @@ class BaseRealtimeIngestor:
                     matched_any = True
                     value_wei = _hex_to_int(tx.get('value')) or 0
                     logger.info(
-                        'native_transfer_candidate tx_hash=%s from=%s to=%s value_wei=%s',
+                        'realtime_native_transfer_candidate tx_hash=%s from=%s to=%s value_wei=%s '
+                        'detected_by=%s',
                         tx_hash, _short_addr(tx.get('from')), _short_addr(tx.get('to')), value_wei,
+                        source_type,
                     )
                     logger.info(
-                        'native_transfer_match target_id=%s direction=%s tx_hash=%s',
-                        target.get('id'), direction, tx_hash,
+                        'realtime_native_transfer_match target_id=%s direction=%s tx_hash=%s '
+                        'detected_by=%s',
+                        target.get('id'), direction, tx_hash, source_type,
                     )
                     if self._is_rate_limited():
                         logger.warning(
@@ -559,6 +562,73 @@ class BaseRealtimeIngestor:
                         'native_transfer_no_match tx_hash=%s reason=address_not_watched',
                         tx_hash,
                     )
+        return processed
+
+    def _watched_wallet_pairs(self) -> list[tuple[dict[str, Any], str]]:
+        """Load active Base targets as ``(target, lowercase_0x_address)`` pairs.
+
+        Shared by the gap backfill and the new-head native scan so both match the
+        watched wallet against the same normalised (lowercase) address.
+        """
+        pairs: list[tuple[dict[str, Any], str]] = []
+        for target in self._watched_targets():
+            addr = str(
+                target.get('wallet_address') or target.get('contract_identifier') or ''
+            ).lower()
+            if addr.startswith('0x'):
+                pairs.append((target, addr))
+        return pairs
+
+    async def _scan_head_native_transfers(self, head: int) -> int:
+        """Scan newly confirmed head block(s) directly for native ETH transfers.
+
+        Runs on every ``newHeads`` message in steady state (when the worker is
+        keeping up, i.e. the lag is within ``gap_threshold_blocks``). Native ETH
+        transfers carry NO logs, so the ``logs`` subscription can never see them —
+        only a full-transaction scan of the block can. Without this, a plain ETH
+        send to/from a watched wallet was invisible to the realtime worker (the most
+        recent blocks are never wide enough to trip the gap backfill), so it only
+        ever surfaced minutes later via the 300 s stable polling worker.
+
+        Detections here are tagged ``detected_by=realtime_websocket`` (requirement 7:
+        new-head scan), distinct from the gap backfill's ``realtime_backfill``.
+
+        Confirmation-safe: only blocks at or below ``head - confirmations_required``
+        are scanned. The checkpoint advances to the last scanned block so each block
+        is scanned once; on RPC failure the checkpoint is NOT advanced so the range
+        is retried on the next head (no transfers skipped).
+        """
+        safe_to = int(head) - self.confirmations_required
+        if safe_to < 0:
+            return 0
+        last = self.state.get('last_processed_block')
+        from_block = (int(last) + 1) if last is not None else safe_to
+        if from_block > safe_to:
+            # Nothing newly confirmed since the last scan.
+            return 0
+        # Defensive bound: a provider that coalesces several heads into one message
+        # must not trigger an unbounded block-by-block fetch on the event loop.
+        from_block = max(from_block, safe_to - self.backfill_chunk_size + 1)
+
+        watched = self._watched_wallet_pairs()
+        if not watched:
+            # No Base wallet targets — advance so an empty range is not re-scanned.
+            self.state['last_processed_block'] = max(int(last or 0), safe_to)
+            return 0
+
+        try:
+            processed = self._scan_native_transfers(
+                from_block, safe_to, watched, source_type=REALTIME_INGESTION_SOURCE,
+            )
+        except Exception as exc:
+            logger.warning(
+                'realtime_head_native_scan_failed from_block=%s to_block=%s watcher=%s error=%s',
+                from_block, safe_to, self.watcher_name, str(exc)[:200],
+            )
+            # Do NOT advance the checkpoint — retry this range on the next head.
+            return 0
+
+        self.state['last_processed_block'] = max(int(last or 0), safe_to)
         return processed
 
     def _log_target_diagnostics(self, targets: list[dict[str, Any]]) -> None:
@@ -619,6 +689,25 @@ class BaseRealtimeIngestor:
     # Heartbeat
     # ------------------------------------------------------------------
 
+    def _effective_degraded_reason(self) -> str | None:
+        """Return the degraded_reason to publish, fixing stale before-first-event text.
+
+        ``provider_closes_before_first_event`` is only true while no head/event has
+        arrived. Once the worker is receiving heads (real WSS heads, or HTTP
+        fast-tail polling that fetches block numbers), continuing to publish that
+        reason is false — it claims the provider never delivered data when it
+        plainly is. So when heads/events have arrived we replace the stale reason:
+        in HTTP fast-tail mode with ``http_fast_tail_active`` (still a fallback, but
+        truthfully tailing), otherwise we clear it (WSS recovered). This is the
+        canonical fact System Health renders, so the customer-facing limitation text
+        stops showing 'provider closes before first event' once heads are flowing.
+        """
+        reason = self.state.get('degraded_reason')
+        if reason == 'provider_closes_before_first_event' and not self._closed_before_first_event():
+            reason = 'http_fast_tail_active' if self._ingestion_mode == 'http_fast_tail' else None
+            self.state['degraded_reason'] = reason
+        return reason
+
     def _record_heartbeat(self) -> None:
         """Emit realtime_worker_heartbeat log and upsert monitoring_watcher_state."""
         lag: int | None = None
@@ -636,11 +725,13 @@ class BaseRealtimeIngestor:
         # the worker switched off WSS without inferring it from log scraping.
         _provider_mode = self.state.get('source_status') or self._ingestion_mode
         _fallback_active = bool(self._wss_permanently_disabled)
+        # Resolve before reading state so the log line and the persisted row agree.
+        _degraded_reason = self._effective_degraded_reason()
         logger.info(
             'realtime_worker_heartbeat watcher_name=%s chain_id=%s chain=%s '
             'last_event_at=%s reconnect_count=%s events_processed=%s '
-            'heads_received=%s lag_blocks=%s degraded=%s active_provider_host=%s '
-            'provider_mode=%s fallback_active=%s',
+            'heads_received=%s lag_blocks=%s degraded=%s degraded_reason=%s '
+            'active_provider_host=%s provider_mode=%s fallback_active=%s',
             self.watcher_name,
             self.chain_id,
             self.chain_network,
@@ -650,6 +741,7 @@ class BaseRealtimeIngestor:
             self.state['metrics'].get('heads_received', 0),
             lag,
             bool(self.state.get('degraded')),
+            _degraded_reason or 'none',
             _active_host,
             _provider_mode,
             _fallback_active,
@@ -694,7 +786,7 @@ class BaseRealtimeIngestor:
                         self.state.get('source_status') or 'realtime_websocket',
                         self._ingestion_mode,
                         bool(self.state.get('degraded')),
-                        self.state.get('degraded_reason'),
+                        _degraded_reason,
                         self.watcher_name,
                         self.state.get('last_processed_block'),
                         json.dumps({**self.state['metrics'], 'lag_blocks': lag, 'active_provider_host': _active_host}),
@@ -790,11 +882,7 @@ class BaseRealtimeIngestor:
         # One bounded chunk per call.
         end = min(int(to_block), int(from_block) + self.backfill_chunk_size - 1)
 
-        watched: list[tuple[dict[str, Any], str]] = []
-        for target in self._watched_targets():
-            addr = str(target.get('wallet_address') or target.get('contract_identifier') or '').lower()
-            if addr.startswith('0x'):
-                watched.append((target, addr))
+        watched = self._watched_wallet_pairs()
 
         logger.info(
             'realtime_backfill_chunk_started from_block=%s to_block=%s lag_blocks=%s watcher=%s',
@@ -1075,7 +1163,15 @@ class BaseRealtimeIngestor:
                                 )
                                 # Bounded: advances the checkpoint by one chunk per
                                 # head, so from_block never sticks on one old block.
+                                # Catch-up scan → detected_by=realtime_backfill.
                                 await self._backfill(int(last) + 1, head)
+                        else:
+                            # Steady state (caught up): scan the newly confirmed head
+                            # block(s) directly for native ETH transfers, which emit no
+                            # logs and so are invisible to the logs subscription. This
+                            # is the realtime_websocket detection path — without it a
+                            # plain ETH send was only ever caught by stable polling.
+                            await self._scan_head_native_transfers(head)
 
                 elif sub == sub_ids.get('logs'):
                     # Skip reorg-removed logs in the realtime path
