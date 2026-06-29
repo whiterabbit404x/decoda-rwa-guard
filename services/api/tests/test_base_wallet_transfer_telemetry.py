@@ -889,3 +889,224 @@ def test_dead_lettered_base_target_is_skipped():
     assert skipped_dead_lettered == 1, f'Expected 1 dead-lettered skip, got {skipped_dead_lettered}'
     assert dead_id not in due_target_ids, 'Dead-lettered target must not appear in due_target_ids'
     assert live_id in due_target_ids, 'Live target must appear in due_target_ids'
+
+
+# ---------------------------------------------------------------------------
+# detected_by field tests
+# ---------------------------------------------------------------------------
+
+def test_stable_rpc_polling_sets_detected_by(monkeypatch):
+    """fetch_evm_activity must set detected_by='stable_rpc_polling' on wallet tx payloads."""
+    target = _make_base_wallet_target()
+
+    mock_client = MagicMock()
+    mock_client.call.side_effect = lambda method, params: {
+        'eth_chainId': hex(BASE_CHAIN_ID),
+        'eth_blockNumber': hex(BLOCK_NUM),
+        'eth_getBlockByNumber': {
+            'hash': '0xblockhash',
+            'timestamp': hex(int(_utcnow().timestamp())),
+            'transactions': [
+                {
+                    'hash': TX_HASH,
+                    'from': WALLET_ADDR,
+                    'to': OTHER_ADDR,
+                    'value': hex(10 ** 17),
+                    'input': '0x',
+                    'blockHash': '0xblockhash',
+                }
+            ],
+        },
+        'eth_getLogs': [],
+    }.get(method)
+
+    with (
+        patch('services.api.app.evm_activity_provider._resolve_evm_rpc_url', return_value='http://rpc.test'),
+        patch('services.api.app.evm_activity_provider._resolve_evm_rpc_urls', return_value=['http://rpc.test']),
+        patch('services.api.app.evm_activity_provider.FailoverJsonRpcClient', return_value=mock_client),
+        patch.dict('os.environ', {'LIVE_MONITORING_CHAINS': 'base', 'EVM_CHAIN_ID': str(BASE_CHAIN_ID)}),
+    ):
+        events = fetch_evm_activity(target, None, rpc_client=mock_client)
+
+    tx_event = next((e for e in events if isinstance(e.payload, dict) and e.payload.get('tx_hash') == TX_HASH), None)
+    assert tx_event is not None, 'Expected wallet transfer event'
+    assert tx_event.payload.get('detected_by') == 'stable_rpc_polling', (
+        f"Expected detected_by='stable_rpc_polling', got {tx_event.payload.get('detected_by')!r}"
+    )
+    assert tx_event.payload.get('provider_mode') == 'stable_rpc_polling'
+    latency = tx_event.payload.get('observed_latency_seconds')
+    assert latency is None or isinstance(latency, float), f'Expected float or None for latency, got {latency!r}'
+
+
+def test_realtime_websocket_build_event_sets_detected_by():
+    """_build_event_from_log (no source_type override) must set detected_by='realtime_websocket'."""
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    target = {
+        'id': str(uuid.uuid4()),
+        'workspace_id': str(uuid.uuid4()),
+        'wallet_address': WALLET_ADDR,
+        'contract_identifier': None,
+        'target_type': 'wallet',
+        'chain_network': 'base',
+    }
+    log = {
+        'blockNumber': hex(BLOCK_NUM),
+        'transactionHash': TX_HASH,
+        'logIndex': '0x0',
+        'topics': [
+            '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',
+            '0x000000000000000000000000deadbeef00000000000000000000000000001234',
+            '0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        ],
+        'address': '0xcontract',
+        'data': '0x0',
+    }
+
+    ingestor = BaseRealtimeIngestor.__new__(BaseRealtimeIngestor)
+    ingestor.chain_id = BASE_CHAIN_ID
+    ingestor.chain_network = 'base'
+    ingestor.watcher_name = 'test_watcher'
+    ingestor._ingestion_mode = 'realtime_websocket'
+    ingestor._wss_permanently_disabled = False
+    ingestor._current_ws_url = 'wss://test'
+    ingestor._backfill_paused_until = 0.0
+    ingestor.confirmations_required = 1
+    ingestor.backfill_chunk_size = 25
+    ingestor.gap_threshold_blocks = 24
+    ingestor.start_at_latest = False
+    ingestor.state = {
+        'metrics': {},
+        'source_status': 'realtime_websocket',
+        'last_head_block': BLOCK_NUM,
+        'last_processed_block': BLOCK_NUM - 1,
+    }
+
+    event = ingestor._build_event_from_log(target, log)
+    assert event.payload.get('detected_by') == 'realtime_websocket', (
+        f"Expected detected_by='realtime_websocket', got {event.payload.get('detected_by')!r}"
+    )
+    assert event.payload.get('source_type') == 'realtime_websocket'
+    assert event.payload.get('provider_mode') == 'realtime_websocket'
+
+
+def test_realtime_backfill_build_event_sets_detected_by():
+    """_build_event_from_log with source_type='realtime_backfill' must set detected_by='realtime_backfill'."""
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    target = {
+        'id': str(uuid.uuid4()),
+        'workspace_id': str(uuid.uuid4()),
+        'wallet_address': WALLET_ADDR,
+        'contract_identifier': None,
+        'target_type': 'wallet',
+        'chain_network': 'base',
+    }
+    log = {
+        'blockNumber': hex(BLOCK_NUM),
+        'transactionHash': TX_HASH,
+        'logIndex': '0x0',
+        'topics': [
+            '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',
+            '0x000000000000000000000000deadbeef00000000000000000000000000001234',
+            '0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        ],
+        'address': '0xcontract',
+        'data': '0x0',
+    }
+
+    ingestor = BaseRealtimeIngestor.__new__(BaseRealtimeIngestor)
+    ingestor.chain_id = BASE_CHAIN_ID
+    ingestor.chain_network = 'base'
+    ingestor.watcher_name = 'test_watcher'
+    ingestor._ingestion_mode = 'realtime_websocket'
+    ingestor._wss_permanently_disabled = False
+    ingestor._current_ws_url = 'wss://test'
+    ingestor._backfill_paused_until = 0.0
+    ingestor.confirmations_required = 1
+    ingestor.backfill_chunk_size = 25
+    ingestor.gap_threshold_blocks = 24
+    ingestor.start_at_latest = False
+    ingestor.state = {
+        'metrics': {},
+        'source_status': 'realtime_websocket',
+        'last_head_block': BLOCK_NUM,
+        'last_processed_block': BLOCK_NUM - 10,
+    }
+
+    event = ingestor._build_event_from_log(target, log, source_type='realtime_backfill')
+    assert event.payload.get('detected_by') == 'realtime_backfill', (
+        f"Expected detected_by='realtime_backfill', got {event.payload.get('detected_by')!r}"
+    )
+    assert event.payload.get('source_type') == 'realtime_backfill'
+    assert event.ingestion_source == 'realtime_backfill'
+
+
+def test_list_target_telemetry_returns_detected_by(monkeypatch):
+    """list_target_telemetry must surface detected_by from payload_json as a top-level field."""
+    import json as _json
+    target_id = str(uuid.uuid4())
+    workspace_id = str(uuid.uuid4())
+
+    payload_json = {
+        'tx_hash': TX_HASH,
+        'from': WALLET_ADDR,
+        'to': OTHER_ADDR,
+        'block_number': BLOCK_NUM,
+        'chain_id': BASE_CHAIN_ID,
+        'source_type': 'realtime_websocket',
+        'detected_by': 'realtime_websocket',
+        'provider_mode': 'realtime_websocket',
+        'observed_latency_seconds': 1.23,
+    }
+    telemetry_row = {
+        'id': str(uuid.uuid4()),
+        'workspace_id': workspace_id,
+        'target_id': target_id,
+        'provider_type': 'evm_activity_provider',
+        'source_type': 'wallet_transfer_detected',
+        'evidence_source': 'live',
+        'observed_at': _utcnow(),
+        'ingested_at': _utcnow(),
+        'payload_json': payload_json,
+        'chain_network': 'base',
+        'receipt_block_number': BLOCK_NUM,
+    }
+
+    class _MockConn:
+        def execute(self, query, params=None):
+            q = (query or '').strip().lower()
+            if 'telemetry_events' in q and 'count' in q:
+                return _Rows([{'cnt': 1}])
+            if 'telemetry_events' in q and 'select' in q:
+                return _Rows([telemetry_row])
+            return _Rows([])
+
+        @contextmanager
+        def transaction(self):
+            yield
+
+    fake_user = {'id': str(uuid.uuid4()), 'workspace_id': workspace_id}
+    fake_workspace = {'workspace_id': workspace_id, 'workspace': {'id': workspace_id}}
+    fake_request = MagicMock()
+    fake_request.headers = {'x-workspace-id': workspace_id}
+
+    with (
+        patch('services.api.app.monitoring_runner.pg_connection') as mock_pg,
+        patch('services.api.app.monitoring_runner.ensure_pilot_schema'),
+        patch('services.api.app.monitoring_runner.authenticate_with_connection', return_value=fake_user),
+        patch('services.api.app.monitoring_runner.resolve_workspace', return_value=fake_workspace),
+    ):
+        mock_pg.return_value.__enter__ = lambda s: _MockConn()
+        mock_pg.return_value.__exit__ = MagicMock(return_value=False)
+
+        result = monitoring_runner.list_target_telemetry(fake_request, target_id=target_id, limit=50)
+
+    rows = result.get('telemetry', [])
+    assert rows, 'Expected at least one telemetry row'
+    row = rows[0]
+    assert row.get('detected_by') == 'realtime_websocket', (
+        f"Expected detected_by='realtime_websocket', got {row.get('detected_by')!r}"
+    )
+    assert row.get('provider_mode') == 'realtime_websocket'
+    assert row.get('observed_latency_seconds') == 1.23
