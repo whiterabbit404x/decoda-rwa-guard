@@ -51,7 +51,9 @@ const HEADERS = [
 const DETECTED_BY_LABELS: Record<string, string> = {
   realtime_websocket: 'Realtime (WebSocket)',
   realtime_backfill: 'Realtime (Backfill)',
+  realtime_http_fast_tail: 'Realtime (HTTP fast-tail)',
   stable_rpc_polling: 'Stable RPC Polling',
+  tx_hash_import: 'Manual tx import',
 };
 
 function formatDetectedBy(val: string | null | undefined): string {
@@ -157,13 +159,27 @@ const BASESCAN_TX_BASE = 'https://basescan.org/tx/';
 function TelemetryDetailModal({
   row,
   onClose,
+  monitoredAddress,
 }: {
   row: TelemetryRow;
   onClose: () => void;
+  monitoredAddress?: string | null;
 }) {
   const payload = row.payload_json;
   const kind = classifyEvent(payload, row.source_type);
   const jsonString = safeJson(payload);
+
+  // Full monitored address: prefer the target-level value, fall back to the
+  // payload's asset_context so the exact watched wallet is always visible.
+  const assetContext =
+    payload && typeof payload === 'object'
+      ? ((payload as Record<string, unknown>).asset_context as Record<string, unknown> | undefined)
+      : undefined;
+  const monitoredAddressFull =
+    monitoredAddress ??
+    (assetContext && typeof assetContext.asset_identifier === 'string'
+      ? (assetContext.asset_identifier as string)
+      : null);
 
   const txHash = extractField(payload, 'tx_hash', 'transactionHash', 'hash');
   const fromAddr = extractField(payload, 'from', 'from_address', 'fromAddress');
@@ -227,6 +243,7 @@ function TelemetryDetailModal({
     ['Block number', blockNum],
     ['Observed at', row.observed_at ? fmt(row.observed_at) : null],
     ['Evidence source', row.evidence_source ?? null],
+    ['Monitored address (full)', monitoredAddressFull],
     ['From address', fromAddr],
     ['To address', toAddr],
     ['Amount', amount],
@@ -523,6 +540,7 @@ export default function TargetTelemetryPage() {
 
   const [rows, setRows] = useState<TelemetryRow[]>([]);
   const [workspaceId, setWorkspaceId] = useState('');
+  const [monitoredAddress, setMonitoredAddress] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [selectedRow, setSelectedRow] = useState<TelemetryRow | null>(null);
@@ -581,6 +599,9 @@ export default function TargetTelemetryPage() {
         if (typeof payload.workspace_id === 'string') {
           setWorkspaceId(payload.workspace_id);
         }
+        setMonitoredAddress(
+          typeof payload.monitored_address === 'string' ? payload.monitored_address : null,
+        );
       })
       .catch((err: unknown) => {
         if ((err as { name?: string }).name === 'AbortError') return;
@@ -597,7 +618,11 @@ export default function TargetTelemetryPage() {
   return (
     <main className="productPage">
       {selectedRow && (
-        <TelemetryDetailModal row={selectedRow} onClose={() => setSelectedRow(null)} />
+        <TelemetryDetailModal
+          row={selectedRow}
+          onClose={() => setSelectedRow(null)}
+          monitoredAddress={monitoredAddress}
+        />
       )}
 
       <div style={{ marginBottom: '1.25rem' }}>
@@ -615,6 +640,20 @@ export default function TargetTelemetryPage() {
         <p className="muted" style={{ margin: '0.35rem 0 0', fontSize: '0.9rem' }}>
           Live telemetry events persisted for this monitoring target.
         </p>
+        {monitoredAddress && (
+          <p
+            className="muted"
+            style={{ margin: '0.35rem 0 0', fontSize: '0.8rem' }}
+          >
+            Monitored address:{' '}
+            <span
+              style={{ fontFamily: 'monospace', wordBreak: 'break-all', color: 'var(--text)' }}
+              title="Full monitored wallet address — confirm this matches your wallet exactly"
+            >
+              {monitoredAddress}
+            </span>
+          </p>
+        )}
       </div>
 
       <div

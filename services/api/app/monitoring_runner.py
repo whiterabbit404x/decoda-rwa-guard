@@ -580,6 +580,81 @@ def _persist_raw_wallet_transfer_telemetry(
         return False
 
 
+def _maybe_persist_ingested_wallet_transfer(
+    connection: Any, *, target: dict[str, Any], event: ActivityEvent
+) -> str | None:
+    """Persist a ``wallet_transfer_detected`` / ``native_transfer`` telemetry row for
+    a real-time–ingested wallet transaction.
+
+    The 300 s polling worker persists this row inside ``process_monitoring_target``.
+    The real-time worker reaches the DB through ``process_ingested_event`` instead,
+    which historically wrote only receipts/detections — so a native ETH transfer the
+    realtime worker detected never produced a customer-visible telemetry row, even
+    though detection ran. This mirrors the polling worker's event_type selection and
+    writes the row on a dedicated committed connection (idempotent via
+    idempotency_key, same key shape as polling), so the realtime and polling paths
+    converge on one deduped row per tx rather than two.
+
+    Returns the persisted event_type, or None when the event is not a directioned
+    wallet transfer.
+
+    Scope: only events that carry an explicit ``wallet_transfer_direction`` (the
+    native-ETH events the realtime worker builds) are persisted here. ERC-20 log
+    events keep their existing realtime behaviour untouched, so this is a additive
+    fix for native transfers, not a change to token-transfer handling.
+    """
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    direction = str(payload.get('wallet_transfer_direction') or '').strip().lower()
+    if direction not in {'inbound', 'outbound'}:
+        return None
+    target_wallet = str(target.get('wallet_address') or '').lower()
+    ev_from = str(payload.get('from') or '').lower()
+    ev_to = str(payload.get('to') or '').lower()
+    is_wallet_tx = (
+        str(target.get('target_type') or '').lower() == 'wallet'
+        and bool(target_wallet)
+        and target_wallet in {ev_from, ev_to}
+    )
+    if not is_wallet_tx:
+        return None
+    raw_event_type = str(payload.get('event_type') or event.kind or '').lower()
+    if raw_event_type == 'transaction':
+        event_type = 'native_transfer'
+    else:
+        event_type = 'wallet_transfer_detected'
+    idempotency_key = _telemetry_idempotency_key(
+        workspace_id=target.get('workspace_id'), target_id=target.get('id'), event=event,
+    )
+    telem_id = str(uuid.uuid4())
+    detected_by = str(payload.get('detected_by') or event.ingestion_source or 'realtime')
+    provider_name = str(
+        (payload.get('metadata') or {}).get('provider_name')
+        if isinstance(payload.get('metadata'), dict) else ''
+    ) or str(event.ingestion_source or 'realtime_websocket')
+    _persist_raw_wallet_transfer_telemetry(
+        connection,
+        telemetry_id=telem_id,
+        workspace_id=str(target['workspace_id']),
+        asset_id=str(target.get('asset_id')) if target.get('asset_id') else None,
+        target_id=str(target['id']),
+        provider_type=provider_name,
+        event_type=event_type,
+        observed_at=event.observed_at,
+        evidence_source='live',
+        payload=payload,
+        idempotency_key=idempotency_key,
+    )
+    logger.info(
+        'wallet_transfer_detected target_id=%s tx_hash=%s detected_by=%s event_type=%s telemetry_id=%s',
+        target.get('id'), str(payload.get('tx_hash') or 'unknown'), detected_by, event_type, telem_id,
+    )
+    logger.info(
+        'realtime_event_persisted tx_hash=%s target_id=%s detected_by=%s',
+        str(payload.get('tx_hash') or 'unknown'), target.get('id'), detected_by,
+    )
+    return event_type
+
+
 def _wallet_transfer_smoke_alert(
     *,
     workspace_id: str,
@@ -4065,13 +4140,15 @@ def process_monitoring_target(
             wallet_transfers_detected += 1
             inserted_telemetry_ids.append(_telem_id)
             logger.info(
-                'wallet_transfer_detected target_id=%s tx_hash=%s from=%s to=%s block=%s telemetry_id=%s evidence_source=%s persisted=%s',
+                'wallet_transfer_detected target_id=%s tx_hash=%s from=%s to=%s block=%s telemetry_id=%s '
+                'detected_by=%s evidence_source=%s persisted=%s',
                 target.get('id'),
                 str(_ev_payload.get('tx_hash') or _ev_payload.get('hash') or 'unknown'),
                 str(_ev_from or 'unknown'),
                 str(_ev_to or 'unknown'),
                 _ev_payload.get('block_number'),
                 _telem_id,
+                str(_ev_payload.get('detected_by') or 'stable_rpc_polling'),
                 telemetry_evidence_source,
                 str(_wallet_transfer_persisted).lower(),
             )
@@ -4594,6 +4671,17 @@ def process_ingested_event(connection: Any, *, target: dict[str, Any], event: Ac
     ).fetchone()
     if receipt is not None:
         return {'status': 'duplicate_suppressed', 'event_id': event.event_id}
+    # Persist the customer-visible wallet-transfer telemetry row FIRST, on its own
+    # committed connection, so a native ETH transfer the realtime worker just
+    # detected survives even if the threat analysis below raises (analysis_unavailable).
+    # Idempotent: same tx → same idempotency_key as the polling worker → ON CONFLICT.
+    try:
+        _maybe_persist_ingested_wallet_transfer(connection, target=target, event=event)
+    except Exception:
+        logger.warning(
+            'realtime_wallet_transfer_telemetry_persist_failed event_id=%s',
+            event.event_id, exc_info=True,
+        )
     processed = _process_single_event(connection, target=target, workspace=workspace, user_id=user_id, monitoring_run_id=monitoring_run_id, event=event, monitoring_path='worker')
     payload = event.payload if isinstance(event.payload, dict) else {}
     ingestion_source = str(event.ingestion_source or '').strip().lower()
@@ -4601,7 +4689,9 @@ def process_ingested_event(connection: Any, *, target: dict[str, Any], event: Ac
         str(ingestion_mode or 'live').strip().lower() in {'live', 'hybrid'}
         and ingestion_source in {
             'rpc_backfill', 'polling', 'websocket', 'real', 'evm_rpc',
-            'realtime_websocket',  # Base real-time worker
+            'realtime_websocket',  # Base real-time worker (WS logs subscription)
+            'realtime_backfill',   # Base real-time worker (gap/native backfill scan)
+            'realtime_http_fast_tail',  # Base real-time worker (HTTP fast-tail fallback)
         }
     )
     live_coverage_telemetry_at = event.observed_at if is_live_ingestion else None
@@ -10302,6 +10392,26 @@ def list_target_telemetry(
         user = authenticate_with_connection(connection, request)
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         workspace_id = workspace_context['workspace_id']
+
+        # Resolve the target's full monitored address so the UI can show the exact
+        # watched wallet (not a truncated form) and an operator can confirm it matches
+        # their MetaMask wallet. Workspace-scoped; None when the target has no wallet.
+        _target_row = connection.execute(
+            '''
+            SELECT wallet_address, contract_identifier, target_metadata, chain_network, target_type
+            FROM targets
+            WHERE id = %s::uuid AND workspace_id = %s::uuid AND deleted_at IS NULL
+            ''',
+            (target_id, workspace_id),
+        ).fetchone()
+        _monitored_address: str | None = None
+        _monitored_chain_network: str | None = None
+        if _target_row:
+            from services.api.app.evm_activity_provider import resolve_monitored_wallet
+            _target_for_resolve = _json_safe_value(dict(_target_row))
+            _monitored_address = resolve_monitored_wallet(_target_for_resolve)
+            _monitored_chain_network = str(_target_row.get('chain_network') or '').strip().lower() or None
+
         _q = (q or '').strip()
         _effective_limit = max(1, min(limit, 200))
         _effective_offset = max(0, offset)
@@ -10484,6 +10594,9 @@ def list_target_telemetry(
             'telemetry': telemetry,
             'target_id': target_id,
             'workspace_id': str(workspace_id),
+            'monitored_address': _monitored_address,
+            'monitored_address_normalized': (_monitored_address or '').lower() or None,
+            'chain_network': _monitored_chain_network,
             'live_telemetry_ready': len(telemetry) > 0,
             'total_count': total_count,
             'page': _effective_offset // _effective_limit if _effective_limit > 0 else 0,
@@ -11008,6 +11121,164 @@ def ingest_tx_by_hash(
             'amount_wei': str(value_wei),
             'amount_eth': round(value_wei / 10 ** 18, 18),
             'observed_at': block_ts.isoformat(),
+        }
+
+
+def diagnose_wallet_transaction(request: Request, tx_hash: str) -> dict[str, Any]:
+    """Explain, read-only, whether a tx involves any active monitored wallet.
+
+    Answers the operator question "I sent ETH from MetaMask — why didn't Decoda
+    detect it?" without mutating anything. For the given tx_hash it reports
+    ``chain_id``, ``block_number``, ``from``, ``to``, ``value`` and, for every active
+    wallet target in the workspace, whether ``from``/``to`` matches the monitored
+    wallet (normalised) and whether a telemetry row was already persisted for it.
+
+    Workspace-scoped — requires x-workspace-id header. Never persists telemetry; use
+    POST /ops/monitoring/targets/{id}/import-tx to actually ingest a matched tx.
+    """
+    from services.api.app.evm_activity_provider import (
+        CHAIN_MAP,
+        FailoverJsonRpcClient,
+        _hex_to_int,
+        explain_wallet_transfer_match,
+        resolve_chain_rpc,
+        resolve_monitored_wallet,
+    )
+
+    _log = logging.getLogger(__name__)
+    if not tx_hash or not str(tx_hash).startswith('0x') or len(str(tx_hash)) != 66:
+        raise HTTPException(status_code=400, detail='tx_hash must be a 66-char 0x-prefixed hex string')
+    tx_hash_norm = str(tx_hash).lower()
+
+    workspace_id = normalize_workspace_header_value(request.headers.get('x-workspace-id'))
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail='x-workspace-id header required')
+
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        rows = connection.execute(
+            '''
+            SELECT id, workspace_id, name, target_type, chain_network,
+                   wallet_address, contract_identifier, target_metadata, asset_id,
+                   monitoring_enabled, enabled, is_active
+            FROM targets
+            WHERE workspace_id = %s::uuid
+              AND deleted_at IS NULL
+              AND target_type = 'wallet'
+            ORDER BY is_active DESC, monitoring_enabled DESC
+            LIMIT 100
+            ''',
+            (workspace_id,),
+        ).fetchall()
+        targets = [_json_safe_value(dict(r)) for r in rows]
+        if not targets:
+            return {
+                'tx_hash': tx_hash_norm,
+                'workspace_id': str(workspace_id),
+                'tx_found': False,
+                'reason': 'no_wallet_targets',
+                'matches': [],
+                'targets_checked': 0,
+            }
+
+        # Resolve the monitored wallet + active-state for each target up front.
+        for target in targets:
+            if not target.get('wallet_address'):
+                asset_ctx = _load_target_asset_context(connection, workspace_id=str(workspace_id), target=target)
+                if isinstance(asset_ctx, dict):
+                    target['asset_context'] = asset_ctx
+            target['_monitored_wallet'] = resolve_monitored_wallet(target)
+            target['_active'] = bool(
+                target.get('monitoring_enabled') and target.get('enabled') and target.get('is_active')
+            )
+
+        # Fetch the tx once per distinct chain the targets live on.
+        tx_by_chain: dict[str, dict[str, Any] | None] = {}
+        chain_meta: dict[str, dict[str, Any]] = {}
+        for chain_network in {str(t.get('chain_network') or 'base').strip().lower() for t in targets}:
+            chain_rpc = resolve_chain_rpc(chain_network)
+            expected_chain_id = chain_rpc.get('expected_chain_id') or (CHAIN_MAP.get(chain_network) or {}).get('chain_id')
+            chain_meta[chain_network] = {'expected_chain_id': expected_chain_id, 'rpc_configured': bool(chain_rpc.get('rpc_url'))}
+            if not chain_rpc.get('rpc_url'):
+                tx_by_chain[chain_network] = None
+                continue
+            try:
+                client = FailoverJsonRpcClient(chain_rpc['rpc_urls'])
+                tx_by_chain[chain_network] = client.call('eth_getTransactionByHash', [tx_hash_norm]) or None
+            except Exception as exc:
+                _log.warning(
+                    'diagnose_tx_rpc_failed tx_hash=%s chain=%s error=%s',
+                    tx_hash_norm, chain_network, str(exc)[:200],
+                )
+                tx_by_chain[chain_network] = None
+
+        any_tx = next((tx for tx in tx_by_chain.values() if tx), None)
+        matches: list[dict[str, Any]] = []
+        for target in targets:
+            chain_network = str(target.get('chain_network') or 'base').strip().lower()
+            tx = tx_by_chain.get(chain_network)
+            monitored_wallet = target.get('_monitored_wallet')
+            explanation = explain_wallet_transfer_match(monitored_wallet, tx if isinstance(tx, dict) else None)
+            # Was a telemetry row already persisted for this tx + target?
+            persisted_row = connection.execute(
+                '''
+                SELECT 1 FROM telemetry_events
+                WHERE workspace_id = %s::uuid AND target_id = %s::uuid
+                  AND lower(payload_json->>'tx_hash') = %s
+                LIMIT 1
+                ''',
+                (workspace_id, target['id'], tx_hash_norm),
+            ).fetchone()
+            already_persisted = persisted_row is not None
+            if explanation.get('matched') and not target.get('_active'):
+                persist_reason = 'target_inactive_not_persisted'
+            elif explanation.get('matched') and already_persisted:
+                persist_reason = 'already_persisted'
+            elif explanation.get('matched'):
+                persist_reason = 'matched_not_yet_persisted_run_import_tx'
+            elif not monitored_wallet:
+                persist_reason = 'monitored_wallet_not_configured'
+            elif tx is None:
+                persist_reason = (
+                    'tx_not_found_on_chain_rpc' if chain_meta.get(chain_network, {}).get('rpc_configured')
+                    else 'chain_rpc_not_configured'
+                )
+            else:
+                persist_reason = 'address_not_watched'
+            matches.append({
+                'target_id': str(target['id']),
+                'target_name': target.get('name'),
+                'chain_network': chain_network,
+                'chain_id': chain_meta.get(chain_network, {}).get('expected_chain_id'),
+                'monitored_address_full': monitored_wallet,
+                'normalized_address_lowercase': (monitored_wallet or '').lower() or None,
+                'active': bool(target.get('_active')),
+                'matched': bool(explanation.get('matched')),
+                'direction': explanation.get('wallet_transfer_direction'),
+                'already_persisted': already_persisted,
+                'persist_reason': persist_reason,
+            })
+
+        block_number = _hex_to_int((any_tx or {}).get('blockNumber')) if any_tx else None
+        tx_chain_id = _hex_to_int((any_tx or {}).get('chainId')) if any_tx else None
+        value_wei = _hex_to_int((any_tx or {}).get('value')) if any_tx else None
+        _log.info(
+            'diagnose_tx_completed tx_hash=%s workspace_id=%s tx_found=%s targets_checked=%s matched=%s',
+            tx_hash_norm, workspace_id, bool(any_tx), len(targets),
+            sum(1 for m in matches if m['matched']),
+        )
+        return {
+            'tx_hash': tx_hash_norm,
+            'workspace_id': str(workspace_id),
+            'tx_found': bool(any_tx),
+            'chain_id': tx_chain_id,
+            'block_number': block_number,
+            'from': str((any_tx or {}).get('from') or '').lower() or None,
+            'to': str((any_tx or {}).get('to') or '').lower() or None,
+            'value_wei': str(value_wei) if value_wei is not None else None,
+            'targets_checked': len(targets),
+            'matched_target_count': sum(1 for m in matches if m['matched']),
+            'matches': matches,
         }
 
 

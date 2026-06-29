@@ -249,6 +249,7 @@ from services.api.app.pilot import (
 from services.api.app.monitoring_runner import (
     backfill_missing_alerts_for_target,
     backfill_target_block_range,
+    diagnose_wallet_transaction,
     get_background_loop_health,
     get_monitoring_health,
     ingest_tx_by_hash,
@@ -3403,6 +3404,24 @@ def ops_monitoring_target_import_tx(target_id: str, payload: dict[str, Any], req
     if not tx_hash:
         raise HTTPException(status_code=400, detail='tx_hash is required')
     return with_auth_schema_json(lambda: ingest_tx_by_hash(request, target_id, tx_hash))
+
+
+@app.post('/ops/monitoring/diagnose-tx', summary='Explain whether a tx involves any active monitored wallet (read-only)')
+def ops_monitoring_diagnose_tx(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Read-only diagnostic for "I sent ETH but Decoda did not detect it".
+
+    Given a tx_hash, reports chain_id, block_number, from, to, value and — for every
+    active wallet target in the workspace — whether from/to matches the monitored
+    wallet and whether a telemetry row was already persisted, with a per-target
+    persist_reason. Never persists anything. Requires x-workspace-id header.
+
+    Body params: tx_hash (str, 66-char 0x-prefixed).
+    """
+    enforce_auth_rate_limit(request, 'ops_monitoring_diagnose_tx')
+    tx_hash = str(payload.get('tx_hash') or '').strip()
+    if not tx_hash:
+        raise HTTPException(status_code=400, detail='tx_hash is required')
+    return with_auth_schema_json(lambda: diagnose_wallet_transaction(request, tx_hash))
 
 
 @app.get('/ops/monitoring/targets/{target_id}/state', summary='Inspect dead-letter and skip state for a monitoring target')
