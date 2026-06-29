@@ -1707,6 +1707,10 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
                     payload['observed_at'] = observed_at.isoformat()
                     payload['event_type'] = 'transaction' if target_type == 'wallet' else 'contract_interaction'
                     payload['source_type'] = 'rpc_polling'
+                    payload['detected_by'] = 'stable_rpc_polling'
+                    payload['provider_mode'] = 'stable_rpc_polling'
+                    _latency = round((datetime.now(timezone.utc) - observed_at).total_seconds(), 2) if isinstance(observed_at, datetime) else None
+                    payload['observed_latency_seconds'] = _latency
                     if target_type == 'wallet' and target_address in {tx_to, tx_from}:
                         payload['wallet_transfer_direction'] = 'outbound' if tx_from == target_address else 'inbound'
                         _wallet_transfers_detected += 1

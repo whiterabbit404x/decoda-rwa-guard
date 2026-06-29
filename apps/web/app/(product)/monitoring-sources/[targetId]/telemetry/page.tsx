@@ -13,6 +13,9 @@ type TelemetryRow = {
   target_id?: string | null;
   provider_type?: string | null;
   source_type?: string | null;
+  detected_by?: string | null;
+  provider_mode?: string | null;
+  observed_latency_seconds?: number | null;
   evidence_source?: string | null;
   chain_id?: string | null;
   block_number?: number | null;
@@ -33,6 +36,7 @@ const QUICK_FILTERS: Array<{ id: QuickFilter; label: string }> = [
 
 const HEADERS = [
   'Event Type',
+  'Detected By',
   'Tx Hash',
   'From',
   'To',
@@ -43,6 +47,17 @@ const HEADERS = [
   'Evidence Source',
   'Details',
 ];
+
+const DETECTED_BY_LABELS: Record<string, string> = {
+  realtime_websocket: 'Realtime (WebSocket)',
+  realtime_backfill: 'Realtime (Backfill)',
+  stable_rpc_polling: 'Stable RPC Polling',
+};
+
+function formatDetectedBy(val: string | null | undefined): string {
+  if (!val) return '-';
+  return DETECTED_BY_LABELS[val] ?? val;
+}
 
 function fmt(value?: string | null): string {
   if (!value) return '-';
@@ -194,10 +209,20 @@ function TelemetryDetailModal({
         ? 'RPC polling heartbeat'
         : row.source_type ?? null;
 
+  const detectedByLabel = formatDetectedBy(row.detected_by ?? extractField(row.payload_json, 'detected_by'));
+  const providerMode = row.provider_mode ?? extractField(row.payload_json, 'provider_mode');
+  const latencySeconds =
+    row.observed_latency_seconds != null
+      ? String(row.observed_latency_seconds)
+      : extractField(row.payload_json, 'observed_latency_seconds');
+
   const summaryFields: Array<[string, string | null]> = [
     ['Event type', eventTypeLabel],
-    ['Source Type', row.source_type ?? null],
-    ['Provider Type', row.provider_type ?? null],
+    ['Detected by', row.detected_by ? detectedByLabel : null],
+    ['Source type', row.source_type ?? null],
+    ['Provider type', row.provider_type ?? null],
+    ['Provider mode', providerMode],
+    ['Latency (s)', latencySeconds],
     ['Chain ID', row.chain_id ?? null],
     ['Block number', blockNum],
     ['Observed at', row.observed_at ? fmt(row.observed_at) : null],
@@ -787,6 +812,7 @@ export default function TargetTelemetryPage() {
               const toAddr = extractField(payload, 'to', 'to_address', 'toAddress');
               const amount = extractField(payload, 'amount', 'value', 'amount_wei');
               const isBaseScan = row.chain_id === BASE_CHAIN_ID;
+              const detectedByRaw = row.detected_by ?? extractField(payload, 'detected_by');
               return (
                 <tr key={row.id}>
                   {/* Event Type */}
@@ -824,6 +850,34 @@ export default function TargetTelemetryPage() {
                       <span className="muted" style={{ fontSize: '0.8rem' }}>
                         {row.source_type ?? '-'}
                       </span>
+                    )}
+                  </td>
+
+                  {/* Detected By */}
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    {kind === 'wallet_transfer' && detectedByRaw ? (
+                      <span
+                        style={{
+                          background:
+                            detectedByRaw === 'stable_rpc_polling'
+                              ? 'var(--info-bg)'
+                              : 'var(--success-bg)',
+                          border: `1px solid ${detectedByRaw === 'stable_rpc_polling' ? 'var(--info-bdr)' : 'var(--success-bdr)'}`,
+                          borderRadius: 'var(--radius-xs)',
+                          color:
+                            detectedByRaw === 'stable_rpc_polling'
+                              ? 'var(--info-fg)'
+                              : 'var(--success-fg)',
+                          display: 'inline-block',
+                          fontSize: '0.72rem',
+                          fontWeight: 600,
+                          padding: '0.15rem 0.5rem',
+                        }}
+                      >
+                        {formatDetectedBy(detectedByRaw)}
+                      </span>
+                    ) : (
+                      <span className="muted" style={{ fontSize: '0.8rem' }}>-</span>
                     )}
                   </td>
 

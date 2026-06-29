@@ -10476,6 +10476,9 @@ def list_target_telemetry(
             item['block_number'] = block_number
             item.pop('chain_network', None)
             item.pop('receipt_block_number', None)
+            item['detected_by'] = payload.get('detected_by')
+            item['provider_mode'] = payload.get('provider_mode')
+            item['observed_latency_seconds'] = payload.get('observed_latency_seconds')
             telemetry.append(item)
         result: dict[str, Any] = {
             'telemetry': telemetry,

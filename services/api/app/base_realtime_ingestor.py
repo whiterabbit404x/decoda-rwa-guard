@@ -366,7 +366,13 @@ class BaseRealtimeIngestor:
     # Event building
     # ------------------------------------------------------------------
 
-    def _build_event_from_log(self, target: dict[str, Any], log: dict[str, Any]) -> ActivityEvent:
+    def _build_event_from_log(
+        self,
+        target: dict[str, Any],
+        log: dict[str, Any],
+        *,
+        source_type: str = REALTIME_INGESTION_SOURCE,
+    ) -> ActivityEvent:
         block_number = _hex_to_int(log.get('blockNumber')) or 0
         tx_hash = str(log.get('transactionHash') or '')
         log_index = _hex_to_int(log.get('logIndex'))
@@ -374,6 +380,7 @@ class BaseRealtimeIngestor:
         owner = _topic_to_address((log.get('topics') or [None, None])[1])
         spender_or_to = _topic_to_address((log.get('topics') or [None, None, None])[2])
         cursor = f"{block_number}:{tx_hash}:{-1 if log_index is None else log_index}"
+        _provider_mode = self.state.get('source_status') or self._ingestion_mode or REALTIME_INGESTION_SOURCE
         payload: dict[str, Any] = {
             'chain_id': self.chain_id,
             'block_number': block_number,
@@ -386,9 +393,11 @@ class BaseRealtimeIngestor:
             'owner': owner,
             'function_selector': _extract_selector(log.get('input')),
             'decode_status': 'partial',
-            'ingestion_source': REALTIME_INGESTION_SOURCE,
+            'ingestion_source': source_type,
             'evidence_source': 'live',
-            'source_type': REALTIME_INGESTION_SOURCE,
+            'source_type': source_type,
+            'detected_by': source_type,
+            'provider_mode': _provider_mode,
             'observed_block_number': block_number,
             'confirmed_block_number': block_number,
         }
@@ -396,7 +405,7 @@ class BaseRealtimeIngestor:
             event_id=_make_event_id(str(target['id']), cursor, 'transaction'),
             kind='transaction',
             observed_at=datetime.now(timezone.utc),
-            ingestion_source=REALTIME_INGESTION_SOURCE,
+            ingestion_source=source_type,
             cursor=cursor,
             payload=payload,
         )
@@ -644,7 +653,7 @@ class BaseRealtimeIngestor:
                             self.watcher_name,
                         )
                         continue
-                    event = self._build_event_from_log(target, log)
+                    event = self._build_event_from_log(target, log, source_type='realtime_backfill')
                     self._persist_event(target, event)
                     processed += 1
         except Exception as exc:
