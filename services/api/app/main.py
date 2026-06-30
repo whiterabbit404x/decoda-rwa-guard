@@ -547,6 +547,8 @@ _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS = [
     'target_coverage_status',
     'runtime_setup_chain',
     'next_required_action',
+    'worker_status',
+    'realtime_enabled',
 ]
 
 
@@ -2893,6 +2895,12 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             summary_payload.get('monitoring_status') or payload.get('monitoring_status') or 'offline'
         ).capitalize()
         canonical_runtime['systems_with_recent_heartbeat'] = payload.get('systems_with_recent_heartbeat')
+        # Separated worker status (stable polling / realtime websocket / provider realtime)
+        # so the UI can distinguish a paused or rate-limited realtime worker from a dead
+        # monitoring source. Passed through verbatim from the canonical runtime builder.
+        if payload.get('worker_status') is not None:
+            canonical_runtime['worker_status'] = payload.get('worker_status')
+        canonical_runtime['realtime_enabled'] = bool(payload.get('realtime_enabled'))
         for _counter_key in (
             'raw_enabled_targets', 'monitorable_enabled_targets', 'valid_asset_linked_targets',
             'enabled_monitored_systems', 'valid_target_system_links',

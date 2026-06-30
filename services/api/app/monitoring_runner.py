@@ -34,6 +34,12 @@ from services.api.app.monitorable_target_types import (
     monitorable_target_types_sql_clause,
 )
 from services.api.app.db_failure import classify_db_error
+from services.api.app.worker_status import (
+    build_worker_status,
+    realtime_enabled,
+    REALTIME_DETECTED_BY,
+    STABLE_DETECTED_BY,
+)
 from services.api.app.workspace_monitoring_summary import (
     build_runtime_setup_chain,
     resolve_next_required_action,
@@ -6551,9 +6557,21 @@ def get_monitoring_health() -> dict[str, Any]:
         normalized['event_count_last_15m'] = int((last_15m_events or {}).get('event_count') or 0)
         normalized['heartbeat_age_seconds'] = heartbeat_age_seconds
         normalized['heartbeat_stale'] = heartbeat_stale
+        # monitoring_watcher_state is written ONLY by the realtime WebSocket worker.
+        # Always expose it separately as `realtime_watcher` so the runtime status can
+        # render a distinct Realtime WebSocket / Provider realtime status. It is only
+        # authoritative for the *live source* (source_type / latest block / degraded)
+        # when realtime is actually enabled — a paused or rate-limited realtime worker
+        # must NOT degrade the independent stable RPC polling source.
+        _realtime_is_enabled = realtime_enabled()
         if watcher_state is not None:
             watcher = _json_safe_value(dict(watcher_state))
             normalized['watcher_state'] = watcher
+            normalized['realtime_watcher'] = watcher
+        else:
+            normalized['realtime_watcher'] = None
+        if watcher_state is not None and _realtime_is_enabled:
+            watcher = normalized['realtime_watcher']
             normalized['source_type'] = watcher.get('source_status') or runtime.get('source')
             normalized['latest_processed_block'] = watcher.get('last_processed_block') or normalized.get('latest_processed_block')
             if watcher.get('degraded'):
@@ -6562,6 +6580,8 @@ def get_monitoring_health() -> dict[str, Any]:
             else:
                 normalized['degraded_reason'] = runtime.get('reason') if runtime.get('degraded') else ('target_source_degraded' if int(stats.get('degraded_targets') or 0) > 0 else None)
         else:
+            # Realtime disabled (or no watcher row): stable RPC polling owns the source
+            # status. Do not let a stale realtime watcher row mark the source degraded.
             normalized['degraded_reason'] = runtime.get('reason') if runtime.get('degraded') else ('target_source_degraded' if int(stats.get('degraded_targets') or 0) > 0 else None)
         normalized['mode'] = runtime.get('mode')
         normalized['ingestion_live_confirmed'] = bool(
@@ -9615,6 +9635,21 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'contradiction_flags': list(contradiction_flags),
         }
 
+        # Separated worker status: stable RPC polling worker vs. realtime WebSocket
+        # worker vs. provider realtime health. canonical_last_heartbeat_at / last_poll_at
+        # are the stable polling facts (monitoring_heartbeats / monitoring_polls); the
+        # realtime watcher row is exposed separately so a paused or rate-limited realtime
+        # worker is not rendered as a dead monitoring source.
+        _worker_status_realtime_enabled = realtime_enabled()
+        worker_status = build_worker_status(
+            now=now,
+            realtime_is_enabled=_worker_status_realtime_enabled,
+            stable_last_heartbeat_at=canonical_last_heartbeat_at,
+            stable_last_poll_at=last_poll_at,
+            heartbeat_ttl_seconds=max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3),
+            realtime_watcher=health.get('realtime_watcher'),
+        )
+
         payload = {
             'workspace_id': workspace_id,
             'workspace_slug': workspace_slug,
@@ -9718,6 +9753,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'coverage_receipts_last_at': live_coverage_receipts_workspace_latest.isoformat() if live_coverage_receipts_workspace_latest else None,
             'coverage_receipts_workspace_count': int(live_coverage_receipts_persisted_count),
             'stale_heartbeat': stale_heartbeat,
+            'worker_status': worker_status,
+            'realtime_enabled': _worker_status_realtime_enabled,
             'worker_alive': bool(worker_alive),
             'dead_lettered_targets': dead_lettered_count,
             'provider_degraded_flag': provider_degraded_or_unreachable,
@@ -10590,6 +10627,42 @@ def list_target_telemetry(
             item['provider_mode'] = payload.get('provider_mode')
             item['observed_latency_seconds'] = payload.get('observed_latency_seconds')
             telemetry.append(item)
+
+        # Separated detection-path freshness for this target so the Telemetry page can
+        # show "Last stable poll" vs "Last realtime event" distinctly (CLAUDE.md: poll
+        # and realtime telemetry are separate facts). Workspace + target scoped.
+        # detected_by lives in payload_json; stable coverage polls also use the
+        # rpc_polling event_type even when detected_by is absent on older rows.
+        last_stable_poll_at: str | None = None
+        last_realtime_event_at: str | None = None
+        try:
+            _rt_placeholders = ', '.join(['%s'] * len(REALTIME_DETECTED_BY))
+            _freshness_row = connection.execute(
+                f'''
+                SELECT
+                    MAX(observed_at) FILTER (
+                        WHERE payload_json->>'detected_by' = %s
+                           OR event_type IN ('rpc_polling', 'live_provider')
+                    ) AS last_stable_poll_at,
+                    MAX(observed_at) FILTER (
+                        WHERE payload_json->>'detected_by' IN ({_rt_placeholders})
+                    ) AS last_realtime_event_at
+                FROM telemetry_events
+                WHERE workspace_id = %s::uuid AND target_id = %s::uuid
+                ''',
+                [STABLE_DETECTED_BY, *REALTIME_DETECTED_BY, workspace_id, target_id],
+            ).fetchone()
+            if isinstance(_freshness_row, dict):
+                _sp = _freshness_row.get('last_stable_poll_at')
+                _rt = _freshness_row.get('last_realtime_event_at')
+                last_stable_poll_at = _sp.isoformat() if hasattr(_sp, 'isoformat') else (_sp or None)
+                last_realtime_event_at = _rt.isoformat() if hasattr(_rt, 'isoformat') else (_rt or None)
+        except Exception:
+            logger.warning(
+                'telemetry_detection_path_freshness_unavailable workspace_id=%s target_id=%s',
+                workspace_id, target_id, exc_info=True,
+            )
+
         result: dict[str, Any] = {
             'telemetry': telemetry,
             'target_id': target_id,
@@ -10598,6 +10671,10 @@ def list_target_telemetry(
             'monitored_address_normalized': (_monitored_address or '').lower() or None,
             'chain_network': _monitored_chain_network,
             'live_telemetry_ready': len(telemetry) > 0,
+            # Separated worker facts for the Telemetry page header.
+            'realtime_enabled': realtime_enabled(),
+            'last_stable_poll_at': last_stable_poll_at,
+            'last_realtime_event_at': last_realtime_event_at,
             'total_count': total_count,
             'page': _effective_offset // _effective_limit if _effective_limit > 0 else 0,
             'page_size': _effective_limit,

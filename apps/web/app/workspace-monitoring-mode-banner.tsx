@@ -74,6 +74,25 @@ function bannerMessage(state: BannerState, truth: WorkspaceMonitoringTruth): Ban
   };
 }
 
+// The separated worker status is the truthful explanation when the realtime
+// WebSocket worker is paused/rate-limited or the stable polling worker is not
+// active. Surfacing worker_status.headline here means the banner says
+// "Stable polling active. Realtime WebSocket paused." instead of a generic
+// "worker heartbeat is stale" — and never claims the heartbeat is stale unless
+// the stable polling worker actually is.
+function workerStatusBannerLine(truth: WorkspaceMonitoringTruth): string | null {
+  const ws = truth.worker_status;
+  if (!ws) return null;
+  const realtimeNotablyOff =
+    !ws.realtime.enabled ||
+    ws.realtime.state === 'paused' ||
+    ws.realtime.state === 'rate_limited' ||
+    ws.realtime.state === 'degraded' ||
+    ws.realtime.state === 'starting';
+  const stableNotActive = !ws.stable_polling.active;
+  return realtimeNotablyOff || stableNotActive ? ws.headline : null;
+}
+
 function stateColor(state: BannerState): string {
   if (state === 'LIVE') return 'var(--success-fg, #16a34a)';
   if (state === 'OFFLINE') return 'var(--danger-fg, #dc2626)';
@@ -94,12 +113,21 @@ export default function WorkspaceMonitoringModeBanner({ apiUrl: _apiUrl }: { api
   const state = deriveBannerState(truth);
   const { headline, subtext } = bannerMessage(state, truth);
   const color = stateColor(state);
+  const workerLine = workerStatusBannerLine(truth);
 
   return (
     <div className="statusBanner" style={{ borderLeftColor: color }}>
       <strong style={{ color, fontSize: '0.75rem', letterSpacing: '0.05em' }}>{stateLabel(state)}</strong>
       <span style={{ fontSize: '0.8rem' }}>{headline}</span>
       <span style={{ fontSize: '0.75rem', opacity: 0.75 }}>{subtext}</span>
+      {workerLine ? (
+        <span
+          data-testid="worker-status-line"
+          style={{ fontSize: '0.75rem', opacity: 0.9, marginTop: '0.15rem' }}
+        >
+          {workerLine}
+        </span>
+      ) : null}
     </div>
   );
 }

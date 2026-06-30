@@ -1,4 +1,4 @@
-import type { MonitoringRuntimeStatus, WorkspaceMonitoringSummary } from './monitoring-status-contract';
+import type { MonitoringRuntimeStatus, WorkspaceMonitoringSummary, WorkerStatusSummary } from './monitoring-status-contract';
 
 export type WorkspaceMonitoringTruth = {
   workspace_slug: string | null;
@@ -33,6 +33,8 @@ export type WorkspaceMonitoringTruth = {
   next_required_action?: string;
   current_step?: string;
   workflow_steps?: unknown[];
+  worker_status?: WorkerStatusSummary | null;
+  realtime_enabled?: boolean;
 };
 
 const DEFAULT_TRUTH: WorkspaceMonitoringTruth = {
@@ -66,6 +68,8 @@ const DEFAULT_TRUTH: WorkspaceMonitoringTruth = {
   next_required_action: 'review_reason_codes',
   current_step: 'asset_created',
   workflow_steps: [],
+  worker_status: null,
+  realtime_enabled: false,
 };
 
 function asTrimmedString(value: unknown): string | null {
@@ -332,13 +336,21 @@ export function resolveWorkspaceMonitoringTruth(status: MonitoringRuntimeStatus 
   const workspaceName = workspaceRecord && typeof workspaceRecord === 'object'
     ? asTrimmedString((workspaceRecord as Record<string, unknown>).name)
     : null;
+  const statusRecord = status as Record<string, unknown> | null;
+  // worker_status is a top-level canonical field (not nested in the summary).
+  const workerStatusRaw = statusRecord?.worker_status;
+  const workerStatus = (workerStatusRaw && typeof workerStatusRaw === 'object')
+    ? (workerStatusRaw as WorkerStatusSummary)
+    : null;
   return {
     ...truth,
-    next_required_action: asTrimmedString((status as Record<string, unknown> | null)?.next_required_action) ?? truth.next_required_action,
-    current_step: asTrimmedString((status as Record<string, unknown> | null)?.current_step) ?? truth.current_step,
-    workflow_steps: Array.isArray((status as Record<string, unknown> | null)?.workflow_steps) ? ((status as Record<string, unknown> | null)?.workflow_steps as unknown[]) : truth.workflow_steps,
-    workspace_slug: asTrimmedString((status as Record<string, unknown> | null)?.workspace_slug),
-    workspace_name: workspaceName ?? asTrimmedString((status as Record<string, unknown> | null)?.workspace_name),
+    next_required_action: asTrimmedString(statusRecord?.next_required_action) ?? truth.next_required_action,
+    current_step: asTrimmedString(statusRecord?.current_step) ?? truth.current_step,
+    workflow_steps: Array.isArray(statusRecord?.workflow_steps) ? (statusRecord?.workflow_steps as unknown[]) : truth.workflow_steps,
+    workspace_slug: asTrimmedString(statusRecord?.workspace_slug),
+    workspace_name: workspaceName ?? asTrimmedString(statusRecord?.workspace_name),
+    worker_status: workerStatus,
+    realtime_enabled: Boolean(statusRecord?.realtime_enabled),
   };
 }
 

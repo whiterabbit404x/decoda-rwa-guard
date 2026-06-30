@@ -2901,3 +2901,112 @@ def test_workspace_summary_normalization_preserves_new_contradiction_flags_and_b
     assert 'ui_live_monitoring_claim_without_telemetry' in canonical['contradiction_flags']
     assert 'ui_healthy_claim_with_zero_reporting_systems' in canonical['contradiction_flags']
     assert canonical['top_banner_reasons'] == ['Live monitoring is claimed, but telemetry is missing.']
+
+
+# ---------------------------------------------------------------------------
+# Separated worker status (stable RPC polling / realtime websocket / provider)
+# ---------------------------------------------------------------------------
+
+def test_runtime_status_worker_status_realtime_disabled_stable_active(monkeypatch):
+    """Realtime disabled + fresh stable heartbeat => realtime paused, stable active,
+    truthful headline, and the monitoring source stays live."""
+    now = datetime.now(timezone.utc)
+    monkeypatch.delenv('BASE_REALTIME_ENABLED', raising=False)
+    realtime_watcher = {
+        'watcher_name': 'base-realtime-worker-x',
+        'source_status': 'provider_rate_limited',
+        'degraded': True,
+        'degraded_reason': 'provider_rate_limited',
+        'metrics': {
+            'rate_limited': True,
+            'next_retry_at': (now + timedelta(minutes=5)).isoformat(),
+            'active_provider_host': 'wss.example.com',
+        },
+    }
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {
+            'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(),
+            'degraded': False, 'last_error': None, 'source_type': 'polling',
+            'worker_running': True, 'realtime_watcher': realtime_watcher,
+        },
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_Conn(now)))
+
+    payload = monitoring_runner.monitoring_runtime_status()
+    assert payload['realtime_enabled'] is False
+    ws = payload['worker_status']
+    assert ws['stable_polling']['state'] == 'active'
+    assert ws['stable_polling']['detection_supported'] is True
+    assert ws['realtime']['enabled'] is False
+    assert ws['realtime']['state'] == 'paused'
+    assert ws['provider_realtime']['state'] == 'cooldown'
+    assert ws['monitoring_source_live'] is True
+    assert ws['headline'] == 'Stable polling active. Realtime WebSocket paused.'
+
+
+def test_runtime_status_worker_status_realtime_rate_limited_keeps_source_live(monkeypatch):
+    """Realtime enabled but provider rate-limited => realtime rate_limited, provider
+    cooldown, stable polling still active and the source is not dead."""
+    now = datetime.now(timezone.utc)
+    monkeypatch.setenv('BASE_REALTIME_ENABLED', 'true')
+    realtime_watcher = {
+        'source_status': 'provider_rate_limited',
+        'degraded': True,
+        'degraded_reason': 'provider_rate_limited',
+        'metrics': {'rate_limited': True, 'next_retry_at': (now + timedelta(minutes=3)).isoformat()},
+    }
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {
+            'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(),
+            'degraded': False, 'last_error': None, 'source_type': 'polling',
+            'worker_running': True, 'realtime_watcher': realtime_watcher,
+        },
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_Conn(now)))
+
+    payload = monitoring_runner.monitoring_runtime_status()
+    ws = payload['worker_status']
+    assert payload['realtime_enabled'] is True
+    assert ws['realtime']['state'] == 'rate_limited'
+    assert ws['provider_realtime']['state'] == 'cooldown'
+    assert ws['monitoring_source_live'] is True
+
+
+def test_runtime_status_worker_status_stable_polling_stale(monkeypatch):
+    """Only a genuinely stale stable polling heartbeat yields the stale headline."""
+    now = datetime.now(timezone.utc)
+    monkeypatch.delenv('BASE_REALTIME_ENABLED', raising=False)
+
+    class _StaleHbConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                stale = (now - timedelta(minutes=30)).isoformat()
+                return _Result(rows=[
+                    {'id': 'sys-1', 'workspace_id': 'ws-1', 'asset_id': 'asset-1', 'target_id': 'target-1', 'is_enabled': True, 'runtime_status': 'idle', 'last_heartbeat': stale, 'monitoring_interval_seconds': 30, 'created_at': now.isoformat()},
+                ])
+            return super().execute(query, params)
+
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {
+            'last_heartbeat_at': (now - timedelta(minutes=30)).isoformat(),
+            'last_cycle_at': (now - timedelta(minutes=30)).isoformat(),
+            'degraded': False, 'last_error': None, 'source_type': 'polling',
+            'realtime_watcher': None,
+        },
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_StaleHbConn(now - timedelta(minutes=30))))
+
+    payload = monitoring_runner.monitoring_runtime_status()
+    ws = payload['worker_status']
+    assert ws['stable_polling']['state'] == 'stale'
+    assert ws['headline'] == 'Stable RPC polling heartbeat is stale.'

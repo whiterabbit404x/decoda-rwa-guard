@@ -552,6 +552,10 @@ export default function TargetTelemetryPage() {
   const [hasNext, setHasNext] = useState(false);
   const [hasPrev, setHasPrev] = useState(false);
   const [totalCount, setTotalCount] = useState(0);
+  // Separated detection-path facts for the worker-status strip.
+  const [realtimeEnabled, setRealtimeEnabled] = useState<boolean | null>(null);
+  const [lastStablePollAt, setLastStablePollAt] = useState<string | null>(null);
+  const [lastRealtimeEventAt, setLastRealtimeEventAt] = useState<string | null>(null);
 
   const { authHeaders } = usePilotAuth();
 
@@ -596,6 +600,9 @@ export default function TargetTelemetryPage() {
         setHasNext(payload.has_next === true);
         setHasPrev(payload.has_prev === true);
         setTotalCount(typeof payload.total_count === 'number' ? payload.total_count : 0);
+        setRealtimeEnabled(typeof payload.realtime_enabled === 'boolean' ? payload.realtime_enabled : null);
+        setLastStablePollAt(typeof payload.last_stable_poll_at === 'string' ? payload.last_stable_poll_at : null);
+        setLastRealtimeEventAt(typeof payload.last_realtime_event_at === 'string' ? payload.last_realtime_event_at : null);
         if (typeof payload.workspace_id === 'string') {
           setWorkspaceId(payload.workspace_id);
         }
@@ -680,6 +687,47 @@ export default function TargetTelemetryPage() {
           </span>
         ) : null}
       </div>
+
+      {/* Worker / detection-path status strip: stable RPC polling and realtime
+          WebSocket are distinct. Never collapse a paused realtime worker into a
+          dead source — stable polling keeps detecting transfers. */}
+      {realtimeEnabled !== null ? (
+        <div
+          data-testid="telemetry-worker-status"
+          style={{
+            background: 'var(--bg-surface)',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-sm)',
+            padding: '0.75rem 1rem',
+            marginBottom: '1.25rem',
+            fontSize: '0.82rem',
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: '1.25rem',
+            alignItems: 'center',
+          }}
+        >
+          <span style={{ display: 'inline-flex', flexDirection: 'column', gap: '0.1rem' }}>
+            <span className="muted">Realtime WebSocket</span>
+            <span style={{ fontWeight: 600, color: realtimeEnabled ? 'var(--success-fg)' : 'var(--warning-fg, #d97706)' }}>
+              {realtimeEnabled ? 'Enabled' : 'Paused / Disabled'}
+            </span>
+          </span>
+          <span style={{ display: 'inline-flex', flexDirection: 'column', gap: '0.1rem' }}>
+            <span className="muted">Last stable poll</span>
+            <span style={{ fontWeight: 600 }}>{fmt(lastStablePollAt)}</span>
+          </span>
+          <span style={{ display: 'inline-flex', flexDirection: 'column', gap: '0.1rem' }}>
+            <span className="muted">Last realtime event</span>
+            <span style={{ fontWeight: 600 }}>{fmt(lastRealtimeEventAt)}</span>
+          </span>
+          {!realtimeEnabled ? (
+            <span className="muted" style={{ fontSize: '0.78rem', flex: '1 1 100%' }}>
+              Realtime paused; stable polling active. Wallet transfers are detected by Stable RPC Polling.
+            </span>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* Search bar */}
       <div
