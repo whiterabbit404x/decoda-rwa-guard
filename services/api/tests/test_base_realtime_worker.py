@@ -3077,3 +3077,312 @@ def test_backfill_chunk_size_env_clamped(monkeypatch):
     monkeypatch.delenv('BASE_REALTIME_BACKFILL_CHUNK_SIZE', raising=False)
     i3 = BaseRealtimeIngestor(rpc_url='http://rpc', ws_url='ws://ws', watcher_name='t')
     assert i3.backfill_chunk_size == 25
+
+
+# ---------------------------------------------------------------------------
+# 56. Reconnect-loop breaker: repeated code=1001 AFTER the provider delivered
+#     heads (so consecutive_1001 resets to 0 every close) still trips the
+#     HTTP fast-tail fallback. This is the exact production incident: 6038 heads
+#     delivered, then code=1001 forever with reconnect_count climbing while
+#     consecutive_1001 stayed 0 and the cursor was frozen.
+# ---------------------------------------------------------------------------
+
+def test_1001_reconnect_loop_trips_fallback_even_when_consecutive_1001_resets():
+    import logging as _logging
+    import time as _time
+    from datetime import datetime as _dt, timezone as _tz
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc',
+        ws_url='ws://primary.example.com/ws',
+        watcher_name='base-realtime-worker',
+        subscriptions='newHeads_only',
+        ws_url_secondary=None,
+    )
+    # Provider HAS delivered heads (6038) — consecutive_1001 will reset to 0 each
+    # close because _closed_before_first_event() is False. last_event_at is set
+    # once (fresh, not stale) and never advances, isolating the close-count path.
+    ingestor.state['metrics']['heads_received'] = 6038
+    ingestor.state['metrics']['events_ingested'] = 6038
+    ingestor.state['last_event_at'] = _dt.now(_tz.utc).isoformat()
+    ingestor.state['last_head_block'] = 6038
+    ingestor._last_head_block_at = _time.monotonic()
+    ingestor.state['last_processed_block'] = 6038
+    ingestor._compute_reconnect_sleep = lambda *a, **k: 0.0  # type: ignore[method-assign]
+
+    calls = [0]
+
+    async def _mock_ws_subscribe():
+        calls[0] += 1
+        # Frozen provider: closes 1001 every time, never advances heads/last_event_at.
+        if calls[0] <= 10:
+            raise Exception('ConnectionClosedOK: code=1001 going away')
+        raise asyncio.CancelledError()
+
+    async def _mock_backfill(a: int, b: int) -> int:
+        return 0
+
+    fast_tail_calls = [0]
+
+    async def _mock_http_fast_tail():
+        fast_tail_calls[0] += 1
+        raise asyncio.CancelledError()
+
+    ingestor._ws_subscribe = _mock_ws_subscribe  # type: ignore[method-assign]
+    ingestor._backfill = _mock_backfill  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+    ingestor._run_http_fast_tail = _mock_http_fast_tail  # type: ignore[method-assign]
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(ingestor.run_forever())
+    finally:
+        mod.logger.removeHandler(handler)
+
+    # Breaker tripped despite consecutive_1001 resetting to 0 on every close.
+    assert ingestor._wss_permanently_disabled is True, (
+        'reconnect loop must trip the breaker even though consecutive_1001 keeps resetting'
+    )
+    assert ingestor._consecutive_1001_closes == 0, (
+        'consecutive_1001 must stay 0 (the reset bug) — the NEW counter is what fires'
+    )
+    assert ingestor._total_close_count_since_last_head >= 3
+    assert ingestor._ingestion_mode == 'http_fast_tail'
+    assert fast_tail_calls[0] == 1, 'must hand off to HTTP fast-tail exactly once'
+    # WSS tried exactly 4 times: 1 baseline close + 3 no-progress closes → trip on 4th.
+    assert calls[0] == 4, f'WSS must stop reconnecting after the breaker trips; got {calls[0]}'
+
+    disabled_log = next(
+        (m for m in log_records if 'realtime_ws_disabled_for_provider' in m), None
+    )
+    assert disabled_log is not None, (
+        f'realtime_ws_disabled_for_provider must be logged. Got: {log_records}'
+    )
+    assert 'reason=provider_1001_reconnect_loop' in disabled_log, disabled_log
+    assert 'close_count=3' in disabled_log, f'close_count=3 expected; got: {disabled_log}'
+
+
+# ---------------------------------------------------------------------------
+# 57. Stale last_event_at (older than 2 minutes) with ongoing 1001 closes trips
+#     the fallback faster than the raw close-count threshold (requirement 5).
+# ---------------------------------------------------------------------------
+
+def test_stale_last_event_at_triggers_fallback():
+    import logging as _logging
+    import time as _time
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc',
+        ws_url='ws://primary.example.com/ws',
+        watcher_name='base-realtime-worker',
+        subscriptions='newHeads_only',
+        ws_url_secondary=None,
+    )
+    # Provider delivered heads, but last_event_at is 3 minutes stale and frozen.
+    ingestor.state['metrics']['heads_received'] = 100
+    ingestor.state['last_event_at'] = (
+        _dt.now(_tz.utc) - _td(seconds=180)
+    ).isoformat()
+    ingestor.state['last_head_block'] = 100
+    ingestor._last_head_block_at = _time.monotonic()
+    ingestor.state['last_processed_block'] = 100
+    ingestor._compute_reconnect_sleep = lambda *a, **k: 0.0  # type: ignore[method-assign]
+
+    calls = [0]
+
+    async def _mock_ws_subscribe():
+        calls[0] += 1
+        if calls[0] <= 10:
+            raise Exception('ConnectionClosedOK: code=1001 going away')
+        raise asyncio.CancelledError()
+
+    async def _mock_backfill(a: int, b: int) -> int:
+        return 0
+
+    async def _mock_http_fast_tail():
+        raise asyncio.CancelledError()
+
+    ingestor._ws_subscribe = _mock_ws_subscribe  # type: ignore[method-assign]
+    ingestor._backfill = _mock_backfill  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+    ingestor._run_http_fast_tail = _mock_http_fast_tail  # type: ignore[method-assign]
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(ingestor.run_forever())
+    finally:
+        mod.logger.removeHandler(handler)
+
+    assert ingestor._wss_permanently_disabled is True, (
+        'a 2-minute-stale last_event_at with repeated 1001 closes must trip fallback'
+    )
+    assert ingestor._ingestion_mode == 'http_fast_tail'
+    # Stale path fires on the 2nd close (1 baseline + 1 no-progress) — before the
+    # raw close-count threshold of 3.
+    assert calls[0] == 2, f'stale path must trip on the 2nd close; got {calls[0]}'
+    assert any(
+        'realtime_ws_disabled_for_provider' in m and 'reason=provider_1001_reconnect_loop' in m
+        for m in log_records
+    ), f'reconnect-loop disable log expected; got: {log_records}'
+
+
+# ---------------------------------------------------------------------------
+# 58. reconnect_count stops growing once the reconnect-loop breaker has fired.
+# ---------------------------------------------------------------------------
+
+def test_reconnect_count_stops_growing_after_reconnect_loop_fallback():
+    import time as _time
+    from datetime import datetime as _dt, timezone as _tz
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc',
+        ws_url='ws://primary.example.com/ws',
+        watcher_name='base-realtime-worker',
+        subscriptions='newHeads_only',
+        ws_url_secondary=None,
+    )
+    ingestor.state['metrics']['heads_received'] = 6038
+    ingestor.state['last_event_at'] = _dt.now(_tz.utc).isoformat()
+    ingestor.state['last_head_block'] = 6038
+    ingestor._last_head_block_at = _time.monotonic()
+    ingestor.state['last_processed_block'] = 6038
+    ingestor._compute_reconnect_sleep = lambda *a, **k: 0.0  # type: ignore[method-assign]
+
+    calls = [0]
+
+    async def _mock_ws_subscribe():
+        calls[0] += 1
+        # Would close 1001 forever if the breaker did not stop the loop.
+        raise Exception('ConnectionClosedOK: code=1001 going away')
+
+    async def _mock_backfill(a: int, b: int) -> int:
+        return 0
+
+    fast_tail_seen = {'reconnects_at_handoff': None}
+
+    async def _mock_http_fast_tail():
+        fast_tail_seen['reconnects_at_handoff'] = ingestor.state['metrics']['ws_reconnects']
+        raise asyncio.CancelledError()
+
+    ingestor._ws_subscribe = _mock_ws_subscribe  # type: ignore[method-assign]
+    ingestor._backfill = _mock_backfill  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+    ingestor._run_http_fast_tail = _mock_http_fast_tail  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(ingestor.run_forever())
+
+    # The breaker fires on the 4th close, so _ws_subscribe runs exactly 4 times and
+    # reconnect_count freezes at 4 — it does NOT climb to 70+ as in production.
+    assert calls[0] == 4, f'WSS reconnect loop must stop after the breaker; got {calls[0]}'
+    assert ingestor.state['metrics']['ws_reconnects'] == 4
+    assert fast_tail_seen['reconnects_at_handoff'] == 4, (
+        'reconnect_count must be frozen at the trip point when fast-tail takes over'
+    )
+
+
+# ---------------------------------------------------------------------------
+# 59. Native ETH transfer is detected by realtime_backfill (detected_by tag),
+#     and the stable 300s polling worker seeing the same tx later is deduped.
+# ---------------------------------------------------------------------------
+
+def test_native_eth_transfer_detected_by_realtime_backfill_and_polling_dedupes():
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app.evm_activity_provider import _make_event_id
+    from services.api.app.monitoring_runner import process_ingested_event
+
+    wallet = '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
+    target = {
+        'id': str(uuid.uuid4()),
+        'workspace_id': str(uuid.uuid4()),
+        'name': 'Base Wallet',
+        'target_type': 'wallet',
+        'chain_network': 'base',
+        'wallet_address': wallet,
+        'contract_identifier': None,
+        'updated_by_user_id': None,
+        'created_by_user_id': None,
+    }
+    # A plain ETH send FROM the watched wallet: carries NO logs, so only a full
+    # transaction scan (the native scan) can see it.
+    native_tx = {
+        'hash': '0xnativetransfer',
+        'from': wallet,
+        'to': '0x1111111111111111111111111111111111111111',
+        'value': hex(10 ** 16),
+        'input': '0x',
+    }
+    block = {
+        'hash': '0xblockhash',
+        'number': hex(900),
+        'timestamp': hex(1_700_000_000),
+        'transactions': [native_tx],
+    }
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='base-realtime-worker',
+        confirmations_required=0,
+    )
+    ingestor._rpc_call = lambda m, p: block if m == 'eth_getBlockByNumber' else []  # type: ignore[method-assign]
+
+    persisted: list = []
+
+    def _capture_persist(tgt, evt):
+        persisted.append(evt)
+        return {'status': 'processed', 'event_id': evt.event_id}
+
+    ingestor._persist_event = _capture_persist  # type: ignore[method-assign]
+
+    processed = ingestor._scan_native_transfers(
+        900, 900, [(target, wallet.lower())], source_type='realtime_backfill',
+    )
+
+    assert processed == 1, 'native ETH transfer must be detected by the backfill native scan'
+    assert len(persisted) == 1
+    detected_event = persisted[0]
+    assert detected_event.payload.get('detected_by') == 'realtime_backfill', (
+        f"detected_by must be realtime_backfill; got {detected_event.payload.get('detected_by')}"
+    )
+    assert detected_event.ingestion_source == 'realtime_backfill'
+
+    # The stable polling worker computes the same event_id for the same tx → dedupe.
+    cursor = f'900:{native_tx["hash"]}:-1'
+    polling_event_id = _make_event_id(str(target['id']), cursor, 'transaction')
+    assert detected_event.event_id == polling_event_id, (
+        'realtime and stable polling must share an idempotency key for the same tx'
+    )
+
+    conn_mock = MagicMock()
+    conn_mock.execute.return_value.fetchone.return_value = {'id': 'existing-receipt'}
+    conn_mock.__enter__ = lambda s: s
+    conn_mock.__exit__ = MagicMock(return_value=False)
+    polling_result = process_ingested_event(
+        conn_mock, target=target, event=detected_event, ingestion_mode='live',
+    )
+    assert polling_result['status'] == 'duplicate_suppressed', (
+        'stable polling seeing the same native tx later must be deduped, not duplicated'
+    )

@@ -67,6 +67,16 @@ _MAX_BACKFILL_CHUNK_SIZE = 25
 # treated as stale ("no reliable checkpoint") for start-at-latest bootstrap.
 _DEFAULT_CHECKPOINT_RELIABLE_MAX_LAG = 50_000
 
+# Provider-wide WSS reconnect-loop circuit breaker. After this many code=1001
+# closes WITHOUT last_event_at advancing, the WSS is permanently disabled and the
+# worker switches to HTTP fast-tail. This is independent of consecutive_1001 (which
+# resets to 0 once any head was ever received) so it still fires after a provider
+# delivers thousands of heads and then wedges.
+_RECONNECT_LOOP_CLOSE_THRESHOLD = 3
+# last_event_at older than this (seconds) while 1001 closes keep happening trips the
+# fallback even before the close-count threshold is reached (stale-event detection).
+_DEFAULT_STALE_EVENT_THRESHOLD_SECONDS = 120
+
 
 def _resolve_int_env(name: str, default: int) -> int:
     raw = (os.getenv(name) or '').strip()
@@ -191,7 +201,26 @@ class BaseRealtimeIngestor:
         self._ingestion_mode: str = 'realtime'
 
         # Tracks consecutive clean-close (code=1001) errors; used for downgrade and failover.
+        # WARNING: this counter RESETS to 0 the moment any head has ever been received
+        # (see _closed_before_first_event). A provider that delivers thousands of heads
+        # and then wedges keeps resetting it, so it must NOT be the only breaker signal.
         self._consecutive_1001_closes: int = 0
+
+        # Provider-wide reconnect-loop breaker (does NOT reset on "first event seen").
+        # _total_provider_close_count   : every 1001 close, for observability/logging.
+        # _total_close_count_since_last_head : 1001 closes since last_event_at last
+        #   advanced. This is the canonical fix for the production loop where the WSS
+        #   delivered 6038 heads, then closed 1001 forever while consecutive_1001 stayed
+        #   0 — events_processed/last_event_at frozen but reconnect_count climbing.
+        # _last_event_at_snapshot       : last_event_at value when the counter last reset.
+        self._total_provider_close_count: int = 0
+        self._total_close_count_since_last_head: int = 0
+        self._last_event_at_snapshot: str | None = None
+        # last_event_at older than this (seconds) while 1001 closes keep happening
+        # trips the fallback even before the close count threshold (requirement 5).
+        self._stale_event_threshold_seconds = max(
+            30, _resolve_int_env('REALTIME_STALE_EVENT_FALLBACK_SECONDS', _DEFAULT_STALE_EVENT_THRESHOLD_SECONDS)
+        )
 
         # WebSocket keepalive settings — configurable via env vars.
         _ping_iv = _resolve_int_env('BASE_WS_PING_INTERVAL', 30)
@@ -344,6 +373,89 @@ class BaseRealtimeIngestor:
         return (
             metrics.get('heads_received', 0) == 0
             and metrics.get('events_ingested', 0) == 0
+        )
+
+    def _seconds_since_last_event(self) -> float | None:
+        """Seconds since last_event_at, or None when it has never been set.
+
+        last_event_at is set on every newHeads message and every persisted event,
+        so it is the canonical "is the provider still delivering data" timestamp.
+        """
+        raw = self.state.get('last_event_at')
+        if not raw:
+            return None
+        try:
+            ts = datetime.fromisoformat(str(raw))
+        except (TypeError, ValueError):
+            return None
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - ts).total_seconds()
+
+    def _last_event_is_stale(self) -> bool:
+        """True when last_event_at exists but is older than the stale threshold.
+
+        Used together with ongoing code=1001 closes to trip the HTTP fast-tail
+        fallback even before the close-count threshold (requirement 5): a provider
+        that stops advancing last_event_at for 2+ minutes while the WSS keeps
+        closing is wedged, not healthy.
+        """
+        secs = self._seconds_since_last_event()
+        return secs is not None and secs >= self._stale_event_threshold_seconds
+
+    def _note_1001_close_for_breaker(self) -> bool:
+        """Account one code=1001 close against the provider-wide reconnect breaker.
+
+        Returns True when the breaker should trip (WSS permanently disabled, switch
+        to HTTP fast-tail). Unlike consecutive_1001 this never resets just because a
+        head was once received — it only resets when last_event_at actually advances,
+        so a provider that delivered thousands of heads then wedged still trips it.
+
+        The before-first-event case (no head ever received) is handled by the
+        existing consecutive_1001 / secondary-failover path, so this only counts once
+        the provider has proven it can deliver heads.
+        """
+        self._total_provider_close_count += 1
+        if self._closed_before_first_event():
+            return False
+        current_event_at = self.state.get('last_event_at')
+        if current_event_at != self._last_event_at_snapshot:
+            # last_event_at advanced since the last close → provider still making
+            # progress; reset the loop counter and re-anchor.
+            self._last_event_at_snapshot = current_event_at
+            self._total_close_count_since_last_head = 0
+        else:
+            # No new head/event since the last close → wedged. Count this close.
+            self._total_close_count_since_last_head += 1
+        if self._total_close_count_since_last_head >= _RECONNECT_LOOP_CLOSE_THRESHOLD:
+            return True
+        # Stale-event fast path: a 2-minute-stale last_event_at with repeated closes
+        # is enough on its own (requirement 5) once at least one no-progress close
+        # has been observed.
+        return self._last_event_is_stale() and self._total_close_count_since_last_head >= 1
+
+    def _trip_reconnect_loop_breaker(self) -> None:
+        """Permanently disable WSS and arm the HTTP fast-tail fallback.
+
+        Emits the canonical realtime_ws_disabled_for_provider marker with
+        reason=provider_1001_reconnect_loop and the close_count so an operator can
+        see exactly why the WSS was given up on.
+        """
+        self._wss_permanently_disabled = True
+        self._ingestion_mode = 'http_fast_tail'
+        self.state['source_status'] = 'quicknode_http_fast_tail'
+        self.state['degraded'] = True
+        self.state['degraded_reason'] = 'provider_1001_reconnect_loop'
+        _age = self._seconds_since_last_event()
+        logger.warning(
+            'realtime_ws_disabled_for_provider reason=provider_1001_reconnect_loop '
+            'close_count=%s total_provider_close_count=%s last_event_age_seconds=%s '
+            'reconnect_count=%s watcher=%s',
+            self._total_close_count_since_last_head,
+            self._total_provider_close_count,
+            round(_age, 1) if _age is not None else 'none',
+            self.state['metrics'].get('ws_reconnects', 0),
+            self.watcher_name,
         )
 
     # ------------------------------------------------------------------
@@ -703,7 +815,10 @@ class BaseRealtimeIngestor:
         stops showing 'provider closes before first event' once heads are flowing.
         """
         reason = self.state.get('degraded_reason')
-        if reason == 'provider_closes_before_first_event' and not self._closed_before_first_event():
+        if reason in (
+            'provider_closes_before_first_event',
+            'provider_1001_reconnect_loop',
+        ) and not self._closed_before_first_event():
             reason = 'http_fast_tail_active' if self._ingestion_mode == 'http_fast_tail' else None
             self.state['degraded_reason'] = reason
         return reason
@@ -1234,7 +1349,11 @@ class BaseRealtimeIngestor:
         self._ingestion_mode = 'http_fast_tail'
         self.state['source_status'] = 'quicknode_http_fast_tail'
         self.state['degraded'] = True
-        self.state['degraded_reason'] = 'provider_closes_before_first_event'
+        # Preserve a reconnect-loop reason set by the breaker; otherwise default to
+        # the before-first-event reason. Both are rewritten to http_fast_tail_active
+        # by _effective_degraded_reason once the fast-tail poll starts fetching heads.
+        if self.state.get('degraded_reason') != 'provider_1001_reconnect_loop':
+            self.state['degraded_reason'] = 'provider_closes_before_first_event'
 
         _poll_interval = float(
             max(30, min(60, _resolve_int_env('REALTIME_HTTP_FAST_TAIL_INTERVAL_SECONDS', 45)))
@@ -1474,9 +1593,22 @@ class BaseRealtimeIngestor:
                     or 'ConnectionClosedOK' in type(exc).__name__
                 )
 
+                # Provider-wide reconnect-loop / stale breaker (requirements 1, 2, 5).
+                # Runs for EVERY 1001 close, independent of subscription mode and of
+                # consecutive_1001 (which is useless here because it resets to 0 the
+                # moment any head was ever received). Trips once the WSS keeps closing
+                # 1001 while last_event_at no longer advances, or last_event_at is
+                # 2+ minutes stale — the exact production loop where 6038 heads were
+                # delivered, then the socket closed 1001 forever with a frozen cursor.
+                if is_1001_close and self._note_1001_close_for_breaker():
+                    self._trip_reconnect_loop_breaker()
+
                 # Auto-downgrade from newHeads,logs → newHeads_only after 3 consecutive
                 # 1001 closes. After downgrade, fail over to secondary URL if configured.
-                if is_1001_close and self.subscriptions == 'newHeads,logs':
+                # Skipped once the reconnect-loop breaker has disabled WSS above.
+                if self._wss_permanently_disabled:
+                    pass
+                elif is_1001_close and self.subscriptions == 'newHeads,logs':
                     self._consecutive_1001_closes += 1
                     if self._consecutive_1001_closes >= 3:
                         self.subscriptions = 'newHeads_only'
@@ -1547,10 +1679,18 @@ class BaseRealtimeIngestor:
                         logger.info(
                             'realtime_ws_closed_cleanly chain=%s watcher=%s '
                             'code=1001 reconnecting reconnect_count=%s '
-                            'consecutive_1001=%s subscriptions=%s%s',
+                            'consecutive_1001=%s close_count_since_last_head=%s '
+                            'total_provider_close_count=%s last_event_age_seconds=%s '
+                            'subscriptions=%s%s',
                             self.chain_network, self.watcher_name,
                             self.state['metrics']['ws_reconnects'],
-                            self._consecutive_1001_closes, self.subscriptions,
+                            self._consecutive_1001_closes,
+                            self._total_close_count_since_last_head,
+                            self._total_provider_close_count,
+                            (lambda a: round(a, 1) if a is not None else 'none')(
+                                self._seconds_since_last_event()
+                            ),
+                            self.subscriptions,
                             _before_first_flag,
                         )
                     elif is_rate_limit:
