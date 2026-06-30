@@ -20,7 +20,10 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import json as _json
+import logging
 import uuid
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -418,3 +421,314 @@ def test_ui_telemetry_page_renders_detected_by_and_source_type():
     assert "['Monitored address (full)', monitoredAddressFull]" in src
     assert 'Monitored address:' in src
     assert "['Latency (s)', latencySeconds]" in src
+
+
+# ---------------------------------------------------------------------------
+# K. New-head realtime_websocket native scan (the production fix)
+#
+# Native ETH transfers in the most recent blocks were never wide enough to trip
+# the gap backfill, so realtime only ever caught them via stable polling minutes
+# later. _scan_head_native_transfers scans each newly confirmed head block
+# directly, tagged detected_by=realtime_websocket.
+# ---------------------------------------------------------------------------
+
+def test_new_head_native_scan_detects_realtime_websocket(monkeypatch):
+    """A native ETH transfer in the freshly confirmed head block is detected and
+    persisted with detected_by=realtime_websocket, advancing the checkpoint."""
+    ing = _make_ingestor()  # confirmations_required=1
+    target = _wallet_target()
+    block = _block_with(
+        [_native_tx(tx_hash='0xheadnative', from_addr=BASE_WALLET, to_addr=OTHER_WALLET)],
+        number=100,
+    )
+    monkeypatch.setattr(
+        ing, '_rpc_call',
+        lambda method, params: block if method == 'eth_getBlockByNumber' else None,
+    )
+    monkeypatch.setattr(ing, '_watched_targets', lambda: [target])
+    persisted: list = []
+    monkeypatch.setattr(
+        ing, '_persist_event',
+        lambda _t, e: (persisted.append(e), {'status': 'processed', 'event_id': e.event_id})[1],
+    )
+    ing.state['last_processed_block'] = 99
+
+    # head=101, confirmations=1 → safe_to=100 → scans block 100.
+    processed = asyncio.run(ing._scan_head_native_transfers(101))
+
+    assert processed == 1
+    ev = persisted[0]
+    assert ev.payload['detected_by'] == 'realtime_websocket'
+    assert ev.payload['source_type'] == 'realtime_websocket'
+    assert ev.payload['tx_hash'] == '0xheadnative'
+    assert ev.payload['wallet_transfer_direction'] == 'outbound'
+    assert ev.cursor == '100:0xheadnative:-1'
+    # Checkpoint advanced to the last scanned (confirmed) block.
+    assert ing.state['last_processed_block'] == 100
+
+
+def test_new_head_native_scan_respects_confirmations(monkeypatch):
+    """Only blocks at or below head - confirmations_required are scanned; the
+    unconfirmed head block itself is not fetched yet."""
+    ing = _make_ingestor()  # confirmations_required=1
+    target = _wallet_target()
+    requested: list[int] = []
+
+    def _rpc(method, params):
+        if method == 'eth_getBlockByNumber':
+            n = int(params[0], 16)
+            requested.append(n)
+            return _block_with([], number=n)
+        return None
+
+    monkeypatch.setattr(ing, '_rpc_call', _rpc)
+    monkeypatch.setattr(ing, '_watched_targets', lambda: [target])
+    monkeypatch.setattr(ing, '_persist_event', lambda _t, e: {'status': 'processed', 'event_id': e.event_id})
+    ing.state['last_processed_block'] = 98
+
+    asyncio.run(ing._scan_head_native_transfers(100))  # safe_to = 99
+
+    assert requested == [99], f'must scan only the confirmed block 99, got {requested}'
+    assert ing.state['last_processed_block'] == 99
+
+
+def test_new_head_native_scan_noop_when_caught_up(monkeypatch):
+    """When nothing new has been confirmed since the last scan, no block is fetched."""
+    ing = _make_ingestor()  # confirmations_required=1
+    rpc_calls = {'n': 0}
+    monkeypatch.setattr(
+        ing, '_rpc_call',
+        lambda m, p: rpc_calls.__setitem__('n', rpc_calls['n'] + 1),
+    )
+    monkeypatch.setattr(ing, '_watched_targets', lambda: [_wallet_target()])
+    ing.state['last_processed_block'] = 100
+
+    # head=101 → safe_to=100, from=101 > 100 → nothing to do.
+    processed = asyncio.run(ing._scan_head_native_transfers(101))
+
+    assert processed == 0
+    assert rpc_calls['n'] == 0
+
+
+def test_new_head_native_scan_failure_does_not_advance_checkpoint(monkeypatch):
+    """An RPC failure mid-scan must NOT advance the checkpoint so the range is
+    retried on the next head (no transfers skipped)."""
+    ing = _make_ingestor()  # confirmations_required=1
+    target = _wallet_target()
+
+    def _rpc(method, params):
+        if method == 'eth_getBlockByNumber':
+            raise RuntimeError('rpc_http_error:429 method=eth_getBlockByNumber')
+        return None
+
+    monkeypatch.setattr(ing, '_rpc_call', _rpc)
+    monkeypatch.setattr(ing, '_watched_targets', lambda: [target])
+    ing.state['last_processed_block'] = 99
+
+    processed = asyncio.run(ing._scan_head_native_transfers(101))
+
+    assert processed == 0
+    assert ing.state['last_processed_block'] == 99  # unchanged
+
+
+def test_new_head_native_scan_advances_when_no_targets(monkeypatch):
+    """With no watched Base wallets, the cursor still advances so an empty range is
+    not re-scanned forever, and no block is fetched."""
+    ing = _make_ingestor()
+    rpc_calls = {'n': 0}
+    monkeypatch.setattr(ing, '_rpc_call', lambda m, p: rpc_calls.__setitem__('n', rpc_calls['n'] + 1))
+    monkeypatch.setattr(ing, '_watched_targets', lambda: [])
+    ing.state['last_processed_block'] = 99
+
+    processed = asyncio.run(ing._scan_head_native_transfers(101))
+
+    assert processed == 0
+    assert rpc_calls['n'] == 0
+    assert ing.state['last_processed_block'] == 100
+
+
+def test_realtime_websocket_and_polling_share_idempotency_key():
+    """The realtime_websocket native event and a stable polling event for the same
+    tx share both the telemetry idempotency key AND the receipt event_id, so the
+    later stable-polling row is deduped instead of duplicating the transfer."""
+    from datetime import datetime, timezone
+
+    from services.api.app.evm_activity_provider import ActivityEvent, _make_event_id
+    from services.api.app.monitoring_runner import _telemetry_idempotency_key
+
+    ing = _make_ingestor()
+    target = _wallet_target()
+    tx = _native_tx(tx_hash='0xshared2', from_addr=BASE_WALLET, to_addr=OTHER_WALLET)
+    ws_event = ing._build_native_transfer_event(
+        target, tx, block_number=100, block_hash='0xb', observed_at=datetime.now(timezone.utc),
+        direction='outbound', source_type='realtime_websocket',
+    )
+    polling_event = ActivityEvent(
+        event_id='ignored', kind='transaction', observed_at=datetime.now(timezone.utc),
+        ingestion_source='rpc_polling', cursor='100:0xshared2:-1',
+        payload={'tx_hash': '0xshared2', 'block_number': 100},
+    )
+    k_ws = _telemetry_idempotency_key(
+        workspace_id=target['workspace_id'], target_id=target['id'], event=ws_event)
+    k_poll = _telemetry_idempotency_key(
+        workspace_id=target['workspace_id'], target_id=target['id'], event=polling_event)
+    assert k_ws == k_poll
+    # Receipt dedupe (process_ingested_event) keys on event_id: identical too.
+    assert ws_event.event_id == _make_event_id(str(target['id']), '100:0xshared2:-1', 'transaction')
+
+
+def test_native_scan_emits_required_log_names(monkeypatch, caplog):
+    """Requirement 9 log names are emitted, each carrying detected_by."""
+    ing = _make_ingestor()
+    target = _wallet_target()
+    block = _block_with([_native_tx(tx_hash='0xloggednative', from_addr=BASE_WALLET, to_addr=OTHER_WALLET)])
+    monkeypatch.setattr(
+        ing, '_rpc_call',
+        lambda method, params: block if method == 'eth_getBlockByNumber' else None,
+    )
+    monkeypatch.setattr(ing, '_persist_event', lambda _t, e: {'status': 'processed', 'event_id': e.event_id})
+
+    with caplog.at_level(logging.INFO, logger='services.api.app.base_realtime_ingestor'):
+        ing._scan_native_transfers(100, 100, [(target, BASE_WALLET)], source_type='realtime_websocket')
+
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any('realtime_native_transfer_scan_started' in m for m in msgs), msgs
+    assert any('realtime_native_transfer_candidate' in m for m in msgs), msgs
+    assert any('realtime_native_transfer_match' in m for m in msgs), msgs
+    assert any('realtime_event_persisted' in m for m in msgs), msgs
+    # detected_by threaded through the scan logs so an operator can tell the path apart.
+    assert any('detected_by=realtime_websocket' in m for m in msgs), msgs
+
+
+# ---------------------------------------------------------------------------
+# L. newHeads dispatch: small lag → realtime_websocket head scan;
+#    large lag → realtime_backfill catch-up. Driven through _ws_subscribe.
+# ---------------------------------------------------------------------------
+
+def _drive_one_newhead(ing, *, head: int) -> None:
+    """Run _ws_subscribe against a fake websocket that delivers a single newHeads
+    notification (block ``head``) and then cancels."""
+    messages = [
+        {'id': 1, 'result': '0xnh'},   # newHeads subscription ack
+        {'id': 2, 'result': '0xlg'},   # logs subscription ack
+        {'params': {'subscription': '0xnh', 'result': {'number': hex(head)}}},
+    ]
+    idx = {'i': 0}
+
+    async def _recv():
+        if idx['i'] >= len(messages):
+            raise asyncio.CancelledError()
+        msg = messages[idx['i']]
+        idx['i'] += 1
+        return _json.dumps(msg)
+
+    mock_ws = MagicMock()
+    mock_ws.send = AsyncMock(return_value=None)
+    mock_ws.recv = AsyncMock(side_effect=_recv)
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=mock_ws)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    fake_ws_module = MagicMock()
+    fake_ws_module.connect.return_value = cm
+
+    import sys
+
+    async def _run():
+        with patch.dict(sys.modules, {'websockets': fake_ws_module}):
+            try:
+                await ing._ws_subscribe()
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(_run())
+
+
+def test_new_head_in_steady_state_persists_realtime_websocket(monkeypatch):
+    """End-to-end through _ws_subscribe: a newHeads message with a small lag scans
+    the confirmed block and persists detected_by=realtime_websocket — proving the
+    transfer no longer has to wait for Stable RPC Polling."""
+    ing = _make_ingestor()  # confirmations_required=1
+    target = _wallet_target()
+    ing.state['last_processed_block'] = 99  # lag 2 → steady-state head scan
+
+    block = _block_with(
+        [_native_tx(tx_hash='0xwsnative', from_addr=BASE_WALLET, to_addr=OTHER_WALLET)],
+        number=100,
+    )
+    monkeypatch.setattr(
+        ing, '_rpc_call',
+        lambda method, params: block if method == 'eth_getBlockByNumber' else None,
+    )
+    monkeypatch.setattr(ing, '_watched_targets', lambda: [target])
+    persisted: list = []
+    monkeypatch.setattr(
+        ing, '_persist_event',
+        lambda _t, e: (persisted.append(e), {'status': 'processed', 'event_id': e.event_id})[1],
+    )
+
+    _drive_one_newhead(ing, head=101)
+
+    assert len(persisted) == 1, f'expected 1 realtime_websocket native event, got {len(persisted)}'
+    assert persisted[0].payload['detected_by'] == 'realtime_websocket'
+    assert persisted[0].payload['tx_hash'] == '0xwsnative'
+    assert ing.state['last_processed_block'] == 100
+
+
+def test_new_head_with_large_gap_uses_backfill_not_head_scan(monkeypatch):
+    """A large lag routes to the bounded _backfill (realtime_backfill), not the
+    steady-state head scan — the two paths are mutually exclusive per head."""
+    ing = _make_ingestor()
+    monkeypatch.setattr(ing, '_watched_targets', lambda: [_wallet_target()])
+    ing.state['last_processed_block'] = 10  # head 101 → lag 91 > gap_threshold (24)
+
+    backfill_calls: list[tuple[int, int]] = []
+    head_scan_calls: list[int] = []
+
+    async def _bf(a, b):
+        backfill_calls.append((a, b))
+        return 0
+
+    async def _hs(h):
+        head_scan_calls.append(h)
+        return 0
+
+    monkeypatch.setattr(ing, '_backfill', _bf)
+    monkeypatch.setattr(ing, '_scan_head_native_transfers', _hs)
+
+    _drive_one_newhead(ing, head=101)
+
+    assert backfill_calls == [(11, 101)], backfill_calls
+    assert head_scan_calls == [], head_scan_calls
+
+
+# ---------------------------------------------------------------------------
+# M. Stale system-health text: 'provider closes before first event' must not
+#    persist once the worker is receiving heads (requirement 10).
+# ---------------------------------------------------------------------------
+
+def test_effective_degraded_reason_keeps_text_before_first_event():
+    ing = _make_ingestor()
+    ing.state['degraded_reason'] = 'provider_closes_before_first_event'
+    ing.state['metrics']['heads_received'] = 0
+    ing.state['metrics']['events_ingested'] = 0
+    # No head/event yet → the reason is still truthful and is kept.
+    assert ing._effective_degraded_reason() == 'provider_closes_before_first_event'
+
+
+def test_effective_degraded_reason_cleared_once_heads_flow_on_wss():
+    ing = _make_ingestor()
+    ing.state['degraded_reason'] = 'provider_closes_before_first_event'
+    ing.state['metrics']['heads_received'] = 5
+    ing._ingestion_mode = 'realtime'
+    assert ing._effective_degraded_reason() is None
+    assert ing.state['degraded_reason'] is None
+
+
+def test_effective_degraded_reason_http_fast_tail_when_heads_flow():
+    ing = _make_ingestor()
+    ing.state['degraded_reason'] = 'provider_closes_before_first_event'
+    ing.state['metrics']['heads_received'] = 3
+    ing._ingestion_mode = 'http_fast_tail'
+    # Still a fallback mode, but heads are flowing — reason is accurate, not stale.
+    assert ing._effective_degraded_reason() == 'http_fast_tail_active'
+    assert ing.state['degraded_reason'] == 'http_fast_tail_active'
