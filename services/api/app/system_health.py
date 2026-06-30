@@ -961,8 +961,25 @@ def _build_realtime_ingestion_status(connection: Any) -> dict[str, Any]:
             except Exception:
                 metrics = {}
 
-        degraded = bool(w.get('degraded')) or not hb_fresh
-        status = 'active' if not degraded else 'degraded'
+        source_status = str(w.get('source_status') or '')
+        degraded_reason = w.get('degraded_reason')
+        # Provider rate-limit (HTTP 429) is a distinct, truthful state — surface it as
+        # "rate limited" with the provider and next retry time instead of a generic
+        # "degraded", so the customer sees the WSS is benched (not broken) while stable
+        # polling keeps running. Only trust it while the heartbeat is fresh; a stale
+        # heartbeat means the worker is not reporting, which is degraded, not a clean
+        # rate-limit.
+        rate_limited = hb_fresh and (
+            source_status == 'provider_rate_limited'
+            or degraded_reason == 'provider_rate_limited'
+        )
+        if rate_limited:
+            status = 'rate_limited'
+            label = 'Realtime: Rate limited'
+        else:
+            degraded = bool(w.get('degraded')) or not hb_fresh
+            status = 'active' if not degraded else 'degraded'
+            label = f'Realtime: {status.capitalize()}'
         return {
             'status': status,
             'enabled': True,
@@ -973,8 +990,14 @@ def _build_realtime_ingestion_status(connection: Any) -> dict[str, Any]:
             'reconnect_count': metrics.get('ws_reconnects'),
             'watcher_name': w.get('watcher_name'),
             'heartbeat_age_seconds': int(hb_age) if hb_age is not None else None,
-            'degraded_reason': w.get('degraded_reason'),
-            'label': f'Realtime: {status.capitalize()}',
+            'degraded_reason': degraded_reason,
+            'rate_limited': rate_limited,
+            'provider': 'QuickNode' if rate_limited else None,
+            'next_retry_at': metrics.get('next_retry_at') if rate_limited else None,
+            # The 300s stable RPC polling worker runs independently of the realtime
+            # path, so it keeps detecting transfers even while WSS is rate-limited.
+            'stable_polling_active': True,
+            'label': label,
         }
 
     # Worker is enabled but no heartbeat row found yet

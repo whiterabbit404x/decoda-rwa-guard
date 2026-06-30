@@ -3386,3 +3386,321 @@ def test_native_eth_transfer_detected_by_realtime_backfill_and_polling_dedupes()
     assert polling_result['status'] == 'duplicate_suppressed', (
         'stable polling seeing the same native tx later must be deduped, not duplicated'
     )
+
+
+# ---------------------------------------------------------------------------
+# 60. WebSocket HTTP 429 trips provider_rate_limited state and stops the
+#     reconnect loop (does NOT keep reconnecting every short interval).
+# ---------------------------------------------------------------------------
+
+def test_ws_http_429_trips_provider_rate_limited_and_stops_reconnect(monkeypatch):
+    """A WSS handshake rejected with HTTP 429 must trip the rate-limit breaker:
+    source_status=provider_rate_limited, a next-retry timestamp, and NO further WSS
+    reconnect during the cooldown window."""
+    import time as _time
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    ingestor.rate_limit_cooldown_seconds = 900
+    ingestor.state['last_head_block'] = 100
+    ingestor._last_head_block_at = _time.monotonic()
+
+    ws_calls = [0]
+
+    async def _mock_ws_subscribe():
+        ws_calls[0] += 1
+        raise RuntimeError('server rejected WebSocket connection: HTTP 429')
+
+    fast_tail_calls = [0]
+
+    async def _mock_fast_tail():
+        fast_tail_calls[0] += 1
+
+    sleep_calls: list[float] = []
+
+    async def _mock_sleep(secs: float) -> None:
+        sleep_calls.append(secs)
+        raise asyncio.CancelledError()
+
+    ingestor._ws_subscribe = _mock_ws_subscribe  # type: ignore[method-assign]
+    ingestor._run_http_fast_tail = _mock_fast_tail  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+    monkeypatch.setattr(mod.asyncio, 'sleep', _mock_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(ingestor.run_forever())
+
+    assert ws_calls[0] == 1, (
+        f'WSS must NOT reconnect during the 429 cooldown; got {ws_calls[0]} attempts'
+    )
+    assert ingestor._provider_rate_limited is True
+    assert ingestor.state['source_status'] == 'provider_rate_limited'
+    assert ingestor.state['degraded_reason'] == 'provider_rate_limited'
+    assert ingestor.state['degraded'] is True
+    assert ingestor._rate_limit_retry_at is not None, 'next retry time must be set'
+    assert fast_tail_calls[0] == 0, (
+        'fast-tail must NOT run during a rate limit by default (same provider quota)'
+    )
+    # The breaker is in cooldown, so the loop is sleeping (waiting it out), not
+    # reconnecting — the only sleep seen is the cooldown heartbeat sleep.
+    assert sleep_calls, 'worker must sleep through the cooldown instead of reconnecting'
+
+
+# ---------------------------------------------------------------------------
+# 61. realtime_ws_disabled_for_provider reason=rate_limited_http_429 is logged
+# ---------------------------------------------------------------------------
+
+def test_rate_limit_breaker_logs_disabled_marker_and_cooldown():
+    """_enter_provider_rate_limit_cooldown must emit the canonical marker with the
+    cooldown and next-retry, and arm the cooldown window."""
+    import logging as _logging
+    import time as _time
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    ingestor.rate_limit_cooldown_seconds = 900
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+    try:
+        ingestor._enter_provider_rate_limit_cooldown()
+    finally:
+        mod.logger.removeHandler(handler)
+
+    marker = next(
+        (m for m in log_records if 'realtime_ws_disabled_for_provider' in m), None
+    )
+    assert marker is not None, 'realtime_ws_disabled_for_provider must be logged'
+    assert 'reason=rate_limited_http_429' in marker, f'got: {marker}'
+    assert 'cooldown_seconds=900' in marker, f'got: {marker}'
+    assert 'next_retry_at=' in marker, f'got: {marker}'
+    # Cooldown window is armed and no WSS retry is due yet.
+    assert ingestor._rate_limit_cooldown_active() is True
+    assert ingestor._rate_limit_cooldown_remaining() > 0
+    assert ingestor._rate_limit_cooldown_until > _time.monotonic()
+
+
+# ---------------------------------------------------------------------------
+# 62. Fast-tail does NOT burn the same provider quota during a rate limit
+# ---------------------------------------------------------------------------
+
+def test_rate_limit_fallback_does_not_burn_same_quota_by_default():
+    """With BASE_REALTIME_FAST_TAIL_ENABLED unset (default), a rate limit must not
+    activate the HTTP fast-tail fallback (it shares the QuickNode HTTP quota), so
+    fallback_active is False and only the stable polling worker covers detection."""
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    assert ingestor.fast_tail_enabled is False
+    ingestor._enter_provider_rate_limit_cooldown()
+    assert ingestor._fallback_is_active() is False, (
+        'no realtime fallback must run during a rate limit by default'
+    )
+    assert ingestor._wss_permanently_disabled is False, (
+        'a rate limit must NOT permanently disable WSS — it resumes after cooldown'
+    )
+
+
+def test_rate_limit_fast_tail_enabled_runs_fast_tail_with_separate_budget(monkeypatch):
+    """When BASE_REALTIME_FAST_TAIL_ENABLED=true (separate HTTP budget), a 429 hands
+    off to the HTTP fast-tail loop instead of going dark."""
+    import time as _time
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    monkeypatch.setenv('BASE_REALTIME_FAST_TAIL_ENABLED', 'true')
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    assert ingestor.fast_tail_enabled is True
+    ingestor.state['last_head_block'] = 100
+    ingestor._last_head_block_at = _time.monotonic()
+
+    async def _mock_ws_subscribe():
+        raise RuntimeError('server rejected WebSocket connection: HTTP 429')
+
+    fast_tail_calls = [0]
+
+    async def _mock_fast_tail():
+        fast_tail_calls[0] += 1
+        raise asyncio.CancelledError()
+
+    ingestor._ws_subscribe = _mock_ws_subscribe  # type: ignore[method-assign]
+    ingestor._run_http_fast_tail = _mock_fast_tail  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(ingestor.run_forever())
+
+    assert ingestor._provider_rate_limited is True
+    assert fast_tail_calls[0] == 1, 'fast-tail must run when a separate HTTP budget is configured'
+    assert ingestor._fallback_is_active() is True
+
+
+# ---------------------------------------------------------------------------
+# 63. Rate-limit cooldown clears and realtime resumes after the window
+# ---------------------------------------------------------------------------
+
+def test_rate_limit_cooldown_clears_and_resumes_wss():
+    """Once the cooldown window elapses, the breaker clears and realtime resumes."""
+    import time as _time
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    ingestor.rate_limit_cooldown_seconds = 900
+    ingestor._enter_provider_rate_limit_cooldown()
+    assert ingestor._rate_limit_cooldown_active() is True
+
+    # Force the cooldown window to expire.
+    ingestor._rate_limit_cooldown_until = _time.monotonic() - 1.0
+    assert ingestor._rate_limit_cooldown_active() is False, (
+        'cooldown must report inactive once the window elapses'
+    )
+
+    ingestor._resume_after_rate_limit_cooldown()
+    assert ingestor._provider_rate_limited is False
+    assert ingestor._rate_limit_retry_at is None
+    assert ingestor.state['degraded_reason'] == 'provider_rate_limit_cooldown_cleared'
+
+
+# ---------------------------------------------------------------------------
+# 64. Heartbeat reports provider_rate_limited + next retry, fallback_active False
+# ---------------------------------------------------------------------------
+
+def test_heartbeat_reports_provider_rate_limited_and_next_retry():
+    """The heartbeat log must surface provider_mode=provider_rate_limited,
+    fallback_active=False (default), and a next_retry_at timestamp."""
+    import logging as _logging
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    ingestor.rate_limit_cooldown_seconds = 900
+    ingestor._enter_provider_rate_limit_cooldown()
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+    try:
+        with (
+            patch('services.api.app.base_realtime_ingestor.pg_connection') as mock_pg,
+            patch('services.api.app.base_realtime_ingestor.ensure_pilot_schema', lambda c: None),
+        ):
+            mock_conn = MagicMock()
+            mock_conn.__enter__ = lambda s: s
+            mock_conn.__exit__ = MagicMock(return_value=False)
+            mock_pg.return_value = mock_conn
+            ingestor._record_heartbeat()
+    finally:
+        mod.logger.removeHandler(handler)
+
+    hb = next((m for m in log_records if 'realtime_worker_heartbeat' in m), None)
+    assert hb is not None, 'realtime_worker_heartbeat must be logged'
+    assert 'provider_mode=provider_rate_limited' in hb, f'got: {hb}'
+    assert 'fallback_active=False' in hb, f'got: {hb}'
+    assert 'next_retry_at=' in hb and 'next_retry_at=none' not in hb, f'got: {hb}'
+
+
+# ---------------------------------------------------------------------------
+# 65. System Health shows "rate limited" (not generic degraded) for a 429
+# ---------------------------------------------------------------------------
+
+def test_system_health_shows_rate_limited_not_generic_degraded(monkeypatch):
+    monkeypatch.setenv('BASE_REALTIME_ENABLED', 'true')
+    monkeypatch.setenv('BASE_WS_RPC_URL', 'ws://ws.example')
+
+    from services.api.app.system_health import _build_realtime_ingestion_status
+
+    fresh_hb = datetime.now(timezone.utc) - timedelta(seconds=5)
+
+    class FakeRow(dict):
+        def keys(self):
+            return super().keys()
+
+    fake_row = FakeRow({
+        'watcher_name': 'base-realtime-worker',
+        'source_status': 'provider_rate_limited',
+        'degraded': True,
+        'degraded_reason': 'provider_rate_limited',
+        'last_heartbeat_at': fresh_hb,
+        'metrics': (
+            '{"events_ingested": 0, "ws_reconnects": 1, '
+            '"next_retry_at": "2026-06-30T12:15:00+00:00"}'
+        ),
+    })
+
+    execute_result = MagicMock()
+    execute_result.fetchone.return_value = fake_row
+    conn_mock = MagicMock()
+    conn_mock.execute.return_value = execute_result
+
+    status = _build_realtime_ingestion_status(conn_mock)
+
+    assert status['status'] == 'rate_limited', (
+        f"rate limit must surface as 'rate_limited', not generic degraded; got {status['status']}"
+    )
+    assert status['rate_limited'] is True
+    assert status['provider'] == 'QuickNode'
+    assert status['next_retry_at'] == '2026-06-30T12:15:00+00:00'
+    assert status['stable_polling_active'] is True
+    assert 'rate limited' in status['label'].lower()
+
+
+def test_system_health_rate_limited_requires_fresh_heartbeat(monkeypatch):
+    """A stale heartbeat must NOT be reported as a clean rate-limit — the worker is
+    not reporting, which is degraded."""
+    monkeypatch.setenv('BASE_REALTIME_ENABLED', 'true')
+    monkeypatch.setenv('BASE_WS_RPC_URL', 'ws://ws.example')
+
+    from services.api.app.system_health import _build_realtime_ingestion_status
+
+    stale_hb = datetime.now(timezone.utc) - timedelta(seconds=7200)
+
+    class FakeRow(dict):
+        def keys(self):
+            return super().keys()
+
+    fake_row = FakeRow({
+        'watcher_name': 'base-realtime-worker',
+        'source_status': 'provider_rate_limited',
+        'degraded': True,
+        'degraded_reason': 'provider_rate_limited',
+        'last_heartbeat_at': stale_hb,
+        'metrics': '{"events_ingested": 0, "ws_reconnects": 1}',
+    })
+
+    execute_result = MagicMock()
+    execute_result.fetchone.return_value = fake_row
+    conn_mock = MagicMock()
+    conn_mock.execute.return_value = execute_result
+
+    status = _build_realtime_ingestion_status(conn_mock)
+
+    assert status['status'] == 'degraded', (
+        f'stale heartbeat must be degraded, not rate_limited; got {status["status"]}'
+    )
+    assert status['rate_limited'] is False
