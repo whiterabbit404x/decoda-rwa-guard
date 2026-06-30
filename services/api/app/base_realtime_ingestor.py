@@ -16,7 +16,7 @@ import os
 import random
 import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib import error as _urllib_error, request
 from urllib.parse import urlparse as _urlparse
@@ -76,6 +76,14 @@ _RECONNECT_LOOP_CLOSE_THRESHOLD = 3
 # last_event_at older than this (seconds) while 1001 closes keep happening trips the
 # fallback even before the close-count threshold is reached (stale-event detection).
 _DEFAULT_STALE_EVENT_THRESHOLD_SECONDS = 120
+
+# Provider rate-limit circuit breaker. When QuickNode rejects the WebSocket upgrade
+# with HTTP 429 it is a hard, provider-wide rate limit — reconnecting every 60-120s
+# just hammers the same limit. Instead the worker trips a cooldown: it stops WSS
+# reconnects for this many seconds (default 15 minutes), publishes provider_rate_limited
+# plus a next-retry timestamp, and lets the independent 300s stable polling worker keep
+# detecting transfers. Configurable via BASE_REALTIME_RATE_LIMIT_COOLDOWN_SECONDS.
+_DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 900
 
 
 def _resolve_int_env(name: str, default: int) -> int:
@@ -221,6 +229,28 @@ class BaseRealtimeIngestor:
         self._stale_event_threshold_seconds = max(
             30, _resolve_int_env('REALTIME_STALE_EVENT_FALLBACK_SECONDS', _DEFAULT_STALE_EVENT_THRESHOLD_SECONDS)
         )
+
+        # Provider rate-limit circuit breaker (HTTP 429 on the WSS handshake).
+        # On a 429 the worker stops WSS reconnects for this cooldown window instead
+        # of reconnecting every 60-120s into the same rate limit (requirements 1-3).
+        self.rate_limit_cooldown_seconds = max(
+            1,
+            _resolve_int_env(
+                'BASE_REALTIME_RATE_LIMIT_COOLDOWN_SECONDS', _DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS
+            ),
+        )
+        # HTTP fast-tail polls the SAME QuickNode HTTP quota, so starting it during a
+        # 429 makes the rate limit worse. Default OFF — only run fast-tail during a
+        # rate limit when a SEPARATE HTTP budget exists (requirement 4).
+        self.fast_tail_enabled = _resolve_bool_env('BASE_REALTIME_FAST_TAIL_ENABLED', default=False)
+        # True while inside a provider rate-limit cooldown (WSS reconnects paused).
+        self._provider_rate_limited: bool = False
+        # Monotonic deadline; while time.monotonic() < this, no WSS reconnect happens.
+        self._rate_limit_cooldown_until: float = 0.0
+        # Wall-clock ISO timestamp of the next WSS retry, surfaced to System Health/UI.
+        self._rate_limit_retry_at: str | None = None
+        # Count of distinct rate-limit trips, for observability.
+        self._rate_limit_count: int = 0
 
         # WebSocket keepalive settings — configurable via env vars.
         _ping_iv = _resolve_int_env('BASE_WS_PING_INTERVAL', 30)
@@ -455,6 +485,78 @@ class BaseRealtimeIngestor:
             self._total_provider_close_count,
             round(_age, 1) if _age is not None else 'none',
             self.state['metrics'].get('ws_reconnects', 0),
+            self.watcher_name,
+        )
+
+    # ------------------------------------------------------------------
+    # Provider rate-limit circuit breaker (HTTP 429 on the WSS handshake)
+    # ------------------------------------------------------------------
+
+    def _rate_limit_cooldown_active(self) -> bool:
+        """True while the provider rate-limit cooldown window is still open."""
+        return self._provider_rate_limited and time.monotonic() < self._rate_limit_cooldown_until
+
+    def _rate_limit_cooldown_remaining(self) -> float:
+        """Seconds left in the rate-limit cooldown (0 when not active)."""
+        if not self._provider_rate_limited:
+            return 0.0
+        return max(0.0, self._rate_limit_cooldown_until - time.monotonic())
+
+    def _fallback_is_active(self) -> bool:
+        """True when a realtime fallback path (HTTP fast-tail) is actually running.
+
+        A permanent WSS-disable always runs fast-tail. A provider rate-limit only
+        runs fast-tail when BASE_REALTIME_FAST_TAIL_ENABLED is set (a separate HTTP
+        budget); by default it does NOT, so no realtime fallback runs and only the
+        independent 300s stable polling worker covers detection — the heartbeat then
+        truthfully reports fallback_active=False (requirement 4).
+        """
+        if self._wss_permanently_disabled:
+            return True
+        if self._provider_rate_limited:
+            return self.fast_tail_enabled
+        return False
+
+    def _enter_provider_rate_limit_cooldown(self) -> None:
+        """Trip the rate-limit breaker after an HTTP 429 on the WSS handshake.
+
+        Stops the WSS reconnect loop for the cooldown window instead of reconnecting
+        every 60-120s into the same rate limit. Publishes the canonical
+        ``realtime_ws_disabled_for_provider reason=rate_limited_http_429`` marker plus
+        a next-retry timestamp so System Health renders "rate limited" (not a generic
+        degraded). Stable RPC polling (a separate worker) keeps detecting transfers.
+        """
+        self._provider_rate_limited = True
+        self._rate_limit_count += 1
+        self._rate_limit_cooldown_until = time.monotonic() + self.rate_limit_cooldown_seconds
+        retry_at = datetime.now(timezone.utc) + timedelta(seconds=self.rate_limit_cooldown_seconds)
+        self._rate_limit_retry_at = retry_at.isoformat()
+        self.state['source_status'] = 'provider_rate_limited'
+        self.state['degraded'] = True
+        self.state['degraded_reason'] = 'provider_rate_limited'
+        logger.warning(
+            'realtime_ws_disabled_for_provider reason=rate_limited_http_429 '
+            'cooldown_seconds=%s next_retry_at=%s fast_tail_enabled=%s '
+            'rate_limit_count=%s watcher=%s',
+            self.rate_limit_cooldown_seconds,
+            self._rate_limit_retry_at,
+            self.fast_tail_enabled,
+            self._rate_limit_count,
+            self.watcher_name,
+        )
+
+    def _resume_after_rate_limit_cooldown(self) -> None:
+        """Clear the rate-limit breaker once the cooldown window has elapsed.
+
+        The next loop iteration attempts a fresh WSS connection (realtime resumes).
+        """
+        self._provider_rate_limited = False
+        self._rate_limit_cooldown_until = 0.0
+        self._rate_limit_retry_at = None
+        self.state['degraded_reason'] = 'provider_rate_limit_cooldown_cleared'
+        logger.info(
+            'realtime_rate_limit_cooldown_cleared resuming_wss rate_limit_count=%s watcher=%s',
+            self._rate_limit_count,
             self.watcher_name,
         )
 
@@ -839,14 +941,15 @@ class BaseRealtimeIngestor:
         # reflects the permanent WSS-disabled flag so health checks can tell that
         # the worker switched off WSS without inferring it from log scraping.
         _provider_mode = self.state.get('source_status') or self._ingestion_mode
-        _fallback_active = bool(self._wss_permanently_disabled)
+        _fallback_active = self._fallback_is_active()
         # Resolve before reading state so the log line and the persisted row agree.
         _degraded_reason = self._effective_degraded_reason()
         logger.info(
             'realtime_worker_heartbeat watcher_name=%s chain_id=%s chain=%s '
             'last_event_at=%s reconnect_count=%s events_processed=%s '
             'heads_received=%s lag_blocks=%s degraded=%s degraded_reason=%s '
-            'active_provider_host=%s provider_mode=%s fallback_active=%s',
+            'active_provider_host=%s provider_mode=%s fallback_active=%s '
+            'next_retry_at=%s',
             self.watcher_name,
             self.chain_id,
             self.chain_network,
@@ -860,6 +963,7 @@ class BaseRealtimeIngestor:
             _active_host,
             _provider_mode,
             _fallback_active,
+            self._rate_limit_retry_at or 'none',
         )
 
         try:
@@ -904,7 +1008,13 @@ class BaseRealtimeIngestor:
                         _degraded_reason,
                         self.watcher_name,
                         self.state.get('last_processed_block'),
-                        json.dumps({**self.state['metrics'], 'lag_blocks': lag, 'active_provider_host': _active_host}),
+                        json.dumps({
+                            **self.state['metrics'],
+                            'lag_blocks': lag,
+                            'active_provider_host': _active_host,
+                            'rate_limited': self._provider_rate_limited,
+                            'next_retry_at': self._rate_limit_retry_at,
+                        }),
                     ),
                 )
                 conn.commit()
@@ -1535,6 +1645,25 @@ class BaseRealtimeIngestor:
             _ConnectionClosedOK = None  # type: ignore[assignment,misc]
 
         while not self._wss_permanently_disabled:
+            # Provider rate-limit cooldown (HTTP 429): do NOT attempt any WSS
+            # reconnect until the cooldown window clears — reconnecting here would
+            # hammer the same rate-limited provider. Keep heartbeating so System
+            # Health shows provider_rate_limited + the next retry time; the
+            # independent 300s stable polling worker keeps detecting transfers.
+            if self._rate_limit_cooldown_active():
+                self._record_heartbeat()
+                _next_heartbeat = time.monotonic() + self.heartbeat_seconds
+                await asyncio.sleep(
+                    max(1.0, min(float(self.heartbeat_seconds), self._rate_limit_cooldown_remaining()))
+                )
+                continue
+            if self._provider_rate_limited:
+                # Cooldown elapsed → clear the breaker and attempt a fresh WSS
+                # connection (realtime resumes only after the cooldown clears).
+                self._resume_after_rate_limit_cooldown()
+                retry = 1.0
+                _last_error_key = None
+
             # Periodic heartbeat regardless of whether WebSocket is up
             now = time.monotonic()
             if now >= _next_heartbeat:
@@ -1577,10 +1706,53 @@ class BaseRealtimeIngestor:
                 _was_degraded = True
                 exc_str = str(exc)
                 error_key = f'{type(exc).__name__}:{exc_str[:80]}'
+
+                is_rate_limit = '429' in exc_str
+
+                # --- Provider rate-limit circuit breaker (HTTP 429 on the WSS) ---
+                # QuickNode rejecting the WebSocket upgrade with HTTP 429 is a hard,
+                # provider-wide rate limit, not a transient close. Reconnecting every
+                # 60-120s just hammers the same limit, so instead of falling through
+                # to the reconnect backoff we trip a cooldown breaker: stop WSS
+                # reconnects for rate_limit_cooldown_seconds, publish
+                # provider_rate_limited + next retry, and let the independent stable
+                # polling worker keep detecting. Realtime resumes once the cooldown
+                # clears (requirements 1-3).
+                if is_rate_limit:
+                    increment(
+                        'decoda_realtime_provider_failures_total',
+                        provider='base_realtime_websocket',
+                        error_type='rate_limited_http_429',
+                    )
+                    now_log = time.monotonic()
+                    if error_key != _last_error_key or now_log - _last_error_logged_at >= _ERROR_LOG_WINDOW:
+                        logger.warning(
+                            'realtime_rpc_rate_limited chain=%s watcher=%s '
+                            'cooldown_seconds=%s reconnect_count=%s',
+                            self.chain_network, self.watcher_name,
+                            self.rate_limit_cooldown_seconds,
+                            self.state['metrics']['ws_reconnects'],
+                        )
+                        _last_error_key = error_key
+                        _last_error_logged_at = now_log
+                    self._enter_provider_rate_limit_cooldown()
+                    gauge('decoda_realtime_worker_healthy', 0, watcher=self.watcher_name)
+                    self._record_heartbeat()
+                    _next_heartbeat = time.monotonic() + self.heartbeat_seconds
+                    if self.fast_tail_enabled:
+                        # Operator asserts a SEPARATE HTTP budget — tail via HTTP
+                        # during the WSS outage instead of going dark (requirement 4).
+                        self._wss_permanently_disabled = True
+                        self._ingestion_mode = 'http_fast_tail'
+                        break
+                    # Default: no fast-tail (it would burn the same QuickNode quota
+                    # and worsen the 429). The top-of-loop cooldown guard waits out
+                    # the window with no WSS reconnect.
+                    continue
+
                 self.state['degraded_reason'] = exc_str[:160]
                 self.state['source_status'] = 'degraded'
 
-                is_rate_limit = '429' in exc_str
                 is_clean_close = (
                     _ConnectionClosedOK is not None
                     and isinstance(exc, _ConnectionClosedOK)

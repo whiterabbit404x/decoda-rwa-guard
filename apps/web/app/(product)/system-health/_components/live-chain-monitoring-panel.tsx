@@ -8,11 +8,13 @@ type Props = {
 function realtimeVariant(status: RealtimeIngestionPath['status']): string {
   if (status === 'active') return 'healthy';
   if (status === 'degraded') return 'degraded';
+  if (status === 'rate_limited') return 'degraded';
   return 'unavailable';
 }
 
 function RealtimePathRow({ realtime }: { realtime: RealtimeIngestionPath }) {
   const variant = realtimeVariant(realtime.status);
+  const isRateLimited = realtime.status === 'rate_limited';
   return (
     <div className="shMetricRow" style={{ alignItems: 'flex-start', marginTop: '0.5rem' }}>
       <span className="shMetricLabel">Realtime path</span>
@@ -25,10 +27,26 @@ function RealtimePathRow({ realtime }: { realtime: RealtimeIngestionPath }) {
             {realtime.events_processed.toLocaleString()} events &middot; {realtime.reconnect_count ?? 0} reconnects
           </span>
         )}
-        {realtime.degraded_reason && (
-          <span className="shMetricValue" style={{ fontSize: '0.7rem', color: 'var(--color-warning, #c09020)' }}>
-            {realtime.degraded_reason}
-          </span>
+        {isRateLimited ? (
+          <>
+            <span className="shMetricValue" style={{ fontSize: '0.7rem', color: 'var(--color-warning, #c09020)' }}>
+              Provider: {realtime.provider ?? 'QuickNode'} &middot; rate limited
+            </span>
+            {realtime.next_retry_at && (
+              <span className="shMetricValue" style={{ fontSize: '0.7rem' }}>
+                Next retry: {formatDateTime(realtime.next_retry_at)}
+              </span>
+            )}
+            <span className="shMetricValue" style={{ fontSize: '0.7rem' }}>
+              Stable polling: Active
+            </span>
+          </>
+        ) : (
+          realtime.degraded_reason && (
+            <span className="shMetricValue" style={{ fontSize: '0.7rem', color: 'var(--color-warning, #c09020)' }}>
+              {realtime.degraded_reason}
+            </span>
+          )
         )}
       </span>
     </div>

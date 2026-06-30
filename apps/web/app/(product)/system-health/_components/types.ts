@@ -10,7 +10,7 @@ export type ComponentDetail = {
 };
 
 export type RealtimeIngestionPath = {
-  status: 'active' | 'degraded' | 'disabled';
+  status: 'active' | 'degraded' | 'disabled' | 'rate_limited';
   enabled: boolean;
   ws_configured: boolean;
   provider_mode: string;
@@ -20,6 +20,10 @@ export type RealtimeIngestionPath = {
   watcher_name: string | null;
   heartbeat_age_seconds?: number | null;
   degraded_reason?: string | null;
+  rate_limited?: boolean;
+  provider?: string | null;
+  next_retry_at?: string | null;
+  stable_polling_active?: boolean;
   label: string;
 };
 
