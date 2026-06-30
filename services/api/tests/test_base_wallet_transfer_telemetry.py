@@ -1110,3 +1110,97 @@ def test_list_target_telemetry_returns_detected_by(monkeypatch):
     )
     assert row.get('provider_mode') == 'realtime_websocket'
     assert row.get('observed_latency_seconds') == 1.23
+
+
+# ---------------------------------------------------------------------------
+# Separated detection-path freshness on the Telemetry list route
+# ---------------------------------------------------------------------------
+
+def test_list_target_telemetry_exposes_separated_worker_timestamps(monkeypatch):
+    """list_target_telemetry returns target-scoped last_stable_poll_at,
+    last_realtime_event_at, and realtime_enabled so the Telemetry page can show
+    stable polling vs realtime detection distinctly."""
+    target_id = str(uuid.uuid4())
+    workspace_id = str(uuid.uuid4())
+    stable_at = _utcnow()
+    realtime_at = _utcnow()
+
+    class _MockConn:
+        def execute(self, query, params=None):
+            q = ' '.join((query or '').split()).lower()
+            if 'count(*) as cnt' in q:
+                return _Rows([{'cnt': 0}])
+            if 'last_stable_poll_at' in q:
+                # The separated detection-path freshness aggregate.
+                return _Rows([{'last_stable_poll_at': stable_at, 'last_realtime_event_at': realtime_at}])
+            if 'telemetry_events' in q and 'select' in q:
+                return _Rows([])
+            return _Rows([])
+
+        @contextmanager
+        def transaction(self):
+            yield
+
+    fake_user = {'id': str(uuid.uuid4()), 'workspace_id': workspace_id}
+    fake_workspace = {'workspace_id': workspace_id, 'workspace': {'id': workspace_id}}
+    fake_request = MagicMock()
+    fake_request.headers = {'x-workspace-id': workspace_id}
+    monkeypatch.delenv('BASE_REALTIME_ENABLED', raising=False)
+
+    with (
+        patch('services.api.app.monitoring_runner.pg_connection') as mock_pg,
+        patch('services.api.app.monitoring_runner.ensure_pilot_schema'),
+        patch('services.api.app.monitoring_runner.authenticate_with_connection', return_value=fake_user),
+        patch('services.api.app.monitoring_runner.resolve_workspace', return_value=fake_workspace),
+    ):
+        mock_pg.return_value.__enter__ = lambda s: _MockConn()
+        mock_pg.return_value.__exit__ = MagicMock(return_value=False)
+
+        result = monitoring_runner.list_target_telemetry(
+            fake_request, target_id=target_id, limit=50
+        )
+
+    assert result['realtime_enabled'] is False
+    assert result['last_stable_poll_at'] == stable_at.isoformat()
+    assert result['last_realtime_event_at'] == realtime_at.isoformat()
+
+
+def test_list_target_telemetry_realtime_enabled_flag_reflects_env(monkeypatch):
+    target_id = str(uuid.uuid4())
+    workspace_id = str(uuid.uuid4())
+
+    class _MockConn:
+        def execute(self, query, params=None):
+            q = ' '.join((query or '').split()).lower()
+            if 'count(*) as cnt' in q:
+                return _Rows([{'cnt': 0}])
+            if 'last_stable_poll_at' in q:
+                return _Rows([{'last_stable_poll_at': None, 'last_realtime_event_at': None}])
+            return _Rows([])
+
+        @contextmanager
+        def transaction(self):
+            yield
+
+    fake_user = {'id': str(uuid.uuid4()), 'workspace_id': workspace_id}
+    fake_workspace = {'workspace_id': workspace_id, 'workspace': {'id': workspace_id}}
+    fake_request = MagicMock()
+    fake_request.headers = {'x-workspace-id': workspace_id}
+    monkeypatch.setenv('BASE_REALTIME_ENABLED', 'true')
+
+    with (
+        patch('services.api.app.monitoring_runner.pg_connection') as mock_pg,
+        patch('services.api.app.monitoring_runner.ensure_pilot_schema'),
+        patch('services.api.app.monitoring_runner.authenticate_with_connection', return_value=fake_user),
+        patch('services.api.app.monitoring_runner.resolve_workspace', return_value=fake_workspace),
+    ):
+        mock_pg.return_value.__enter__ = lambda s: _MockConn()
+        mock_pg.return_value.__exit__ = MagicMock(return_value=False)
+
+        result = monitoring_runner.list_target_telemetry(
+            fake_request, target_id=target_id, limit=50
+        )
+
+    assert result['realtime_enabled'] is True
+    assert result['last_stable_poll_at'] is None
+    assert result['last_realtime_event_at'] is None

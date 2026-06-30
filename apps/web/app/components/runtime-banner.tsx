@@ -98,8 +98,23 @@ export default function RuntimeBanner() {
   const nextAction = summary.next_required_action;
   const nextActionDisplay = nextAction ? (NEXT_ACTION_LABELS[nextAction] ?? contextNextActionLabel) : contextNextActionLabel;
 
-  const reasonCopy = (topReason && topReason !== 'summary_unavailable')
+  // Separated worker status: a paused or rate-limited realtime WebSocket worker
+  // must never read as a dead worker while the stable RPC polling worker is alive.
+  const workerStatus = summary.worker_status ?? null;
+  const stablePollingActive = workerStatus?.stable_polling?.active ?? false;
+  const isHeartbeatStaleReason =
+    typeof topReason === 'string' && (topReason === 'stale_heartbeat' || topReason.startsWith('heartbeat_'));
+  // Suppress the generic "worker heartbeat is stale" limitation when the stable
+  // polling worker is actually active (it would be misleading).
+  const suppressHeartbeatLimitation = isHeartbeatStaleReason && stablePollingActive;
+  const reasonCopy = (topReason && topReason !== 'summary_unavailable' && !suppressHeartbeatLimitation)
     ? reasonMessageForCode(topReason)
+    : null;
+  const workerLine = workerStatus
+    && (!workerStatus.realtime.enabled
+      || workerStatus.realtime.state !== 'active'
+      || !workerStatus.stable_polling.active)
+    ? workerStatus.headline
     : null;
 
   const toneClass = healthProvable
@@ -127,6 +142,12 @@ export default function RuntimeBanner() {
       <Field label="Poll" value={formatAge(summary.last_poll_at)} />
       <Sep />
       <Field label="Next action" value={nextActionDisplay} />
+      {workerLine ? (
+        <>
+          <Sep />
+          <Field label="Workers" value={workerLine} />
+        </>
+      ) : null}
       {reasonCopy ? (
         <>
           <Sep />

@@ -97,21 +97,32 @@ if 'fastapi' not in sys.modules:
 
 # -- psycopg ------------------------------------------------------------------
 if 'psycopg' not in sys.modules:
+    # Mirror real psycopg's hierarchy: every concrete error subclasses psycopg.Error
+    # so `except psycopg.Error` catches them (and `except psycopg.errors.SyntaxError`
+    # still matches the specific class).
+    _PgError = type('Error', (Exception,), {})
     _pg_errors = _make_stub(
         'psycopg.errors',
-        UniqueViolation=type('UniqueViolation', (Exception,), {}),
-        OperationalError=type('OperationalError', (Exception,), {}),
-        DeadlockDetected=type('DeadlockDetected', (Exception,), {}),
-        ForeignKeyViolation=type('ForeignKeyViolation', (Exception,), {}),
-        IntegrityError=type('IntegrityError', (Exception,), {}),
-        UndefinedTable=type('UndefinedTable', (Exception,), {}),
-        UndefinedColumn=type('UndefinedColumn', (Exception,), {}),
+        UniqueViolation=type('UniqueViolation', (_PgError,), {}),
+        OperationalError=type('OperationalError', (_PgError,), {}),
+        DeadlockDetected=type('DeadlockDetected', (_PgError,), {}),
+        ForeignKeyViolation=type('ForeignKeyViolation', (_PgError,), {}),
+        IntegrityError=type('IntegrityError', (_PgError,), {}),
+        UndefinedTable=type('UndefinedTable', (_PgError,), {}),
+        UndefinedColumn=type('UndefinedColumn', (_PgError,), {}),
+        # Names referenced by the app / tests; without these the stub raises
+        # ImportError on `from psycopg.errors import SyntaxError` collection.
+        SyntaxError=type('SyntaxError', (_PgError,), {}),
+        CheckViolation=type('CheckViolation', (_PgError,), {}),
+        InvalidColumnReference=type('InvalidColumnReference', (_PgError,), {}),
     )
     _pg = _make_stub(
         'psycopg',
         connect=lambda *a, **kw: None,
         errors=_pg_errors,
-        OperationalError=type('OperationalError', (Exception,), {}),
+        OperationalError=_pg_errors.OperationalError,
+        # Base exception class used by `except psycopg.Error` handlers.
+        Error=_PgError,
     )
     _pg.errors = _pg_errors
 

@@ -8,6 +8,39 @@ export type MonitoringLoopHealth = {
   updated_at?: string | null;
 };
 
+// Separated worker status: the stable RPC polling worker and the realtime WebSocket
+// worker are distinct services, plus a provider-realtime health signal. Mirrors the
+// backend services/api/app/worker_status.build_worker_status() shape so the UI never
+// collapses a paused/rate-limited realtime worker into a dead monitoring source.
+export type WorkerStatusSummary = {
+  stable_polling: {
+    label: string;
+    state: 'active' | 'stale' | 'offline';
+    active: boolean;
+    last_heartbeat_at: string | null;
+    last_poll_at: string | null;
+    heartbeat_age_seconds: number | null;
+    heartbeat_ttl_seconds: number;
+    detection_supported: boolean;
+  };
+  realtime: {
+    label: string;
+    enabled: boolean;
+    state: 'paused' | 'active' | 'rate_limited' | 'degraded' | 'starting' | 'offline';
+    last_event_at: string | null;
+    reason: string | null;
+  };
+  provider_realtime: {
+    label: string;
+    state: 'healthy' | 'rate_limited' | 'cooldown' | 'not_applicable' | 'unknown';
+    rate_limited: boolean;
+    next_retry_at: string | null;
+    host: string | null;
+  };
+  headline: string;
+  monitoring_source_live: boolean;
+};
+
 export type EnterpriseCriterionCheck = {
   name: string;
   pass: boolean;
@@ -234,6 +267,8 @@ export type MonitoringRuntimeStatus = {
   successful_detection_evaluation_recent?: boolean;
   synthetic_leak_detected?: boolean;
   workspace_monitoring_summary?: WorkspaceMonitoringSummary;
+  worker_status?: WorkerStatusSummary;
+  realtime_enabled?: boolean;
   workspace_configured?: boolean;
   reason_codes?: string[];
   next_required_action?: string;
