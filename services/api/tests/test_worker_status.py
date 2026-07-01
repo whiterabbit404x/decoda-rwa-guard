@@ -12,7 +12,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from services.api.app.worker_status import build_worker_status, realtime_enabled
+from services.api.app.worker_status import (
+    build_worker_status,
+    realtime_enabled,
+    stable_poll_stale_threshold_seconds,
+    DEFAULT_STABLE_POLL_STALE_SECONDS,
+)
 
 
 def _now() -> datetime:
@@ -359,3 +364,116 @@ def test_realtime_disabled_stable_active_via_poll_only_acceptance_headline():
     assert status['realtime']['state'] == 'paused'
     assert status['stable_polling']['active'] is True
     assert 'stale' not in status['headline'].lower()
+
+
+# ---------------------------------------------------------------------------
+# Stable poll stale threshold — forgiving multi-minute cadence, not the 180s TTL
+# ---------------------------------------------------------------------------
+
+def test_stable_poll_stale_threshold_default_is_900(monkeypatch):
+    monkeypatch.delenv('MONITORING_STABLE_POLL_STALE_SECONDS', raising=False)
+    assert DEFAULT_STABLE_POLL_STALE_SECONDS == 900
+    # Small worker-loop interval keeps the 900s default (>= max(2*30, 600)).
+    assert stable_poll_stale_threshold_seconds(30) == 900
+    assert stable_poll_stale_threshold_seconds() == 900
+
+
+def test_stable_poll_stale_threshold_floors_at_two_poll_cycles(monkeypatch):
+    """Never stricter than two poll cycles: a 10-minute poll interval widens the
+    threshold to 1200s even though that exceeds the 900s default."""
+    monkeypatch.delenv('MONITORING_STABLE_POLL_STALE_SECONDS', raising=False)
+    assert stable_poll_stale_threshold_seconds(600) == 1200
+
+
+def test_stable_poll_stale_threshold_env_override(monkeypatch):
+    monkeypatch.setenv('MONITORING_STABLE_POLL_STALE_SECONDS', '1800')
+    assert stable_poll_stale_threshold_seconds(30) == 1800
+
+
+def test_stable_poll_stale_threshold_env_floored_at_ten_minutes(monkeypatch):
+    """Even a too-strict env value is floored at 600s (10 minutes) so stable polling
+    is never flagged stale sooner than the requirement allows."""
+    monkeypatch.setenv('MONITORING_STABLE_POLL_STALE_SECONDS', '120')
+    assert stable_poll_stale_threshold_seconds(30) == 600
+
+
+def test_stable_poll_stale_threshold_bad_env_falls_back_to_default(monkeypatch):
+    monkeypatch.setenv('MONITORING_STABLE_POLL_STALE_SECONDS', 'not-an-int')
+    assert stable_poll_stale_threshold_seconds(30) == 900
+    monkeypatch.setenv('MONITORING_STABLE_POLL_STALE_SECONDS', '')
+    assert stable_poll_stale_threshold_seconds(30) == 900
+
+
+# ---------------------------------------------------------------------------
+# The reported bug: a 4–5 minute-old heartbeat/poll at a 5-minute cadence is HEALTHY
+# ---------------------------------------------------------------------------
+
+def test_stable_poll_four_minutes_old_at_five_minute_interval_is_active(monkeypatch):
+    """A stable poll 4 minutes old at a 5-minute polling interval must read ACTIVE.
+    Under the old max(180s, 90s) threshold this wrongly flagged stale."""
+    monkeypatch.delenv('MONITORING_STABLE_POLL_STALE_SECONDS', raising=False)
+    now = _now()
+    threshold = stable_poll_stale_threshold_seconds(300)  # 5-minute per-target interval
+    status = build_worker_status(
+        now=now,
+        realtime_is_enabled=False,
+        stable_last_heartbeat_at=None,
+        stable_last_poll_at=now - timedelta(minutes=4),
+        heartbeat_ttl_seconds=threshold,
+        realtime_watcher=None,
+    )
+    assert status['stable_polling']['state'] == 'active'
+    assert status['stable_polling']['active'] is True
+    assert status['headline'] == 'Stable polling active. Realtime WebSocket paused.'
+    assert 'stale' not in status['headline'].lower()
+
+
+def test_heartbeat_five_minutes_old_with_fifteen_minute_threshold_is_active():
+    """Heartbeat 5 minutes ago with a 15-minute (900s) threshold => active."""
+    now = _now()
+    status = build_worker_status(
+        now=now,
+        realtime_is_enabled=False,
+        stable_last_heartbeat_at=now - timedelta(minutes=5),
+        stable_last_poll_at=None,
+        heartbeat_ttl_seconds=900,
+        realtime_watcher=None,
+    )
+    assert status['stable_polling']['state'] == 'active'
+    assert status['stable_polling']['heartbeat_fresh'] is True
+    assert status['headline'] == 'Stable polling active. Realtime WebSocket paused.'
+
+
+def test_heartbeat_sixteen_minutes_old_exceeds_threshold_is_stale():
+    """Heartbeat 16 minutes ago exceeds the 900s threshold => stale (and only then)."""
+    now = _now()
+    status = build_worker_status(
+        now=now,
+        realtime_is_enabled=False,
+        stable_last_heartbeat_at=now - timedelta(minutes=16),
+        stable_last_poll_at=None,
+        heartbeat_ttl_seconds=900,
+        realtime_watcher=None,
+    )
+    assert status['stable_polling']['state'] == 'stale'
+    assert status['stable_polling']['active'] is False
+    assert status['headline'] == 'Stable RPC polling heartbeat is stale.'
+
+
+def test_stable_polling_exposes_debug_threshold_age_and_status_fields():
+    """Requirement 6: the stable_polling block carries the applied threshold, the
+    freshest-proof age, and a status alias so runtime status can be reconciled."""
+    now = _now()
+    status = build_worker_status(
+        now=now,
+        realtime_is_enabled=False,
+        stable_last_heartbeat_at=now - timedelta(minutes=5),
+        stable_last_poll_at=now - timedelta(minutes=4),
+        heartbeat_ttl_seconds=900,
+        realtime_watcher=None,
+    )
+    sp = status['stable_polling']
+    assert sp['stale_threshold_seconds'] == 900
+    # Freshest proof is the 4-minute-old poll => 240s.
+    assert sp['age_seconds'] == 240
+    assert sp['status'] == 'active'

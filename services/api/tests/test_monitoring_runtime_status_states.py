@@ -671,20 +671,24 @@ def test_runtime_status_coverage_uses_recent_heartbeats(monkeypatch):
 
 def test_runtime_status_degraded_on_stale_heartbeat(monkeypatch):
     now = datetime.now(timezone.utc)
+    # The stable-poll stale threshold is a forgiving multi-minute window (default 900s),
+    # so "stale" here must exceed it — 30 minutes is unambiguously past the 15-minute
+    # boundary for both the heartbeat and the poll cycle.
+    monkeypatch.delenv('MONITORING_STABLE_POLL_STALE_SECONDS', raising=False)
 
     class _StaleConn(_Conn):
         def execute(self, query, params=None):
             q = ' '.join(str(query).split())
             if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
                 rows = super().execute(query, params)._rows
-                stale = now - timedelta(minutes=15)
+                stale = now - timedelta(minutes=30)
                 return _Result(rows=[{**row, 'last_heartbeat': stale.isoformat()} for row in rows])
             return super().execute(query, params)
 
     monkeypatch.setattr(
         monitoring_runner,
         'get_monitoring_health',
-        lambda: {'last_heartbeat_at': (now - timedelta(minutes=20)).isoformat(), 'last_cycle_at': (now - timedelta(minutes=20)).isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling'},
+        lambda: {'last_heartbeat_at': (now - timedelta(minutes=30)).isoformat(), 'last_cycle_at': (now - timedelta(minutes=30)).isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling'},
     )
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_StaleConn(now - timedelta(seconds=30))))
@@ -3061,3 +3065,90 @@ def test_runtime_status_stable_polling_active_via_fresh_poll_when_heartbeat_stal
     assert payload.get('degraded_reason') != 'stale_heartbeat'
     assert payload.get('status_reason') != 'stale_heartbeat'
     assert payload['workspace_monitoring_summary'].get('status_reason') != 'stale_heartbeat'
+
+
+def test_runtime_status_stable_polling_active_at_five_minute_cadence(monkeypatch):
+    """Reported bug: at a ~5-minute stable polling cadence a heartbeat 5 minutes old and a
+    poll 4 minutes old are HEALTHY, but the old max(180s, 90s) threshold flagged them stale
+    — so the top banner said 'Stable RPC polling heartbeat is stale' while the Telemetry
+    worker-status card showed a recent stable poll. With the forgiving stable-poll threshold
+    (default 900s) every surface agrees: no stale_heartbeat, stable polling ACTIVE, realtime
+    paused, and the debug fields expose exactly why."""
+    now = datetime.now(timezone.utc)
+    monkeypatch.delenv('BASE_REALTIME_ENABLED', raising=False)
+    monkeypatch.delenv('MONITORING_STABLE_POLL_STALE_SECONDS', raising=False)
+    hb_iso = (now - timedelta(minutes=5)).isoformat()
+    poll_ts = now - timedelta(minutes=4)
+
+    class _FiveMinCadenceConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                # 5-minute per-target interval; last system heartbeat 5 minutes ago.
+                return _Result(rows=[
+                    {'id': 'sys-1', 'workspace_id': 'ws-1', 'asset_id': 'asset-1', 'target_id': 'target-1', 'is_enabled': True, 'runtime_status': 'active', 'last_heartbeat': hb_iso, 'monitoring_interval_seconds': 300, 'created_at': now.isoformat()},
+                ])
+            if 'FROM monitoring_heartbeats' in q:
+                return _Result({'ts': now - timedelta(minutes=5)})
+            if 'FROM monitoring_polls' in q:
+                return _Result({'ts': poll_ts})
+            return super().execute(query, params)
+
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {
+            'last_heartbeat_at': hb_iso,
+            'last_cycle_at': (now - timedelta(minutes=4)).isoformat(),
+            'degraded': False, 'last_error': None, 'source_type': 'polling',
+            'worker_running': True, 'realtime_watcher': None,
+        },
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_FiveMinCadenceConn(poll_ts)))
+
+    payload = monitoring_runner.monitoring_runtime_status()
+
+    # Core fix: a 4–5 minute-old heartbeat/poll is NOT stale.
+    assert payload['stale_heartbeat'] is False
+    ws = payload['worker_status']
+    assert ws['stable_polling']['state'] == 'active'
+    assert ws['stable_polling']['active'] is True
+    assert ws['monitoring_source_live'] is True
+    # Requirement 4 + acceptance: realtime disabled + stable active headline.
+    assert ws['headline'] == 'Stable polling active. Realtime WebSocket paused.'
+    assert 'stale' not in ws['headline'].lower()
+    # Top banner and worker card agree: no stale-heartbeat reason reaches any surface.
+    assert 'heartbeat_stale' not in (payload.get('continuity_reason_codes') or [])
+    assert payload.get('degraded_reason') != 'stale_heartbeat'
+    assert payload.get('status_reason') != 'stale_heartbeat'
+    # Requirement 6: debug fields on the runtime status.
+    assert payload['stable_poll_stale_threshold_seconds'] == 900
+    assert payload['stable_polling_status'] == 'active'
+    assert payload['last_stable_poll_at'] is not None
+    assert payload['last_rpc_polling_heartbeat_at'] is not None
+    assert payload['stable_poll_age_seconds'] is not None
+    assert payload['stable_poll_age_seconds'] <= 900
+
+
+def test_runtime_status_stable_polling_debug_threshold_env_override(monkeypatch):
+    """The stable-poll stale threshold is configurable via MONITORING_STABLE_POLL_STALE_SECONDS
+    and the chosen value is surfaced on the runtime status for operators."""
+    now = datetime.now(timezone.utc)
+    monkeypatch.delenv('BASE_REALTIME_ENABLED', raising=False)
+    monkeypatch.setenv('MONITORING_STABLE_POLL_STALE_SECONDS', '1200')
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {
+            'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(),
+            'degraded': False, 'last_error': None, 'source_type': 'polling',
+            'worker_running': True, 'realtime_watcher': None,
+        },
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_Conn(now)))
+
+    payload = monitoring_runner.monitoring_runtime_status()
+    assert payload['stable_poll_stale_threshold_seconds'] == 1200
+    assert payload['worker_status']['stable_polling']['stale_threshold_seconds'] == 1200
