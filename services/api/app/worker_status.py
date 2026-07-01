@@ -90,24 +90,49 @@ def build_worker_status(
     heartbeat_ttl_seconds: int,
     realtime_watcher: dict[str, Any] | None = None,
     realtime_last_event_at: datetime | None = None,
+    stable_last_coverage_poll_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Derive a separated, truthful worker status from canonical facts.
 
-    ``stable_last_heartbeat_at`` / ``stable_last_poll_at`` come from the stable
-    polling worker (monitoring_heartbeats / monitoring_worker_state). The realtime
-    worker only writes ``monitoring_watcher_state``; that row is passed as
-    ``realtime_watcher`` (already json-safe, so timestamps are ISO strings).
+    ``stable_last_heartbeat_at`` comes from the RPC polling heartbeat
+    (monitoring_heartbeats). ``stable_last_poll_at`` is the monitoring poll
+    completion (monitoring_polls). ``stable_last_coverage_poll_at`` is the live
+    rpc_polling coverage telemetry timestamp (telemetry_events) — the SAME canonical
+    source the Telemetry worker-status card reads for "Last stable poll", so the
+    runtime banner and that card agree. Any one of the three being fresh proves the
+    stable RPC polling loop is live. The realtime worker only writes
+    ``monitoring_watcher_state``; that row is passed as ``realtime_watcher``
+    (already json-safe, so timestamps are ISO strings).
     """
     ttl = max(int(heartbeat_ttl_seconds or 0), 1)
 
     # --- Stable RPC polling worker -------------------------------------------------
+    # Stable polling is proven live by ANY of: a recent RPC polling heartbeat, a
+    # recent monitoring poll completion, or a recent live rpc_polling coverage
+    # telemetry row (the same source the Telemetry card shows as "Last stable poll").
+    # CLAUDE.md keeps heartbeat and poll as separate facts, but for the *stable
+    # polling* verdict any one is sufficient: the heartbeat proves the worker is
+    # alive and the poll/coverage proves the monitoring loop ran. Only when ALL are
+    # absent/stale is the stable polling worker actually stale — so a lagging
+    # heartbeat writer never contradicts a Telemetry page that shows a fresh "Last
+    # stable poll" (requirements 1-4).
     stable_age = _age_seconds(now, stable_last_heartbeat_at)
-    if stable_last_heartbeat_at is None:
-        stable_state = 'offline'
-    elif stable_age is not None and stable_age > ttl:
-        stable_state = 'stale'
-    else:
+    stable_poll_age = _age_seconds(now, stable_last_poll_at)
+    stable_coverage_age = _age_seconds(now, stable_last_coverage_poll_at)
+    heartbeat_fresh = stable_age is not None and stable_age <= ttl
+    poll_fresh = stable_poll_age is not None and stable_poll_age <= ttl
+    coverage_poll_fresh = stable_coverage_age is not None and stable_coverage_age <= ttl
+    stable_poll_proof_fresh = poll_fresh or coverage_poll_fresh
+    if heartbeat_fresh or stable_poll_proof_fresh:
         stable_state = 'active'
+    elif (
+        stable_last_heartbeat_at is None
+        and stable_last_poll_at is None
+        and stable_last_coverage_poll_at is None
+    ):
+        stable_state = 'offline'
+    else:
+        stable_state = 'stale'
     stable_active = stable_state == 'active'
 
     # --- Realtime WebSocket worker -------------------------------------------------
@@ -171,7 +196,12 @@ def build_worker_status(
             'active': stable_active,
             'last_heartbeat_at': _iso(stable_last_heartbeat_at),
             'last_poll_at': _iso(stable_last_poll_at),
+            'last_coverage_poll_at': _iso(stable_last_coverage_poll_at),
             'heartbeat_age_seconds': stable_age,
+            'last_poll_age_seconds': stable_poll_age,
+            'last_coverage_poll_age_seconds': stable_coverage_age,
+            'heartbeat_fresh': heartbeat_fresh,
+            'poll_fresh': stable_poll_proof_fresh,
             'heartbeat_ttl_seconds': ttl,
             # Stable polling is the canonical transfer-detection path; when it is
             # active, transfer detection remains supported regardless of realtime.

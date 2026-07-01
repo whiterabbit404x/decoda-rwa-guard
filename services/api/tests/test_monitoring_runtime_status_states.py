@@ -3010,3 +3010,54 @@ def test_runtime_status_worker_status_stable_polling_stale(monkeypatch):
     ws = payload['worker_status']
     assert ws['stable_polling']['state'] == 'stale'
     assert ws['headline'] == 'Stable RPC polling heartbeat is stale.'
+
+
+def test_runtime_status_stable_polling_active_via_fresh_poll_when_heartbeat_stale(monkeypatch):
+    """Telemetry-contradiction fix: the RPC polling heartbeat writer lagged (stale)
+    but the worker is actively polling (fresh poll cycle + fresh monitoring_polls
+    completion). The runtime banner must agree with the Telemetry worker-status card
+    — stable polling reads ACTIVE — and the backend must NOT emit a stale_heartbeat
+    degradation/reason while polling is fresh."""
+    now = datetime.now(timezone.utc)
+    monkeypatch.delenv('BASE_REALTIME_ENABLED', raising=False)
+    stale_iso = (now - timedelta(minutes=30)).isoformat()
+
+    class _StaleHbFreshPollConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                return _Result(rows=[
+                    {'id': 'sys-1', 'workspace_id': 'ws-1', 'asset_id': 'asset-1', 'target_id': 'target-1', 'is_enabled': True, 'runtime_status': 'active', 'last_heartbeat': stale_iso, 'monitoring_interval_seconds': 30, 'created_at': now.isoformat()},
+                ])
+            if 'FROM monitoring_polls' in q:
+                # A fresh monitoring poll completion — the stable loop ran seconds ago.
+                return _Result({'ts': now - timedelta(seconds=20)})
+            return super().execute(query, params)
+
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {
+            # Heartbeat writer is behind, but the worker keeps cycling (polling).
+            'last_heartbeat_at': stale_iso,
+            'last_cycle_at': now.isoformat(),
+            'degraded': False, 'last_error': None, 'source_type': 'polling',
+            'worker_running': True, 'realtime_watcher': None,
+        },
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_StaleHbFreshPollConn(now - timedelta(seconds=20))))
+
+    payload = monitoring_runner.monitoring_runtime_status()
+    ws = payload['worker_status']
+    # Stable polling reads ACTIVE off the fresh poll even though the heartbeat is stale.
+    assert ws['stable_polling']['active'] is True
+    assert ws['stable_polling']['state'] == 'active'
+    assert ws['stable_polling']['poll_fresh'] is True
+    assert ws['stable_polling']['heartbeat_fresh'] is False
+    assert ws['headline'] == 'Stable polling active. Realtime WebSocket paused.'
+    assert ws['monitoring_source_live'] is True
+    # Backend must not surface a stale-heartbeat degradation/reason when polling is fresh.
+    assert payload.get('degraded_reason') != 'stale_heartbeat'
+    assert payload.get('status_reason') != 'stale_heartbeat'
+    assert payload['workspace_monitoring_summary'].get('status_reason') != 'stale_heartbeat'

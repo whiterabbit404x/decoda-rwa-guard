@@ -8266,7 +8266,20 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     )
             except Exception:
                 pass
-        stale_heartbeat = heartbeat_age is None or heartbeat_age > max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3)
+        # The stable RPC polling worker is proven alive by EITHER a fresh heartbeat
+        # OR a fresh poll cycle. CLAUDE.md keeps these as separate facts (heartbeat
+        # proves the service is alive; poll proves the monitoring loop ran), but for
+        # the *stable polling* verdict either one is sufficient. Only treat the worker
+        # as stale when BOTH are stale, so a lagging heartbeat writer never contradicts
+        # a Telemetry page that shows fresh RPC polling. last_cycle_at is the worker's
+        # canonical per-cycle poll timestamp (monitoring_worker_state, written every
+        # poll loop alongside the monitoring_polls completion row).
+        _stable_stale_ttl = max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3)
+        _heartbeat_is_stale = heartbeat_age is None or heartbeat_age > _stable_stale_ttl
+        _last_poll_cycle_at = _parse_ts(health.get('last_cycle_at'))
+        _poll_cycle_age = int((now - _last_poll_cycle_at).total_seconds()) if _last_poll_cycle_at else None
+        _poll_cycle_is_stale = _poll_cycle_age is None or _poll_cycle_age > _stable_stale_ttl
+        stale_heartbeat = _heartbeat_is_stale and _poll_cycle_is_stale
         def _row_tracks_valid_monitorable_target(row: dict[str, Any]) -> bool:
             target_id = str(row.get('target_id') or '')
             if target_id and target_id in healthy_enabled_target_ids:
@@ -9646,6 +9659,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             realtime_is_enabled=_worker_status_realtime_enabled,
             stable_last_heartbeat_at=canonical_last_heartbeat_at,
             stable_last_poll_at=last_poll_at,
+            # Live rpc_polling coverage telemetry — the SAME canonical source the
+            # Telemetry worker-status card reads for "Last stable poll" — so the banner
+            # and that card agree on whether stable polling is active (requirement 1).
+            stable_last_coverage_poll_at=canonical_last_telemetry_at,
             heartbeat_ttl_seconds=max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3),
             realtime_watcher=health.get('realtime_watcher'),
         )
