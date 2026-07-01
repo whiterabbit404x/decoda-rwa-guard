@@ -572,6 +572,15 @@ class BaseRealtimeIngestor:
             self._rate_limit_count,
             self.watcher_name,
         )
+        # Canonical cooldown-started marker (requirement 4). Distinct from the
+        # ws-disabled marker above so an operator/log query can key on the cooldown
+        # window and its next-retry deadline explicitly.
+        logger.warning(
+            'realtime_rate_limit_cooldown_started seconds=%s next_retry_at=%s watcher=%s',
+            self.rate_limit_cooldown_seconds,
+            self._rate_limit_retry_at,
+            self.watcher_name,
+        )
 
     def _resume_after_rate_limit_cooldown(self) -> None:
         """Clear the rate-limit breaker once the cooldown window has elapsed.
@@ -968,7 +977,17 @@ class BaseRealtimeIngestor:
         # (e.g. 'quicknode_http_fast_tail' once WSS is disabled). fallback_active
         # reflects the permanent WSS-disabled flag so health checks can tell that
         # the worker switched off WSS without inferring it from log scraping.
-        _provider_mode = self.state.get('source_status') or self._ingestion_mode
+        # During a provider rate-limit cooldown the canonical operating mode is
+        # 'rate_limited' (requirements 1, 2, 4). This is deliberately distinct from
+        # degraded_reason ('provider_rate_limited') and from the persisted
+        # source_status column, which stays 'provider_rate_limited' so the System
+        # Health detector keeps classifying the worker as rate-limited. Once the WSS
+        # is permanently disabled and HTTP fast-tail took over (fast_tail_enabled),
+        # the mode reflects the fast-tail source_status instead of 'rate_limited'.
+        if self._provider_rate_limited and not self._wss_permanently_disabled:
+            _provider_mode = 'rate_limited'
+        else:
+            _provider_mode = self.state.get('source_status') or self._ingestion_mode
         _fallback_active = self._fallback_is_active()
         # Resolve before reading state so the log line and the persisted row agree.
         _degraded_reason = self._effective_degraded_reason()
@@ -1040,6 +1059,7 @@ class BaseRealtimeIngestor:
                             **self.state['metrics'],
                             'lag_blocks': lag,
                             'active_provider_host': _active_host,
+                            'provider_mode': _provider_mode,
                             'rate_limited': self._provider_rate_limited,
                             'next_retry_at': self._rate_limit_retry_at,
                         }),
