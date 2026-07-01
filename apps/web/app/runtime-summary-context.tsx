@@ -47,6 +47,13 @@ const REASON_CODE_MESSAGES: Record<string, string> = {
   stale_heartbeat: 'Stable RPC polling worker heartbeat is stale. The polling worker may have stopped or lost its database connection. (The realtime WebSocket worker is reported separately.)',
   targets_blocked: 'The monitoring worker is alive, but one or more targets are blocked (dead-lettered) and are not being polled. Recover the affected target(s) to resume live coverage.',
   no_fresh_live_coverage_telemetry: 'Worker is running but has not received live chain data. Check EVM_RPC_URL connectivity in the worker service.',
+  // Stable RPC polling is proven alive (fresh heartbeat/poll) but realtime is paused: this
+  // is NOT an RPC connectivity problem, so the limitation must say so instead of blaming
+  // EVM_RPC_URL. Mirrors the telemetry page's worker-status strip wording.
+  realtime_paused_stable_polling_active: 'Realtime paused; stable polling active. Wallet transfers are detected by Stable RPC Polling.',
+  // Stable RPC polling is active with realtime enabled — the loop is live and simply
+  // awaiting new on-chain activity on monitored addresses (not an RPC failure).
+  stable_polling_active_awaiting_coverage: 'Stable RPC polling is active. Awaiting new on-chain activity on monitored addresses.',
   runtime_contradiction_asset_monitoring_attached_but_no_monitored_systems: 'Assets are registered, but monitoring is not attached to any running systems.',
   runtime_contradiction_asset_count_mismatch_runtime_vs_registry: 'Asset counts are out of sync between registry and runtime.',
   runtime_contradiction_healthy_claim_with_reporting_systems_zero: 'Health cannot be verified because no systems are reporting.',

@@ -674,7 +674,14 @@ def test_runtime_status_optional_query_failure_still_returns_workspace_identity(
     assert payload['workspace_slug'] == 'legacy'
     assert payload['runtime_error_code'] == 'runtime_optional_query_failed'
     assert payload['runtime_degraded_reason'] == 'partial_query_failure'
-    assert payload['status_reason'] in {'runtime_status_degraded:partial_query_failure', 'no_fresh_live_coverage_telemetry'}
+    # Fresh stable-polling heartbeat/cycle => the coverage-gap reason is now a truthful
+    # stable-active reason (never the EVM_RPC_URL warning while polling is alive).
+    assert payload['status_reason'] in {
+        'runtime_status_degraded:partial_query_failure',
+        'realtime_paused_stable_polling_active',
+        'stable_polling_active_awaiting_coverage',
+    }
+    assert payload['status_reason'] != 'no_fresh_live_coverage_telemetry'
     assert payload['field_reason_codes']['active_alerts_count'] == ['optional_table_unavailable']
     assert 'error' not in payload
     assert captured_requests

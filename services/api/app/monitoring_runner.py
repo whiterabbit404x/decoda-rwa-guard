@@ -36,6 +36,7 @@ from services.api.app.monitorable_target_types import (
 from services.api.app.db_failure import classify_db_error
 from services.api.app.worker_status import (
     build_worker_status,
+    live_coverage_gap_reason,
     realtime_enabled,
     stable_poll_stale_threshold_seconds,
     REALTIME_DETECTED_BY,
@@ -8288,6 +8289,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         _poll_cycle_age = int((now - _last_poll_cycle_at).total_seconds()) if _last_poll_cycle_at else None
         _poll_cycle_is_stale = _poll_cycle_age is None or _poll_cycle_age > _stable_stale_ttl
         stale_heartbeat = _heartbeat_is_stale and _poll_cycle_is_stale
+        # Resolved once here so the live-coverage-gap reason (below) and build_worker_status
+        # agree on whether the realtime WebSocket worker is paused vs enabled.
+        _reason_realtime_enabled = realtime_enabled()
         def _row_tracks_valid_monitorable_target(row: dict[str, Any]) -> bool:
             target_id = str(row.get('target_id') or '')
             if target_id and target_id in healthy_enabled_target_ids:
@@ -9044,11 +9048,18 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 else 'workspace_not_configured'
             )
         else:
-            # Suppress 'no_fresh_live_coverage_telemetry' when rpc_polling coverage is fresh.
-            # A fresh coverage_fresh signals the worker is actively polling the chain even if
-            # the reporting_systems JOIN hasn't caught up yet.
+            # Suppress the live-coverage-gap reason entirely when rpc_polling coverage is
+            # fresh. When it is NOT fresh, pick a TRUTHFUL reason: only blame EVM_RPC_URL
+            # ('no_fresh_live_coverage_telemetry') when the stable RPC polling worker is
+            # actually stale/missing AND provider checks are failing. A fresh heartbeat/poll
+            # means the worker is polling the chain — with realtime paused that is
+            # "Realtime paused; stable polling active", never an RPC connectivity warning.
             runtime_status_reason = degraded_reason or (
-                'no_fresh_live_coverage_telemetry' if not coverage_fresh else None
+                None if coverage_fresh else live_coverage_gap_reason(
+                    stable_polling_active=not stale_heartbeat,
+                    realtime_is_enabled=_reason_realtime_enabled,
+                    provider_failing=provider_degraded_or_unreachable,
+                )
             )
         if workspace_configured and reporting_systems <= 0 and evidence_source == 'live':
             runtime_status_summary = 'degraded'
@@ -9585,11 +9596,18 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             summary['runtime_status'] = 'degraded'
             summary['monitoring_status'] = 'limited'
             if runtime_status_reason is None:
-                # Only blame missing coverage telemetry when coverage is actually not fresh.
+                # Only surface a coverage-gap reason when coverage is actually not fresh.
                 # When coverage_fresh=True the worker is polling; the gap is a reporting_systems
-                # JOIN miss, not an RPC connectivity problem.
+                # JOIN miss, not an RPC connectivity problem. And even when coverage is not
+                # fresh, only blame EVM_RPC_URL when stable polling is stale/missing AND
+                # provider checks fail — a fresh heartbeat/poll with realtime paused is
+                # "Realtime paused; stable polling active", not an RPC warning.
                 if not coverage_fresh:
-                    runtime_status_reason = 'no_fresh_live_coverage_telemetry'
+                    runtime_status_reason = live_coverage_gap_reason(
+                        stable_polling_active=not stale_heartbeat,
+                        realtime_is_enabled=_reason_realtime_enabled,
+                        provider_failing=provider_degraded_or_unreachable,
+                    )
                     summary['status_reason'] = runtime_status_reason
         if runtime_status_summary not in {'live', 'healthy', 'degraded', 'offline', 'fail', 'idle'}:
             runtime_status_summary = 'degraded' if workspace_configured else 'offline'

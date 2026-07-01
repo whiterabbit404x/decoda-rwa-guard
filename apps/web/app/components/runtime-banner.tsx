@@ -107,7 +107,15 @@ export default function RuntimeBanner() {
   // Suppress the generic "worker heartbeat is stale" limitation when the stable
   // polling worker is actually active (it would be misleading).
   const suppressHeartbeatLimitation = isHeartbeatStaleReason && stablePollingActive;
-  const reasonCopy = (topReason && topReason !== 'summary_unavailable' && !suppressHeartbeatLimitation)
+  // Fail-closed guard: never show the "Check EVM_RPC_URL connectivity" limitation while
+  // stable RPC polling is proven active (fresh heartbeat/poll). The backend now emits a
+  // truthful reason in that case, but a stale/cached 'no_fresh_live_coverage_telemetry'
+  // must never contradict a live stable-polling worker. The separated worker line still
+  // surfaces the truthful "Stable polling active. Realtime WebSocket paused." headline.
+  const isRpcConnectivityReason = topReason === 'no_fresh_live_coverage_telemetry';
+  const suppressRpcConnectivityLimitation = isRpcConnectivityReason && stablePollingActive;
+  const suppressLimitation = suppressHeartbeatLimitation || suppressRpcConnectivityLimitation;
+  const reasonCopy = (topReason && topReason !== 'summary_unavailable' && !suppressLimitation)
     ? reasonMessageForCode(topReason)
     : null;
   const workerLine = workerStatus

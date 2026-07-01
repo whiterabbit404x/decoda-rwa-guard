@@ -89,6 +89,59 @@ def realtime_enabled() -> bool:
     return raw in _TRUE_VALUES
 
 
+# --- Live-coverage-gap reason selection ------------------------------------------
+# When no fresh live *coverage* telemetry row exists, the runtime must pick a reason
+# code that is truthful about WHY, so the customer-facing limitation never blames RPC
+# connectivity while the stable RPC polling worker is demonstrably alive.
+#
+#   * realtime paused + stable polling active  -> realtime is intentionally off; stable
+#     RPC polling is the detection path. A quiet coverage gap here is normal, NOT an RPC
+#     problem. Surfaced as "Realtime paused; stable polling active".
+#   * realtime enabled + stable polling active -> the polling loop is live and simply
+#     awaiting new on-chain activity on monitored addresses. Also NOT an RPC problem.
+#   * stable polling stale/missing + provider/RPC checks failing -> the ONE case where
+#     "Check EVM_RPC_URL connectivity" is truthful.
+#
+# These map to customer-facing limitation copy in apps/web/app/runtime-summary-context.tsx.
+REALTIME_PAUSED_STABLE_ACTIVE_REASON = 'realtime_paused_stable_polling_active'
+STABLE_ACTIVE_AWAITING_COVERAGE_REASON = 'stable_polling_active_awaiting_coverage'
+NO_LIVE_COVERAGE_RPC_REASON = 'no_fresh_live_coverage_telemetry'
+
+
+def live_coverage_gap_reason(
+    *,
+    stable_polling_active: bool,
+    realtime_is_enabled: bool,
+    provider_failing: bool,
+) -> str:
+    """Pick a truthful reason code for a missing/stale live-coverage-telemetry gap.
+
+    Requirements (telemetry-limitation task + CLAUDE.md truthfulness rules):
+      1-2. When the stable RPC polling worker is proven alive (fresh heartbeat OR poll),
+           a missing coverage telemetry row is NOT an RPC connectivity problem — never
+           emit the "Check EVM_RPC_URL" reason. With realtime paused the truthful reason
+           is simply "Realtime paused; stable polling active".
+      3.   ``no_fresh_live_coverage_telemetry`` (which carries the "Check EVM_RPC_URL"
+           warning) is only returned when stable polling is stale/missing AND the
+           provider/RPC checks are actually failing.
+    """
+    if stable_polling_active:
+        return (
+            STABLE_ACTIVE_AWAITING_COVERAGE_REASON
+            if realtime_is_enabled
+            else REALTIME_PAUSED_STABLE_ACTIVE_REASON
+        )
+    # Stable polling is stale/missing. Only blame EVM_RPC_URL when the provider/RPC
+    # checks are actually failing (requirement 3); otherwise stay non-alarming.
+    if provider_failing:
+        return NO_LIVE_COVERAGE_RPC_REASON
+    return (
+        STABLE_ACTIVE_AWAITING_COVERAGE_REASON
+        if realtime_is_enabled
+        else REALTIME_PAUSED_STABLE_ACTIVE_REASON
+    )
+
+
 def _age_seconds(now: datetime, ts: datetime | None) -> int | None:
     if ts is None:
         return None

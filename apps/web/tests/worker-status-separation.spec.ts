@@ -85,6 +85,42 @@ test('telemetry page renders a worker-status strip with separated detection fact
   expect(telemetryPageSource).toContain('Realtime paused; stable polling active');
 });
 
+// --- Requirement 6.4: banner and limitation text agree ----------------------
+
+const LIMITATION_PHRASE =
+  'Realtime paused; stable polling active. Wallet transfers are detected by Stable RPC Polling.';
+
+test('limitation copy for a paused-realtime coverage gap matches the telemetry worker-status wording', () => {
+  // The runtime-summary limitation for the truthful reason code must read exactly the
+  // same as the telemetry page's worker-status strip, so the banner (worker line) and
+  // the limitation never contradict each other.
+  expect(reasonContextSource).toContain('realtime_paused_stable_polling_active:');
+  expect(reasonContextSource).toContain(LIMITATION_PHRASE);
+  expect(telemetryPageSource).toContain(LIMITATION_PHRASE);
+});
+
+test('paused-realtime limitation never blames EVM_RPC_URL connectivity', () => {
+  // The truthful realtime-paused reason must not carry any EVM_RPC_URL wording.
+  const mapMatch = reasonContextSource.match(/realtime_paused_stable_polling_active:\s*'([^']*)'/);
+  expect(mapMatch).not.toBeNull();
+  expect(mapMatch?.[1] ?? '').not.toContain('EVM_RPC_URL');
+  expect(mapMatch?.[1] ?? '').not.toContain('has not received live chain data');
+});
+
+test('runtime banner suppresses the EVM_RPC_URL limitation while stable polling is active', () => {
+  // Fail-closed: a stale/cached 'no_fresh_live_coverage_telemetry' must never reach the
+  // limitation surface when the stable RPC polling worker is proven active.
+  expect(runtimeBannerSource).toContain("topReason === 'no_fresh_live_coverage_telemetry'");
+  expect(runtimeBannerSource).toContain('suppressRpcConnectivityLimitation');
+  expect(runtimeBannerSource).toContain('stablePollingActive');
+});
+
+test('backend defines the truthful live-coverage-gap reason codes', () => {
+  expect(workerStatusPy).toContain("REALTIME_PAUSED_STABLE_ACTIVE_REASON = 'realtime_paused_stable_polling_active'");
+  expect(workerStatusPy).toContain('def live_coverage_gap_reason');
+  expect(workerStatusPy).toContain("NO_LIVE_COVERAGE_RPC_REASON = 'no_fresh_live_coverage_telemetry'");
+});
+
 test('telemetry page keeps the Detected By column unchanged', () => {
   // Detected By column + label map must remain (Stable RPC Polling / Realtime WebSocket / Realtime Backfill).
   expect(telemetryPageSource).toContain("'Detected By'");
