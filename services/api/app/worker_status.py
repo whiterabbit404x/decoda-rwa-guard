@@ -33,6 +33,10 @@ from typing import Any
 REALTIME_DETECTED_BY: tuple[str, ...] = (
     'realtime_websocket',
     'realtime_backfill',
+    # HTTP fast-tail fallback. 'quicknode_http_fast_tail' is the canonical tag
+    # (base_realtime_ingestor.HTTP_FAST_TAIL_SOURCE); 'realtime_http_fast_tail' is
+    # retained so any rows persisted before the rename still classify as realtime.
+    'quicknode_http_fast_tail',
     'realtime_http_fast_tail',
 )
 STABLE_DETECTED_BY = 'stable_rpc_polling'

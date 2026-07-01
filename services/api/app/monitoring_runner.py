@@ -4697,7 +4697,8 @@ def process_ingested_event(connection: Any, *, target: dict[str, Any], event: Ac
             'rpc_backfill', 'polling', 'websocket', 'real', 'evm_rpc',
             'realtime_websocket',  # Base real-time worker (WS logs subscription)
             'realtime_backfill',   # Base real-time worker (gap/native backfill scan)
-            'realtime_http_fast_tail',  # Base real-time worker (HTTP fast-tail fallback)
+            'quicknode_http_fast_tail',  # Base real-time worker (HTTP fast-tail fallback)
+            'realtime_http_fast_tail',   # legacy tag for fast-tail rows persisted pre-rename
         }
     )
     live_coverage_telemetry_at = event.observed_at if is_live_ingestion else None

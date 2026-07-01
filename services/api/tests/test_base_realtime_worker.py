@@ -3704,3 +3704,415 @@ def test_system_health_rate_limited_requires_fresh_heartbeat(monkeypatch):
         f'stale heartbeat must be degraded, not rate_limited; got {status["status"]}'
     )
     assert status['rate_limited'] is False
+
+
+# ---------------------------------------------------------------------------
+# 67. Native ETH transfer FROM a watched wallet surfaced by the HTTP fast-tail
+#     loop is persisted with detected_by=quicknode_http_fast_tail (req 3/4/7).
+# ---------------------------------------------------------------------------
+
+def test_fast_tail_native_eth_from_watched_wallet_tagged_quicknode_http_fast_tail():
+    from services.api.app.base_realtime_ingestor import (
+        BaseRealtimeIngestor, HTTP_FAST_TAIL_SOURCE,
+    )
+
+    assert HTTP_FAST_TAIL_SOURCE == 'quicknode_http_fast_tail'
+
+    wallet = '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
+    target = {
+        'id': str(uuid.uuid4()),
+        'workspace_id': str(uuid.uuid4()),
+        'target_type': 'wallet',
+        'chain_network': 'base',
+        'wallet_address': wallet,
+        'contract_identifier': None,
+    }
+    # Plain ETH send FROM the watched wallet: carries NO logs, so only the native
+    # full-transaction scan can see it.
+    native_tx = {
+        'hash': '0xfasttailnativefrom',
+        'from': wallet,
+        'to': '0x1111111111111111111111111111111111111111',
+        'value': hex(10 ** 16),
+        'input': '0x',
+    }
+    block = {
+        'hash': '0xblockhash',
+        'number': hex(900),
+        'timestamp': hex(1_700_000_000),
+        'transactions': [native_tx],
+    }
+
+    def _mock_rpc_call(method, params):
+        if method == 'eth_blockNumber':
+            return hex(900)
+        if method == 'eth_getBlockByNumber':
+            return block
+        return []  # eth_getLogs → no ERC20 logs
+
+    persisted: list = []
+
+    def _capture_persist(tgt, evt):
+        persisted.append(evt)
+        return {'status': 'processed', 'event_id': evt.event_id}
+
+    async def _mock_sleep(secs: float) -> None:
+        raise asyncio.CancelledError()
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='https://rpc.quicknode.example/v1/TOKEN',
+        ws_url='wss://rpc.quicknode.example/v1/TOKEN',
+        watcher_name='test-watcher',
+        confirmations_required=0,
+    )
+    ingestor.state['last_processed_block'] = 899
+    ingestor._wss_permanently_disabled = True
+    ingestor._ingestion_mode = 'http_fast_tail'
+    ingestor._rpc_call = _mock_rpc_call  # type: ignore[method-assign]
+    ingestor._persist_event = _capture_persist  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+
+    with patch.object(ingestor, '_watched_targets', return_value=[target]):
+        with patch('services.api.app.base_realtime_ingestor.asyncio') as mock_asyncio:
+            mock_asyncio.sleep = _mock_sleep
+            mock_asyncio.CancelledError = asyncio.CancelledError
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(ingestor._run_http_fast_tail())
+
+    assert len(persisted) == 1, f'expected 1 native fast-tail detection; got {len(persisted)}'
+    evt = persisted[0]
+    assert evt.payload.get('detected_by') == 'quicknode_http_fast_tail', (
+        f"detected_by must be quicknode_http_fast_tail; got {evt.payload.get('detected_by')}"
+    )
+    assert evt.payload.get('source_type') == 'quicknode_http_fast_tail'
+    assert evt.ingestion_source == 'quicknode_http_fast_tail'
+    assert evt.payload.get('wallet_transfer_direction') == 'outbound'
+    assert evt.payload.get('tx_hash') == '0xfasttailnativefrom'
+    assert evt.payload.get('evidence_source') == 'live'
+    assert evt.payload.get('chain_id') == 8453
+
+
+# ---------------------------------------------------------------------------
+# 68. Native ETH transfer TO a watched wallet is detected by the fast-tail native
+#     scan and tagged quicknode_http_fast_tail (inbound direction).
+# ---------------------------------------------------------------------------
+
+def test_fast_tail_native_eth_to_watched_wallet_tagged_quicknode_http_fast_tail():
+    from services.api.app.base_realtime_ingestor import (
+        BaseRealtimeIngestor, HTTP_FAST_TAIL_SOURCE,
+    )
+
+    wallet = '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
+    target = {
+        'id': str(uuid.uuid4()),
+        'workspace_id': str(uuid.uuid4()),
+        'target_type': 'wallet',
+        'chain_network': 'base',
+        'wallet_address': wallet,
+        'contract_identifier': None,
+    }
+    native_tx = {
+        'hash': '0xfasttailnativeto',
+        'from': '0x2222222222222222222222222222222222222222',
+        'to': wallet,
+        'value': hex(5 * 10 ** 15),
+        'input': '0x',
+    }
+    block = {
+        'hash': '0xblockhash',
+        'number': hex(950),
+        'timestamp': hex(1_700_000_100),
+        'transactions': [native_tx],
+    }
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='https://rpc.quicknode.example/v1/TOKEN',
+        ws_url='wss://rpc.quicknode.example/v1/TOKEN',
+        watcher_name='test-watcher',
+        confirmations_required=0,
+    )
+    ingestor._rpc_call = (  # type: ignore[method-assign]
+        lambda m, p: block if m == 'eth_getBlockByNumber' else []
+    )
+
+    persisted: list = []
+
+    def _capture_persist(tgt, evt):
+        persisted.append(evt)
+        return {'status': 'processed', 'event_id': evt.event_id}
+
+    ingestor._persist_event = _capture_persist  # type: ignore[method-assign]
+
+    processed = ingestor._scan_native_transfers(
+        950, 950, [(target, wallet.lower())], source_type=HTTP_FAST_TAIL_SOURCE,
+    )
+
+    assert processed == 1
+    assert len(persisted) == 1
+    evt = persisted[0]
+    assert evt.payload.get('detected_by') == 'quicknode_http_fast_tail'
+    assert evt.payload.get('wallet_transfer_direction') == 'inbound'
+    assert evt.payload.get('tx_hash') == '0xfasttailnativeto'
+    assert evt.ingestion_source == 'quicknode_http_fast_tail'
+
+
+# ---------------------------------------------------------------------------
+# 69. HTTP fast-tail uses the HTTPS RPC endpoint (self.rpc_url) and never opens a
+#     WebSocket — proving the fallback does not re-hammer the WSS (requirement 3/7).
+# ---------------------------------------------------------------------------
+
+def test_fast_tail_uses_https_rpc_not_wss():
+    import sys
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='https://rpc.example/v1/TOKEN',
+        ws_url='wss://rpc.example/v1/TOKEN',
+        watcher_name='test-watcher',
+    )
+    ingestor._wss_permanently_disabled = True
+    ingestor._ingestion_mode = 'http_fast_tail'
+
+    rpc_methods: list[str] = []
+
+    def _mock_rpc_call(method, params):
+        rpc_methods.append(method)
+        if method == 'eth_blockNumber':
+            return hex(300)
+        return []
+
+    async def _mock_sleep(secs: float) -> None:
+        raise asyncio.CancelledError()
+
+    ingestor._rpc_call = _mock_rpc_call  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+
+    fake_ws_module = MagicMock()
+
+    with patch.object(ingestor, '_watched_targets', return_value=[]):
+        with patch.dict(sys.modules, {'websockets': fake_ws_module}):
+            with patch('services.api.app.base_realtime_ingestor.asyncio') as mock_asyncio:
+                mock_asyncio.sleep = _mock_sleep
+                mock_asyncio.CancelledError = asyncio.CancelledError
+                with pytest.raises(asyncio.CancelledError):
+                    asyncio.run(ingestor._run_http_fast_tail())
+
+    assert fake_ws_module.connect.call_count == 0, (
+        'fast-tail must never open a WebSocket connection'
+    )
+    assert rpc_methods, 'fast-tail must poll over HTTPS RPC (_rpc_call)'
+    assert 'eth_blockNumber' in rpc_methods
+    assert ingestor.rpc_url.startswith('https://'), 'fast-tail transport must be HTTPS RPC'
+
+
+# ---------------------------------------------------------------------------
+# 70. BASE_REALTIME_FAST_TAIL_INTERVAL_SECONDS / _CHUNK_SIZE env vars are honored,
+#     defaulted (60 / 10) and clamped (interval floor 5, chunk cap 25).
+# ---------------------------------------------------------------------------
+
+def test_fast_tail_interval_and_chunk_env_vars_honored(monkeypatch):
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    monkeypatch.setenv('BASE_REALTIME_FAST_TAIL_INTERVAL_SECONDS', '90')
+    monkeypatch.setenv('BASE_REALTIME_FAST_TAIL_CHUNK_SIZE', '7')
+    ing = BaseRealtimeIngestor(rpc_url='http://rpc', ws_url='ws://ws', watcher_name='w')
+    assert ing.fast_tail_interval_seconds == 90
+    assert ing.fast_tail_chunk_size == 7
+
+
+def test_fast_tail_env_var_defaults_and_clamps(monkeypatch):
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    monkeypatch.delenv('BASE_REALTIME_FAST_TAIL_INTERVAL_SECONDS', raising=False)
+    monkeypatch.delenv('BASE_REALTIME_FAST_TAIL_CHUNK_SIZE', raising=False)
+    ing = BaseRealtimeIngestor(rpc_url='http://rpc', ws_url='ws://ws', watcher_name='w')
+    assert ing.fast_tail_interval_seconds == 60, 'default interval must be 60s'
+    assert ing.fast_tail_chunk_size == 10, 'default chunk size must be 10'
+
+    monkeypatch.setenv('BASE_REALTIME_FAST_TAIL_INTERVAL_SECONDS', '1')  # below floor
+    monkeypatch.setenv('BASE_REALTIME_FAST_TAIL_CHUNK_SIZE', '999')  # above cap
+    ing2 = BaseRealtimeIngestor(rpc_url='http://rpc', ws_url='ws://ws', watcher_name='w')
+    assert ing2.fast_tail_interval_seconds == 5, 'interval must be floored at 5s'
+    assert ing2.fast_tail_chunk_size == 25, 'chunk size must be hard-capped at 25'
+
+
+# ---------------------------------------------------------------------------
+# 71. A successful fast-tail cycle logs quicknode_fast_tail_scan_ok with the
+#     latest block and the number of blocks scanned (requirement 3).
+# ---------------------------------------------------------------------------
+
+def test_quicknode_fast_tail_scan_ok_logged():
+    import logging as _logging
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    ingestor._wss_permanently_disabled = True
+    ingestor._ingestion_mode = 'http_fast_tail'
+    ingestor.state['last_processed_block'] = 298
+
+    def _mock_rpc_call(method, params):
+        if method == 'eth_blockNumber':
+            return hex(300)
+        return []
+
+    async def _mock_sleep(secs: float) -> None:
+        raise asyncio.CancelledError()
+
+    ingestor._rpc_call = _mock_rpc_call  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+    try:
+        with patch.object(ingestor, '_watched_targets', return_value=[]):
+            with patch('services.api.app.base_realtime_ingestor.asyncio') as mock_asyncio:
+                mock_asyncio.sleep = _mock_sleep
+                mock_asyncio.CancelledError = asyncio.CancelledError
+                with pytest.raises(asyncio.CancelledError):
+                    asyncio.run(ingestor._run_http_fast_tail())
+    finally:
+        mod.logger.removeHandler(handler)
+
+    scan_ok = next((m for m in log_records if 'quicknode_fast_tail_scan_ok' in m), None)
+    assert scan_ok is not None, f'quicknode_fast_tail_scan_ok must be logged. Got: {log_records}'
+    assert 'latest_block=300' in scan_ok, f'got: {scan_ok}'
+    assert 'scanned_blocks=2' in scan_ok, f'got: {scan_ok}'
+    assert ingestor.state['last_processed_block'] == 300
+
+
+# ---------------------------------------------------------------------------
+# 72. A rate-limited fast-tail scan logs quicknode_fast_tail_paused reason=rate_limited
+#     and does NOT advance the checkpoint (so the range is retried) (requirement 3).
+# ---------------------------------------------------------------------------
+
+def test_quicknode_fast_tail_paused_on_rate_limit_does_not_advance_checkpoint():
+    import logging as _logging
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    wallet = '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
+    target = {
+        'id': str(uuid.uuid4()),
+        'workspace_id': str(uuid.uuid4()),
+        'target_type': 'wallet',
+        'chain_network': 'base',
+        'wallet_address': wallet,
+        'contract_identifier': None,
+    }
+
+    def _mock_rpc_call(method, params):
+        if method == 'eth_blockNumber':
+            return hex(300)
+        if method == 'eth_getLogs':
+            raise RuntimeError('rpc_http_error:429 method=eth_getLogs')
+        return []
+
+    async def _mock_sleep(secs: float) -> None:
+        raise asyncio.CancelledError()
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    ingestor._wss_permanently_disabled = True
+    ingestor._ingestion_mode = 'http_fast_tail'
+    ingestor.state['last_processed_block'] = 298
+    ingestor._rpc_call = _mock_rpc_call  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+    try:
+        with patch.object(ingestor, '_watched_targets', return_value=[target]):
+            with patch('services.api.app.base_realtime_ingestor.asyncio') as mock_asyncio:
+                mock_asyncio.sleep = _mock_sleep
+                mock_asyncio.CancelledError = asyncio.CancelledError
+                with pytest.raises(asyncio.CancelledError):
+                    asyncio.run(ingestor._run_http_fast_tail())
+    finally:
+        mod.logger.removeHandler(handler)
+
+    paused = next((m for m in log_records if 'quicknode_fast_tail_paused' in m), None)
+    assert paused is not None, f'quicknode_fast_tail_paused must be logged. Got: {log_records}'
+    assert 'reason=rate_limited' in paused, f'got: {paused}'
+    assert ingestor.state['last_processed_block'] == 298, (
+        'a rate-limited scan must NOT advance the checkpoint'
+    )
+    assert not any('quicknode_fast_tail_scan_ok' in m for m in log_records), (
+        'scan_ok must not be logged when a scan was rate-limited'
+    )
+
+
+# ---------------------------------------------------------------------------
+# 73. Fast-tail bounds each scan to fast_tail_chunk_size of the most-recent blocks
+#     so a stale checkpoint never scans a huge historical gap (requirement 3).
+# ---------------------------------------------------------------------------
+
+def test_fast_tail_bounds_scan_window_to_chunk_size():
+    import logging as _logging
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    ingestor._wss_permanently_disabled = True
+    ingestor._ingestion_mode = 'http_fast_tail'
+    # Huge gap: checkpoint 900 blocks behind head. Default chunk size is 10.
+    ingestor.state['last_processed_block'] = 100
+
+    def _mock_rpc_call(method, params):
+        if method == 'eth_blockNumber':
+            return hex(1000)
+        return []
+
+    async def _mock_sleep(secs: float) -> None:
+        raise asyncio.CancelledError()
+
+    ingestor._rpc_call = _mock_rpc_call  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+    try:
+        with patch.object(ingestor, '_watched_targets', return_value=[]):
+            with patch('services.api.app.base_realtime_ingestor.asyncio') as mock_asyncio:
+                mock_asyncio.sleep = _mock_sleep
+                mock_asyncio.CancelledError = asyncio.CancelledError
+                with pytest.raises(asyncio.CancelledError):
+                    asyncio.run(ingestor._run_http_fast_tail())
+    finally:
+        mod.logger.removeHandler(handler)
+
+    scan_log = next((m for m in log_records if 'realtime_http_fast_tail_scan ' in m), None)
+    assert scan_log is not None, f'fast-tail scan log must be emitted. Got: {log_records}'
+    # from_block bounded to head - chunk_size + 1 = 1000 - 10 + 1 = 991 (not 101).
+    assert 'from_block=991' in scan_log, f'scan window not bounded to chunk size; got: {scan_log}'
+    assert 'to_block=1000' in scan_log, f'got: {scan_log}'
+    scan_ok = next((m for m in log_records if 'quicknode_fast_tail_scan_ok' in m), None)
+    assert scan_ok is not None and 'scanned_blocks=10' in scan_ok, (
+        f'a bounded cycle must scan exactly chunk_size (10) blocks; got: {scan_ok}'
+    )

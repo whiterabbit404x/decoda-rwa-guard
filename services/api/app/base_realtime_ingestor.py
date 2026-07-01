@@ -41,6 +41,12 @@ logger = logging.getLogger(__name__)
 BASE_CHAIN_ID = 8453
 BASE_CHAIN_NETWORK = 'base'
 REALTIME_INGESTION_SOURCE = 'realtime_websocket'
+# detected_by tag for the HTTP fast-tail fallback. Native ETH transfers and ERC20
+# logs surfaced by the HTTPS RPC fast-tail loop carry this so the customer-facing
+# "Detected by" reads quicknode_http_fast_tail (never realtime_websocket, which
+# would falsely claim the WSS delivered them). Registered in
+# worker_status.REALTIME_DETECTED_BY so those rows classify as realtime telemetry.
+HTTP_FAST_TAIL_SOURCE = 'quicknode_http_fast_tail'
 
 # All chain_network values that map to Base (chain_id=8453).
 # Must stay in sync with CHAIN_MAP in evm_activity_provider.py.
@@ -84,6 +90,15 @@ _DEFAULT_STALE_EVENT_THRESHOLD_SECONDS = 120
 # plus a next-retry timestamp, and lets the independent 300s stable polling worker keep
 # detecting transfers. Configurable via BASE_REALTIME_RATE_LIMIT_COOLDOWN_SECONDS.
 _DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 900
+
+# HTTP fast-tail fallback tuning (requirement 3). The fast-tail loop polls the
+# HTTPS RPC (never the WSS) on this interval and scans at most this many of the
+# most-recent blocks per cycle, so a stale checkpoint can never trigger a giant
+# historical scan — the independent 300 s stable polling worker closes any deeper
+# gap. Configurable via BASE_REALTIME_FAST_TAIL_INTERVAL_SECONDS /
+# BASE_REALTIME_FAST_TAIL_CHUNK_SIZE.
+_DEFAULT_FAST_TAIL_INTERVAL_SECONDS = 60
+_DEFAULT_FAST_TAIL_CHUNK_SIZE = 10
 
 
 def _resolve_int_env(name: str, default: int) -> int:
@@ -243,6 +258,19 @@ class BaseRealtimeIngestor:
         # 429 makes the rate limit worse. Default OFF — only run fast-tail during a
         # rate limit when a SEPARATE HTTP budget exists (requirement 4).
         self.fast_tail_enabled = _resolve_bool_env('BASE_REALTIME_FAST_TAIL_ENABLED', default=False)
+        # Fast-tail poll cadence (HTTPS RPC only). Floored at 5 s so a mis-set value
+        # cannot busy-loop the provider; default 60 s (requirement 3).
+        self.fast_tail_interval_seconds = max(
+            5, _resolve_int_env('BASE_REALTIME_FAST_TAIL_INTERVAL_SECONDS', _DEFAULT_FAST_TAIL_INTERVAL_SECONDS)
+        )
+        # Most-recent blocks scanned per fast-tail cycle. Clamped to
+        # [1, _MAX_BACKFILL_CHUNK_SIZE] so it can never widen a single scan past the
+        # safe maximum; default 10. Bounds both the eth_getLogs range and the native
+        # transaction scan so a huge historical gap is never scanned in one poll.
+        self.fast_tail_chunk_size = min(
+            _MAX_BACKFILL_CHUNK_SIZE,
+            max(1, _resolve_int_env('BASE_REALTIME_FAST_TAIL_CHUNK_SIZE', _DEFAULT_FAST_TAIL_CHUNK_SIZE)),
+        )
         # True while inside a provider rate-limit cooldown (WSS reconnects paused).
         self._provider_rate_limited: bool = False
         # Monotonic deadline; while time.monotonic() < this, no WSS reconnect happens.
@@ -1449,12 +1477,16 @@ class BaseRealtimeIngestor:
     async def _run_http_fast_tail(self) -> None:
         """HTTP polling fallback when WSS is permanently disabled for the provider.
 
-        Polls QuickNode HTTP RPC every 30-60 s, scans eth_getLogs for active Base
-        watched wallet targets.  Uses the same process_ingested_event path so
-        deduplication with the stable 300-s polling worker is automatic.
+        Polls QuickNode HTTPS RPC (self.rpc_url, never the WSS) every
+        ``fast_tail_interval_seconds`` (default 60 s), scanning at most
+        ``fast_tail_chunk_size`` of the most-recent blocks for both ERC20 Transfer/
+        Approval logs and native ETH transactions for active Base watched targets.
+        Detections are tagged ``detected_by=quicknode_http_fast_tail`` and flow
+        through the same process_ingested_event path, so deduplication with the
+        stable 300 s polling worker is automatic.
 
-        Cursor is only advanced when all target scans succeed — failed scans retry
-        the same block range on the next poll so no events are missed.
+        Cursor is only advanced when all scans succeed — a failed or rate-limited
+        scan retries the same block range on the next poll so no events are missed.
         """
         self._ingestion_mode = 'http_fast_tail'
         self.state['source_status'] = 'quicknode_http_fast_tail'
@@ -1465,9 +1497,7 @@ class BaseRealtimeIngestor:
         if self.state.get('degraded_reason') != 'provider_1001_reconnect_loop':
             self.state['degraded_reason'] = 'provider_closes_before_first_event'
 
-        _poll_interval = float(
-            max(30, min(60, _resolve_int_env('REALTIME_HTTP_FAST_TAIL_INTERVAL_SECONDS', 45)))
-        )
+        _poll_interval = float(self.fast_tail_interval_seconds)
 
         # Count active watched targets for the start log. Never logs IDs/addresses.
         try:
@@ -1518,12 +1548,18 @@ class BaseRealtimeIngestor:
                     await asyncio.sleep(_poll_interval)
                     continue
 
-                from_block = last + 1
                 to_block = head_num
+                from_block = last + 1
+                # Bound to the most-recent chunk so a stale checkpoint (or a provider
+                # that jumps the head far ahead) never triggers a huge historical scan
+                # in one poll. The independent 300 s stable polling worker closes any
+                # deeper gap; overlapping blocks dedupe against it by event_id.
+                if to_block - from_block + 1 > self.fast_tail_chunk_size:
+                    from_block = to_block - self.fast_tail_chunk_size + 1
 
                 logger.info(
-                    'realtime_http_fast_tail_scan watcher=%s from_block=%s to_block=%s',
-                    self.watcher_name, from_block, to_block,
+                    'realtime_http_fast_tail_scan watcher=%s from_block=%s to_block=%s chunk_size=%s',
+                    self.watcher_name, from_block, to_block, self.fast_tail_chunk_size,
                 )
 
                 targets = self._watched_targets()
@@ -1560,7 +1596,9 @@ class BaseRealtimeIngestor:
                                 )
                                 continue
 
-                            event = self._build_event_from_log(target, log)
+                            event = self._build_event_from_log(
+                                target, log, source_type=HTTP_FAST_TAIL_SOURCE,
+                            )
                             result = self._persist_event(target, event)
 
                             if result.get('status') == 'duplicate_suppressed':
@@ -1574,10 +1612,23 @@ class BaseRealtimeIngestor:
                                 increment('decoda_realtime_events_total', chain=self.chain_network)
 
                     except Exception as scan_exc:
-                        logger.warning(
-                            'http_fast_tail_scan_failed watcher=%s target=%s error=%s',
-                            self.watcher_name, target.get('id'), str(scan_exc)[:200],
-                        )
+                        # A rate-limited scan must NOT advance the checkpoint (so the
+                        # range is retried) and is surfaced with the canonical paused
+                        # marker; other failures log the generic scan_failed line.
+                        if self._is_rate_limit_error(scan_exc):
+                            logger.warning(
+                                'quicknode_fast_tail_paused reason=rate_limited '
+                                'watcher=%s from_block=%s to_block=%s',
+                                self.watcher_name, from_block, to_block,
+                            )
+                            self.state['metrics']['backfill_rate_limited'] = (
+                                self.state['metrics'].get('backfill_rate_limited', 0) + 1
+                            )
+                        else:
+                            logger.warning(
+                                'http_fast_tail_scan_failed watcher=%s target=%s error=%s',
+                                self.watcher_name, target.get('id'), str(scan_exc)[:200],
+                            )
                         scan_all_ok = False
 
                 # Native ETH transfers (no logs) for the recent tail. Bounded to the
@@ -1596,21 +1647,36 @@ class BaseRealtimeIngestor:
                         if str(t.get('wallet_address') or t.get('contract_identifier') or '')
                         .lower().startswith('0x')
                     ]
-                    _native_from = max(int(from_block), int(to_block) - _MAX_BACKFILL_CHUNK_SIZE + 1)
+                    _native_from = max(int(from_block), int(to_block) - self.fast_tail_chunk_size + 1)
                     try:
                         self._scan_native_transfers(
                             _native_from, to_block, _ft_watched,
-                            source_type='realtime_http_fast_tail',
+                            source_type=HTTP_FAST_TAIL_SOURCE,
                         )
                     except Exception as native_exc:
-                        logger.warning(
-                            'http_fast_tail_native_scan_failed watcher=%s error=%s',
-                            self.watcher_name, str(native_exc)[:200],
-                        )
+                        if self._is_rate_limit_error(native_exc):
+                            logger.warning(
+                                'quicknode_fast_tail_paused reason=rate_limited '
+                                'watcher=%s from_block=%s to_block=%s',
+                                self.watcher_name, _native_from, to_block,
+                            )
+                        else:
+                            logger.warning(
+                                'http_fast_tail_native_scan_failed watcher=%s error=%s',
+                                self.watcher_name, str(native_exc)[:200],
+                            )
                         scan_all_ok = False
 
                 if scan_all_ok:
+                    # Only advance the checkpoint when every scan in this cycle
+                    # succeeded, then publish the canonical fast-tail success marker.
+                    _scanned_blocks = int(to_block) - int(from_block) + 1
                     self.state['last_processed_block'] = to_block
+                    logger.info(
+                        'quicknode_fast_tail_scan_ok latest_block=%s scanned_blocks=%s '
+                        'chain_id=%s watcher=%s',
+                        to_block, _scanned_blocks, self.chain_id, self.watcher_name,
+                    )
                     self.state['metrics']['heads_received'] = (
                         self.state['metrics'].get('heads_received', 0) + 1
                     )
