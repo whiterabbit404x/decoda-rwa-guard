@@ -37,6 +37,7 @@ from services.api.app.db_failure import classify_db_error
 from services.api.app.worker_status import (
     build_worker_status,
     realtime_enabled,
+    stable_poll_stale_threshold_seconds,
     REALTIME_DETECTED_BY,
     STABLE_DETECTED_BY,
 )
@@ -8249,10 +8250,16 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                         )
             except Exception:
                 pass
+        # Canonical stable-polling stale threshold. The stable RPC polling loop runs on a
+        # ~5-minute cadence, so a heartbeat/poll a few minutes old is HEALTHY — the tight
+        # realtime heartbeat TTL (180s) must never gate it. Computed once and reused by the
+        # stale_heartbeat flag, the continuity evaluator, and build_worker_status so the top
+        # banner, worker-status card, limitation text, and runtime summary agree.
+        _stable_poll_stale_threshold = stable_poll_stale_threshold_seconds(MONITOR_POLL_INTERVAL_SECONDS)
         # Bug 5: If still stale/missing after monitoring_heartbeats check, fallback to
         # MAX(last_heartbeat_at) FROM monitoring_worker_state (any worker name) to handle
         # Railway auto-named workers that wrote heartbeats under a different worker_name.
-        if last_heartbeat is None or heartbeat_age is None or heartbeat_age > max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3):
+        if last_heartbeat is None or heartbeat_age is None or heartbeat_age > _stable_poll_stale_threshold:
             try:
                 _mws_row = connection.execute(
                     'SELECT MAX(last_heartbeat_at) AS ts FROM monitoring_worker_state',
@@ -8275,7 +8282,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         # a Telemetry page that shows fresh RPC polling. last_cycle_at is the worker's
         # canonical per-cycle poll timestamp (monitoring_worker_state, written every
         # poll loop alongside the monitoring_polls completion row).
-        _stable_stale_ttl = max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3)
+        _stable_stale_ttl = _stable_poll_stale_threshold
         _heartbeat_is_stale = heartbeat_age is None or heartbeat_age > _stable_stale_ttl
         _last_poll_cycle_at = _parse_ts(health.get('last_cycle_at'))
         _poll_cycle_age = int((now - _last_poll_cycle_at).total_seconds()) if _last_poll_cycle_at else None
@@ -9241,7 +9248,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             last_heartbeat_at=last_heartbeat,
             last_event_at=_continuity_last_event_at,
             last_detection_at=_continuity_last_detection_at,
-            heartbeat_ttl_seconds=max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3),
+            # Same forgiving stable-poll threshold the banner/card use, so the continuity
+            # heartbeat check never emits heartbeat_stale for a healthy 5-minute cadence.
+            heartbeat_ttl_seconds=_stable_poll_stale_threshold,
             telemetry_window_seconds=telemetry_window_seconds,
             detection_window_seconds=max(900, MONITOR_POLL_INTERVAL_SECONDS * 10),
         )
@@ -9664,9 +9673,20 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             # Telemetry worker-status card reads for "Last stable poll" — so the banner
             # and that card agree on whether stable polling is active (requirement 1).
             stable_last_coverage_poll_at=canonical_last_telemetry_at,
-            heartbeat_ttl_seconds=max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3),
+            heartbeat_ttl_seconds=_stable_poll_stale_threshold,
             realtime_watcher=health.get('realtime_watcher'),
         )
+        # Debug / reconciliation fields for the stable-polling verdict. Surfaced at the top
+        # level of the runtime status so operators can see exactly which timestamps and
+        # threshold drove `stable_polling_status` (and why the banner is/isn't stale).
+        _ws_stable = worker_status.get('stable_polling', {}) if isinstance(worker_status, dict) else {}
+        stable_polling_debug = {
+            'last_stable_poll_at': _ws_stable.get('last_poll_at') or _ws_stable.get('last_coverage_poll_at'),
+            'last_rpc_polling_heartbeat_at': _ws_stable.get('last_heartbeat_at'),
+            'stable_poll_age_seconds': _ws_stable.get('age_seconds'),
+            'stable_poll_stale_threshold_seconds': _stable_poll_stale_threshold,
+            'stable_polling_status': _ws_stable.get('state'),
+        }
 
         payload = {
             'workspace_id': workspace_id,
@@ -9772,6 +9792,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'coverage_receipts_workspace_count': int(live_coverage_receipts_persisted_count),
             'stale_heartbeat': stale_heartbeat,
             'worker_status': worker_status,
+            **stable_polling_debug,
             'realtime_enabled': _worker_status_realtime_enabled,
             'worker_alive': bool(worker_alive),
             'dead_lettered_targets': dead_lettered_count,

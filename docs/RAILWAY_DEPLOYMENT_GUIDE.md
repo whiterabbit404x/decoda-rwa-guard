@@ -44,7 +44,14 @@ DEMO_MODE=false
 ALLOW_DEMO_MODE=false
 MONITORING_WORKER_INTERVAL_SECONDS=60   # default 60s; lower only if your RPC quota allows
 MONITORING_WORKER_HEARTBEAT_TTL_SECONDS=180
+MONITORING_STABLE_POLL_STALE_SECONDS=900   # stable RPC polling stale window (default 900 = 15 min)
 ```
+
+`MONITORING_STABLE_POLL_STALE_SECONDS` is how old the stable RPC polling heartbeat/poll may
+be before the UI reports it stale. The stable loop runs on a multi-minute cadence, so this is
+intentionally far more forgiving than the realtime heartbeat TTL — a 4–5 minute-old poll is
+healthy. It is floored at `max(2 * poll_interval, 600s)` and drives every stable-polling
+surface (top banner, worker-status card, limitation text, runtime summary) identically.
 
 **The worker service must use the same DATABASE_URL as the API service.**
 

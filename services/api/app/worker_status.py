@@ -47,6 +47,37 @@ _TRUE_VALUES = {'1', 'true', 'yes', 'on'}
 # window so "stale" means the same thing across worker and API.
 DEFAULT_REALTIME_HEARTBEAT_TTL_SECONDS = 180
 
+# The stable RPC polling loop runs on a MULTI-MINUTE cadence (per-target interval,
+# ~5 minutes in production), so its staleness threshold must be far more forgiving
+# than the realtime heartbeat TTL. A heartbeat or poll only 4–5 minutes old at a
+# 5-minute polling cadence is HEALTHY, not stale — flagging it stale is the exact
+# contradiction this module exists to prevent. Default 900s (15m), overridable via
+# MONITORING_STABLE_POLL_STALE_SECONDS, and never stricter than two poll cycles or
+# ten minutes.
+DEFAULT_STABLE_POLL_STALE_SECONDS = 900
+STABLE_POLL_STALE_FLOOR_SECONDS = 600
+
+
+def stable_poll_stale_threshold_seconds(poll_interval_seconds: int | None = None) -> int:
+    """Seconds after which the stable RPC polling worker is treated as stale.
+
+    Fail-open for a normal cadence: returns at least ``max(2 * poll_interval, 600)``
+    (two poll cycles / ten minutes) and defaults to 900s, overridable via
+    ``MONITORING_STABLE_POLL_STALE_SECONDS``. The SAME threshold must be used by the
+    top banner, worker-status card, limitation text, and runtime summary so they never
+    disagree about whether stable polling is stale.
+    """
+    raw = os.getenv('MONITORING_STABLE_POLL_STALE_SECONDS')
+    try:
+        configured = int(raw) if raw not in (None, '') else DEFAULT_STABLE_POLL_STALE_SECONDS
+    except (TypeError, ValueError):
+        configured = DEFAULT_STABLE_POLL_STALE_SECONDS
+    try:
+        interval = max(0, int(poll_interval_seconds or 0))
+    except (TypeError, ValueError):
+        interval = 0
+    return max(configured, interval * 2, STABLE_POLL_STALE_FLOOR_SECONDS, 1)
+
 
 def realtime_enabled() -> bool:
     """True only when ``BASE_REALTIME_ENABLED`` is explicitly truthy.
@@ -108,6 +139,10 @@ def build_worker_status(
     ``monitoring_watcher_state``; that row is passed as ``realtime_watcher``
     (already json-safe, so timestamps are ISO strings).
     """
+    # ``heartbeat_ttl_seconds`` is the STABLE-POLL stale threshold (see
+    # ``stable_poll_stale_threshold_seconds``), not the tight realtime heartbeat TTL —
+    # callers must pass the forgiving multi-minute value so a 4–5 minute-old heartbeat at
+    # a 5-minute cadence never reads as stale.
     ttl = max(int(heartbeat_ttl_seconds or 0), 1)
 
     # --- Stable RPC polling worker -------------------------------------------------
@@ -127,6 +162,11 @@ def build_worker_status(
     poll_fresh = stable_poll_age is not None and stable_poll_age <= ttl
     coverage_poll_fresh = stable_coverage_age is not None and stable_coverage_age <= ttl
     stable_poll_proof_fresh = poll_fresh or coverage_poll_fresh
+    # Age of the freshest stable-polling proof (heartbeat / poll / coverage). This is the
+    # single number compared against ``ttl`` for the verdict and exposed for debugging so
+    # the banner, card, and runtime summary can be reconciled from one canonical age.
+    _proof_ages = [a for a in (stable_age, stable_poll_age, stable_coverage_age) if a is not None]
+    stable_poll_age_seconds = min(_proof_ages) if _proof_ages else None
     if heartbeat_fresh or stable_poll_proof_fresh:
         stable_state = 'active'
     elif (
@@ -207,6 +247,12 @@ def build_worker_status(
             'heartbeat_fresh': heartbeat_fresh,
             'poll_fresh': stable_poll_proof_fresh,
             'heartbeat_ttl_seconds': ttl,
+            # Debug / reconciliation fields: the stale threshold actually applied and the
+            # freshest-proof age it was compared against. ``status`` mirrors ``state`` so a
+            # runtime-status payload can surface ``stable_polling_status`` without re-deriving.
+            'stale_threshold_seconds': ttl,
+            'age_seconds': stable_poll_age_seconds,
+            'status': stable_state,
             # Stable polling is the canonical transfer-detection path; when it is
             # active, transfer detection remains supported regardless of realtime.
             'detection_supported': stable_active,

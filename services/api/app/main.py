@@ -549,6 +549,11 @@ _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS = [
     'next_required_action',
     'worker_status',
     'realtime_enabled',
+    'last_stable_poll_at',
+    'last_rpc_polling_heartbeat_at',
+    'stable_poll_age_seconds',
+    'stable_poll_stale_threshold_seconds',
+    'stable_polling_status',
 ]
 
 
@@ -2901,6 +2906,14 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
         if payload.get('worker_status') is not None:
             canonical_runtime['worker_status'] = payload.get('worker_status')
         canonical_runtime['realtime_enabled'] = bool(payload.get('realtime_enabled'))
+        # Stable-polling debug fields: surface the timestamps/threshold/status that drove
+        # the stable-polling verdict so the top banner, worker-status card, limitation text,
+        # and runtime summary can be reconciled against one canonical set of facts.
+        for _stable_debug_key in (
+            'last_stable_poll_at', 'last_rpc_polling_heartbeat_at', 'stable_poll_age_seconds',
+            'stable_poll_stale_threshold_seconds', 'stable_polling_status',
+        ):
+            canonical_runtime[_stable_debug_key] = payload.get(_stable_debug_key)
         for _counter_key in (
             'raw_enabled_targets', 'monitorable_enabled_targets', 'valid_asset_linked_targets',
             'enabled_monitored_systems', 'valid_target_system_links',

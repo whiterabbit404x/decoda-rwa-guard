@@ -29,6 +29,12 @@ export type WorkerStatusSummary = {
     heartbeat_fresh?: boolean;
     poll_fresh?: boolean;
     heartbeat_ttl_seconds: number;
+    // Debug / reconciliation fields: the stale threshold actually applied, the freshest
+    // proof age it was compared against, and a `status` alias of `state`. Kept optional so
+    // older payloads still type-check.
+    stale_threshold_seconds?: number;
+    age_seconds?: number | null;
+    status?: 'active' | 'stale' | 'offline';
     detection_supported: boolean;
   };
   realtime: {
@@ -277,6 +283,13 @@ export type MonitoringRuntimeStatus = {
   workspace_monitoring_summary?: WorkspaceMonitoringSummary;
   worker_status?: WorkerStatusSummary;
   realtime_enabled?: boolean;
+  // Stable-polling debug fields (mirror worker_status.stable_polling) so the top banner,
+  // worker-status card, limitation text, and runtime summary reconcile from one source.
+  last_stable_poll_at?: string | null;
+  last_rpc_polling_heartbeat_at?: string | null;
+  stable_poll_age_seconds?: number | null;
+  stable_poll_stale_threshold_seconds?: number | null;
+  stable_polling_status?: 'active' | 'stale' | 'offline' | string | null;
   workspace_configured?: boolean;
   reason_codes?: string[];
   next_required_action?: string;
