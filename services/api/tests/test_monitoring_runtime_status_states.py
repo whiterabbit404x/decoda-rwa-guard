@@ -2060,7 +2060,13 @@ def test_runtime_status_live_heartbeat_and_poll_without_coverage_keeps_confidenc
     assert summary['confidence_status'] == 'unavailable'
     assert payload['confidence_status'] == summary['confidence_status']
     assert summary['reporting_systems'] == 0
-    assert summary['status_reason'] == 'no_fresh_live_coverage_telemetry'
+    # Fresh stable-polling heartbeat + poll (last_heartbeat_at/last_cycle_at = now) proves
+    # the worker is polling the chain, so the limitation must NOT blame EVM_RPC_URL.
+    assert summary['status_reason'] != 'no_fresh_live_coverage_telemetry'
+    assert summary['status_reason'] in {
+        'realtime_paused_stable_polling_active',
+        'stable_polling_active_awaiting_coverage',
+    }
 
 
 def test_runtime_status_demo_coverage_does_not_count_as_live(monkeypatch):
@@ -2290,7 +2296,12 @@ def test_runtime_status_summary_prefers_unsupported_target_type_reason(monkeypat
 
     payload = monitoring_runner.monitoring_runtime_status()
     summary = payload['workspace_monitoring_summary']
-    assert summary['status_reason'] == 'no_fresh_live_coverage_telemetry'
+    # Fresh stable-polling heartbeat/poll => truthful non-RPC reason, not the EVM warning.
+    assert summary['status_reason'] != 'no_fresh_live_coverage_telemetry'
+    assert summary['status_reason'] in {
+        'realtime_paused_stable_polling_active',
+        'stable_polling_active_awaiting_coverage',
+    }
     assert payload['coverage_reason'] == 'no_evidence'
 
 
@@ -2419,7 +2430,12 @@ def test_runtime_status_not_offline_when_configured_but_no_fresh_coverage(monkey
     assert summary['workspace_configured'] is True
     assert summary['runtime_status'] in {'idle', 'degraded'}
     assert summary['runtime_status'] != 'offline'
-    assert summary['status_reason'] == 'no_fresh_live_coverage_telemetry'
+    # Fresh stable-polling heartbeat/poll => truthful non-RPC reason, not the EVM warning.
+    assert summary['status_reason'] != 'no_fresh_live_coverage_telemetry'
+    assert summary['status_reason'] in {
+        'realtime_paused_stable_polling_active',
+        'stable_polling_active_awaiting_coverage',
+    }
 
 
 def test_runtime_status_includes_workspace_identity_fields(monkeypatch):
@@ -2574,7 +2590,14 @@ def test_runtime_status_partial_query_failure_keeps_workspace_identity_and_struc
     assert payload['configuration_reason'] != 'runtime_status_unavailable'
     assert payload['runtime_error_code'] == 'runtime_coverage_query_failed'
     assert payload['runtime_degraded_reason'] == 'partial_query_failure'
-    assert payload['status_reason'] in {'runtime_status_degraded:partial_query_failure', 'no_fresh_live_coverage_telemetry'}
+    # Fresh stable-polling heartbeat/cycle => the coverage-gap reason is now a truthful
+    # stable-active reason (never the EVM_RPC_URL warning while polling is alive).
+    assert payload['status_reason'] in {
+        'runtime_status_degraded:partial_query_failure',
+        'realtime_paused_stable_polling_active',
+        'stable_polling_active_awaiting_coverage',
+    }
+    assert payload['status_reason'] != 'no_fresh_live_coverage_telemetry'
     assert 'error' not in payload
     assert payload['field_reason_codes']['reporting_systems'] == ['optional_table_unavailable']
     assert payload['field_reason_codes']['last_coverage_telemetry_at'] == ['optional_table_unavailable']

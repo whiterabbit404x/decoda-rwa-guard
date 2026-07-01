@@ -14,9 +14,13 @@ from datetime import datetime, timedelta, timezone
 
 from services.api.app.worker_status import (
     build_worker_status,
+    live_coverage_gap_reason,
     realtime_enabled,
     stable_poll_stale_threshold_seconds,
     DEFAULT_STABLE_POLL_STALE_SECONDS,
+    NO_LIVE_COVERAGE_RPC_REASON,
+    REALTIME_PAUSED_STABLE_ACTIVE_REASON,
+    STABLE_ACTIVE_AWAITING_COVERAGE_REASON,
 )
 
 
@@ -477,3 +481,71 @@ def test_stable_polling_exposes_debug_threshold_age_and_status_fields():
     # Freshest proof is the 4-minute-old poll => 240s.
     assert sp['age_seconds'] == 240
     assert sp['status'] == 'active'
+
+
+# ---------------------------------------------------------------------------
+# live_coverage_gap_reason() — never blame EVM_RPC_URL while stable polling is
+# active; only surface the RPC connectivity reason when polling is stale AND the
+# provider checks fail (telemetry-limitation task requirements 1-3 + 6).
+# ---------------------------------------------------------------------------
+
+def test_coverage_gap_recent_stable_heartbeat_realtime_disabled_is_not_rpc_warning():
+    """Requirement 6.1: recent stable polling heartbeat + realtime disabled =>
+    no EVM_RPC_URL warning; the reason is the truthful realtime-paused reason."""
+    reason = live_coverage_gap_reason(
+        stable_polling_active=True,
+        realtime_is_enabled=False,
+        provider_failing=False,
+    )
+    assert reason == REALTIME_PAUSED_STABLE_ACTIVE_REASON
+    assert reason != NO_LIVE_COVERAGE_RPC_REASON
+
+
+def test_coverage_gap_stable_stale_and_provider_failing_is_rpc_warning():
+    """Requirement 6.2: stable polling stale/missing + RPC provider failing =>
+    the EVM_RPC_URL warning reason is the truthful one."""
+    reason = live_coverage_gap_reason(
+        stable_polling_active=False,
+        realtime_is_enabled=False,
+        provider_failing=True,
+    )
+    assert reason == NO_LIVE_COVERAGE_RPC_REASON
+
+
+def test_coverage_gap_realtime_disabled_alone_does_not_create_live_chain_warning():
+    """Requirement 6.3: realtime disabled alone (stable polling still active) must
+    never produce the 'has not received live chain data' EVM_RPC_URL reason, even if
+    the provider realtime health is unknown."""
+    # Realtime paused is orthogonal to stable polling; while polling is active the
+    # reason stays non-alarming regardless of the realtime flag.
+    for provider_failing in (False, True):
+        reason = live_coverage_gap_reason(
+            stable_polling_active=True,
+            realtime_is_enabled=False,
+            provider_failing=provider_failing,
+        )
+        assert reason != NO_LIVE_COVERAGE_RPC_REASON
+        assert reason == REALTIME_PAUSED_STABLE_ACTIVE_REASON
+
+
+def test_coverage_gap_stable_active_realtime_enabled_awaits_coverage():
+    """Realtime enabled + stable polling active + no coverage => 'awaiting coverage',
+    still not an RPC connectivity warning."""
+    reason = live_coverage_gap_reason(
+        stable_polling_active=True,
+        realtime_is_enabled=True,
+        provider_failing=False,
+    )
+    assert reason == STABLE_ACTIVE_AWAITING_COVERAGE_REASON
+    assert reason != NO_LIVE_COVERAGE_RPC_REASON
+
+
+def test_coverage_gap_stable_stale_but_provider_healthy_is_not_rpc_warning():
+    """Requirement 3 is an AND: stale polling but provider checks passing must NOT
+    blame EVM_RPC_URL (the RPC connectivity reason requires provider_failing)."""
+    reason = live_coverage_gap_reason(
+        stable_polling_active=False,
+        realtime_is_enabled=False,
+        provider_failing=False,
+    )
+    assert reason != NO_LIVE_COVERAGE_RPC_REASON
