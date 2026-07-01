@@ -3493,6 +3493,43 @@ def test_rate_limit_breaker_logs_disabled_marker_and_cooldown():
     assert ingestor._rate_limit_cooldown_until > _time.monotonic()
 
 
+def test_rate_limit_cooldown_started_marker_logged():
+    """Entering the cooldown must emit the canonical
+    realtime_rate_limit_cooldown_started marker with the configured seconds and a
+    next_retry_at deadline (requirement 4)."""
+    import logging as _logging
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+    from services.api.app import base_realtime_ingestor as mod
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='test-watcher',
+    )
+    ingestor.rate_limit_cooldown_seconds = 900
+
+    log_records: list[str] = []
+
+    class _Cap(_logging.Handler):
+        def emit(self, r: _logging.LogRecord) -> None:
+            log_records.append(r.getMessage())
+
+    handler = _Cap()
+    mod.logger.addHandler(handler)
+    mod.logger.setLevel(_logging.DEBUG)
+    try:
+        ingestor._enter_provider_rate_limit_cooldown()
+    finally:
+        mod.logger.removeHandler(handler)
+
+    marker = next(
+        (m for m in log_records if 'realtime_rate_limit_cooldown_started' in m), None
+    )
+    assert marker is not None, 'realtime_rate_limit_cooldown_started must be logged'
+    assert 'seconds=900' in marker, f'got: {marker}'
+    assert 'next_retry_at=' in marker and 'next_retry_at=none' not in marker, f'got: {marker}'
+    assert ingestor._rate_limit_retry_at is not None
+    assert marker.strip().endswith(f'next_retry_at={ingestor._rate_limit_retry_at} watcher=test-watcher')
+
+
 # ---------------------------------------------------------------------------
 # 62. Fast-tail does NOT burn the same provider quota during a rate limit
 # ---------------------------------------------------------------------------
@@ -3584,8 +3621,9 @@ def test_rate_limit_cooldown_clears_and_resumes_wss():
 # ---------------------------------------------------------------------------
 
 def test_heartbeat_reports_provider_rate_limited_and_next_retry():
-    """The heartbeat log must surface provider_mode=provider_rate_limited,
-    fallback_active=False (default), and a next_retry_at timestamp."""
+    """The heartbeat log must surface provider_mode=rate_limited,
+    degraded_reason=provider_rate_limited, fallback_active=False (default), and a
+    next_retry_at timestamp (requirements 1, 2, 4)."""
     import logging as _logging
     from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
     from services.api.app import base_realtime_ingestor as mod
@@ -3620,7 +3658,11 @@ def test_heartbeat_reports_provider_rate_limited_and_next_retry():
 
     hb = next((m for m in log_records if 'realtime_worker_heartbeat' in m), None)
     assert hb is not None, 'realtime_worker_heartbeat must be logged'
-    assert 'provider_mode=provider_rate_limited' in hb, f'got: {hb}'
+    # provider_mode is the canonical operating mode ('rate_limited'), distinct from
+    # the degraded_reason string ('provider_rate_limited').
+    assert 'provider_mode=rate_limited' in hb, f'got: {hb}'
+    assert 'provider_mode=provider_rate_limited' not in hb, f'got: {hb}'
+    assert 'degraded_reason=provider_rate_limited' in hb, f'got: {hb}'
     assert 'fallback_active=False' in hb, f'got: {hb}'
     assert 'next_retry_at=' in hb and 'next_retry_at=none' not in hb, f'got: {hb}'
 
