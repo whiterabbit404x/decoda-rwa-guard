@@ -240,3 +240,122 @@ def test_realtime_enabled_but_no_heartbeat_is_starting():
     )
     assert status['realtime']['state'] == 'starting'
     assert status['provider_realtime']['state'] == 'unknown'
+
+
+# ---------------------------------------------------------------------------
+# Stable polling is active on EITHER a fresh heartbeat OR a fresh poll
+# (heartbeat and poll are separate facts; either proves the stable loop is live)
+# ---------------------------------------------------------------------------
+
+def test_recent_rpc_polling_heartbeat_means_stable_active_even_if_poll_stale():
+    """Requirement 2: a recent RPC polling heartbeat => stable polling active,
+    even when the monitoring poll completion is stale/absent."""
+    now = _now()
+    status = build_worker_status(
+        now=now,
+        realtime_is_enabled=False,
+        stable_last_heartbeat_at=now - timedelta(seconds=20),
+        stable_last_poll_at=now - timedelta(seconds=TTL + 600),
+        heartbeat_ttl_seconds=TTL,
+        realtime_watcher=None,
+    )
+    assert status['stable_polling']['state'] == 'active'
+    assert status['stable_polling']['active'] is True
+    assert status['stable_polling']['heartbeat_fresh'] is True
+    assert status['stable_polling']['poll_fresh'] is False
+    assert status['stable_polling']['detection_supported'] is True
+    assert status['monitoring_source_live'] is True
+    assert 'stale' not in status['headline'].lower()
+
+
+def test_recent_monitoring_poll_means_stable_active_even_if_heartbeat_stale():
+    """Requirement 3: a recent monitoring poll completion => stable polling active,
+    even when the RPC polling heartbeat writer lagged and is stale. This is the
+    exact contradiction the fix targets: Telemetry shows a fresh stable poll while
+    the heartbeat table is behind."""
+    now = _now()
+    status = build_worker_status(
+        now=now,
+        realtime_is_enabled=False,
+        stable_last_heartbeat_at=now - timedelta(seconds=TTL + 600),
+        stable_last_poll_at=now - timedelta(seconds=20),
+        heartbeat_ttl_seconds=TTL,
+        realtime_watcher=None,
+    )
+    assert status['stable_polling']['state'] == 'active'
+    assert status['stable_polling']['active'] is True
+    assert status['stable_polling']['heartbeat_fresh'] is False
+    assert status['stable_polling']['poll_fresh'] is True
+    assert status['stable_polling']['detection_supported'] is True
+    assert status['monitoring_source_live'] is True
+    # Must NOT claim the worker/heartbeat is stale while polling is fresh.
+    assert 'stale' not in status['headline'].lower()
+    # Acceptance headline (realtime disabled + stable active via a fresh poll).
+    assert status['headline'] == 'Stable polling active. Realtime WebSocket paused.'
+
+
+def test_recent_coverage_poll_telemetry_means_stable_active():
+    """Requirement 1: the stable_polling verdict reads from the SAME canonical
+    source the Telemetry worker-status card shows as "Last stable poll" (live
+    rpc_polling coverage telemetry). A fresh coverage poll keeps stable polling
+    active even when both the heartbeat and monitoring_polls are stale/absent, so
+    the banner never contradicts the Telemetry card."""
+    now = _now()
+    status = build_worker_status(
+        now=now,
+        realtime_is_enabled=False,
+        stable_last_heartbeat_at=now - timedelta(seconds=TTL + 600),
+        stable_last_poll_at=None,
+        stable_last_coverage_poll_at=now - timedelta(seconds=25),
+        heartbeat_ttl_seconds=TTL,
+        realtime_watcher=None,
+    )
+    assert status['stable_polling']['state'] == 'active'
+    assert status['stable_polling']['active'] is True
+    assert status['stable_polling']['poll_fresh'] is True
+    assert status['stable_polling']['heartbeat_fresh'] is False
+    assert status['headline'] == 'Stable polling active. Realtime WebSocket paused.'
+    assert 'stale' not in status['headline'].lower()
+
+
+def test_both_heartbeat_and_poll_stale_yields_stale_warning():
+    """Requirement 4: only when the heartbeat AND both poll proofs (monitoring poll
+    completion + coverage poll telemetry) are stale does the stable polling worker
+    read as stale."""
+    now = _now()
+    status = build_worker_status(
+        now=now,
+        realtime_is_enabled=False,
+        stable_last_heartbeat_at=now - timedelta(seconds=TTL + 600),
+        stable_last_poll_at=now - timedelta(seconds=TTL + 600),
+        stable_last_coverage_poll_at=now - timedelta(seconds=TTL + 600),
+        heartbeat_ttl_seconds=TTL,
+        realtime_watcher=None,
+    )
+    assert status['stable_polling']['state'] == 'stale'
+    assert status['stable_polling']['active'] is False
+    assert status['stable_polling']['heartbeat_fresh'] is False
+    assert status['stable_polling']['poll_fresh'] is False
+    assert status['stable_polling']['detection_supported'] is False
+    assert status['monitoring_source_live'] is False
+    assert status['headline'] == 'Stable RPC polling heartbeat is stale.'
+
+
+def test_realtime_disabled_stable_active_via_poll_only_acceptance_headline():
+    """Acceptance: realtime disabled + stable polling proven by a fresh poll (with a
+    stale heartbeat) => 'Stable polling active. Realtime WebSocket paused.' and no
+    'stale' wording anywhere in the headline."""
+    now = _now()
+    status = build_worker_status(
+        now=now,
+        realtime_is_enabled=False,
+        stable_last_heartbeat_at=now - timedelta(seconds=TTL + 1200),
+        stable_last_poll_at=now - timedelta(seconds=10),
+        heartbeat_ttl_seconds=TTL,
+        realtime_watcher=None,
+    )
+    assert status['headline'] == 'Stable polling active. Realtime WebSocket paused.'
+    assert status['realtime']['enabled'] is False
+    assert status['realtime']['state'] == 'paused'
+    assert status['stable_polling']['active'] is True
+    assert 'stale' not in status['headline'].lower()

@@ -19,7 +19,15 @@ export type WorkerStatusSummary = {
     active: boolean;
     last_heartbeat_at: string | null;
     last_poll_at: string | null;
+    // Live rpc_polling coverage telemetry — the same "Last stable poll" source the
+    // Telemetry worker-status card shows. A fresh heartbeat, poll, OR coverage poll
+    // keeps stable polling active, so the banner never contradicts that card.
+    last_coverage_poll_at?: string | null;
     heartbeat_age_seconds: number | null;
+    last_poll_age_seconds?: number | null;
+    last_coverage_poll_age_seconds?: number | null;
+    heartbeat_fresh?: boolean;
+    poll_fresh?: boolean;
     heartbeat_ttl_seconds: number;
     detection_supported: boolean;
   };
