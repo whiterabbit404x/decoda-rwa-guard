@@ -423,6 +423,21 @@ def test_ui_telemetry_page_renders_detected_by_and_source_type():
     assert "['Latency (s)', latencySeconds]" in src
 
 
+def test_ui_telemetry_page_renders_realtime_active_state():
+    """Requirement 5: the Telemetry worker-status strip renders "Active" when the
+    canonical realtime_state is 'active' (worker delivering heads), not just the
+    binary Enabled/Paused. Prevents the "Realtime WebSocket Paused / Disabled"
+    label while the WSS is demonstrably active."""
+    src = open(
+        'apps/web/app/(product)/monitoring-sources/[targetId]/telemetry/page.tsx',
+        encoding='utf-8',
+    ).read()
+    assert 'realtimeState' in src
+    assert 'payload.realtime_state' in src
+    assert "realtimeState === 'active'" in src
+    assert "'Active'" in src
+
+
 # ---------------------------------------------------------------------------
 # K. New-head realtime_websocket native scan (the production fix)
 #

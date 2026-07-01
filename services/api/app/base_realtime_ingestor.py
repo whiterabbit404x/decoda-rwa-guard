@@ -31,8 +31,13 @@ from services.api.app.evm_activity_provider import (
     _make_event_id,
     _topic_to_address,
     native_transfer_direction,
+    resolve_monitored_wallet,
 )
-from services.api.app.monitoring_runner import ActivityEvent, process_ingested_event
+from services.api.app.monitoring_runner import (
+    ActivityEvent,
+    _load_target_asset_context,
+    process_ingested_event,
+)
 from services.api.app.observability import increment, gauge
 from services.api.app.pilot import ensure_pilot_schema, pg_connection
 
@@ -297,6 +302,13 @@ class BaseRealtimeIngestor:
         self._block_number_cache: int | None = None
         self._block_number_fetched_at: float = 0.0
         self._last_head_block_at: float = 0.0  # monotonic time of last newHeads update
+
+        # Target-loading (monitored-address) degraded signal. Set True when at least
+        # one active Base target has no resolvable monitored address so it is excluded
+        # from realtime matching (requirement 3). Kept SEPARATE from the WSS/provider
+        # degraded flag so a config gap never marks a healthy socket degraded.
+        self._target_loading_degraded: bool = False
+        self._target_loading_degraded_reason: str | None = None
 
         self.state: dict[str, Any] = {
             'source_status': 'degraded',
@@ -606,13 +618,21 @@ class BaseRealtimeIngestor:
 
         Each call opens and closes its own connection so no connection is
         held while waiting for the next WebSocket message.
+
+        Loads the SAME columns the stable RPC polling worker reads
+        (``asset_id``, ``chain_id``, ``target_metadata``) in addition to the
+        canonical ``wallet_address`` / ``contract_identifier`` so
+        :func:`resolve_monitored_wallet` can resolve a monitored address that is
+        stored in a fallback location (the linked asset's identifier or
+        ``target_metadata``) — the exact case where realtime previously logged
+        ``monitored_address_full=none`` while stable polling detected transfers.
         """
         with pg_connection() as conn:
             ensure_pilot_schema(conn)
             rows = conn.execute(
                 '''
-                SELECT id, workspace_id, name, target_type, chain_network,
-                       wallet_address, contract_identifier,
+                SELECT id, workspace_id, name, target_type, chain_network, chain_id,
+                       wallet_address, contract_identifier, asset_id, target_metadata,
                        monitoring_enabled, enabled, is_active,
                        updated_by_user_id, created_by_user_id, severity_threshold
                 FROM targets
@@ -628,6 +648,76 @@ class BaseRealtimeIngestor:
                 ''',
             ).fetchall()
             return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Monitored-address resolution (shared with stable RPC polling)
+    # ------------------------------------------------------------------
+
+    def _resolve_target_address(self, target: dict[str, Any]) -> str | None:
+        """Resolve a target's monitored EVM address the SAME way stable polling does.
+
+        Uses :func:`resolve_monitored_wallet` — the canonical resolver the 300 s
+        stable RPC polling worker relies on — which checks ``wallet_address``, then
+        ``contract_identifier``, the linked asset's identifier (``asset_context``),
+        and ``target_metadata``. For a wallet target whose ``wallet_address`` column
+        is empty, the linked asset context is loaded on demand (mirroring
+        ``monitoring_runner.process_monitoring_target``) so realtime resolves the
+        exact address stable polling already detects transfers from. Returns a
+        lowercase ``0x`` address, or ``None`` when no valid address is configured
+        anywhere (fail-closed — the caller excludes the target from matching).
+        """
+        addr = resolve_monitored_wallet(target)
+        if addr:
+            return addr
+        if (
+            str(target.get('target_type') or '').lower() == 'wallet'
+            and not target.get('wallet_address')
+            and target.get('asset_context') is None
+            and target.get('asset_id')
+        ):
+            ctx = self._load_asset_context_for(target)
+            if isinstance(ctx, dict):
+                target['asset_context'] = ctx
+                addr = resolve_monitored_wallet(target)
+        return addr
+
+    def _load_asset_context_for(self, target: dict[str, Any]) -> dict[str, Any] | None:
+        """Load the linked asset context for a target (best-effort, own connection)."""
+        try:
+            with pg_connection() as conn:
+                ensure_pilot_schema(conn)
+                return _load_target_asset_context(
+                    conn, workspace_id=str(target.get('workspace_id') or ''), target=target
+                )
+        except Exception as exc:
+            logger.warning(
+                'realtime_target_asset_context_load_failed target_id=%s error=%s',
+                target.get('id'), str(exc)[:160],
+            )
+            return None
+
+    def _note_target_loading(self, *, loaded: int, with_address: int, missing: int) -> None:
+        """Record target-loading facts and the fail-closed missing-address degraded flag.
+
+        Requirement 3: an active target with no resolvable monitored address is
+        excluded from realtime matching and target loading is marked degraded with
+        ``reason=missing_monitored_address``. This is a TARGET-LOADING signal kept
+        distinct from the WSS/provider ``degraded`` flag, so a target that cannot be
+        resolved never falsely flips a healthy realtime socket to degraded — while a
+        genuinely healthy load (every target resolved) clears it.
+        """
+        metrics = self.state['metrics']
+        metrics['targets_loaded'] = loaded
+        metrics['targets_with_address'] = with_address
+        metrics['targets_missing_address'] = missing
+        if missing > 0:
+            self._target_loading_degraded = True
+            self._target_loading_degraded_reason = 'missing_monitored_address'
+        else:
+            self._target_loading_degraded = False
+            self._target_loading_degraded_reason = None
+        metrics['target_loading_degraded'] = self._target_loading_degraded
+        metrics['target_loading_degraded_reason'] = self._target_loading_degraded_reason
 
     # ------------------------------------------------------------------
     # Event building
@@ -815,19 +905,47 @@ class BaseRealtimeIngestor:
                     )
         return processed
 
-    def _watched_wallet_pairs(self) -> list[tuple[dict[str, Any], str]]:
+    def _watched_wallet_pairs(self, *, log_summary: bool = False) -> list[tuple[dict[str, Any], str]]:
         """Load active Base targets as ``(target, lowercase_0x_address)`` pairs.
 
-        Shared by the gap backfill and the new-head native scan so both match the
-        watched wallet against the same normalised (lowercase) address.
+        Shared by the gap backfill, the new-head native scan, the realtime logs
+        subscription, and the HTTP fast-tail so every path matches the watched
+        wallet against the SAME normalised (lowercase) address resolved by
+        :meth:`_resolve_target_address` (which reuses stable polling's
+        ``resolve_monitored_wallet``). A target with no resolvable monitored
+        address is excluded from matching and marks target loading degraded
+        (requirement 3). When ``log_summary`` is True (startup / fast-tail start),
+        emits the canonical ``realtime_targets_loaded count=<n> address_count=<n>``
+        line and a per-target ``realtime_target_address_missing`` warning; the
+        hot per-head path leaves ``log_summary`` False to avoid log spam.
         """
+        targets = self._watched_targets()
         pairs: list[tuple[dict[str, Any], str]] = []
-        for target in self._watched_targets():
-            addr = str(
-                target.get('wallet_address') or target.get('contract_identifier') or ''
-            ).lower()
+        missing = 0
+        for target in targets:
+            addr = (self._resolve_target_address(target) or '')
             if addr.startswith('0x'):
                 pairs.append((target, addr))
+            else:
+                missing += 1
+                if log_summary:
+                    logger.warning(
+                        'realtime_target_address_missing target_id=%s workspace_id=%s '
+                        'chain_id=%s reason=missing_monitored_address watcher=%s',
+                        target.get('id'), target.get('workspace_id'), self.chain_id,
+                        self.watcher_name,
+                    )
+        self._note_target_loading(loaded=len(targets), with_address=len(pairs), missing=missing)
+        if log_summary:
+            _workspace_count = len({str(t.get('workspace_id')) for t in targets})
+            logger.info(
+                'realtime_targets_loaded count=%s address_count=%s chain_id=%s '
+                'workspace_count=%s degraded=%s degraded_reason=%s watcher=%s',
+                len(targets), len(pairs), self.chain_id, _workspace_count,
+                self._target_loading_degraded,
+                self._target_loading_degraded_reason or 'none',
+                self.watcher_name,
+            )
         return pairs
 
     async def _scan_head_native_transfers(self, head: int) -> int:
@@ -890,9 +1008,10 @@ class BaseRealtimeIngestor:
         ``0x5f6f…1d1f`` hide the very mismatch this is meant to catch.
         """
         for target in targets:
-            raw_addr = str(
-                target.get('wallet_address') or target.get('contract_identifier') or ''
-            )
+            # Resolve via the shared stable-polling resolver so a monitored address
+            # stored in a fallback location (asset identifier / target_metadata) is
+            # surfaced here instead of logging monitored_address_full=none.
+            raw_addr = self._resolve_target_address(target) or ''
             logger.info(
                 'realtime_target_diagnostics target_id=%s workspace_id=%s chain_id=%s '
                 'monitored_address_full=%s normalized_address_lowercase=%s watcher=%s',
@@ -1361,19 +1480,20 @@ class BaseRealtimeIngestor:
             try:
                 _startup_targets = self._watched_targets()
                 _target_count = len(_startup_targets)
-                _workspace_count = len({str(t.get('workspace_id')) for t in _startup_targets})
-                _target_ids = [str(t.get('id', '')) for t in _startup_targets]
-                logger.info(
-                    'realtime_targets_loaded count=%s chain_id=%s chain_network=%s '
-                    'workspace_count=%s watcher=%s target_ids=%s',
-                    _target_count, self.chain_id, self.chain_network,
-                    _workspace_count, self.watcher_name,
-                    ','.join(_target_ids[:20]),  # IDs only — no addresses or secrets
-                )
+                # Resolve each target's monitored address (shared stable-polling
+                # resolver) and emit realtime_targets_loaded count/address_count plus a
+                # per-target realtime_target_address_missing warning + degraded flag.
+                _startup_pairs = self._watched_wallet_pairs(log_summary=True)
                 if _target_count == 0:
                     logger.warning(
                         'realtime_no_targets_loaded chain_id=%s chain_network=%s watcher=%s '
                         'worker_healthy_but_no_events_will_be_processed',
+                        self.chain_id, self.chain_network, self.watcher_name,
+                    )
+                elif not _startup_pairs:
+                    logger.warning(
+                        'realtime_no_target_addresses_resolved chain_id=%s chain_network=%s '
+                        'watcher=%s reason=missing_monitored_address',
                         self.chain_id, self.chain_network, self.watcher_name,
                     )
                 # Full monitored address per target so an operator can confirm the
@@ -1462,10 +1582,9 @@ class BaseRealtimeIngestor:
                         )
                         continue
 
-                    for target in self._watched_targets():
-                        watched = str(
-                            target.get('wallet_address') or target.get('contract_identifier') or ''
-                        ).lower()
+                    # Match against the SAME resolved monitored addresses the native
+                    # scan uses; a target with no resolvable address is excluded.
+                    for target, watched in self._watched_wallet_pairs():
                         topics = [str(t).lower() for t in (result.get('topics') or [])]
                         address = str(result.get('address') or '').lower()
                         if watched not in topics and watched != address:
@@ -1582,16 +1701,12 @@ class BaseRealtimeIngestor:
                     self.watcher_name, from_block, to_block, self.fast_tail_chunk_size,
                 )
 
-                targets = self._watched_targets()
+                # Resolve monitored addresses via the shared stable-polling resolver;
+                # targets with no resolvable address are excluded (fail-closed).
+                watched_pairs = self._watched_wallet_pairs()
                 scan_all_ok = True
 
-                for target in targets:
-                    watched = str(
-                        target.get('wallet_address') or target.get('contract_identifier') or ''
-                    ).lower()
-                    if not watched.startswith('0x'):
-                        continue
-
+                for target, watched in watched_pairs:
                     try:
                         logs = self._rpc_call(
                             'eth_getLogs',
@@ -1658,19 +1773,10 @@ class BaseRealtimeIngestor:
                 # below when this also succeeds, so a failed native scan re-scans next
                 # poll rather than skipping transfers.
                 if scan_all_ok:
-                    _ft_watched = [
-                        (
-                            t,
-                            str(t.get('wallet_address') or t.get('contract_identifier') or '').lower(),
-                        )
-                        for t in targets
-                        if str(t.get('wallet_address') or t.get('contract_identifier') or '')
-                        .lower().startswith('0x')
-                    ]
                     _native_from = max(int(from_block), int(to_block) - self.fast_tail_chunk_size + 1)
                     try:
                         self._scan_native_transfers(
-                            _native_from, to_block, _ft_watched,
+                            _native_from, to_block, watched_pairs,
                             source_type=HTTP_FAST_TAIL_SOURCE,
                         )
                     except Exception as native_exc:
