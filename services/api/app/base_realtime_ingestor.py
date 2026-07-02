@@ -844,13 +844,22 @@ class BaseRealtimeIngestor:
             self.chain_id, from_block, to_block, len(watched), source_type, self.watcher_name,
         )
         processed = 0
+        blocks_scanned = 0
+        txs_seen = 0
+        matches = 0
         for block_number in range(int(from_block), int(to_block) + 1):
             block = self._rpc_call('eth_getBlockByNumber', [hex(block_number), True]) or {}
+            blocks_scanned += 1
             block_hash = str(block.get('hash') or '') or None
             observed_at = _iso_from_block_ts(block.get('timestamp'))
             for tx in (block.get('transactions') or []):
+                # A hash-only block (eth_getBlockByNumber called without full=True, or a
+                # provider that ignores it) yields str entries, never a dict — those can
+                # never be matched. Counting only dict txs in txs_seen makes the
+                # scan_complete line reveal that case (txs_seen=0 despite a full block).
                 if not isinstance(tx, dict):
                     continue
+                txs_seen += 1
                 tx_hash = str(tx.get('hash') or '')
                 matched_any = False
                 for target, addr in watched:
@@ -858,6 +867,7 @@ class BaseRealtimeIngestor:
                     if direction is None:
                         continue
                     matched_any = True
+                    matches += 1
                     value_wei = _hex_to_int(tx.get('value')) or 0
                     logger.info(
                         'realtime_native_transfer_candidate tx_hash=%s from=%s to=%s value_wei=%s '
@@ -865,10 +875,15 @@ class BaseRealtimeIngestor:
                         tx_hash, _short_addr(tx.get('from')), _short_addr(tx.get('to')), value_wei,
                         source_type,
                     )
+                    # Full from/to/value/block_number so an operator can confirm the exact
+                    # matched transfer without cross-referencing the truncated candidate line.
                     logger.info(
                         'realtime_native_transfer_match target_id=%s direction=%s tx_hash=%s '
-                        'detected_by=%s',
-                        target.get('id'), direction, tx_hash, source_type,
+                        'from=%s to=%s value=%s block_number=%s detected_by=%s',
+                        target.get('id'), direction, tx_hash,
+                        str(tx.get('from') or '').lower() or 'none',
+                        str(tx.get('to') or '').lower() or 'none',
+                        value_wei, block_number, source_type,
                     )
                     if self._is_rate_limited():
                         logger.warning(
@@ -896,13 +911,31 @@ class BaseRealtimeIngestor:
                             'wallet_transfer_detected tx_hash=%s detected_by=%s',
                             tx_hash, source_type,
                         )
-                        logger.info('realtime_event_persisted tx_hash=%s', tx_hash)
+                        # Canonical persisted marker: names the customer-facing event
+                        # class (wallet_transfer_detected) and the detected_by/source_type
+                        # tag so the realtime path is unambiguous in logs.
+                        logger.info(
+                            'realtime_event_persisted event_type=wallet_transfer_detected '
+                            'tx_hash=%s detected_by=%s source_type=%s',
+                            tx_hash, source_type, source_type,
+                        )
                         increment('decoda_realtime_events_total', chain=self.chain_network)
                 if not matched_any and tx_hash:
                     logger.debug(
                         'native_transfer_no_match tx_hash=%s reason=address_not_watched',
                         tx_hash,
                     )
+        # Completion marker with the counts an operator needs to explain why a scan
+        # produced no telemetry: txs_seen=0 → the block came back with no full
+        # transactions (e.g. a hash-only eth_getBlockByNumber response); txs_seen>0 with
+        # matches=0 → transactions were inspected but none touched a watched wallet.
+        # Without this line, "scan_started" followed by silence was undiagnosable.
+        logger.info(
+            'realtime_native_transfer_scan_complete chain_id=%s from_block=%s to_block=%s '
+            'blocks_scanned=%s txs_seen=%s watched_targets=%s matches=%s detected_by=%s watcher=%s',
+            self.chain_id, from_block, to_block, blocks_scanned, txs_seen, len(watched),
+            matches, source_type, self.watcher_name,
+        )
         return processed
 
     def _watched_wallet_pairs(self, *, log_summary: bool = False) -> list[tuple[dict[str, Any], str]]:

@@ -1086,6 +1086,12 @@ def _build_base_payload(*, target: dict[str, Any], network: str, chain_id: int, 
         'tx_hash': tx_hash,
         'from': str(tx.get('from') or '').lower() or None,
         'to': str(tx.get('to') or '').lower() or None,
+        # Canonical *_address aliases persisted alongside from/to so a wallet-transfer
+        # telemetry row carries explicit from_address/to_address (the fields the
+        # customer-facing telemetry view and downstream evidence readers look up).
+        # Additive: existing readers keep using from/to.
+        'from_address': str(tx.get('from') or '').lower() or None,
+        'to_address': str(tx.get('to') or '').lower() or None,
         'amount': str(_value_wei),
         'value_wei': _value_wei,
         'value_eth': round(_value_wei / 10 ** 18, 18),
