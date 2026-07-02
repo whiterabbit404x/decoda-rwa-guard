@@ -30,6 +30,7 @@ from services.api.app.evm_activity_provider import (
     _iso_from_block_ts,
     _make_event_id,
     _topic_to_address,
+    explain_wallet_transfer_match,
     native_transfer_direction,
     resolve_monitored_wallet,
 )
@@ -129,6 +130,33 @@ def _resolve_subscriptions_mode(raw: str) -> str:
     if mode in ('newheads_only',):
         return 'newHeads_only'
     return 'newHeads,logs'
+
+
+def _resolve_tx_hash_list_env(name: str) -> list[str]:
+    """Parse a comma/space-separated list of 0x tx hashes from an env var.
+
+    Backs the tx-hash debug mode (``BASE_REALTIME_DEBUG_TX_HASHES``). Only
+    well-formed 0x-prefixed 32-byte hex strings are kept; anything else is dropped
+    so a mis-set value can never turn into an ``eth_getTransactionByHash`` call with
+    a bogus hash. Deduped, lowercased, order preserved.
+    """
+    raw = (os.getenv(name) or '').strip()
+    if not raw:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for part in raw.replace(',', ' ').split():
+        h = part.strip().lower()
+        if not (h.startswith('0x') and len(h) == 66):
+            continue
+        try:
+            int(h, 16)
+        except ValueError:
+            continue
+        if h not in seen:
+            seen.add(h)
+            out.append(h)
+    return out
 
 
 def _ws_url_host(url: str) -> str:
@@ -276,6 +304,18 @@ class BaseRealtimeIngestor:
             _MAX_BACKFILL_CHUNK_SIZE,
             max(1, _resolve_int_env('BASE_REALTIME_FAST_TAIL_CHUNK_SIZE', _DEFAULT_FAST_TAIL_CHUNK_SIZE)),
         )
+        # Optional tx-hash debug mode (requirements 1-2). When
+        # BASE_REALTIME_DEBUG_TX_HASHES lists one or more tx hashes, the worker
+        # fetches each via eth_getTransactionByHash once on WSS / fast-tail startup,
+        # logs a full match diagnostic (realtime_tx_debug), and — when the tx is
+        # at/below the realtime checkpoint so the forward head scan will never reach
+        # it — runs a bounded ±2-block backfill around it
+        # (realtime_tx_skipped_by_checkpoint). Safe: gated behind the env var, scans
+        # at most 5 blocks per hash, and only reads chain data (never sends a tx).
+        self.debug_tx_hashes: list[str] = _resolve_tx_hash_list_env('BASE_REALTIME_DEBUG_TX_HASHES')
+        # Guards the one-shot startup debug so a reconnect does not re-run it.
+        self._tx_debug_completed: bool = False
+
         # True while inside a provider rate-limit cooldown (WSS reconnects paused).
         self._provider_rate_limited: bool = False
         # Monotonic deadline; while time.monotonic() < this, no WSS reconnect happens.
@@ -1053,6 +1093,157 @@ class BaseRealtimeIngestor:
             )
 
     # ------------------------------------------------------------------
+    # tx-hash debug mode (requirements 1-2)
+    # ------------------------------------------------------------------
+
+    def _debug_tx_match(
+        self,
+        tx_hash: str,
+        watched: list[tuple[dict[str, Any], str]],
+        *,
+        run_backfill: bool = True,
+    ) -> dict[str, Any]:
+        """Fetch one tx by hash and log a full match diagnostic (+ bounded backfill).
+
+        Requirement 1: ``eth_getTransactionByHash`` → one ``realtime_tx_debug`` line
+        per watched target carrying block_number/from/to/value/chain_id, per-target
+        ``from_matches``/``to_matches`` and the normalized from/to/target addresses.
+        The match is computed by the canonical :func:`explain_wallet_transfer_match`
+        helper (same normalisation the live scan uses) so the debug view can never
+        disagree with the real matcher.
+
+        Requirement 2: when the tx's block is at or below the realtime checkpoint —
+        so the forward head scan (which only scans blocks *after*
+        ``last_processed_block``) will never reach it — log
+        ``realtime_tx_skipped_by_checkpoint`` and, unless ``run_backfill`` is False,
+        run a bounded ``tx_block-2 .. tx_block+2`` native scan tagged
+        ``detected_by=realtime_websocket``. The forward checkpoint is deliberately
+        NOT advanced: a backfill of an older block must never move the live cursor.
+
+        Read-only apart from the bounded backfill's own idempotent event
+        persistence, so it is safe to run on startup for an operator-supplied tx
+        hash without sending more ETH.
+        """
+        try:
+            tx = self._rpc_call('eth_getTransactionByHash', [tx_hash])
+        except Exception as exc:
+            logger.warning(
+                'realtime_tx_debug_failed tx_hash=%s error=%s watcher=%s',
+                tx_hash, str(exc)[:200], self.watcher_name,
+            )
+            return {'tx_hash': tx_hash, 'found': False, 'error': str(exc)[:200]}
+
+        tx = tx if isinstance(tx, dict) else {}
+        if not tx:
+            logger.warning(
+                'realtime_tx_debug tx_hash=%s found=False reason=transaction_not_found watcher=%s',
+                tx_hash, self.watcher_name,
+            )
+            return {'tx_hash': tx_hash, 'found': False}
+
+        block_number = _hex_to_int(tx.get('blockNumber'))
+        value_wei = _hex_to_int(tx.get('value')) or 0
+        chain_id = _hex_to_int(tx.get('chainId'))
+        raw_from = str(tx.get('from') or '') or 'none'
+        raw_to = str(tx.get('to') or '') or 'none'
+
+        matched: list[dict[str, Any]] = []
+        for target, addr in watched:
+            explanation = explain_wallet_transfer_match(addr, tx)
+            norm_target = explanation.get('monitored_wallet') or (addr or '').lower() or 'none'
+            norm_from = explanation.get('tx_from') or 'none'
+            norm_to = explanation.get('tx_to') or 'none'
+            from_matches = norm_from != 'none' and norm_from == norm_target
+            to_matches = norm_to != 'none' and norm_to == norm_target
+            logger.info(
+                'realtime_tx_debug tx_hash=%s block_number=%s from=%s to=%s value=%s chain_id=%s '
+                'monitored_address=%s from_matches=%s to_matches=%s '
+                'normalized_from=%s normalized_to=%s normalized_target=%s '
+                'matched=%s direction=%s target_id=%s watcher=%s',
+                tx_hash, block_number if block_number is not None else 'none',
+                raw_from, raw_to, value_wei, chain_id if chain_id is not None else 'none',
+                addr, from_matches, to_matches,
+                norm_from, norm_to, norm_target,
+                bool(explanation.get('matched')),
+                explanation.get('wallet_transfer_direction') or 'none',
+                target.get('id'), self.watcher_name,
+            )
+            if explanation.get('matched'):
+                matched.append({'target_id': target.get('id'),
+                                'direction': explanation.get('wallet_transfer_direction')})
+
+        result: dict[str, Any] = {
+            'tx_hash': tx_hash,
+            'found': True,
+            'block_number': block_number,
+            'from': (raw_from.lower() if raw_from != 'none' else None),
+            'to': (raw_to.lower() if raw_to != 'none' else None),
+            'value_wei': value_wei,
+            'chain_id': chain_id,
+            'matched_target_count': len(matched),
+            'skipped_by_checkpoint': False,
+            'backfill_triggered': False,
+        }
+
+        checkpoint = self.state.get('last_processed_block')
+        if block_number is not None and checkpoint is not None and block_number <= int(checkpoint):
+            logger.warning(
+                'realtime_tx_skipped_by_checkpoint tx_hash=%s tx_block=%s checkpoint_block=%s watcher=%s',
+                tx_hash, block_number, int(checkpoint), self.watcher_name,
+            )
+            result['skipped_by_checkpoint'] = True
+            if run_backfill and watched:
+                _from = max(0, int(block_number) - 2)
+                _to = int(block_number) + 2
+                logger.info(
+                    'realtime_tx_debug_backfill_started tx_hash=%s from_block=%s to_block=%s watcher=%s',
+                    tx_hash, _from, _to, self.watcher_name,
+                )
+                try:
+                    # Bounded ±2-block native scan tagged realtime_websocket. This
+                    # persists the missed transfer but does NOT touch
+                    # last_processed_block — the live forward cursor is unchanged.
+                    self._scan_native_transfers(
+                        _from, _to, watched, source_type=REALTIME_INGESTION_SOURCE,
+                    )
+                    result['backfill_triggered'] = True
+                    result['backfill_from_block'] = _from
+                    result['backfill_to_block'] = _to
+                except Exception as exc:
+                    logger.warning(
+                        'realtime_tx_debug_backfill_failed tx_hash=%s from_block=%s to_block=%s '
+                        'error=%s watcher=%s',
+                        tx_hash, _from, _to, str(exc)[:200], self.watcher_name,
+                    )
+        return result
+
+    def _run_configured_tx_debug(self) -> None:
+        """Run tx-hash debug once for every hash in BASE_REALTIME_DEBUG_TX_HASHES.
+
+        No-op unless the env var is set, so it is inert in normal operation. Guarded
+        by ``_tx_debug_completed`` so a WSS reconnect (or fast-tail restart) does not
+        re-run the diagnostic and re-trigger the bounded backfill on every cycle.
+        """
+        if self._tx_debug_completed or not self.debug_tx_hashes:
+            return
+        self._tx_debug_completed = True
+        watched = self._watched_wallet_pairs()
+        logger.info(
+            'realtime_tx_debug_mode_active tx_hash_count=%s watched_targets=%s '
+            'checkpoint_block=%s watcher=%s',
+            len(self.debug_tx_hashes), len(watched),
+            self.state.get('last_processed_block'), self.watcher_name,
+        )
+        for tx_hash in self.debug_tx_hashes:
+            try:
+                self._debug_tx_match(tx_hash, watched)
+            except Exception as exc:
+                logger.warning(
+                    'realtime_tx_debug_unexpected_error tx_hash=%s error=%s watcher=%s',
+                    tx_hash, str(exc)[:200], self.watcher_name,
+                )
+
+    # ------------------------------------------------------------------
     # Persistence (short transaction per event)
     # ------------------------------------------------------------------
 
@@ -1538,6 +1729,10 @@ class BaseRealtimeIngestor:
                     self.watcher_name, str(_load_exc)[:200],
                 )
 
+            # Optional tx-hash debug + below-checkpoint backfill (requirements 1-2).
+            # Runs once when BASE_REALTIME_DEBUG_TX_HASHES is set; inert otherwise.
+            self._run_configured_tx_debug()
+
             while True:
                 msg = json.loads(await ws.recv())
                 self._session_messages_received += 1
@@ -1690,6 +1885,12 @@ class BaseRealtimeIngestor:
             _ws_url_host(self.rpc_url),
             _poll_interval,
         )
+
+        # Optional tx-hash debug + below-checkpoint backfill (requirements 1-2).
+        # Runs once when BASE_REALTIME_DEBUG_TX_HASHES is set; inert otherwise. Also
+        # runs here so an operator can debug via the HTTP fast-tail path when the WSS
+        # is disabled.
+        self._run_configured_tx_debug()
 
         _next_heartbeat = time.monotonic()
 
