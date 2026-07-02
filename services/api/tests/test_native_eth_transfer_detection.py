@@ -910,3 +910,305 @@ def test_ui_telemetry_page_renders_realtime_websocket_label():
     # fields are surfaced, not ignored.
     assert "'from', 'from_address'" in src
     assert "'to', 'to_address'" in src
+
+
+# ---------------------------------------------------------------------------
+# O. tx-hash debug mode + below-checkpoint bounded backfill (requirements 1-2)
+#
+# Realtime is scanning (txs_seen > 0) but not matching (matches=0) because the
+# monitored wallet's tx sits in a block BELOW the realtime checkpoint, which the
+# forward head scan never re-visits. These tests lock in the operator-triggered
+# tx-hash debug (eth_getTransactionByHash → realtime_tx_debug) and the bounded
+# ±2-block backfill that closes exactly that gap without moving the live cursor.
+# ---------------------------------------------------------------------------
+
+def test_debug_tx_env_parser_filters_bogus_and_dedupes(monkeypatch):
+    from services.api.app.base_realtime_ingestor import _resolve_tx_hash_list_env
+    good = '0x' + 'a' * 64
+    other = '0x' + 'b' * 64
+    # Mixed case + duplicates + junk + wrong-length + non-hex — only valid 0x hashes,
+    # lowercased and deduped in first-seen order, survive.
+    monkeypatch.setenv(
+        'BASE_REALTIME_DEBUG_TX_HASHES',
+        f'{good.upper()}, not-a-hash 0x123 {good} {other} 0xZZ{"z" * 62}',
+    )
+    assert _resolve_tx_hash_list_env('BASE_REALTIME_DEBUG_TX_HASHES') == [good, other]
+
+
+def test_debug_tx_env_parser_empty_is_empty(monkeypatch):
+    from services.api.app.base_realtime_ingestor import _resolve_tx_hash_list_env
+    monkeypatch.delenv('BASE_REALTIME_DEBUG_TX_HASHES', raising=False)
+    assert _resolve_tx_hash_list_env('BASE_REALTIME_DEBUG_TX_HASHES') == []
+
+
+def test_debug_tx_match_reports_from_to_value_block(monkeypatch, caplog):
+    """Requirement 1 + 6: eth_getTransactionByHash → realtime_tx_debug carrying the
+    exact from / to / value / block_number / chain_id and per-target match flags."""
+    ing = _make_ingestor()
+    target = _wallet_target()
+    # MetaMask sends with a checksum-cased from; watched stored lowercase — must match.
+    tx = _native_tx(
+        tx_hash='0xdbg',
+        from_addr=BASE_WALLET.upper().replace('0X', '0x'),
+        to_addr=OTHER_WALLET,
+        value_wei=10 ** 17,
+    )  # blockNumber = 100
+    # Checkpoint below the tx block → forward scan would reach it → no skip/backfill,
+    # isolating the requirement-1 diagnostic.
+    ing.state['last_processed_block'] = 50
+    monkeypatch.setattr(
+        ing, '_rpc_call',
+        lambda method, params: tx if method == 'eth_getTransactionByHash' else None,
+    )
+
+    with caplog.at_level(logging.INFO, logger='services.api.app.base_realtime_ingestor'):
+        result = ing._debug_tx_match('0xdbg', [(target, BASE_WALLET.lower())])
+
+    assert result['found'] is True
+    assert result['block_number'] == 100
+    assert result['from'] == BASE_WALLET.lower()
+    assert result['to'] == OTHER_WALLET.lower()
+    assert result['value_wei'] == 10 ** 17
+    assert result['chain_id'] == 8453
+    assert result['matched_target_count'] == 1
+    assert result['skipped_by_checkpoint'] is False
+    assert result['backfill_triggered'] is False
+
+    dbg = next(m for m in (r.getMessage() for r in caplog.records) if 'realtime_tx_debug ' in m)
+    assert 'block_number=100' in dbg
+    assert f'value={10 ** 17}' in dbg
+    assert 'chain_id=8453' in dbg
+    assert 'from_matches=True' in dbg
+    assert 'to_matches=False' in dbg
+    assert f'normalized_from={BASE_WALLET.lower()}' in dbg
+    assert f'normalized_to={OTHER_WALLET.lower()}' in dbg
+    assert f'normalized_target={BASE_WALLET.lower()}' in dbg
+
+
+def test_debug_tx_match_reports_not_found(monkeypatch, caplog):
+    """A tx hash the provider does not know yields found=False and never backfills."""
+    ing = _make_ingestor()
+    target = _wallet_target()
+    monkeypatch.setattr(ing, '_rpc_call', lambda method, params: None)
+    with caplog.at_level(logging.WARNING, logger='services.api.app.base_realtime_ingestor'):
+        result = ing._debug_tx_match('0xmissing', [(target, BASE_WALLET.lower())])
+    assert result == {'tx_hash': '0xmissing', 'found': False}
+    assert any('found=False' in r.getMessage() for r in caplog.records)
+
+
+def test_debug_tx_below_checkpoint_triggers_bounded_backfill(monkeypatch, caplog):
+    """Requirement 2 + 6: a tx in a block BELOW the checkpoint logs
+    realtime_tx_skipped_by_checkpoint and runs a bounded tx_block-2..tx_block+2
+    native scan (detected_by=realtime_websocket) WITHOUT advancing the checkpoint."""
+    ing = _make_ingestor()
+    target = _wallet_target()
+    tx = _native_tx(tx_hash='0xold', from_addr=BASE_WALLET, to_addr=OTHER_WALLET)  # block 100
+    block_100 = _block_with(
+        [_native_tx(tx_hash='0xold', from_addr=BASE_WALLET, to_addr=OTHER_WALLET)], number=100,
+    )
+    # Checkpoint AHEAD of the tx block → the live forward head scan never reaches it.
+    ing.state['last_processed_block'] = 500
+
+    scanned_blocks: list[int] = []
+
+    def _rpc(method, params):
+        if method == 'eth_getTransactionByHash':
+            return tx
+        if method == 'eth_getBlockByNumber':
+            num = int(params[0], 16)
+            scanned_blocks.append(num)
+            return block_100 if num == 100 else _block_with([], number=num)
+        return None
+
+    monkeypatch.setattr(ing, '_rpc_call', _rpc)
+    persisted: list = []
+    monkeypatch.setattr(
+        ing, '_persist_event',
+        lambda _t, e: (persisted.append(e), {'status': 'processed', 'event_id': e.event_id})[1],
+    )
+
+    with caplog.at_level(logging.INFO, logger='services.api.app.base_realtime_ingestor'):
+        result = ing._debug_tx_match('0xold', [(target, BASE_WALLET.lower())])
+
+    assert result['skipped_by_checkpoint'] is True
+    assert result['backfill_triggered'] is True
+    assert result['backfill_from_block'] == 98
+    assert result['backfill_to_block'] == 102
+    # The bounded backfill scanned exactly the ±2 window around the tx block.
+    assert scanned_blocks == [98, 99, 100, 101, 102]
+    # Forward cursor MUST NOT move for an old-block backfill.
+    assert ing.state['last_processed_block'] == 500
+    # The previously-missed transfer is now persisted, tagged realtime_websocket.
+    assert len(persisted) == 1
+    assert persisted[0].payload['tx_hash'] == '0xold'
+    assert persisted[0].payload['detected_by'] == 'realtime_websocket'
+
+    skip = next(m for m in (r.getMessage() for r in caplog.records)
+                if 'realtime_tx_skipped_by_checkpoint' in m)
+    assert 'tx_block=100' in skip
+    assert 'checkpoint_block=500' in skip
+
+
+def test_debug_tx_above_checkpoint_does_not_backfill(monkeypatch):
+    """A tx above the checkpoint is still reachable by the forward head scan, so no
+    skipped-by-checkpoint backfill fires (avoids redundant scans)."""
+    ing = _make_ingestor()
+    target = _wallet_target()
+    tx = _native_tx(tx_hash='0xfresh', from_addr=BASE_WALLET, to_addr=OTHER_WALLET)  # block 100
+    ing.state['last_processed_block'] = 99  # tx block 100 > checkpoint → forward scan reaches it
+
+    block_calls = {'n': 0}
+
+    def _rpc(method, params):
+        if method == 'eth_getTransactionByHash':
+            return tx
+        if method == 'eth_getBlockByNumber':
+            block_calls['n'] += 1
+            return _block_with([], number=int(params[0], 16))
+        return None
+
+    monkeypatch.setattr(ing, '_rpc_call', _rpc)
+    result = ing._debug_tx_match('0xfresh', [(target, BASE_WALLET.lower())])
+    assert result['skipped_by_checkpoint'] is False
+    assert result['backfill_triggered'] is False
+    assert block_calls['n'] == 0  # no bounded backfill scan issued
+
+
+def test_run_configured_tx_debug_inert_without_env(monkeypatch):
+    """With BASE_REALTIME_DEBUG_TX_HASHES unset the debug path is fully inert — it
+    never even loads targets, so normal operation is unaffected."""
+    monkeypatch.delenv('BASE_REALTIME_DEBUG_TX_HASHES', raising=False)
+    ing = _make_ingestor()
+    loaded = {'n': 0}
+    monkeypatch.setattr(ing, '_watched_wallet_pairs', lambda *a, **k: (loaded.__setitem__('n', loaded['n'] + 1), [])[1])
+    ing._run_configured_tx_debug()
+    assert loaded['n'] == 0
+
+
+def test_run_configured_tx_debug_runs_once(monkeypatch):
+    """When the env var is set the debug runs for each hash exactly once, even if
+    invoked again on a WSS reconnect (guarded by _tx_debug_completed)."""
+    monkeypatch.setenv('BASE_REALTIME_DEBUG_TX_HASHES', '0x' + 'c' * 64)
+    ing = _make_ingestor()
+    target = _wallet_target()
+    monkeypatch.setattr(ing, '_watched_wallet_pairs', lambda *a, **k: [(target, BASE_WALLET.lower())])
+    calls: list[str] = []
+    monkeypatch.setattr(ing, '_debug_tx_match', lambda h, w, **k: calls.append(h))
+    ing._run_configured_tx_debug()
+    ing._run_configured_tx_debug()  # reconnect — must not re-run
+    assert calls == ['0x' + 'c' * 64]
+
+
+# ---------------------------------------------------------------------------
+# P. realtime_websocket detections surface in the Target Telemetry API
+#    (requirement 5 + 6). A native_transfer row tagged detected_by=realtime_websocket
+#    must be returned by list_target_telemetry under both "All" and "Wallet transfers".
+# ---------------------------------------------------------------------------
+
+class _TelemetryRows:
+    def __init__(self, rows):
+        self._rows = list(rows or [])
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return list(self._rows)
+
+
+def _run_list_target_telemetry_with_row(monkeypatch, telemetry_row, *, event_type_filter=None):
+    from datetime import datetime, timezone
+    from services.api.app import monitoring_runner
+
+    workspace_id = telemetry_row['workspace_id']
+    target_id = telemetry_row['target_id']
+    captured: list[str] = []
+
+    class _MockConn:
+        def execute(self, query, params=None):
+            captured.append(query or '')
+            q = (query or '').lower()
+            if 'from targets' in q and 'wallet_address' in q:
+                return _TelemetryRows([{
+                    'wallet_address': BASE_WALLET.lower(), 'contract_identifier': None,
+                    'target_metadata': None, 'chain_network': 'base', 'target_type': 'wallet',
+                }])
+            if 'monitoring_watcher_state' in q:
+                return _TelemetryRows([])
+            if 'count(*)' in q and 'telemetry_events' in q:
+                return _TelemetryRows([{'cnt': 1}])
+            if 'telemetry_events' in q and 'filter' in q:
+                return _TelemetryRows([{'last_stable_poll_at': None,
+                                        'last_realtime_event_at': datetime.now(timezone.utc)}])
+            if 'telemetry_events' in q and 'source_type' in q:
+                return _TelemetryRows([telemetry_row])
+            return _TelemetryRows([])
+
+    fake_user = {'id': str(uuid.uuid4()), 'workspace_id': workspace_id}
+    fake_workspace = {'workspace_id': workspace_id, 'workspace': {'id': workspace_id}}
+    fake_request = MagicMock()
+    fake_request.headers = {'x-workspace-id': workspace_id}
+
+    with (
+        patch('services.api.app.monitoring_runner.pg_connection') as mock_pg,
+        patch('services.api.app.monitoring_runner.ensure_pilot_schema'),
+        patch('services.api.app.monitoring_runner.authenticate_with_connection', return_value=fake_user),
+        patch('services.api.app.monitoring_runner.resolve_workspace', return_value=fake_workspace),
+    ):
+        mock_pg.return_value.__enter__ = lambda s: _MockConn()
+        mock_pg.return_value.__exit__ = MagicMock(return_value=False)
+        result = monitoring_runner.list_target_telemetry(
+            fake_request, target_id=target_id, limit=50, event_type_filter=event_type_filter,
+        )
+    return result, captured
+
+
+def _realtime_native_row():
+    from datetime import datetime, timezone
+    target_id = str(uuid.uuid4())
+    workspace_id = str(uuid.uuid4())
+    payload_json = {
+        'tx_hash': '0xrt', 'from': BASE_WALLET.lower(), 'to': OTHER_WALLET.lower(),
+        'block_number': 100, 'chain_id': 8453,
+        'detected_by': 'realtime_websocket', 'source_type': 'realtime_websocket',
+        'provider_mode': 'realtime_websocket', 'wallet_transfer_direction': 'outbound',
+    }
+    return {
+        'id': str(uuid.uuid4()), 'workspace_id': workspace_id, 'target_id': target_id,
+        'provider_type': 'realtime_websocket',
+        'source_type': 'native_transfer',  # te.event_type AS source_type
+        'evidence_source': 'live',
+        'observed_at': datetime.now(timezone.utc), 'ingested_at': datetime.now(timezone.utc),
+        'payload_json': payload_json, 'chain_network': 'base', 'receipt_block_number': 100,
+    }
+
+
+def test_list_target_telemetry_returns_realtime_websocket_row_all(monkeypatch):
+    """A native_transfer row tagged detected_by=realtime_websocket is returned under
+    the default 'All' view with detected_by / provider_mode preserved for the UI."""
+    row = _realtime_native_row()
+    result, _ = _run_list_target_telemetry_with_row(monkeypatch, row)
+    assert result['telemetry'], 'realtime_websocket row must be returned'
+    item = result['telemetry'][0]
+    assert item['source_type'] == 'native_transfer'
+    assert item['detected_by'] == 'realtime_websocket'
+    assert item['provider_mode'] == 'realtime_websocket'
+    assert item['block_number'] == 100
+    # Detection-path freshness classifies it as a realtime (not stable) event.
+    assert result['last_realtime_event_at'] is not None
+    assert result['last_stable_poll_at'] is None
+
+
+def test_list_target_telemetry_wallet_transfers_filter_includes_native_transfer(monkeypatch):
+    """The 'Wallet transfers' quick filter maps to an event_type IN clause that
+    includes native_transfer, so realtime native ETH detections are not filtered out."""
+    row = _realtime_native_row()
+    result, captured = _run_list_target_telemetry_with_row(
+        monkeypatch, row, event_type_filter='wallet_transfers',
+    )
+    assert result['telemetry'], 'wallet_transfers filter must still return the realtime row'
+    assert result['telemetry'][0]['detected_by'] == 'realtime_websocket'
+    # The SQL applied for this filter must whitelist native_transfer explicitly.
+    assert any("'native_transfer'" in q and 'wallet_transfer_detected' in q for q in captured), (
+        'wallet_transfers filter SQL must include native_transfer'
+    )
