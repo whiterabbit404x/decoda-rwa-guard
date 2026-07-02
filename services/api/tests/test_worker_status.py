@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from services.api.app.worker_status import (
     build_worker_status,
     live_coverage_gap_reason,
+    realtime_active_by_watcher_facts,
     realtime_enabled,
     stable_poll_stale_threshold_seconds,
     DEFAULT_STABLE_POLL_STALE_SECONDS,
@@ -235,6 +236,91 @@ def test_realtime_enabled_active_provider_healthy():
     assert status['provider_realtime']['state'] == 'healthy'
     assert status['realtime']['last_event_at'] is not None
     assert status['headline'] == 'Stable polling active. Realtime WebSocket active.'
+
+
+# ---------------------------------------------------------------------------
+# Requirement 5: Realtime shows ACTIVE from canonical watcher facts even when
+# THIS process's BASE_REALTIME_ENABLED env is not set (worker-only env). The UI
+# said "Realtime WebSocket Paused / Disabled" while the worker logs showed the
+# WSS active (provider_mode=realtime_websocket, degraded=False, heads increasing).
+# ---------------------------------------------------------------------------
+
+def _realtime_websocket_watcher(*, heads: int = 125, degraded: bool = False, rate_limited: bool = False):
+    return {
+        'source_status': 'realtime_websocket',
+        'degraded': degraded,
+        'metrics': {
+            'provider_mode': 'realtime_websocket',
+            'heads_received': heads,
+            'rate_limited': rate_limited,
+        },
+    }
+
+
+def test_realtime_active_by_watcher_facts_true():
+    assert realtime_active_by_watcher_facts(_realtime_websocket_watcher()) is True
+
+
+def test_realtime_active_by_watcher_facts_false_without_heads():
+    assert realtime_active_by_watcher_facts(_realtime_websocket_watcher(heads=0)) is False
+
+
+def test_realtime_active_by_watcher_facts_false_when_degraded():
+    assert realtime_active_by_watcher_facts(_realtime_websocket_watcher(degraded=True)) is False
+
+
+def test_realtime_active_by_watcher_facts_false_when_rate_limited():
+    assert realtime_active_by_watcher_facts(_realtime_websocket_watcher(rate_limited=True)) is False
+
+
+def test_realtime_active_by_watcher_facts_false_for_fast_tail_mode():
+    watcher = {
+        'source_status': 'quicknode_http_fast_tail',
+        'degraded': True,
+        'metrics': {'provider_mode': 'quicknode_http_fast_tail', 'heads_received': 50},
+    }
+    assert realtime_active_by_watcher_facts(watcher) is False
+
+
+def test_realtime_active_by_watcher_facts_none_watcher():
+    assert realtime_active_by_watcher_facts(None) is False
+    assert realtime_active_by_watcher_facts({}) is False
+
+
+def test_realtime_shows_active_from_facts_even_when_env_disabled():
+    """The exact production mismatch: API process has no BASE_REALTIME_ENABLED, but
+    the watcher row proves the WSS worker is delivering heads. Runtime status must
+    read Active (not paused) from the canonical backend facts."""
+    now = _now()
+    status = build_worker_status(
+        now=now,
+        realtime_is_enabled=False,  # API env not set — only the worker had it
+        stable_last_heartbeat_at=now - timedelta(seconds=15),
+        stable_last_poll_at=now - timedelta(seconds=15),
+        heartbeat_ttl_seconds=TTL,
+        realtime_watcher=_realtime_websocket_watcher(heads=125),
+        realtime_last_event_at=now - timedelta(seconds=2),
+    )
+    assert status['realtime']['state'] == 'active'
+    assert status['realtime']['enabled'] is True
+    assert status['provider_realtime']['state'] == 'healthy'
+    assert status['headline'] == 'Stable polling active. Realtime WebSocket active.'
+
+
+def test_realtime_paused_when_env_disabled_and_no_heads_yet():
+    """Env disabled + a watcher row that has NOT received heads must NOT be forced
+    active — it stays paused (fail-closed: no false Active)."""
+    now = _now()
+    status = build_worker_status(
+        now=now,
+        realtime_is_enabled=False,
+        stable_last_heartbeat_at=now - timedelta(seconds=15),
+        stable_last_poll_at=now - timedelta(seconds=15),
+        heartbeat_ttl_seconds=TTL,
+        realtime_watcher=_realtime_websocket_watcher(heads=0),
+    )
+    assert status['realtime']['state'] == 'paused'
+    assert status['realtime']['enabled'] is False
 
 
 def test_realtime_enabled_but_no_heartbeat_is_starting():

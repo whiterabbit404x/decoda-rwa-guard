@@ -142,6 +142,41 @@ def live_coverage_gap_reason(
     )
 
 
+def realtime_active_by_watcher_facts(watcher: dict[str, Any] | None) -> bool:
+    """True when the realtime watcher row PROVES the WebSocket worker is live.
+
+    Canonical backend facts, written only by the realtime worker into
+    ``monitoring_watcher_state``:
+
+      * ``provider_mode`` / ``source_status`` == ``realtime_websocket``
+      * not degraded
+      * not provider-rate-limited
+      * ``heads_received`` > 0 (heads are actually arriving)
+
+    Runtime status must derive from these facts (CLAUDE.md: "Runtime status must be
+    derived from canonical backend facts"), so a worker that is demonstrably
+    receiving heads reads **Active** even when THIS API process was never given
+    ``BASE_REALTIME_ENABLED`` — the exact mismatch where the UI said "Realtime
+    WebSocket Paused / Disabled" while the worker logs showed realtime active
+    (requirement 5).
+    """
+    if not isinstance(watcher, dict) or not watcher:
+        return False
+    metrics = watcher.get('metrics') if isinstance(watcher.get('metrics'), dict) else {}
+    if bool(metrics.get('rate_limited')):
+        return False
+    if bool(watcher.get('degraded')):
+        return False
+    provider_mode = str(
+        metrics.get('provider_mode') or watcher.get('source_status') or ''
+    ).strip().lower()
+    try:
+        heads_received = int(metrics.get('heads_received') or 0)
+    except (TypeError, ValueError):
+        heads_received = 0
+    return provider_mode == 'realtime_websocket' and heads_received > 0
+
+
 def _age_seconds(now: datetime, ts: datetime | None) -> int | None:
     if ts is None:
         return None
@@ -242,7 +277,20 @@ def build_worker_status(
     watcher_degraded_reason = watcher.get('degraded_reason') or None
     watcher_has_row = bool(watcher)
 
-    if not realtime_is_enabled:
+    # Canonical proof the realtime WebSocket worker is live, independent of THIS
+    # process's BASE_REALTIME_ENABLED env (requirement 5): the watcher row reports
+    # provider_mode=realtime_websocket, not degraded/rate-limited, heads increasing.
+    realtime_active_by_facts = realtime_active_by_watcher_facts(watcher)
+    # Effective enablement drives the provider-health verdict, headline, and the
+    # customer-facing ``enabled`` flag so a worker proven active reads as such even
+    # when the env flag was only set on the worker process, not the API process.
+    effective_realtime_enabled = bool(realtime_is_enabled or realtime_active_by_facts)
+
+    if realtime_active_by_facts:
+        # Backend facts win: the worker is delivering heads on the WSS right now.
+        realtime_state = 'active'
+        realtime_reason = None
+    elif not realtime_is_enabled:
         realtime_state = 'paused'
         realtime_reason = 'BASE_REALTIME_ENABLED_not_true'
     elif provider_rate_limited:
@@ -262,7 +310,7 @@ def build_worker_status(
     # --- Provider realtime health --------------------------------------------------
     if provider_rate_limited:
         provider_state = 'cooldown' if _is_future_iso(next_retry_at, now) else 'rate_limited'
-    elif not realtime_is_enabled:
+    elif not effective_realtime_enabled:
         provider_state = 'not_applicable'
     elif watcher_has_row and not watcher_degraded:
         provider_state = 'healthy'
@@ -271,7 +319,7 @@ def build_worker_status(
 
     # --- Truthful headline ---------------------------------------------------------
     # Only mention "heartbeat is stale" when STABLE polling is actually stale.
-    if stable_active and not realtime_is_enabled:
+    if stable_active and not effective_realtime_enabled:
         headline = 'Stable polling active. Realtime WebSocket paused.'
     elif stable_active and realtime_state == 'rate_limited':
         headline = 'Stable polling active. Realtime WebSocket rate limited (provider cooldown).'
@@ -312,7 +360,9 @@ def build_worker_status(
         },
         'realtime': {
             'label': 'Realtime WebSocket',
-            'enabled': bool(realtime_is_enabled),
+            # Effective enablement: True when the env flag is set OR the watcher row
+            # proves the worker is actively delivering heads (requirement 5).
+            'enabled': bool(effective_realtime_enabled),
             'state': realtime_state,
             'last_event_at': _iso(realtime_last_event_at),
             'reason': realtime_reason,

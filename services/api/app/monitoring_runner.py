@@ -37,6 +37,7 @@ from services.api.app.db_failure import classify_db_error
 from services.api.app.worker_status import (
     build_worker_status,
     live_coverage_gap_reason,
+    realtime_active_by_watcher_facts,
     realtime_enabled,
     stable_poll_stale_threshold_seconds,
     REALTIME_DETECTED_BY,
@@ -10506,6 +10507,42 @@ def list_target_telemetry(
             _monitored_address = resolve_monitored_wallet(_target_for_resolve)
             _monitored_chain_network = str(_target_row.get('chain_network') or '').strip().lower() or None
 
+        # Realtime WebSocket status for the Telemetry header. The env flag alone is
+        # NOT authoritative: the worker may run with BASE_REALTIME_ENABLED set only on
+        # the worker process while the API process does not have it. Derive from the
+        # canonical watcher row (written only by the realtime worker) so the UI shows
+        # "Active" when provider_mode=realtime_websocket, degraded=False, and heads are
+        # increasing — instead of a false "Paused / Disabled" (requirement 5). Resolved
+        # here (before the count/data queries) so the telemetry data query stays the
+        # last executed statement for callers that assert on execution order.
+        _realtime_env_enabled = realtime_enabled()
+        _realtime_active_by_facts = False
+        try:
+            _watcher_row = connection.execute(
+                '''
+                SELECT source_status, degraded, degraded_reason, metrics
+                FROM monitoring_watcher_state
+                ORDER BY COALESCE(last_heartbeat_at, updated_at) DESC
+                LIMIT 1
+                '''
+            ).fetchone()
+            if _watcher_row is not None:
+                _realtime_active_by_facts = realtime_active_by_watcher_facts(
+                    _json_safe_value(dict(_watcher_row))
+                )
+        except Exception:
+            logger.warning(
+                'telemetry_realtime_watcher_unavailable workspace_id=%s target_id=%s',
+                workspace_id, target_id, exc_info=True,
+            )
+        _realtime_effective_enabled = _realtime_env_enabled or _realtime_active_by_facts
+        if _realtime_active_by_facts:
+            _realtime_state = 'active'
+        elif _realtime_env_enabled:
+            _realtime_state = 'enabled'
+        else:
+            _realtime_state = 'paused'
+
         _q = (q or '').strip()
         _effective_limit = max(1, min(limit, 200))
         _effective_offset = max(0, offset)
@@ -10728,8 +10765,12 @@ def list_target_telemetry(
             'monitored_address_normalized': (_monitored_address or '').lower() or None,
             'chain_network': _monitored_chain_network,
             'live_telemetry_ready': len(telemetry) > 0,
-            # Separated worker facts for the Telemetry page header.
-            'realtime_enabled': realtime_enabled(),
+            # Separated worker facts for the Telemetry page header. realtime_enabled
+            # reflects canonical backend facts (worker actively delivering heads),
+            # not just this process's env flag; realtime_state distinguishes
+            # active / enabled / paused so the UI can render "Active" (requirement 5).
+            'realtime_enabled': _realtime_effective_enabled,
+            'realtime_state': _realtime_state,
             'last_stable_poll_at': last_stable_poll_at,
             'last_realtime_event_at': last_realtime_event_at,
             'total_count': total_count,
