@@ -1038,15 +1038,18 @@ def test_debug_tx_below_checkpoint_triggers_bounded_backfill(monkeypatch, caplog
     assert scanned_blocks == [98, 99, 100, 101, 102]
     # Forward cursor MUST NOT move for an old-block backfill.
     assert ing.state['last_processed_block'] == 500
-    # The previously-missed transfer is now persisted, tagged realtime_websocket.
+    # The previously-missed transfer is now persisted, tagged realtime_backfill — it is
+    # a recovery scan of an OLD block, not a live WebSocket detection.
     assert len(persisted) == 1
     assert persisted[0].payload['tx_hash'] == '0xold'
-    assert persisted[0].payload['detected_by'] == 'realtime_websocket'
+    assert persisted[0].payload['detected_by'] == 'realtime_backfill'
 
     skip = next(m for m in (r.getMessage() for r in caplog.records)
                 if 'realtime_tx_skipped_by_checkpoint' in m)
     assert 'tx_block=100' in skip
     assert 'checkpoint_block=500' in skip
+    # The bounded backfill announces itself with the canonical marker.
+    assert any('realtime_bounded_backfill_started' in m for m in (r.getMessage() for r in caplog.records))
 
 
 def test_debug_tx_above_checkpoint_does_not_backfill(monkeypatch):
@@ -1212,3 +1215,243 @@ def test_list_target_telemetry_wallet_transfers_filter_includes_native_transfer(
     assert any("'native_transfer'" in q and 'wallet_transfer_detected' in q for q in captured), (
         'wallet_transfers filter SQL must include native_transfer'
     )
+
+
+# ---------------------------------------------------------------------------
+# Q. Requirement 1 completion: receipt status + realtime scan-window context
+#    (checkpoint_block / scan_start_block / was_block_scanned) in BOTH the
+#    env-var _debug_tx_match path and the read-only /ops/monitoring/diagnose-tx
+#    endpoint. This is the smoking-gun diagnostic for the production incident:
+#    a MetaMask ETH transfer whose block sits FAR below the realtime cold-start
+#    checkpoint (tx block 47_373_543 vs cold start 48_094_524) was never
+#    forward-scanned, so realtime structurally could not catch it — recover via
+#    import-tx. was_block_scanned=False makes that unambiguous.
+# ---------------------------------------------------------------------------
+
+def test_debug_tx_match_reports_receipt_status_and_scan_window(monkeypatch, caplog):
+    """_debug_tx_match fetches the receipt (status) and reports the scan window:
+    a tx block inside [scan_start_block, checkpoint_block] is was_block_scanned=True."""
+    ing = _make_ingestor()
+    target = _wallet_target()
+    tx = _native_tx(tx_hash='0xscanned', from_addr=BASE_WALLET, to_addr=OTHER_WALLET)  # block 100
+
+    def _rpc(method, params):
+        if method == 'eth_getTransactionByHash':
+            return tx
+        if method == 'eth_getTransactionReceipt':
+            return {'status': '0x1'}
+        return None
+
+    monkeypatch.setattr(ing, '_rpc_call', _rpc)
+    ing.state['scan_start_block'] = 90
+    ing.state['last_processed_block'] = 120  # 90 <= 100 <= 120 → forward-scanned
+
+    with caplog.at_level(logging.INFO, logger='services.api.app.base_realtime_ingestor'):
+        result = ing._debug_tx_match('0xscanned', [(target, BASE_WALLET.lower())], run_backfill=False)
+
+    assert result['status'] == 1
+    assert result['checkpoint_block'] == 120
+    assert result['scan_start_block'] == 90
+    assert result['was_block_scanned'] is True
+
+    dbg = next(m for m in (r.getMessage() for r in caplog.records) if 'realtime_tx_debug ' in m)
+    assert 'status=1' in dbg
+    assert 'checkpoint_block=120' in dbg
+    assert 'scan_start_block=90' in dbg
+    assert 'was_block_scanned=True' in dbg
+
+
+def test_debug_tx_match_below_scan_start_is_not_scanned(monkeypatch):
+    """The production case: a tx block BELOW the cold-start floor was never
+    forward-scanned (was_block_scanned=False) even though it is below the checkpoint,
+    and the bounded recovery backfill still runs."""
+    ing = _make_ingestor()
+    target = _wallet_target()
+    tx = _native_tx(tx_hash='0xcold', from_addr=BASE_WALLET, to_addr=OTHER_WALLET)  # block 100
+    block_100 = _block_with(
+        [_native_tx(tx_hash='0xcold', from_addr=BASE_WALLET, to_addr=OTHER_WALLET)], number=100,
+    )
+
+    def _rpc(method, params):
+        if method == 'eth_getTransactionByHash':
+            return tx
+        if method == 'eth_getTransactionReceipt':
+            return {'status': '0x1'}
+        if method == 'eth_getBlockByNumber':
+            num = int(params[0], 16)
+            return block_100 if num == 100 else _block_with([], number=num)
+        return None
+
+    monkeypatch.setattr(ing, '_rpc_call', _rpc)
+    monkeypatch.setattr(ing, '_persist_event', lambda _t, e: {'status': 'processed', 'event_id': e.event_id})
+    # Cold-start floor ABOVE the tx block → block 100 was skipped at cold start.
+    ing.state['scan_start_block'] = 500
+    ing.state['last_processed_block'] = 800
+
+    result = ing._debug_tx_match('0xcold', [(target, BASE_WALLET.lower())])
+
+    assert result['status'] == 1
+    assert result['was_block_scanned'] is False       # 100 < scan_start 500 → never scanned
+    assert result['skipped_by_checkpoint'] is True    # 100 <= checkpoint 800
+    assert result['backfill_triggered'] is True        # bounded recovery scan ran
+
+
+def test_realtime_native_event_persists_when_address_in_fallback_location(monkeypatch):
+    """A realtime native transfer for a target whose monitored address is stored in a
+    FALLBACK location (contract_identifier, not wallet_address) is still classified and
+    persisted as native_transfer. The resolved monitored wallet — not the raw
+    wallet_address column — drives classification, so realtime detections are not
+    silently dropped for such targets."""
+    from services.api.app import monitoring_runner
+    from datetime import datetime, timezone
+
+    captured: dict = {}
+
+    def _fake_persist_raw(connection, *, telemetry_id, workspace_id, asset_id, target_id,
+                          provider_type, event_type, observed_at, evidence_source, payload, idempotency_key):
+        captured['event_type'] = event_type
+        return True
+
+    monkeypatch.setattr(monitoring_runner, '_persist_raw_wallet_transfer_telemetry', _fake_persist_raw)
+
+    target = _wallet_target()
+    target['wallet_address'] = None                 # empty canonical column
+    target['contract_identifier'] = BASE_WALLET.lower()  # address lives here instead
+
+    ing = _make_ingestor()
+    tx = _native_tx(tx_hash='0xfallback', from_addr=BASE_WALLET, to_addr=OTHER_WALLET)
+    event = ing._build_native_transfer_event(
+        target, tx, block_number=100, block_hash='0xb', observed_at=datetime.now(timezone.utc),
+        direction='outbound', source_type='realtime_websocket',
+    )
+    result = monitoring_runner._maybe_persist_ingested_wallet_transfer(object(), target=target, event=event)
+
+    assert result == 'native_transfer'
+    assert captured['event_type'] == 'native_transfer'
+
+
+# --- diagnose-tx endpoint: production scenario (tx below cold-start checkpoint) ---
+
+_PROD_TX_HASH = '0x' + '7f' * 32  # 66-char 0x hash
+
+
+def _run_diagnose_tx(monkeypatch, *, tx, receipt, target_row, checkpoint_row):
+    from services.api.app import monitoring_runner
+
+    workspace_id = str(target_row['workspace_id'])
+
+    class _Conn:
+        def execute(self, query, params=None):
+            q = (query or '').lower()
+            if 'from targets' in q:
+                return _TelemetryRows([target_row])
+            if 'monitoring_watcher_state' in q:
+                return _TelemetryRows([checkpoint_row] if checkpoint_row is not None else [])
+            if 'from telemetry_events' in q:
+                return _TelemetryRows([])  # not yet persisted
+            return _TelemetryRows([])
+
+    rpc = MagicMock()
+    rpc.call.side_effect = lambda method, params: (
+        tx if method == 'eth_getTransactionByHash'
+        else receipt if method == 'eth_getTransactionReceipt'
+        else None
+    )
+    fake_request = MagicMock()
+    fake_request.headers = {'x-workspace-id': workspace_id}
+
+    with (
+        patch('services.api.app.monitoring_runner.pg_connection') as mock_pg,
+        patch('services.api.app.monitoring_runner.ensure_pilot_schema'),
+        patch('services.api.app.evm_activity_provider.FailoverJsonRpcClient', return_value=rpc),
+        patch('services.api.app.evm_activity_provider.resolve_chain_rpc', return_value={
+            'rpc_url': 'http://rpc', 'rpc_urls': ['http://rpc'], 'expected_chain_id': 8453,
+        }),
+    ):
+        mock_pg.return_value.__enter__ = lambda s: _Conn()
+        mock_pg.return_value.__exit__ = MagicMock(return_value=False)
+        return monitoring_runner.diagnose_wallet_transaction(fake_request, tx['hash'])
+
+
+def _prod_diagnose_target():
+    return {
+        'id': str(uuid.uuid4()),
+        'workspace_id': str(uuid.uuid4()),
+        'name': 'Base Wallet',
+        'target_type': 'wallet',
+        'chain_network': 'base',
+        'wallet_address': BASE_WALLET.lower(),
+        'contract_identifier': None,
+        'target_metadata': None,
+        'asset_id': str(uuid.uuid4()),
+        'monitoring_enabled': True,
+        'enabled': True,
+        'is_active': True,
+    }
+
+
+def test_diagnose_tx_reports_below_checkpoint_and_receipt_status(monkeypatch):
+    """Read-only diagnose-tx endpoint reproduces the production incident: a matched
+    outbound transfer whose block (47_373_543) is far below the realtime cold-start
+    checkpoint (48_094_524) reports was_block_scanned=False, receipt status, and a
+    persist_reason pointing the operator at import-tx."""
+    target_row = _prod_diagnose_target()
+    tx = {
+        'hash': _PROD_TX_HASH,
+        'from': BASE_WALLET.upper().replace('0X', '0x'),  # checksum-cased from MetaMask
+        'to': OTHER_WALLET,
+        'value': hex(10 ** 15),
+        'input': '0x',
+        'blockNumber': hex(47_373_543),
+        'chainId': hex(8453),
+    }
+    receipt = {'status': '0x1'}
+    checkpoint_row = {'last_processed_block': 48_094_524, 'metrics': {'scan_start_block': 48_094_523}}
+
+    result = _run_diagnose_tx(
+        monkeypatch, tx=tx, receipt=receipt, target_row=target_row, checkpoint_row=checkpoint_row,
+    )
+
+    assert result['tx_found'] is True
+    assert result['block_number'] == 47_373_543
+    assert result['receipt_status'] == 1
+    assert result['realtime_checkpoint_block'] == 48_094_524
+    assert result['realtime_scan_start_block'] == 48_094_523
+    assert result['was_block_scanned'] is False
+    assert result['below_realtime_checkpoint'] is True
+    assert result['matched_target_count'] == 1
+
+    match = result['matches'][0]
+    assert match['matched'] is True
+    assert match['from_matches'] is True
+    assert match['to_matches'] is False
+    assert match['normalized_from'] == BASE_WALLET.lower()
+    assert match['normalized_to'] == OTHER_WALLET.lower()
+    assert match['normalized_target'] == BASE_WALLET.lower()
+    assert match['was_block_scanned'] is False
+    assert match['persist_reason'] == 'matched_below_realtime_checkpoint_run_import_tx'
+
+
+def test_diagnose_tx_reverted_transfer_surfaces_status_zero(monkeypatch):
+    """A reverted send (receipt.status=0x0) is surfaced as receipt_status=0 so an
+    operator can see the transfer failed on-chain (not a Decoda detection bug)."""
+    target_row = _prod_diagnose_target()
+    tx = {
+        'hash': _PROD_TX_HASH,
+        'from': BASE_WALLET.lower(),
+        'to': OTHER_WALLET,
+        'value': hex(0),
+        'input': '0x',
+        'blockNumber': hex(48_094_600),  # above checkpoint → forward scan will reach it
+        'chainId': hex(8453),
+    }
+    receipt = {'status': '0x0'}
+    checkpoint_row = {'last_processed_block': 48_094_524, 'metrics': {'scan_start_block': 48_094_523}}
+
+    result = _run_diagnose_tx(
+        monkeypatch, tx=tx, receipt=receipt, target_row=target_row, checkpoint_row=checkpoint_row,
+    )
+
+    assert result['receipt_status'] == 0
+    assert result['below_realtime_checkpoint'] is False  # block above checkpoint
+    assert result['was_block_scanned'] is False           # not yet within [start, checkpoint]
