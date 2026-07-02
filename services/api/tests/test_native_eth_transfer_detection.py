@@ -747,3 +747,166 @@ def test_effective_degraded_reason_http_fast_tail_when_heads_flow():
     # Still a fallback mode, but heads are flowing — reason is accurate, not stale.
     assert ing._effective_degraded_reason() == 'http_fast_tail_active'
     assert ing.state['degraded_reason'] == 'http_fast_tail_active'
+
+
+# ---------------------------------------------------------------------------
+# N. Scan-complete observability + enriched match/persisted logs + payload
+#    address fields. These are the production-incident diagnostics: a
+#    "scan_started" line with no follow-up must now always be explained by a
+#    "scan_complete" line carrying blocks_scanned / txs_seen / matches.
+# ---------------------------------------------------------------------------
+
+def test_native_scan_emits_scan_complete_with_counts(monkeypatch, caplog):
+    """A matched scan emits realtime_native_transfer_scan_complete with
+    blocks_scanned / txs_seen / matches so an operator can see the scan ran."""
+    ing = _make_ingestor()
+    target = _wallet_target()
+    block = _block_with(
+        [_native_tx(tx_hash='0xcomplete', from_addr=BASE_WALLET, to_addr=OTHER_WALLET)],
+        number=100,
+    )
+    monkeypatch.setattr(
+        ing, '_rpc_call',
+        lambda method, params: block if method == 'eth_getBlockByNumber' else None,
+    )
+    monkeypatch.setattr(ing, '_persist_event', lambda _t, e: {'status': 'processed', 'event_id': e.event_id})
+
+    with caplog.at_level(logging.INFO, logger='services.api.app.base_realtime_ingestor'):
+        ing._scan_native_transfers(100, 100, [(target, BASE_WALLET)], source_type='realtime_websocket')
+
+    complete = [m for m in (r.getMessage() for r in caplog.records)
+                if 'realtime_native_transfer_scan_complete' in m]
+    assert complete, 'scan_complete line must be emitted'
+    line = complete[0]
+    assert 'from_block=100' in line and 'to_block=100' in line
+    assert 'blocks_scanned=1' in line
+    assert 'txs_seen=1' in line
+    assert 'watched_targets=1' in line
+    assert 'matches=1' in line
+    assert 'detected_by=realtime_websocket' in line
+
+
+def test_native_scan_complete_reports_zero_txs_for_hash_only_block(monkeypatch, caplog):
+    """The root cause the scan_complete line must expose: a hash-only block (the
+    shape eth_getBlockByNumber returns WITHOUT full=True) yields str entries, so
+    txs_seen=0 / matches=0 even though a block was scanned. This is exactly why a
+    native ETH send can be invisible while scan_started still logs."""
+    ing = _make_ingestor()
+    target = _wallet_target()
+    # transactions as bare hash strings — no full transaction objects.
+    hash_only_block = {
+        'hash': '0xabc', 'number': hex(100), 'timestamp': hex(1_700_000_000),
+        'transactions': ['0xhash1', '0xhash2'],
+    }
+    monkeypatch.setattr(
+        ing, '_rpc_call',
+        lambda method, params: hash_only_block if method == 'eth_getBlockByNumber' else None,
+    )
+    persisted: list = []
+    monkeypatch.setattr(
+        ing, '_persist_event',
+        lambda _t, e: (persisted.append(e), {'status': 'processed', 'event_id': e.event_id})[1],
+    )
+
+    with caplog.at_level(logging.INFO, logger='services.api.app.base_realtime_ingestor'):
+        n = ing._scan_native_transfers(100, 100, [(target, BASE_WALLET)], source_type='realtime_websocket')
+
+    assert n == 0
+    assert persisted == []
+    line = next(m for m in (r.getMessage() for r in caplog.records)
+                if 'realtime_native_transfer_scan_complete' in m)
+    assert 'blocks_scanned=1' in line
+    assert 'txs_seen=0' in line
+    assert 'matches=0' in line
+
+
+def test_native_transfer_match_log_includes_from_to_value_block(monkeypatch, caplog):
+    """realtime_native_transfer_match carries from / to / value / block_number so the
+    matched transfer is fully described in one line (requirement 3)."""
+    ing = _make_ingestor()
+    target = _wallet_target()
+    block = _block_with(
+        [_native_tx(tx_hash='0xmatchlog', from_addr=BASE_WALLET, to_addr=OTHER_WALLET, value_wei=10 ** 15)],
+        number=100,
+    )
+    monkeypatch.setattr(
+        ing, '_rpc_call',
+        lambda method, params: block if method == 'eth_getBlockByNumber' else None,
+    )
+    monkeypatch.setattr(ing, '_persist_event', lambda _t, e: {'status': 'processed', 'event_id': e.event_id})
+
+    with caplog.at_level(logging.INFO, logger='services.api.app.base_realtime_ingestor'):
+        ing._scan_native_transfers(100, 100, [(target, BASE_WALLET)], source_type='realtime_websocket')
+
+    match = next(m for m in (r.getMessage() for r in caplog.records)
+                 if 'realtime_native_transfer_match' in m)
+    assert f'from={BASE_WALLET.lower()}' in match
+    assert f'to={OTHER_WALLET.lower()}' in match
+    assert f'value={10 ** 15}' in match
+    assert 'block_number=100' in match
+    assert 'detected_by=realtime_websocket' in match
+
+
+def test_realtime_event_persisted_log_has_event_type_and_source(monkeypatch, caplog):
+    """realtime_event_persisted names the customer-facing event class and the
+    detected_by / source_type tag (requirement 3)."""
+    ing = _make_ingestor()
+    target = _wallet_target()
+    block = _block_with(
+        [_native_tx(tx_hash='0xpersistlog', from_addr=BASE_WALLET, to_addr=OTHER_WALLET)],
+        number=100,
+    )
+    monkeypatch.setattr(
+        ing, '_rpc_call',
+        lambda method, params: block if method == 'eth_getBlockByNumber' else None,
+    )
+    monkeypatch.setattr(ing, '_persist_event', lambda _t, e: {'status': 'processed', 'event_id': e.event_id})
+
+    with caplog.at_level(logging.INFO, logger='services.api.app.base_realtime_ingestor'):
+        ing._scan_native_transfers(100, 100, [(target, BASE_WALLET)], source_type='realtime_websocket')
+
+    persisted = next(m for m in (r.getMessage() for r in caplog.records)
+                     if 'realtime_event_persisted' in m)
+    assert 'event_type=wallet_transfer_detected' in persisted
+    assert 'detected_by=realtime_websocket' in persisted
+    assert 'source_type=realtime_websocket' in persisted
+    assert 'tx_hash=0xpersistlog' in persisted
+
+
+def test_native_transfer_event_payload_has_from_and_to_address():
+    """The persisted native-transfer payload carries explicit from_address / to_address
+    aliases (requirement 4) matching the normalised from / to."""
+    from datetime import datetime, timezone
+    ing = _make_ingestor()
+    target = _wallet_target()
+    tx = _native_tx(tx_hash='0xaddr', from_addr=BASE_WALLET.upper().replace('0X', '0x'), to_addr=OTHER_WALLET)
+    event = ing._build_native_transfer_event(
+        target, tx, block_number=100, block_hash='0xb', observed_at=datetime.now(timezone.utc),
+        direction='outbound', source_type='realtime_websocket',
+    )
+    p = event.payload
+    assert p['from_address'] == BASE_WALLET.lower()
+    assert p['to_address'] == OTHER_WALLET.lower()
+    # from_address / to_address stay consistent with the existing from / to fields.
+    assert p['from_address'] == p['from']
+    assert p['to_address'] == p['to']
+    # Canonical realtime evidence tags remain intact.
+    assert p['detected_by'] == 'realtime_websocket'
+    assert p['source_type'] == 'realtime_websocket'
+    assert p['evidence_source'] == 'live'
+    assert p['chain_id'] == 8453
+
+
+def test_ui_telemetry_page_renders_realtime_websocket_label():
+    """Requirement 7: the Telemetry view maps detected_by=realtime_websocket to the
+    human label 'Realtime (WebSocket)' so a customer sees the transfer was caught by
+    the realtime socket, not stable polling."""
+    src = open(
+        'apps/web/app/(product)/monitoring-sources/[targetId]/telemetry/page.tsx',
+        encoding='utf-8',
+    ).read()
+    assert "realtime_websocket: 'Realtime (WebSocket)'" in src
+    # from_address / to_address are read by the row classifier so the aliased payload
+    # fields are surfaced, not ignored.
+    assert "'from', 'from_address'" in src
+    assert "'to', 'to_address'" in src
