@@ -1195,11 +1195,25 @@ class BaseRealtimeIngestor:
 
         Requirement A — the live-tail scan of the newest confirmed block(s) ALWAYS
         runs first and is fully independent of the gap backfill: a failing, paused,
-        or 413-ing backfill can NEVER block detection of current blocks. Requirement
-        C — single-flight + coalescing: at most one block scan runs at a time, and
-        newHeads that arrive while a scan is in flight are coalesced so only the
-        latest head is scanned (a burst of heads never fans out into one RPC-heavy
-        scan per head, which is what pushed the provider into HTTP 429).
+        or 413-ing backfill can NEVER block detection of current blocks.
+
+        Requirement C — bounded, single-flight, coalescing:
+        * Single-flight: ``_head_scan_in_flight`` guarantees at most ONE block scan is
+          ever active, so concurrent callers (or a future concurrent producer) can
+          never fan out into overlapping RPC-heavy scans.
+        * Coalescing: callers that arrive while a scan is in flight only bump
+          ``_coalesced_head`` and return; the in-flight scan drains to the latest head
+          instead of starting a fresh scan each.
+        * Bounded once-per-block: every path advances ``last_processed_block``, so even
+          when heads are processed one-at-a-time each block is fetched EXACTLY ONCE
+          (subsequent heads scan only the newly-confirmed block, not the whole window).
+          This — plus the bounded live-tail window and the rate-limit breaker — is what
+          keeps newHeads from amplifying into the provider HTTP 429.
+
+        Note: because the WSS recv loop awaits this dispatch inline and ``_rpc_call``
+        is synchronous, in steady state heads are drained one-at-a-time rather than
+        coalesced mid-scan; the once-per-block bound (not the coalescer) is what caps
+        the RPC load there. The coalescer engages when this is driven concurrently.
         """
         self._coalesced_head = (
             head if self._coalesced_head is None else max(int(self._coalesced_head), int(head))
@@ -2183,8 +2197,11 @@ class BaseRealtimeIngestor:
                         )
                         self.state['last_event_at'] = datetime.now(timezone.utc).isoformat()
                         # Live-tail always runs; gap backfill is separate and never
-                        # blocks it (requirement A). Single-flight + coalescing keeps at
-                        # most one block scan active (requirement C).
+                        # blocks it (requirement A). Single-flight keeps at most one
+                        # block scan active and every block is fetched once (checkpoint
+                        # advances), so newHeads never amplify into a provider 429
+                        # (requirement C). This awaits inline, so heads are drained
+                        # one-at-a-time; the once-per-block bound caps the RPC load.
                         await self._handle_new_head(head)
 
                 elif sub == sub_ids.get('logs'):
