@@ -33,6 +33,9 @@ from typing import Any
 REALTIME_DETECTED_BY: tuple[str, ...] = (
     'realtime_websocket',
     'realtime_backfill',
+    # Bounded tx-hash import (base_realtime_ingestor._backfill_tx_by_hash): recovers an
+    # old transfer below the fast-tail catch-up window without advancing the cursor.
+    'realtime_tx_import',
     # HTTP fast-tail fallback. 'quicknode_http_fast_tail' is the canonical tag
     # (base_realtime_ingestor.HTTP_FAST_TAIL_SOURCE); 'realtime_http_fast_tail' is
     # retained so any rows persisted before the rename still classify as realtime.
