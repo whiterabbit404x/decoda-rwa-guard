@@ -689,9 +689,11 @@ def test_new_head_in_steady_state_persists_realtime_websocket(monkeypatch):
     assert ing.state['last_processed_block'] == 100
 
 
-def test_new_head_with_large_gap_uses_backfill_not_head_scan(monkeypatch):
-    """A large lag routes to the bounded _backfill (realtime_backfill), not the
-    steady-state head scan — the two paths are mutually exclusive per head."""
+def test_new_head_with_large_gap_runs_live_tail_and_backfill(monkeypatch):
+    """Requirement A: a large lag runs BOTH the live-tail head scan (current blocks,
+    detected_by=realtime_websocket) AND the separate bounded gap backfill. The two
+    are no longer mutually exclusive — a failing/paused backfill must never block
+    detection of the current head block."""
     ing = _make_ingestor()
     monkeypatch.setattr(ing, '_watched_targets', lambda: [_wallet_target()])
     ing.state['last_processed_block'] = 10  # head 101 → lag 91 > gap_threshold (24)
@@ -712,8 +714,39 @@ def test_new_head_with_large_gap_uses_backfill_not_head_scan(monkeypatch):
 
     _drive_one_newhead(ing, head=101)
 
+    # Live-tail ALWAYS runs on the current head (requirement A) ...
+    assert head_scan_calls == [101], head_scan_calls
+    # ... and the deep-gap backfill runs separately, sized from the pre-scan checkpoint.
     assert backfill_calls == [(11, 101)], backfill_calls
-    assert head_scan_calls == [], head_scan_calls
+
+
+def test_failed_backfill_does_not_block_live_tail(monkeypatch):
+    """Requirement A: even when the gap backfill raises, the live-tail head scan for
+    the current block still runs and persists — a failing backfill can never block
+    realtime detection of current blocks."""
+    ing = _make_ingestor()
+    monkeypatch.setattr(ing, '_watched_targets', lambda: [_wallet_target()])
+    ing.state['last_processed_block'] = 10  # large gap → backfill path is exercised
+
+    head_scan_calls: list[int] = []
+
+    async def _hs(h):
+        head_scan_calls.append(h)
+        return 0
+
+    async def _boom(a, b):
+        raise RuntimeError('backfill exploded (413/429/whatever)')
+
+    # Live-tail runs first; the backfill blows up afterwards. The exception must not
+    # prevent the live-tail scan that already ran, and must not crash the ws loop.
+    monkeypatch.setattr(ing, '_scan_head_native_transfers', _hs)
+    monkeypatch.setattr(ing, '_backfill', _boom)
+
+    _drive_one_newhead(ing, head=101)
+
+    assert head_scan_calls == [101], (
+        f'live-tail must run even when backfill fails; got {head_scan_calls}'
+    )
 
 
 # ---------------------------------------------------------------------------

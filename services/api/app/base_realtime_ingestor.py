@@ -250,6 +250,11 @@ class BaseRealtimeIngestor:
         # Monotonic deadline; while time.monotonic() < this, gap backfill is paused
         # (set after a provider rate-limit so we do not re-trigger every block).
         self._backfill_paused_until: float = 0.0
+        # Set True after the gap backfill's eth_getLogs returns HTTP 413 enough times
+        # that its chunk cannot be shrunk further. Native ETH detection never depends
+        # on eth_getLogs (requirement E), so the log scan is disabled and only the
+        # native full-transaction scan runs — never looping on the same 413 chunk.
+        self._backfill_log_scan_disabled: bool = False
         # Guards the one-time checkpoint bootstrap (DB load) on cold start.
         self._checkpoint_bootstrapped: bool = False
 
@@ -364,6 +369,14 @@ class BaseRealtimeIngestor:
         self._block_number_cache: int | None = None
         self._block_number_fetched_at: float = 0.0
         self._last_head_block_at: float = 0.0  # monotonic time of last newHeads update
+
+        # Live-tail single-flight + coalescing (requirement C). Only ONE block scan
+        # runs at a time; newHeads that arrive while a scan is in flight are coalesced
+        # into the next scan window (only the latest head is scanned) so a burst of
+        # heads never fans out into one RPC-heavy scan per head. The live-tail scan
+        # itself always uses the newHeads-supplied block number, never eth_blockNumber.
+        self._head_scan_in_flight: bool = False
+        self._coalesced_head: int | None = None
 
         # Target-loading (monitored-address) degraded signal. Set True when at least
         # one active Base target has no resolvable monitored address so it is excluded
@@ -891,13 +904,23 @@ class BaseRealtimeIngestor:
         watched: list[tuple[dict[str, Any], str]],
         *,
         source_type: str = 'realtime_backfill',
+        live_tail: bool = False,
     ) -> int:
         """Detect native ETH transfers to/from watched wallets in a block range.
 
         Native ETH transfers carry NO logs, so ``eth_getLogs`` can never see them.
         The only way to detect them is to fetch each block's full transaction list
-        and match ``tx.from`` / ``tx.to`` against the watched wallet via the shared
-        :func:`native_transfer_direction` matcher (same one the polling worker uses).
+        (``eth_getBlockByNumber`` with full=True) and match ``tx.from`` / ``tx.to``
+        against the watched wallet via the shared :func:`native_transfer_direction`
+        matcher (same one the polling worker uses) — never ``eth_getLogs``
+        (requirement B).
+
+        When ``live_tail`` is True the scan is the newest-head live-tail path
+        (requirement A): in addition to the generic ``realtime_native_transfer_*``
+        markers it emits the canonical ``realtime_live_tail_scan_started`` /
+        ``realtime_live_tail_match`` / ``realtime_live_tail_persisted`` /
+        ``realtime_live_tail_scan_complete`` lines so a log query can prove the
+        live-tail scanned the current blocks independently of any gap backfill.
 
         Returns the number of matched transfers persisted. Raises on RPC failure so
         the caller's rate-limit / pause handling applies (the checkpoint is then not
@@ -905,6 +928,16 @@ class BaseRealtimeIngestor:
         """
         if to_block < from_block or not watched:
             return 0
+        if live_tail:
+            # Requirement A: canonical live-tail start marker naming the exact newest
+            # block window scanned. Emitted regardless of gap/backfill state so an
+            # operator can confirm the current blocks were scanned immediately.
+            logger.info(
+                'realtime_live_tail_scan_started chain_id=%s from_block=%s to_block=%s '
+                'watched_targets=%s detected_by=%s watcher=%s',
+                self.chain_id, from_block, to_block, len(watched), source_type,
+                self.watcher_name,
+            )
         _is_fast_tail = source_type == HTTP_FAST_TAIL_SOURCE
         if _is_fast_tail:
             # Requirement 6: canonical fast-tail native-scan start marker. Emitted in
@@ -962,6 +995,15 @@ class BaseRealtimeIngestor:
                         str(tx.get('to') or '').lower() or 'none',
                         value_wei, block_number, source_type,
                     )
+                    if live_tail:
+                        # Requirement A: live-tail match marker (distinct from the
+                        # generic native match) so the current-block detection path is
+                        # unambiguous in logs even during a concurrent gap backfill.
+                        logger.info(
+                            'realtime_live_tail_match target_id=%s direction=%s tx_hash=%s '
+                            'block_number=%s detected_by=%s',
+                            target.get('id'), direction, tx_hash, block_number, source_type,
+                        )
                     if self._is_rate_limited():
                         logger.warning(
                             'realtime_rate_limit_exceeded watcher=%s during_native_scan',
@@ -996,6 +1038,16 @@ class BaseRealtimeIngestor:
                             'tx_hash=%s detected_by=%s source_type=%s',
                             tx_hash, source_type, source_type,
                         )
+                        if live_tail:
+                            # Requirement A: live-tail persisted marker — proves a
+                            # current-block transfer reached telemetry via the live-tail
+                            # path within one/two newHeads, not via a later gap backfill
+                            # or the 300s stable poller.
+                            logger.info(
+                                'realtime_live_tail_persisted event_type=wallet_transfer_detected '
+                                'tx_hash=%s block_number=%s detected_by=%s source_type=%s',
+                                tx_hash, block_number, source_type, source_type,
+                            )
                         increment('decoda_realtime_events_total', chain=self.chain_network)
                 if not matched_any and tx_hash:
                     logger.debug(
@@ -1013,6 +1065,16 @@ class BaseRealtimeIngestor:
             self.chain_id, from_block, to_block, blocks_scanned, txs_seen, len(watched),
             matches, source_type, self.watcher_name,
         )
+        if live_tail:
+            # Requirement A: live-tail completion marker carrying the same counts as
+            # the generic scan_complete so a fast-tail/backfill scan is never mistaken
+            # for the live-tail path. txs_seen>0 with matches=0 explains a quiet scan.
+            logger.info(
+                'realtime_live_tail_scan_complete chain_id=%s from_block=%s to_block=%s '
+                'blocks_scanned=%s txs_seen=%s matches=%s detected_by=%s watcher=%s',
+                self.chain_id, from_block, to_block, blocks_scanned, txs_seen, matches,
+                source_type, self.watcher_name,
+            )
         if _is_fast_tail:
             # Requirement 6: canonical fast-tail native-scan completion marker carrying
             # blocks_scanned / txs_seen / matches so an operator can confirm the fast-tail
@@ -1072,21 +1134,22 @@ class BaseRealtimeIngestor:
     async def _scan_head_native_transfers(self, head: int) -> int:
         """Scan newly confirmed head block(s) directly for native ETH transfers.
 
-        Runs on every ``newHeads`` message in steady state (when the worker is
-        keeping up, i.e. the lag is within ``gap_threshold_blocks``). Native ETH
-        transfers carry NO logs, so the ``logs`` subscription can never see them —
-        only a full-transaction scan of the block can. Without this, a plain ETH
-        send to/from a watched wallet was invisible to the realtime worker (the most
-        recent blocks are never wide enough to trip the gap backfill), so it only
-        ever surfaced minutes later via the 300 s stable polling worker.
+        This is the LIVE-TAIL path (requirement A): it runs on EVERY ``newHeads``
+        message via :meth:`_handle_new_head`, independent of any gap backfill. Native
+        ETH transfers carry NO logs, so the ``logs`` subscription can never see them —
+        only a full-transaction ``eth_getBlockByNumber`` scan of the block can
+        (requirement B). Without this, a plain ETH send to/from a watched wallet was
+        invisible to the realtime worker until the 300 s stable polling worker caught
+        it minutes later.
 
-        Detections here are tagged ``detected_by=realtime_websocket`` (requirement 7:
-        new-head scan), distinct from the gap backfill's ``realtime_backfill``.
+        Detections here are tagged ``detected_by=realtime_websocket`` (requirement A:
+        live-tail scan), distinct from the gap backfill's ``realtime_backfill``.
 
         Confirmation-safe: only blocks at or below ``head - confirmations_required``
-        are scanned. The checkpoint advances to the last scanned block so each block
-        is scanned once; on RPC failure the checkpoint is NOT advanced so the range
-        is retried on the next head (no transfers skipped).
+        are scanned. The scan is bounded to the newest ``backfill_chunk_size`` blocks
+        (requirement C) and the checkpoint advances to the last scanned block so lag
+        collapses to ~0-2 even after a large gap; on RPC failure the checkpoint is NOT
+        advanced so the range is retried on the next head (no transfers skipped).
         """
         safe_to = int(head) - self.confirmations_required
         if safe_to < 0:
@@ -1097,8 +1160,13 @@ class BaseRealtimeIngestor:
             # Nothing newly confirmed since the last scan.
             return 0
         # Defensive bound: a provider that coalesces several heads into one message
-        # must not trigger an unbounded block-by-block fetch on the event loop.
-        from_block = max(from_block, safe_to - self.backfill_chunk_size + 1)
+        # must not trigger an unbounded block-by-block fetch on the event loop. The
+        # window reaches at least ``gap_threshold_blocks`` back so anything the gap
+        # backfill would NOT pick up (lag <= threshold) is always covered by live-tail
+        # — and it stays independent of ``backfill_chunk_size`` so a 413-driven chunk
+        # shrink on the eth_getLogs backfill never narrows the live-tail's reach.
+        _live_tail_window = max(self.backfill_chunk_size, self.gap_threshold_blocks)
+        from_block = max(from_block, safe_to - _live_tail_window + 1)
 
         watched = self._watched_wallet_pairs()
         if not watched:
@@ -1108,7 +1176,8 @@ class BaseRealtimeIngestor:
 
         try:
             processed = self._scan_native_transfers(
-                from_block, safe_to, watched, source_type=REALTIME_INGESTION_SOURCE,
+                from_block, safe_to, watched,
+                source_type=REALTIME_INGESTION_SOURCE, live_tail=True,
             )
         except Exception as exc:
             logger.warning(
@@ -1120,6 +1189,74 @@ class BaseRealtimeIngestor:
 
         self.state['last_processed_block'] = max(int(last or 0), safe_to)
         return processed
+
+    async def _handle_new_head(self, head: int) -> None:
+        """Dispatch a ``newHeads`` block: live-tail first, gap backfill separately.
+
+        Requirement A — the live-tail scan of the newest confirmed block(s) ALWAYS
+        runs first and is fully independent of the gap backfill: a failing, paused,
+        or 413-ing backfill can NEVER block detection of current blocks. Requirement
+        C — single-flight + coalescing: at most one block scan runs at a time, and
+        newHeads that arrive while a scan is in flight are coalesced so only the
+        latest head is scanned (a burst of heads never fans out into one RPC-heavy
+        scan per head, which is what pushed the provider into HTTP 429).
+        """
+        self._coalesced_head = (
+            head if self._coalesced_head is None else max(int(self._coalesced_head), int(head))
+        )
+        if self._head_scan_in_flight:
+            # A scan is already active (requirement C: max one active block scan). It
+            # will pick up self._coalesced_head when it finishes — never start a second
+            # concurrent scan nor one scan per buffered head.
+            return
+        self._head_scan_in_flight = True
+        try:
+            while self._coalesced_head is not None:
+                current_head = int(self._coalesced_head)
+                self._coalesced_head = None
+
+                # Checkpoint BEFORE the live-tail scan advances it — used only to size
+                # the separate historical-gap backfill below.
+                last_before = self.state.get('last_processed_block')
+
+                # LIVE-TAIL (always runs): scan the newest confirmed block(s) for
+                # native ETH transfers. detected_by=realtime_websocket. Its own
+                # try/except means an RPC error here never propagates to the backfill
+                # step, and vice-versa — the two paths are independent.
+                await self._scan_head_native_transfers(current_head)
+
+                # GAP BACKFILL (separate, best-effort): when a real historical gap
+                # remains below the live-tail window, close ONE bounded chunk of the
+                # older skipped range (ERC20 logs + native). Skipped while paused; a
+                # failure here never affects the live-tail scan above. The independent
+                # 300 s stable polling worker covers any deeper span (requirement D).
+                if (
+                    last_before is not None
+                    and current_head - int(last_before) > self.gap_threshold_blocks
+                    and not self._backfill_paused()
+                ):
+                    logger.warning(
+                        'realtime_gap_detected chain=%s from_block=%s to_block=%s '
+                        'lag_blocks=%s bounded_chunk=%s live_tail_scanned=True',
+                        self.chain_network, int(last_before) + 1, current_head,
+                        current_head - int(last_before), self.backfill_chunk_size,
+                    )
+                    # Defensive isolation (requirement A): a backfill failure must
+                    # never propagate to break the live-tail above or the WSS session.
+                    # ``_backfill`` handles rate-limit/413 internally, but any
+                    # unexpected error here is logged and swallowed so current-block
+                    # detection is never blocked by a historical-gap problem.
+                    try:
+                        await self._backfill(int(last_before) + 1, current_head)
+                    except Exception as bf_exc:
+                        logger.warning(
+                            'realtime_gap_backfill_failed_isolated from_block=%s to_block=%s '
+                            'watcher=%s error=%s live_tail_unaffected=True',
+                            int(last_before) + 1, current_head, self.watcher_name,
+                            str(bf_exc)[:200],
+                        )
+        finally:
+            self._head_scan_in_flight = False
 
     def _log_target_diagnostics(self, targets: list[dict[str, Any]]) -> None:
         """Emit one full-address diagnostic line per watched target.
@@ -1511,6 +1648,18 @@ class BaseRealtimeIngestor:
         else:
             _provider_mode = self.state.get('source_status') or self._ingestion_mode
         _fallback_active = self._fallback_is_active()
+        # realtime_scanning_active is the canonical fact for requirement D: is ANY
+        # realtime detection path (WSS live-tail or HTTP fast-tail) actually able to
+        # scan right now? It is False during a provider rate-limit cooldown with no
+        # fast-tail — the ONE case where fallback_active=False would otherwise be
+        # ambiguous. When it is False the independent 300 s stable RPC polling worker
+        # is the detection path; the runtime-status layer (worker_status.py) derives
+        # "Realtime paused; stable polling active" from the persisted rate_limited /
+        # next_retry_at facts. This flag never claims stable polling is alive itself
+        # (that is the stable worker's own heartbeat fact), only that realtime is not.
+        _realtime_scanning_active = not (
+            self._provider_rate_limited and not self._fallback_is_active()
+        )
         # Resolve before reading state so the log line and the persisted row agree.
         _degraded_reason = self._effective_degraded_reason()
         logger.info(
@@ -1518,7 +1667,7 @@ class BaseRealtimeIngestor:
             'last_event_at=%s reconnect_count=%s events_processed=%s '
             'heads_received=%s lag_blocks=%s degraded=%s degraded_reason=%s '
             'active_provider_host=%s provider_mode=%s fallback_active=%s '
-            'next_retry_at=%s',
+            'realtime_scanning_active=%s next_retry_at=%s',
             self.watcher_name,
             self.chain_id,
             self.chain_network,
@@ -1532,6 +1681,7 @@ class BaseRealtimeIngestor:
             _active_host,
             _provider_mode,
             _fallback_active,
+            _realtime_scanning_active,
             self._rate_limit_retry_at or 'none',
         )
 
@@ -1584,6 +1734,12 @@ class BaseRealtimeIngestor:
                             'provider_mode': _provider_mode,
                             'rate_limited': self._provider_rate_limited,
                             'next_retry_at': self._rate_limit_retry_at,
+                            # Requirement D: whether any realtime detection path can
+                            # scan right now. False during a rate-limit cooldown with no
+                            # fast-tail — the runtime-status layer then surfaces
+                            # "Realtime paused; stable polling active" from these facts.
+                            'realtime_scanning_active': _realtime_scanning_active,
+                            'fallback_active': _fallback_active,
                             # Cold-start floor so read-only diagnostics (diagnose-tx)
                             # can tell whether a tx block was ever forward-scanned.
                             'scan_start_block': self.state.get('scan_start_block'),
@@ -1644,6 +1800,39 @@ class BaseRealtimeIngestor:
         )
         self._pause_backfill('rate_limited', 60.0 + random.random() * 60.0)
 
+    def _note_backfill_413(self, from_block: int, to_block: int) -> None:
+        """Handle an eth_getLogs HTTP 413 in the gap backfill (requirement E).
+
+        A 413 means the requested log range/response is too large. Rather than
+        failing the whole chunk and re-attempting the SAME failing from_block on the
+        next head (the production ``realtime_backfill_scan_failed error=413`` loop),
+        the backfill:
+
+        * halves ``backfill_chunk_size`` (floored at 1) so subsequent chunks are
+          smaller and more likely to fit, and
+        * disables the eth_getLogs scan once the chunk can shrink no further — native
+          ETH detection never depends on eth_getLogs (requirement B), so the native
+          full-transaction scan still runs and the checkpoint still advances after it.
+
+        Never retries the same failing chunk: the caller continues to the native scan
+        and advances the cursor past ``to_block`` after it verifies.
+        """
+        old_chunk = self.backfill_chunk_size
+        self.backfill_chunk_size = max(1, self.backfill_chunk_size // 2)
+        if self.backfill_chunk_size <= 1:
+            # Cannot shrink further — the log scan will 413 forever for this workload.
+            self._backfill_log_scan_disabled = True
+        self.state['metrics']['backfill_payload_too_large'] = (
+            self.state['metrics'].get('backfill_payload_too_large', 0) + 1
+        )
+        logger.warning(
+            'realtime_backfill_payload_too_large method=eth_getLogs from_block=%s to_block=%s '
+            'old_chunk=%s new_chunk=%s log_scan_disabled=%s '
+            'action=chunk_reduced_native_scan_continues watcher=%s',
+            from_block, to_block, old_chunk, self.backfill_chunk_size,
+            self._backfill_log_scan_disabled, self.watcher_name,
+        )
+
     def _backfill_paused(self) -> bool:
         """True while the rate-limit cooldown window is still active."""
         return time.monotonic() < self._backfill_paused_until
@@ -1688,6 +1877,10 @@ class BaseRealtimeIngestor:
           forward and the same gap is never re-scanned forever.
         - On a rate-limited or failed scan the checkpoint is NOT advanced and
           backfill is paused for a 60-120 s cooldown (no per-block retry storm).
+        - On an eth_getLogs HTTP 413 (requirement E) the ERC20 log scan is shrunk /
+          disabled but the native full-transaction scan STILL runs and the checkpoint
+          STILL advances after it — native ETH detection never depends on eth_getLogs,
+          and the same 413 chunk is never retried forever.
         """
         if to_block < from_block:
             return 0
@@ -1707,33 +1900,50 @@ class BaseRealtimeIngestor:
 
         processed = 0
         try:
-            for target, addr in watched:
-                logs = self._rpc_call(
-                    'eth_getLogs',
-                    [{'fromBlock': hex(int(from_block)), 'toBlock': hex(end),
-                      'topics': [[TRANSFER_TOPIC, APPROVAL_TOPIC]]}],
-                ) or []
-                for log in logs:
-                    if bool(log.get('removed')):
-                        continue
-                    topics = [str(t).lower() for t in (log.get('topics') or [])]
-                    log_addr = str(log.get('address') or '').lower()
-                    if addr not in topics and addr != log_addr:
-                        continue
-                    if self._is_rate_limited():
-                        logger.warning(
-                            'realtime_rate_limit_exceeded watcher=%s during_backfill',
-                            self.watcher_name,
-                        )
-                        continue
-                    event = self._build_event_from_log(target, log, source_type='realtime_backfill')
-                    self._persist_event(target, event)
-                    processed += 1
+            # ERC20/contract log scan (OPTIONAL). eth_getLogs can return HTTP 413 for a
+            # wide range/response; native ETH detection NEVER depends on it, so a 413
+            # here shrinks the chunk, may disable the log scan, and we CONTINUE to the
+            # native scan below (requirement E) — never failing the whole chunk nor
+            # re-attempting the same failing from_block forever.
+            if not self._backfill_log_scan_disabled:
+                for target, addr in watched:
+                    try:
+                        logs = self._rpc_call(
+                            'eth_getLogs',
+                            [{'fromBlock': hex(int(from_block)), 'toBlock': hex(end),
+                              'topics': [[TRANSFER_TOPIC, APPROVAL_TOPIC]]}],
+                        ) or []
+                    except Exception as log_exc:
+                        if self._is_payload_too_large_error(log_exc):
+                            # 413: reduce chunk + (maybe) disable log scan, then break
+                            # out of the ERC20 loop so the native scan still runs.
+                            self._note_backfill_413(int(from_block), int(end))
+                            break
+                        # Rate-limit / other errors propagate to the outer handler
+                        # (pause + do-not-advance), same as before.
+                        raise
+                    for log in logs:
+                        if bool(log.get('removed')):
+                            continue
+                        topics = [str(t).lower() for t in (log.get('topics') or [])]
+                        log_addr = str(log.get('address') or '').lower()
+                        if addr not in topics and addr != log_addr:
+                            continue
+                        if self._is_rate_limited():
+                            logger.warning(
+                                'realtime_rate_limit_exceeded watcher=%s during_backfill',
+                                self.watcher_name,
+                            )
+                            continue
+                        event = self._build_event_from_log(target, log, source_type='realtime_backfill')
+                        self._persist_event(target, event)
+                        processed += 1
 
             # Native ETH transfers emit NO logs, so the eth_getLogs scan above can
-            # never see them. Scan the same block range's full transactions so a
-            # plain ETH send to/from a watched wallet is detected here instead of
-            # only by the 300 s polling worker minutes later.
+            # never see them — and it runs even when the log scan was 413-disabled.
+            # Scan the same block range's full transactions (eth_getBlockByNumber) so a
+            # plain ETH send to/from a watched wallet is detected here instead of only
+            # by the 300 s polling worker minutes later.
             processed += self._scan_native_transfers(
                 int(from_block), int(end), watched, source_type='realtime_backfill',
             )
@@ -1960,7 +2170,10 @@ class BaseRealtimeIngestor:
                 sub = params.get('subscription')
 
                 if sub == sub_ids.get('newHeads'):
-                    # Track chain head to enforce confirmation safety and count block activity.
+                    # Track chain head to enforce confirmation safety and count block
+                    # activity. The head block number comes straight from the newHeads
+                    # message — eth_blockNumber is never called on this path
+                    # (requirement C: avoid RPC spam that trips the provider 429).
                     head = _hex_to_int(result.get('number'))
                     if head is not None:
                         self.state['last_head_block'] = head
@@ -1969,30 +2182,10 @@ class BaseRealtimeIngestor:
                             self.state['metrics'].get('heads_received', 0) + 1
                         )
                         self.state['last_event_at'] = datetime.now(timezone.utc).isoformat()
-                        last = self.state.get('last_processed_block')
-                        if last is not None and head - int(last) > self.gap_threshold_blocks:
-                            if self._backfill_paused():
-                                # Provider is rate-limited: do not re-trigger gap
-                                # backfill on every head. The cooldown clears itself.
-                                pass
-                            else:
-                                logger.warning(
-                                    'realtime_gap_detected chain=%s from_block=%s to_block=%s '
-                                    'lag_blocks=%s bounded_chunk=%s',
-                                    self.chain_network, int(last) + 1, head,
-                                    head - int(last), self.backfill_chunk_size,
-                                )
-                                # Bounded: advances the checkpoint by one chunk per
-                                # head, so from_block never sticks on one old block.
-                                # Catch-up scan → detected_by=realtime_backfill.
-                                await self._backfill(int(last) + 1, head)
-                        else:
-                            # Steady state (caught up): scan the newly confirmed head
-                            # block(s) directly for native ETH transfers, which emit no
-                            # logs and so are invisible to the logs subscription. This
-                            # is the realtime_websocket detection path — without it a
-                            # plain ETH send was only ever caught by stable polling.
-                            await self._scan_head_native_transfers(head)
+                        # Live-tail always runs; gap backfill is separate and never
+                        # blocks it (requirement A). Single-flight + coalescing keeps at
+                        # most one block scan active (requirement C).
+                        await self._handle_new_head(head)
 
                 elif sub == sub_ids.get('logs'):
                     # Skip reorg-removed logs in the realtime path
