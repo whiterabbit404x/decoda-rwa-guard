@@ -4158,3 +4158,443 @@ def test_fast_tail_bounds_scan_window_to_chunk_size():
     assert scan_ok is not None and 'scanned_blocks=10' in scan_ok, (
         f'a bounded cycle must scan exactly chunk_size (10) blocks; got: {scan_ok}'
     )
+
+
+# ===========================================================================
+# Fast-tail native ETH detection + 413 handling + lag safety + tx-hash import
+# (fast-tail fallback outage fix). Requirements 1-7.
+# ===========================================================================
+
+def _fast_tail_wallet_target(wallet: str) -> dict:
+    return {
+        'id': str(uuid.uuid4()),
+        'workspace_id': str(uuid.uuid4()),
+        'name': 'Fast Tail Wallet',
+        'target_type': 'wallet',
+        'chain_network': 'base',
+        'wallet_address': wallet,
+        'contract_identifier': None,
+        'monitoring_enabled': True,
+        'enabled': True,
+        'is_active': True,
+        'updated_by_user_id': None,
+        'created_by_user_id': None,
+        'severity_threshold': None,
+    }
+
+
+def _run_one_fast_tail_poll(ingestor, rpc_call, targets, *, capture_logs=False):
+    """Drive ingestor._run_http_fast_tail for a single poll (sleep raises Cancelled).
+
+    Returns (persisted_events, log_records). ``log_records`` is populated only when
+    ``capture_logs`` is True.
+    """
+    import logging as _logging
+    from services.api.app import base_realtime_ingestor as mod
+
+    persisted: list = []
+
+    def _capture_persist(tgt, evt):
+        persisted.append(evt)
+        return {'status': 'processed', 'event_id': evt.event_id}
+
+    async def _mock_sleep(secs: float) -> None:
+        raise asyncio.CancelledError()
+
+    ingestor._rpc_call = rpc_call  # type: ignore[method-assign]
+    ingestor._persist_event = _capture_persist  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+
+    log_records: list[str] = []
+    handler = None
+    if capture_logs:
+        class _Cap(_logging.Handler):
+            def emit(self, r: _logging.LogRecord) -> None:
+                log_records.append(r.getMessage())
+
+        handler = _Cap()
+        mod.logger.addHandler(handler)
+        mod.logger.setLevel(_logging.DEBUG)
+    try:
+        with patch.object(ingestor, '_watched_targets', return_value=targets):
+            with patch('services.api.app.base_realtime_ingestor.asyncio') as mock_asyncio:
+                mock_asyncio.sleep = _mock_sleep
+                mock_asyncio.CancelledError = asyncio.CancelledError
+                with pytest.raises(asyncio.CancelledError):
+                    asyncio.run(ingestor._run_http_fast_tail())
+    finally:
+        if handler is not None:
+            mod.logger.removeHandler(handler)
+    return persisted, log_records
+
+
+def test_fast_tail_native_scan_uses_get_block_not_get_logs():
+    """Requirement 1-2: the native ETH fast-tail scan detects a plain ETH send via
+    eth_getBlockByNumber and is fully independent of eth_getLogs — with the log scan
+    disabled, eth_getLogs is never called yet the native transfer is still detected."""
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    wallet = '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
+    target = _fast_tail_wallet_target(wallet)
+    native_tx = {
+        'hash': '0xnativeonly', 'from': wallet,
+        'to': '0x1111111111111111111111111111111111111111',
+        'value': hex(10 ** 16), 'input': '0x',
+    }
+    block = {
+        'hash': '0xblk', 'number': hex(500), 'timestamp': hex(1_700_000_000),
+        'transactions': [native_tx],
+    }
+    methods: list[str] = []
+
+    def _mock_rpc_call(method, params):
+        methods.append(method)
+        if method == 'eth_blockNumber':
+            return hex(500)
+        if method == 'eth_getBlockByNumber':
+            return block
+        if method == 'eth_getLogs':
+            raise AssertionError('eth_getLogs must not be called for native ETH detection')
+        return None
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='https://rpc.quicknode.example/v1/T', ws_url='wss://rpc.quicknode.example/v1/T',
+        watcher_name='w', confirmations_required=0,
+    )
+    ingestor.state['last_processed_block'] = 499
+    ingestor._wss_permanently_disabled = True
+    ingestor._ingestion_mode = 'http_fast_tail'
+    # Pre-disable the log scan so eth_getLogs is never attempted this cycle.
+    ingestor._fast_tail_log_scan_disabled = True
+
+    persisted, _ = _run_one_fast_tail_poll(ingestor, _mock_rpc_call, [target])
+
+    assert len(persisted) == 1, f'native ETH transfer must be detected; got {len(persisted)}'
+    assert persisted[0].payload['tx_hash'] == '0xnativeonly'
+    assert persisted[0].payload['detected_by'] == 'quicknode_http_fast_tail'
+    assert 'eth_getBlockByNumber' in methods, 'native scan must use eth_getBlockByNumber'
+    assert 'eth_getLogs' not in methods, 'native scan must not depend on eth_getLogs'
+    assert ingestor.state['last_processed_block'] == 500
+
+
+def test_fast_tail_eth_getlogs_413_does_not_stop_native_scan():
+    """Requirement 2-3: an eth_getLogs HTTP 413 logs provider_payload_too_large,
+    disables the log scan, and does NOT stop the native ETH transaction scan or the
+    checkpoint advance (so lag cannot grow forever)."""
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    wallet = '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
+    target = _fast_tail_wallet_target(wallet)
+    native_tx = {
+        'hash': '0x413nativetx',
+        'from': '0x2222222222222222222222222222222222222222', 'to': wallet,
+        'value': hex(3 * 10 ** 15), 'input': '0x',
+    }
+    block = {
+        'hash': '0xblk', 'number': hex(500), 'timestamp': hex(1_700_000_000),
+        'transactions': [native_tx],
+    }
+    getlogs_calls = [0]
+
+    def _mock_rpc_call(method, params):
+        if method == 'eth_blockNumber':
+            return hex(500)
+        if method == 'eth_getBlockByNumber':
+            return block
+        if method == 'eth_getLogs':
+            getlogs_calls[0] += 1
+            raise RuntimeError('rpc_http_error:413 method=eth_getLogs')
+        return None
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='https://rpc.quicknode.example/v1/T', ws_url='wss://rpc.quicknode.example/v1/T',
+        watcher_name='w', confirmations_required=0,
+    )
+    ingestor.state['last_processed_block'] = 499
+    ingestor._wss_permanently_disabled = True
+    ingestor._ingestion_mode = 'http_fast_tail'
+
+    persisted, logs = _run_one_fast_tail_poll(
+        ingestor, _mock_rpc_call, [target], capture_logs=True,
+    )
+
+    # Native ETH transfer still detected despite the eth_getLogs 413.
+    assert len(persisted) == 1, f'native scan must survive a 413; got {len(persisted)}'
+    assert persisted[0].payload['tx_hash'] == '0x413nativetx'
+    assert persisted[0].payload['detected_by'] == 'quicknode_http_fast_tail'
+    assert persisted[0].payload['wallet_transfer_direction'] == 'inbound'
+    # 413 handled per requirement 3 + 6.
+    assert any('provider_payload_too_large method=eth_getLogs' in m for m in logs), (
+        f'provider_payload_too_large must be logged. Got: {logs}'
+    )
+    assert ingestor._fast_tail_log_scan_disabled is True
+    # Requirement 6 native-scan + persisted markers present.
+    assert any('realtime_fast_tail_native_scan_started' in m for m in logs)
+    assert any('realtime_fast_tail_native_scan_complete' in m for m in logs)
+    assert any('realtime_native_transfer_match' in m and '0x413nativetx' in m for m in logs)
+    assert any('realtime_event_persisted' in m and '0x413nativetx' in m for m in logs)
+    # Checkpoint advanced → lag does not grow forever.
+    assert ingestor.state['last_processed_block'] == 500
+    assert any('quicknode_fast_tail_scan_ok' in m for m in logs)
+
+
+def test_fast_tail_413_does_not_loop_forever():
+    """Acceptance: no repeated rpc_http_error:413 loop. After the first 413 the log
+    scan is disabled, so eth_getLogs is never called again across further polls while
+    the native scan and checkpoint keep advancing."""
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    wallet = '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
+    target = _fast_tail_wallet_target(wallet)
+    native_tx = {
+        'hash': '0xloopnative', 'from': wallet,
+        'to': '0x1111111111111111111111111111111111111111',
+        'value': hex(10 ** 16), 'input': '0x',
+    }
+    head = [500]
+    getlogs_calls = [0]
+
+    def _mock_rpc_call(method, params):
+        if method == 'eth_blockNumber':
+            return hex(head[0])
+        if method == 'eth_getBlockByNumber':
+            blk_num = int(params[0], 16)
+            txs = [native_tx] if blk_num == 500 else []
+            return {'hash': '0xblk', 'number': params[0], 'timestamp': hex(1_700_000_000),
+                    'transactions': txs}
+        if method == 'eth_getLogs':
+            getlogs_calls[0] += 1
+            raise RuntimeError('rpc_http_error:413 method=eth_getLogs')
+        return None
+
+    persisted: list = []
+
+    def _capture_persist(tgt, evt):
+        persisted.append(evt)
+        return {'status': 'processed', 'event_id': evt.event_id}
+
+    poll = [0]
+
+    async def _mock_sleep(secs: float) -> None:
+        poll[0] += 1
+        if poll[0] >= 3:
+            raise asyncio.CancelledError()
+        head[0] += 1  # head advances so each subsequent poll has a fresh block to scan
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='https://rpc.quicknode.example/v1/T', ws_url='wss://rpc.quicknode.example/v1/T',
+        watcher_name='w', confirmations_required=0,
+    )
+    ingestor.state['last_processed_block'] = 499
+    ingestor._wss_permanently_disabled = True
+    ingestor._ingestion_mode = 'http_fast_tail'
+    ingestor._rpc_call = _mock_rpc_call  # type: ignore[method-assign]
+    ingestor._persist_event = _capture_persist  # type: ignore[method-assign]
+    ingestor._record_heartbeat = lambda: None  # type: ignore[method-assign]
+
+    with patch.object(ingestor, '_watched_targets', return_value=[target]):
+        with patch('services.api.app.base_realtime_ingestor.asyncio') as mock_asyncio:
+            mock_asyncio.sleep = _mock_sleep
+            mock_asyncio.CancelledError = asyncio.CancelledError
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(ingestor._run_http_fast_tail())
+
+    # eth_getLogs attempted exactly once (first poll), then disabled — no 413 loop.
+    assert getlogs_calls[0] == 1, (
+        f'eth_getLogs must be attempted once then disabled; got {getlogs_calls[0]} calls'
+    )
+    # Native detection still happened and the checkpoint kept advancing with head.
+    assert len(persisted) == 1
+    assert ingestor.state['last_processed_block'] == head[0]
+
+
+def test_fast_tail_native_from_watched_wallet_persists_with_413_present():
+    """Requirement 7: tx.from == monitored wallet persists wallet_transfer_detected via
+    the native fast-tail scan even while eth_getLogs is 413-ing (outbound)."""
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    wallet = '0xabcabcabcabcabcabcabcabcabcabcabcabcabca'
+    target = _fast_tail_wallet_target(wallet)
+    native_tx = {
+        'hash': '0xfromwatched', 'from': wallet,
+        'to': '0x9999999999999999999999999999999999999999',
+        'value': hex(2 * 10 ** 16), 'input': '0x',
+    }
+    block = {'hash': '0xblk', 'number': hex(700), 'timestamp': hex(1_700_000_050),
+             'transactions': [native_tx]}
+
+    def _mock_rpc_call(method, params):
+        if method == 'eth_blockNumber':
+            return hex(700)
+        if method == 'eth_getBlockByNumber':
+            return block
+        if method == 'eth_getLogs':
+            raise RuntimeError('rpc_http_error:413 method=eth_getLogs')
+        return None
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='https://rpc.quicknode.example/v1/T', ws_url='wss://rpc.quicknode.example/v1/T',
+        watcher_name='w', confirmations_required=0,
+    )
+    ingestor.state['last_processed_block'] = 699
+    ingestor._wss_permanently_disabled = True
+    ingestor._ingestion_mode = 'http_fast_tail'
+
+    persisted, _ = _run_one_fast_tail_poll(ingestor, _mock_rpc_call, [target])
+
+    assert len(persisted) == 1
+    assert persisted[0].payload['tx_hash'] == '0xfromwatched'
+    assert persisted[0].payload['wallet_transfer_direction'] == 'outbound'
+    assert persisted[0].payload['detected_by'] == 'quicknode_http_fast_tail'
+
+
+def test_fast_tail_lag_too_large_pauses_broad_catchup():
+    """Requirement 4: a lag beyond max_catchup_blocks logs realtime_fast_tail_lag_too_large,
+    fast-forwards the cursor to a bounded window behind head (no huge-range scan), and
+    collapses lag instead of letting it grow forever."""
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    def _mock_rpc_call(method, params):
+        if method == 'eth_blockNumber':
+            return hex(50_000)
+        return []
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='w',
+    )
+    ingestor._wss_permanently_disabled = True
+    ingestor._ingestion_mode = 'http_fast_tail'
+    # Huge gap: checkpoint ~49900 blocks behind head; default max_catchup is 100.
+    ingestor.state['last_processed_block'] = 100
+    assert ingestor.fast_tail_max_catchup_blocks == 100
+
+    _, logs = _run_one_fast_tail_poll(ingestor, _mock_rpc_call, [], capture_logs=True)
+
+    lag_log = next((m for m in logs if 'realtime_fast_tail_lag_too_large' in m), None)
+    assert lag_log is not None, f'realtime_fast_tail_lag_too_large must be logged. Got: {logs}'
+    assert 'max_catchup_blocks=100' in lag_log, f'got: {lag_log}'
+    assert 'lag_blocks=49900' in lag_log, f'got: {lag_log}'
+    # Scan window bounded to the recent chunk (head - chunk + 1), NOT block 101.
+    scan_log = next((m for m in logs if 'realtime_http_fast_tail_scan ' in m), None)
+    assert scan_log is not None and 'from_block=49991' in scan_log and 'to_block=50000' in scan_log, (
+        f'lag-too-large must still bound the scan to the recent chunk; got: {scan_log}'
+    )
+    # Cursor fast-forwarded to head → lag collapses to 0 next cycle.
+    assert ingestor.state['last_processed_block'] == 50_000
+
+
+def test_tx_hash_bounded_backfill_imports_old_tx():
+    """Requirement 5: _backfill_tx_by_hash imports an old transfer via a ±2-block native
+    scan tagged detected_by=realtime_tx_import WITHOUT advancing the forward checkpoint."""
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    wallet = '0xfeedfeedfeedfeedfeedfeedfeedfeedfeedfeed'
+    target = _fast_tail_wallet_target(wallet)
+    old_tx = {
+        'hash': '0xoldimport',
+        'from': '0x3333333333333333333333333333333333333333', 'to': wallet,
+        'value': hex(7 * 10 ** 15), 'input': '0x', 'blockNumber': hex(100),
+    }
+    receipt = {'status': hex(1), 'blockNumber': hex(100)}
+    block = {'hash': '0xblk', 'number': hex(100), 'timestamp': hex(1_699_999_000),
+             'transactions': [old_tx]}
+
+    def _mock_rpc_call(method, params):
+        if method == 'eth_getTransactionByHash':
+            return old_tx
+        if method == 'eth_getTransactionReceipt':
+            return receipt
+        if method == 'eth_getBlockByNumber':
+            return block if int(params[0], 16) == 100 else {
+                'hash': '0x', 'number': params[0], 'timestamp': hex(1_699_999_000),
+                'transactions': [],
+            }
+        return []
+
+    persisted: list = []
+
+    def _capture_persist(tgt, evt):
+        persisted.append(evt)
+        return {'status': 'processed', 'event_id': evt.event_id}
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='w', confirmations_required=0,
+    )
+    # Forward checkpoint far AHEAD of the old tx block — the import must not move it.
+    ingestor.state['last_processed_block'] = 5000
+    ingestor._rpc_call = _mock_rpc_call  # type: ignore[method-assign]
+    ingestor._persist_event = _capture_persist  # type: ignore[method-assign]
+
+    result = ingestor._backfill_tx_by_hash('0xoldimport', [(target, wallet.lower())])
+
+    assert result['found'] is True
+    assert result['imported'] == 1
+    assert result['detected_by'] == 'realtime_tx_import'
+    assert result['backfill_from_block'] == 98 and result['backfill_to_block'] == 102
+    assert len(persisted) == 1
+    assert persisted[0].payload['tx_hash'] == '0xoldimport'
+    assert persisted[0].payload['detected_by'] == 'realtime_tx_import'
+    assert persisted[0].payload['wallet_transfer_direction'] == 'inbound'
+    # Forward checkpoint unchanged — importing an old block must never advance the cursor.
+    assert ingestor.state['last_processed_block'] == 5000
+
+
+def test_realtime_tx_import_classified_as_realtime_detection():
+    """realtime_tx_import must classify as a realtime detection path so the UI's
+    'Detected by' surfaces it alongside realtime_backfill / quicknode_http_fast_tail."""
+    from services.api.app.worker_status import REALTIME_DETECTED_BY
+
+    assert 'realtime_tx_import' in REALTIME_DETECTED_BY
+    assert 'realtime_backfill' in REALTIME_DETECTED_BY
+    assert 'quicknode_http_fast_tail' in REALTIME_DETECTED_BY
+
+
+def test_fast_tail_native_event_dedupes_with_stable_polling():
+    """Requirement 7: a native fast-tail event and the stable poller's event for the
+    same tx share one event_id, so the second persist is duplicate_suppressed."""
+    from services.api.app.base_realtime_ingestor import (
+        BaseRealtimeIngestor, HTTP_FAST_TAIL_SOURCE, REALTIME_INGESTION_SOURCE,
+    )
+
+    wallet = '0xcafecafecafecafecafecafecafecafecafecafe'
+    target = _fast_tail_wallet_target(wallet)
+    native_tx = {
+        'hash': '0xsharednative', 'from': wallet,
+        'to': '0x4444444444444444444444444444444444444444',
+        'value': hex(10 ** 15), 'input': '0x',
+    }
+    observed = datetime.now(timezone.utc)
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='http://rpc', ws_url='ws://ws', watcher_name='w', confirmations_required=0,
+    )
+
+    fast_tail_event = ingestor._build_native_transfer_event(
+        target, native_tx, block_number=800, block_hash='0xblk', observed_at=observed,
+        direction='outbound', source_type=HTTP_FAST_TAIL_SOURCE,
+    )
+    polling_event = ingestor._build_native_transfer_event(
+        target, native_tx, block_number=800, block_hash='0xblk', observed_at=observed,
+        direction='outbound', source_type=REALTIME_INGESTION_SOURCE,
+    )
+    assert fast_tail_event.event_id == polling_event.event_id, (
+        'fast-tail and polling must produce the same event_id for the same native tx'
+    )
+
+    seen: set[str] = set()
+
+    def _mock_persist(tgt, evt):
+        if evt.event_id in seen:
+            return {'status': 'duplicate_suppressed', 'event_id': evt.event_id}
+        seen.add(evt.event_id)
+        return {'status': 'processed', 'event_id': evt.event_id}
+
+    ingestor._persist_event = _mock_persist  # type: ignore[method-assign]
+
+    r1 = ingestor._persist_event(target, fast_tail_event)
+    if r1.get('status') != 'duplicate_suppressed':
+        ingestor.state['metrics']['events_ingested'] += 1
+    r2 = ingestor._persist_event(target, polling_event)
+
+    assert r2['status'] == 'duplicate_suppressed'
+    assert ingestor.state['metrics']['events_ingested'] == 1

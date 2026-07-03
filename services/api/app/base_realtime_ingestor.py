@@ -105,6 +105,14 @@ _DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 900
 # BASE_REALTIME_FAST_TAIL_CHUNK_SIZE.
 _DEFAULT_FAST_TAIL_INTERVAL_SECONDS = 60
 _DEFAULT_FAST_TAIL_CHUNK_SIZE = 10
+# Maximum block lag the HTTP fast-tail will auto-catch-up. When the checkpoint is
+# more than this many blocks behind head, replaying the whole gap would burn provider
+# quota (the production 40k-block lag explosion), so the fast-tail logs
+# realtime_fast_tail_lag_too_large, fast-forwards the cursor to a bounded window
+# behind head (lag stops growing), and leaves the skipped span to tx-hash import /
+# bounded backfill and the independent 300 s stable poller. Configurable via
+# BASE_REALTIME_FAST_TAIL_MAX_CATCHUP_BLOCKS; floored at fast_tail_chunk_size.
+_DEFAULT_FAST_TAIL_MAX_CATCHUP_BLOCKS = 100
 
 
 def _resolve_int_env(name: str, default: int) -> int:
@@ -304,6 +312,20 @@ class BaseRealtimeIngestor:
             _MAX_BACKFILL_CHUNK_SIZE,
             max(1, _resolve_int_env('BASE_REALTIME_FAST_TAIL_CHUNK_SIZE', _DEFAULT_FAST_TAIL_CHUNK_SIZE)),
         )
+        # Max block lag the fast-tail auto-catches-up (requirement 4). A larger gap is
+        # never scanned in-loop; the cursor is fast-forwarded so lag cannot grow forever.
+        # Floored at fast_tail_chunk_size so it can never be smaller than a single scan.
+        self.fast_tail_max_catchup_blocks = max(
+            self.fast_tail_chunk_size,
+            _resolve_int_env(
+                'BASE_REALTIME_FAST_TAIL_MAX_CATCHUP_BLOCKS', _DEFAULT_FAST_TAIL_MAX_CATCHUP_BLOCKS
+            ),
+        )
+        # Set True after eth_getLogs returns HTTP 413 (payload too large) in the
+        # fast-tail loop. eth_getLogs will 413 forever for this workload, so the
+        # log-based scan is disabled and only the native ETH transaction scan runs
+        # (requirement 3) — native detection never depends on eth_getLogs.
+        self._fast_tail_log_scan_disabled: bool = False
         # Optional tx-hash debug mode (requirements 1-2). When
         # BASE_REALTIME_DEBUG_TX_HASHES lists one or more tx hashes, the worker
         # fetches each via eth_getTransactionByHash once on WSS / fast-tail startup,
@@ -883,6 +905,16 @@ class BaseRealtimeIngestor:
         """
         if to_block < from_block or not watched:
             return 0
+        _is_fast_tail = source_type == HTTP_FAST_TAIL_SOURCE
+        if _is_fast_tail:
+            # Requirement 6: canonical fast-tail native-scan start marker. Emitted in
+            # addition to the generic line below so a log query keyed on the fast-tail
+            # fallback finds it without matching the WSS/backfill native scans.
+            logger.info(
+                'realtime_fast_tail_native_scan_started chain_id=%s from_block=%s to_block=%s '
+                'watched_targets=%s watcher=%s',
+                self.chain_id, from_block, to_block, len(watched), self.watcher_name,
+            )
         logger.info(
             'realtime_native_transfer_scan_started chain_id=%s from_block=%s to_block=%s '
             'watched_targets=%s detected_by=%s watcher=%s',
@@ -981,6 +1013,17 @@ class BaseRealtimeIngestor:
             self.chain_id, from_block, to_block, blocks_scanned, txs_seen, len(watched),
             matches, source_type, self.watcher_name,
         )
+        if _is_fast_tail:
+            # Requirement 6: canonical fast-tail native-scan completion marker carrying
+            # blocks_scanned / txs_seen / matches so an operator can confirm the fast-tail
+            # native path actually inspected transactions (txs_seen>0) even when it
+            # produced no matches.
+            logger.info(
+                'realtime_fast_tail_native_scan_complete chain_id=%s from_block=%s to_block=%s '
+                'blocks_scanned=%s txs_seen=%s matches=%s watcher=%s',
+                self.chain_id, from_block, to_block, blocks_scanned, txs_seen, matches,
+                self.watcher_name,
+            )
         return processed
 
     def _watched_wallet_pairs(self, *, log_summary: bool = False) -> list[tuple[dict[str, Any], str]]:
@@ -1286,6 +1329,99 @@ class BaseRealtimeIngestor:
                     tx_hash, str(exc)[:200], self.watcher_name,
                 )
 
+    def _backfill_tx_by_hash(
+        self,
+        tx_hash: str,
+        watched: list[tuple[dict[str, Any], str]] | None = None,
+        *,
+        source_type: str = 'realtime_tx_import',
+    ) -> dict[str, Any]:
+        """Import a single old transaction by hash via a bounded ±2-block native scan.
+
+        Requirement 5: recover a transfer whose block is older than the fast-tail
+        catch-up window (below the forward checkpoint) without replaying a huge range.
+
+        Steps:
+          1. ``eth_getTransactionByHash`` → the tx (block number, from, to, value).
+          2. ``eth_getTransactionReceipt`` → on-chain status (best-effort; a receipt
+             failure never aborts the import).
+          3. Scan ``tx_block-2 .. tx_block+2`` with :meth:`_scan_native_transfers`,
+             matching ``tx.from`` / ``tx.to`` against every resolved monitored wallet
+             and persisting ``wallet_transfer_detected`` telemetry tagged
+             ``detected_by=source_type`` (default ``realtime_tx_import``).
+
+        The forward checkpoint (``last_processed_block``) is deliberately NOT advanced —
+        importing an OLD block must never move the live cursor forward and skip newer
+        blocks. Idempotent: re-importing the same tx dedupes by event_id, so it is safe
+        to call repeatedly. Read-only apart from that idempotent persistence.
+        """
+        if watched is None:
+            watched = self._watched_wallet_pairs()
+        try:
+            tx = self._rpc_call('eth_getTransactionByHash', [tx_hash])
+        except Exception as exc:
+            logger.warning(
+                'realtime_tx_import_failed tx_hash=%s error=%s watcher=%s',
+                tx_hash, str(exc)[:200], self.watcher_name,
+            )
+            return {'tx_hash': tx_hash, 'found': False, 'imported': 0, 'error': str(exc)[:200]}
+
+        tx = tx if isinstance(tx, dict) else {}
+        block_number = _hex_to_int(tx.get('blockNumber'))
+        if not tx or block_number is None:
+            logger.warning(
+                'realtime_tx_import tx_hash=%s found=False reason=transaction_not_found_or_pending '
+                'watcher=%s',
+                tx_hash, self.watcher_name,
+            )
+            return {'tx_hash': tx_hash, 'found': False, 'imported': 0}
+
+        # Receipt is best-effort context (execution status); a failure must not abort.
+        try:
+            receipt = self._rpc_call('eth_getTransactionReceipt', [tx_hash])
+        except Exception:
+            receipt = None
+        tx_status = _hex_to_int((receipt or {}).get('status')) if isinstance(receipt, dict) else None
+
+        _from = max(0, int(block_number) - 2)
+        _to = int(block_number) + 2
+        _checkpoint_before = self.state.get('last_processed_block')
+        logger.info(
+            'realtime_tx_import_started tx_hash=%s tx_block=%s from_block=%s to_block=%s '
+            'status=%s detected_by=%s watcher=%s',
+            tx_hash, block_number, _from, _to,
+            tx_status if tx_status is not None else 'none', source_type, self.watcher_name,
+        )
+        imported = 0
+        try:
+            imported = self._scan_native_transfers(
+                _from, _to, watched, source_type=source_type,
+            )
+        except Exception as exc:
+            logger.warning(
+                'realtime_tx_import_scan_failed tx_hash=%s from_block=%s to_block=%s error=%s watcher=%s',
+                tx_hash, _from, _to, str(exc)[:200], self.watcher_name,
+            )
+        # Fail-closed invariant: the bounded backfill must never move the forward
+        # cursor (it scans OLD blocks). Restore it in case a shared helper touched it.
+        self.state['last_processed_block'] = _checkpoint_before
+        logger.info(
+            'realtime_tx_import_complete tx_hash=%s tx_block=%s imported=%s detected_by=%s '
+            'checkpoint_block=%s watcher=%s',
+            tx_hash, block_number, imported, source_type,
+            _checkpoint_before if _checkpoint_before is not None else 'none', self.watcher_name,
+        )
+        return {
+            'tx_hash': tx_hash,
+            'found': True,
+            'block_number': block_number,
+            'status': tx_status,
+            'imported': imported,
+            'detected_by': source_type,
+            'backfill_from_block': _from,
+            'backfill_to_block': _to,
+        }
+
     # ------------------------------------------------------------------
     # Persistence (short transaction per event)
     # ------------------------------------------------------------------
@@ -1469,6 +1605,24 @@ class BaseRealtimeIngestor:
         """True when an RPC error string indicates provider throttling (HTTP 429)."""
         s = str(exc).lower()
         return '429' in s or 'rate limit' in s or 'rate_limit' in s or 'too many requests' in s
+
+    @staticmethod
+    def _is_payload_too_large_error(exc: Exception) -> bool:
+        """True when an RPC error indicates HTTP 413 (payload / response too large).
+
+        ``_rpc_call`` raises ``rpc_http_error:413 method=...`` for an HTTP 413; some
+        providers also phrase it as "payload too large" / "request entity too large".
+        This is a PERMANENT condition for the current eth_getLogs workload (unlike a
+        transient 429), so the fast-tail disables the log scan instead of retrying it
+        forever (requirement 3).
+        """
+        s = str(exc).lower()
+        return (
+            'rpc_http_error:413' in s
+            or ':413' in s
+            or 'payload too large' in s
+            or 'request entity too large' in s
+        )
 
     def _pause_backfill(self, reason: str, cooldown: float) -> None:
         """Pause gap backfill for ``cooldown`` seconds.
@@ -1967,6 +2121,20 @@ class BaseRealtimeIngestor:
                     await asyncio.sleep(_poll_interval)
                     continue
 
+                # Requirement 4: never auto-catch-up a huge gap. When the checkpoint is
+                # more than max_catchup_blocks behind head, replaying the middle would
+                # burn QuickNode quota (the 40k-block production lag explosion). Log it,
+                # fast-forward the cursor to a bounded window behind head so lag stops
+                # growing, and leave the skipped span to tx-hash import / bounded
+                # backfill and the independent 300 s stable poller.
+                lag_blocks = head_num - last
+                if lag_blocks > self.fast_tail_max_catchup_blocks:
+                    logger.warning(
+                        'realtime_fast_tail_lag_too_large lag_blocks=%s max_catchup_blocks=%s watcher=%s',
+                        lag_blocks, self.fast_tail_max_catchup_blocks, self.watcher_name,
+                    )
+                    last = head_num - self.fast_tail_max_catchup_blocks
+
                 to_block = head_num
                 from_block = last + 1
                 # Bound to the most-recent chunk so a stale checkpoint (or a provider
@@ -1984,98 +2152,126 @@ class BaseRealtimeIngestor:
                 # Resolve monitored addresses via the shared stable-polling resolver;
                 # targets with no resolvable address are excluded (fail-closed).
                 watched_pairs = self._watched_wallet_pairs()
+                # scan_all_ok gates the checkpoint advance. It is cleared ONLY by a
+                # RETRYABLE failure (rate-limit or unexpected error). A 413 on the
+                # optional eth_getLogs scan is a graceful skip that must NOT hold the
+                # checkpoint back — otherwise lag grows forever (the production bug).
                 scan_all_ok = True
 
-                for target, watched in watched_pairs:
-                    try:
-                        logs = self._rpc_call(
-                            'eth_getLogs',
-                            [{
-                                'fromBlock': hex(from_block),
-                                'toBlock': hex(to_block),
-                                'topics': [[TRANSFER_TOPIC, APPROVAL_TOPIC]],
-                            }],
-                        ) or []
-
-                        for log in logs:
-                            if bool(log.get('removed')):
-                                continue
-                            topics = [str(t).lower() for t in (log.get('topics') or [])]
-                            addr = str(log.get('address') or '').lower()
-                            if watched not in topics and watched != addr:
-                                continue
-
-                            if self._is_rate_limited():
-                                logger.warning(
-                                    'http_fast_tail_rate_limited watcher=%s', self.watcher_name,
-                                )
-                                continue
-
-                            event = self._build_event_from_log(
-                                target, log, source_type=HTTP_FAST_TAIL_SOURCE,
-                            )
-                            result = self._persist_event(target, event)
-
-                            if result.get('status') == 'duplicate_suppressed':
-                                logger.debug(
-                                    'http_fast_tail_deduped watcher=%s event_id=%s',
-                                    self.watcher_name, event.event_id,
-                                )
-                            elif result.get('status') != 'persist_failed':
-                                self.state['metrics']['events_ingested'] += 1
-                                self.state['last_event_at'] = datetime.now(timezone.utc).isoformat()
-                                increment('decoda_realtime_events_total', chain=self.chain_network)
-
-                    except Exception as scan_exc:
-                        # A rate-limited scan must NOT advance the checkpoint (so the
-                        # range is retried) and is surfaced with the canonical paused
-                        # marker; other failures log the generic scan_failed line.
-                        if self._is_rate_limit_error(scan_exc):
-                            logger.warning(
-                                'quicknode_fast_tail_paused reason=rate_limited '
-                                'watcher=%s from_block=%s to_block=%s',
-                                self.watcher_name, from_block, to_block,
-                            )
-                            self.state['metrics']['backfill_rate_limited'] = (
-                                self.state['metrics'].get('backfill_rate_limited', 0) + 1
-                            )
-                        else:
-                            logger.warning(
-                                'http_fast_tail_scan_failed watcher=%s target=%s error=%s',
-                                self.watcher_name, target.get('id'), str(scan_exc)[:200],
-                            )
-                        scan_all_ok = False
-
-                # Native ETH transfers (no logs) for the recent tail. Bounded to the
-                # most recent blocks so a stale checkpoint can never trigger a giant
-                # block-by-block fetch in one poll; the 300 s polling worker's own
-                # bounded backfill covers any deeper history. Only advance the cursor
-                # below when this also succeeds, so a failed native scan re-scans next
-                # poll rather than skipping transfers.
-                if scan_all_ok:
-                    _native_from = max(int(from_block), int(to_block) - self.fast_tail_chunk_size + 1)
-                    try:
-                        self._scan_native_transfers(
-                            _native_from, to_block, watched_pairs,
-                            source_type=HTTP_FAST_TAIL_SOURCE,
+                # Requirement 1-2: the native ETH transaction scan is the PRIMARY
+                # fast-tail detection path and ALWAYS runs first. Native ETH sends emit
+                # NO logs, so only a full-transaction (eth_getBlockByNumber) scan can see
+                # them; this never depends on eth_getLogs succeeding. Bounded to the most
+                # recent chunk so a stale checkpoint can never trigger a giant
+                # block-by-block fetch in one poll.
+                _native_from = max(int(from_block), int(to_block) - self.fast_tail_chunk_size + 1)
+                native_rate_limited = False
+                try:
+                    self._scan_native_transfers(
+                        _native_from, to_block, watched_pairs,
+                        source_type=HTTP_FAST_TAIL_SOURCE,
+                    )
+                except Exception as native_exc:
+                    if self._is_rate_limit_error(native_exc):
+                        logger.warning(
+                            'quicknode_fast_tail_paused reason=rate_limited '
+                            'watcher=%s from_block=%s to_block=%s scan=native',
+                            self.watcher_name, _native_from, to_block,
                         )
-                    except Exception as native_exc:
-                        if self._is_rate_limit_error(native_exc):
-                            logger.warning(
-                                'quicknode_fast_tail_paused reason=rate_limited '
-                                'watcher=%s from_block=%s to_block=%s',
-                                self.watcher_name, _native_from, to_block,
-                            )
-                        else:
-                            logger.warning(
-                                'http_fast_tail_native_scan_failed watcher=%s error=%s',
-                                self.watcher_name, str(native_exc)[:200],
-                            )
-                        scan_all_ok = False
+                        native_rate_limited = True
+                    else:
+                        logger.warning(
+                            'http_fast_tail_native_scan_failed watcher=%s error=%s',
+                            self.watcher_name, str(native_exc)[:200],
+                        )
+                    scan_all_ok = False
+
+                # Requirement 2-3: ERC20 / log-based detection is OPTIONAL. Skipped when
+                # the provider is already rate-limiting (429 is provider-wide) or the log
+                # scan was disabled by a prior 413. A 413 here logs
+                # provider_payload_too_large, disables further log scans, and does NOT
+                # clear scan_all_ok — the native scan already covered this range so the
+                # checkpoint still advances and lag cannot grow forever.
+                if not native_rate_limited and not self._fast_tail_log_scan_disabled:
+                    for target, watched in watched_pairs:
+                        try:
+                            logs = self._rpc_call(
+                                'eth_getLogs',
+                                [{
+                                    'fromBlock': hex(from_block),
+                                    'toBlock': hex(to_block),
+                                    'topics': [[TRANSFER_TOPIC, APPROVAL_TOPIC]],
+                                }],
+                            ) or []
+
+                            for log in logs:
+                                if bool(log.get('removed')):
+                                    continue
+                                topics = [str(t).lower() for t in (log.get('topics') or [])]
+                                addr = str(log.get('address') or '').lower()
+                                if watched not in topics and watched != addr:
+                                    continue
+
+                                if self._is_rate_limited():
+                                    logger.warning(
+                                        'http_fast_tail_rate_limited watcher=%s', self.watcher_name,
+                                    )
+                                    continue
+
+                                event = self._build_event_from_log(
+                                    target, log, source_type=HTTP_FAST_TAIL_SOURCE,
+                                )
+                                result = self._persist_event(target, event)
+
+                                if result.get('status') == 'duplicate_suppressed':
+                                    logger.debug(
+                                        'http_fast_tail_deduped watcher=%s event_id=%s',
+                                        self.watcher_name, event.event_id,
+                                    )
+                                elif result.get('status') != 'persist_failed':
+                                    self.state['metrics']['events_ingested'] += 1
+                                    self.state['last_event_at'] = datetime.now(timezone.utc).isoformat()
+                                    increment('decoda_realtime_events_total', chain=self.chain_network)
+
+                        except Exception as scan_exc:
+                            if self._is_payload_too_large_error(scan_exc):
+                                # Requirement 3: eth_getLogs HTTP 413. The requested range/
+                                # response is too large; eth_getLogs will 413 forever for
+                                # this workload, so disable it (native ETH detection
+                                # continues) instead of failing every poll. This is a
+                                # graceful skip — it does NOT clear scan_all_ok, so the
+                                # checkpoint still advances.
+                                logger.warning(
+                                    'provider_payload_too_large method=eth_getLogs '
+                                    'watcher=%s from_block=%s to_block=%s action=log_scan_disabled',
+                                    self.watcher_name, from_block, to_block,
+                                )
+                                self._fast_tail_log_scan_disabled = True
+                                break
+                            # A rate-limited or otherwise failed log scan must NOT advance
+                            # the checkpoint (so the range is retried on the next poll).
+                            if self._is_rate_limit_error(scan_exc):
+                                logger.warning(
+                                    'quicknode_fast_tail_paused reason=rate_limited '
+                                    'watcher=%s from_block=%s to_block=%s scan=logs',
+                                    self.watcher_name, from_block, to_block,
+                                )
+                                self.state['metrics']['backfill_rate_limited'] = (
+                                    self.state['metrics'].get('backfill_rate_limited', 0) + 1
+                                )
+                            else:
+                                logger.warning(
+                                    'http_fast_tail_scan_failed watcher=%s target=%s error=%s',
+                                    self.watcher_name, target.get('id'), str(scan_exc)[:200],
+                                )
+                            scan_all_ok = False
+                            break
 
                 if scan_all_ok:
-                    # Only advance the checkpoint when every scan in this cycle
-                    # succeeded, then publish the canonical fast-tail success marker.
+                    # Advance the checkpoint when no retryable failure occurred, then
+                    # publish the canonical fast-tail success marker. A 413-disabled log
+                    # scan still reaches here (native scan covered the range), so lag
+                    # collapses instead of growing forever.
                     _scanned_blocks = int(to_block) - int(from_block) + 1
                     self.state['last_processed_block'] = to_block
                     logger.info(
