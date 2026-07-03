@@ -616,7 +616,16 @@ def _maybe_persist_ingested_wallet_transfer(
     direction = str(payload.get('wallet_transfer_direction') or '').strip().lower()
     if direction not in {'inbound', 'outbound'}:
         return None
-    target_wallet = str(target.get('wallet_address') or '').lower()
+    # Classify against the RESOLVED monitored wallet, not just the raw wallet_address
+    # column. Realtime targets frequently carry the monitored address in a fallback
+    # location (contract_identifier / the linked asset's identifier / target_metadata);
+    # the realtime worker already MATCHED the transfer against that resolved address,
+    # so re-deriving the match from wallet_address alone would silently drop a
+    # genuinely-matched native transfer (detection ran, but no customer-visible
+    # telemetry row appeared). resolve_monitored_wallet is the same canonical resolver
+    # the scan and import-tx paths use, so all three stay consistent.
+    from services.api.app.evm_activity_provider import resolve_monitored_wallet
+    target_wallet = (resolve_monitored_wallet(target) or '').lower()
     ev_from = str(payload.get('from') or '').lower()
     ev_to = str(payload.get('to') or '').lower()
     is_wallet_tx = (
@@ -11367,8 +11376,11 @@ def diagnose_wallet_transaction(request: Request, tx_hash: str) -> dict[str, Any
                 target.get('monitoring_enabled') and target.get('enabled') and target.get('is_active')
             )
 
-        # Fetch the tx once per distinct chain the targets live on.
+        # Fetch the tx (and its receipt) once per distinct chain the targets live on.
+        # The receipt gives the on-chain execution status (requirement 1): a reverted
+        # send explains "no telemetry" with no Decoda-side bug.
         tx_by_chain: dict[str, dict[str, Any] | None] = {}
+        receipt_by_chain: dict[str, dict[str, Any]] = {}
         chain_meta: dict[str, dict[str, Any]] = {}
         for chain_network in {str(t.get('chain_network') or 'base').strip().lower() for t in targets}:
             chain_rpc = resolve_chain_rpc(chain_network)
@@ -11380,6 +11392,11 @@ def diagnose_wallet_transaction(request: Request, tx_hash: str) -> dict[str, Any
             try:
                 client = FailoverJsonRpcClient(chain_rpc['rpc_urls'])
                 tx_by_chain[chain_network] = client.call('eth_getTransactionByHash', [tx_hash_norm]) or None
+                if tx_by_chain[chain_network]:
+                    try:
+                        receipt_by_chain[chain_network] = client.call('eth_getTransactionReceipt', [tx_hash_norm]) or {}
+                    except Exception:
+                        receipt_by_chain[chain_network] = {}
             except Exception as exc:
                 _log.warning(
                     'diagnose_tx_rpc_failed tx_hash=%s chain=%s error=%s',
@@ -11387,7 +11404,51 @@ def diagnose_wallet_transaction(request: Request, tx_hash: str) -> dict[str, Any
                 )
                 tx_by_chain[chain_network] = None
 
-        any_tx = next((tx for tx in tx_by_chain.values() if tx), None)
+        any_tx_chain = next((cn for cn, tx in tx_by_chain.items() if tx), None)
+        any_tx = tx_by_chain.get(any_tx_chain) if any_tx_chain else None
+        any_receipt = receipt_by_chain.get(any_tx_chain or '', {})
+        receipt_status = _hex_to_int(any_receipt.get('status')) if isinstance(any_receipt, dict) else None
+        block_number = _hex_to_int((any_tx or {}).get('blockNumber')) if any_tx else None
+
+        # Realtime forward-scan window (requirement 1): read the realtime worker's
+        # checkpoint + cold-start floor so we can report whether this tx block was ever
+        # in the scan window. A tx below the cold-start floor (the production case: tx
+        # block far below the realtime checkpoint) was never forward-scanned and is only
+        # recoverable via import-tx. Best-effort — never breaks the read-only diagnostic.
+        realtime_checkpoint_block: int | None = None
+        realtime_scan_start_block: int | None = None
+        try:
+            _wr = connection.execute(
+                '''
+                SELECT last_processed_block, metrics
+                FROM monitoring_watcher_state
+                ORDER BY COALESCE(last_heartbeat_at, updated_at) DESC
+                LIMIT 1
+                '''
+            ).fetchone()
+            if _wr is not None:
+                _wr = _json_safe_value(dict(_wr))
+                if _wr.get('last_processed_block') is not None:
+                    realtime_checkpoint_block = int(_wr['last_processed_block'])
+                _metrics = _wr.get('metrics') if isinstance(_wr.get('metrics'), dict) else {}
+                _ssb = _metrics.get('scan_start_block')
+                if _ssb is not None:
+                    realtime_scan_start_block = int(_ssb)
+        except Exception:
+            _log.warning('diagnose_tx_checkpoint_read_failed tx_hash=%s', tx_hash_norm, exc_info=True)
+
+        was_block_scanned = bool(
+            block_number is not None
+            and realtime_checkpoint_block is not None
+            and realtime_scan_start_block is not None
+            and realtime_scan_start_block <= block_number <= realtime_checkpoint_block
+        )
+        below_realtime_checkpoint = bool(
+            block_number is not None
+            and realtime_checkpoint_block is not None
+            and block_number <= realtime_checkpoint_block
+        )
+
         matches: list[dict[str, Any]] = []
         for target in targets:
             chain_network = str(target.get('chain_network') or 'base').strip().lower()
@@ -11405,10 +11466,23 @@ def diagnose_wallet_transaction(request: Request, tx_hash: str) -> dict[str, Any
                 (workspace_id, target['id'], tx_hash_norm),
             ).fetchone()
             already_persisted = persisted_row is not None
+            # Explicit per-target match flags + normalized addresses (requirement 1) so
+            # an operator sees exactly which side matched and the lowercase forms
+            # compared, without inferring it from `direction`.
+            norm_target = explanation.get('monitored_wallet')
+            norm_from = explanation.get('tx_from')
+            norm_to = explanation.get('tx_to')
+            from_matches = bool(norm_target and norm_from and norm_from == norm_target)
+            to_matches = bool(norm_target and norm_to and norm_to == norm_target)
             if explanation.get('matched') and not target.get('_active'):
                 persist_reason = 'target_inactive_not_persisted'
             elif explanation.get('matched') and already_persisted:
                 persist_reason = 'already_persisted'
+            elif explanation.get('matched') and below_realtime_checkpoint and not was_block_scanned:
+                # Matched, but the tx block is below the realtime cold-start floor, so
+                # the forward WebSocket scan never reached it — the exact production
+                # miss. import-tx (or the bounded tx-hash backfill) is the recovery.
+                persist_reason = 'matched_below_realtime_checkpoint_run_import_tx'
             elif explanation.get('matched'):
                 persist_reason = 'matched_not_yet_persisted_run_import_tx'
             elif not monitored_wallet:
@@ -11427,20 +11501,43 @@ def diagnose_wallet_transaction(request: Request, tx_hash: str) -> dict[str, Any
                 'chain_id': chain_meta.get(chain_network, {}).get('expected_chain_id'),
                 'monitored_address_full': monitored_wallet,
                 'normalized_address_lowercase': (monitored_wallet or '').lower() or None,
+                'normalized_from': norm_from,
+                'normalized_to': norm_to,
+                'normalized_target': norm_target,
+                'from_matches': from_matches,
+                'to_matches': to_matches,
                 'active': bool(target.get('_active')),
                 'matched': bool(explanation.get('matched')),
                 'direction': explanation.get('wallet_transfer_direction'),
+                'was_block_scanned': was_block_scanned,
                 'already_persisted': already_persisted,
                 'persist_reason': persist_reason,
             })
 
-        block_number = _hex_to_int((any_tx or {}).get('blockNumber')) if any_tx else None
         tx_chain_id = _hex_to_int((any_tx or {}).get('chainId')) if any_tx else None
         value_wei = _hex_to_int((any_tx or {}).get('value')) if any_tx else None
+        tx_from = str((any_tx or {}).get('from') or '').lower() or None
+        tx_to = str((any_tx or {}).get('to') or '').lower() or None
+        _matched_count = sum(1 for m in matches if m['matched'])
         _log.info(
             'diagnose_tx_completed tx_hash=%s workspace_id=%s tx_found=%s targets_checked=%s matched=%s',
-            tx_hash_norm, workspace_id, bool(any_tx), len(targets),
-            sum(1 for m in matches if m['matched']),
+            tx_hash_norm, workspace_id, bool(any_tx), len(targets), _matched_count,
+        )
+        # Canonical realtime_tx_debug marker (requirement 1) so the read-only endpoint
+        # and the env-var worker path emit the same log fields — status, checkpoint
+        # context, and whether the block was ever forward-scanned.
+        _log.info(
+            'realtime_tx_debug tx_hash=%s block_number=%s from=%s to=%s value=%s status=%s '
+            'chain_id=%s checkpoint_block=%s scan_start_block=%s was_block_scanned=%s '
+            'below_realtime_checkpoint=%s matched_target_count=%s',
+            tx_hash_norm, block_number if block_number is not None else 'none',
+            tx_from or 'none', tx_to or 'none',
+            value_wei if value_wei is not None else 'none',
+            receipt_status if receipt_status is not None else 'none',
+            tx_chain_id if tx_chain_id is not None else 'none',
+            realtime_checkpoint_block if realtime_checkpoint_block is not None else 'none',
+            realtime_scan_start_block if realtime_scan_start_block is not None else 'none',
+            was_block_scanned, below_realtime_checkpoint, _matched_count,
         )
         return {
             'tx_hash': tx_hash_norm,
@@ -11448,11 +11545,19 @@ def diagnose_wallet_transaction(request: Request, tx_hash: str) -> dict[str, Any
             'tx_found': bool(any_tx),
             'chain_id': tx_chain_id,
             'block_number': block_number,
-            'from': str((any_tx or {}).get('from') or '').lower() or None,
-            'to': str((any_tx or {}).get('to') or '').lower() or None,
+            'from': tx_from,
+            'to': tx_to,
             'value_wei': str(value_wei) if value_wei is not None else None,
+            'receipt_status': receipt_status,
+            # Realtime forward-scan window context (requirement 1). was_block_scanned is
+            # the smoking gun: False for a tx below the cold-start floor → realtime
+            # structurally could not catch it → run import-tx to recover.
+            'realtime_checkpoint_block': realtime_checkpoint_block,
+            'realtime_scan_start_block': realtime_scan_start_block,
+            'was_block_scanned': was_block_scanned,
+            'below_realtime_checkpoint': below_realtime_checkpoint,
             'targets_checked': len(targets),
-            'matched_target_count': sum(1 for m in matches if m['matched']),
+            'matched_target_count': _matched_count,
             'matches': matches,
         }
 

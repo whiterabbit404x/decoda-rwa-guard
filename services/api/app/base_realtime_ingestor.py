@@ -355,6 +355,11 @@ class BaseRealtimeIngestor:
             'degraded': False,
             'degraded_reason': None,
             'last_processed_block': None,
+            # Lowest block the forward head scan will ever cover (the cold-start /
+            # resume checkpoint). Anything strictly below this was skipped at cold
+            # start and can only be recovered via the bounded tx-hash backfill or the
+            # import-tx endpoint — surfaced as was_block_scanned in the tx debug.
+            'scan_start_block': None,
             'last_head_block': None,
             'last_heartbeat_at': None,
             'last_event_at': None,
@@ -1147,6 +1152,32 @@ class BaseRealtimeIngestor:
         raw_from = str(tx.get('from') or '') or 'none'
         raw_to = str(tx.get('to') or '') or 'none'
 
+        # Requirement 1: also fetch the receipt so the debug can report the on-chain
+        # execution status (1=success, 0=reverted, None=pending/unknown). A reverted
+        # send explains "no telemetry" without any Decoda-side bug. Best-effort — a
+        # receipt RPC failure must never abort the diagnostic.
+        try:
+            receipt = self._rpc_call('eth_getTransactionReceipt', [tx_hash])
+        except Exception:
+            receipt = None
+        receipt = receipt if isinstance(receipt, dict) else {}
+        tx_status = _hex_to_int(receipt.get('status'))
+
+        # Requirement 1: checkpoint context. was_block_scanned is truthful only when we
+        # know the cold-start floor: the forward head scan covers exactly
+        # [scan_start_block, last_processed_block]. A tx below scan_start_block was
+        # skipped at cold start (the production case: tx block far below the
+        # cold-start checkpoint), so it was NEVER scanned — even though its block is
+        # below the checkpoint. Fail-closed to False when either bound is unknown.
+        checkpoint_block = self.state.get('last_processed_block')
+        scan_start_block = self.state.get('scan_start_block')
+        was_block_scanned = bool(
+            block_number is not None
+            and checkpoint_block is not None
+            and scan_start_block is not None
+            and int(scan_start_block) <= int(block_number) <= int(checkpoint_block)
+        )
+
         matched: list[dict[str, Any]] = []
         for target, addr in watched:
             explanation = explain_wallet_transfer_match(addr, tx)
@@ -1156,14 +1187,20 @@ class BaseRealtimeIngestor:
             from_matches = norm_from != 'none' and norm_from == norm_target
             to_matches = norm_to != 'none' and norm_to == norm_target
             logger.info(
-                'realtime_tx_debug tx_hash=%s block_number=%s from=%s to=%s value=%s chain_id=%s '
-                'monitored_address=%s from_matches=%s to_matches=%s '
+                'realtime_tx_debug tx_hash=%s block_number=%s from=%s to=%s value=%s status=%s '
+                'chain_id=%s monitored_address=%s from_matches=%s to_matches=%s '
                 'normalized_from=%s normalized_to=%s normalized_target=%s '
+                'checkpoint_block=%s scan_start_block=%s was_block_scanned=%s '
                 'matched=%s direction=%s target_id=%s watcher=%s',
                 tx_hash, block_number if block_number is not None else 'none',
-                raw_from, raw_to, value_wei, chain_id if chain_id is not None else 'none',
+                raw_from, raw_to, value_wei,
+                tx_status if tx_status is not None else 'none',
+                chain_id if chain_id is not None else 'none',
                 addr, from_matches, to_matches,
                 norm_from, norm_to, norm_target,
+                checkpoint_block if checkpoint_block is not None else 'none',
+                scan_start_block if scan_start_block is not None else 'none',
+                was_block_scanned,
                 bool(explanation.get('matched')),
                 explanation.get('wallet_transfer_direction') or 'none',
                 target.get('id'), self.watcher_name,
@@ -1180,6 +1217,10 @@ class BaseRealtimeIngestor:
             'to': (raw_to.lower() if raw_to != 'none' else None),
             'value_wei': value_wei,
             'chain_id': chain_id,
+            'status': tx_status,
+            'checkpoint_block': int(checkpoint_block) if checkpoint_block is not None else None,
+            'scan_start_block': int(scan_start_block) if scan_start_block is not None else None,
+            'was_block_scanned': was_block_scanned,
             'matched_target_count': len(matched),
             'skipped_by_checkpoint': False,
             'backfill_triggered': False,
@@ -1196,22 +1237,24 @@ class BaseRealtimeIngestor:
                 _from = max(0, int(block_number) - 2)
                 _to = int(block_number) + 2
                 logger.info(
-                    'realtime_tx_debug_backfill_started tx_hash=%s from_block=%s to_block=%s watcher=%s',
+                    'realtime_bounded_backfill_started tx_hash=%s from_block=%s to_block=%s watcher=%s',
                     tx_hash, _from, _to, self.watcher_name,
                 )
                 try:
-                    # Bounded ±2-block native scan tagged realtime_websocket. This
-                    # persists the missed transfer but does NOT touch
+                    # Bounded ±2-block native scan tagged realtime_backfill (NOT
+                    # realtime_websocket): this is a recovery scan of an OLD block below
+                    # the live forward cursor, so it must not claim the WebSocket
+                    # delivered it. It persists the missed transfer but does NOT touch
                     # last_processed_block — the live forward cursor is unchanged.
                     self._scan_native_transfers(
-                        _from, _to, watched, source_type=REALTIME_INGESTION_SOURCE,
+                        _from, _to, watched, source_type='realtime_backfill',
                     )
                     result['backfill_triggered'] = True
                     result['backfill_from_block'] = _from
                     result['backfill_to_block'] = _to
                 except Exception as exc:
                     logger.warning(
-                        'realtime_tx_debug_backfill_failed tx_hash=%s from_block=%s to_block=%s '
+                        'realtime_bounded_backfill_failed tx_hash=%s from_block=%s to_block=%s '
                         'error=%s watcher=%s',
                         tx_hash, _from, _to, str(exc)[:200], self.watcher_name,
                     )
@@ -1405,6 +1448,9 @@ class BaseRealtimeIngestor:
                             'provider_mode': _provider_mode,
                             'rate_limited': self._provider_rate_limited,
                             'next_retry_at': self._rate_limit_retry_at,
+                            # Cold-start floor so read-only diagnostics (diagnose-tx)
+                            # can tell whether a tx block was ever forward-scanned.
+                            'scan_start_block': self.state.get('scan_start_block'),
                         }),
                     ),
                 )
@@ -2103,7 +2149,11 @@ class BaseRealtimeIngestor:
                 if head is not None:
                     self.state['last_head_block'] = head
                     if self.state.get('last_processed_block') is None and not self._checkpoint_bootstrapped:
-                        self.state['last_processed_block'] = self._bootstrap_checkpoint(int(head))
+                        _start_block = self._bootstrap_checkpoint(int(head))
+                        self.state['last_processed_block'] = _start_block
+                        # Remember the cold-start floor so the tx debug can report
+                        # whether a given tx block was ever in the forward scan window.
+                        self.state['scan_start_block'] = _start_block
                         self._checkpoint_bootstrapped = True
 
                 self._record_heartbeat()
