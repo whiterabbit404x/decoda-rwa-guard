@@ -206,6 +206,9 @@ def test_ingest_tx_by_hash_persists_matching_base_transfer():
     assert payload['source_type'] == 'tx_hash_import'
     assert payload['ingestion_method'] == 'tx_hash_import'
     assert payload['wallet_transfer_direction'] == 'outbound'
+    # Canonical detection-path tag: the UI "Detected By" column must render
+    # Realtime Tx Import for imported rows, never blank.
+    assert payload['detected_by'] == 'realtime_tx_import'
 
 
 # ---------------------------------------------------------------------------

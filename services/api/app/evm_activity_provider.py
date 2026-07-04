@@ -1791,6 +1791,13 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
                 'event_type': 'approval' if topic0 == APPROVAL_TOPIC else 'transfer',
                 'amount': str(_hex_to_int(log.get('data')) or 0),
                 'observed_at': observed_at.isoformat(),
+                # ERC-20 transfer/approval logs found by this poller persist as
+                # wallet_transfer_detected when the monitored wallet is involved —
+                # tag the detection path so their Detected By is never blank
+                # (the native-tx scan above already tags stable_rpc_polling).
+                'source_type': 'rpc_polling',
+                'detected_by': 'stable_rpc_polling',
+                'provider_mode': 'stable_rpc_polling',
             }
         )
         kind = 'transaction'

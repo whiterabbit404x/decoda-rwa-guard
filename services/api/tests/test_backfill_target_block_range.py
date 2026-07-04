@@ -184,6 +184,13 @@ def test_backfill_finds_matching_transfer_and_persists_it():
     first_params = capture.inserts[[t for (t, _) in capture.inserts].index('telemetry_events')][1]
     assert 'native_transfer' in first_params, f'Expected native_transfer in params: {first_params}'
     assert 'live' in first_params, 'Expected evidence_source=live'
+    # Detected By must never be blank for wallet-transfer rows: the block-range
+    # replay scans over the stable HTTPS RPC, so it is tagged stable_rpc_polling.
+    import json as _json
+    payload_str = next((p for p in first_params if isinstance(p, str) and 'tx_hash' in p), None)
+    assert payload_str, 'Expected payload_json param'
+    payload = _json.loads(payload_str)
+    assert payload['detected_by'] == 'stable_rpc_polling', f'Expected detected_by=stable_rpc_polling, got {payload.get("detected_by")}'
 
 
 # ---------------------------------------------------------------------------

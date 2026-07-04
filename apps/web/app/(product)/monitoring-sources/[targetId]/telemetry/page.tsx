@@ -49,18 +49,141 @@ const HEADERS = [
 ];
 
 const DETECTED_BY_LABELS: Record<string, string> = {
-  realtime_websocket: 'Realtime (WebSocket)',
-  realtime_backfill: 'Realtime (Backfill)',
-  realtime_tx_import: 'Realtime (Tx import)',
-  quicknode_http_fast_tail: 'Realtime (HTTP fast-tail)',
-  realtime_http_fast_tail: 'Realtime (HTTP fast-tail)',
+  realtime_websocket: 'Realtime WebSocket',
+  realtime_backfill: 'Realtime Backfill',
+  realtime_tx_import: 'Realtime Tx Import',
+  quicknode_http_fast_tail: 'Realtime HTTP Fast-Tail',
+  realtime_http_fast_tail: 'Realtime HTTP Fast-Tail',
   stable_rpc_polling: 'Stable RPC Polling',
-  tx_hash_import: 'Manual tx import',
+  tx_hash_import: 'Realtime Tx Import',
+  simulator: 'Simulator (not live)',
+  replay: 'Replay (not live)',
+  unknown: 'Unknown',
 };
 
 function formatDetectedBy(val: string | null | undefined): string {
   if (!val) return '-';
   return DETECTED_BY_LABELS[val] ?? val;
+}
+
+// Canonical detection paths that come from the realtime worker family.
+const REALTIME_DETECTED_BY = new Set([
+  'realtime_websocket',
+  'realtime_backfill',
+  'realtime_tx_import',
+  'quicknode_http_fast_tail',
+  'realtime_http_fast_tail',
+]);
+
+// Payload source/ingestion values that map onto a canonical detected_by tag —
+// mirrors worker_status.resolve_telemetry_detected_by on the backend so old
+// rows render truthfully even before the API normalization ships.
+function canonicalDetectedBy(raw: string | null | undefined): string | null {
+  const v = (raw ?? '').trim().toLowerCase();
+  if (!v) return null;
+  if (REALTIME_DETECTED_BY.has(v) || v === 'stable_rpc_polling') return v;
+  if (v === 'tx_hash_import') return 'realtime_tx_import';
+  if (v === 'polling' || v === 'rpc_polling' || v === 'evm_rpc' || v === 'rpc_backfill') {
+    return 'stable_rpc_polling';
+  }
+  return null;
+}
+
+function asRecord(val: unknown): Record<string, unknown> | null {
+  return val && typeof val === 'object' && !Array.isArray(val)
+    ? (val as Record<string, unknown>)
+    : null;
+}
+
+// Resolve the Detected By value for a row: top-level field first, then the
+// payload's detected_by, then details/metadata copies, then source/ingestion
+// mappings. Returns null only when no fact names a detection path — callers
+// render an explicit "Unknown" for wallet transfers, never a blank cell.
+function deriveDetectedBy(row: TelemetryRow): string | null {
+  const payload = row.payload_json;
+  const details = asRecord(payload?.details);
+  const metadata = asRecord(payload?.metadata);
+  const candidates = [
+    row.detected_by,
+    payload ? extractField(payload, 'detected_by') : null,
+    details ? extractField(details, 'detected_by') : null,
+    metadata ? extractField(metadata, 'detected_by') : null,
+  ];
+  for (const c of candidates) {
+    const v = (c ?? '').trim();
+    if (v) return canonicalDetectedBy(v) ?? v;
+  }
+  const mappable = [
+    payload ? extractField(payload, 'source_type') : null,
+    details ? extractField(details, 'source_type') : null,
+    metadata ? extractField(metadata, 'source_type') : null,
+    payload ? extractField(payload, 'ingestion_source', 'ingestion_method') : null,
+  ];
+  for (const c of mappable) {
+    const mapped = canonicalDetectedBy(c);
+    if (mapped) return mapped;
+  }
+  return null;
+}
+
+// Fail-closed display value for wallet-transfer rows: never blank. Non-live
+// rows name their evidence source; unattributable live rows say Unknown.
+function walletTransferDetectedBy(row: TelemetryRow): string {
+  const derived = deriveDetectedBy(row);
+  if (derived) return derived;
+  const evidence = (row.evidence_source ?? '').trim().toLowerCase();
+  return evidence && evidence !== 'live' ? evidence : 'unknown';
+}
+
+// Shape of POST /api/ops/monitoring/diagnose-tx (backend diagnose_wallet_transaction).
+type TxDiagnosis = {
+  tx_found?: boolean;
+  block_number?: number | null;
+  live_tail_from_block?: number | null;
+  live_tail_to_block?: number | null;
+  realtime_scanned_spans?: number[][];
+  was_block_scanned?: boolean;
+  below_realtime_checkpoint?: boolean;
+  rate_limited_at_time?: boolean | string;
+  existing_detected_by?: string | null;
+  realtime_duplicate_skipped?: boolean;
+  realtime_verdict?: string;
+  receipt_status?: number | null;
+};
+
+// Human-readable text for the backend's canonical realtime_verdict values
+// (worker_status.classify_realtime_tx_verdict). Dynamic suffixes carry the
+// detecting path, so match on prefix and name the path with its UI label.
+function formatRealtimeVerdict(verdict: string | null | undefined): string {
+  const v = (verdict ?? '').trim();
+  if (!v) return 'No verdict returned';
+  if (v === 'transaction_not_found') return 'Transaction not found on the chain RPC';
+  if (v === 'not_matched_no_watched_wallet_in_tx')
+    return 'Not matched — no monitored wallet is in this transaction';
+  if (v === 'already_exists_stable_rpc_polling_realtime_duplicate_skipped')
+    return 'Detected by Stable RPC Polling — realtime skipped it as a duplicate';
+  if (v.startsWith('matched_and_persisted_by_'))
+    return `Realtime matched — detected by ${formatDetectedBy(v.slice('matched_and_persisted_by_'.length))}`;
+  if (v.startsWith('outside_scanned_window_imported_by_'))
+    return `Imported — block was outside the scanned window; recovered by ${formatDetectedBy(v.slice('outside_scanned_window_imported_by_'.length))}`;
+  if (v.startsWith('already_exists_detected_by_'))
+    return `Already persisted — detected by ${formatDetectedBy(v.slice('already_exists_detected_by_'.length))}`;
+  if (v === 'scanned_but_not_persisted_check_matching')
+    return 'Block was scanned but no row was persisted — check wallet matching';
+  if (v === 'missed_provider_rate_limited')
+    return 'Missed by realtime — provider was rate-limited when the tx landed (stable polling is the fallback)';
+  if (v === 'outside_scanned_window_not_yet_imported')
+    return 'Outside the scanned window — not yet imported (run tx import to recover)';
+  if (v === 'pending_forward_scan') return 'Pending — block is ahead of the forward scan';
+  return v;
+}
+
+function formatSpans(spans: number[][] | undefined): string | null {
+  if (!Array.isArray(spans) || spans.length === 0) return null;
+  const parts = spans
+    .filter((s) => Array.isArray(s) && s.length === 2)
+    .map((s) => `${s[0]}–${s[1]}`);
+  return parts.length > 0 ? parts.join(', ') : null;
 }
 
 function fmt(value?: string | null): string {
@@ -195,6 +318,45 @@ function TelemetryDetailModal({
   const [copiedJson, setCopiedJson] = useState(false);
   const [copiedTx, setCopiedTx] = useState(false);
 
+  // Exact tx-hash detection-path diagnosis: fetches the tx by hash server-side,
+  // compares tx.blockNumber to the realtime worker's scanned live-tail windows,
+  // and reports whether it was realtime matched, imported, stable-polling
+  // detected, or duplicate-skipped.
+  const { authHeaders } = usePilotAuth();
+  const [diagnosis, setDiagnosis] = useState<TxDiagnosis | null>(null);
+  const [diagnosing, setDiagnosing] = useState(false);
+  const [diagnosisError, setDiagnosisError] = useState('');
+
+  const runDiagnosis = useCallback(() => {
+    if (!txHash || diagnosing) return;
+    setDiagnosing(true);
+    setDiagnosisError('');
+    fetch('/api/ops/monitoring/diagnose-tx', {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      body: JSON.stringify({ tx_hash: txHash }),
+    })
+      .then(async (res) => {
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const detail =
+            typeof (payload as { detail?: unknown })?.detail === 'string'
+              ? ((payload as { detail: string }).detail)
+              : `HTTP ${res.status}`;
+          setDiagnosisError(`Diagnosis failed: ${detail}`);
+          return;
+        }
+        setDiagnosis(payload as TxDiagnosis);
+      })
+      .catch((err: unknown) => {
+        setDiagnosisError(
+          `Network error: ${err instanceof Error ? err.message : 'unknown error'}`,
+        );
+      })
+      .finally(() => setDiagnosing(false));
+  }, [txHash, diagnosing, authHeaders]);
+
   const copyJson = useCallback(() => {
     navigator.clipboard.writeText(jsonString).then(() => {
       setCopiedJson(true);
@@ -227,7 +389,11 @@ function TelemetryDetailModal({
         ? 'RPC polling heartbeat'
         : row.source_type ?? null;
 
-  const detectedByLabel = formatDetectedBy(row.detected_by ?? extractField(row.payload_json, 'detected_by'));
+  // Wallet transfers must always name their detection path (fail-closed to
+  // "Unknown"); other event kinds only show it when a fact resolves.
+  const detectedByValue =
+    kind === 'wallet_transfer' ? walletTransferDetectedBy(row) : deriveDetectedBy(row);
+  const detectedByLabel = detectedByValue ? formatDetectedBy(detectedByValue) : null;
   const providerMode = row.provider_mode ?? extractField(row.payload_json, 'provider_mode');
   const latencySeconds =
     row.observed_latency_seconds != null
@@ -236,7 +402,7 @@ function TelemetryDetailModal({
 
   const summaryFields: Array<[string, string | null]> = [
     ['Event type', eventTypeLabel],
-    ['Detected by', row.detected_by ? detectedByLabel : null],
+    ['Detected by', detectedByLabel],
     ['Source type', row.source_type ?? null],
     ['Provider type', row.provider_type ?? null],
     ['Provider mode', providerMode],
@@ -425,6 +591,150 @@ function TelemetryDetailModal({
             </Fragment>
           )}
         </div>
+
+        {/* Exact tx-hash detection-path diagnosis (wallet transfers only) */}
+        {kind === 'wallet_transfer' && txHash ? (
+          <div
+            data-testid="tx-detection-diagnosis"
+            style={{
+              background: 'var(--bg-base)',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-sm)',
+              marginBottom: '1.25rem',
+              padding: '0.85rem 1rem',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '0.75rem',
+                flexWrap: 'wrap',
+              }}
+            >
+              <span
+                style={{
+                  fontSize: '0.75rem',
+                  fontWeight: 600,
+                  color: 'var(--text-secondary)',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.07em',
+                }}
+              >
+                Detection Path Diagnosis
+              </span>
+              <button
+                type="button"
+                onClick={runDiagnosis}
+                disabled={diagnosing}
+                style={{
+                  background: 'transparent',
+                  border: '1px solid var(--border)',
+                  borderRadius: 'var(--radius-xs)',
+                  color: diagnosing ? 'var(--text-muted)' : 'var(--text-accent)',
+                  cursor: diagnosing ? 'default' : 'pointer',
+                  fontSize: '0.78rem',
+                  padding: '0.25rem 0.7rem',
+                }}
+              >
+                {diagnosing
+                  ? 'Checking scan windows…'
+                  : diagnosis
+                    ? 'Re-run diagnosis'
+                    : 'Diagnose this transaction'}
+              </button>
+            </div>
+            {!diagnosis && !diagnosing && !diagnosisError ? (
+              <p className="muted" style={{ margin: '0.5rem 0 0', fontSize: '0.78rem' }}>
+                Fetches this tx by hash, compares its block number to the realtime
+                worker&apos;s scanned live-tail windows, and reports whether it was realtime
+                matched, imported, stable-polling detected, or duplicate-skipped.
+              </p>
+            ) : null}
+            {diagnosisError ? (
+              <p style={{ margin: '0.5rem 0 0', fontSize: '0.8rem', color: 'var(--danger-fg)' }}>
+                {diagnosisError}
+              </p>
+            ) : null}
+            {diagnosis ? (
+              <div style={{ marginTop: '0.65rem' }}>
+                <div
+                  style={{
+                    background: 'var(--bg-surface)',
+                    border: '1px solid var(--border-accent)',
+                    borderRadius: 'var(--radius-xs)',
+                    fontSize: '0.82rem',
+                    fontWeight: 600,
+                    marginBottom: '0.6rem',
+                    padding: '0.4rem 0.7rem',
+                  }}
+                >
+                  {formatRealtimeVerdict(diagnosis.realtime_verdict)}
+                </div>
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'max-content 1fr',
+                    columnGap: '1.25rem',
+                    rowGap: '0.35rem',
+                    fontSize: '0.8rem',
+                  }}
+                >
+                  <span className="muted">Tx block:</span>
+                  <code style={{ fontFamily: 'monospace' }}>
+                    {diagnosis.block_number != null ? diagnosis.block_number : 'not found'}
+                  </code>
+                  <span className="muted">Last live-tail window:</span>
+                  <code style={{ fontFamily: 'monospace' }}>
+                    {diagnosis.live_tail_from_block != null && diagnosis.live_tail_to_block != null
+                      ? `${diagnosis.live_tail_from_block}–${diagnosis.live_tail_to_block}${
+                          diagnosis.block_number != null
+                            ? diagnosis.block_number >= diagnosis.live_tail_from_block &&
+                              diagnosis.block_number <= diagnosis.live_tail_to_block
+                              ? ' (includes tx block)'
+                              : ' (does not include tx block)'
+                            : ''
+                        }`
+                      : 'no live-tail window recorded'}
+                  </code>
+                  <span className="muted">Scanned spans:</span>
+                  <code style={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                    {formatSpans(diagnosis.realtime_scanned_spans) ?? 'none recorded'}
+                  </code>
+                  <span className="muted">Block was scanned:</span>
+                  <code style={{ fontFamily: 'monospace' }}>
+                    {diagnosis.was_block_scanned === true
+                      ? 'yes'
+                      : diagnosis.was_block_scanned === false
+                        ? 'no'
+                        : 'unknown'}
+                  </code>
+                  <span className="muted">Persisted row detected by:</span>
+                  <code style={{ fontFamily: 'monospace' }}>
+                    {diagnosis.existing_detected_by
+                      ? formatDetectedBy(diagnosis.existing_detected_by)
+                      : 'no persisted row found'}
+                  </code>
+                  {diagnosis.realtime_duplicate_skipped ? (
+                    <>
+                      <span className="muted">Duplicate handling:</span>
+                      <code style={{ fontFamily: 'monospace' }}>
+                        realtime duplicate skipped — first detector kept
+                      </code>
+                    </>
+                  ) : null}
+                  {diagnosis.rate_limited_at_time === true ? (
+                    <>
+                      <span className="muted">Rate limited at tx time:</span>
+                      <code style={{ fontFamily: 'monospace' }}>yes</code>
+                    </>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
         {/* Raw Response toolbar */}
         <div
@@ -907,7 +1217,13 @@ export default function TargetTelemetryPage() {
               const toAddr = extractField(payload, 'to', 'to_address', 'toAddress');
               const amount = extractField(payload, 'amount', 'value', 'amount_wei');
               const isBaseScan = row.chain_id === BASE_CHAIN_ID;
-              const detectedByRaw = row.detected_by ?? extractField(payload, 'detected_by');
+              // Wallet transfers must never render a blank Detected By — resolve
+              // with payload/details/metadata fallbacks, then fail closed to an
+              // explicit "Unknown" (or the simulator/replay evidence source).
+              const detectedByRaw =
+                kind === 'wallet_transfer' ? walletTransferDetectedBy(row) : deriveDetectedBy(row);
+              const detectedByIsRealtime = detectedByRaw ? REALTIME_DETECTED_BY.has(detectedByRaw) : false;
+              const detectedByIsStable = detectedByRaw === 'stable_rpc_polling';
               return (
                 <tr key={row.id}>
                   {/* Event Type */}
@@ -948,27 +1264,39 @@ export default function TargetTelemetryPage() {
                     )}
                   </td>
 
-                  {/* Detected By */}
+                  {/* Detected By — never blank for wallet transfer rows */}
                   <td style={{ whiteSpace: 'nowrap' }}>
                     {kind === 'wallet_transfer' && detectedByRaw ? (
                       <span
                         style={{
-                          background:
-                            detectedByRaw === 'stable_rpc_polling'
-                              ? 'var(--info-bg)'
-                              : 'var(--success-bg)',
-                          border: `1px solid ${detectedByRaw === 'stable_rpc_polling' ? 'var(--info-bdr)' : 'var(--success-bdr)'}`,
+                          background: detectedByIsStable
+                            ? 'var(--info-bg)'
+                            : detectedByIsRealtime
+                              ? 'var(--success-bg)'
+                              : 'var(--warning-bg)',
+                          border: `1px solid ${
+                            detectedByIsStable
+                              ? 'var(--info-bdr)'
+                              : detectedByIsRealtime
+                                ? 'var(--success-bdr)'
+                                : 'var(--warning-bdr)'
+                          }`,
                           borderRadius: 'var(--radius-xs)',
-                          color:
-                            detectedByRaw === 'stable_rpc_polling'
-                              ? 'var(--info-fg)'
-                              : 'var(--success-fg)',
+                          color: detectedByIsStable
+                            ? 'var(--info-fg)'
+                            : detectedByIsRealtime
+                              ? 'var(--success-fg)'
+                              : 'var(--warning-fg, #d97706)',
                           display: 'inline-block',
                           fontSize: '0.72rem',
                           fontWeight: 600,
                           padding: '0.15rem 0.5rem',
                         }}
                       >
+                        {formatDetectedBy(detectedByRaw)}
+                      </span>
+                    ) : detectedByRaw ? (
+                      <span className="muted" style={{ fontSize: '0.78rem' }}>
                         {formatDetectedBy(detectedByRaw)}
                       </span>
                     ) : (

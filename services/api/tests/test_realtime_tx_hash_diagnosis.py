@@ -502,8 +502,8 @@ def test_ui_telemetry_page_labels_realtime_backfill_and_tx_import():
         'apps/web/app/(product)/monitoring-sources/[targetId]/telemetry/page.tsx',
         encoding='utf-8',
     ).read()
-    assert "realtime_backfill: 'Realtime (Backfill)'" in src
-    assert "realtime_tx_import: 'Realtime (Tx import)'" in src
+    assert "realtime_backfill: 'Realtime Backfill'" in src
+    assert "realtime_tx_import: 'Realtime Tx Import'" in src
     assert "stable_rpc_polling: 'Stable RPC Polling'" in src
 
 

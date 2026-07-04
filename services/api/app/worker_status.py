@@ -69,6 +69,76 @@ def detected_by_from_ingestion_source(source: Any) -> str:
     return src
 
 
+# source_type / ingestion_method values that name the single-tx import path. The
+# ops import-tx endpoint historically wrote source_type='tx_hash_import' with no
+# detected_by, which rendered a blank customer-facing "Detected By". Both spellings
+# resolve to the canonical realtime_tx_import tag.
+_TX_IMPORT_SOURCES: tuple[str, ...] = ('tx_hash_import', 'realtime_tx_import')
+
+# Telemetry event_type values that render as "Wallet transfer detected" in the UI
+# and therefore must never have a blank detected_by (acceptance rule).
+WALLET_TRANSFER_EVENT_TYPES: tuple[str, ...] = ('wallet_transfer_detected', 'native_transfer')
+
+
+def _canonical_detected_by_or_none(source: Any) -> str | None:
+    """Strict variant of :func:`detected_by_from_ingestion_source`.
+
+    Returns a canonical detected_by tag (realtime_websocket / realtime_backfill /
+    realtime_tx_import / quicknode_http_fast_tail / stable_rpc_polling) or ``None``
+    when the value names no known detection path. Never passes unknown strings
+    through — the caller decides how to fail closed.
+    """
+    src = str(source or '').strip().lower()
+    if not src:
+        return None
+    if src in REALTIME_DETECTED_BY:
+        return src
+    if src in _TX_IMPORT_SOURCES:
+        return 'realtime_tx_import'
+    if src in _STABLE_INGESTION_SOURCES or src == STABLE_DETECTED_BY:
+        return STABLE_DETECTED_BY
+    return None
+
+
+def resolve_telemetry_detected_by(payload: Any) -> str | None:
+    """Resolve the canonical detected_by tag for a telemetry row payload.
+
+    The telemetry_events table has no top-level detected_by column — the fact
+    lives inside payload_json, and older writers spread it across several keys.
+    Resolution order (first canonical answer wins, never invented):
+
+      1. payload.detected_by
+      2. payload.details.detected_by, then payload.metadata.detected_by
+      3. payload.source_type, then details.source_type / metadata.source_type
+         (e.g. 'rpc_polling' -> stable_rpc_polling, 'tx_hash_import' ->
+         realtime_tx_import)
+      4. payload.ingestion_source / payload.ingestion_method
+
+    Returns ``None`` when no fact names a detection path — callers must render
+    that as an explicit "unknown", never silently claim a path (CLAUDE.md
+    truthfulness: fail closed, no invented status).
+    """
+    if not isinstance(payload, dict):
+        return None
+    details = payload.get('details') if isinstance(payload.get('details'), dict) else {}
+    metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
+    candidates: tuple[Any, ...] = (
+        payload.get('detected_by'),
+        details.get('detected_by'),
+        metadata.get('detected_by'),
+        payload.get('source_type'),
+        details.get('source_type'),
+        metadata.get('source_type'),
+        payload.get('ingestion_source'),
+        payload.get('ingestion_method'),
+    )
+    for candidate in candidates:
+        resolved = _canonical_detected_by_or_none(candidate)
+        if resolved is not None:
+            return resolved
+    return None
+
+
 def classify_realtime_tx_verdict(
     *,
     tx_found: bool,
