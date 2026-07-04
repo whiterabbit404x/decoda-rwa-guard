@@ -41,6 +41,10 @@ from services.api.app.monitoring_runner import (
 )
 from services.api.app.observability import increment, gauge
 from services.api.app.pilot import ensure_pilot_schema, pg_connection
+from services.api.app.worker_status import (
+    classify_realtime_tx_verdict,
+    detected_by_from_ingestion_source,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +117,12 @@ _DEFAULT_FAST_TAIL_CHUNK_SIZE = 10
 # bounded backfill and the independent 300 s stable poller. Configurable via
 # BASE_REALTIME_FAST_TAIL_MAX_CATCHUP_BLOCKS; floored at fast_tail_chunk_size.
 _DEFAULT_FAST_TAIL_MAX_CATCHUP_BLOCKS = 100
+
+# Bounds for the in-memory (and heartbeat-persisted) tx-diagnosis facts. Scanned
+# spans merge into a handful of contiguous ranges in practice; rate-limit windows
+# accrue one per cooldown. Both are capped so heartbeat metrics stay small.
+_MAX_SCANNED_SPANS = 100
+_MAX_RATE_LIMIT_WINDOWS = 20
 
 
 def _resolve_int_env(name: str, default: int) -> int:
@@ -351,6 +361,23 @@ class BaseRealtimeIngestor:
         self._rate_limit_retry_at: str | None = None
         # Count of distinct rate-limit trips, for observability.
         self._rate_limit_count: int = 0
+        # Wall-clock history of rate-limit cooldown windows
+        # ({'started_at', 'ended_at', 'next_retry_at'} ISO strings; ended_at None while
+        # the cooldown is still open). Backs the tx-hash diagnosis question "was the
+        # provider rate-limited when this tx landed?" (rate_limited_at_time /
+        # realtime_tx_missed_due_to_rate_limit). Bounded; persisted in heartbeat
+        # metrics so the read-only diagnose-tx endpoint can answer it too.
+        self._rate_limit_windows: list[dict[str, Any]] = []
+
+        # Block ranges this process ACTUALLY native-scanned (merged, sorted,
+        # disjoint [from, to] pairs). This is the truthful basis for
+        # was_block_scanned in the tx-hash diagnosis: the old
+        # [scan_start_block, last_processed_block] inference over-claimed after a
+        # rate-limit cooldown, when the live-tail fast-forwards the checkpoint past
+        # blocks that were never scanned (the production "matches=0 but tx exists"
+        # case). Recording what was scanned — instead of inferring it — can never
+        # claim coverage of a skipped span. Bounded; persisted in heartbeat metrics.
+        self._scanned_spans: list[list[int]] = []
 
         # WebSocket keepalive settings — configurable via env vars.
         _ping_iv = _resolve_int_env('BASE_WS_PING_INTERVAL', 30)
@@ -395,6 +422,11 @@ class BaseRealtimeIngestor:
             # start and can only be recovered via the bounded tx-hash backfill or the
             # import-tx endpoint — surfaced as was_block_scanned in the tx debug.
             'scan_start_block': None,
+            # Most recent live-tail native scan window (requirement: the tx-hash
+            # debug reports live_tail_from_block / live_tail_to_block so an operator
+            # can see whether the tx block fell inside the window actually tailed).
+            'live_tail_from_block': None,
+            'live_tail_to_block': None,
             'last_head_block': None,
             'last_heartbeat_at': None,
             'last_event_at': None,
@@ -651,6 +683,15 @@ class BaseRealtimeIngestor:
         self._rate_limit_cooldown_until = time.monotonic() + self.rate_limit_cooldown_seconds
         retry_at = datetime.now(timezone.utc) + timedelta(seconds=self.rate_limit_cooldown_seconds)
         self._rate_limit_retry_at = retry_at.isoformat()
+        # Record the cooldown window (wall clock) so the tx-hash diagnosis can later
+        # answer "was the provider rate-limited when this tx landed?" truthfully.
+        self._rate_limit_windows.append({
+            'started_at': datetime.now(timezone.utc).isoformat(),
+            'ended_at': None,
+            'next_retry_at': self._rate_limit_retry_at,
+        })
+        if len(self._rate_limit_windows) > _MAX_RATE_LIMIT_WINDOWS:
+            self._rate_limit_windows = self._rate_limit_windows[-_MAX_RATE_LIMIT_WINDOWS:]
         self.state['source_status'] = 'provider_rate_limited'
         self.state['degraded'] = True
         self.state['degraded_reason'] = 'provider_rate_limited'
@@ -682,12 +723,82 @@ class BaseRealtimeIngestor:
         self._provider_rate_limited = False
         self._rate_limit_cooldown_until = 0.0
         self._rate_limit_retry_at = None
+        # Close the open cooldown window so rate_limited_at_time stays accurate for
+        # transactions that land after realtime scanning resumes.
+        if self._rate_limit_windows and self._rate_limit_windows[-1].get('ended_at') is None:
+            self._rate_limit_windows[-1]['ended_at'] = datetime.now(timezone.utc).isoformat()
         self.state['degraded_reason'] = 'provider_rate_limit_cooldown_cleared'
         logger.info(
             'realtime_rate_limit_cooldown_cleared resuming_wss rate_limit_count=%s watcher=%s',
             self._rate_limit_count,
             self.watcher_name,
         )
+
+    def _rate_limit_window_covering(self, ts: datetime) -> dict[str, Any] | None:
+        """Return the rate-limit cooldown window covering wall-clock ``ts``, if any.
+
+        A window still open (``ended_at`` None) covers up to its ``next_retry_at``
+        deadline. Timestamps that parse badly fail closed to "not covered" so the
+        diagnosis never claims a rate limit it cannot prove.
+        """
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        for window in reversed(self._rate_limit_windows):
+            try:
+                started = datetime.fromisoformat(str(window.get('started_at')))
+                ended_raw = window.get('ended_at') or window.get('next_retry_at')
+                ended = datetime.fromisoformat(str(ended_raw)) if ended_raw else None
+            except (TypeError, ValueError):
+                continue
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            if ended is not None and ended.tzinfo is None:
+                ended = ended.replace(tzinfo=timezone.utc)
+            if started <= ts and (ended is None or ts <= ended):
+                return window
+        return None
+
+    # ------------------------------------------------------------------
+    # Scanned-block spans (truthful was_block_scanned for tx diagnosis)
+    # ------------------------------------------------------------------
+
+    def _note_scanned_range(self, from_block: int, to_block: int) -> None:
+        """Record that ``[from_block, to_block]`` was fully native-scanned.
+
+        Merges into a sorted list of disjoint spans (adjacent spans coalesce) so the
+        common case — a contiguous live tail — stays a single entry. Only called
+        after a scan completed every block in the range, so a mid-range RPC failure
+        never records unproven coverage (fail-closed).
+        """
+        if to_block < from_block:
+            return
+        spans = self._scanned_spans + [[int(from_block), int(to_block)]]
+        spans.sort()
+        merged: list[list[int]] = []
+        for span in spans:
+            if merged and span[0] <= merged[-1][1] + 1:
+                merged[-1][1] = max(merged[-1][1], span[1])
+            else:
+                merged.append(span)
+        self._scanned_spans = merged[-_MAX_SCANNED_SPANS:]
+
+    def _was_block_scanned(self, block_number: int | None) -> bool:
+        """True only when this process actually native-scanned ``block_number``.
+
+        Span-based, never inferred from [scan_start_block, checkpoint]: after a
+        rate-limit cooldown the live-tail fast-forwards the checkpoint past blocks
+        it never scanned, and the old inference falsely claimed those were covered.
+        """
+        if block_number is None:
+            return False
+        blk = int(block_number)
+        return any(span[0] <= blk <= span[1] for span in self._scanned_spans)
+
+    def _scanned_window_bounds(self) -> tuple[int | None, int | None]:
+        """Overall (lowest, highest) block this process has native-scanned."""
+        if not self._scanned_spans:
+            return None, None
+        return self._scanned_spans[0][0], self._scanned_spans[-1][1]
 
     # ------------------------------------------------------------------
     # Target loading (workspace-scoped)
@@ -905,6 +1016,7 @@ class BaseRealtimeIngestor:
         *,
         source_type: str = 'realtime_backfill',
         live_tail: bool = False,
+        result_by_tx: dict[str, dict[str, Any]] | None = None,
     ) -> int:
         """Detect native ETH transfers to/from watched wallets in a block range.
 
@@ -929,6 +1041,10 @@ class BaseRealtimeIngestor:
         if to_block < from_block or not watched:
             return 0
         if live_tail:
+            # Record the most recent live-tail window as a canonical fact; the
+            # tx-hash debug reports it as live_tail_from_block / live_tail_to_block.
+            self.state['live_tail_from_block'] = int(from_block)
+            self.state['live_tail_to_block'] = int(to_block)
             # Requirement A: canonical live-tail start marker naming the exact newest
             # block window scanned. Emitted regardless of gap/backfill state so an
             # operator can confirm the current blocks were scanned immediately.
@@ -1017,12 +1133,36 @@ class BaseRealtimeIngestor:
                     )
                     result = self._persist_event(target, event)
                     if result.get('status') == 'duplicate_suppressed':
+                        # The tx already exists — usually because the independent 300s
+                        # stable polling worker detected it first. Log WHO owns the
+                        # existing row so "realtime saw it but UI says stable polling"
+                        # is explained in one line, and the UI stays truthful
+                        # (detected_by keeps the first detector; realtime skipped a dup).
+                        _existing_by = detected_by_from_ingestion_source(
+                            result.get('existing_detected_by')
+                            or result.get('existing_ingestion_source')
+                        )
+                        logger.info(
+                            'realtime_duplicate_existing_tx tx_hash=%s existing_detected_by=%s '
+                            'attempted_detected_by=%s target_id=%s watcher=%s',
+                            tx_hash, _existing_by, source_type, target.get('id'),
+                            self.watcher_name,
+                        )
                         logger.debug(
                             'realtime_event_deduped watcher=%s event_id=%s',
                             self.watcher_name, event.event_id,
                         )
+                        if result_by_tx is not None and tx_hash:
+                            result_by_tx[tx_hash.lower()] = {
+                                'status': 'duplicate_suppressed',
+                                'existing_detected_by': _existing_by,
+                            }
                         continue
                     if result.get('status') != 'persist_failed':
+                        if result_by_tx is not None and tx_hash:
+                            result_by_tx[tx_hash.lower()] = {
+                                'status': 'processed', 'detected_by': source_type,
+                            }
                         processed += 1
                         self.state['metrics']['events_ingested'] += 1
                         self.state['last_event_at'] = datetime.now(timezone.utc).isoformat()
@@ -1054,6 +1194,11 @@ class BaseRealtimeIngestor:
                         'native_transfer_no_match tx_hash=%s reason=address_not_watched',
                         tx_hash,
                     )
+        # Every block in the range was fetched and inspected — record the span so
+        # the tx-hash diagnosis can answer was_block_scanned truthfully (a raised
+        # RPC error above never reaches this line, so partial scans are not
+        # recorded — fail-closed).
+        self._note_scanned_range(int(from_block), int(to_block))
         # Completion marker with the counts an operator needs to explain why a scan
         # produced no telemetry: txs_seen=0 → the block came back with no full
         # transactions (e.g. a hash-only eth_getBlockByNumber response); txs_seen>0 with
@@ -1290,20 +1435,35 @@ class BaseRealtimeIngestor:
     ) -> dict[str, Any]:
         """Fetch one tx by hash and log a full match diagnostic (+ bounded backfill).
 
-        Requirement 1: ``eth_getTransactionByHash`` → one ``realtime_tx_debug`` line
-        per watched target carrying block_number/from/to/value/chain_id, per-target
-        ``from_matches``/``to_matches`` and the normalized from/to/target addresses.
+        Requirement 1: ``eth_getTransactionByHash`` + ``eth_getTransactionReceipt`` →
+        one ``realtime_tx_debug`` line per watched target carrying
+        block_number/from/to/value/status/chain_id, per-target ``from_matches``/
+        ``to_matches``, the normalized from/to/target addresses, the live-tail window
+        (``live_tail_from_block``/``live_tail_to_block``), the span-truthful
+        ``was_block_scanned``, and ``provider_mode_at_time``/``rate_limited_at_time``.
         The match is computed by the canonical :func:`explain_wallet_transfer_match`
         helper (same normalisation the live scan uses) so the debug view can never
         disagree with the real matcher.
 
-        Requirement 2: when the tx's block is at or below the realtime checkpoint —
-        so the forward head scan (which only scans blocks *after*
-        ``last_processed_block``) will never reach it — log
-        ``realtime_tx_skipped_by_checkpoint`` and, unless ``run_backfill`` is False,
-        run a bounded ``tx_block-2 .. tx_block+2`` native scan tagged
-        ``detected_by=realtime_websocket``. The forward checkpoint is deliberately
+        Requirement 2: when the tx's block was never actually scanned it logs
+        ``realtime_tx_not_in_scanned_window`` (and, below the checkpoint, the legacy
+        ``realtime_tx_skipped_by_checkpoint``) and — unless ``run_backfill`` is False,
+        the provider was rate-limited when the tx landed (requirement 5: stable
+        polling remains the fallback), or a row already exists — runs a bounded
+        ``tx_block-2 .. tx_block+2`` native scan persisting
+        ``detected_by=realtime_backfill``. The forward checkpoint is deliberately
         NOT advanced: a backfill of an older block must never move the live cursor.
+
+        Requirement 4: when the tx already exists from the stable polling worker the
+        debug logs ``realtime_duplicate_existing_tx existing_detected_by=...`` and
+        skips the import — the customer-facing detected_by stays truthful.
+
+        Requirement 5: when the tx landed inside a provider rate-limit cooldown
+        window and realtime missed it, logs ``realtime_tx_missed_due_to_rate_limit``
+        with the cooldown's next_retry_at.
+
+        Acceptance: ends with exactly one ``realtime_tx_verdict`` line (see
+        :func:`worker_status.classify_realtime_tx_verdict`).
 
         Read-only apart from the bounded backfill's own idempotent event
         persistence, so it is safe to run on startup for an operator-supplied tx
@@ -1343,20 +1503,50 @@ class BaseRealtimeIngestor:
         receipt = receipt if isinstance(receipt, dict) else {}
         tx_status = _hex_to_int(receipt.get('status'))
 
-        # Requirement 1: checkpoint context. was_block_scanned is truthful only when we
-        # know the cold-start floor: the forward head scan covers exactly
-        # [scan_start_block, last_processed_block]. A tx below scan_start_block was
-        # skipped at cold start (the production case: tx block far below the
-        # cold-start checkpoint), so it was NEVER scanned — even though its block is
-        # below the checkpoint. Fail-closed to False when either bound is unknown.
+        # Requirement 1: checkpoint + scan-window context. was_block_scanned is now
+        # SPAN-truthful: it is True only when this process actually native-scanned
+        # the tx's block (_note_scanned_range records every completed scan range).
+        # The old [scan_start_block, checkpoint] inference over-claimed after a
+        # rate-limit cooldown, when the live-tail fast-forwards the checkpoint past
+        # blocks it never scanned — the production "tx exists but matches=0" case.
         checkpoint_block = self.state.get('last_processed_block')
         scan_start_block = self.state.get('scan_start_block')
-        was_block_scanned = bool(
-            block_number is not None
-            and checkpoint_block is not None
-            and scan_start_block is not None
-            and int(scan_start_block) <= int(block_number) <= int(checkpoint_block)
-        )
+        was_block_scanned = self._was_block_scanned(block_number)
+        scanned_from, scanned_to = self._scanned_window_bounds()
+        live_tail_from = self.state.get('live_tail_from_block')
+        live_tail_to = self.state.get('live_tail_to_block')
+
+        # Requirement 5: was the provider rate-limited when this tx landed? Answered
+        # from the recorded cooldown windows against the tx block's on-chain
+        # timestamp. The block header is fetched lazily — only when a cooldown was
+        # ever recorded — so the debug adds no RPC cost in the healthy case.
+        # rate_limited_at_time is True / False / 'unknown' (header unavailable):
+        # never a claim the worker cannot prove.
+        rate_limited_at_time: Any = False
+        rate_limit_next_retry_at: str | None = None
+        if self._rate_limit_windows and block_number is not None:
+            rate_limited_at_time = 'unknown'
+            try:
+                header = self._rpc_call('eth_getBlockByNumber', [hex(int(block_number)), False])
+            except Exception:
+                header = None
+            header = header if isinstance(header, dict) else {}
+            ts_int = _hex_to_int(header.get('timestamp'))
+            if ts_int is not None:
+                tx_time = datetime.fromtimestamp(ts_int, tz=timezone.utc)
+                window = self._rate_limit_window_covering(tx_time)
+                rate_limited_at_time = window is not None
+                if window is not None:
+                    rate_limit_next_retry_at = window.get('next_retry_at')
+
+        if rate_limited_at_time is True:
+            provider_mode_at_time = 'rate_limited'
+        elif was_block_scanned:
+            provider_mode_at_time = (
+                self.state.get('source_status') or self._ingestion_mode or 'realtime_websocket'
+            )
+        else:
+            provider_mode_at_time = 'unknown'
 
         matched: list[dict[str, Any]] = []
         for target, addr in watched:
@@ -1370,7 +1560,9 @@ class BaseRealtimeIngestor:
                 'realtime_tx_debug tx_hash=%s block_number=%s from=%s to=%s value=%s status=%s '
                 'chain_id=%s monitored_address=%s from_matches=%s to_matches=%s '
                 'normalized_from=%s normalized_to=%s normalized_target=%s '
+                'live_tail_from_block=%s live_tail_to_block=%s '
                 'checkpoint_block=%s scan_start_block=%s was_block_scanned=%s '
+                'provider_mode_at_time=%s rate_limited_at_time=%s '
                 'matched=%s direction=%s target_id=%s watcher=%s',
                 tx_hash, block_number if block_number is not None else 'none',
                 raw_from, raw_to, value_wei,
@@ -1378,9 +1570,13 @@ class BaseRealtimeIngestor:
                 chain_id if chain_id is not None else 'none',
                 addr, from_matches, to_matches,
                 norm_from, norm_to, norm_target,
+                live_tail_from if live_tail_from is not None else 'none',
+                live_tail_to if live_tail_to is not None else 'none',
                 checkpoint_block if checkpoint_block is not None else 'none',
                 scan_start_block if scan_start_block is not None else 'none',
                 was_block_scanned,
+                provider_mode_at_time,
+                rate_limited_at_time,
                 bool(explanation.get('matched')),
                 explanation.get('wallet_transfer_direction') or 'none',
                 target.get('id'), self.watcher_name,
@@ -1401,19 +1597,90 @@ class BaseRealtimeIngestor:
             'checkpoint_block': int(checkpoint_block) if checkpoint_block is not None else None,
             'scan_start_block': int(scan_start_block) if scan_start_block is not None else None,
             'was_block_scanned': was_block_scanned,
+            'live_tail_from_block': live_tail_from,
+            'live_tail_to_block': live_tail_to,
+            'provider_mode_at_time': provider_mode_at_time,
+            'rate_limited_at_time': rate_limited_at_time,
             'matched_target_count': len(matched),
             'skipped_by_checkpoint': False,
             'backfill_triggered': False,
         }
 
+        # WHO already has this tx (if anyone). Realtime rows keep their tag; a row
+        # from the 300 s stable polling worker means realtime must SKIP the import
+        # (requirement 4) so the customer-facing detected_by stays truthful.
+        existing_detected_by = (
+            self._existing_telemetry_detected_by(tx_hash, watched) if matched else None
+        )
+        result['existing_detected_by'] = existing_detected_by
+        if matched and existing_detected_by:
+            logger.info(
+                'realtime_duplicate_existing_tx tx_hash=%s existing_detected_by=%s '
+                'attempted_detected_by=realtime_tx_debug watcher=%s',
+                tx_hash, existing_detected_by, self.watcher_name,
+            )
+
+        # Requirement 5: the tx landed inside a provider rate-limit cooldown and no
+        # realtime path scanned its block — realtime missed it because scanning was
+        # paused. The independent stable polling worker remains the fallback, so no
+        # bounded import fires here (a stable row will/should appear; if it already
+        # has, the duplicate branch above owns the verdict).
+        if (
+            matched and existing_detected_by is None
+            and rate_limited_at_time is True and not was_block_scanned
+        ):
+            logger.warning(
+                'realtime_tx_missed_due_to_rate_limit tx_hash=%s block_number=%s '
+                'next_retry_at=%s watcher=%s',
+                tx_hash, block_number if block_number is not None else 'none',
+                rate_limit_next_retry_at or 'none', self.watcher_name,
+            )
+
+        # Requirement 2: canonical marker naming the exact scanned window whenever
+        # the tx block was never actually scanned and nothing was persisted for it.
+        if (
+            block_number is not None and not was_block_scanned
+            and existing_detected_by is None
+        ):
+            logger.warning(
+                'realtime_tx_not_in_scanned_window tx_hash=%s tx_block=%s '
+                'scanned_from=%s scanned_to=%s watcher=%s',
+                tx_hash, block_number,
+                scanned_from if scanned_from is not None else 'none',
+                scanned_to if scanned_to is not None else 'none',
+                self.watcher_name,
+            )
+
         checkpoint = self.state.get('last_processed_block')
-        if block_number is not None and checkpoint is not None and block_number <= int(checkpoint):
+        below_checkpoint = bool(
+            block_number is not None and checkpoint is not None
+            and block_number <= int(checkpoint)
+        )
+        if was_block_scanned and matched and existing_detected_by is None:
+            # The block WAS scanned and the tx matches a watched wallet, yet no row
+            # exists — a matching/persistence defect, surfaced loudly (requirement 3)
+            # before the recovery import below makes the customer whole.
+            logger.error(
+                'realtime_tx_scanned_but_not_persisted tx_hash=%s tx_block=%s '
+                'matched_target_count=%s action=recovery_import watcher=%s',
+                tx_hash, block_number, len(matched), self.watcher_name,
+            )
+        imported_by: str | None = None
+        if below_checkpoint:
             logger.warning(
                 'realtime_tx_skipped_by_checkpoint tx_hash=%s tx_block=%s checkpoint_block=%s watcher=%s',
                 tx_hash, block_number, int(checkpoint), self.watcher_name,
             )
             result['skipped_by_checkpoint'] = True
-            if run_backfill and watched:
+            # Bounded recovery import. Skipped when a row already exists (dedupe
+            # would no-op; requirement 4 keeps the stable row authoritative) and
+            # when the miss is rate-limit-explained (requirement 5: stable polling
+            # remains the fallback).
+            if (
+                run_backfill and watched
+                and existing_detected_by is None
+                and rate_limited_at_time is not True
+            ):
                 _from = max(0, int(block_number) - 2)
                 _to = int(block_number) + 2
                 logger.info(
@@ -1426,19 +1693,96 @@ class BaseRealtimeIngestor:
                     # the live forward cursor, so it must not claim the WebSocket
                     # delivered it. It persists the missed transfer but does NOT touch
                     # last_processed_block — the live forward cursor is unchanged.
+                    _backfill_results: dict[str, dict[str, Any]] = {}
                     self._scan_native_transfers(
                         _from, _to, watched, source_type='realtime_backfill',
+                        result_by_tx=_backfill_results,
                     )
                     result['backfill_triggered'] = True
                     result['backfill_from_block'] = _from
                     result['backfill_to_block'] = _to
+                    _tx_outcome = _backfill_results.get(tx_hash.lower()) or {}
+                    if _tx_outcome.get('status') == 'processed':
+                        imported_by = str(_tx_outcome.get('detected_by') or 'realtime_backfill')
+                    elif _tx_outcome.get('status') == 'duplicate_suppressed':
+                        # A row appeared between the check above and the scan —
+                        # report its true owner instead of claiming an import.
+                        existing_detected_by = str(
+                            _tx_outcome.get('existing_detected_by') or 'unknown'
+                        )
+                        result['existing_detected_by'] = existing_detected_by
                 except Exception as exc:
                     logger.warning(
                         'realtime_bounded_backfill_failed tx_hash=%s from_block=%s to_block=%s '
                         'error=%s watcher=%s',
                         tx_hash, _from, _to, str(exc)[:200], self.watcher_name,
                     )
+
+        # Acceptance: exactly one canonical verdict for this tx hash, shared with
+        # the read-only diagnose-tx endpoint via classify_realtime_tx_verdict.
+        verdict = classify_realtime_tx_verdict(
+            tx_found=True,
+            matched=bool(matched),
+            existing_detected_by=existing_detected_by,
+            was_block_scanned=was_block_scanned,
+            rate_limited_at_tx_time=rate_limited_at_time is True,
+            below_checkpoint=below_checkpoint,
+            imported_by=imported_by,
+        )
+        result['verdict'] = verdict
+        result['imported_by'] = imported_by
+        logger.info(
+            'realtime_tx_verdict tx_hash=%s verdict=%s block_number=%s '
+            'was_block_scanned=%s rate_limited_at_time=%s existing_detected_by=%s '
+            'imported_by=%s next_retry_at=%s watcher=%s',
+            tx_hash, verdict, block_number if block_number is not None else 'none',
+            was_block_scanned, rate_limited_at_time, existing_detected_by or 'none',
+            imported_by or 'none', rate_limit_next_retry_at or 'none', self.watcher_name,
+        )
         return result
+
+    def _existing_telemetry_detected_by(
+        self,
+        tx_hash: str,
+        watched: list[tuple[dict[str, Any], str]],
+    ) -> str | None:
+        """Return the detected_by of an already-persisted telemetry row for this tx.
+
+        Checks every watched target's workspace-scoped telemetry for the tx hash and
+        returns the canonical detected_by tag of the first row found (rows persisted
+        by the stable polling worker before the detected_by field existed default to
+        ``stable_rpc_polling``). Best-effort: any DB failure returns ``None`` so the
+        debug degrades to "no known row" — the bounded import that may follow is
+        idempotent, so a wrong ``None`` can never create a duplicate.
+        """
+        tx_hash_norm = str(tx_hash or '').lower()
+        if not tx_hash_norm:
+            return None
+        try:
+            with pg_connection() as conn:
+                ensure_pilot_schema(conn)
+                for target, _addr in watched:
+                    row = conn.execute(
+                        '''
+                        SELECT payload_json->>'detected_by' AS detected_by
+                        FROM telemetry_events
+                        WHERE workspace_id = %s AND target_id = %s
+                          AND lower(payload_json->>'tx_hash') = %s
+                        LIMIT 1
+                        ''',
+                        (target.get('workspace_id'), target.get('id'), tx_hash_norm),
+                    ).fetchone()
+                    if row is not None:
+                        row = dict(row) if not isinstance(row, dict) else row
+                        return detected_by_from_ingestion_source(
+                            row.get('detected_by') or 'stable_rpc_polling'
+                        )
+        except Exception as exc:
+            logger.warning(
+                'realtime_tx_existing_row_check_failed tx_hash=%s error=%s watcher=%s',
+                tx_hash_norm, str(exc)[:160], self.watcher_name,
+            )
+        return None
 
     def _run_configured_tx_debug(self) -> None:
         """Run tx-hash debug once for every hash in BASE_REALTIME_DEBUG_TX_HASHES.
@@ -1743,6 +2087,14 @@ class BaseRealtimeIngestor:
                             # Cold-start floor so read-only diagnostics (diagnose-tx)
                             # can tell whether a tx block was ever forward-scanned.
                             'scan_start_block': self.state.get('scan_start_block'),
+                            # Span-truthful scan coverage + rate-limit cooldown history +
+                            # most recent live-tail window, so the read-only diagnose-tx
+                            # endpoint answers was_block_scanned / rate_limited_at_time
+                            # from the same facts the worker's tx debug uses.
+                            'scanned_spans': [list(s) for s in self._scanned_spans],
+                            'rate_limit_windows': list(self._rate_limit_windows),
+                            'live_tail_from_block': self.state.get('live_tail_from_block'),
+                            'live_tail_to_block': self.state.get('live_tail_to_block'),
                         }),
                     ),
                 )

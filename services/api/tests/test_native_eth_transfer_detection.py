@@ -1263,7 +1263,10 @@ def test_list_target_telemetry_wallet_transfers_filter_includes_native_transfer(
 
 def test_debug_tx_match_reports_receipt_status_and_scan_window(monkeypatch, caplog):
     """_debug_tx_match fetches the receipt (status) and reports the scan window:
-    a tx block inside [scan_start_block, checkpoint_block] is was_block_scanned=True."""
+    a tx block inside a range the worker actually native-scanned is
+    was_block_scanned=True. (Coverage is span-recorded, never inferred from
+    [scan_start_block, checkpoint] — that inference over-claimed across
+    rate-limit cooldown gaps.)"""
     ing = _make_ingestor()
     target = _wallet_target()
     tx = _native_tx(tx_hash='0xscanned', from_addr=BASE_WALLET, to_addr=OTHER_WALLET)  # block 100
@@ -1277,7 +1280,8 @@ def test_debug_tx_match_reports_receipt_status_and_scan_window(monkeypatch, capl
 
     monkeypatch.setattr(ing, '_rpc_call', _rpc)
     ing.state['scan_start_block'] = 90
-    ing.state['last_processed_block'] = 120  # 90 <= 100 <= 120 → forward-scanned
+    ing.state['last_processed_block'] = 120
+    ing._note_scanned_range(90, 120)  # worker actually scanned 90..120 → covers block 100
 
     with caplog.at_level(logging.INFO, logger='services.api.app.base_realtime_ingestor'):
         result = ing._debug_tx_match('0xscanned', [(target, BASE_WALLET.lower())], run_backfill=False)
