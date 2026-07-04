@@ -405,13 +405,15 @@ def test_list_target_telemetry_q_filters_by_tx_hash(monkeypatch):
             q=TX_HASH,
         )
 
-    # Check the backend applied a LIKE filter
+    # Check the backend applied a LIKE filter. Several telemetry_events queries run
+    # (freshness aggregate, count, data) — pick the search-filtered one by its LIKE.
     telemetry_queries = [(q, p) for q, p in sql_queries_captured if 'telemetry_events' in (q or '').lower()]
     assert telemetry_queries, 'Expected a DB query on telemetry_events'
-    search_query_sql, search_params = telemetry_queries[0]
-    assert 'like' in search_query_sql.lower(), (
-        f'Expected LIKE clause in telemetry search SQL: {search_query_sql}'
+    like_queries = [(q, p) for q, p in telemetry_queries if 'like' in (q or '').lower()]
+    assert like_queries, (
+        f'Expected LIKE clause in a telemetry search SQL: {[q for q, _ in telemetry_queries]}'
     )
+    search_query_sql, search_params = like_queries[0]
     # The tx_hash must appear in the query params
     assert any(TX_HASH.lower() in str(p).lower() for p in (search_params or [])), (
         f'Expected tx_hash in query params: {search_params}'

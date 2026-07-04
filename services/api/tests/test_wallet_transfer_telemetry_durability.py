@@ -422,8 +422,13 @@ def _search_telemetry(query: str):
 def test_tx_hash_search_returns_persisted_transfer():
     result, captured = _search_telemetry(TX_HASH)
 
-    telemetry_queries = [(q, p) for q, p in captured if 'telemetry_events' in (q or '').lower()]
-    assert telemetry_queries, 'expected a telemetry_events query'
+    # Several telemetry_events queries run (freshness aggregate, count, data) —
+    # pick the search-filtered one by its LIKE clause.
+    telemetry_queries = [
+        (q, p) for q, p in captured
+        if 'telemetry_events' in (q or '').lower() and 'like' in (q or '').lower()
+    ]
+    assert telemetry_queries, 'expected a search-filtered telemetry_events query'
     sql, params = telemetry_queries[0]
     assert "payload_json->>'tx_hash'" in sql.lower(), 'search must filter on tx_hash'
     assert any(TX_HASH.lower() in str(p).lower() for p in (params or []))
@@ -437,8 +442,11 @@ def test_tx_hash_search_returns_persisted_transfer():
 def test_block_number_search_returns_persisted_transfer():
     result, captured = _search_telemetry(str(BLOCK_NUM))
 
-    telemetry_queries = [(q, p) for q, p in captured if 'telemetry_events' in (q or '').lower()]
-    assert telemetry_queries, 'expected a telemetry_events query'
+    telemetry_queries = [
+        (q, p) for q, p in captured
+        if 'telemetry_events' in (q or '').lower() and 'like' in (q or '').lower()
+    ]
+    assert telemetry_queries, 'expected a search-filtered telemetry_events query'
     sql, params = telemetry_queries[0]
     assert "payload_json->>'block_number'" in sql.lower(), 'search must filter on block_number'
     assert any(str(BLOCK_NUM) in str(p) for p in (params or []))
@@ -463,7 +471,11 @@ def test_search_exposes_required_ui_fields():
 def test_search_matches_by_from_and_to_address():
     for query in (WALLET_ADDR, COUNTERPARTY):
         result, captured = _search_telemetry(query)
-        telemetry_queries = [(q, p) for q, p in captured if 'telemetry_events' in (q or '').lower()]
+        telemetry_queries = [
+            (q, p) for q, p in captured
+            if 'telemetry_events' in (q or '').lower() and 'like' in (q or '').lower()
+        ]
+        assert telemetry_queries, 'expected a search-filtered telemetry_events query'
         sql, params = telemetry_queries[0]
         assert "payload_json->>'from'" in sql.lower()
         assert "payload_json->>'to'" in sql.lower()

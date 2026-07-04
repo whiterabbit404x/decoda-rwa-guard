@@ -41,9 +41,11 @@ from services.api.app.worker_status import (
     live_coverage_gap_reason,
     realtime_active_by_watcher_facts,
     realtime_enabled,
+    resolve_telemetry_detected_by,
     stable_poll_stale_threshold_seconds,
     REALTIME_DETECTED_BY,
     STABLE_DETECTED_BY,
+    WALLET_TRANSFER_EVENT_TYPES,
 )
 from services.api.app.workspace_monitoring_summary import (
     build_runtime_setup_chain,
@@ -537,6 +539,33 @@ def _persist_raw_wallet_transfer_telemetry(
     returns ``False`` to signal the independent commit did not hold.
     """
     safe_payload = payload if isinstance(payload, dict) else {}
+    # Acceptance rule: every persisted LIVE wallet-transfer row must carry a
+    # canonical detected_by (realtime_websocket / realtime_backfill /
+    # realtime_tx_import / stable_rpc_polling / fast-tail). When the caller's
+    # payload has no top-level detected_by, resolve it from the payload's own
+    # source_type / details / metadata / ingestion facts and stamp it BEFORE the
+    # row is written, so the customer-facing "Detected By" column is never blank.
+    # Never invented: an unresolvable path stays absent and is logged loudly
+    # instead of guessed. Simulator/replay rows are excluded — a demo row must
+    # never claim a live detection path (CLAUDE.md truthfulness).
+    if (
+        evidence_source == 'live'
+        and event_type in WALLET_TRANSFER_EVENT_TYPES
+        and not safe_payload.get('detected_by')
+    ):
+        _resolved_detected_by = resolve_telemetry_detected_by(safe_payload)
+        if _resolved_detected_by:
+            safe_payload['detected_by'] = _resolved_detected_by
+        else:
+            logger.warning(
+                'wallet_transfer_missing_detected_by telemetry_id=%s target_id=%s tx_hash=%s '
+                'event_type=%s source_type=%s ingestion_source=%s',
+                telemetry_id, target_id,
+                str(safe_payload.get('tx_hash') or safe_payload.get('hash') or 'unknown'),
+                event_type,
+                str(safe_payload.get('source_type') or 'none'),
+                str(safe_payload.get('ingestion_source') or 'none'),
+            )
     payload_json = _json_dumps(safe_payload)
     payload_hash = hashlib.sha256(payload_json.encode('utf-8')).hexdigest()
     tx_hash = str(safe_payload.get('tx_hash') or safe_payload.get('hash') or '')
@@ -10603,6 +10632,43 @@ def list_target_telemetry(
         else:
             _realtime_state = 'paused'
 
+        # Separated detection-path freshness for this target so the Telemetry page can
+        # show "Last stable poll" vs "Last realtime event" distinctly (CLAUDE.md: poll
+        # and realtime telemetry are separate facts). Workspace + target scoped.
+        # detected_by lives in payload_json; stable coverage polls also use the
+        # rpc_polling event_type even when detected_by is absent on older rows.
+        # Resolved BEFORE the count/data queries so the telemetry data query stays
+        # the last executed statement (same invariant as the watcher-state read).
+        last_stable_poll_at: str | None = None
+        last_realtime_event_at: str | None = None
+        try:
+            _rt_placeholders = ', '.join(['%s'] * len(REALTIME_DETECTED_BY))
+            _freshness_row = connection.execute(
+                f'''
+                SELECT
+                    MAX(observed_at) FILTER (
+                        WHERE payload_json->>'detected_by' = %s
+                           OR event_type IN ('rpc_polling', 'live_provider')
+                    ) AS last_stable_poll_at,
+                    MAX(observed_at) FILTER (
+                        WHERE payload_json->>'detected_by' IN ({_rt_placeholders})
+                    ) AS last_realtime_event_at
+                FROM telemetry_events
+                WHERE workspace_id = %s::uuid AND target_id = %s::uuid
+                ''',
+                [STABLE_DETECTED_BY, *REALTIME_DETECTED_BY, workspace_id, target_id],
+            ).fetchone()
+            if isinstance(_freshness_row, dict):
+                _sp = _freshness_row.get('last_stable_poll_at')
+                _rt = _freshness_row.get('last_realtime_event_at')
+                last_stable_poll_at = _sp.isoformat() if hasattr(_sp, 'isoformat') else (_sp or None)
+                last_realtime_event_at = _rt.isoformat() if hasattr(_rt, 'isoformat') else (_rt or None)
+        except Exception:
+            logger.warning(
+                'telemetry_detection_path_freshness_unavailable workspace_id=%s target_id=%s',
+                workspace_id, target_id, exc_info=True,
+            )
+
         _q = (q or '').strip()
         _effective_limit = max(1, min(limit, 200))
         _effective_offset = max(0, offset)
@@ -10777,44 +10843,69 @@ def list_target_telemetry(
             item['block_number'] = block_number
             item.pop('chain_network', None)
             item.pop('receipt_block_number', None)
-            item['detected_by'] = payload.get('detected_by')
+            # detected_by lives in payload_json (there is no top-level column) and
+            # older writers spread it across details/metadata/source_type. Resolve
+            # the canonical tag with fallbacks; a wallet-transfer row must NEVER
+            # come back blank (acceptance rule): when no fact names a live
+            # detection path, return the explicit truth — the evidence_source for
+            # simulator/replay rows, 'unknown' for unattributable live rows.
+            _row_event_type = str(item.get('source_type') or '').lower()
+            _detected_by = resolve_telemetry_detected_by(payload)
+            if _detected_by is None and _row_event_type in WALLET_TRANSFER_EVENT_TYPES:
+                _row_evidence = str(item.get('evidence_source') or '').lower()
+                _detected_by = _row_evidence if _row_evidence and _row_evidence != 'live' else 'unknown'
+            item['detected_by'] = _detected_by
+            # Explicit event_type alias: the legacy response reuses 'source_type'
+            # for the DB event_type; keep that for compat but also name it truthfully.
+            item['event_type'] = item.get('source_type')
+            item['tx_hash'] = payload.get('tx_hash') or payload.get('hash')
             item['provider_mode'] = payload.get('provider_mode')
             item['observed_latency_seconds'] = payload.get('observed_latency_seconds')
             telemetry.append(item)
 
-        # Separated detection-path freshness for this target so the Telemetry page can
-        # show "Last stable poll" vs "Last realtime event" distinctly (CLAUDE.md: poll
-        # and realtime telemetry are separate facts). Workspace + target scoped.
-        # detected_by lives in payload_json; stable coverage polls also use the
-        # rpc_polling event_type even when detected_by is absent on older rows.
-        last_stable_poll_at: str | None = None
-        last_realtime_event_at: str | None = None
-        try:
-            _rt_placeholders = ', '.join(['%s'] * len(REALTIME_DETECTED_BY))
-            _freshness_row = connection.execute(
-                f'''
-                SELECT
-                    MAX(observed_at) FILTER (
-                        WHERE payload_json->>'detected_by' = %s
-                           OR event_type IN ('rpc_polling', 'live_provider')
-                    ) AS last_stable_poll_at,
-                    MAX(observed_at) FILTER (
-                        WHERE payload_json->>'detected_by' IN ({_rt_placeholders})
-                    ) AS last_realtime_event_at
-                FROM telemetry_events
-                WHERE workspace_id = %s::uuid AND target_id = %s::uuid
-                ''',
-                [STABLE_DETECTED_BY, *REALTIME_DETECTED_BY, workspace_id, target_id],
-            ).fetchone()
-            if isinstance(_freshness_row, dict):
-                _sp = _freshness_row.get('last_stable_poll_at')
-                _rt = _freshness_row.get('last_realtime_event_at')
-                last_stable_poll_at = _sp.isoformat() if hasattr(_sp, 'isoformat') else (_sp or None)
-                last_realtime_event_at = _rt.isoformat() if hasattr(_rt, 'isoformat') else (_rt or None)
-        except Exception:
-            logger.warning(
-                'telemetry_detection_path_freshness_unavailable workspace_id=%s target_id=%s',
-                workspace_id, target_id, exc_info=True,
+        # Debug/diagnosis contract for the newest row: log AND return the exact
+        # detection-path fields so a blank customer-facing "Detected By" can be
+        # traced to persistence vs normalization vs rendering in one place.
+        top_row_detection_debug: dict[str, Any] | None = None
+        if telemetry:
+            _top = telemetry[0]
+            _top_payload = _top.get('payload_json') if isinstance(_top.get('payload_json'), dict) else {}
+            _top_details = _top_payload.get('details') if isinstance(_top_payload.get('details'), dict) else {}
+            _top_metadata = _top_payload.get('metadata') if isinstance(_top_payload.get('metadata'), dict) else {}
+            top_row_detection_debug = {
+                'telemetry_id': _top.get('id'),
+                'event_type': _top.get('event_type'),
+                'tx_hash': _top.get('tx_hash'),
+                'detected_by': _top.get('detected_by'),
+                'payload_detected_by': _top_payload.get('detected_by'),
+                'source_type': _top_payload.get('source_type'),
+                'evidence_source': _top.get('evidence_source'),
+                'detection_method': _top_payload.get('detection_method'),
+                'details_detected_by': _top_details.get('detected_by'),
+                'details_source_type': _top_details.get('source_type'),
+                'metadata_detected_by': _top_metadata.get('detected_by'),
+                'ingestion_source': _top_payload.get('ingestion_source'),
+                'ingestion_method': _top_payload.get('ingestion_method'),
+            }
+            logger.info(
+                'telemetry_top_row_debug target_id=%s telemetry_id=%s event_type=%s tx_hash=%s '
+                'detected_by=%s payload_detected_by=%s source_type=%s evidence_source=%s '
+                'detection_method=%s details_detected_by=%s details_source_type=%s '
+                'metadata_detected_by=%s ingestion_source=%s ingestion_method=%s',
+                target_id,
+                top_row_detection_debug['telemetry_id'],
+                top_row_detection_debug['event_type'] or 'none',
+                top_row_detection_debug['tx_hash'] or 'none',
+                top_row_detection_debug['detected_by'] or 'none',
+                top_row_detection_debug['payload_detected_by'] or 'none',
+                top_row_detection_debug['source_type'] or 'none',
+                top_row_detection_debug['evidence_source'] or 'none',
+                top_row_detection_debug['detection_method'] or 'none',
+                top_row_detection_debug['details_detected_by'] or 'none',
+                top_row_detection_debug['details_source_type'] or 'none',
+                top_row_detection_debug['metadata_detected_by'] or 'none',
+                top_row_detection_debug['ingestion_source'] or 'none',
+                top_row_detection_debug['ingestion_method'] or 'none',
             )
 
         result: dict[str, Any] = {
@@ -10833,6 +10924,7 @@ def list_target_telemetry(
             'realtime_state': _realtime_state,
             'last_stable_poll_at': last_stable_poll_at,
             'last_realtime_event_at': last_realtime_event_at,
+            'top_row_detection_debug': top_row_detection_debug,
             'total_count': total_count,
             'page': _effective_offset // _effective_limit if _effective_limit > 0 else 0,
             'page_size': _effective_limit,
@@ -10975,6 +11067,10 @@ def backfill_target_block_range(
                 payload['source_type'] = 'rpc_polling'
                 payload['wallet_transfer_direction'] = direction
                 payload['backfill'] = True
+                # Block-range replay scans over the plain HTTPS RPC exactly like the
+                # stable poller — tag it stable_rpc_polling so the Detected By column
+                # is truthful and never blank for these native_transfer rows.
+                payload['detected_by'] = 'stable_rpc_polling'
                 payload['evidence_source'] = 'live'
                 telem_id = str(uuid.uuid4())
                 payload_json = _json_dumps(payload)
@@ -11241,6 +11337,11 @@ def ingest_tx_by_hash(
         payload['source_type'] = 'tx_hash_import'
         payload['wallet_transfer_direction'] = direction
         payload['ingestion_method'] = 'tx_hash_import'
+        # Canonical detection-path tag (acceptance rule: wallet_transfer_detected
+        # rows must never have a blank Detected By). tx-hash import is the
+        # realtime_tx_import path — same tag the realtime worker's bounded
+        # tx-hash backfill writes, so the UI renders "Realtime Tx Import".
+        payload['detected_by'] = 'realtime_tx_import'
         payload['evidence_source'] = 'live'
         if receipt:
             payload['tx_status'] = _hex_to_int(receipt.get('status'))

@@ -932,13 +932,13 @@ def test_native_transfer_event_payload_has_from_and_to_address():
 
 def test_ui_telemetry_page_renders_realtime_websocket_label():
     """Requirement 7: the Telemetry view maps detected_by=realtime_websocket to the
-    human label 'Realtime (WebSocket)' so a customer sees the transfer was caught by
+    human label 'Realtime WebSocket' so a customer sees the transfer was caught by
     the realtime socket, not stable polling."""
     src = open(
         'apps/web/app/(product)/monitoring-sources/[targetId]/telemetry/page.tsx',
         encoding='utf-8',
     ).read()
-    assert "realtime_websocket: 'Realtime (WebSocket)'" in src
+    assert "realtime_websocket: 'Realtime WebSocket'" in src
     # from_address / to_address are read by the row classifier so the aliased payload
     # fields are surfaced, not ignored.
     assert "'from', 'from_address'" in src
