@@ -139,6 +139,73 @@ def resolve_telemetry_detected_by(payload: Any) -> str | None:
     return None
 
 
+# telemetry_events.provider_type values written by the stable-polling family of
+# writers: process_monitoring_target uses the provider's name
+# ('evm_activity_provider', generic fallback 'monitoring_provider'); the ops
+# import-tx and block-range replay endpoints write 'evm_rpc'. Every realtime
+# writer has stamped payload ingestion markers (ingestion_source / source_type /
+# detected_by) since its first commit, so a LIVE wallet-transfer row whose
+# payload carries no marker can only have been written by this stable family —
+# rows persisted before the payload stamps existed.
+STABLE_PROVIDER_TYPES: tuple[str, ...] = ('evm_activity_provider', 'monitoring_provider', 'evm_rpc')
+
+# Basis values for classify_wallet_transfer_detected_by: name WHICH fact decided
+# the detected_by tag so the UI/debug output can distinguish a hard payload fact
+# from a row-level inference (requirement: warn only when truly unclassifiable).
+DETECTED_BY_BASIS_PAYLOAD = 'payload'
+DETECTED_BY_BASIS_EVIDENCE = 'evidence_source'
+DETECTED_BY_BASIS_PROVIDER_TYPE = 'provider_type'
+DETECTED_BY_BASIS_STABLE_INFERENCE = 'stable_polling_inference'
+DETECTED_BY_BASIS_UNCLASSIFIED = 'unclassified'
+
+
+def classify_wallet_transfer_detected_by(
+    *,
+    payload: Any,
+    provider_type: Any = None,
+    event_type: Any = None,
+    evidence_source: Any = None,
+) -> tuple[str | None, str]:
+    """Classify a telemetry ROW's detection path from every persisted fact.
+
+    Resolution tiers (first truthful answer wins, never invented):
+
+      1. payload facts — :func:`resolve_telemetry_detected_by` (detected_by /
+         details / metadata / source_type / ingestion markers).
+      2. non-live evidence — a simulator/replay wallet row names its evidence
+         source, never a live detection path (CLAUDE.md truthfulness).
+      3. the row's ``provider_type`` column — realtime tags map to themselves;
+         the stable-family writer names ('evm_activity_provider',
+         'monitoring_provider', 'evm_rpc') map to stable_rpc_polling.
+      4. stable-polling inference — a LIVE wallet-transfer row with NO payload
+         markers and NO provider_type can only predate the payload stamps, and
+         every realtime-family writer has stamped markers since its first
+         commit, so the writer was the stable polling family. This is the only
+         inference tier and it never claims a realtime path.
+
+    Returns ``(detected_by, basis)``. ``detected_by`` is ``None`` only when the
+    row names a foreign writer (unknown provider_type with no payload facts) —
+    callers keep failing closed to an explicit 'unknown' for wallet rows.
+    """
+    resolved = resolve_telemetry_detected_by(payload)
+    if resolved:
+        return resolved, DETECTED_BY_BASIS_PAYLOAD
+    etype = str(event_type or '').strip().lower()
+    is_wallet = etype in WALLET_TRANSFER_EVENT_TYPES
+    evidence = str(evidence_source or '').strip().lower()
+    if is_wallet and evidence and evidence != 'live':
+        return evidence, DETECTED_BY_BASIS_EVIDENCE
+    ptype = str(provider_type or '').strip().lower()
+    mapped = _canonical_detected_by_or_none(ptype)
+    if mapped is None and ptype in STABLE_PROVIDER_TYPES:
+        mapped = STABLE_DETECTED_BY
+    if mapped:
+        return mapped, DETECTED_BY_BASIS_PROVIDER_TYPE
+    if is_wallet and not ptype and evidence in ('', 'live'):
+        return STABLE_DETECTED_BY, DETECTED_BY_BASIS_STABLE_INFERENCE
+    return None, DETECTED_BY_BASIS_UNCLASSIFIED
+
+
 def classify_realtime_tx_verdict(
     *,
     tx_found: bool,

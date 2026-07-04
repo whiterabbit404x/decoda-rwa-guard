@@ -26,7 +26,14 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 from services.api.app.worker_status import (
+    classify_wallet_transfer_detected_by,
     resolve_telemetry_detected_by,
+    DETECTED_BY_BASIS_EVIDENCE,
+    DETECTED_BY_BASIS_PAYLOAD,
+    DETECTED_BY_BASIS_PROVIDER_TYPE,
+    DETECTED_BY_BASIS_STABLE_INFERENCE,
+    DETECTED_BY_BASIS_UNCLASSIFIED,
+    STABLE_PROVIDER_TYPES,
     WALLET_TRANSFER_EVENT_TYPES,
 )
 from services.api.app.monitoring_runner import list_target_telemetry
@@ -81,6 +88,84 @@ def test_resolver_never_invents_a_path():
 def test_wallet_transfer_event_types_constant():
     assert 'wallet_transfer_detected' in WALLET_TRANSFER_EVENT_TYPES
     assert 'native_transfer' in WALLET_TRANSFER_EVENT_TYPES
+
+
+# ---------------------------------------------------------------------------
+# 1b. classify_wallet_transfer_detected_by (row-level tiers, pure)
+# ---------------------------------------------------------------------------
+
+
+def test_classifier_payload_facts_win_over_provider_type():
+    detected, basis = classify_wallet_transfer_detected_by(
+        payload={'detected_by': 'realtime_websocket'},
+        provider_type='evm_activity_provider',
+        event_type='wallet_transfer_detected',
+        evidence_source='live',
+    )
+    assert (detected, basis) == ('realtime_websocket', DETECTED_BY_BASIS_PAYLOAD)
+
+
+def test_classifier_non_live_wallet_row_names_evidence_source():
+    detected, basis = classify_wallet_transfer_detected_by(
+        payload={'tx_hash': TX_HASH},
+        provider_type='evm_activity_provider',
+        event_type='wallet_transfer_detected',
+        evidence_source='simulator',
+    )
+    assert (detected, basis) == ('simulator', DETECTED_BY_BASIS_EVIDENCE)
+
+
+def test_classifier_stable_family_provider_types_map_to_stable():
+    for provider in STABLE_PROVIDER_TYPES:
+        detected, basis = classify_wallet_transfer_detected_by(
+            payload={'tx_hash': TX_HASH},
+            provider_type=provider,
+            event_type='wallet_transfer_detected',
+            evidence_source='live',
+        )
+        assert (detected, basis) == ('stable_rpc_polling', DETECTED_BY_BASIS_PROVIDER_TYPE), provider
+
+
+def test_classifier_realtime_provider_type_maps_to_itself():
+    detected, basis = classify_wallet_transfer_detected_by(
+        payload={},
+        provider_type='quicknode_http_fast_tail',
+        event_type='native_transfer',
+        evidence_source='live',
+    )
+    assert (detected, basis) == ('quicknode_http_fast_tail', DETECTED_BY_BASIS_PROVIDER_TYPE)
+
+
+def test_classifier_bare_live_wallet_row_infers_stable_never_realtime():
+    detected, basis = classify_wallet_transfer_detected_by(
+        payload={'tx_hash': TX_HASH},
+        provider_type=None,
+        event_type='wallet_transfer_detected',
+        evidence_source='live',
+    )
+    assert (detected, basis) == ('stable_rpc_polling', DETECTED_BY_BASIS_STABLE_INFERENCE)
+
+
+def test_classifier_foreign_writer_stays_unclassified():
+    detected, basis = classify_wallet_transfer_detected_by(
+        payload={'tx_hash': TX_HASH},
+        provider_type='guided_workflow',
+        event_type='wallet_transfer_detected',
+        evidence_source='live',
+    )
+    assert (detected, basis) == (None, DETECTED_BY_BASIS_UNCLASSIFIED)
+
+
+def test_classifier_non_wallet_bare_row_not_inferred():
+    """The stable inference applies to wallet rows only — a bare non-wallet row
+    stays unclassified (debug/other rows may render unknown)."""
+    detected, basis = classify_wallet_transfer_detected_by(
+        payload={},
+        provider_type=None,
+        event_type='some_debug_event',
+        evidence_source='live',
+    )
+    assert (detected, basis) == (None, DETECTED_BY_BASIS_UNCLASSIFIED)
 
 
 # ---------------------------------------------------------------------------
@@ -188,14 +273,67 @@ def test_api_maps_details_and_metadata_detected_by():
 
 
 def test_api_live_wallet_transfer_row_never_blank_detected_by():
-    """Acceptance: no blank Detected By for wallet transfer rows — an
-    unattributable live row returns the explicit 'unknown'."""
+    """Acceptance (production row at block 48150235): a live wallet-transfer row
+    persisted before the payload stamps existed — bare payload, provider_type
+    naming the stable-family writer — classifies as Stable RPC Polling, never
+    'Unknown'. detected_by is always non-empty for wallet rows."""
+    ws, tgt = str(uuid.uuid4()), str(uuid.uuid4())
+    row = _make_row(ws, tgt, payload={'tx_hash': TX_HASH, 'block_number': 48150235})
+    result = _run_telemetry([row], ws, tgt)
+    item = result['telemetry'][0]
+    # _make_row uses provider_type='evm_rpc' (stable family) — never realtime.
+    assert item['detected_by'] == 'stable_rpc_polling'
+    assert item['detected_by_source'] == 'provider_type'
+    assert item['detected_by']  # non-empty
+
+
+def test_api_bare_live_row_with_stable_poller_provider_type():
+    """provider_type='evm_activity_provider' (the stable poller's provider name)
+    classifies a marker-less live row as stable_rpc_polling."""
     ws, tgt = str(uuid.uuid4()), str(uuid.uuid4())
     row = _make_row(ws, tgt, payload={'tx_hash': TX_HASH, 'block_number': 1})
+    row['provider_type'] = 'evm_activity_provider'
     result = _run_telemetry([row], ws, tgt)
-    detected_by = result['telemetry'][0]['detected_by']
-    assert detected_by == 'unknown'
-    assert detected_by  # non-empty
+    item = result['telemetry'][0]
+    assert item['detected_by'] == 'stable_rpc_polling'
+    assert item['detected_by_source'] == 'provider_type'
+
+
+def test_api_bare_live_row_with_realtime_provider_type():
+    """A realtime provider_type column value maps to its own canonical tag."""
+    ws, tgt = str(uuid.uuid4()), str(uuid.uuid4())
+    row = _make_row(ws, tgt, payload={'tx_hash': TX_HASH, 'block_number': 1})
+    row['provider_type'] = 'realtime_websocket'
+    result = _run_telemetry([row], ws, tgt)
+    item = result['telemetry'][0]
+    assert item['detected_by'] == 'realtime_websocket'
+    assert item['detected_by_source'] == 'provider_type'
+
+
+def test_api_bare_live_row_with_no_provider_type_infers_stable():
+    """No payload markers AND no provider_type: every realtime-family writer has
+    stamped payload markers since its first commit, so the writer can only be
+    the stable polling family — never claimed as realtime."""
+    ws, tgt = str(uuid.uuid4()), str(uuid.uuid4())
+    row = _make_row(ws, tgt, payload={'tx_hash': TX_HASH, 'block_number': 1})
+    row['provider_type'] = None
+    result = _run_telemetry([row], ws, tgt)
+    item = result['telemetry'][0]
+    assert item['detected_by'] == 'stable_rpc_polling'
+    assert item['detected_by_source'] == 'stable_polling_inference'
+
+
+def test_api_unknown_only_for_foreign_writer_rows():
+    """'unknown' remains ONLY for rows naming a foreign writer no fact can
+    classify — and is still never blank."""
+    ws, tgt = str(uuid.uuid4()), str(uuid.uuid4())
+    row = _make_row(ws, tgt, payload={'tx_hash': TX_HASH, 'block_number': 1})
+    row['provider_type'] = 'guided_workflow'
+    result = _run_telemetry([row], ws, tgt)
+    item = result['telemetry'][0]
+    assert item['detected_by'] == 'unknown'
+    assert item['detected_by_source'] == 'unclassified'
+    assert item['detected_by']  # non-empty
 
 
 def test_api_simulator_wallet_row_reports_evidence_source_not_live_path():
@@ -337,6 +475,56 @@ def test_persist_does_not_stamp_simulator_rows():
     )
     assert persisted is not None
     assert 'detected_by' not in persisted
+
+
+# ---------------------------------------------------------------------------
+# 3b. Realtime persist path stamps detected_by INTO the payload
+# ---------------------------------------------------------------------------
+
+
+def test_realtime_ingest_persist_stamps_ingestion_source_into_payload():
+    """_maybe_persist_ingested_wallet_transfer: event.ingestion_source lives on
+    the ActivityEvent object — the persisted payload must carry the canonical
+    tag itself, or a marker-less payload would persist bare and render Unknown."""
+    from datetime import datetime, timezone
+    from services.api.app import monitoring_runner as mr
+    from services.api.app.activity_providers import ActivityEvent
+
+    conn = _InsertCaptureConn()
+    mock_pg = MagicMock()
+    mock_pg.return_value.__enter__ = lambda s: conn
+    mock_pg.return_value.__exit__ = MagicMock(return_value=False)
+    target = {
+        'id': str(uuid.uuid4()),
+        'workspace_id': str(uuid.uuid4()),
+        'asset_id': None,
+        'target_type': 'wallet',
+        'wallet_address': WALLET_ADDR,
+    }
+    event = ActivityEvent(
+        event_id='evt-1',
+        kind='transaction',
+        observed_at=datetime.now(timezone.utc),
+        ingestion_source='realtime_websocket',
+        cursor=f'100:{TX_HASH}:-1',
+        payload={
+            'tx_hash': TX_HASH,
+            'from': WALLET_ADDR,
+            'to': '0x' + 'b' * 40,
+            'wallet_transfer_direction': 'outbound',
+            'event_type': 'transaction',
+        },
+    )
+    with patch('services.api.app.monitoring_runner.pg_connection', mock_pg):
+        persisted_event_type = mr._maybe_persist_ingested_wallet_transfer(
+            MagicMock(), target=target, event=event,
+        )
+    assert persisted_event_type == 'native_transfer'
+    assert conn.inserts, 'expected a telemetry insert'
+    payload_str = next((p for p in conn.inserts[0] if isinstance(p, str) and 'tx_hash' in p), None)
+    assert payload_str is not None
+    persisted = json.loads(payload_str)
+    assert persisted['detected_by'] == 'realtime_websocket'
 
 
 # ---------------------------------------------------------------------------
