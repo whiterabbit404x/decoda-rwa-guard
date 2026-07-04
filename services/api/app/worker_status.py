@@ -44,6 +44,85 @@ REALTIME_DETECTED_BY: tuple[str, ...] = (
 )
 STABLE_DETECTED_BY = 'stable_rpc_polling'
 
+# ingestion_source values written by the stable RPC polling path (ActivityEvent
+# ingestion_source / monitoring_event_receipts.ingestion_source). They all mean the
+# transfer was detected by the 300s stable polling worker, not the realtime worker.
+_STABLE_INGESTION_SOURCES: tuple[str, ...] = ('polling', 'rpc_polling', 'evm_rpc', 'rpc_backfill')
+
+
+def detected_by_from_ingestion_source(source: Any) -> str:
+    """Map a receipt/event ingestion_source to the canonical detected_by tag.
+
+    Used when the realtime worker hits a duplicate: the existing row's
+    ingestion_source says WHO detected the tx first, and the duplicate log must
+    name it truthfully (``existing_detected_by=stable_rpc_polling`` when the
+    stable polling worker got there first). Unknown/missing sources return
+    ``'unknown'`` — never a false claim of either detection path.
+    """
+    src = str(source or '').strip().lower()
+    if not src:
+        return 'unknown'
+    if src in REALTIME_DETECTED_BY:
+        return src
+    if src in _STABLE_INGESTION_SOURCES or src == STABLE_DETECTED_BY:
+        return STABLE_DETECTED_BY
+    return src
+
+
+def classify_realtime_tx_verdict(
+    *,
+    tx_found: bool,
+    matched: bool,
+    existing_detected_by: str | None,
+    was_block_scanned: bool,
+    rate_limited_at_tx_time: bool,
+    below_checkpoint: bool,
+    imported_by: str | None = None,
+) -> str:
+    """Return the single canonical verdict for a tx-hash diagnosis.
+
+    This is the acceptance contract for "why did/didn't realtime detect this tx":
+    exactly one clear answer, shared by the worker's tx-hash debug
+    (``base_realtime_ingestor._debug_tx_match``) and the read-only
+    ``/ops/monitoring/diagnose-tx`` endpoint so the two can never disagree.
+
+    Priority order (strongest truth first):
+      1. tx not found / not matched — nothing for realtime to detect.
+      2. A persisted row already exists — report WHO detected it
+         (realtime_websocket / fast-tail => matched-and-persisted;
+         realtime_backfill / realtime_tx_import => recovered via import;
+         stable_rpc_polling => realtime duplicate was skipped).
+      3. The tx was just imported by this diagnosis run (bounded backfill).
+      4. The block was scanned but no row exists — matching/persistence bug,
+         surfaced loudly instead of being explained away.
+      5. Provider was rate-limited when the tx landed — realtime missed it;
+         stable polling remains the fallback.
+      6. Not scanned: below the checkpoint means the forward scan will never
+         reach it (import is the recovery); above means it is still pending.
+    """
+    if not tx_found:
+        return 'transaction_not_found'
+    if not matched:
+        return 'not_matched_no_watched_wallet_in_tx'
+    if existing_detected_by:
+        if existing_detected_by in ('realtime_backfill', 'realtime_tx_import'):
+            return f'outside_scanned_window_imported_by_{existing_detected_by}'
+        if existing_detected_by in REALTIME_DETECTED_BY:
+            return f'matched_and_persisted_by_{existing_detected_by}'
+        if existing_detected_by == STABLE_DETECTED_BY:
+            return 'already_exists_stable_rpc_polling_realtime_duplicate_skipped'
+        return f'already_exists_detected_by_{existing_detected_by}'
+    if imported_by:
+        return f'outside_scanned_window_imported_by_{imported_by}'
+    if was_block_scanned:
+        return 'scanned_but_not_persisted_check_matching'
+    if rate_limited_at_tx_time:
+        return 'missed_provider_rate_limited'
+    if below_checkpoint:
+        return 'outside_scanned_window_not_yet_imported'
+    return 'pending_forward_scan'
+
+
 _TRUE_VALUES = {'1', 'true', 'yes', 'on'}
 
 # Mirror run_realtime_worker._resolve_int_env default for the realtime heartbeat

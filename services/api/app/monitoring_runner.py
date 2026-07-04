@@ -36,6 +36,8 @@ from services.api.app.monitorable_target_types import (
 from services.api.app.db_failure import classify_db_error
 from services.api.app.worker_status import (
     build_worker_status,
+    classify_realtime_tx_verdict,
+    detected_by_from_ingestion_source as worker_status_detected_by,
     live_coverage_gap_reason,
     realtime_active_by_watcher_facts,
     realtime_enabled,
@@ -4683,12 +4685,60 @@ def process_ingested_event(connection: Any, *, target: dict[str, Any], event: Ac
     monitoring_run_id = str(uuid.uuid4())
     receipt = connection.execute(
         '''
-        SELECT id FROM monitoring_event_receipts WHERE workspace_id = %s AND target_id = %s AND event_id = %s
+        SELECT id, ingestion_source FROM monitoring_event_receipts WHERE workspace_id = %s AND target_id = %s AND event_id = %s
         ''',
         (target['workspace_id'], target['id'], event.event_id),
     ).fetchone()
     if receipt is not None:
-        return {'status': 'duplicate_suppressed', 'event_id': event.event_id}
+        receipt_dict = dict(receipt) if not isinstance(receipt, dict) else receipt
+        _existing_source = receipt_dict.get('ingestion_source')
+        return {
+            'status': 'duplicate_suppressed',
+            'event_id': event.event_id,
+            'existing_ingestion_source': _existing_source,
+            'existing_detected_by': worker_status_detected_by(_existing_source),
+        }
+    # Cross-worker dedupe: the 300 s stable polling worker persists telemetry with
+    # the SAME idempotency key but writes no monitoring_event_receipts row, so the
+    # receipt check above cannot see a transfer stable polling already detected.
+    # Without this check the realtime worker re-ran analysis for such a tx and its
+    # logs claimed realtime persistence while the customer-visible row truthfully
+    # kept detected_by=stable_rpc_polling. Report it as a duplicate instead, naming
+    # the existing row's detector. Best-effort: on query failure fall through to
+    # normal processing (the telemetry insert itself still dedupes ON CONFLICT).
+    try:
+        _dup_key = _telemetry_idempotency_key(
+            workspace_id=target.get('workspace_id'), target_id=target.get('id'), event=event,
+        )
+        _existing_telemetry = connection.execute(
+            '''
+            SELECT payload_json->>'detected_by' AS detected_by
+            FROM telemetry_events
+            WHERE workspace_id = %s AND target_id = %s AND idempotency_key = %s
+            LIMIT 1
+            ''',
+            (target['workspace_id'], target['id'], _dup_key),
+        ).fetchone()
+    except Exception:
+        _existing_telemetry = None
+    if _existing_telemetry is not None:
+        _existing_row = (
+            dict(_existing_telemetry) if not isinstance(_existing_telemetry, dict) else _existing_telemetry
+        )
+        _existing_by = worker_status_detected_by(
+            _existing_row.get('detected_by') or 'stable_rpc_polling'
+        )
+        logger.info(
+            'realtime_duplicate_existing_tx tx_hash=%s existing_detected_by=%s '
+            'attempted_ingestion_source=%s target_id=%s',
+            (event.payload or {}).get('tx_hash') if isinstance(event.payload, dict) else 'unknown',
+            _existing_by, event.ingestion_source, target.get('id'),
+        )
+        return {
+            'status': 'duplicate_suppressed',
+            'event_id': event.event_id,
+            'existing_detected_by': _existing_by,
+        }
     # Persist the customer-visible wallet-transfer telemetry row FIRST, on its own
     # committed connection, so a native ETH transfer the realtime worker just
     # detected survives even if the threat analysis below raises (analysis_unavailable).
@@ -11362,6 +11412,7 @@ def diagnose_wallet_transaction(request: Request, tx_hash: str) -> dict[str, Any
                 'workspace_id': str(workspace_id),
                 'tx_found': False,
                 'reason': 'no_wallet_targets',
+                'realtime_verdict': 'not_matched_no_watched_wallet_in_tx',
                 'matches': [],
                 'targets_checked': 0,
             }
@@ -11383,6 +11434,7 @@ def diagnose_wallet_transaction(request: Request, tx_hash: str) -> dict[str, Any
         tx_by_chain: dict[str, dict[str, Any] | None] = {}
         receipt_by_chain: dict[str, dict[str, Any]] = {}
         chain_meta: dict[str, dict[str, Any]] = {}
+        client_by_chain: dict[str, Any] = {}
         for chain_network in {str(t.get('chain_network') or 'base').strip().lower() for t in targets}:
             chain_rpc = resolve_chain_rpc(chain_network)
             expected_chain_id = chain_rpc.get('expected_chain_id') or (CHAIN_MAP.get(chain_network) or {}).get('chain_id')
@@ -11392,6 +11444,7 @@ def diagnose_wallet_transaction(request: Request, tx_hash: str) -> dict[str, Any
                 continue
             try:
                 client = FailoverJsonRpcClient(chain_rpc['rpc_urls'])
+                client_by_chain[chain_network] = client
                 tx_by_chain[chain_network] = client.call('eth_getTransactionByHash', [tx_hash_norm]) or None
                 if tx_by_chain[chain_network]:
                     try:
@@ -11418,6 +11471,10 @@ def diagnose_wallet_transaction(request: Request, tx_hash: str) -> dict[str, Any
         # recoverable via import-tx. Best-effort — never breaks the read-only diagnostic.
         realtime_checkpoint_block: int | None = None
         realtime_scan_start_block: int | None = None
+        realtime_scanned_spans: list[list[int]] = []
+        realtime_rate_limit_windows: list[dict[str, Any]] = []
+        live_tail_from_block: int | None = None
+        live_tail_to_block: int | None = None
         try:
             _wr = connection.execute(
                 '''
@@ -11435,20 +11492,85 @@ def diagnose_wallet_transaction(request: Request, tx_hash: str) -> dict[str, Any
                 _ssb = _metrics.get('scan_start_block')
                 if _ssb is not None:
                     realtime_scan_start_block = int(_ssb)
+                # Span-truthful scan coverage + rate-limit cooldown history + live-tail
+                # window persisted by the realtime worker heartbeat — the same facts the
+                # worker's own tx debug uses, so the endpoint can never disagree with it.
+                _raw_spans = _metrics.get('scanned_spans')
+                if isinstance(_raw_spans, list):
+                    for _sp in _raw_spans:
+                        if isinstance(_sp, (list, tuple)) and len(_sp) == 2:
+                            try:
+                                realtime_scanned_spans.append([int(_sp[0]), int(_sp[1])])
+                            except (TypeError, ValueError):
+                                continue
+                _raw_windows = _metrics.get('rate_limit_windows')
+                if isinstance(_raw_windows, list):
+                    realtime_rate_limit_windows = [w for w in _raw_windows if isinstance(w, dict)]
+                if _metrics.get('live_tail_from_block') is not None:
+                    live_tail_from_block = int(_metrics['live_tail_from_block'])
+                if _metrics.get('live_tail_to_block') is not None:
+                    live_tail_to_block = int(_metrics['live_tail_to_block'])
         except Exception:
             _log.warning('diagnose_tx_checkpoint_read_failed tx_hash=%s', tx_hash_norm, exc_info=True)
 
-        was_block_scanned = bool(
-            block_number is not None
-            and realtime_checkpoint_block is not None
-            and realtime_scan_start_block is not None
-            and realtime_scan_start_block <= block_number <= realtime_checkpoint_block
-        )
+        # was_block_scanned: prefer the span-truthful record of what the realtime
+        # worker ACTUALLY scanned. Only when no spans were ever persisted (older
+        # worker build) fall back to the legacy [scan_start_block, checkpoint]
+        # inference — which over-claims across rate-limit cooldown gaps.
+        if realtime_scanned_spans:
+            was_block_scanned = bool(
+                block_number is not None
+                and any(s[0] <= block_number <= s[1] for s in realtime_scanned_spans)
+            )
+        else:
+            was_block_scanned = bool(
+                block_number is not None
+                and realtime_checkpoint_block is not None
+                and realtime_scan_start_block is not None
+                and realtime_scan_start_block <= block_number <= realtime_checkpoint_block
+            )
         below_realtime_checkpoint = bool(
             block_number is not None
             and realtime_checkpoint_block is not None
             and block_number <= realtime_checkpoint_block
         )
+
+        # Requirement 5: was the provider rate-limited when this tx landed? Answered
+        # from the worker's persisted cooldown windows against the tx block's
+        # on-chain timestamp. The block header is fetched lazily — only when a
+        # cooldown was ever recorded — and a fetch failure yields 'unknown', never a
+        # false claim.
+        rate_limited_at_time: Any = False
+        rate_limit_next_retry_at: str | None = None
+        if realtime_rate_limit_windows and block_number is not None and any_tx_chain:
+            rate_limited_at_time = 'unknown'
+            _hdr_client = client_by_chain.get(any_tx_chain)
+            _tx_ts: datetime | None = None
+            if _hdr_client is not None:
+                try:
+                    _hdr = _hdr_client.call('eth_getBlockByNumber', [hex(int(block_number)), False]) or {}
+                    _ts_int = _hex_to_int(_hdr.get('timestamp')) if isinstance(_hdr, dict) else None
+                    if _ts_int is not None:
+                        _tx_ts = datetime.fromtimestamp(_ts_int, tz=timezone.utc)
+                except Exception:
+                    _tx_ts = None
+            if _tx_ts is not None:
+                rate_limited_at_time = False
+                for _win in reversed(realtime_rate_limit_windows):
+                    try:
+                        _w_start = datetime.fromisoformat(str(_win.get('started_at')))
+                        _w_end_raw = _win.get('ended_at') or _win.get('next_retry_at')
+                        _w_end = datetime.fromisoformat(str(_w_end_raw)) if _w_end_raw else None
+                    except (TypeError, ValueError):
+                        continue
+                    if _w_start.tzinfo is None:
+                        _w_start = _w_start.replace(tzinfo=timezone.utc)
+                    if _w_end is not None and _w_end.tzinfo is None:
+                        _w_end = _w_end.replace(tzinfo=timezone.utc)
+                    if _w_start <= _tx_ts and (_w_end is None or _tx_ts <= _w_end):
+                        rate_limited_at_time = True
+                        rate_limit_next_retry_at = _win.get('next_retry_at')
+                        break
 
         matches: list[dict[str, Any]] = []
         for target in targets:
@@ -11456,10 +11578,13 @@ def diagnose_wallet_transaction(request: Request, tx_hash: str) -> dict[str, Any
             tx = tx_by_chain.get(chain_network)
             monitored_wallet = target.get('_monitored_wallet')
             explanation = explain_wallet_transfer_match(monitored_wallet, tx if isinstance(tx, dict) else None)
-            # Was a telemetry row already persisted for this tx + target?
+            # Was a telemetry row already persisted for this tx + target — and by WHOM?
+            # detected_by names the first detector so the UI/operator can see e.g.
+            # "detected by stable polling, realtime duplicate skipped" truthfully.
             persisted_row = connection.execute(
                 '''
-                SELECT 1 FROM telemetry_events
+                SELECT payload_json->>'detected_by' AS detected_by
+                FROM telemetry_events
                 WHERE workspace_id = %s::uuid AND target_id = %s::uuid
                   AND lower(payload_json->>'tx_hash') = %s
                 LIMIT 1
@@ -11467,6 +11592,12 @@ def diagnose_wallet_transaction(request: Request, tx_hash: str) -> dict[str, Any
                 (workspace_id, target['id'], tx_hash_norm),
             ).fetchone()
             already_persisted = persisted_row is not None
+            existing_detected_by = None
+            if already_persisted:
+                _persisted_dict = dict(persisted_row) if not isinstance(persisted_row, dict) else persisted_row
+                existing_detected_by = worker_status_detected_by(
+                    _persisted_dict.get('detected_by') or STABLE_DETECTED_BY
+                )
             # Explicit per-target match flags + normalized addresses (requirement 1) so
             # an operator sees exactly which side matched and the lowercase forms
             # compared, without inferring it from `direction`.
@@ -11512,6 +11643,15 @@ def diagnose_wallet_transaction(request: Request, tx_hash: str) -> dict[str, Any
                 'direction': explanation.get('wallet_transfer_direction'),
                 'was_block_scanned': was_block_scanned,
                 'already_persisted': already_persisted,
+                'existing_detected_by': existing_detected_by,
+                # Requirement 4 (truthful UI): the tx matched but a row from another
+                # detector (the 300s stable polling worker) already exists — realtime
+                # skipped it as a duplicate rather than re-claiming the detection.
+                'realtime_duplicate_skipped': bool(
+                    explanation.get('matched')
+                    and already_persisted
+                    and existing_detected_by not in REALTIME_DETECTED_BY
+                ),
                 'persist_reason': persist_reason,
             })
 
@@ -11520,25 +11660,91 @@ def diagnose_wallet_transaction(request: Request, tx_hash: str) -> dict[str, Any
         tx_from = str((any_tx or {}).get('from') or '').lower() or None
         tx_to = str((any_tx or {}).get('to') or '').lower() or None
         _matched_count = sum(1 for m in matches if m['matched'])
+        # WHO already owns this tx, taken from the first matched target with a
+        # persisted row — drives the duplicate-skip fact and the final verdict.
+        _existing_by = next(
+            (m['existing_detected_by'] for m in matches if m['matched'] and m['existing_detected_by']),
+            None,
+        )
+        if _existing_by and any(m.get('realtime_duplicate_skipped') for m in matches):
+            # Requirement 4: same canonical duplicate marker the worker emits, so a
+            # log query keyed on realtime_duplicate_existing_tx finds both paths.
+            _log.info(
+                'realtime_duplicate_existing_tx tx_hash=%s existing_detected_by=%s '
+                'attempted_detected_by=diagnose_tx',
+                tx_hash_norm, _existing_by,
+            )
+        if (
+            _matched_count and _existing_by is None
+            and rate_limited_at_time is True and not was_block_scanned
+        ):
+            # Requirement 5: the tx landed during a provider rate-limit cooldown and
+            # realtime never scanned its block. Stable polling remains the fallback.
+            _log.warning(
+                'realtime_tx_missed_due_to_rate_limit tx_hash=%s block_number=%s next_retry_at=%s',
+                tx_hash_norm, block_number if block_number is not None else 'none',
+                rate_limit_next_retry_at or 'none',
+            )
+        if bool(any_tx) and block_number is not None and not was_block_scanned and _existing_by is None:
+            # Requirement 2: canonical not-in-scanned-window marker with the exact
+            # window the realtime worker actually covered.
+            _scanned_from = realtime_scanned_spans[0][0] if realtime_scanned_spans else None
+            _scanned_to = realtime_scanned_spans[-1][1] if realtime_scanned_spans else None
+            _log.warning(
+                'realtime_tx_not_in_scanned_window tx_hash=%s tx_block=%s scanned_from=%s scanned_to=%s',
+                tx_hash_norm, block_number,
+                _scanned_from if _scanned_from is not None else 'none',
+                _scanned_to if _scanned_to is not None else 'none',
+            )
+        # Acceptance: one canonical verdict, shared with the worker's tx debug via
+        # classify_realtime_tx_verdict so the two paths can never disagree. The
+        # endpoint is read-only, so "outside scanned window" verdicts point at the
+        # import-tx recovery instead of importing here.
+        realtime_verdict = classify_realtime_tx_verdict(
+            tx_found=bool(any_tx),
+            matched=bool(_matched_count),
+            existing_detected_by=_existing_by,
+            was_block_scanned=was_block_scanned,
+            rate_limited_at_tx_time=rate_limited_at_time is True,
+            below_checkpoint=below_realtime_checkpoint,
+        )
         _log.info(
             'diagnose_tx_completed tx_hash=%s workspace_id=%s tx_found=%s targets_checked=%s matched=%s',
             tx_hash_norm, workspace_id, bool(any_tx), len(targets), _matched_count,
         )
         # Canonical realtime_tx_debug marker (requirement 1) so the read-only endpoint
-        # and the env-var worker path emit the same log fields — status, checkpoint
-        # context, and whether the block was ever forward-scanned.
+        # and the env-var worker path emit the same log fields — status, checkpoint +
+        # live-tail context, whether the block was actually scanned, and the provider
+        # mode / rate-limit state when the tx landed.
         _log.info(
             'realtime_tx_debug tx_hash=%s block_number=%s from=%s to=%s value=%s status=%s '
-            'chain_id=%s checkpoint_block=%s scan_start_block=%s was_block_scanned=%s '
+            'chain_id=%s live_tail_from_block=%s live_tail_to_block=%s '
+            'checkpoint_block=%s scan_start_block=%s was_block_scanned=%s '
+            'provider_mode_at_time=%s rate_limited_at_time=%s '
             'below_realtime_checkpoint=%s matched_target_count=%s',
             tx_hash_norm, block_number if block_number is not None else 'none',
             tx_from or 'none', tx_to or 'none',
             value_wei if value_wei is not None else 'none',
             receipt_status if receipt_status is not None else 'none',
             tx_chain_id if tx_chain_id is not None else 'none',
+            live_tail_from_block if live_tail_from_block is not None else 'none',
+            live_tail_to_block if live_tail_to_block is not None else 'none',
             realtime_checkpoint_block if realtime_checkpoint_block is not None else 'none',
             realtime_scan_start_block if realtime_scan_start_block is not None else 'none',
-            was_block_scanned, below_realtime_checkpoint, _matched_count,
+            was_block_scanned,
+            'rate_limited' if rate_limited_at_time is True else (
+                'realtime_scanned' if was_block_scanned else 'unknown'
+            ),
+            rate_limited_at_time,
+            below_realtime_checkpoint, _matched_count,
+        )
+        _log.info(
+            'realtime_tx_verdict tx_hash=%s verdict=%s block_number=%s was_block_scanned=%s '
+            'rate_limited_at_time=%s existing_detected_by=%s next_retry_at=%s',
+            tx_hash_norm, realtime_verdict,
+            block_number if block_number is not None else 'none',
+            was_block_scanned, rate_limited_at_time, _existing_by or 'none',
+            rate_limit_next_retry_at or 'none',
         )
         return {
             'tx_hash': tx_hash_norm,
@@ -11550,13 +11756,25 @@ def diagnose_wallet_transaction(request: Request, tx_hash: str) -> dict[str, Any
             'to': tx_to,
             'value_wei': str(value_wei) if value_wei is not None else None,
             'receipt_status': receipt_status,
-            # Realtime forward-scan window context (requirement 1). was_block_scanned is
-            # the smoking gun: False for a tx below the cold-start floor → realtime
-            # structurally could not catch it → run import-tx to recover.
+            # Realtime scan-window context (requirement 1). was_block_scanned is the
+            # smoking gun: False for a block the worker never actually scanned (cold
+            # start skip OR rate-limit cooldown gap) → realtime structurally could not
+            # catch it → run import-tx to recover.
             'realtime_checkpoint_block': realtime_checkpoint_block,
             'realtime_scan_start_block': realtime_scan_start_block,
+            'realtime_scanned_spans': realtime_scanned_spans,
+            'live_tail_from_block': live_tail_from_block,
+            'live_tail_to_block': live_tail_to_block,
             'was_block_scanned': was_block_scanned,
             'below_realtime_checkpoint': below_realtime_checkpoint,
+            'rate_limited_at_time': rate_limited_at_time,
+            'rate_limit_next_retry_at': rate_limit_next_retry_at,
+            'existing_detected_by': _existing_by,
+            'realtime_duplicate_skipped': bool(
+                any(m.get('realtime_duplicate_skipped') for m in matches)
+            ),
+            # Acceptance: the single clear answer for this tx hash.
+            'realtime_verdict': realtime_verdict,
             'targets_checked': len(targets),
             'matched_target_count': _matched_count,
             'matches': matches,

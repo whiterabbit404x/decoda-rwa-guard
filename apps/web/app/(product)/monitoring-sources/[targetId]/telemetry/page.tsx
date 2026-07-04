@@ -51,6 +51,7 @@ const HEADERS = [
 const DETECTED_BY_LABELS: Record<string, string> = {
   realtime_websocket: 'Realtime (WebSocket)',
   realtime_backfill: 'Realtime (Backfill)',
+  realtime_tx_import: 'Realtime (Tx import)',
   quicknode_http_fast_tail: 'Realtime (HTTP fast-tail)',
   realtime_http_fast_tail: 'Realtime (HTTP fast-tail)',
   stable_rpc_polling: 'Stable RPC Polling',
