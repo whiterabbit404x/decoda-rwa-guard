@@ -498,13 +498,15 @@ def test_debug_tx_with_existing_stable_row_reports_duplicate_verdict(monkeypatch
 # ---------------------------------------------------------------------------
 
 def test_ui_telemetry_page_labels_realtime_backfill_and_tx_import():
-    src = open(
-        'apps/web/app/(product)/monitoring-sources/[targetId]/telemetry/page.tsx',
-        encoding='utf-8',
-    ).read()
-    assert "realtime_backfill: 'Realtime Backfill'" in src
-    assert "realtime_tx_import: 'Realtime Tx Import'" in src
-    assert "stable_rpc_polling: 'Stable RPC Polling'" in src
+    # Labels live in the shared detected-by module; the page must import it.
+    base = 'apps/web/app/(product)/monitoring-sources/[targetId]/telemetry'
+    labels_src = open(f'{base}/detected-by.ts', encoding='utf-8').read()
+    assert "realtime_websocket: 'Realtime WebSocket'" in labels_src
+    assert "realtime_backfill: 'Realtime Backfill'" in labels_src
+    assert "realtime_tx_import: 'Realtime Tx Import'" in labels_src
+    assert "stable_rpc_polling: 'Stable RPC Polling'" in labels_src
+    page_src = open(f'{base}/page.tsx', encoding='utf-8').read()
+    assert "from './detected-by'" in page_src
 
 
 def test_api_classifies_import_tags_as_realtime_detection():
@@ -692,7 +694,14 @@ def test_diagnose_tx_reports_stable_duplicate_skipped():
         tx=tx, receipt={'status': '0x1'}, target_row=_diagnose_target(),
         checkpoint_row={'last_processed_block': 500,
                         'metrics': {'scan_start_block': 90, 'scanned_spans': [[90, 500]]}},
-        telemetry_row={'detected_by': 'stable_rpc_polling'},
+        telemetry_row={
+            'id': 'telem-1',
+            'event_type': 'wallet_transfer_detected',
+            'provider_type': 'evm_activity_provider',
+            'evidence_source': 'live',
+            'observed_at': '2026-07-03T21:43:00+00:00',
+            'payload_json': {'tx_hash': tx['hash'], 'detected_by': 'stable_rpc_polling'},
+        },
     )
     assert result['realtime_verdict'] == 'already_exists_stable_rpc_polling_realtime_duplicate_skipped'
     assert result['existing_detected_by'] == 'stable_rpc_polling'
@@ -701,6 +710,49 @@ def test_diagnose_tx_reports_stable_duplicate_skipped():
     assert match['already_persisted'] is True
     assert match['existing_detected_by'] == 'stable_rpc_polling'
     assert match['realtime_duplicate_skipped'] is True
+
+
+def test_diagnose_tx_inspects_persisted_row_detection_facts(caplog):
+    """Requirement: for a persisted tx the diagnosis logs + returns every
+    detection-path fact (top-level detected_by, source_type, details/metadata
+    copies, ingestion path, created_by_worker) — and a LEGACY bare row (no
+    payload markers, stable-poller provider_type) resolves to Stable RPC
+    Polling, never Unknown and never a realtime claim."""
+    import logging
+
+    tx = _native_tx(block=100)
+    with caplog.at_level(logging.INFO):
+        result = _run_diagnose_tx(
+            tx=tx, receipt={'status': '0x1'}, target_row=_diagnose_target(),
+            checkpoint_row={'last_processed_block': 500,
+                            'metrics': {'scan_start_block': 90, 'scanned_spans': [[90, 500]]}},
+            telemetry_row={
+                'id': 'telem-legacy',
+                'event_type': 'wallet_transfer_detected',
+                'provider_type': 'evm_activity_provider',
+                'evidence_source': 'live',
+                'observed_at': '2026-07-03T21:43:00+00:00',
+                'payload_json': {'tx_hash': tx['hash'], 'block_number': 100},
+            },
+        )
+    match = result['matches'][0]
+    assert match['existing_detected_by'] == 'stable_rpc_polling'
+    inspection = match['persisted_row_inspection']
+    assert inspection is not None
+    assert inspection['event_type'] == 'wallet_transfer_detected'
+    assert inspection['top_level_detected_by'] is None
+    assert inspection['source_type'] is None
+    assert inspection['details_detected_by'] is None
+    assert inspection['details_source_type'] is None
+    assert inspection['metadata_detected_by'] is None
+    assert inspection['ingestion_path'] is None
+    assert inspection['created_by_worker'] == 'evm_activity_provider'
+    assert inspection['resolved_detected_by'] == 'stable_rpc_polling'
+    assert inspection['resolved_basis'] == 'provider_type'
+    log_text = '\n'.join(r.getMessage() for r in caplog.records)
+    assert 'tx_persisted_row_inspection' in log_text
+    assert 'created_by_worker=evm_activity_provider' in log_text
+    assert 'resolved_detected_by=stable_rpc_polling' in log_text
 
 
 def test_diagnose_tx_missed_due_to_rate_limit():

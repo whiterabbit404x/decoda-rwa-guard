@@ -102,7 +102,8 @@ test('telemetry page renders workspace_id field', () => {
 
 test('telemetry page renders provider_type column', () => {
   expect(telemetryPageSource).toContain('provider_type');
-  expect(telemetryPageSource).toContain('Provider Type');
+  // Rendered in the detail modal's summary grid ("Provider type: …").
+  expect(telemetryPageSource).toContain('Provider type');
 });
 
 test('telemetry page renders evidence_source column', () => {
@@ -112,7 +113,8 @@ test('telemetry page renders evidence_source column', () => {
 
 test('telemetry page renders source_type column', () => {
   expect(telemetryPageSource).toContain('source_type');
-  expect(telemetryPageSource).toContain('Source Type');
+  // Rendered in the detail modal's summary grid ("Source type: …").
+  expect(telemetryPageSource).toContain('Source type');
 });
 
 test('telemetry page renders chain_id column', () => {

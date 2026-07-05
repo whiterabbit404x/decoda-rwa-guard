@@ -299,7 +299,7 @@ def test_live_telemetry_ready_false_when_no_telemetry_rows(monkeypatch):
     monkeypatch.setattr(
         api_main,
         'list_target_telemetry',
-        lambda request, target_id, limit=50, q=None: {
+        lambda request, target_id, limit=50, q=None, **kwargs: {
             'telemetry': [],
             'target_id': target_id,
             'workspace_id': ws_id,
@@ -333,7 +333,7 @@ def test_live_telemetry_ready_true_after_telemetry_row_written(monkeypatch):
     monkeypatch.setattr(
         api_main,
         'list_target_telemetry',
-        lambda request, target_id, limit=50, q=None: {
+        lambda request, target_id, limit=50, q=None, **kwargs: {
             'telemetry': [
                 {
                     'id': row_id,

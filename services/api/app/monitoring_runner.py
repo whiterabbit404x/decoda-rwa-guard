@@ -37,12 +37,14 @@ from services.api.app.db_failure import classify_db_error
 from services.api.app.worker_status import (
     build_worker_status,
     classify_realtime_tx_verdict,
+    classify_wallet_transfer_detected_by,
     detected_by_from_ingestion_source as worker_status_detected_by,
     live_coverage_gap_reason,
     realtime_active_by_watcher_facts,
     realtime_enabled,
     resolve_telemetry_detected_by,
     stable_poll_stale_threshold_seconds,
+    DETECTED_BY_BASIS_UNCLASSIFIED,
     REALTIME_DETECTED_BY,
     STABLE_DETECTED_BY,
     WALLET_TRANSFER_EVENT_TYPES,
@@ -676,6 +678,12 @@ def _maybe_persist_ingested_wallet_transfer(
     )
     telem_id = str(uuid.uuid4())
     detected_by = str(payload.get('detected_by') or event.ingestion_source or 'realtime')
+    # Stamp the resolved tag INTO the persisted payload (not just the log line
+    # below): event.ingestion_source lives on the ActivityEvent object, so a
+    # payload that lacks its own detection markers would otherwise persist bare
+    # and render a customer-facing "Unknown".
+    if not payload.get('detected_by') and event.ingestion_source:
+        payload['detected_by'] = worker_status_detected_by(event.ingestion_source)
     provider_name = str(
         (payload.get('metadata') or {}).get('provider_name')
         if isinstance(payload.get('metadata'), dict) else ''
@@ -4169,6 +4177,18 @@ def process_monitoring_target(
             _telem_event_type = str(event.kind or 'target_event')
         _telem_id = str(uuid.uuid4())
         if _is_wallet_tx:
+            # This IS the stable RPC polling loop persisting its own detection, so a
+            # live payload that carries no detection-path fact (a provider that
+            # forgot to stamp) is truthfully stamped stable_rpc_polling here —
+            # never left blank for the API to guess at later. Simulator/replay
+            # payloads are never stamped with a live path.
+            if (
+                telemetry_evidence_source == 'live'
+                and not _ev_payload.get('detected_by')
+                and resolve_telemetry_detected_by(_ev_payload) is None
+            ):
+                _ev_payload['detected_by'] = STABLE_DETECTED_BY
+                _ev_payload['detected_by_source'] = 'stable_polling_loop'
             # Detected wallet transfers are canonical live evidence. Persist and COMMIT the
             # raw telemetry on a dedicated connection BEFORE threat analysis runs. If analysis
             # later raises (e.g. analysis_unavailable) the surrounding monitoring transaction
@@ -10844,17 +10864,24 @@ def list_target_telemetry(
             item.pop('chain_network', None)
             item.pop('receipt_block_number', None)
             # detected_by lives in payload_json (there is no top-level column) and
-            # older writers spread it across details/metadata/source_type. Resolve
-            # the canonical tag with fallbacks; a wallet-transfer row must NEVER
-            # come back blank (acceptance rule): when no fact names a live
-            # detection path, return the explicit truth — the evidence_source for
-            # simulator/replay rows, 'unknown' for unattributable live rows.
+            # older writers spread it across details/metadata/source_type; rows
+            # persisted before ANY payload stamp existed classify by the row's
+            # provider_type column / the stable-polling inference (see
+            # classify_wallet_transfer_detected_by). A wallet-transfer row must
+            # NEVER come back blank (acceptance rule): 'unknown' remains only for
+            # rows naming a foreign writer that no fact can classify.
             _row_event_type = str(item.get('source_type') or '').lower()
-            _detected_by = resolve_telemetry_detected_by(payload)
+            _detected_by, _detected_by_basis = classify_wallet_transfer_detected_by(
+                payload=payload,
+                provider_type=item.get('provider_type'),
+                event_type=_row_event_type,
+                evidence_source=item.get('evidence_source'),
+            )
             if _detected_by is None and _row_event_type in WALLET_TRANSFER_EVENT_TYPES:
-                _row_evidence = str(item.get('evidence_source') or '').lower()
-                _detected_by = _row_evidence if _row_evidence and _row_evidence != 'live' else 'unknown'
+                _detected_by = 'unknown'
+                _detected_by_basis = DETECTED_BY_BASIS_UNCLASSIFIED
             item['detected_by'] = _detected_by
+            item['detected_by_source'] = _detected_by_basis
             # Explicit event_type alias: the legacy response reuses 'source_type'
             # for the DB event_type; keep that for compat but also name it truthfully.
             item['event_type'] = item.get('source_type')
@@ -10877,9 +10904,11 @@ def list_target_telemetry(
                 'event_type': _top.get('event_type'),
                 'tx_hash': _top.get('tx_hash'),
                 'detected_by': _top.get('detected_by'),
+                'detected_by_source': _top.get('detected_by_source'),
                 'payload_detected_by': _top_payload.get('detected_by'),
                 'source_type': _top_payload.get('source_type'),
                 'evidence_source': _top.get('evidence_source'),
+                'provider_type': _top.get('provider_type'),
                 'detection_method': _top_payload.get('detection_method'),
                 'details_detected_by': _top_details.get('detected_by'),
                 'details_source_type': _top_details.get('source_type'),
@@ -10889,7 +10918,8 @@ def list_target_telemetry(
             }
             logger.info(
                 'telemetry_top_row_debug target_id=%s telemetry_id=%s event_type=%s tx_hash=%s '
-                'detected_by=%s payload_detected_by=%s source_type=%s evidence_source=%s '
+                'detected_by=%s detected_by_source=%s payload_detected_by=%s source_type=%s '
+                'evidence_source=%s provider_type=%s '
                 'detection_method=%s details_detected_by=%s details_source_type=%s '
                 'metadata_detected_by=%s ingestion_source=%s ingestion_method=%s',
                 target_id,
@@ -10897,9 +10927,11 @@ def list_target_telemetry(
                 top_row_detection_debug['event_type'] or 'none',
                 top_row_detection_debug['tx_hash'] or 'none',
                 top_row_detection_debug['detected_by'] or 'none',
+                top_row_detection_debug['detected_by_source'] or 'none',
                 top_row_detection_debug['payload_detected_by'] or 'none',
                 top_row_detection_debug['source_type'] or 'none',
                 top_row_detection_debug['evidence_source'] or 'none',
+                top_row_detection_debug['provider_type'] or 'none',
                 top_row_detection_debug['detection_method'] or 'none',
                 top_row_detection_debug['details_detected_by'] or 'none',
                 top_row_detection_debug['details_source_type'] or 'none',
@@ -11680,11 +11712,13 @@ def diagnose_wallet_transaction(request: Request, tx_hash: str) -> dict[str, Any
             monitored_wallet = target.get('_monitored_wallet')
             explanation = explain_wallet_transfer_match(monitored_wallet, tx if isinstance(tx, dict) else None)
             # Was a telemetry row already persisted for this tx + target — and by WHOM?
-            # detected_by names the first detector so the UI/operator can see e.g.
-            # "detected by stable polling, realtime duplicate skipped" truthfully.
+            # Inspect EVERY persisted detection-path fact (top-level detected_by,
+            # source_type, details/metadata copies, ingestion markers, the
+            # provider_type column = created_by_worker) and log them, so a row that
+            # renders "Unknown" can be traced to exactly which fact is missing.
             persisted_row = connection.execute(
                 '''
-                SELECT payload_json->>'detected_by' AS detected_by
+                SELECT id, event_type, provider_type, evidence_source, observed_at, payload_json
                 FROM telemetry_events
                 WHERE workspace_id = %s::uuid AND target_id = %s::uuid
                   AND lower(payload_json->>'tx_hash') = %s
@@ -11694,10 +11728,52 @@ def diagnose_wallet_transaction(request: Request, tx_hash: str) -> dict[str, Any
             ).fetchone()
             already_persisted = persisted_row is not None
             existing_detected_by = None
+            persisted_row_inspection: dict[str, Any] | None = None
             if already_persisted:
-                _persisted_dict = dict(persisted_row) if not isinstance(persisted_row, dict) else persisted_row
-                existing_detected_by = worker_status_detected_by(
-                    _persisted_dict.get('detected_by') or STABLE_DETECTED_BY
+                _persisted_dict = _json_safe_value(dict(persisted_row))
+                _p_payload = _persisted_dict.get('payload_json') if isinstance(_persisted_dict.get('payload_json'), dict) else {}
+                _p_details = _p_payload.get('details') if isinstance(_p_payload.get('details'), dict) else {}
+                _p_metadata = _p_payload.get('metadata') if isinstance(_p_payload.get('metadata'), dict) else {}
+                _classified_by, _classified_basis = classify_wallet_transfer_detected_by(
+                    payload=_p_payload,
+                    provider_type=_persisted_dict.get('provider_type'),
+                    event_type=_persisted_dict.get('event_type'),
+                    evidence_source=_persisted_dict.get('evidence_source'),
+                )
+                existing_detected_by = _classified_by or 'unknown'
+                persisted_row_inspection = {
+                    'telemetry_id': _persisted_dict.get('id'),
+                    'event_type': _persisted_dict.get('event_type'),
+                    'observed_at': _persisted_dict.get('observed_at'),
+                    'evidence_source': _persisted_dict.get('evidence_source'),
+                    'top_level_detected_by': _p_payload.get('detected_by'),
+                    'source_type': _p_payload.get('source_type'),
+                    'details_detected_by': _p_details.get('detected_by'),
+                    'details_source_type': _p_details.get('source_type'),
+                    'metadata_detected_by': _p_metadata.get('detected_by'),
+                    'ingestion_path': _p_payload.get('ingestion_source') or _p_payload.get('ingestion_method'),
+                    'created_by_worker': _persisted_dict.get('provider_type'),
+                    'resolved_detected_by': existing_detected_by,
+                    'resolved_basis': _classified_basis,
+                }
+                _log.info(
+                    'tx_persisted_row_inspection tx_hash=%s target_id=%s telemetry_id=%s '
+                    'top_level_detected_by=%s source_type=%s event_type=%s '
+                    'details_detected_by=%s details_source_type=%s metadata_detected_by=%s '
+                    'ingestion_path=%s created_by_worker=%s evidence_source=%s '
+                    'resolved_detected_by=%s resolved_basis=%s',
+                    tx_hash_norm, target['id'],
+                    persisted_row_inspection['telemetry_id'],
+                    persisted_row_inspection['top_level_detected_by'] or 'none',
+                    persisted_row_inspection['source_type'] or 'none',
+                    persisted_row_inspection['event_type'] or 'none',
+                    persisted_row_inspection['details_detected_by'] or 'none',
+                    persisted_row_inspection['details_source_type'] or 'none',
+                    persisted_row_inspection['metadata_detected_by'] or 'none',
+                    persisted_row_inspection['ingestion_path'] or 'none',
+                    persisted_row_inspection['created_by_worker'] or 'none',
+                    persisted_row_inspection['evidence_source'] or 'none',
+                    existing_detected_by, _classified_basis,
                 )
             # Explicit per-target match flags + normalized addresses (requirement 1) so
             # an operator sees exactly which side matched and the lowercase forms
@@ -11745,6 +11821,7 @@ def diagnose_wallet_transaction(request: Request, tx_hash: str) -> dict[str, Any
                 'was_block_scanned': was_block_scanned,
                 'already_persisted': already_persisted,
                 'existing_detected_by': existing_detected_by,
+                'persisted_row_inspection': persisted_row_inspection,
                 # Requirement 4 (truthful UI): the tx matched but a row from another
                 # detector (the 300s stable polling worker) already exists — realtime
                 # skipped it as a duplicate rather than re-claiming the detection.

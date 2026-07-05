@@ -122,9 +122,15 @@ test('backend defines the truthful live-coverage-gap reason codes', () => {
 });
 
 test('telemetry page keeps the Detected By column unchanged', () => {
-  // Detected By column + label map must remain (Stable RPC Polling / Realtime WebSocket / Realtime Backfill).
+  // Detected By column must remain; the label map lives in the shared
+  // detected-by module the page imports (Stable RPC Polling / Realtime
+  // WebSocket / Realtime Backfill).
   expect(telemetryPageSource).toContain("'Detected By'");
-  expect(telemetryPageSource).toContain('stable_rpc_polling');
-  expect(telemetryPageSource).toContain('realtime_websocket');
-  expect(telemetryPageSource).toContain('realtime_backfill');
+  expect(telemetryPageSource).toContain("from './detected-by'");
+  const detectedBySource = read(
+    appDir, '(product)', 'monitoring-sources', '[targetId]', 'telemetry', 'detected-by.ts',
+  );
+  expect(detectedBySource).toContain('stable_rpc_polling');
+  expect(detectedBySource).toContain('realtime_websocket');
+  expect(detectedBySource).toContain('realtime_backfill');
 });

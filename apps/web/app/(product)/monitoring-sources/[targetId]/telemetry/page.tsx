@@ -6,6 +6,12 @@ import { useParams } from 'next/navigation';
 
 import { TableShell } from '../../../../components/ui-primitives';
 import { usePilotAuth } from '../../../../pilot-auth-context';
+import {
+  REALTIME_DETECTED_BY,
+  deriveDetectedBy,
+  formatDetectedBy,
+  walletTransferDetectedBy,
+} from './detected-by';
 
 type TelemetryRow = {
   id: string;
@@ -14,6 +20,7 @@ type TelemetryRow = {
   provider_type?: string | null;
   source_type?: string | null;
   detected_by?: string | null;
+  detected_by_source?: string | null;
   provider_mode?: string | null;
   observed_latency_seconds?: number | null;
   evidence_source?: string | null;
@@ -48,92 +55,8 @@ const HEADERS = [
   'Details',
 ];
 
-const DETECTED_BY_LABELS: Record<string, string> = {
-  realtime_websocket: 'Realtime WebSocket',
-  realtime_backfill: 'Realtime Backfill',
-  realtime_tx_import: 'Realtime Tx Import',
-  quicknode_http_fast_tail: 'Realtime HTTP Fast-Tail',
-  realtime_http_fast_tail: 'Realtime HTTP Fast-Tail',
-  stable_rpc_polling: 'Stable RPC Polling',
-  tx_hash_import: 'Realtime Tx Import',
-  simulator: 'Simulator (not live)',
-  replay: 'Replay (not live)',
-  unknown: 'Unknown',
-};
-
-function formatDetectedBy(val: string | null | undefined): string {
-  if (!val) return '-';
-  return DETECTED_BY_LABELS[val] ?? val;
-}
-
-// Canonical detection paths that come from the realtime worker family.
-const REALTIME_DETECTED_BY = new Set([
-  'realtime_websocket',
-  'realtime_backfill',
-  'realtime_tx_import',
-  'quicknode_http_fast_tail',
-  'realtime_http_fast_tail',
-]);
-
-// Payload source/ingestion values that map onto a canonical detected_by tag —
-// mirrors worker_status.resolve_telemetry_detected_by on the backend so old
-// rows render truthfully even before the API normalization ships.
-function canonicalDetectedBy(raw: string | null | undefined): string | null {
-  const v = (raw ?? '').trim().toLowerCase();
-  if (!v) return null;
-  if (REALTIME_DETECTED_BY.has(v) || v === 'stable_rpc_polling') return v;
-  if (v === 'tx_hash_import') return 'realtime_tx_import';
-  if (v === 'polling' || v === 'rpc_polling' || v === 'evm_rpc' || v === 'rpc_backfill') {
-    return 'stable_rpc_polling';
-  }
-  return null;
-}
-
-function asRecord(val: unknown): Record<string, unknown> | null {
-  return val && typeof val === 'object' && !Array.isArray(val)
-    ? (val as Record<string, unknown>)
-    : null;
-}
-
-// Resolve the Detected By value for a row: top-level field first, then the
-// payload's detected_by, then details/metadata copies, then source/ingestion
-// mappings. Returns null only when no fact names a detection path — callers
-// render an explicit "Unknown" for wallet transfers, never a blank cell.
-function deriveDetectedBy(row: TelemetryRow): string | null {
-  const payload = row.payload_json;
-  const details = asRecord(payload?.details);
-  const metadata = asRecord(payload?.metadata);
-  const candidates = [
-    row.detected_by,
-    payload ? extractField(payload, 'detected_by') : null,
-    details ? extractField(details, 'detected_by') : null,
-    metadata ? extractField(metadata, 'detected_by') : null,
-  ];
-  for (const c of candidates) {
-    const v = (c ?? '').trim();
-    if (v) return canonicalDetectedBy(v) ?? v;
-  }
-  const mappable = [
-    payload ? extractField(payload, 'source_type') : null,
-    details ? extractField(details, 'source_type') : null,
-    metadata ? extractField(metadata, 'source_type') : null,
-    payload ? extractField(payload, 'ingestion_source', 'ingestion_method') : null,
-  ];
-  for (const c of mappable) {
-    const mapped = canonicalDetectedBy(c);
-    if (mapped) return mapped;
-  }
-  return null;
-}
-
-// Fail-closed display value for wallet-transfer rows: never blank. Non-live
-// rows name their evidence source; unattributable live rows say Unknown.
-function walletTransferDetectedBy(row: TelemetryRow): string {
-  const derived = deriveDetectedBy(row);
-  if (derived) return derived;
-  const evidence = (row.evidence_source ?? '').trim().toLowerCase();
-  return evidence && evidence !== 'live' ? evidence : 'unknown';
-}
+// Detected By labels + resolution shared with tests: ./detected-by.ts
+// (mirrors worker_status.classify_wallet_transfer_detected_by on the backend).
 
 // Shape of POST /api/ops/monitoring/diagnose-tx (backend diagnose_wallet_transaction).
 type TxDiagnosis = {

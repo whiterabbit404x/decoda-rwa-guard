@@ -407,15 +407,16 @@ def test_realtime_erc20_event_without_direction_is_not_persisted_here(monkeypatc
 # ---------------------------------------------------------------------------
 
 def test_ui_telemetry_page_renders_detected_by_and_source_type():
-    src = open(
-        'apps/web/app/(product)/monitoring-sources/[targetId]/telemetry/page.tsx',
-        encoding='utf-8',
-    ).read()
-    # Columns / labels the row + detail panel render.
+    base = 'apps/web/app/(product)/monitoring-sources/[targetId]/telemetry'
+    src = open(f'{base}/page.tsx', encoding='utf-8').read()
+    # Columns / labels the row + detail panel render. The label map itself lives
+    # in the shared detected-by module the page imports.
     assert "'Detected By'" in src
     assert "['Source type', row.source_type ?? null]" in src
     assert 'formatDetectedBy' in src
-    assert 'realtime_backfill' in src
+    assert "from './detected-by'" in src
+    labels_src = open(f'{base}/detected-by.ts', encoding='utf-8').read()
+    assert 'realtime_backfill' in labels_src
     # Full monitored address surfaced in the header and the detail panel.
     assert 'monitoredAddressFull' in src
     assert "['Monitored address (full)', monitoredAddressFull]" in src
@@ -934,11 +935,11 @@ def test_ui_telemetry_page_renders_realtime_websocket_label():
     """Requirement 7: the Telemetry view maps detected_by=realtime_websocket to the
     human label 'Realtime WebSocket' so a customer sees the transfer was caught by
     the realtime socket, not stable polling."""
-    src = open(
-        'apps/web/app/(product)/monitoring-sources/[targetId]/telemetry/page.tsx',
-        encoding='utf-8',
-    ).read()
-    assert "realtime_websocket: 'Realtime WebSocket'" in src
+    base = 'apps/web/app/(product)/monitoring-sources/[targetId]/telemetry'
+    labels_src = open(f'{base}/detected-by.ts', encoding='utf-8').read()
+    assert "realtime_websocket: 'Realtime WebSocket'" in labels_src
+    src = open(f'{base}/page.tsx', encoding='utf-8').read()
+    assert "from './detected-by'" in src
     # from_address / to_address are read by the row classifier so the aliased payload
     # fields are surfaced, not ignored.
     assert "'from', 'from_address'" in src
