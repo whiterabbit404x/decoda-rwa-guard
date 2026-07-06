@@ -10,7 +10,7 @@ Required env vars when enabled:
   BASE_REALTIME_FALLBACK_TO_POLLING   (default true — polling always runs independently)
 
 Optional provider failover env vars (order: primary WSS -> secondary WSS ->
-primary HTTP fast-tail -> stable RPC polling only):
+HTTP fast-tail on a HEALTHY host -> stable RPC polling only):
   BASE_WS_RPC_URL_SECONDARY    second WSS endpoint tried after the primary's
                                circuit opens (repeated TLS/1001 provider failures)
   BASE_HTTP_RPC_URL_PRIMARY    HTTPS RPC for JSON-RPC calls + the fast-tail fallback
@@ -18,6 +18,12 @@ primary HTTP fast-tail -> stable RPC polling only):
                                EVM_RPC_URL, then to the WS URL converted to https)
   BASE_HTTP_RPC_URL_SECONDARY  second HTTPS RPC the fast-tail fails over to after
                                repeated primary HTTP failures
+
+When the primary WSS fails with a TLS internal error the SAME host's HTTPS RPC
+fails the identical handshake, so the fast-tail skips the primary host and uses
+BASE_HTTP_RPC_URL_SECONDARY (a different provider). With no healthy secondary HTTP
+RPC the worker fails closed to stable RPC polling only — it never claims
+quicknode_http_fast_tail is active against the broken host.
 
 The 300s polling worker continues to run as backup/backfill regardless of this worker.
 """

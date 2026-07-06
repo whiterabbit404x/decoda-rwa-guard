@@ -743,7 +743,7 @@ class BaseRealtimeIngestor:
 
     def _ws_circuit(self, url: str) -> dict[str, Any]:
         return self._ws_circuits.setdefault(
-            url, {'open_until': 0.0, 'opened_count': 0, 'probation': False},
+            url, {'open_until': 0.0, 'opened_count': 0, 'probation': False, 'reason': None},
         )
 
     def _ws_circuit_state(self, url: str) -> str:
@@ -784,6 +784,12 @@ class BaseRealtimeIngestor:
         c['open_until'] = time.monotonic() + self.provider_circuit_seconds
         c['opened_count'] += 1
         c['probation'] = False
+        # Remember WHY this endpoint's circuit opened. A ``tls_internal_error`` is a
+        # WHOLE-HOST failure (the same host's HTTPS RPC fails the identical
+        # handshake), so the HTTP fast-tail must not be run against it — see
+        # _host_level_failed_hosts. Other reasons (wss_no_heads / reconnect loop)
+        # are WSS-only and leave the host's HTTPS RPC usable.
+        c['reason'] = reason
         self.state['metrics']['provider_circuit_opens'] = (
             self.state['metrics'].get('provider_circuit_opens', 0) + 1
         )
@@ -837,7 +843,9 @@ class BaseRealtimeIngestor:
         c = self._ws_circuits.get(url)
         if not c or not c.get('opened_count'):
             return
-        self._ws_circuits[url] = {'open_until': 0.0, 'opened_count': 0, 'probation': False}
+        self._ws_circuits[url] = {
+            'open_until': 0.0, 'opened_count': 0, 'probation': False, 'reason': None,
+        }
         if (
             not self._wss_permanently_disabled
             and self._ingestion_mode in ('http_fast_tail', STABLE_POLLING_FALLBACK_MODE)
@@ -882,13 +890,60 @@ class BaseRealtimeIngestor:
             return True
         return self._no_data_session_count > _NO_DATA_SESSION_THRESHOLD
 
+    def _host_level_failed_hosts(self) -> set[str]:
+        """Hosts whose WSS circuit is open because of a TLS/host-level failure.
+
+        A ``tls_internal_error`` is not a WSS-only problem: the SAME host's HTTPS
+        RPC fails the identical TLS handshake, so polling it with the HTTP fast-tail
+        just reproduces the failure (the production ``http_fast_tail_error
+        TLSV1_ALERT_INTERNAL_ERROR`` loop). Those hosts are excluded from the
+        fast-tail candidate list (requirement 3: do not use the same host for HTTP
+        fast-tail). WSS-only reasons (``wss_no_heads`` / reconnect loop) leave the
+        host's HTTPS RPC usable, so they are NOT returned here.
+        """
+        hosts: set[str] = set()
+        for url in (self.ws_url, self.ws_url_secondary, self._current_ws_url):
+            if not url:
+                continue
+            c = self._ws_circuits.get(url)
+            if (
+                c and c.get('opened_count')
+                and c.get('reason') == 'tls_internal_error'
+                and self._ws_circuit_state(url) == 'open'
+            ):
+                hosts.add(_ws_url_host(url))
+        return hosts
+
+    def _fast_tail_rpc_candidate(self) -> str | None:
+        """Return the HTTPS RPC the fast-tail may safely poll, or None.
+
+        Failover order (requirement 2/3): the primary HTTP RPC first, then the
+        secondary HTTP RPC — but ANY endpoint whose host failed the WSS TLS
+        handshake is skipped, because that host's HTTPS RPC fails the same
+        handshake. Returns None when every configured HTTP RPC sits on a
+        host-level-failed host (no key configured, or only the broken primary):
+        the caller then runs stable RPC polling only (requirement 4), never a
+        doomed fast-tail against the failed provider.
+        """
+        failed = self._host_level_failed_hosts()
+        for url in (self.rpc_url, self.rpc_url_secondary):
+            if url and _ws_url_host(url) not in failed:
+                return url
+        return None
+
     def _circuit_fallback_mode(self) -> str:
         """Canonical provider_mode for the circuit-open fallback ladder.
 
-        HTTP fast-tail when an HTTPS RPC exists and is not rate-limited without a
-        separate budget; otherwise stable RPC polling only.
+        HTTP fast-tail when a HEALTHY HTTPS RPC exists (a host that did NOT fail the
+        WSS TLS handshake) and it is not rate-limited without a separate budget;
+        otherwise stable RPC polling only. When the primary WSS host failed with a
+        TLS internal error and no secondary HTTP RPC is configured, the only HTTP
+        endpoint is the same broken host, so this returns the stable-polling
+        fallback — never a fast-tail that would loop on the same TLS failure
+        (requirements 3-4).
         """
-        use_fast_tail = bool(self.rpc_url) and not (
+        candidate = self._fast_tail_rpc_candidate()
+        use_fast_tail = bool(candidate) and not (
             self._provider_rate_limited and not self.fast_tail_enabled
         )
         return HTTP_FAST_TAIL_SOURCE if use_fast_tail else STABLE_POLLING_FALLBACK_MODE
@@ -937,6 +992,10 @@ class BaseRealtimeIngestor:
                 'state': self._ws_circuit_state(url),
                 'opened_count': int(c.get('opened_count') or 0),
                 'retry_in_seconds': round(max(0.0, c.get('open_until', 0.0) - time.monotonic()), 1),
+                # WHY the circuit opened, so System Health can distinguish a
+                # host-level TLS failure (HTTP fast-tail unusable on that host) from
+                # a WSS-only close without scraping logs.
+                'reason': c.get('reason'),
             }
         return facts
 
@@ -2986,6 +3045,33 @@ class BaseRealtimeIngestor:
             old_host, _ws_url_host(self.rpc_url), self.watcher_name,
         )
 
+    def _ensure_fast_tail_rpc_host_healthy(self) -> None:
+        """Switch the fast-tail's HTTP RPC off a TLS-broken host before polling.
+
+        Requirement 3: a WSS endpoint that failed with a TLS internal error is a
+        whole-host failure — the same host's HTTPS RPC fails the identical
+        handshake. When the active ``rpc_url`` sits on such a host, fail it over to
+        the first healthy HTTP RPC (the secondary) so the fast-tail never reproduces
+        the ``http_fast_tail_error TLSV1_ALERT_INTERNAL_ERROR`` loop. When no
+        healthy HTTP host exists the caller never reaches the fast-tail (the
+        stable-polling fallback runs instead), so this is a no-op there.
+        """
+        failed = self._host_level_failed_hosts()
+        if not failed or _ws_url_host(self.rpc_url) not in failed:
+            return
+        candidate = self._fast_tail_rpc_candidate()
+        if not candidate or candidate == self.rpc_url:
+            return
+        old_host = _ws_url_host(self.rpc_url)
+        self.rpc_url = candidate
+        self._http_failover_done = True
+        self._fast_tail_consecutive_failures = 0
+        logger.warning(
+            'realtime_http_provider_failover old_host=%s new_host=%s '
+            'reason=primary_host_tls_failure watcher=%s',
+            old_host, _ws_url_host(self.rpc_url), self.watcher_name,
+        )
+
     async def _run_circuit_open_fallback(self) -> None:
         """Fallback ladder while EVERY WSS endpoint's circuit is open.
 
@@ -3046,6 +3132,11 @@ class BaseRealtimeIngestor:
         probe the WSS again. Without it (permanent WSS-disable) the loop runs
         forever, exactly as before.
         """
+        # Requirement 3: never poll a host that failed the WSS TLS handshake — the
+        # same host's HTTPS RPC fails the identical handshake. Fail over to the
+        # healthy secondary HTTP RPC first so the fast-tail cannot loop on
+        # http_fast_tail_error TLS against the broken provider.
+        self._ensure_fast_tail_rpc_host_healthy()
         self._ingestion_mode = 'http_fast_tail'
         self.state['source_status'] = 'quicknode_http_fast_tail'
         self.state['degraded'] = True
