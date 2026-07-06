@@ -29,6 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from services.api.app.domains import alert_stream, alert_delivery
 from services.api.app.domains.rate_limit import rate_limit_connectivity
+from services.api.app.quicknode_streams import process_quicknode_base_stream_webhook
 
 from services.api.app.pilot import (
     accept_workspace_invitation,
@@ -2072,7 +2073,7 @@ _DEFAULT_MAX_UPLOAD_BODY_BYTES  = 50 * 1024 * 1024   # 50 MiB for uploads
 _DEFAULT_MAX_INGEST_BODY_BYTES  = 20 * 1024 * 1024   # 20 MiB for telemetry ingest
 
 _UPLOAD_PATH_PREFIXES  = ('/uploads/', '/export/', '/exports/')
-_INGEST_PATH_PREFIXES  = ('/telemetry/', '/monitoring/ingest/', '/ingest/')
+_INGEST_PATH_PREFIXES  = ('/telemetry/', '/monitoring/ingest/', '/ingest/', '/api/integrations/quicknode/')
 
 
 def _resolve_body_limit(path: str) -> int:
@@ -3806,6 +3807,18 @@ async def billing_webhook_paddle_canonical(request: Request) -> dict[str, Any]:
     signature = request.headers.get('paddle-signature')
     timestamp = request.headers.get('paddle-timestamp')
     return with_auth_schema_json(lambda: process_paddle_webhook(payload, signature_header=signature, timestamp_header=timestamp, raw_body=raw))
+
+
+@app.get('/api/integrations/quicknode/streams/base', summary='QuickNode Streams (Base) webhook health check')
+def quicknode_streams_base_health() -> dict[str, Any]:
+    return {'status': 'quicknode_streams_base_endpoint_ready'}
+
+
+@app.post('/api/integrations/quicknode/streams/base', summary='QuickNode Streams webhook (Base chain wallet transfers)')
+async def quicknode_streams_base_webhook(request: Request) -> dict[str, Any]:
+    raw = await request.body()
+    signature = request.headers.get('x-qn-signature') or request.headers.get('x-quicknode-signature')
+    return with_auth_schema_json(lambda: process_quicknode_base_stream_webhook(raw_body=raw, signature_header=signature))
 
 
 @app.get('/webhooks', summary='List workspace webhooks')

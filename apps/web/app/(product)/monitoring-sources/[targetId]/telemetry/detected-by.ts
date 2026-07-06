@@ -21,6 +21,7 @@ export const DETECTED_BY_LABELS: Record<string, string> = {
   realtime_tx_import: 'Realtime Tx Import',
   quicknode_http_fast_tail: 'Realtime HTTP Fast-Tail',
   realtime_http_fast_tail: 'Realtime HTTP Fast-Tail',
+  quicknode_stream: 'QuickNode Stream',
   stable_rpc_polling: 'Stable RPC Polling',
   tx_hash_import: 'Realtime Tx Import',
   simulator: 'Simulator (not live)',
@@ -40,6 +41,7 @@ export const REALTIME_DETECTED_BY = new Set([
   'realtime_tx_import',
   'quicknode_http_fast_tail',
   'realtime_http_fast_tail',
+  'quicknode_stream',
 ]);
 
 // Payload source/ingestion values that map onto a canonical detected_by tag —
