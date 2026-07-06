@@ -918,3 +918,194 @@ def test_tls_failures_do_not_trigger_reconnect_backfill():
         'a failed TLS handshake must not trigger eth_getLogs/eth_getBlockByNumber '
         'backfill scans on every retry (provider pressure)'
     )
+
+
+# ---------------------------------------------------------------------------
+# 10. TLS host-safety: the HTTP fast-tail must NEVER poll the SAME host whose WSS
+#     just failed the TLS handshake (the production http_fast_tail_error
+#     TLSV1_ALERT_INTERNAL_ERROR loop). A TLS internal error is a whole-host
+#     failure — the same host's HTTPS RPC fails the identical handshake — so the
+#     failover ladder is: primary WSS -> secondary WSS -> HTTP fast-tail on a
+#     DIFFERENT (healthy) host -> stable RPC polling only.
+# ---------------------------------------------------------------------------
+
+# A single QuickNode-style provider whose WSS and derived HTTPS RPC share ONE
+# host: a TLS internal error on the WSS means that host's HTTPS RPC is broken too.
+QUICKNODE_WS = 'wss://alpha.quiknode.example/abc123'
+QUICKNODE_HTTP = 'https://alpha.quiknode.example/abc123'
+# A second, independent provider on a DIFFERENT host — a real failover target.
+ALT_HTTP = 'https://base-mainnet.alt-provider.example/xyz789'
+
+
+def test_host_level_failed_hosts_only_tracks_tls_reason():
+    # A WSS-only failure (silent session) is NOT a host-level failure: the host's
+    # HTTPS RPC stays usable, so it must not exclude the fast-tail.
+    silent = _make_ingestor(ws_url=QUICKNODE_WS, rpc_url=QUICKNODE_HTTP)
+    silent._mark_ws_provider_unhealthy('wss_no_heads')
+    assert silent._host_level_failed_hosts() == set()
+    assert silent._fast_tail_rpc_candidate() == QUICKNODE_HTTP
+
+    # A TLS internal error IS a host-level failure: the same-host HTTPS RPC is out.
+    tls = _make_ingestor(ws_url=QUICKNODE_WS, rpc_url=QUICKNODE_HTTP)
+    tls._mark_ws_provider_unhealthy('tls_internal_error')
+    assert tls._host_level_failed_hosts() == {'alpha.quiknode.example'}
+    assert tls._fast_tail_rpc_candidate() is None
+
+
+def test_same_host_tls_no_secondary_falls_back_to_stable_polling_only():
+    """Requirement 4: primary WSS TLS internal error and the ONLY HTTP RPC is the
+    same broken host -> stable RPC polling fallback, never a doomed fast-tail."""
+    from services.api.app.base_realtime_ingestor import (
+        BaseRealtimeIngestor,
+        STABLE_POLLING_FALLBACK_MODE,
+    )
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url=QUICKNODE_HTTP, ws_url=QUICKNODE_WS, watcher_name='w',
+    )
+    ingestor._mark_ws_provider_unhealthy('tls_internal_error')
+
+    assert ingestor._circuit_fallback_mode() == STABLE_POLLING_FALLBACK_MODE
+    # source_status/ingestion_mode reflect stable-polling-only, never fast-tail.
+    assert ingestor.state['source_status'] == STABLE_POLLING_FALLBACK_MODE
+    assert ingestor._ingestion_mode == STABLE_POLLING_FALLBACK_MODE
+    assert ingestor._fallback_is_active() is True
+
+    hb = _heartbeat_log(ingestor)
+    assert 'provider_mode=stable_rpc_polling_fallback' in hb, hb
+    assert 'fallback_active=True' in hb, hb
+    # UI truth (requirement 4-5): no realtime path scans in stable-only fallback.
+    assert 'realtime_scanning_active=False' in hb, hb
+    # Never claim the fast-tail is active against the broken host.
+    assert 'provider_mode=quicknode_http_fast_tail' not in hb, hb
+    assert 'degraded_reason=tls_internal_error' in hb, hb
+
+
+def test_same_host_tls_uses_secondary_http_when_configured():
+    """Requirement 6: with the secondary WSS missing but a secondary HTTP RPC on a
+    DIFFERENT host configured, the fast-tail uses it (not the broken primary)."""
+    from services.api.app.base_realtime_ingestor import (
+        BaseRealtimeIngestor,
+        HTTP_FAST_TAIL_SOURCE,
+    )
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url=QUICKNODE_HTTP, ws_url=QUICKNODE_WS, watcher_name='w',
+        rpc_url_secondary=ALT_HTTP,
+    )
+    ingestor._mark_ws_provider_unhealthy('tls_internal_error')
+
+    assert ingestor._host_level_failed_hosts() == {'alpha.quiknode.example'}
+    # The healthy secondary HTTP host is the fast-tail target — not the broken one.
+    assert ingestor._fast_tail_rpc_candidate() == ALT_HTTP
+    assert ingestor._circuit_fallback_mode() == HTTP_FAST_TAIL_SOURCE
+    assert ingestor.state['source_status'] == HTTP_FAST_TAIL_SOURCE
+
+    hb = _heartbeat_log(ingestor)
+    assert 'provider_mode=quicknode_http_fast_tail' in hb, hb
+    assert 'fallback_active=True' in hb, hb
+    assert 'realtime_scanning_active=True' in hb, hb
+
+
+def test_fast_tail_switches_off_tls_broken_host_before_polling():
+    """Requirement 3: _run_http_fast_tail must fail the HTTP RPC over to the healthy
+    secondary host BEFORE its first poll — it must never call the TLS-broken host."""
+    from services.api.app import base_realtime_ingestor as mod
+    from services.api.app.base_realtime_ingestor import _ws_url_host
+
+    ingestor = _make_ingestor(
+        ws_url=QUICKNODE_WS, rpc_url=QUICKNODE_HTTP, rpc_url_secondary=ALT_HTTP,
+    )
+    ingestor._mark_ws_provider_unhealthy('tls_internal_error')
+    ingestor._watched_targets = lambda: []  # type: ignore[method-assign]
+
+    def _guarded_rpc(method, params):
+        # An RPC against the broken primary host would reproduce the TLS loop.
+        assert _ws_url_host(ingestor.rpc_url) != 'alpha.quiknode.example', (
+            f'fast-tail must not call the TLS-broken host: {method}'
+        )
+        raise asyncio.CancelledError()
+
+    ingestor._rpc_call = _guarded_rpc  # type: ignore[method-assign]
+
+    capture = _LogCapture()
+    mod.logger.addHandler(capture)
+    mod.logger.setLevel(logging.DEBUG)
+    try:
+        # The first eth_blockNumber runs against the SWITCHED (healthy) host, then
+        # CancelledError ends the loop.
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(ingestor._run_http_fast_tail())
+    finally:
+        mod.logger.removeHandler(capture)
+
+    assert ingestor.rpc_url == ALT_HTTP, 'fast-tail must switch to the secondary HTTP host'
+    failover = next(
+        (m for m in capture.messages if 'realtime_http_provider_failover' in m
+         and 'reason=primary_host_tls_failure' in m), None,
+    )
+    assert failover is not None, f'host failover must be logged; got {capture.messages}'
+    assert 'old_host=alpha.quiknode.example' in failover
+    assert 'new_host=base-mainnet.alt-provider.example' in failover
+    # The fast-tail start line names the healthy host, never the broken one.
+    started = next((m for m in capture.messages if 'realtime_http_fast_tail_started' in m), None)
+    assert started is not None
+    assert 'rpc_host=base-mainnet.alt-provider.example' in started
+
+
+def test_circuit_open_fallback_same_host_tls_runs_stable_polling_not_fast_tail():
+    """Requirement 3-4: with the WSS circuit TLS-open and the only HTTP RPC on the
+    same broken host, the circuit-open fallback runs stable RPC polling only — the
+    HTTP fast-tail is NEVER started against the failed provider."""
+    from services.api.app import base_realtime_ingestor as mod
+    from services.api.app.base_realtime_ingestor import STABLE_POLLING_FALLBACK_MODE
+
+    ingestor = _make_ingestor(ws_url=QUICKNODE_WS, rpc_url=QUICKNODE_HTTP)
+    ingestor._mark_ws_provider_unhealthy('tls_internal_error')
+    assert ingestor._all_ws_circuits_open() is True
+
+    async def _fast_tail_must_not_run(stop_when=None):
+        raise AssertionError('fast-tail must not run against the TLS-broken host')
+
+    ingestor._run_http_fast_tail = _fast_tail_must_not_run  # type: ignore[method-assign]
+    # The circuit has half-opened, so the fallback returns immediately for a WSS
+    # probe without idling (keeps the test fast, no real sleep).
+    ingestor._ws_probe_due = lambda: True  # type: ignore[method-assign]
+    ingestor._seconds_until_ws_probe = lambda: 0.0  # type: ignore[method-assign]
+
+    capture = _LogCapture()
+    mod.logger.addHandler(capture)
+    mod.logger.setLevel(logging.DEBUG)
+    try:
+        asyncio.run(ingestor._run_circuit_open_fallback())
+    finally:
+        mod.logger.removeHandler(capture)
+
+    assert ingestor._ingestion_mode == STABLE_POLLING_FALLBACK_MODE
+    assert any(
+        'realtime_fallback_activated' in m
+        and 'provider_mode=stable_rpc_polling_fallback' in m
+        for m in capture.messages
+    ), capture.messages
+    assert any('realtime_fallback_ended' in m for m in capture.messages)
+
+
+def test_realtime_telemetry_classification_counts_fast_tail_never_stable_polling():
+    """Acceptance: a transfer counts as realtime telemetry when Detected By is
+    Realtime WebSocket / Realtime Backfill / Fast Tail — and stable_rpc_polling is
+    never realtime. (The strict WSS *proof* set stays WSS/backfill-only via
+    is_realtime_detection_proof; this is the realtime telemetry classification the
+    UI/telemetry list uses.)"""
+    from services.api.app.worker_status import (
+        REALTIME_DETECTED_BY,
+        STABLE_DETECTED_BY,
+        detected_by_from_ingestion_source,
+    )
+
+    for tag in ('realtime_websocket', 'realtime_backfill', 'quicknode_http_fast_tail'):
+        assert tag in REALTIME_DETECTED_BY
+        assert detected_by_from_ingestion_source(tag) == tag
+    # Stable RPC polling is NEVER counted as realtime telemetry.
+    assert STABLE_DETECTED_BY == 'stable_rpc_polling'
+    assert STABLE_DETECTED_BY not in REALTIME_DETECTED_BY
+    assert detected_by_from_ingestion_source('rpc_polling') == STABLE_DETECTED_BY
