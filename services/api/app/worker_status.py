@@ -44,6 +44,23 @@ REALTIME_DETECTED_BY: tuple[str, ...] = (
 )
 STABLE_DETECTED_BY = 'stable_rpc_polling'
 
+# detected_by values that PROVE the realtime WebSocket pipeline delivered a
+# detection. Acceptance rule: a test transaction only counts as realtime proof when
+# Detected By is Realtime WebSocket or Realtime Backfill — quicknode_http_fast_tail
+# and realtime_tx_import classify as realtime *telemetry* (REALTIME_DETECTED_BY) but
+# are fallback/recovery paths, and stable_rpc_polling is never realtime proof.
+REALTIME_PROOF_DETECTED_BY: tuple[str, ...] = ('realtime_websocket', 'realtime_backfill')
+
+
+def is_realtime_detection_proof(detected_by: Any) -> bool:
+    """True only when ``detected_by`` proves the realtime WSS pipeline detected it.
+
+    Fail-closed: unknown/blank values, the stable polling tag, and the fallback
+    tags (HTTP fast-tail, tx import) all return False — a transfer detected while
+    realtime was degraded must never be claimed as realtime working.
+    """
+    return str(detected_by or '').strip().lower() in REALTIME_PROOF_DETECTED_BY
+
 # ingestion_source values written by the stable RPC polling path (ActivityEvent
 # ingestion_source / monitoring_event_receipts.ingestion_source). They all mean the
 # transfer was detected by the 300s stable polling worker, not the realtime worker.
@@ -495,6 +512,17 @@ def build_worker_status(
     watcher_degraded = bool(watcher.get('degraded'))
     watcher_degraded_reason = watcher.get('degraded_reason') or None
     watcher_has_row = bool(watcher)
+    # Canonical fallback facts written by the realtime worker's heartbeat: when the
+    # WSS is degraded past its breaker thresholds (TLS provider failure, reconnect
+    # loop) fallback_active=True and provider_mode names the active fallback path
+    # (quicknode_http_fast_tail or stable_rpc_polling_fallback). The UI renders
+    # "Realtime degraded — stable polling fallback active" from these, never from a
+    # bare degraded flag.
+    realtime_fallback_active = bool(metrics.get('fallback_active'))
+    realtime_provider_mode = (
+        str(metrics.get('provider_mode') or watcher.get('source_status') or '').strip().lower()
+        or None
+    )
 
     # Canonical proof the realtime WebSocket worker is live, independent of THIS
     # process's BASE_REALTIME_ENABLED env (requirement 5): the watcher row reports
@@ -545,7 +573,11 @@ def build_worker_status(
     elif stable_active and realtime_state == 'active':
         headline = 'Stable polling active. Realtime WebSocket active.'
     elif stable_active and realtime_state == 'degraded':
-        headline = 'Stable polling active. Realtime WebSocket degraded.'
+        headline = (
+            'Stable polling active. Realtime degraded — stable polling fallback active.'
+            if realtime_fallback_active
+            else 'Stable polling active. Realtime WebSocket degraded.'
+        )
     elif stable_active:
         headline = 'Stable polling active.'
     elif stable_state == 'stale':
@@ -585,6 +617,12 @@ def build_worker_status(
             'state': realtime_state,
             'last_event_at': _iso(realtime_last_event_at),
             'reason': realtime_reason,
+            # Fallback facts from the worker heartbeat: True when realtime detection
+            # has handed off to a fallback path; provider_mode names it
+            # (quicknode_http_fast_tail / stable_rpc_polling_fallback / rate_limited
+            # / realtime_websocket when healthy).
+            'fallback_active': realtime_fallback_active,
+            'provider_mode': realtime_provider_mode,
         },
         'provider_realtime': {
             'label': 'Provider realtime status',

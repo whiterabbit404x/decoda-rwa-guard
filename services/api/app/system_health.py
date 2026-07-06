@@ -931,14 +931,19 @@ def _build_realtime_ingestion_status(connection: Any) -> dict[str, Any]:
             'label': 'Realtime: Disabled',
         }
 
-    # Look for the watcher heartbeat in monitoring_watcher_state
+    # Look for the watcher heartbeat in monitoring_watcher_state. The realtime
+    # worker writes ingestion_mode='realtime' while on the WSS, 'http_fast_tail'
+    # once the fast-tail fallback took over, and 'stable_rpc_polling_fallback'
+    # while every WSS circuit is open with no fast-tail — all three are the SAME
+    # realtime worker, so the row must not vanish from System Health the moment a
+    # fallback activates.
     try:
         row = connection.execute(
             '''
             SELECT watcher_name, source_status, degraded, degraded_reason,
                    last_heartbeat_at, metrics
             FROM monitoring_watcher_state
-            WHERE ingestion_mode = 'realtime'
+            WHERE ingestion_mode IN ('realtime', 'http_fast_tail', 'stable_rpc_polling_fallback')
             ORDER BY COALESCE(last_heartbeat_at, updated_at) DESC
             LIMIT 1
             '''
@@ -973,13 +978,23 @@ def _build_realtime_ingestion_status(connection: Any) -> dict[str, Any]:
             source_status == 'provider_rate_limited'
             or degraded_reason == 'provider_rate_limited'
         )
+        # Canonical fallback facts from the worker heartbeat (only trusted while the
+        # heartbeat is fresh): fallback_active=True with a fallback provider_mode
+        # means the WSS is degraded past its breaker thresholds and detection has
+        # handed off (HTTP fast-tail or stable polling). Rendered as
+        # "Degraded — stable polling fallback active", never a bare "Degraded".
+        fallback_active = hb_fresh and bool(metrics.get('fallback_active'))
+        worker_provider_mode = str(metrics.get('provider_mode') or source_status or '') or None
         if rate_limited:
             status = 'rate_limited'
             label = 'Realtime: Rate limited'
         else:
             degraded = bool(w.get('degraded')) or not hb_fresh
             status = 'active' if not degraded else 'degraded'
-            label = f'Realtime: {status.capitalize()}'
+            if status == 'degraded' and fallback_active:
+                label = 'Realtime: Degraded — stable polling fallback active'
+            else:
+                label = f'Realtime: {status.capitalize()}'
         return {
             'status': status,
             'enabled': True,
@@ -994,6 +1009,8 @@ def _build_realtime_ingestion_status(connection: Any) -> dict[str, Any]:
             'rate_limited': rate_limited,
             'provider': 'QuickNode' if rate_limited else None,
             'next_retry_at': metrics.get('next_retry_at') if rate_limited else None,
+            'fallback_active': fallback_active,
+            'worker_provider_mode': worker_provider_mode,
             # The 300s stable RPC polling worker runs independently of the realtime
             # path, so it keeps detecting transfers even while WSS is rate-limited.
             'stable_polling_active': True,

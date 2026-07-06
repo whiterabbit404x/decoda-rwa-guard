@@ -15,6 +15,7 @@ function realtimeVariant(status: RealtimeIngestionPath['status']): string {
 function RealtimePathRow({ realtime }: { realtime: RealtimeIngestionPath }) {
   const variant = realtimeVariant(realtime.status);
   const isRateLimited = realtime.status === 'rate_limited';
+  const isDegradedWithFallback = realtime.status === 'degraded' && realtime.fallback_active === true;
   return (
     <div className="shMetricRow" style={{ alignItems: 'flex-start', marginTop: '0.5rem' }}>
       <span className="shMetricLabel">Realtime path</span>
@@ -42,11 +43,20 @@ function RealtimePathRow({ realtime }: { realtime: RealtimeIngestionPath }) {
             </span>
           </>
         ) : (
-          realtime.degraded_reason && (
-            <span className="shMetricValue" style={{ fontSize: '0.7rem', color: 'var(--color-warning, #c09020)' }}>
-              {realtime.degraded_reason}
-            </span>
-          )
+          <>
+            {realtime.degraded_reason && (
+              <span className="shMetricValue" style={{ fontSize: '0.7rem', color: 'var(--color-warning, #c09020)' }}>
+                {realtime.degraded_reason}
+              </span>
+            )}
+            {isDegradedWithFallback && (
+              <span className="shMetricValue" style={{ fontSize: '0.7rem' }}>
+                Fallback: {realtime.worker_provider_mode === 'quicknode_http_fast_tail'
+                  ? 'HTTP fast-tail'
+                  : 'Stable RPC polling'} active
+              </span>
+            )}
+          </>
         )}
       </span>
     </div>

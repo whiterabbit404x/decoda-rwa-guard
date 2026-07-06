@@ -44,6 +44,7 @@ from services.api.app.worker_status import (
     realtime_enabled,
     resolve_telemetry_detected_by,
     stable_poll_stale_threshold_seconds,
+    DEFAULT_REALTIME_HEARTBEAT_TTL_SECONDS,
     DETECTED_BY_BASIS_UNCLASSIFIED,
     REALTIME_DETECTED_BY,
     STABLE_DETECTED_BY,
@@ -10626,19 +10627,57 @@ def list_target_telemetry(
         # last executed statement for callers that assert on execution order.
         _realtime_env_enabled = realtime_enabled()
         _realtime_active_by_facts = False
+        _realtime_degraded_by_facts = False
+        _realtime_fallback_active = False
+        _realtime_provider_mode: str | None = None
         try:
             _watcher_row = connection.execute(
                 '''
-                SELECT source_status, degraded, degraded_reason, metrics
+                SELECT source_status, degraded, degraded_reason, last_heartbeat_at, metrics
                 FROM monitoring_watcher_state
                 ORDER BY COALESCE(last_heartbeat_at, updated_at) DESC
                 LIMIT 1
                 '''
             ).fetchone()
             if _watcher_row is not None:
-                _realtime_active_by_facts = realtime_active_by_watcher_facts(
-                    _json_safe_value(dict(_watcher_row))
+                _watcher_dict = _json_safe_value(dict(_watcher_row))
+                _realtime_active_by_facts = realtime_active_by_watcher_facts(_watcher_dict)
+                # Degraded-with-fallback facts (only trusted while the watcher
+                # heartbeat is FRESH — a dead worker's stale row must not claim an
+                # active fallback). The worker heartbeat publishes fallback_active
+                # + provider_mode whenever the WSS is degraded past its breaker
+                # thresholds (TLS provider failure / reconnect loop), so the
+                # Telemetry header can say "Realtime degraded — stable polling
+                # fallback active" instead of a false "Paused / Disabled".
+                _w_metrics = (
+                    _watcher_dict.get('metrics')
+                    if isinstance(_watcher_dict.get('metrics'), dict) else {}
                 )
+                _hb_raw = _watcher_dict.get('last_heartbeat_at')
+                _hb_fresh = False
+                if _hb_raw:
+                    try:
+                        _hb_ts = datetime.fromisoformat(str(_hb_raw).replace('Z', '+00:00'))
+                        if _hb_ts.tzinfo is None:
+                            _hb_ts = _hb_ts.replace(tzinfo=timezone.utc)
+                        _hb_fresh = (
+                            (utc_now() - _hb_ts).total_seconds()
+                            <= DEFAULT_REALTIME_HEARTBEAT_TTL_SECONDS
+                        )
+                    except (TypeError, ValueError):
+                        _hb_fresh = False
+                if _hb_fresh:
+                    _realtime_fallback_active = bool(_w_metrics.get('fallback_active'))
+                    _realtime_provider_mode = (
+                        str(
+                            _w_metrics.get('provider_mode')
+                            or _watcher_dict.get('source_status')
+                            or ''
+                        ).strip().lower() or None
+                    )
+                    _realtime_degraded_by_facts = bool(_watcher_dict.get('degraded')) or (
+                        _realtime_fallback_active
+                    )
         except Exception:
             logger.warning(
                 'telemetry_realtime_watcher_unavailable workspace_id=%s target_id=%s',
@@ -10647,6 +10686,11 @@ def list_target_telemetry(
         _realtime_effective_enabled = _realtime_env_enabled or _realtime_active_by_facts
         if _realtime_active_by_facts:
             _realtime_state = 'active'
+        elif _realtime_degraded_by_facts:
+            # The worker exists and is reporting degraded/fallback facts — never
+            # render this as "Paused / Disabled" (the production symptom) nor as a
+            # healthy "Enabled".
+            _realtime_state = 'degraded'
         elif _realtime_env_enabled:
             _realtime_state = 'enabled'
         else:
@@ -10954,6 +10998,10 @@ def list_target_telemetry(
             # active / enabled / paused so the UI can render "Active" (requirement 5).
             'realtime_enabled': _realtime_effective_enabled,
             'realtime_state': _realtime_state,
+            # Fallback facts (fresh-heartbeat-gated) so the Telemetry header can say
+            # "Realtime degraded — stable polling fallback active" truthfully.
+            'realtime_fallback_active': _realtime_fallback_active,
+            'realtime_provider_mode': _realtime_provider_mode,
             'last_stable_poll_at': last_stable_poll_at,
             'last_realtime_event_at': last_realtime_event_at,
             'top_row_detection_debug': top_row_detection_debug,
