@@ -101,6 +101,36 @@ _DEFAULT_STALE_EVENT_THRESHOLD_SECONDS = 120
 # detecting transfers. Configurable via BASE_REALTIME_RATE_LIMIT_COOLDOWN_SECONDS.
 _DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 900
 
+# TLS/SSL provider-failure breaker (fix for the production loop where QuickNode WSS
+# kept terminating the handshake with `[SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert
+# internal error` while reconnect_count climbed 35 -> 100+ and heads_received stayed
+# frozen). A TLS alert is a provider-side failure: retrying the same endpoint every
+# 5-120 s can never fix it. After MORE THAN this many consecutive TLS failures on one
+# endpoint the worker marks that WSS provider unhealthy
+# (realtime_ws_provider_unhealthy reason=tls_internal_error), opens its circuit, and
+# fails over: secondary WSS -> HTTP fast-tail -> stable RPC polling only.
+_TLS_FAILURE_THRESHOLD = 3
+# Per-endpoint provider circuit breaker window. An unhealthy WSS endpoint is not
+# retried while its circuit is open (provider_circuit_open); when the window elapses
+# the circuit goes half-open (provider_circuit_half_open) and exactly ONE probe
+# connection is allowed — any failure re-opens the circuit, real data closes it.
+# Default 15 minutes, clamped to 10-30 minutes via
+# BASE_REALTIME_PROVIDER_CIRCUIT_SECONDS.
+_DEFAULT_PROVIDER_CIRCUIT_SECONDS = 900
+_MIN_PROVIDER_CIRCUIT_SECONDS = 600
+_MAX_PROVIDER_CIRCUIT_SECONDS = 1800
+# Canonical provider_mode while every WSS circuit is open and no HTTP fast-tail can
+# run: no realtime path scans, and the independent 300 s stable RPC polling worker is
+# the active detection fallback. Published in the heartbeat with fallback_active=True
+# so the UI can render "Realtime degraded — stable polling fallback active" instead
+# of an ambiguous provider_mode=degraded with fallback_active=False.
+STABLE_POLLING_FALLBACK_MODE = 'stable_rpc_polling_fallback'
+# Consecutive failed HTTP fast-tail cycles before the fast-tail fails over from the
+# primary HTTPS RPC to BASE_HTTP_RPC_URL_SECONDARY (when configured).
+_HTTP_FAILOVER_FAILURE_THRESHOLD = 3
+# Upper bound for the fast-tail's exponential 429 backoff sleep.
+_FAST_TAIL_MAX_BACKOFF_SECONDS = 600.0
+
 # HTTP fast-tail fallback tuning (requirement 3). The fast-tail loop polls the
 # HTTPS RPC (never the WSS) on this interval and scans at most this many of the
 # most-recent blocks per cycle, so a stale checkpoint can never trigger a giant
@@ -219,6 +249,7 @@ class BaseRealtimeIngestor:
         max_events_per_minute: int | None = None,
         subscriptions: str | None = None,
         ws_url_secondary: str | None = None,
+        rpc_url_secondary: str | None = None,
     ) -> None:
         self.rpc_url = rpc_url
         self.ws_url = ws_url
@@ -272,6 +303,36 @@ class BaseRealtimeIngestor:
         self.ws_url_secondary: str | None = ws_url_secondary or None
         # Active URL — may be swapped to secondary on failover.
         self._current_ws_url: str = ws_url
+        # Secondary HTTPS RPC for the fast-tail fallback (BASE_HTTP_RPC_URL_SECONDARY).
+        # Used only after _HTTP_FAILOVER_FAILURE_THRESHOLD consecutive failed fast-tail
+        # cycles on the primary HTTP endpoint.
+        self.rpc_url_secondary: str | None = rpc_url_secondary or None
+        self._http_failover_done: bool = False
+        self._fast_tail_consecutive_failures: int = 0
+        # Exponential 429 backoff strikes for the fast-tail poll loop: the poll sleep
+        # doubles per consecutive rate-limited cycle (capped) so the fallback never
+        # hammers a throttling provider, and resets on the first successful cycle.
+        self._fast_tail_rate_limit_strikes: int = 0
+
+        # Per-endpoint WSS provider circuit breaker, keyed by WS URL:
+        #   open_until   monotonic deadline; the endpoint is not retried before it
+        #   opened_count how many times this endpoint's circuit has opened
+        #   probation    True while a half-open probe connection is outstanding
+        # Circuits open after repeated TLS failures (realtime_ws_provider_unhealthy)
+        # and re-open one-strike when a half-open probe fails; real data closes them.
+        self.provider_circuit_seconds = min(
+            _MAX_PROVIDER_CIRCUIT_SECONDS,
+            max(
+                _MIN_PROVIDER_CIRCUIT_SECONDS,
+                _resolve_int_env(
+                    'BASE_REALTIME_PROVIDER_CIRCUIT_SECONDS', _DEFAULT_PROVIDER_CIRCUIT_SECONDS
+                ),
+            ),
+        )
+        self._ws_circuits: dict[str, dict[str, Any]] = {}
+        # Consecutive TLS/SSL failures on the CURRENT WSS endpoint. Reset when the
+        # endpoint delivers real data / survives a heartbeat window, or on failover.
+        self._tls_failure_count: int = 0
         # Messages received in the current WS session (reset at start of each _ws_subscribe call).
         self._session_messages_received: int = 0
         # Set True after 3 × 1001 closes before first event with no secondary; switches to HTTP fast-tail.
@@ -641,6 +702,210 @@ class BaseRealtimeIngestor:
         )
 
     # ------------------------------------------------------------------
+    # TLS provider failure + per-endpoint circuit breaker
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_tls_error(exc: Exception) -> bool:
+        """True when an error indicates a TLS/SSL failure on the WSS handshake.
+
+        Matches ``ssl.SSLError`` (and subclasses) by type name plus the canonical
+        provider failure strings — most importantly QuickNode's
+        ``[SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error``. A TLS
+        alert is a provider-side failure the client cannot fix by retrying the same
+        endpoint, so it must be treated as provider failure, not a transient error.
+        """
+        if 'ssl' in type(exc).__name__.lower():
+            return True
+        s = str(exc).lower()
+        return (
+            'tlsv1_alert_internal_error' in s
+            or 'tlsv1 alert internal error' in s
+            or '[ssl:' in s
+            or 'ssl handshake' in s
+            or 'tls handshake' in s
+            or 'certificate verify failed' in s
+        )
+
+    def _ws_circuit(self, url: str) -> dict[str, Any]:
+        return self._ws_circuits.setdefault(
+            url, {'open_until': 0.0, 'opened_count': 0, 'probation': False},
+        )
+
+    def _ws_circuit_state(self, url: str) -> str:
+        """'closed' (healthy / recovered), 'open' (do not retry), or 'half_open'."""
+        c = self._ws_circuits.get(url)
+        if not c or not c.get('opened_count'):
+            return 'closed'
+        if time.monotonic() < c['open_until']:
+            return 'open'
+        return 'half_open'
+
+    def _all_ws_circuits_open(self) -> bool:
+        """True when EVERY configured WSS endpoint's circuit is currently open."""
+        urls = [u for u in (self.ws_url, self.ws_url_secondary) if u]
+        return bool(urls) and all(self._ws_circuit_state(u) == 'open' for u in urls)
+
+    def _seconds_until_ws_probe(self) -> float:
+        """Seconds until the earliest WSS circuit half-opens (0 when one already has)."""
+        urls = [u for u in (self.ws_url, self.ws_url_secondary) if u]
+        if not urls:
+            return 0.0
+        deadlines = [self._ws_circuit(u)['open_until'] for u in urls]
+        return max(0.0, min(deadlines) - time.monotonic())
+
+    def _ws_probe_due(self) -> bool:
+        """True when a WSS endpoint may be (re)tried: some circuit is not open."""
+        return not self._wss_permanently_disabled and not self._all_ws_circuits_open()
+
+    def _open_ws_circuit(self, url: str, reason: str) -> None:
+        """Open one WSS endpoint's circuit for ``provider_circuit_seconds``.
+
+        Canonical marker: ``provider_circuit_open``. The endpoint is not retried
+        until the window elapses (then ``provider_circuit_half_open`` grants one
+        probe), so the worker never reconnects to the same failing provider every
+        few seconds forever.
+        """
+        c = self._ws_circuit(url)
+        c['open_until'] = time.monotonic() + self.provider_circuit_seconds
+        c['opened_count'] += 1
+        c['probation'] = False
+        self.state['metrics']['provider_circuit_opens'] = (
+            self.state['metrics'].get('provider_circuit_opens', 0) + 1
+        )
+        logger.warning(
+            'provider_circuit_open provider=%s reason=%s cooldown_seconds=%s '
+            'opened_count=%s watcher=%s',
+            _ws_url_host(url), reason, self.provider_circuit_seconds,
+            c['opened_count'], self.watcher_name,
+        )
+
+    def _select_ws_url(self) -> str | None:
+        """Pick the WSS endpoint to connect to, honouring per-endpoint circuits.
+
+        Preference order: the current URL while its circuit is closed, then the
+        primary, then the secondary (failover order: primary WSS -> secondary WSS).
+        When no circuit is closed, a half-open endpoint is granted exactly ONE
+        probe connection — logged with the canonical ``provider_circuit_half_open``
+        marker. Returns ``None`` when every endpoint's circuit is open (the caller
+        runs the fallback ladder: HTTP fast-tail -> stable polling only).
+        """
+        ordered: list[str] = []
+        for u in (self._current_ws_url, self.ws_url, self.ws_url_secondary):
+            if u and u not in ordered:
+                ordered.append(u)
+        for url in ordered:
+            if self._ws_circuit_state(url) == 'closed':
+                return url
+        for url in ordered:
+            if self._ws_circuit_state(url) == 'half_open':
+                c = self._ws_circuit(url)
+                if not c.get('probation'):
+                    c['probation'] = True
+                    logger.warning(
+                        'provider_circuit_half_open provider=%s probe_allowed=1 watcher=%s',
+                        _ws_url_host(url), self.watcher_name,
+                    )
+                return url
+        return None
+
+    def _note_ws_provider_recovered(self, url: str) -> None:
+        """Close ``url``'s circuit after it delivered real data (probe succeeded).
+
+        Also switches the ingestion mode back to realtime: the fallback mode (and
+        therefore fallback_active=True) is published right up until the WSS has
+        actually proven healthy again — never during the probe attempt itself.
+        """
+        if self._tls_failure_count:
+            self._tls_failure_count = 0
+        c = self._ws_circuits.get(url)
+        if not c or not c.get('opened_count'):
+            return
+        self._ws_circuits[url] = {'open_until': 0.0, 'opened_count': 0, 'probation': False}
+        if (
+            not self._wss_permanently_disabled
+            and self._ingestion_mode in ('http_fast_tail', STABLE_POLLING_FALLBACK_MODE)
+        ):
+            self._ingestion_mode = 'realtime'
+        logger.info(
+            'provider_circuit_closed provider=%s reason=provider_recovered watcher=%s',
+            _ws_url_host(url), self.watcher_name,
+        )
+
+    def _note_tls_failure(self) -> bool:
+        """Count one TLS failure on the current endpoint; True when the breaker trips.
+
+        More than ``_TLS_FAILURE_THRESHOLD`` consecutive TLS failures mark the
+        endpoint unhealthy. A TLS failure during a half-open probe is one-strike:
+        the circuit re-opens immediately.
+        """
+        self._tls_failure_count += 1
+        self.state['metrics']['tls_failures'] = (
+            self.state['metrics'].get('tls_failures', 0) + 1
+        )
+        c = self._ws_circuits.get(self._current_ws_url)
+        if c is not None and c.get('probation'):
+            return True
+        return self._tls_failure_count > _TLS_FAILURE_THRESHOLD
+
+    def _circuit_fallback_mode(self) -> str:
+        """Canonical provider_mode for the circuit-open fallback ladder.
+
+        HTTP fast-tail when an HTTPS RPC exists and is not rate-limited without a
+        separate budget; otherwise stable RPC polling only.
+        """
+        use_fast_tail = bool(self.rpc_url) and not (
+            self._provider_rate_limited and not self.fast_tail_enabled
+        )
+        return HTTP_FAST_TAIL_SOURCE if use_fast_tail else STABLE_POLLING_FALLBACK_MODE
+
+    def _mark_ws_provider_unhealthy(self, reason: str) -> None:
+        """Mark the current WSS endpoint unhealthy and open its circuit.
+
+        Emits the canonical ``realtime_ws_provider_unhealthy`` marker (e.g.
+        ``reason=tls_internal_error``) and opens the endpoint's circuit so it is
+        never retried inside the window. run_forever's provider ladder then selects
+        the next endpoint (secondary WSS) or, when every WSS circuit is open, the
+        HTTP fast-tail / stable-polling fallback. In that all-open case the
+        fallback facts are published immediately: the very next heartbeat carries
+        fallback_active=True with the canonical fallback provider_mode — never a
+        bare provider_mode=degraded with fallback_active=False.
+        """
+        logger.warning(
+            'realtime_ws_provider_unhealthy reason=%s provider=%s failure_count=%s '
+            'reconnect_count=%s watcher=%s',
+            reason, _ws_url_host(self._current_ws_url), self._tls_failure_count,
+            self.state['metrics'].get('ws_reconnects', 0), self.watcher_name,
+        )
+        self._open_ws_circuit(self._current_ws_url, reason)
+        self._tls_failure_count = 0
+        self.state['degraded'] = True
+        self.state['degraded_reason'] = reason
+        if self._all_ws_circuits_open():
+            _mode = self._circuit_fallback_mode()
+            self._ingestion_mode = (
+                'http_fast_tail' if _mode == HTTP_FAST_TAIL_SOURCE
+                else STABLE_POLLING_FALLBACK_MODE
+            )
+            self.state['source_status'] = _mode
+        increment(
+            'decoda_realtime_provider_failures_total',
+            provider='base_realtime_websocket',
+            error_type=reason,
+        )
+
+    def _provider_circuit_facts(self) -> dict[str, Any]:
+        """Compact per-host circuit summary for the heartbeat metrics (JSON-safe)."""
+        facts: dict[str, Any] = {}
+        for url, c in self._ws_circuits.items():
+            facts[_ws_url_host(url)] = {
+                'state': self._ws_circuit_state(url),
+                'opened_count': int(c.get('opened_count') or 0),
+                'retry_in_seconds': round(max(0.0, c.get('open_until', 0.0) - time.monotonic()), 1),
+            }
+        return facts
+
+    # ------------------------------------------------------------------
     # Provider rate-limit circuit breaker (HTTP 429 on the WSS handshake)
     # ------------------------------------------------------------------
 
@@ -655,15 +920,26 @@ class BaseRealtimeIngestor:
         return max(0.0, self._rate_limit_cooldown_until - time.monotonic())
 
     def _fallback_is_active(self) -> bool:
-        """True when a realtime fallback path (HTTP fast-tail) is actually running.
+        """True when realtime detection has handed off to a fallback path.
 
-        A permanent WSS-disable always runs fast-tail. A provider rate-limit only
-        runs fast-tail when BASE_REALTIME_FAST_TAIL_ENABLED is set (a separate HTTP
-        budget); by default it does NOT, so no realtime fallback runs and only the
-        independent 300s stable polling worker covers detection — the heartbeat then
-        truthfully reports fallback_active=False (requirement 4).
+        Fallback paths: the HTTP fast-tail loop (permanent WSS-disable, or every WSS
+        circuit open after repeated TLS failures) and stable-polling-only mode
+        (STABLE_POLLING_FALLBACK_MODE — no realtime path scans; the independent
+        300 s stable RPC polling worker is the detection path, and this flag says
+        realtime has DEFERRED to it). Whenever the WSS is degraded past its breaker
+        thresholds the heartbeat must publish fallback_active=True with a canonical
+        fallback provider_mode — never provider_mode=degraded with
+        fallback_active=False (the production contradiction).
+
+        A provider rate-limit cooldown WITHOUT a separate fast-tail budget
+        deliberately stays fallback_active=False: no realtime fallback runs there,
+        and provider_mode=rate_limited carries that truth instead.
         """
         if self._wss_permanently_disabled:
+            return True
+        if self._ingestion_mode in ('http_fast_tail', STABLE_POLLING_FALLBACK_MODE):
+            return True
+        if self._all_ws_circuits_open():
             return True
         if self._provider_rate_limited:
             return self.fast_tail_enabled
@@ -1996,13 +2272,17 @@ class BaseRealtimeIngestor:
         # realtime detection path (WSS live-tail or HTTP fast-tail) actually able to
         # scan right now? It is False during a provider rate-limit cooldown with no
         # fast-tail — the ONE case where fallback_active=False would otherwise be
-        # ambiguous. When it is False the independent 300 s stable RPC polling worker
-        # is the detection path; the runtime-status layer (worker_status.py) derives
-        # "Realtime paused; stable polling active" from the persisted rate_limited /
-        # next_retry_at facts. This flag never claims stable polling is alive itself
-        # (that is the stable worker's own heartbeat fact), only that realtime is not.
+        # ambiguous — and False in stable_rpc_polling_fallback mode (every WSS
+        # circuit open, no fast-tail: fallback_active=True names the stable poller
+        # as the detection path, but no realtime path scans). When it is False the
+        # independent 300 s stable RPC polling worker is the detection path; the
+        # runtime-status layer (worker_status.py) derives "Realtime paused; stable
+        # polling active" from the persisted facts. This flag never claims stable
+        # polling is alive itself (that is the stable worker's own heartbeat fact),
+        # only that realtime is not.
         _realtime_scanning_active = not (
-            self._provider_rate_limited and not self._fallback_is_active()
+            (self._provider_rate_limited and not _fallback_active)
+            or self._ingestion_mode == STABLE_POLLING_FALLBACK_MODE
         )
         # Resolve before reading state so the log line and the persisted row agree.
         _degraded_reason = self._effective_degraded_reason()
@@ -2095,6 +2375,10 @@ class BaseRealtimeIngestor:
                             'rate_limit_windows': list(self._rate_limit_windows),
                             'live_tail_from_block': self.state.get('live_tail_from_block'),
                             'live_tail_to_block': self.state.get('live_tail_to_block'),
+                            # Per-endpoint provider circuit state (open/half_open) so
+                            # System Health can show WHY the WSS is benched and when
+                            # the next probe is due — never a bare "degraded".
+                            'provider_circuits': self._provider_circuit_facts(),
                         }),
                     ),
                 )
@@ -2534,6 +2818,9 @@ class BaseRealtimeIngestor:
                             self.state['metrics'].get('heads_received', 0) + 1
                         )
                         self.state['last_event_at'] = datetime.now(timezone.utc).isoformat()
+                        # Real chain data proves this endpoint healthy: close any
+                        # half-open circuit and reset the TLS failure counter.
+                        self._note_ws_provider_recovered(self._current_ws_url)
                         # Live-tail always runs; gap backfill is separate and never
                         # blocks it (requirement A). Single-flight + coalescing keeps at
                         # most one block scan active (requirement C).
@@ -2583,13 +2870,101 @@ class BaseRealtimeIngestor:
                             increment('decoda_realtime_events_total', chain=self.chain_network)
 
     # ------------------------------------------------------------------
-    # HTTP fast-tail fallback (QuickNode WSS permanently disabled)
+    # HTTP fast-tail fallback (WSS permanently disabled or circuit open)
     # ------------------------------------------------------------------
 
-    async def _run_http_fast_tail(self) -> None:
-        """HTTP polling fallback when WSS is permanently disabled for the provider.
+    async def _fast_tail_sleep(self, seconds: float, stop_when: Any = None) -> None:
+        """Sleep up to ``seconds``, waking early when ``stop_when`` fires.
 
-        Polls QuickNode HTTPS RPC (self.rpc_url, never the WSS) every
+        Chunked so a circuit-open fallback returns to the WSS probe within ~5 s of
+        the circuit half-opening instead of waiting out a full (possibly
+        backed-off) poll interval.
+        """
+        if stop_when is None:
+            await asyncio.sleep(seconds)
+            return
+        slept = 0.0
+        while slept < seconds and not stop_when():
+            chunk = min(5.0, seconds - slept)
+            await asyncio.sleep(chunk)
+            slept += chunk
+
+    def _fast_tail_effective_interval(self, base_interval: float) -> float:
+        """Poll sleep with exponential 429 backoff.
+
+        Doubles per consecutive rate-limited cycle (capped at
+        ``_FAST_TAIL_MAX_BACKOFF_SECONDS``) so the fallback never hammers a
+        throttling provider; resets to the base interval on the first clean cycle.
+        """
+        if self._fast_tail_rate_limit_strikes <= 0:
+            return base_interval
+        return min(
+            _FAST_TAIL_MAX_BACKOFF_SECONDS,
+            base_interval * (2 ** min(self._fast_tail_rate_limit_strikes, 6)),
+        )
+
+    def _maybe_failover_http_rpc(self) -> None:
+        """Fail the fast-tail over to the secondary HTTPS RPC after repeated failures.
+
+        Fires once, after ``_HTTP_FAILOVER_FAILURE_THRESHOLD`` consecutive failed
+        fast-tail cycles on the primary, and only when
+        ``BASE_HTTP_RPC_URL_SECONDARY`` is configured. Rate-limited cycles do not
+        count (they back off instead — a 429 is quota, not endpoint health).
+        """
+        if self._http_failover_done or not self.rpc_url_secondary:
+            return
+        if self._fast_tail_consecutive_failures < _HTTP_FAILOVER_FAILURE_THRESHOLD:
+            return
+        old_host = _ws_url_host(self.rpc_url)
+        self.rpc_url = self.rpc_url_secondary
+        self._http_failover_done = True
+        self._fast_tail_consecutive_failures = 0
+        logger.warning(
+            'realtime_http_provider_failover old_host=%s new_host=%s '
+            'reason=repeated_http_failures watcher=%s',
+            old_host, _ws_url_host(self.rpc_url), self.watcher_name,
+        )
+
+    async def _run_circuit_open_fallback(self) -> None:
+        """Fallback ladder while EVERY WSS endpoint's circuit is open.
+
+        Failover order (after primary WSS -> secondary WSS have both been circuit-
+        opened): primary HTTP fast-tail (provider_mode=quicknode_http_fast_tail),
+        else stable RPC polling only (provider_mode=stable_rpc_polling_fallback —
+        no realtime path scans; the independent 300 s stable polling worker is the
+        detection path and this worker idles with heartbeats, making NO RPC calls).
+        Both publish fallback_active=True in the heartbeat. Returns once the
+        earliest circuit half-opens so run_forever can probe the WSS again.
+        """
+        self.state['degraded'] = True
+        _mode = self._circuit_fallback_mode()
+        logger.warning(
+            'realtime_fallback_activated provider_mode=%s fallback_active=True '
+            'wss_retry_in_seconds=%.0f watcher=%s',
+            _mode, self._seconds_until_ws_probe(), self.watcher_name,
+        )
+        if _mode == HTTP_FAST_TAIL_SOURCE:
+            await self._run_http_fast_tail(stop_when=self._ws_probe_due)
+        else:
+            self._ingestion_mode = STABLE_POLLING_FALLBACK_MODE
+            self.state['source_status'] = STABLE_POLLING_FALLBACK_MODE
+            while not self._ws_probe_due():
+                self._record_heartbeat()
+                await asyncio.sleep(
+                    max(1.0, min(float(self.heartbeat_seconds), self._seconds_until_ws_probe()))
+                )
+        # The WSS probe is due. The fallback mode (and fallback_active=True) keeps
+        # publishing through the probe attempt — _note_ws_provider_recovered flips
+        # the mode back to realtime only once the WSS actually proves healthy.
+        logger.info(
+            'realtime_fallback_ended reason=wss_probe_due provider_mode=%s watcher=%s',
+            _mode, self.watcher_name,
+        )
+
+    async def _run_http_fast_tail(self, stop_when: Any = None) -> None:
+        """HTTP polling fallback when the WSS is disabled or circuit-open.
+
+        Polls the HTTPS RPC (self.rpc_url, never the WSS) every
         ``fast_tail_interval_seconds`` (default 60 s), scanning at most
         ``fast_tail_chunk_size`` of the most-recent blocks for both ERC20 Transfer/
         Approval logs and native ETH transactions for active Base watched targets.
@@ -2599,14 +2974,27 @@ class BaseRealtimeIngestor:
 
         Cursor is only advanced when all scans succeed — a failed or rate-limited
         scan retries the same block range on the next poll so no events are missed.
+
+        Provider-pressure guards: the head block number is served from the shared
+        eth_blockNumber cache inside ``_BLOCK_NUMBER_MIN_INTERVAL``; rate-limited
+        cycles back the poll interval off exponentially; repeated non-rate-limit
+        failures fail over to ``BASE_HTTP_RPC_URL_SECONDARY`` when configured.
+
+        When ``stop_when`` is provided (circuit-open fallback) the loop returns as
+        soon as it fires — a WSS circuit has half-opened and run_forever should
+        probe the WSS again. Without it (permanent WSS-disable) the loop runs
+        forever, exactly as before.
         """
         self._ingestion_mode = 'http_fast_tail'
         self.state['source_status'] = 'quicknode_http_fast_tail'
         self.state['degraded'] = True
-        # Preserve a reconnect-loop reason set by the breaker; otherwise default to
-        # the before-first-event reason. Both are rewritten to http_fast_tail_active
-        # by _effective_degraded_reason once the fast-tail poll starts fetching heads.
-        if self.state.get('degraded_reason') != 'provider_1001_reconnect_loop':
+        # Preserve a breaker-set reason (reconnect loop / TLS provider failure);
+        # otherwise default to the before-first-event reason. The generic reasons
+        # are rewritten to http_fast_tail_active by _effective_degraded_reason once
+        # the fast-tail poll starts fetching heads.
+        if self.state.get('degraded_reason') not in (
+            'provider_1001_reconnect_loop', 'tls_internal_error', 'half_open_probe_failed',
+        ):
             self.state['degraded_reason'] = 'provider_closes_before_first_event'
 
         _poll_interval = float(self.fast_tail_interval_seconds)
@@ -2640,19 +3028,37 @@ class BaseRealtimeIngestor:
         _next_heartbeat = time.monotonic()
 
         while True:
+            if stop_when is not None and stop_when():
+                logger.info(
+                    'realtime_fast_tail_stopped reason=wss_probe_due watcher=%s',
+                    self.watcher_name,
+                )
+                return
             now = time.monotonic()
             if now >= _next_heartbeat:
                 self._record_heartbeat()
                 _next_heartbeat = now + self.heartbeat_seconds
 
+            # Set inside the cycle: drives the 429 backoff and the HTTP failover
+            # accounting after the try block.
+            _cycle_rate_limited = False
+            _cycle_failed = False
+
             try:
-                head_raw = self._rpc_call('eth_blockNumber', [])
-                head_num = _hex_to_int(head_raw)
+                # One eth_blockNumber per poll cycle — the poll interval (plus the
+                # exponential 429 backoff below) bounds the call rate. The result
+                # feeds the shared block-number cache so the WSS reconnect path's
+                # _throttled_block_number reuses it instead of issuing its own call
+                # (requirement: cache the latest block number, never spam it).
+                head_num = _hex_to_int(self._rpc_call('eth_blockNumber', []))
+                if head_num is not None:
+                    self._block_number_cache = head_num
+                    self._block_number_fetched_at = time.monotonic()
                 if head_num is None:
                     logger.warning(
                         'http_fast_tail_no_block_number watcher=%s', self.watcher_name,
                     )
-                    await asyncio.sleep(_poll_interval)
+                    await self._fast_tail_sleep(_poll_interval, stop_when)
                     continue
 
                 self.state['last_head_block'] = head_num
@@ -2663,7 +3069,7 @@ class BaseRealtimeIngestor:
                     or max(0, head_num - self.confirmations_required - 1)
                 )
                 if last >= head_num:
-                    await asyncio.sleep(_poll_interval)
+                    await self._fast_tail_sleep(_poll_interval, stop_when)
                     continue
 
                 # Requirement 4: never auto-catch-up a huge gap. When the checkpoint is
@@ -2724,11 +3130,13 @@ class BaseRealtimeIngestor:
                             self.watcher_name, _native_from, to_block,
                         )
                         native_rate_limited = True
+                        _cycle_rate_limited = True
                     else:
                         logger.warning(
                             'http_fast_tail_native_scan_failed watcher=%s error=%s',
                             self.watcher_name, str(native_exc)[:200],
                         )
+                        _cycle_failed = True
                     scan_all_ok = False
 
                 # Requirement 2-3: ERC20 / log-based detection is OPTIONAL. Skipped when
@@ -2804,11 +3212,13 @@ class BaseRealtimeIngestor:
                                 self.state['metrics']['backfill_rate_limited'] = (
                                     self.state['metrics'].get('backfill_rate_limited', 0) + 1
                                 )
+                                _cycle_rate_limited = True
                             else:
                                 logger.warning(
                                     'http_fast_tail_scan_failed watcher=%s target=%s error=%s',
                                     self.watcher_name, target.get('id'), str(scan_exc)[:200],
                                 )
+                                _cycle_failed = True
                             scan_all_ok = False
                             break
 
@@ -2827,16 +3237,43 @@ class BaseRealtimeIngestor:
                     self.state['metrics']['heads_received'] = (
                         self.state['metrics'].get('heads_received', 0) + 1
                     )
+                    # Clean cycle: clear the 429 backoff and the failover counter.
+                    self._fast_tail_rate_limit_strikes = 0
+                    self._fast_tail_consecutive_failures = 0
 
             except Exception as exc:
+                if self._is_rate_limit_error(exc):
+                    logger.warning(
+                        'quicknode_fast_tail_paused reason=rate_limited watcher=%s scan=head_fetch',
+                        self.watcher_name,
+                    )
+                    _cycle_rate_limited = True
+                else:
+                    logger.warning(
+                        'http_fast_tail_error watcher=%s error=%s',
+                        self.watcher_name, str(exc)[:200],
+                    )
+                    _cycle_failed = True
+
+            # Cycle accounting: a rate-limited cycle backs the next poll off
+            # exponentially (never hammer a throttling provider); repeated
+            # non-rate-limit failures fail over to the secondary HTTPS RPC.
+            _sleep_seconds = _poll_interval
+            if _cycle_rate_limited:
+                self._fast_tail_rate_limit_strikes += 1
+                _sleep_seconds = self._fast_tail_effective_interval(_poll_interval)
                 logger.warning(
-                    'http_fast_tail_error watcher=%s error=%s',
-                    self.watcher_name, str(exc)[:200],
+                    'realtime_fast_tail_backoff reason=rate_limited strikes=%s '
+                    'next_poll_seconds=%.0f watcher=%s',
+                    self._fast_tail_rate_limit_strikes, _sleep_seconds, self.watcher_name,
                 )
+            elif _cycle_failed:
+                self._fast_tail_consecutive_failures += 1
+                self._maybe_failover_http_rpc()
 
             self._record_heartbeat()
             _next_heartbeat = time.monotonic() + self.heartbeat_seconds
-            await asyncio.sleep(_poll_interval)
+            await self._fast_tail_sleep(_sleep_seconds, stop_when)
 
     # ------------------------------------------------------------------
     # Main loop
@@ -2857,7 +3294,34 @@ class BaseRealtimeIngestor:
         except Exception:
             _ConnectionClosedOK = None  # type: ignore[assignment,misc]
 
-        while not self._wss_permanently_disabled:
+        while True:
+            if self._wss_permanently_disabled:
+                break
+            # Provider circuit ladder: when EVERY WSS endpoint's circuit is open
+            # (repeated TLS failures / failed half-open probes), do not reconnect to
+            # any of them — run the fallback (HTTP fast-tail, else stable polling
+            # only) until the earliest circuit half-opens, then probe the WSS again.
+            if self._all_ws_circuits_open():
+                await self._run_circuit_open_fallback()
+                retry = 1.0
+                _last_error_key = None
+                continue
+            _selected_ws = self._select_ws_url()
+            if _selected_ws is None:
+                # Defensive: only reachable when every circuit is open — the guard
+                # above dispatches to the fallback on the next iteration.
+                await asyncio.sleep(1.0)
+                continue
+            if _selected_ws != self._current_ws_url:
+                logger.warning(
+                    'realtime_provider_failover old_host=%s new_host=%s '
+                    'reason=provider_circuit watcher=%s',
+                    _ws_url_host(self._current_ws_url), _ws_url_host(_selected_ws),
+                    self.watcher_name,
+                )
+                self._current_ws_url = _selected_ws
+                self._tls_failure_count = 0
+                retry = 1.0
             # Provider rate-limit cooldown (HTTP 429): do NOT attempt any WSS
             # reconnect until the cooldown window clears — reconnecting here would
             # hammer the same rate-limited provider. Keep heartbeating so System
@@ -2905,7 +3369,10 @@ class BaseRealtimeIngestor:
                 _last_error_key = None
 
             except asyncio.TimeoutError:
-                # Normal: heartbeat interval elapsed; WebSocket is alive
+                # Normal: heartbeat interval elapsed; WebSocket is alive. A socket
+                # that survived a full heartbeat window proves the TLS handshake and
+                # subscription work — close any half-open circuit for this endpoint.
+                self._note_ws_provider_recovered(self._current_ws_url)
                 if _was_degraded and not self.state.get('degraded'):
                     logger.info(
                         'realtime_recovered chain=%s watcher=%s events_processed=%s',
@@ -2967,8 +3434,69 @@ class BaseRealtimeIngestor:
                     # the window with no WSS reconnect.
                     continue
 
+                # --- TLS/SSL provider-failure breaker ----------------------------
+                # QuickNode terminating the WSS handshake with
+                # [SSL: TLSV1_ALERT_INTERNAL_ERROR] is a provider failure, not a
+                # transient error: retrying the same endpoint every 5-120 s can never
+                # fix it (the production loop where reconnect_count climbed 35 ->
+                # 100+ while heads_received stayed frozen). More than
+                # _TLS_FAILURE_THRESHOLD consecutive TLS failures mark this endpoint
+                # unhealthy and open its circuit; the provider ladder then fails over
+                # (secondary WSS -> HTTP fast-tail -> stable polling only).
+                if self._is_tls_error(exc):
+                    self.state['degraded_reason'] = 'tls_internal_error'
+                    self.state['source_status'] = 'degraded'
+                    increment(
+                        'decoda_realtime_provider_failures_total',
+                        provider='base_realtime_websocket',
+                        error_type=type(exc).__name__,
+                    )
+                    _tls_tripped = self._note_tls_failure()
+                    now_log = time.monotonic()
+                    if error_key != _last_error_key or now_log - _last_error_logged_at >= _ERROR_LOG_WINDOW:
+                        logger.warning(
+                            'realtime_ws_tls_failure chain=%s watcher=%s error_type=%s '
+                            'tls_failure_count=%s threshold=%s error=%s reconnect_count=%s',
+                            self.chain_network, self.watcher_name, type(exc).__name__,
+                            self._tls_failure_count, _TLS_FAILURE_THRESHOLD,
+                            exc_str[:200], self.state['metrics']['ws_reconnects'],
+                        )
+                        _last_error_key = error_key
+                        _last_error_logged_at = now_log
+                    if _tls_tripped:
+                        self._mark_ws_provider_unhealthy('tls_internal_error')
+                    self._record_heartbeat()
+                    _next_heartbeat = time.monotonic() + self.heartbeat_seconds
+                    gauge('decoda_realtime_worker_healthy', 0, watcher=self.watcher_name)
+                    if _tls_tripped:
+                        # Circuit opened — no backoff sleep against a benched
+                        # endpoint; the top-of-loop ladder selects the next provider
+                        # or the fallback immediately.
+                        continue
+                    # Below the trip threshold: retry the SAME endpoint with the
+                    # normal backoff. Deliberately NO reconnect-gap backfill here:
+                    # the connect never succeeded, and running eth_getLogs /
+                    # eth_getBlockByNumber scans on every failed handshake only adds
+                    # provider pressure — live-tail / fast-tail / the independent
+                    # stable poller cover the gap once data flows again.
+                    sleep_for = self._compute_reconnect_sleep(exc, retry)
+                    await asyncio.sleep(sleep_for)
+                    retry = min(120.0, retry * 2)
+                    continue
+
                 self.state['degraded_reason'] = exc_str[:160]
                 self.state['source_status'] = 'degraded'
+
+                # A half-open probe that fails with ANY error re-opens the circuit
+                # (one-strike half-open semantics). TLS failures were handled above;
+                # a 429 trips its own cooldown breaker before this point.
+                _probe_circuit = self._ws_circuits.get(self._current_ws_url)
+                if _probe_circuit is not None and _probe_circuit.get('probation'):
+                    self._mark_ws_provider_unhealthy('half_open_probe_failed')
+                    self._record_heartbeat()
+                    _next_heartbeat = time.monotonic() + self.heartbeat_seconds
+                    gauge('decoda_realtime_worker_healthy', 0, watcher=self.watcher_name)
+                    continue
 
                 is_clean_close = (
                     _ConnectionClosedOK is not None
@@ -3121,6 +3649,11 @@ class BaseRealtimeIngestor:
 
                 if self._wss_permanently_disabled:
                     break
+                if self._ws_circuit_state(self._current_ws_url) == 'open':
+                    # Defensive: the current endpoint's circuit opened during this
+                    # handler — never sleep a backoff against a benched endpoint; the
+                    # top-of-loop ladder picks the next provider or the fallback.
+                    continue
 
                 sleep_for = self._compute_reconnect_sleep(exc, retry)
                 await asyncio.sleep(sleep_for)

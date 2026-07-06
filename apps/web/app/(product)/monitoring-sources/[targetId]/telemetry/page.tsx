@@ -790,6 +790,7 @@ export default function TargetTelemetryPage() {
   // Separated detection-path facts for the worker-status strip.
   const [realtimeEnabled, setRealtimeEnabled] = useState<boolean | null>(null);
   const [realtimeState, setRealtimeState] = useState<string | null>(null);
+  const [realtimeFallbackActive, setRealtimeFallbackActive] = useState<boolean>(false);
   const [lastStablePollAt, setLastStablePollAt] = useState<string | null>(null);
   const [lastRealtimeEventAt, setLastRealtimeEventAt] = useState<string | null>(null);
 
@@ -838,6 +839,7 @@ export default function TargetTelemetryPage() {
         setTotalCount(typeof payload.total_count === 'number' ? payload.total_count : 0);
         setRealtimeEnabled(typeof payload.realtime_enabled === 'boolean' ? payload.realtime_enabled : null);
         setRealtimeState(typeof payload.realtime_state === 'string' ? payload.realtime_state : null);
+        setRealtimeFallbackActive(payload.realtime_fallback_active === true);
         setLastStablePollAt(typeof payload.last_stable_poll_at === 'string' ? payload.last_stable_poll_at : null);
         setLastRealtimeEventAt(typeof payload.last_realtime_event_at === 'string' ? payload.last_realtime_event_at : null);
         if (typeof payload.workspace_id === 'string') {
@@ -946,12 +948,28 @@ export default function TargetTelemetryPage() {
         >
           <span style={{ display: 'inline-flex', flexDirection: 'column', gap: '0.1rem' }}>
             <span className="muted">Realtime WebSocket</span>
-            <span style={{ fontWeight: 600, color: realtimeEnabled ? 'var(--success-fg)' : 'var(--warning-fg, #d97706)' }}>
+            <span
+              style={{
+                fontWeight: 600,
+                color:
+                  realtimeState === 'active'
+                    ? 'var(--success-fg)'
+                    : realtimeState === 'degraded'
+                      ? 'var(--warning-fg, #d97706)'
+                      : realtimeEnabled
+                        ? 'var(--success-fg)'
+                        : 'var(--warning-fg, #d97706)',
+              }}
+            >
               {realtimeState === 'active'
                 ? 'Active'
-                : realtimeEnabled
-                  ? 'Enabled'
-                  : 'Paused / Disabled'}
+                : realtimeState === 'degraded'
+                  ? realtimeFallbackActive
+                    ? 'Realtime degraded — stable polling fallback active'
+                    : 'Degraded'
+                  : realtimeEnabled
+                    ? 'Enabled'
+                    : 'Paused / Disabled'}
             </span>
           </span>
           <span style={{ display: 'inline-flex', flexDirection: 'column', gap: '0.1rem' }}>
@@ -962,7 +980,13 @@ export default function TargetTelemetryPage() {
             <span className="muted">Last realtime event</span>
             <span style={{ fontWeight: 600 }}>{fmt(lastRealtimeEventAt)}</span>
           </span>
-          {!realtimeEnabled ? (
+          {realtimeState === 'degraded' ? (
+            <span className="muted" style={{ fontSize: '0.78rem', flex: '1 1 100%' }}>
+              Realtime WebSocket is degraded (provider failure). Stable RPC polling remains
+              active and continues detecting wallet transfers; realtime resumes automatically
+              once the provider recovers.
+            </span>
+          ) : !realtimeEnabled ? (
             <span className="muted" style={{ fontSize: '0.78rem', flex: '1 1 100%' }}>
               Realtime paused; stable polling active. Wallet transfers are detected by Stable RPC Polling.
             </span>

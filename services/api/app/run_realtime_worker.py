@@ -4,10 +4,20 @@ Starts only when BASE_REALTIME_ENABLED=true.
 Default: disabled (BASE_REALTIME_ENABLED=false).
 
 Required env vars when enabled:
-  BASE_WS_RPC_URL           WebSocket RPC endpoint for Base
+  BASE_WS_RPC_URL_PRIMARY   WebSocket RPC endpoint for Base (or legacy BASE_WS_RPC_URL)
   BASE_REALTIME_CONFIRMATIONS     (default 1)
   BASE_REALTIME_MAX_EVENTS_PER_MINUTE (default 1000)
   BASE_REALTIME_FALLBACK_TO_POLLING   (default true — polling always runs independently)
+
+Optional provider failover env vars (order: primary WSS -> secondary WSS ->
+primary HTTP fast-tail -> stable RPC polling only):
+  BASE_WS_RPC_URL_SECONDARY    second WSS endpoint tried after the primary's
+                               circuit opens (repeated TLS/1001 provider failures)
+  BASE_HTTP_RPC_URL_PRIMARY    HTTPS RPC for JSON-RPC calls + the fast-tail fallback
+                               (falls back to EVM_RPC_URL_8453/BASE_EVM_RPC_URL/
+                               EVM_RPC_URL, then to the WS URL converted to https)
+  BASE_HTTP_RPC_URL_SECONDARY  second HTTPS RPC the fast-tail fails over to after
+                               repeated primary HTTP failures
 
 The 300s polling worker continues to run as backup/backfill regardless of this worker.
 """
@@ -114,14 +124,27 @@ def _resolve_config() -> dict[str, object]:
 
     ws_url_secondary = _normalize_ws_scheme(_ws_raw_secondary) if _ws_raw_secondary else ''
 
-    # HTTP RPC URL: explicit env vars first, then derive from WS URL.
+    # HTTP RPC URL: BASE_HTTP_RPC_URL_PRIMARY (explicit) first, then the legacy env
+    # vars, then derive from the WS URL.
+    _http_raw_primary = _strip_env_value(os.getenv('BASE_HTTP_RPC_URL_PRIMARY') or '')
     rpc_url = (
-        _strip_env_value(os.getenv('EVM_RPC_URL_8453') or '')
+        _http_raw_primary
+        or _strip_env_value(os.getenv('EVM_RPC_URL_8453') or '')
         or _strip_env_value(os.getenv('BASE_EVM_RPC_URL') or '')
         or _strip_env_value(os.getenv('EVM_RPC_URL') or '')
     )
     if not rpc_url and ws_url:
         rpc_url = _ws_url_to_http(ws_url)
+
+    # Secondary HTTP RPC for the fast-tail failover ladder: explicit
+    # BASE_HTTP_RPC_URL_SECONDARY, else derived from the secondary WS URL.
+    _http_raw_secondary = _strip_env_value(os.getenv('BASE_HTTP_RPC_URL_SECONDARY') or '')
+    rpc_url_secondary = _http_raw_secondary or (
+        _ws_url_to_http(ws_url_secondary) if ws_url_secondary else ''
+    )
+    if rpc_url_secondary and rpc_url_secondary == rpc_url:
+        # A secondary identical to the primary is not a failover target.
+        rpc_url_secondary = ''
 
     webhook_secret_set = bool(_strip_env_value(os.getenv('BASE_WEBHOOK_SECRET') or ''))
     confirmations = _resolve_int_env('BASE_REALTIME_CONFIRMATIONS', 1)
@@ -143,6 +166,8 @@ def _resolve_config() -> dict[str, object]:
         'ws_url_secondary_host': _safe_rpc_host(ws_url_secondary) if ws_url_secondary else 'not_configured',
         'rpc_url': rpc_url,
         'rpc_url_host': _safe_rpc_host(rpc_url) if rpc_url else 'not_configured',
+        'rpc_url_secondary': rpc_url_secondary,
+        'rpc_url_secondary_host': _safe_rpc_host(rpc_url_secondary) if rpc_url_secondary else 'not_configured',
         'webhook_secret_set': webhook_secret_set,
         'confirmations': confirmations,
         'max_events_per_minute': max_events_per_minute,
@@ -155,6 +180,8 @@ def _resolve_config() -> dict[str, object]:
         'base_ws_rpc_url_8453_present': bool(_ws_raw_8453),
         'base_ws_rpc_url_primary_present': bool(_ws_raw_named_primary),
         'base_ws_rpc_url_secondary_present': bool(_ws_raw_secondary),
+        'base_http_rpc_url_primary_present': bool(_http_raw_primary),
+        'base_http_rpc_url_secondary_present': bool(_http_raw_secondary),
         'selected_ws_rpc_env_name': _selected_ws_env or 'none',
     }
 
@@ -164,13 +191,16 @@ def _check_realtime_config(config: dict[str, object]) -> tuple[bool, str]:
     if not config['enabled']:
         return False, 'BASE_REALTIME_ENABLED_not_true'
     if config['provider_mode'] == 'websocket' and not config['ws_url']:
-        return False, 'missing_ws_url checked_env_names=BASE_WS_RPC_URL,BASE_WS_RPC_URL_8453'
+        return False, (
+            'missing_ws_url checked_env_names='
+            'BASE_WS_RPC_URL_PRIMARY,BASE_WS_RPC_URL,BASE_WS_RPC_URL_8453'
+        )
     if config['provider_mode'] == 'webhook' and not config['webhook_secret_set']:
         return False, 'missing_BASE_WEBHOOK_SECRET'
     if not config['rpc_url']:
         return False, (
             'missing_rpc_url_for_Base '
-            'checked_env_names=BASE_WS_RPC_URL,BASE_WS_RPC_URL_8453,'
+            'checked_env_names=BASE_HTTP_RPC_URL_PRIMARY,BASE_WS_RPC_URL,BASE_WS_RPC_URL_8453,'
             'EVM_RPC_URL_8453,BASE_EVM_RPC_URL,EVM_RPC_URL'
         )
     return True, 'ok'
@@ -271,7 +301,7 @@ async def _run_ingestor(config: dict[str, object]) -> None:
         'realtime_worker_started chain_id=%s provider_mode=%s '
         'ws_host=%s rpc_host=%s confirmations=%s '
         'max_events_per_minute=%s workspace_target_count=%s '
-        'subscriptions=%s ws_secondary_host=%s watcher=%s',
+        'subscriptions=%s ws_secondary_host=%s rpc_secondary_host=%s watcher=%s',
         _BASE_CHAIN_ID,
         config['provider_mode'],
         config['ws_url_host'],
@@ -281,6 +311,7 @@ async def _run_ingestor(config: dict[str, object]) -> None:
         workspace_target_count,
         config.get('subscriptions', 'newHeads,logs'),
         config.get('ws_url_secondary_host', 'not_configured'),
+        config.get('rpc_url_secondary_host', 'not_configured'),
         config['watcher_name'],
     )
     if workspace_target_count == 0:
@@ -291,6 +322,7 @@ async def _run_ingestor(config: dict[str, object]) -> None:
         )
 
     _ws_secondary = str(config.get('ws_url_secondary') or '') or None
+    _rpc_secondary = str(config.get('rpc_url_secondary') or '') or None
     ingestor = BaseRealtimeIngestor(
         rpc_url=str(config['rpc_url']),
         ws_url=str(config['ws_url']),
@@ -299,6 +331,7 @@ async def _run_ingestor(config: dict[str, object]) -> None:
         max_events_per_minute=int(config['max_events_per_minute']),
         subscriptions=str(config.get('subscriptions') or ''),
         ws_url_secondary=_ws_secondary,
+        rpc_url_secondary=_rpc_secondary,
     )
 
     await ingestor.run_forever()

@@ -24,6 +24,11 @@ export type RealtimeIngestionPath = {
   provider?: string | null;
   next_retry_at?: string | null;
   stable_polling_active?: boolean;
+  // Worker-heartbeat fallback facts: fallback_active=true means the WSS is degraded
+  // past its breaker thresholds and detection handed off to the path named by
+  // worker_provider_mode (quicknode_http_fast_tail / stable_rpc_polling_fallback).
+  fallback_active?: boolean;
+  worker_provider_mode?: string | null;
   label: string;
 };
 

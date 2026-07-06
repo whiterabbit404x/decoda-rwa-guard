@@ -43,6 +43,11 @@ export type WorkerStatusSummary = {
     state: 'paused' | 'active' | 'rate_limited' | 'degraded' | 'starting' | 'offline';
     last_event_at: string | null;
     reason: string | null;
+    // Worker-heartbeat fallback facts: fallback_active=true means realtime detection
+    // handed off to the fallback named by provider_mode (quicknode_http_fast_tail /
+    // stable_rpc_polling_fallback). Optional so older payloads still type-check.
+    fallback_active?: boolean;
+    provider_mode?: string | null;
   };
   provider_realtime: {
     label: string;
