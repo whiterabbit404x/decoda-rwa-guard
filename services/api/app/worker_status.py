@@ -41,6 +41,10 @@ REALTIME_DETECTED_BY: tuple[str, ...] = (
     # retained so any rows persisted before the rename still classify as realtime.
     'quicknode_http_fast_tail',
     'realtime_http_fast_tail',
+    # QuickNode Streams webhook push ingestion (services/api/app/quicknode_streams.py).
+    # A separate push-based detection path from the WSS/HTTP-fast-tail realtime
+    # worker, but still realtime *telemetry* like the other tags in this tuple.
+    'quicknode_stream',
 )
 STABLE_DETECTED_BY = 'stable_rpc_polling'
 

@@ -16,6 +16,7 @@ test('renders the four canonical Detected By labels', () => {
 
 test('renders fallback and non-live labels truthfully', () => {
   expect(formatDetectedBy('quicknode_http_fast_tail')).toBe('Realtime HTTP Fast-Tail');
+  expect(formatDetectedBy('quicknode_stream')).toBe('QuickNode Stream');
   expect(formatDetectedBy('simulator')).toBe('Simulator (not live)');
   expect(formatDetectedBy('replay')).toBe('Replay (not live)');
   expect(formatDetectedBy('unknown')).toBe('Unknown');
@@ -32,6 +33,7 @@ test('canonicalDetectedBy maps source/ingestion spellings to canonical tags', ()
   expect(canonicalDetectedBy('evm_rpc')).toBe('stable_rpc_polling');
   expect(canonicalDetectedBy('rpc_backfill')).toBe('stable_rpc_polling');
   expect(canonicalDetectedBy('realtime_websocket')).toBe('realtime_websocket');
+  expect(canonicalDetectedBy('quicknode_stream')).toBe('quicknode_stream');
   expect(canonicalDetectedBy('demo')).toBeNull();
   expect(canonicalDetectedBy('')).toBeNull();
 });
