@@ -977,10 +977,14 @@ def test_degraded_clears_after_stable_reconnect():
         calls[0] += 1
         if calls[0] == 1:
             raise RuntimeError('ws_disconnected_first_attempt')
-        # Second call: simulate what the real _ws_subscribe does — clear degraded on
-        # successful connection, then block long enough to trigger the TimeoutError path.
+        # Second call: simulate what the real _ws_subscribe does on a HEALTHY socket —
+        # clear degraded on connect AND deliver a real newHead so heads_received
+        # advances (a socket that merely stays open without delivering heads is wedged,
+        # not recovered), then block long enough to trigger the TimeoutError path.
         ingestor.state['degraded'] = False
         ingestor.state['degraded_reason'] = None
+        ingestor.state['metrics']['heads_received'] += 1
+        ingestor.state['last_event_at'] = datetime.now(timezone.utc).isoformat()
         await asyncio.sleep(5.0)
 
     ingestor._ws_subscribe = _mock_ws_subscribe  # type: ignore[method-assign]

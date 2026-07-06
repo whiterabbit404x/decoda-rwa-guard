@@ -339,6 +339,213 @@ def test_below_threshold_tls_failures_do_not_activate_fallback():
 
 
 # ---------------------------------------------------------------------------
+# 4b. Heartbeat consistency guard: a degraded WSS never publishes the
+#     provider_mode=degraded + fallback_active=False + realtime_scanning_active=True
+#     contradiction, even BEFORE the circuit trips (requirements 1 & 4).
+# ---------------------------------------------------------------------------
+
+def test_heartbeat_degraded_wss_below_trip_publishes_fallback_not_contradiction():
+    from services.api.app.base_realtime_ingestor import (
+        BaseRealtimeIngestor,
+        STABLE_POLLING_FALLBACK_MODE,
+    )
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='https://rpc.example/v1/key', ws_url=PRIMARY_WS, watcher_name='w',
+    )
+    # The below-trip degraded window: a single TLS failure has set the degraded state
+    # + source_status='degraded' but has NOT opened the circuit (1 < the >3 threshold).
+    ingestor.state['degraded'] = True
+    ingestor.state['degraded_reason'] = 'tls_internal_error'
+    ingestor.state['source_status'] = 'degraded'
+    ingestor._note_tls_failure()
+    assert ingestor._fallback_is_active() is False
+    assert ingestor._ws_circuit_state(PRIMARY_WS) == 'closed'
+
+    hb = _heartbeat_log(ingestor)
+    # The exact production contradiction must be impossible in a persisted heartbeat.
+    assert 'provider_mode=degraded ' not in hb, hb
+    assert f'provider_mode={STABLE_POLLING_FALLBACK_MODE}' in hb, hb
+    assert 'fallback_active=True' in hb, hb
+    assert 'realtime_scanning_active=False' in hb, hb
+    assert 'degraded_reason=tls_internal_error' in hb, hb
+
+
+def test_heartbeat_cold_start_does_not_publish_false_fallback():
+    """Before the first connection the worker is STARTING, not degraded: the initial
+    source_status is the 'degraded' sentinel but state['degraded'] is False, so the
+    consistency guard must NOT fire and claim a fallback is covering detection."""
+    from services.api.app.base_realtime_ingestor import BaseRealtimeIngestor
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='https://rpc.example/v1/key', ws_url=PRIMARY_WS, watcher_name='w',
+    )
+    assert ingestor.state['degraded'] is False
+    hb = _heartbeat_log(ingestor)
+    assert 'fallback_active=False' in hb, hb
+    assert 'stable_rpc_polling_fallback' not in hb, hb
+
+
+def test_worker_status_reads_degraded_column_with_fallback_metrics():
+    """Fix A persists the source_status column as 'degraded' while the metrics carry
+    provider_mode=stable_rpc_polling_fallback + fallback_active=True. The status layer
+    must read the fallback facts and render the truthful headline — never claim
+    realtime active (requirement 1: UI and backend agree on one fact)."""
+    from services.api.app.worker_status import (
+        build_worker_status,
+        realtime_active_by_watcher_facts,
+    )
+
+    watcher = {
+        'watcher_name': 'base-realtime-worker',
+        'source_status': 'degraded',
+        'degraded': True,
+        'degraded_reason': 'tls_internal_error',
+        'metrics': {
+            'heads_received': 935,
+            'events_ingested': 20,
+            'ws_reconnects': 40,
+            'rate_limited': False,
+            'provider_mode': 'stable_rpc_polling_fallback',
+            'fallback_active': True,
+            'realtime_scanning_active': False,
+        },
+    }
+    assert realtime_active_by_watcher_facts(watcher) is False
+
+    now = datetime(2026, 7, 6, 12, 0, tzinfo=timezone.utc)
+    status = build_worker_status(
+        now=now,
+        realtime_is_enabled=True,
+        stable_last_heartbeat_at=now - timedelta(seconds=30),
+        stable_last_poll_at=now - timedelta(seconds=30),
+        heartbeat_ttl_seconds=900,
+        realtime_watcher=watcher,
+    )
+    assert status['realtime']['state'] == 'degraded'
+    assert status['realtime']['fallback_active'] is True
+    assert status['realtime']['provider_mode'] == 'stable_rpc_polling_fallback'
+    assert status['headline'] == (
+        'Stable polling active. Realtime degraded — stable polling fallback active.'
+    )
+    assert status['monitoring_source_live'] is True
+
+
+# ---------------------------------------------------------------------------
+# 9b. Silent (open-but-no-heads) WSS session: no fake recovery, breaker trips.
+#     A provider that accepts the connection and ACKs the subscription but delivers
+#     no newHeads must never read as recovered/active, and must fail over instead of
+#     looping forever (requirement 4 + acceptance: reconnect_count no longer grows).
+# ---------------------------------------------------------------------------
+
+def test_no_data_session_threshold_trips_after_more_than_three():
+    ingestor = _make_ingestor()
+    assert ingestor._note_no_data_session() is False
+    assert ingestor._note_no_data_session() is False
+    assert ingestor._note_no_data_session() is False
+    assert ingestor._note_no_data_session() is True
+    assert ingestor.state['metrics']['no_data_sessions'] == 4
+
+
+def test_provider_recovered_resets_no_data_session_count():
+    ingestor = _make_ingestor()
+    ingestor._note_no_data_session()
+    ingestor._note_no_data_session()
+    assert ingestor._no_data_session_count == 2
+    # Real chain data closes the loop: the silent-session counter resets to zero.
+    ingestor._note_ws_provider_recovered(PRIMARY_WS)
+    assert ingestor._no_data_session_count == 0
+
+
+def test_silent_wss_session_no_fake_recovery_and_trips_breaker():
+    from services.api.app import base_realtime_ingestor as mod
+
+    # No secondary WSS, no HTTP RPC -> the breaker trips straight to the stable-polling
+    # fallback once the endpoint is marked unhealthy.
+    ingestor = _make_ingestor(rpc_url='')
+    ingestor.heartbeat_seconds = 0.02
+    ingestor._throttled_block_number = lambda: None  # type: ignore[method-assign]
+
+    ws_calls = [0]
+
+    async def _silent_ws_subscribe():
+        # Connected but silent: block past the heartbeat window (so wait_for times
+        # out) and deliver NO heads (never touch heads_received).
+        ws_calls[0] += 1
+        await asyncio.sleep(1.0)
+
+    async def _mock_fallback():
+        # The endpoint is unhealthy and its circuit opened — end the test here.
+        raise asyncio.CancelledError()
+
+    ingestor._ws_subscribe = _silent_ws_subscribe  # type: ignore[method-assign]
+    ingestor._run_circuit_open_fallback = _mock_fallback  # type: ignore[method-assign]
+
+    capture = _LogCapture()
+    mod.logger.addHandler(capture)
+    mod.logger.setLevel(logging.DEBUG)
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(ingestor.run_forever())
+    finally:
+        mod.logger.removeHandler(capture)
+
+    # Exactly 4 silent sessions (> the >3 threshold), then no more reconnects.
+    assert ws_calls[0] == 4, f'silent session loop must stop after the trip; got {ws_calls[0]}'
+    assert ingestor.state['metrics']['ws_reconnects'] == 4
+    assert ingestor._ws_circuit_state(PRIMARY_WS) == 'open'
+    # It is a cooldown, not a permanent disable — realtime resumes after the probe.
+    assert ingestor._wss_permanently_disabled is False
+
+    # A socket that delivered zero heads must NEVER be logged as recovered/healthy.
+    assert not any('realtime_recovered' in m for m in capture.messages), capture.messages
+    assert any('realtime_ws_no_data_session' in m for m in capture.messages)
+    unhealthy = next(
+        (m for m in capture.messages if 'realtime_ws_provider_unhealthy' in m), None,
+    )
+    assert unhealthy is not None, f'unhealthy marker expected; got: {capture.messages}'
+    assert 'reason=wss_no_heads' in unhealthy
+
+
+def test_head_delivering_session_recovers_normally():
+    """A session that DID deliver heads during the window is genuine recovery: the
+    silent-session breaker must not fire and realtime_recovered is logged once."""
+    from services.api.app import base_realtime_ingestor as mod
+
+    ingestor = _make_ingestor()
+    ingestor.heartbeat_seconds = 0.02
+    ingestor._throttled_block_number = lambda: None  # type: ignore[method-assign]
+    ingestor.state['degraded'] = True  # start degraded so 'realtime_recovered' can log
+
+    calls = [0]
+
+    async def _ws_subscribe_delivers_head():
+        calls[0] += 1
+        # Deliver a real head this window, then block so wait_for times out.
+        ingestor.state['metrics']['heads_received'] += 1
+        ingestor.state['degraded'] = False
+        if calls[0] >= 2:
+            raise asyncio.CancelledError()
+        await asyncio.sleep(1.0)
+
+    ingestor._ws_subscribe = _ws_subscribe_delivers_head  # type: ignore[method-assign]
+
+    capture = _LogCapture()
+    mod.logger.addHandler(capture)
+    mod.logger.setLevel(logging.DEBUG)
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(ingestor.run_forever())
+    finally:
+        mod.logger.removeHandler(capture)
+
+    assert ingestor._no_data_session_count == 0, 'a head-delivering window is not silent'
+    assert ingestor.state['metrics'].get('no_data_sessions', 0) == 0
+    assert any('realtime_recovered' in m for m in capture.messages), capture.messages
+    assert not any('realtime_ws_no_data_session' in m for m in capture.messages)
+
+
+# ---------------------------------------------------------------------------
 # 5. Status layer / UI truth: degraded never reads as active; stable polling
 #    keeps detecting while realtime is degraded.
 # ---------------------------------------------------------------------------

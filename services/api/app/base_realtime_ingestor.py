@@ -130,6 +130,14 @@ STABLE_POLLING_FALLBACK_MODE = 'stable_rpc_polling_fallback'
 _HTTP_FAILOVER_FAILURE_THRESHOLD = 3
 # Upper bound for the fast-tail's exponential 429 backoff sleep.
 _FAST_TAIL_MAX_BACKOFF_SECONDS = 600.0
+# A WSS session that connects and ACKs the subscription but delivers NO newHeads for
+# a full heartbeat window is wedged, not healthy (the production loop where the socket
+# looked connected while heads_received stayed frozen at 935). After MORE THAN this
+# many consecutive silent sessions on one endpoint the worker marks it unhealthy
+# (realtime_ws_provider_unhealthy reason=wss_no_heads) and fails over, exactly like a
+# TLS failure — so an open-but-silent provider can never loop forever while the
+# heartbeat falsely reads realtime as recovered/active.
+_NO_DATA_SESSION_THRESHOLD = 3
 
 # HTTP fast-tail fallback tuning (requirement 3). The fast-tail loop polls the
 # HTTPS RPC (never the WSS) on this interval and scans at most this many of the
@@ -333,6 +341,12 @@ class BaseRealtimeIngestor:
         # Consecutive TLS/SSL failures on the CURRENT WSS endpoint. Reset when the
         # endpoint delivers real data / survives a heartbeat window, or on failover.
         self._tls_failure_count: int = 0
+        # Consecutive WSS sessions on the CURRENT endpoint that connected but delivered
+        # no newHeads for a full heartbeat window (wedged/silent provider). Reset when
+        # the endpoint delivers real data or on failover; trips the provider breaker
+        # past _NO_DATA_SESSION_THRESHOLD so a silent socket fails over instead of
+        # looping forever while looking connected.
+        self._no_data_session_count: int = 0
         # Messages received in the current WS session (reset at start of each _ws_subscribe call).
         self._session_messages_received: int = 0
         # Set True after 3 × 1001 closes before first event with no secondary; switches to HTTP fast-tail.
@@ -818,6 +832,8 @@ class BaseRealtimeIngestor:
         """
         if self._tls_failure_count:
             self._tls_failure_count = 0
+        if self._no_data_session_count:
+            self._no_data_session_count = 0
         c = self._ws_circuits.get(url)
         if not c or not c.get('opened_count'):
             return
@@ -847,6 +863,24 @@ class BaseRealtimeIngestor:
         if c is not None and c.get('probation'):
             return True
         return self._tls_failure_count > _TLS_FAILURE_THRESHOLD
+
+    def _note_no_data_session(self) -> bool:
+        """Count one silent WSS session on the current endpoint; True when it trips.
+
+        A session that connected and ACKed the subscription but delivered no
+        newHeads for a full heartbeat window is wedged. More than
+        ``_NO_DATA_SESSION_THRESHOLD`` consecutive silent sessions mark the endpoint
+        unhealthy. A silent session during a half-open probe is one-strike: the
+        circuit re-opens immediately.
+        """
+        self._no_data_session_count += 1
+        self.state['metrics']['no_data_sessions'] = (
+            self.state['metrics'].get('no_data_sessions', 0) + 1
+        )
+        c = self._ws_circuits.get(self._current_ws_url)
+        if c is not None and c.get('probation'):
+            return True
+        return self._no_data_session_count > _NO_DATA_SESSION_THRESHOLD
 
     def _circuit_fallback_mode(self) -> str:
         """Canonical provider_mode for the circuit-open fallback ladder.
@@ -879,6 +913,7 @@ class BaseRealtimeIngestor:
         )
         self._open_ws_circuit(self._current_ws_url, reason)
         self._tls_failure_count = 0
+        self._no_data_session_count = 0
         self.state['degraded'] = True
         self.state['degraded_reason'] = reason
         if self._all_ws_circuits_open():
@@ -2268,21 +2303,47 @@ class BaseRealtimeIngestor:
         else:
             _provider_mode = self.state.get('source_status') or self._ingestion_mode
         _fallback_active = self._fallback_is_active()
+        # Degraded-WSS heartbeat consistency guard (requirements 1 & 4). The WSS
+        # reconnect handlers set source_status='degraded' the instant a connect/stream
+        # error fires, but the per-endpoint circuit only switches to a canonical
+        # fallback provider_mode after repeated failures trip it. In the window before
+        # the trip — and for any WSS error that degrades without tripping a specific
+        # breaker — the raw facts would publish provider_mode='degraded' with
+        # fallback_active=False and realtime_scanning_active=True: the exact production
+        # contradiction where the heartbeat claimed a realtime path was scanning while
+        # heads stayed frozen. Whenever the WSS is degraded (not merely starting, not
+        # rate-limited) and no realtime fallback loop has taken over yet
+        # (_ingestion_mode is still 'realtime'), the independent 300 s stable RPC
+        # polling worker is the active detection path: publish fallback_active=True
+        # with the canonical stable-polling fallback mode and never claim a realtime
+        # path is scanning. A bare provider_mode=degraded with fallback_active=False is
+        # therefore impossible in a persisted heartbeat.
+        _wss_degraded_no_fallback = (
+            _provider_mode == 'degraded'
+            and bool(self.state.get('degraded'))
+            and self._ingestion_mode == 'realtime'
+            and not self._provider_rate_limited
+        )
+        if _wss_degraded_no_fallback:
+            _fallback_active = True
+            _provider_mode = STABLE_POLLING_FALLBACK_MODE
         # realtime_scanning_active is the canonical fact for requirement D: is ANY
         # realtime detection path (WSS live-tail or HTTP fast-tail) actually able to
         # scan right now? It is False during a provider rate-limit cooldown with no
         # fast-tail — the ONE case where fallback_active=False would otherwise be
-        # ambiguous — and False in stable_rpc_polling_fallback mode (every WSS
-        # circuit open, no fast-tail: fallback_active=True names the stable poller
-        # as the detection path, but no realtime path scans). When it is False the
-        # independent 300 s stable RPC polling worker is the detection path; the
-        # runtime-status layer (worker_status.py) derives "Realtime paused; stable
-        # polling active" from the persisted facts. This flag never claims stable
-        # polling is alive itself (that is the stable worker's own heartbeat fact),
-        # only that realtime is not.
+        # ambiguous — False in stable_rpc_polling_fallback mode (every WSS circuit
+        # open, no fast-tail: fallback_active=True names the stable poller as the
+        # detection path, but no realtime path scans), and False whenever the WSS is
+        # degraded with no fallback loop (the guard above: heads are not being
+        # processed on any realtime path). When it is False the independent 300 s
+        # stable RPC polling worker is the detection path; the runtime-status layer
+        # (worker_status.py) derives "Realtime paused; stable polling active" from the
+        # persisted facts. This flag never claims stable polling is alive itself (that
+        # is the stable worker's own heartbeat fact), only that realtime is not.
         _realtime_scanning_active = not (
             (self._provider_rate_limited and not _fallback_active)
             or self._ingestion_mode == STABLE_POLLING_FALLBACK_MODE
+            or _wss_degraded_no_fallback
         )
         # Resolve before reading state so the log line and the persisted row agree.
         _degraded_reason = self._effective_degraded_reason()
@@ -3321,6 +3382,7 @@ class BaseRealtimeIngestor:
                 )
                 self._current_ws_url = _selected_ws
                 self._tls_failure_count = 0
+                self._no_data_session_count = 0
                 retry = 1.0
             # Provider rate-limit cooldown (HTTP 429): do NOT attempt any WSS
             # reconnect until the cooldown window clears — reconnecting here would
@@ -3364,22 +3426,66 @@ class BaseRealtimeIngestor:
                 self._record_heartbeat()
                 _next_heartbeat = time.monotonic() + self.heartbeat_seconds
 
+                # Snapshot the head counter so the TimeoutError branch can tell a
+                # healthy socket (heads advanced this window) from a wedged/silent one.
+                _heads_before_session = self.state['metrics'].get('heads_received', 0)
                 await asyncio.wait_for(self._ws_subscribe(), timeout=float(self.heartbeat_seconds))
                 retry = 1.0
                 _last_error_key = None
 
             except asyncio.TimeoutError:
-                # Normal: heartbeat interval elapsed; WebSocket is alive. A socket
-                # that survived a full heartbeat window proves the TLS handshake and
-                # subscription work — close any half-open circuit for this endpoint.
-                self._note_ws_provider_recovered(self._current_ws_url)
-                if _was_degraded and not self.state.get('degraded'):
-                    logger.info(
-                        'realtime_recovered chain=%s watcher=%s events_processed=%s',
-                        self.chain_network, self.watcher_name,
-                        self.state['metrics'].get('events_ingested', 0),
-                    )
-                    _was_degraded = False
+                # The heartbeat window elapsed while _ws_subscribe was still running.
+                # This is genuine recovery ONLY when the socket actually delivered
+                # chain data during the window: a wedged provider that accepts the
+                # connection and ACKs the subscription but sends NO newHeads also
+                # "survives the window", and treating that as recovery is the
+                # production bug where the worker looked connected (realtime_recovered,
+                # degraded cleared, realtime_scanning_active=True) while heads_received
+                # stayed frozen at 935.
+                _delivered_heads = (
+                    self.state['metrics'].get('heads_received', 0) > _heads_before_session
+                )
+                if _delivered_heads:
+                    # Real chain data flowed this window — the endpoint is healthy.
+                    # Close any half-open circuit and reset the failure counters.
+                    self._note_ws_provider_recovered(self._current_ws_url)
+                    if _was_degraded and not self.state.get('degraded'):
+                        logger.info(
+                            'realtime_recovered chain=%s watcher=%s events_processed=%s',
+                            self.chain_network, self.watcher_name,
+                            self.state['metrics'].get('events_ingested', 0),
+                        )
+                        _was_degraded = False
+                    self._record_heartbeat()
+                    _next_heartbeat = time.monotonic() + self.heartbeat_seconds
+                    continue
+                # Connected but delivered no heads: a wedged/silent provider. Do NOT
+                # mark realtime recovered (no fake healthy status — requirement 4) and
+                # keep the WSS degraded so the heartbeat publishes fallback_active=True
+                # / realtime_scanning_active=False. Count the silent session toward the
+                # provider breaker so a persistently silent socket fails over to the
+                # fallback ladder instead of reconnecting every heartbeat window
+                # forever (acceptance: reconnect_count no longer grows forever).
+                self.state['metrics']['ws_reconnects'] += 1
+                self.state['degraded'] = True
+                self.state['degraded_reason'] = 'wss_no_heads'
+                self.state['source_status'] = 'degraded'
+                _was_degraded = True
+                _no_data_tripped = self._note_no_data_session()
+                logger.warning(
+                    'realtime_ws_no_data_session chain=%s watcher=%s '
+                    'no_data_session_count=%s threshold=%s reconnect_count=%s '
+                    'last_event_age_seconds=%s',
+                    self.chain_network, self.watcher_name,
+                    self._no_data_session_count, _NO_DATA_SESSION_THRESHOLD,
+                    self.state['metrics']['ws_reconnects'],
+                    (lambda a: round(a, 1) if a is not None else 'none')(
+                        self._seconds_since_last_event()
+                    ),
+                )
+                gauge('decoda_realtime_worker_healthy', 0, watcher=self.watcher_name)
+                if _no_data_tripped:
+                    self._mark_ws_provider_unhealthy('wss_no_heads')
                 self._record_heartbeat()
                 _next_heartbeat = time.monotonic() + self.heartbeat_seconds
                 continue
