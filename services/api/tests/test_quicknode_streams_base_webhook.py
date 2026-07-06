@@ -3,24 +3,35 @@
 POST /api/integrations/quicknode/streams/base
 services/api/app/quicknode_streams.py
 
+QuickNode Streams signs ``nonce + timestamp + raw_body`` with HMAC-SHA256
+(hex digest) keyed by the Stream's security token, delivered via the
+X-QN-Nonce / X-QN-Timestamp / X-QN-Signature headers. See:
+https://www.quicknode.com/guides/quicknode-products/streams/validating-incoming-streams-webhook-messages
+
 Covers:
-  A. Valid HMAC signature is accepted.
+  A. Valid HMAC signature (nonce+timestamp+body) is accepted.
   B. Invalid HMAC signature is rejected (400).
-  C. Missing signature header is rejected (400).
+  C. Missing nonce/timestamp/signature header is rejected (400).
   D. Missing configured secret is rejected (503) — fails closed.
-  E. A transaction matching a monitored wallet persists wallet_transfer_detected
+  E. A stale/future timestamp is rejected (400) — replay protection.
+  F. A gzip-encoded body (Content-Encoding: gzip) is accepted, verified over
+     the compressed wire bytes, then decompressed for parsing.
+  G. A transaction matching a monitored wallet persists wallet_transfer_detected
      with detected_by=quicknode_stream and source_type=quicknode_stream.
-  F. A transaction NOT matching any monitored wallet is not persisted.
-  G. A duplicate transaction (already recorded, e.g. by stable_rpc_polling) is
+  H. A transaction NOT matching any monitored wallet is not persisted.
+  I. A duplicate transaction (already recorded, e.g. by stable_rpc_polling) is
      suppressed instead of creating a second row.
-  H. UI label mapping: quicknode_stream => "QuickNode Stream" (Python-side
+  J. UI label mapping: quicknode_stream => "QuickNode Stream" (Python-side
      canonical detected_by classification mirrors the frontend label map).
+  K. No secret value ever appears in a raised HTTPException detail.
 """
 from __future__ import annotations
 
+import gzip
 import hashlib
 import hmac
 import json
+import time
 import uuid
 from contextlib import contextmanager
 from unittest.mock import patch
@@ -35,10 +46,16 @@ COUNTERPARTY = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 UNRELATED_ADDR = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 TX_HASH = '0x42eb6fb953a32dc80fef0f62b4eadfa0fed18c7129d68924cd65bdb37e25a51'
 SECRET = 'whsec_test_secret_123'
+NONCE = 'test-nonce-abc123'
 
 
-def _sign(secret: str, body: bytes) -> str:
-    return hmac.new(secret.encode('utf-8'), body, hashlib.sha256).hexdigest()
+def _sign(secret: str, *, nonce: str, timestamp: str, body: bytes) -> str:
+    signing_input = nonce.encode('utf-8') + timestamp.encode('utf-8') + body
+    return hmac.new(secret.encode('utf-8'), signing_input, hashlib.sha256).hexdigest()
+
+
+def _now_ts() -> str:
+    return str(int(time.time()))
 
 
 def _make_target(*, target_id: str | None = None, wallet_address: str = WALLET_ADDR) -> dict:
@@ -116,15 +133,21 @@ def _body(tx: dict) -> bytes:
 def test_valid_hmac_signature_accepted(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
     raw = _body({'hash': TX_HASH})
-    signature = _sign(SECRET, raw)
-    qn.verify_quicknode_stream_signature(raw_body=raw, signature_header=signature)  # no raise
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    qn.verify_quicknode_stream_signature(
+        raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+    )  # no raise
 
 
 def test_invalid_hmac_signature_rejected(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
     raw = _body({'hash': TX_HASH})
+    timestamp = _now_ts()
     with pytest.raises(HTTPException) as exc:
-        qn.verify_quicknode_stream_signature(raw_body=raw, signature_header='deadbeef')
+        qn.verify_quicknode_stream_signature(
+            raw_body=raw, signature_header='deadbeef', nonce_header=NONCE, timestamp_header=timestamp,
+        )
     assert exc.value.status_code == 400
 
 
@@ -132,7 +155,32 @@ def test_missing_signature_header_rejected(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
     raw = _body({'hash': TX_HASH})
     with pytest.raises(HTTPException) as exc:
-        qn.verify_quicknode_stream_signature(raw_body=raw, signature_header=None)
+        qn.verify_quicknode_stream_signature(
+            raw_body=raw, signature_header=None, nonce_header=NONCE, timestamp_header=_now_ts(),
+        )
+    assert exc.value.status_code == 400
+
+
+def test_missing_nonce_header_rejected(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    raw = _body({'hash': TX_HASH})
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce='', timestamp=timestamp, body=raw)
+    with pytest.raises(HTTPException) as exc:
+        qn.verify_quicknode_stream_signature(
+            raw_body=raw, signature_header=signature, nonce_header=None, timestamp_header=timestamp,
+        )
+    assert exc.value.status_code == 400
+
+
+def test_missing_timestamp_header_rejected(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    raw = _body({'hash': TX_HASH})
+    signature = _sign(SECRET, nonce=NONCE, timestamp='', body=raw)
+    with pytest.raises(HTTPException) as exc:
+        qn.verify_quicknode_stream_signature(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=None,
+        )
     assert exc.value.status_code == 400
 
 
@@ -140,8 +188,95 @@ def test_missing_secret_rejected_fail_closed(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv('QUICKNODE_STREAMS_SECRET', raising=False)
     raw = _body({'hash': TX_HASH})
     with pytest.raises(HTTPException) as exc:
-        qn.verify_quicknode_stream_signature(raw_body=raw, signature_header='anything')
+        qn.verify_quicknode_stream_signature(
+            raw_body=raw, signature_header='anything', nonce_header=NONCE, timestamp_header=_now_ts(),
+        )
     assert exc.value.status_code == 503
+
+
+def test_old_timestamp_rejected_replay_protection(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    raw = _body({'hash': TX_HASH})
+    stale_timestamp = str(int(time.time()) - 3600)  # 1 hour old, well past default tolerance
+    signature = _sign(SECRET, nonce=NONCE, timestamp=stale_timestamp, body=raw)
+    with pytest.raises(HTTPException) as exc:
+        qn.verify_quicknode_stream_signature(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=stale_timestamp,
+        )
+    assert exc.value.status_code == 400
+
+
+def test_future_timestamp_rejected_replay_protection(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    raw = _body({'hash': TX_HASH})
+    future_timestamp = str(int(time.time()) + 3600)
+    signature = _sign(SECRET, nonce=NONCE, timestamp=future_timestamp, body=raw)
+    with pytest.raises(HTTPException) as exc:
+        qn.verify_quicknode_stream_signature(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=future_timestamp,
+        )
+    assert exc.value.status_code == 400
+
+
+def test_secret_never_appears_in_exception_detail(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    raw = _body({'hash': TX_HASH})
+    with pytest.raises(HTTPException) as exc:
+        qn.verify_quicknode_stream_signature(
+            raw_body=raw, signature_header='deadbeef', nonce_header=NONCE, timestamp_header=_now_ts(),
+        )
+    assert SECRET not in str(exc.value.detail)
+
+
+# ---------------------------------------------------------------------------
+# Gzip body handling
+# ---------------------------------------------------------------------------
+
+def test_gzip_body_accepted_and_decompressed(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    target = _make_target()
+    conn = _FakeConnection(targets=[target])
+    tx = {
+        'tx_hash': TX_HASH,
+        'from': WALLET_ADDR,
+        'to': COUNTERPARTY,
+        'value': '1000000000000000000',
+        'block_number': 47286578,
+        'chain_id': 8453,
+    }
+    plain_body = _body(tx)
+    compressed_body = gzip.compress(plain_body)
+    timestamp = _now_ts()
+    # Signature is computed over the compressed wire bytes, not the plaintext.
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=compressed_body)
+
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None):
+        result = qn.process_quicknode_base_stream_webhook(
+            raw_body=compressed_body,
+            signature_header=signature,
+            nonce_header=NONCE,
+            timestamp_header=timestamp,
+            content_encoding='gzip',
+        )
+
+    assert result['received'] is True
+    assert result['results'][0]['status'] == 'processed'
+    assert len(conn.telemetry_inserts) == 1
+
+
+def test_gzip_signature_over_plaintext_is_rejected(monkeypatch: pytest.MonkeyPatch):
+    """Signing the decompressed body (instead of the wire bytes) must fail."""
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    plain_body = _body({'tx_hash': TX_HASH, 'from': WALLET_ADDR})
+    compressed_body = gzip.compress(plain_body)
+    timestamp = _now_ts()
+    wrong_signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=plain_body)
+    with pytest.raises(HTTPException) as exc:
+        qn.verify_quicknode_stream_signature(
+            raw_body=compressed_body, signature_header=wrong_signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert exc.value.status_code == 400
 
 
 # ---------------------------------------------------------------------------
@@ -161,10 +296,13 @@ def test_matching_tx_persists_wallet_transfer_detected(monkeypatch: pytest.Monke
         'chain_id': 8453,
     }
     raw = _body(tx)
-    signature = _sign(SECRET, raw)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
     with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
          patch.object(qn, 'ensure_pilot_schema', lambda _c: None):
-        result = qn.process_quicknode_base_stream_webhook(raw_body=raw, signature_header=signature)
+        result = qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
 
     assert result['received'] is True
     assert result['results'][0]['status'] == 'processed'
@@ -193,10 +331,13 @@ def test_non_matching_tx_is_not_persisted(monkeypatch: pytest.MonkeyPatch):
         'chain_id': 8453,
     }
     raw = _body(tx)
-    signature = _sign(SECRET, raw)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
     with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
          patch.object(qn, 'ensure_pilot_schema', lambda _c: None):
-        result = qn.process_quicknode_base_stream_webhook(raw_body=raw, signature_header=signature)
+        result = qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
 
     assert result['results'][0]['status'] == 'no_match'
     assert conn.telemetry_inserts == []
@@ -217,10 +358,13 @@ def test_duplicate_tx_is_suppressed(monkeypatch: pytest.MonkeyPatch):
         'chain_id': 8453,
     }
     raw = _body(tx)
-    signature = _sign(SECRET, raw)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
     with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
          patch.object(qn, 'ensure_pilot_schema', lambda _c: None):
-        result = qn.process_quicknode_base_stream_webhook(raw_body=raw, signature_header=signature)
+        result = qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
 
     assert result['results'][0]['status'] == 'duplicate_suppressed'
     assert result['results'][0]['existing_detected_by'] == 'stable_rpc_polling'
@@ -266,7 +410,35 @@ def test_route_post_invalid_signature_rejected(monkeypatch: pytest.MonkeyPatch):
     response = client.post(
         '/api/integrations/quicknode/streams/base',
         content=body,
-        headers={'content-type': 'application/json', 'x-qn-signature': 'not-the-right-signature'},
+        headers={
+            'content-type': 'application/json',
+            'x-qn-signature': 'not-the-right-signature',
+            'x-qn-nonce': NONCE,
+            'x-qn-timestamp': _now_ts(),
+        },
+    )
+    assert response.status_code == 400
+
+
+def test_route_post_missing_nonce_rejected(monkeypatch: pytest.MonkeyPatch):
+    from fastapi.testclient import TestClient
+
+    from services.api.app import main as api_main
+
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    client = TestClient(api_main.app, raise_server_exceptions=False)
+    body = _body({'tx_hash': TX_HASH, 'from': WALLET_ADDR})
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=body)
+    response = client.post(
+        '/api/integrations/quicknode/streams/base',
+        content=body,
+        headers={
+            'content-type': 'application/json',
+            'x-qn-signature': signature,
+            'x-qn-timestamp': timestamp,
+            # x-qn-nonce intentionally omitted
+        },
     )
     assert response.status_code == 400
 
@@ -283,7 +455,12 @@ def test_route_post_valid_signature_reaches_handler(monkeypatch: pytest.MonkeyPa
     response = client.post(
         '/api/integrations/quicknode/streams/base',
         content=body,
-        headers={'content-type': 'application/json', 'x-qn-signature': 'anything'},
+        headers={
+            'content-type': 'application/json',
+            'x-qn-signature': 'anything',
+            'x-qn-nonce': NONCE,
+            'x-qn-timestamp': _now_ts(),
+        },
     )
     assert response.status_code == 200
     assert response.json() == {'received': True, 'results': []}

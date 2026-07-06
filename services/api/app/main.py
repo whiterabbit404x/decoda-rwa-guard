@@ -3817,8 +3817,17 @@ def quicknode_streams_base_health() -> dict[str, Any]:
 @app.post('/api/integrations/quicknode/streams/base', summary='QuickNode Streams webhook (Base chain wallet transfers)')
 async def quicknode_streams_base_webhook(request: Request) -> dict[str, Any]:
     raw = await request.body()
-    signature = request.headers.get('x-qn-signature') or request.headers.get('x-quicknode-signature')
-    return with_auth_schema_json(lambda: process_quicknode_base_stream_webhook(raw_body=raw, signature_header=signature))
+    signature = request.headers.get('x-qn-signature')
+    nonce = request.headers.get('x-qn-nonce')
+    timestamp = request.headers.get('x-qn-timestamp')
+    content_encoding = request.headers.get('content-encoding')
+    return with_auth_schema_json(lambda: process_quicknode_base_stream_webhook(
+        raw_body=raw,
+        signature_header=signature,
+        nonce_header=nonce,
+        timestamp_header=timestamp,
+        content_encoding=content_encoding,
+    ))
 
 
 @app.get('/webhooks', summary='List workspace webhooks')
