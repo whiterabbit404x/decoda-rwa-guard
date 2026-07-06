@@ -60,6 +60,11 @@ def _make_ingestor(**kwargs):
     )
     defaults.update(kwargs)
     ingestor = BaseRealtimeIngestor(**defaults)
+    # These tests exercise the HTTP fast-tail fallback path, which is now opt-in via
+    # BASE_REALTIME_FAST_TAIL_ENABLED (default off → stable polling). Enable it so the
+    # provider-unhealthy fallback selects the fast-tail when a healthy HTTP host
+    # exists; the disabled default is covered by its own dedicated tests below.
+    ingestor.fast_tail_enabled = True
     # Skip the checkpoint bootstrap / eth_blockNumber path in loop tests.
     ingestor.state['last_head_block'] = 1000
     ingestor._last_head_block_at = time.monotonic()
@@ -298,6 +303,9 @@ def test_heartbeat_publishes_fallback_active_true_with_fast_tail_mode():
     ingestor = BaseRealtimeIngestor(
         rpc_url='https://rpc.example/v1/key', ws_url=PRIMARY_WS, watcher_name='w',
     )
+    # Fast-tail is opt-in; the HTTPS RPC is on a DIFFERENT host from the TLS-broken
+    # WSS, so with it enabled the provider-unhealthy fallback uses the fast-tail.
+    ingestor.fast_tail_enabled = True
     ingestor._mark_ws_provider_unhealthy('tls_internal_error')
 
     assert ingestor._fallback_is_active() is True
@@ -316,6 +324,9 @@ def test_heartbeat_publishes_stable_polling_fallback_when_no_http_rpc():
     )
 
     ingestor = BaseRealtimeIngestor(rpc_url='', ws_url=PRIMARY_WS, watcher_name='w')
+    # Enable fast-tail so the stable-polling result is proven to come from "no HTTP
+    # RPC configured" (no healthy candidate), not merely from the disabled gate.
+    ingestor.fast_tail_enabled = True
     ingestor._mark_ws_provider_unhealthy('tls_internal_error')
 
     assert ingestor._circuit_fallback_mode() == STABLE_POLLING_FALLBACK_MODE
@@ -963,6 +974,9 @@ def test_same_host_tls_no_secondary_falls_back_to_stable_polling_only():
     ingestor = BaseRealtimeIngestor(
         rpc_url=QUICKNODE_HTTP, ws_url=QUICKNODE_WS, watcher_name='w',
     )
+    # Enable fast-tail so the stable-polling result is proven to come from the
+    # same-broken-host candidate logic, not merely from the disabled gate.
+    ingestor.fast_tail_enabled = True
     ingestor._mark_ws_provider_unhealthy('tls_internal_error')
 
     assert ingestor._circuit_fallback_mode() == STABLE_POLLING_FALLBACK_MODE
@@ -993,6 +1007,8 @@ def test_same_host_tls_uses_secondary_http_when_configured():
         rpc_url=QUICKNODE_HTTP, ws_url=QUICKNODE_WS, watcher_name='w',
         rpc_url_secondary=ALT_HTTP,
     )
+    # Fast-tail is opt-in; enable it so the healthy secondary HTTP host is used.
+    ingestor.fast_tail_enabled = True
     ingestor._mark_ws_provider_unhealthy('tls_internal_error')
 
     assert ingestor._host_level_failed_hosts() == {'alpha.quiknode.example'}
@@ -1109,3 +1125,249 @@ def test_realtime_telemetry_classification_counts_fast_tail_never_stable_polling
     assert STABLE_DETECTED_BY == 'stable_rpc_polling'
     assert STABLE_DETECTED_BY not in REALTIME_DETECTED_BY
     assert detected_by_from_ingestion_source('rpc_polling') == STABLE_DETECTED_BY
+
+
+# ---------------------------------------------------------------------------
+# 11. Fast-tail's OWN first scan fails with TLS -> downgrade to stable polling.
+#     The production loop: provider_mode=quicknode_http_fast_tail, fallback_active=
+#     True, realtime_scanning_active=True while EVERY cycle fails
+#     http_fast_tail_error TLSV1_ALERT_INTERNAL_ERROR, heads_received=0, same host,
+#     no secondary. The fast-tail must stop claiming it is active and hand off to
+#     stable polling (requirement 1) instead of looping forever (acceptance).
+# ---------------------------------------------------------------------------
+
+def _run_fast_tail_capturing(ingestor):
+    """Run _run_http_fast_tail once under a mocked pg_connection, returning the
+    captured log messages. _idle_stable_polling is stubbed to a no-op so the
+    permanent-disable downgrade path returns instead of looping forever."""
+    from services.api.app import base_realtime_ingestor as mod
+
+    async def _idle_noop(stop_when=None):
+        return
+
+    ingestor._idle_stable_polling = _idle_noop  # type: ignore[method-assign]
+
+    capture = _LogCapture()
+    mod.logger.addHandler(capture)
+    mod.logger.setLevel(logging.DEBUG)
+    try:
+        with (
+            patch('services.api.app.base_realtime_ingestor.pg_connection') as mock_pg,
+            patch('services.api.app.base_realtime_ingestor.ensure_pilot_schema', lambda c: None),
+        ):
+            mock_conn = MagicMock()
+            mock_conn.__enter__ = lambda s: s
+            mock_conn.__exit__ = MagicMock(return_value=False)
+            mock_pg.return_value = mock_conn
+            asyncio.run(ingestor._run_http_fast_tail())
+    finally:
+        mod.logger.removeHandler(capture)
+    return capture.messages
+
+
+def test_fast_tail_first_scan_tls_failure_downgrades_to_stable_polling():
+    from services.api.app.base_realtime_ingestor import (
+        BaseRealtimeIngestor,
+        STABLE_POLLING_FALLBACK_MODE,
+    )
+
+    # Same QuickNode host for WSS and HTTPS RPC, no secondary — the production shape.
+    # The WSS circuit is NOT pre-marked: the fast-tail itself discovers the TLS
+    # failure on its very first eth_blockNumber call.
+    ingestor = BaseRealtimeIngestor(
+        rpc_url=QUICKNODE_HTTP, ws_url=QUICKNODE_WS, watcher_name='w',
+    )
+    ingestor.fast_tail_enabled = True
+    ingestor._wss_permanently_disabled = True  # entered via the permanent-disable path
+    ingestor._ingestion_mode = 'http_fast_tail'
+    ingestor.state['source_status'] = 'quicknode_http_fast_tail'
+    ingestor.state['last_head_block'] = 1000
+    ingestor.state['last_processed_block'] = 1000
+    ingestor._watched_targets = lambda: []  # type: ignore[method-assign]
+
+    def _tls_rpc(method, params):
+        raise ssl.SSLError(1, TLS_ERROR_TEXT)
+
+    ingestor._rpc_call = _tls_rpc  # type: ignore[method-assign]
+
+    messages = _run_fast_tail_capturing(ingestor)
+
+    # Requirement 1: provider_mode flips to stable_rpc_polling_fallback and the
+    # fast-tail is no longer claimed active.
+    assert ingestor._ingestion_mode == STABLE_POLLING_FALLBACK_MODE
+    assert ingestor.state['source_status'] == STABLE_POLLING_FALLBACK_MODE
+    assert ingestor._fallback_is_active() is True
+    # The broken host is benched so it is never reused for the fast-tail.
+    assert 'alpha.quiknode.example' in ingestor._http_failed_hosts
+    assert ingestor._fast_tail_rpc_candidate() is None
+
+    # Canonical downgrade + skip markers were logged; the fast-tail did NOT loop.
+    assert any('realtime_fast_tail_unhealthy' in m for m in messages), messages
+    assert any(
+        'realtime_fast_tail_skipped_same_failed_provider' in m for m in messages
+    ), messages
+    # Exactly one http_fast_tail_error (one failed cycle), not an endless loop.
+    assert sum('http_fast_tail_error' in m for m in messages) == 1, messages
+
+    # The persisted heartbeat facts are truthful: stable polling, realtime not
+    # scanning. (source_status was mutated above; the guard fires on these facts.)
+    hb = _heartbeat_log(ingestor)
+    assert 'provider_mode=stable_rpc_polling_fallback' in hb, hb
+    assert 'fallback_active=True' in hb, hb
+    assert 'realtime_scanning_active=False' in hb, hb
+    assert 'provider_mode=quicknode_http_fast_tail' not in hb, hb
+
+
+def test_fast_tail_first_scan_tls_fails_over_to_healthy_secondary_http():
+    """With a healthy secondary HTTP host, a first-scan TLS failure on the primary
+    fails the fast-tail OVER to the secondary instead of downgrading — the fast-tail
+    keeps scanning on a working host (requirement 1/2)."""
+    from services.api.app.base_realtime_ingestor import _ws_url_host
+
+    ingestor = _make_ingestor(
+        ws_url=QUICKNODE_WS, rpc_url=QUICKNODE_HTTP, rpc_url_secondary=ALT_HTTP,
+    )
+    ingestor._watched_targets = lambda: []  # type: ignore[method-assign]
+
+    call_hosts: list[str] = []
+
+    def _rpc(method, params):
+        call_hosts.append(_ws_url_host(ingestor.rpc_url))
+        # The broken primary host fails TLS; the healthy secondary ends the test.
+        if _ws_url_host(ingestor.rpc_url) == 'alpha.quiknode.example':
+            raise ssl.SSLError(1, TLS_ERROR_TEXT)
+        raise asyncio.CancelledError()
+
+    ingestor._rpc_call = _rpc  # type: ignore[method-assign]
+
+    from services.api.app import base_realtime_ingestor as mod
+    capture = _LogCapture()
+    mod.logger.addHandler(capture)
+    mod.logger.setLevel(logging.DEBUG)
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(ingestor._run_http_fast_tail())
+    finally:
+        mod.logger.removeHandler(capture)
+
+    # It called the broken host once, benched it, then switched to the healthy host.
+    assert ingestor.rpc_url == ALT_HTTP
+    assert 'alpha.quiknode.example' in ingestor._http_failed_hosts
+    assert ingestor._ingestion_mode == 'http_fast_tail', 'still tailing on the healthy host'
+    failover = next(
+        (m for m in capture.messages if 'realtime_http_provider_failover' in m
+         and 'reason=fast_tail_first_scan_tls_failure' in m), None,
+    )
+    assert failover is not None, capture.messages
+    assert 'new_host=base-mainnet.alt-provider.example' in failover
+
+
+def test_same_failed_provider_not_reused_for_fast_tail():
+    """A host benched by a fast-tail TLS failure is never returned as a candidate."""
+    ingestor = _make_ingestor(ws_url=QUICKNODE_WS, rpc_url=QUICKNODE_HTTP)
+    assert ingestor._fast_tail_rpc_candidate() == QUICKNODE_HTTP
+    ingestor._record_fast_tail_host_failed('alpha.quiknode.example')
+    assert 'alpha.quiknode.example' in ingestor._host_level_failed_hosts()
+    assert ingestor._fast_tail_rpc_candidate() is None
+
+
+# ---------------------------------------------------------------------------
+# 12. BASE_REALTIME_FAST_TAIL_ENABLED=false disables the HTTP fast-tail fallback:
+#     the provider-unhealthy fallback goes straight to stable_rpc_polling_fallback
+#     even when a healthy HTTP host exists (requirement 3).
+# ---------------------------------------------------------------------------
+
+def test_fast_tail_disabled_forces_stable_polling_fallback_even_with_healthy_http():
+    from services.api.app.base_realtime_ingestor import (
+        BaseRealtimeIngestor,
+        HTTP_FAST_TAIL_SOURCE,
+        STABLE_POLLING_FALLBACK_MODE,
+    )
+
+    # A healthy, DIFFERENT HTTP host is available — normally a fast-tail target.
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='https://rpc.example/v1/key', ws_url=PRIMARY_WS, watcher_name='w',
+    )
+    assert ingestor.fast_tail_enabled is False, 'default must be off'
+    assert ingestor._fast_tail_rpc_candidate() == 'https://rpc.example/v1/key'
+    # Disabled -> the provider-unhealthy fallback is stable polling, NOT fast-tail.
+    assert ingestor._circuit_fallback_mode() == STABLE_POLLING_FALLBACK_MODE
+
+    # Enabling it (a separate healthy HTTP budget) selects the fast-tail.
+    ingestor.fast_tail_enabled = True
+    assert ingestor._circuit_fallback_mode() == HTTP_FAST_TAIL_SOURCE
+
+
+def test_fast_tail_disabled_env_resolves_and_marks_unhealthy_to_stable_polling(monkeypatch):
+    monkeypatch.setenv('BASE_REALTIME_FAST_TAIL_ENABLED', 'false')
+    from services.api.app.base_realtime_ingestor import (
+        BaseRealtimeIngestor,
+        STABLE_POLLING_FALLBACK_MODE,
+    )
+
+    ingestor = BaseRealtimeIngestor(
+        rpc_url='https://rpc.example/v1/key', ws_url=PRIMARY_WS, watcher_name='w',
+    )
+    assert ingestor.fast_tail_enabled is False
+    ingestor._mark_ws_provider_unhealthy('tls_internal_error')
+
+    assert ingestor._ingestion_mode == STABLE_POLLING_FALLBACK_MODE
+    assert ingestor.state['source_status'] == STABLE_POLLING_FALLBACK_MODE
+    hb = _heartbeat_log(ingestor)
+    assert 'provider_mode=stable_rpc_polling_fallback' in hb, hb
+    assert 'fallback_active=True' in hb, hb
+    assert 'realtime_scanning_active=False' in hb, hb
+    assert 'provider_mode=quicknode_http_fast_tail' not in hb, hb
+
+
+# ---------------------------------------------------------------------------
+# 13. UI truth: a failing/disabled fast-tail never reads as realtime active.
+#     The facts the downgrade persists (source_status=stable_rpc_polling_fallback,
+#     provider_mode=stable_rpc_polling_fallback, realtime_scanning_active=False)
+#     must make the status layer render the stable-polling fallback headline
+#     (requirement: UI does not claim fast-tail active when scans fail).
+# ---------------------------------------------------------------------------
+
+def test_ui_does_not_claim_fast_tail_active_when_scans_fail():
+    from services.api.app.worker_status import (
+        build_worker_status,
+        realtime_active_by_watcher_facts,
+    )
+
+    # The row a downgraded fast-tail persists after its scans failed with TLS.
+    watcher = {
+        'watcher_name': 'base-realtime-worker',
+        'source_status': 'stable_rpc_polling_fallback',
+        'degraded': True,
+        'degraded_reason': 'fast_tail_tls_internal_error',
+        'metrics': {
+            'heads_received': 0,
+            'events_ingested': 0,
+            'ws_reconnects': 40,
+            'rate_limited': False,
+            'provider_mode': 'stable_rpc_polling_fallback',
+            'fallback_active': True,
+            'realtime_scanning_active': False,
+        },
+    }
+    # heads_received=0 and provider_mode!=realtime_websocket -> never realtime proof.
+    assert realtime_active_by_watcher_facts(watcher) is False
+
+    now = datetime(2026, 7, 6, 12, 0, tzinfo=timezone.utc)
+    status = build_worker_status(
+        now=now,
+        realtime_is_enabled=True,
+        stable_last_heartbeat_at=now - timedelta(seconds=30),
+        stable_last_poll_at=now - timedelta(seconds=30),
+        heartbeat_ttl_seconds=900,
+        realtime_watcher=watcher,
+    )
+    assert status['realtime']['state'] == 'degraded'
+    assert status['realtime']['fallback_active'] is True
+    assert status['realtime']['provider_mode'] == 'stable_rpc_polling_fallback'
+    assert status['headline'] == (
+        'Stable polling active. Realtime degraded — stable polling fallback active.'
+    )
+    # Stable polling remains the active detection path (acceptance).
+    assert status['stable_polling']['state'] == 'active'
+    assert status['monitoring_source_live'] is True

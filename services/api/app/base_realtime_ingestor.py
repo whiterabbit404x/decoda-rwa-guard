@@ -321,6 +321,19 @@ class BaseRealtimeIngestor:
         # doubles per consecutive rate-limited cycle (capped) so the fallback never
         # hammers a throttling provider, and resets on the first successful cycle.
         self._fast_tail_rate_limit_strikes: int = 0
+        # True once the HTTP fast-tail has completed at least one successful scan
+        # (a clean cycle that advanced the checkpoint). Until then the fast-tail is
+        # unproven, so a first-scan TLS/host-level provider failure downgrades it to
+        # stable-polling-only instead of looping http_fast_tail_error forever
+        # (requirement 1). Never reset — once the endpoint proved it can scan, a later
+        # transient failure fails over via _maybe_failover_http_rpc, not an instant
+        # downgrade.
+        self._fast_tail_ever_succeeded: bool = False
+        # HTTPS RPC hosts the fast-tail itself proved broken with a TLS/host-level
+        # error (the same host's HTTPS RPC failed the identical handshake the WSS
+        # did). Merged into _host_level_failed_hosts so _fast_tail_rpc_candidate never
+        # returns a host the fast-tail already looped on — requirement 2/3.
+        self._http_failed_hosts: set[str] = set()
 
         # Per-endpoint WSS provider circuit breaker, keyed by WS URL:
         #   open_until   monotonic deadline; the endpoint is not retried before it
@@ -385,9 +398,12 @@ class BaseRealtimeIngestor:
                 'BASE_REALTIME_RATE_LIMIT_COOLDOWN_SECONDS', _DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS
             ),
         )
-        # HTTP fast-tail polls the SAME QuickNode HTTP quota, so starting it during a
-        # 429 makes the rate limit worse. Default OFF — only run fast-tail during a
-        # rate limit when a SEPARATE HTTP budget exists (requirement 4).
+        # Master gate for the HTTP fast-tail fallback. HTTP fast-tail polls the SAME
+        # provider HTTP quota/host as the WSS, so on a rate limit it worsens the 429
+        # and on a host TLS failure it just reproduces http_fast_tail_error. Default
+        # OFF: when disabled the provider-unhealthy fallback goes straight to
+        # stable_rpc_polling_fallback and the fast-tail never starts (requirement 3) —
+        # only enable it when a SEPARATE, healthy HTTP budget exists.
         self.fast_tail_enabled = _resolve_bool_env('BASE_REALTIME_FAST_TAIL_ENABLED', default=False)
         # Fast-tail poll cadence (HTTPS RPC only). Floored at 5 s so a mis-set value
         # cannot busy-loop the provider; default 60 s (requirement 3).
@@ -900,8 +916,12 @@ class BaseRealtimeIngestor:
         fast-tail candidate list (requirement 3: do not use the same host for HTTP
         fast-tail). WSS-only reasons (``wss_no_heads`` / reconnect loop) leave the
         host's HTTPS RPC usable, so they are NOT returned here.
+
+        Also includes any host the HTTP fast-tail itself proved broken with a TLS
+        first-scan failure (``_http_failed_hosts``) — that host must never be handed
+        back to the fast-tail (requirements 1-2).
         """
-        hosts: set[str] = set()
+        hosts: set[str] = set(self._http_failed_hosts)
         for url in (self.ws_url, self.ws_url_secondary, self._current_ws_url):
             if not url:
                 continue
@@ -934,19 +954,20 @@ class BaseRealtimeIngestor:
     def _circuit_fallback_mode(self) -> str:
         """Canonical provider_mode for the circuit-open fallback ladder.
 
-        HTTP fast-tail when a HEALTHY HTTPS RPC exists (a host that did NOT fail the
-        WSS TLS handshake) and it is not rate-limited without a separate budget;
-        otherwise stable RPC polling only. When the primary WSS host failed with a
-        TLS internal error and no secondary HTTP RPC is configured, the only HTTP
-        endpoint is the same broken host, so this returns the stable-polling
-        fallback — never a fast-tail that would loop on the same TLS failure
-        (requirements 3-4).
+        HTTP fast-tail ONLY when the fast-tail is enabled
+        (``BASE_REALTIME_FAST_TAIL_ENABLED=true``) AND a HEALTHY HTTPS RPC exists (a
+        host that did NOT fail the WSS TLS handshake); otherwise stable RPC polling
+        only. Two ways this returns the stable-polling fallback instead of a doomed
+        fast-tail:
+          * the fast-tail is disabled (default) — requirement 3: never start the
+            HTTP fast-tail, go straight to stable_rpc_polling_fallback;
+          * the only HTTP endpoint is the same TLS-broken host (no healthy candidate)
+            — a fast-tail there would loop on the same TLS failure (requirement 2).
         """
+        if not self.fast_tail_enabled:
+            return STABLE_POLLING_FALLBACK_MODE
         candidate = self._fast_tail_rpc_candidate()
-        use_fast_tail = bool(candidate) and not (
-            self._provider_rate_limited and not self.fast_tail_enabled
-        )
-        return HTTP_FAST_TAIL_SOURCE if use_fast_tail else STABLE_POLLING_FALLBACK_MODE
+        return HTTP_FAST_TAIL_SOURCE if candidate else STABLE_POLLING_FALLBACK_MODE
 
     def _mark_ws_provider_unhealthy(self, reason: str) -> None:
         """Mark the current WSS endpoint unhealthy and open its circuit.
@@ -3072,6 +3093,55 @@ class BaseRealtimeIngestor:
             old_host, _ws_url_host(self.rpc_url), self.watcher_name,
         )
 
+    def _record_fast_tail_host_failed(self, host: str) -> None:
+        """Bench an HTTPS RPC host the fast-tail proved broken with a TLS failure.
+
+        Adds it to ``_host_level_failed_hosts`` so ``_fast_tail_rpc_candidate`` never
+        hands it back — the fast-tail must not keep polling a host whose HTTPS RPC
+        fails the TLS handshake (the production ``http_fast_tail_error
+        TLSV1_ALERT_INTERNAL_ERROR`` loop).
+        """
+        if host and host != 'unknown':
+            self._http_failed_hosts.add(host)
+
+    def _downgrade_fast_tail_to_stable_polling(self, reason: str) -> None:
+        """Abandon the HTTP fast-tail and publish the stable-polling-only fallback.
+
+        Requirement 1: when the fast-tail's own scan fails with a TLS/host-level
+        provider error and no healthy HTTP host remains, the worker must stop
+        claiming the fast-tail is active. This flips the canonical facts to
+        provider_mode=stable_rpc_polling_fallback (fallback_active=True,
+        realtime_scanning_active=False) so the heartbeat never reports
+        quicknode_http_fast_tail active while every cycle fails — the independent
+        300 s stable RPC polling worker is the detection path.
+        """
+        self._ingestion_mode = STABLE_POLLING_FALLBACK_MODE
+        self.state['source_status'] = STABLE_POLLING_FALLBACK_MODE
+        self.state['degraded'] = True
+        self.state['degraded_reason'] = reason
+        logger.warning(
+            'realtime_fast_tail_unhealthy reason=%s provider_mode=%s '
+            'fallback_active=True realtime_scanning_active=False rpc_host=%s watcher=%s',
+            reason, STABLE_POLLING_FALLBACK_MODE, _ws_url_host(self.rpc_url),
+            self.watcher_name,
+        )
+
+    async def _idle_stable_polling(self, stop_when: Any = None) -> None:
+        """Idle in stable-polling-only fallback: heartbeat, make NO realtime RPC call.
+
+        Entered when the HTTP fast-tail is disabled or has proven unhealthy against
+        the only available host. The independent 300 s stable RPC polling worker is
+        the detection path here; this worker just keeps the heartbeat truthful
+        (provider_mode=stable_rpc_polling_fallback). Returns as soon as ``stop_when``
+        fires (a WSS circuit half-opened → run_forever should probe the WSS again);
+        without it, idles forever (permanent WSS disable).
+        """
+        while True:
+            if stop_when is not None and stop_when():
+                return
+            self._record_heartbeat()
+            await self._fast_tail_sleep(float(self.heartbeat_seconds), stop_when)
+
     async def _run_circuit_open_fallback(self) -> None:
         """Fallback ladder while EVERY WSS endpoint's circuit is open.
 
@@ -3137,6 +3207,25 @@ class BaseRealtimeIngestor:
         # healthy secondary HTTP RPC first so the fast-tail cannot loop on
         # http_fast_tail_error TLS against the broken provider.
         self._ensure_fast_tail_rpc_host_healthy()
+
+        # Requirement 2: if WSS and the HTTP RPC are the same host and that host
+        # failed the TLS handshake, there is no healthy HTTP endpoint left — skip the
+        # fast-tail entirely and hand off to stable polling instead of starting a
+        # doomed http_fast_tail_error TLS loop against the failed provider.
+        if (
+            self._fast_tail_rpc_candidate() is None
+            or _ws_url_host(self.rpc_url) in self._host_level_failed_hosts()
+        ):
+            logger.warning(
+                'realtime_fast_tail_skipped_same_failed_provider rpc_host=%s '
+                'reason=wss_host_tls_failure watcher=%s',
+                _ws_url_host(self.rpc_url), self.watcher_name,
+            )
+            self._downgrade_fast_tail_to_stable_polling('fast_tail_skipped_same_failed_provider')
+            self._record_heartbeat()
+            await self._idle_stable_polling(stop_when)
+            return
+
         self._ingestion_mode = 'http_fast_tail'
         self.state['source_status'] = 'quicknode_http_fast_tail'
         self.state['degraded'] = True
@@ -3192,9 +3281,12 @@ class BaseRealtimeIngestor:
                 _next_heartbeat = now + self.heartbeat_seconds
 
             # Set inside the cycle: drives the 429 backoff and the HTTP failover
-            # accounting after the try block.
+            # accounting after the try block. _cycle_fatal_tls flags a TLS/host-level
+            # provider failure (requirement 1) so an unproven fast-tail downgrades to
+            # stable polling instead of looping http_fast_tail_error.
             _cycle_rate_limited = False
             _cycle_failed = False
+            _cycle_fatal_tls = False
 
             try:
                 # One eth_blockNumber per poll cycle — the poll interval (plus the
@@ -3289,6 +3381,7 @@ class BaseRealtimeIngestor:
                             self.watcher_name, str(native_exc)[:200],
                         )
                         _cycle_failed = True
+                        _cycle_fatal_tls = _cycle_fatal_tls or self._is_tls_error(native_exc)
                     scan_all_ok = False
 
                 # Requirement 2-3: ERC20 / log-based detection is OPTIONAL. Skipped when
@@ -3371,6 +3464,7 @@ class BaseRealtimeIngestor:
                                     self.watcher_name, target.get('id'), str(scan_exc)[:200],
                                 )
                                 _cycle_failed = True
+                                _cycle_fatal_tls = _cycle_fatal_tls or self._is_tls_error(scan_exc)
                             scan_all_ok = False
                             break
 
@@ -3389,9 +3483,12 @@ class BaseRealtimeIngestor:
                     self.state['metrics']['heads_received'] = (
                         self.state['metrics'].get('heads_received', 0) + 1
                     )
-                    # Clean cycle: clear the 429 backoff and the failover counter.
+                    # Clean cycle: clear the 429 backoff and the failover counter, and
+                    # mark the fast-tail proven so a later transient TLS blip fails
+                    # over instead of downgrading a working endpoint (requirement 1).
                     self._fast_tail_rate_limit_strikes = 0
                     self._fast_tail_consecutive_failures = 0
+                    self._fast_tail_ever_succeeded = True
 
             except Exception as exc:
                 if self._is_rate_limit_error(exc):
@@ -3406,6 +3503,43 @@ class BaseRealtimeIngestor:
                         self.watcher_name, str(exc)[:200],
                     )
                     _cycle_failed = True
+                    _cycle_fatal_tls = _cycle_fatal_tls or self._is_tls_error(exc)
+
+            # Requirement 1: the fast-tail's OWN scan failed with a TLS/host-level
+            # provider error and the fast-tail has never delivered a successful scan.
+            # Polling the same host again just reproduces http_fast_tail_error TLS
+            # forever (the production loop), so bench the broken host and either fail
+            # over to a healthy HTTP host or downgrade to stable-polling-only — never
+            # keep claiming quicknode_http_fast_tail is active.
+            if _cycle_fatal_tls and not self._fast_tail_ever_succeeded:
+                _broken_host = _ws_url_host(self.rpc_url)
+                self._record_fast_tail_host_failed(_broken_host)
+                _candidate = self._fast_tail_rpc_candidate()
+                if _candidate and _candidate != self.rpc_url:
+                    self.rpc_url = _candidate
+                    self._http_failover_done = True
+                    self._fast_tail_consecutive_failures = 0
+                    logger.warning(
+                        'realtime_http_provider_failover old_host=%s new_host=%s '
+                        'reason=fast_tail_first_scan_tls_failure watcher=%s',
+                        _broken_host, _ws_url_host(self.rpc_url), self.watcher_name,
+                    )
+                    # Brief pause, then retry against the healthy host next cycle.
+                    self._record_heartbeat()
+                    _next_heartbeat = time.monotonic() + self.heartbeat_seconds
+                    await self._fast_tail_sleep(min(5.0, _poll_interval), stop_when)
+                    continue
+                # No healthy HTTP host remains (same failed provider). Requirement 1-2:
+                # skip the fast-tail and hand off to stable polling.
+                logger.warning(
+                    'realtime_fast_tail_skipped_same_failed_provider rpc_host=%s '
+                    'reason=fast_tail_first_scan_tls_failure watcher=%s',
+                    _broken_host, self.watcher_name,
+                )
+                self._downgrade_fast_tail_to_stable_polling('fast_tail_tls_internal_error')
+                self._record_heartbeat()
+                await self._idle_stable_polling(stop_when)
+                return
 
             # Cycle accounting: a rate-limited cycle backs the next poll off
             # exponentially (never hammer a throttling provider); repeated
