@@ -484,6 +484,9 @@ def test_full_pipeline_logs_shape_normalized_targets_match_and_persist(
         qn.process_quicknode_base_stream_webhook(
             raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
         )
+    assert 'quicknode_stream_handler_started' in caplog.text
+    assert 'quicknode_stream_json_parsed' in caplog.text
+    assert 'decoded_type=list' in caplog.text
     assert 'quicknode_stream_payload_shape' in caplog.text
     assert 'top_level_type=list' in caplog.text
     assert 'first_block_keys=' in caplog.text
@@ -493,7 +496,10 @@ def test_full_pipeline_logs_shape_normalized_targets_match_and_persist(
     assert 'sample_tx_hash_present=True' in caplog.text
     assert 'quicknode_stream_targets_loaded count=1 monitored_wallets_count=1' in caplog.text
     assert f'quicknode_stream_wallet_match tx_hash={TX_HASH} target_id={target["id"]} from_match=True' in caplog.text
-    assert f'quicknode_stream_event_persisted detected_by=quicknode_stream tx_hash={TX_HASH}' in caplog.text
+    assert (
+        f'quicknode_stream_event_persisted detected_by=quicknode_stream '
+        f'tx_hash={TX_HASH} target_id={target["id"]}'
+    ) in caplog.text
 
 
 def test_no_targets_and_no_match_logs(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
@@ -547,6 +553,74 @@ def test_duplicate_suppressed_log_includes_existing_detected_by(
             raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
         )
     assert f'quicknode_stream_duplicate_suppressed tx_hash={TX_HASH} existing_detected_by=stable_rpc_polling' in caplog.text
+
+
+def test_handler_started_log_emitted_even_when_signature_fails(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    """quicknode_stream_handler_started must fire before signature verification,
+    so a rejected (bad-signature) request is still provable from the handler's
+    own logs — not only the route-hit line."""
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    raw = _body({'hash': TX_HASH, 'from': WALLET_ADDR})
+    with caplog.at_level('INFO', logger=_QN_LOGGER):
+        with pytest.raises(HTTPException) as exc:
+            qn.process_quicknode_base_stream_webhook(
+                raw_body=raw, signature_header='not-the-right-signature',
+                nonce_header=NONCE, timestamp_header=_now_ts(),
+            )
+    assert exc.value.status_code == 400
+    assert 'quicknode_stream_handler_started' in caplog.text
+    assert f'raw_body_bytes={len(raw)}' in caplog.text
+    assert 'has_signature=True' in caplog.text
+    # Fail-closed: a rejected signature must not emit the "valid" marker.
+    assert 'quicknode_stream_signature_valid' not in caplog.text
+
+
+def test_json_parsed_log_emitted_after_signature_check(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    raw = _body({'unrelated': 'field'})
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with caplog.at_level('INFO', logger=_QN_LOGGER):
+        qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert 'quicknode_stream_json_parsed' in caplog.text
+    assert 'decoded_type=dict' in caplog.text
+    assert f'decoded_bytes={len(raw)}' in caplog.text
+
+
+def test_event_persisted_log_includes_target_id(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    target = _make_target()
+    conn = _FakeConnection(targets=[target])
+    tx = {'tx_hash': TX_HASH, 'from': WALLET_ADDR, 'to': COUNTERPARTY, 'value': '1'}
+    raw = _body(tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
+         caplog.at_level('INFO', logger=_QN_LOGGER):
+        qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert (
+        f'quicknode_stream_event_persisted detected_by=quicknode_stream '
+        f'tx_hash={TX_HASH} target_id={target["id"]}'
+    ) in caplog.text
+
+
+def test_qn_module_logger_pinned_to_info_survives_global_warning():
+    """The quicknode_stream_* diagnostics must not be silenced by a global
+    LOG_LEVEL=WARNING: the module logger is pinned to INFO at import."""
+    import logging
+
+    assert qn.logger.level == logging.INFO
 
 
 # ---------------------------------------------------------------------------
@@ -605,6 +679,32 @@ def test_route_post_logs_route_hit_even_when_signature_invalid(
         )
     assert response.status_code == 400
     assert 'quicknode_stream_route_hit' in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Deployed-build marker: lets an operator confirm from Railway startup logs
+# alone that the running API commit includes this webhook code (requirement:
+# "Confirm the deployed API commit includes this code").
+# ---------------------------------------------------------------------------
+
+def test_startup_emits_quicknode_streams_webhook_version(caplog: pytest.LogCaptureFixture):
+    from services.api.app import main as api_main
+
+    with caplog.at_level('INFO', logger='services.api.app.main.quicknode_streams'):
+        api_main.emit_quicknode_streams_webhook_version()
+    assert 'quicknode_streams_webhook_version=' in caplog.text
+    assert api_main.QUICKNODE_STREAMS_WEBHOOK_VERSION in caplog.text
+    assert 'git_commit=' in caplog.text
+
+
+def test_startup_version_marker_logger_pinned_to_info():
+    """The route-hit and startup version markers ride an INFO-pinned child
+    logger so they survive a global LOG_LEVEL=WARNING in production."""
+    import logging
+
+    from services.api.app import main as api_main
+
+    assert api_main._quicknode_streams_logger.level == logging.INFO
 
 
 # ---------------------------------------------------------------------------
