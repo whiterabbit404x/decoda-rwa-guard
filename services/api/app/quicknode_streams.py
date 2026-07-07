@@ -16,6 +16,7 @@ already wrote).
 """
 from __future__ import annotations
 
+import gzip
 import hashlib
 import hmac
 import json
@@ -33,12 +34,58 @@ BASE_CHAIN_ID = 8453
 BASE_CHAIN_NETWORK = 'base'
 QUICKNODE_STREAM_SOURCE = 'quicknode_stream'
 
+# QuickNode Streams signs nonce + timestamp + raw payload bytes with
+# HMAC-SHA256 (hex digest) keyed by the Stream's security token, delivered
+# via these three headers. See:
+# https://www.quicknode.com/guides/quicknode-products/streams/validating-incoming-streams-webhook-messages
+QUICKNODE_NONCE_HEADER = 'x-qn-nonce'
+QUICKNODE_TIMESTAMP_HEADER = 'x-qn-timestamp'
+QUICKNODE_SIGNATURE_HEADER = 'x-qn-signature'
 
-def verify_quicknode_stream_signature(*, raw_body: bytes, signature_header: str | None) -> None:
-    """Verify a QuickNode Streams HMAC-SHA256 signature over the raw request body.
+# QuickNode's docs don't publish a fixed tolerance; this bounds replay of a
+# captured (nonce, timestamp, signature, body) tuple to a configurable window.
+DEFAULT_QUICKNODE_TIMESTAMP_TOLERANCE_SECONDS = 300
 
-    Fails closed: no configured secret or a missing/invalid signature always
-    rejects the request, never silently accepts an unverified payload.
+
+def _quicknode_timestamp_tolerance_seconds() -> int:
+    raw = (getenv('QUICKNODE_STREAMS_TIMESTAMP_TOLERANCE_SECONDS') or '').strip()
+    if not raw:
+        return DEFAULT_QUICKNODE_TIMESTAMP_TOLERANCE_SECONDS
+    try:
+        return int(raw)
+    except ValueError:
+        return DEFAULT_QUICKNODE_TIMESTAMP_TOLERANCE_SECONDS
+
+
+def _check_quicknode_timestamp_freshness(timestamp_raw: str) -> None:
+    try:
+        ts = float(timestamp_raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid QuickNode Streams timestamp header.') from exc
+    if ts > 10 ** 12:  # tolerate milliseconds in addition to seconds
+        ts = ts / 1000.0
+    now = datetime.now(timezone.utc).timestamp()
+    if abs(now - ts) > _quicknode_timestamp_tolerance_seconds():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='QuickNode Streams timestamp outside allowed tolerance.')
+
+
+def verify_quicknode_stream_signature(
+    *,
+    raw_body: bytes,
+    signature_header: str | None,
+    nonce_header: str | None = None,
+    timestamp_header: str | None = None,
+) -> None:
+    """Verify a QuickNode Streams HMAC-SHA256 signature.
+
+    QuickNode signs ``nonce + timestamp + raw_body`` (raw wire bytes, i.e.
+    still gzip-compressed if Content-Encoding: gzip was used) with
+    HMAC-SHA256 keyed by the Stream's security token, hex-encoded, and
+    delivered via the X-QN-Nonce / X-QN-Timestamp / X-QN-Signature headers.
+
+    Fails closed: no configured secret, a missing nonce/timestamp/signature
+    header, a stale/future timestamp, or an invalid signature always rejects
+    the request, never silently accepts an unverified payload.
     """
     secret = (getenv('QUICKNODE_STREAMS_SECRET') or '').strip()
     if not secret:
@@ -46,14 +93,36 @@ def verify_quicknode_stream_signature(*, raw_body: bytes, signature_header: str 
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail='QuickNode Streams webhook is not configured (QUICKNODE_STREAMS_SECRET missing).',
         )
-    if not signature_header or not signature_header.strip():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Missing QuickNode Streams signature header.')
-    provided = signature_header.strip()
-    if provided.lower().startswith('sha256='):
-        provided = provided[len('sha256='):]
-    expected = hmac.new(secret.encode('utf-8'), raw_body, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(provided.strip().lower(), expected.lower()):
+    nonce = (nonce_header or '').strip()
+    timestamp_raw = (timestamp_header or '').strip()
+    signature = (signature_header or '').strip()
+    if not nonce or not timestamp_raw or not signature:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Missing QuickNode Streams signature headers (X-QN-Nonce/X-QN-Timestamp/X-QN-Signature).',
+        )
+    _check_quicknode_timestamp_freshness(timestamp_raw)
+    if signature.lower().startswith('sha256='):
+        signature = signature[len('sha256='):]
+    signing_input = nonce.encode('utf-8') + timestamp_raw.encode('utf-8') + raw_body
+    expected = hmac.new(secret.encode('utf-8'), signing_input, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature.strip().lower(), expected.lower()):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid QuickNode Streams signature.')
+
+
+def _maybe_gunzip_quicknode_body(raw_body: bytes, content_encoding: str | None) -> bytes:
+    """Decompress a gzip-encoded QuickNode Streams body.
+
+    Must only be called *after* signature verification: the signature is
+    computed over the raw wire bytes (compressed, when Content-Encoding is
+    gzip), not the decompressed payload.
+    """
+    if (content_encoding or '').strip().lower() != 'gzip':
+        return raw_body
+    try:
+        return gzip.decompress(raw_body)
+    except OSError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid gzip-encoded QuickNode Streams payload.') from exc
 
 
 def _hex_or_int(value: Any) -> int | None:
@@ -249,11 +318,24 @@ def _persist_quicknode_wallet_transfer(connection: Any, *, target: dict[str, Any
     }
 
 
-def process_quicknode_base_stream_webhook(*, raw_body: bytes, signature_header: str | None) -> dict[str, Any]:
+def process_quicknode_base_stream_webhook(
+    *,
+    raw_body: bytes,
+    signature_header: str | None,
+    nonce_header: str | None = None,
+    timestamp_header: str | None = None,
+    content_encoding: str | None = None,
+) -> dict[str, Any]:
     """Verify, parse, match, and persist a QuickNode Streams Base webhook payload."""
-    verify_quicknode_stream_signature(raw_body=raw_body, signature_header=signature_header)
+    verify_quicknode_stream_signature(
+        raw_body=raw_body,
+        signature_header=signature_header,
+        nonce_header=nonce_header,
+        timestamp_header=timestamp_header,
+    )
+    body_bytes = _maybe_gunzip_quicknode_body(raw_body, content_encoding)
     try:
-        body = json.loads(raw_body.decode('utf-8') or '{}')
+        body = json.loads(body_bytes.decode('utf-8') or '{}')
     except (UnicodeDecodeError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid JSON payload.') from exc
     raw_txs = _extract_tx_dicts(body)
