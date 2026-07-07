@@ -22,6 +22,7 @@ import hmac
 import json
 import logging
 import uuid
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from os import getenv
 from typing import Any
@@ -44,11 +45,17 @@ logger.setLevel(logging.INFO)
 # quicknode_streams_webhook_version=... startup log alone (emitted by
 # services/api/app/main.py). Lets an operator confirm the deployed API commit
 # actually includes this code without shell access to the container.
-QUICKNODE_STREAMS_WEBHOOK_VERSION = '2026-07-07-quicknode-stream-signature-failed-401-v3'
+QUICKNODE_STREAMS_WEBHOOK_VERSION = '2026-07-07-quicknode-stream-nested-envelope-summary-v4'
 
 BASE_CHAIN_ID = 8453
 BASE_CHAIN_NETWORK = 'base'
 QUICKNODE_STREAM_SOURCE = 'quicknode_stream'
+
+# Cap on per-tx quicknode_stream_no_match_detail lines emitted for a single
+# payload, so a misconfigured/unfiltered stream (a whole block of unrelated
+# transactions) cannot flood Railway logs. The aggregate quicknode_stream_no_match
+# line is always emitted regardless of this cap.
+_NO_MATCH_DETAIL_LOG_LIMIT = 25
 
 # QuickNode Streams signs nonce + timestamp + raw payload bytes with
 # HMAC-SHA256 (hex digest) keyed by the Stream's security token, delivered
@@ -239,11 +246,40 @@ def _log_payload_shape(body: Any) -> None:
     )
 
 
+def _iter_stream_entries(body: Any) -> Iterator[dict[str, Any]]:
+    """Yield candidate stream-entry dicts from an arbitrarily list-nested body.
+
+    QuickNode Streams delivers either the dataset output array directly, or a
+    ``{"data": [...], "metadata": {...}}`` envelope; with some batch/filter
+    configurations ``data`` is nested one extra level (a list of lists). Walk
+    lists to any depth and unwrap a single ``data`` envelope, yielding each dict
+    entry, so a nested batch shape still produces transactions instead of
+    silently normalizing to zero. A dict that is *not* an envelope (no
+    list/dict ``data`` key) is yielded as-is, so a flat tx object, a block
+    object, or a ``{"block": ..., "receipts": ...}`` entry are all preserved —
+    a tx's own ``data``/``input`` calldata (a hex string) is never descended
+    into.
+    """
+    if isinstance(body, dict):
+        data = body.get('data')
+        if isinstance(data, (list, dict)):
+            yield from _iter_stream_entries(data)
+            return
+        yield body
+        return
+    if isinstance(body, list):
+        for item in body:
+            if isinstance(item, (list, dict)):
+                yield from _iter_stream_entries(item)
+        return
+
+
 def _extract_tx_dicts(body: Any) -> list[dict[str, Any]]:
     """Flatten a QuickNode Streams Base payload into a list of raw tx dicts.
 
     Accepts a single tx object, a list of tx objects, a ``{"data": [...]}``
-    envelope, or block-shaped entries.
+    envelope (including one nested an extra list level), or block-shaped
+    entries.
 
     Supports both the real QuickNode "Block with Receipts" dataset shape
     (``{"block": {..., "transactions": [...]}, "receipts": [...]}``, batch
@@ -254,19 +290,8 @@ def _extract_tx_dicts(body: Any) -> list[dict[str, Any]]:
     transaction hash) are merged onto each transaction without overwriting
     fields the transaction already provides.
     """
-    if isinstance(body, dict):
-        if isinstance(body.get('data'), list):
-            body = body['data']
-        elif isinstance(body.get('data'), dict):
-            body = [body['data']]
-        else:
-            body = [body]
-    if not isinstance(body, list):
-        return []
     out: list[dict[str, Any]] = []
-    for item in body:
-        if not isinstance(item, dict):
-            continue
+    for item in _iter_stream_entries(body):
         block = item.get('block') if isinstance(item.get('block'), dict) else None
         transactions = block.get('transactions') if block is not None and isinstance(block.get('transactions'), list) else None
         if transactions is None and isinstance(item.get('transactions'), list):
@@ -360,6 +385,23 @@ def _load_all_base_wallet_targets(connection: Any) -> list[dict[str, Any]]:
     if not targets:
         logger.info('quicknode_stream_no_targets_loaded')
     return targets
+
+
+def _wallet_fingerprint(wallet: str | None) -> str:
+    """Compact, non-reversible tag for a monitored wallet, safe to log.
+
+    Returns ``<last4>/<hash8>`` where hash8 is the first 8 hex chars of the
+    SHA-256 of the lowercased address. Enough to correlate a no-match against a
+    specific configured target from Railway logs (task requirement: on no-match
+    log "target wallet hash/last4 only, not full secrets") without printing the
+    full monitored wallet.
+    """
+    normalized = (wallet or '').strip().lower()
+    if not normalized:
+        return 'none'
+    last4 = normalized[-4:]
+    hash8 = hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:8]
+    return f'{last4}/{hash8}'
 
 
 def _match_targets_for_tx(
@@ -459,6 +501,44 @@ def _persist_quicknode_wallet_transfer(connection: Any, *, target: dict[str, Any
     }
 
 
+def _summary_response(
+    *,
+    tx_count: int,
+    targets_loaded: int,
+    matched: int,
+    persisted: int,
+    duplicates: int,
+    skipped: int,
+    results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build and log the safe aggregate outcome summary for a processed webhook.
+
+    Emitted (as ``quicknode_stream_summary``) and returned in the 200 body for
+    every successfully verified QuickNode POST, so the outcome —
+    tx_count/targets_loaded/matched/persisted/duplicates/skipped — is provable
+    from Railway logs *and* visible to QuickNode in the response. Counts only:
+    never wallet addresses, tx hashes, or secrets. ``ok`` is True because the
+    request was verified and processed; it does not assert that any transfer
+    matched (that is exactly what ``matched``/``persisted`` report).
+    """
+    logger.info(
+        'quicknode_stream_summary ok=True tx_count=%s targets_loaded=%s matched=%s '
+        'persisted=%s duplicates=%s skipped=%s',
+        tx_count, targets_loaded, matched, persisted, duplicates, skipped,
+    )
+    return {
+        'received': True,
+        'ok': True,
+        'tx_count': tx_count,
+        'targets_loaded': targets_loaded,
+        'matched': matched,
+        'persisted': persisted,
+        'duplicates': duplicates,
+        'skipped': skipped,
+        'results': results,
+    }
+
+
 def process_quicknode_base_stream_webhook(
     *,
     raw_body: bytes,
@@ -520,18 +600,41 @@ def process_quicknode_base_stream_webhook(
     if not normalized_txs:
         reason = 'no_raw_transactions_extracted' if not raw_txs else 'raw_transactions_missing_required_fields'
         logger.info('quicknode_stream_no_transactions_normalized reason=%s', reason)
-        return {'received': True, 'results': []}
+        return _summary_response(
+            tx_count=0, targets_loaded=0, matched=0, persisted=0, duplicates=0, skipped=0, results=[],
+        )
 
     results: list[dict[str, Any]] = []
     match_count = 0
+    persisted_count = 0
+    duplicate_count = 0
+    skipped_count = 0
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         targets = _load_all_base_wallet_targets(connection)
+        # Computed once per payload: last4/hash8 tags for every loaded target
+        # wallet, so a no-match tx can be diagnosed against the configured
+        # targets from logs without ever printing a full monitored wallet.
+        target_fingerprints = [_wallet_fingerprint(resolve_monitored_wallet(t)) for t in targets]
+        no_match_logged = 0
         for normalized in normalized_txs:
             matched_targets = _match_targets_for_tx(
                 targets, from_address=normalized['from_address'], to_address=normalized['to_address'],
             )
             if not matched_targets:
+                skipped_count += 1
+                # Per-tx no-match diagnostics (task: on no-match "log the
+                # normalized from/to addresses and target wallet hash/last4
+                # only"). from/to come from the on-chain payload (public); the
+                # monitored wallets are fingerprinted, never printed in full.
+                # Capped so an unfiltered stream cannot flood Railway logs.
+                if no_match_logged < _NO_MATCH_DETAIL_LOG_LIMIT:
+                    logger.info(
+                        'quicknode_stream_no_match_detail tx_hash=%s from=%s to=%s target_wallets=%s',
+                        normalized['tx_hash'], normalized['from_address'],
+                        normalized.get('to_address'), target_fingerprints,
+                    )
+                    no_match_logged += 1
                 results.append({'tx_hash': normalized['tx_hash'], 'status': 'no_match'})
                 continue
             for target in matched_targets:
@@ -545,11 +648,13 @@ def process_quicknode_base_stream_webhook(
                 )
                 outcome = _persist_quicknode_wallet_transfer(connection, target=target, tx=normalized)
                 if outcome['status'] == 'processed':
+                    persisted_count += 1
                     logger.info(
                         'quicknode_stream_event_persisted detected_by=%s tx_hash=%s target_id=%s',
                         QUICKNODE_STREAM_SOURCE, normalized['tx_hash'], target['id'],
                     )
                 elif outcome['status'] == 'duplicate_suppressed':
+                    duplicate_count += 1
                     logger.info(
                         'quicknode_stream_duplicate_suppressed tx_hash=%s existing_detected_by=%s',
                         normalized['tx_hash'], outcome.get('existing_detected_by'),
@@ -560,4 +665,7 @@ def process_quicknode_base_stream_webhook(
                 'quicknode_stream_no_match tx_count=%s target_count=%s',
                 len(normalized_txs), len(targets),
             )
-    return {'received': True, 'results': results}
+        return _summary_response(
+            tx_count=len(normalized_txs), targets_loaded=len(targets), matched=match_count,
+            persisted=persisted_count, duplicates=duplicate_count, skipped=skipped_count, results=results,
+        )
