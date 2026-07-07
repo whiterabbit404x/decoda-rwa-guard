@@ -32,6 +32,19 @@ from services.api.app.evm_activity_provider import resolve_monitored_wallet
 from services.api.app.pilot import ensure_pilot_schema, pg_connection
 
 logger = logging.getLogger(__name__)
+# These quicknode_stream_* lines are mandatory operational evidence: the
+# product requires every QuickNode POST to be provable from Railway logs, so
+# pin this module to INFO even if a global LOG_LEVEL=WARNING is configured.
+# The lines only ever contain sizes, counts, opaque UUIDs, and booleans — never
+# payload bodies or secrets — so this cannot leak customer data at INFO.
+logger.setLevel(logging.INFO)
+
+# Bumped whenever this webhook's ingestion or diagnostic-logging contract
+# changes, so a running deployment can be matched to source from the
+# quicknode_streams_webhook_version=... startup log alone (emitted by
+# services/api/app/main.py). Lets an operator confirm the deployed API commit
+# actually includes this code without shell access to the container.
+QUICKNODE_STREAMS_WEBHOOK_VERSION = '2026-07-07-quicknode-stream-diagnostic-logging-v2'
 
 BASE_CHAIN_ID = 8453
 BASE_CHAIN_NETWORK = 'base'
@@ -433,6 +446,19 @@ def process_quicknode_base_stream_webhook(
     content_encoding: str | None = None,
 ) -> dict[str, Any]:
     """Verify, parse, match, and persist a QuickNode Streams Base webhook payload."""
+    # First handler line, logged *before* signature verification so a handler
+    # entry is provable from logs even when verification then rejects the
+    # request (missing/invalid signature, stale timestamp). Only sizes and
+    # header-presence booleans — never the body or any secret.
+    logger.info(
+        'quicknode_stream_handler_started raw_body_bytes=%s content_encoding=%s '
+        'has_signature=%s has_nonce=%s has_timestamp=%s',
+        len(raw_body),
+        (content_encoding or '').strip().lower() or None,
+        bool((signature_header or '').strip()),
+        bool((nonce_header or '').strip()),
+        bool((timestamp_header or '').strip()),
+    )
     verify_quicknode_stream_signature(
         raw_body=raw_body,
         signature_header=signature_header,
@@ -444,6 +470,10 @@ def process_quicknode_base_stream_webhook(
         body = json.loads(body_bytes.decode('utf-8') or '{}')
     except (UnicodeDecodeError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid JSON payload.') from exc
+    logger.info(
+        'quicknode_stream_json_parsed decoded_bytes=%s decoded_type=%s',
+        len(body_bytes), type(body).__name__,
+    )
     _log_payload_shape(body)
 
     raw_txs = _extract_tx_dicts(body)
@@ -494,8 +524,8 @@ def process_quicknode_base_stream_webhook(
                 outcome = _persist_quicknode_wallet_transfer(connection, target=target, tx=normalized)
                 if outcome['status'] == 'processed':
                     logger.info(
-                        'quicknode_stream_event_persisted detected_by=%s tx_hash=%s',
-                        QUICKNODE_STREAM_SOURCE, normalized['tx_hash'],
+                        'quicknode_stream_event_persisted detected_by=%s tx_hash=%s target_id=%s',
+                        QUICKNODE_STREAM_SOURCE, normalized['tx_hash'], target['id'],
                     )
                 elif outcome['status'] == 'duplicate_suppressed':
                     logger.info(

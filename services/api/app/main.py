@@ -29,7 +29,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from services.api.app.domains import alert_stream, alert_delivery
 from services.api.app.domains.rate_limit import rate_limit_connectivity
-from services.api.app.quicknode_streams import process_quicknode_base_stream_webhook
+from services.api.app.quicknode_streams import (
+    QUICKNODE_STREAMS_WEBHOOK_VERSION,
+    process_quicknode_base_stream_webhook,
+)
 
 from services.api.app.pilot import (
     accept_workspace_invitation,
@@ -322,6 +325,15 @@ load_env_file()
 
 logger = logging.getLogger(__name__)
 configure_logging(service='api')
+
+# Mandatory QuickNode Streams webhook diagnostics. Kept at INFO on a dedicated
+# child logger so `quicknode_stream_route_hit` (every POST) and the startup
+# `quicknode_streams_webhook_version=...` marker are always provable from
+# Railway logs, even when the global log level is raised to WARNING — without
+# forcing the rest of the API's INFO logs on. See CLAUDE.md truthfulness rules:
+# a QuickNode POST 200 with no quicknode_stream_* line is a bug.
+_quicknode_streams_logger = logging.getLogger(f'{__name__}.quicknode_streams')
+_quicknode_streams_logger.setLevel(logging.INFO)
 
 SERVICE_NAME = 'api'
 PORT = int(os.getenv('PORT', 8000))
@@ -1497,7 +1509,28 @@ def fixture_diagnostics() -> dict[str, Any]:
     }
 
 
+def emit_quicknode_streams_webhook_version() -> None:
+    """Log a stable marker proving which QuickNode Streams webhook build is live.
+
+    Emitted once at startup so an operator can confirm from Railway logs alone
+    that the deployed API commit actually includes the current webhook
+    ingestion + diagnostic-logging code (services/api/app/quicknode_streams.py),
+    without shell access to the running container. If a QuickNode POST returns
+    200 but emits no quicknode_stream_* lines, this marker's git_commit tells
+    you immediately whether the deploy is simply stale.
+    """
+    _quicknode_streams_logger.info(
+        'quicknode_streams_webhook_version=%s git_commit=%s build_id=%s',
+        QUICKNODE_STREAMS_WEBHOOK_VERSION,
+        BACKEND_GIT_COMMIT or 'unavailable',
+        BACKEND_BUILD_ID,
+    )
+
+
 def emit_startup_fixture_diagnostics() -> None:
+    # Emitted first, outside the try below, so a fixture-diagnostics failure can
+    # never suppress the deployed-build marker.
+    emit_quicknode_streams_webhook_version()
     try:
         diagnostics = fixture_diagnostics()
         identity = runtime_environment_identity()
@@ -3823,8 +3856,9 @@ async def quicknode_streams_base_webhook(request: Request) -> dict[str, Any]:
     content_encoding = request.headers.get('content-encoding')
     # Mandatory route-hit marker, logged before any return (including
     # signature/validation failures) so every QuickNode POST 200 (and every
-    # rejected one) is provable from logs alone.
-    logger.info(
+    # rejected one) is provable from logs alone. Uses the INFO-pinned QuickNode
+    # diagnostics logger so it survives a global LOG_LEVEL=WARNING.
+    _quicknode_streams_logger.info(
         'quicknode_stream_route_hit content_length=%s content_encoding=%s '
         'has_x_qn_nonce=%s has_x_qn_timestamp=%s has_x_qn_signature=%s',
         len(raw), content_encoding, bool(nonce), bool(timestamp), bool(signature),
