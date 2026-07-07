@@ -951,3 +951,234 @@ def test_route_post_valid_signature_reaches_handler(monkeypatch: pytest.MonkeyPa
     )
     assert response.status_code == 200
     assert response.json() == {'received': True, 'results': []}
+
+
+# ---------------------------------------------------------------------------
+# Envelope / nested-list payload shapes. QuickNode Streams wraps the dataset
+# output in {"data": [...], "metadata": {...}} and, with some batch/filter
+# configs, nests `data` one extra list level. Both must still yield
+# transactions — a regression guard for the production incident where a POST
+# returned 200 OK but silently normalized to tx_count=0, so detected_by stayed
+# stable_rpc_polling and no QuickNode Stream row ever appeared.
+# ---------------------------------------------------------------------------
+
+def test_extract_tx_dicts_handles_data_envelope_shape():
+    tx = {'hash': TX_HASH, 'from': WALLET_ADDR, 'to': COUNTERPARTY, 'value': '0x1'}
+    payload = {'data': _block_with_receipts_payload(tx=tx), 'metadata': {'dataset': 'block_with_receipts'}}
+    out = qn._extract_tx_dicts(payload)
+    assert len(out) == 1
+    assert out[0]['hash'] == TX_HASH
+    assert out[0]['block_number'] == '0x2d1a2c6'
+
+
+def test_extract_tx_dicts_handles_nested_list_data_envelope():
+    tx = {'hash': TX_HASH, 'from': WALLET_ADDR, 'to': COUNTERPARTY, 'value': '0x1'}
+    # data nested one extra list level: {"data": [[ {block, receipts} ]]}
+    payload = {'data': [_block_with_receipts_payload(tx=tx)], 'metadata': {}}
+    out = qn._extract_tx_dicts(payload)
+    assert len(out) == 1
+    assert out[0]['hash'] == TX_HASH
+
+
+def test_extract_tx_dicts_does_not_descend_into_tx_data_calldata():
+    # A flat tx whose own `data` is hex calldata must be treated as a tx, not an
+    # envelope to unwrap (otherwise the tx would be dropped).
+    tx = {'hash': TX_HASH, 'from': WALLET_ADDR, 'to': COUNTERPARTY, 'value': '0x1', 'data': '0xabcdef'}
+    out = qn._extract_tx_dicts([tx])
+    assert len(out) == 1
+    assert out[0]['hash'] == TX_HASH
+
+
+def test_data_envelope_shape_matched_and_persisted(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    target = _make_target()
+    conn = _FakeConnection(targets=[target])
+    tx = {'hash': TX_HASH, 'from': WALLET_ADDR, 'to': COUNTERPARTY, 'value': '0xde0b6b3a7640000'}
+    payload = {'data': _block_with_receipts_payload(tx=tx), 'metadata': {'network': 'base-mainnet'}}
+    raw = json.dumps(payload).encode('utf-8')
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None):
+        result = qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert result['results'][0]['status'] == 'processed'
+    assert result['results'][0]['detected_by'] == 'quicknode_stream'
+    assert result['tx_count'] == 1
+    assert result['persisted'] == 1
+    assert len(conn.telemetry_inserts) == 1
+
+
+# ---------------------------------------------------------------------------
+# Response summary: every processed (200) QuickNode POST returns a safe
+# aggregate {ok, tx_count, targets_loaded, matched, persisted, duplicates,
+# skipped}, and logs the same as quicknode_stream_summary.
+# ---------------------------------------------------------------------------
+
+def test_summary_response_on_match_and_persist(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    target = _make_target()
+    conn = _FakeConnection(targets=[target])
+    tx = {'tx_hash': TX_HASH, 'from': WALLET_ADDR, 'to': COUNTERPARTY, 'value': '1'}
+    raw = _body(tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None):
+        result = qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert result['ok'] is True
+    assert result['tx_count'] == 1
+    assert result['targets_loaded'] == 1
+    assert result['matched'] == 1
+    assert result['persisted'] == 1
+    assert result['duplicates'] == 0
+    assert result['skipped'] == 0
+
+
+def test_summary_response_on_no_match(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    target = _make_target()
+    conn = _FakeConnection(targets=[target])
+    tx = {'tx_hash': TX_HASH, 'from': UNRELATED_ADDR, 'to': COUNTERPARTY, 'value': '1'}
+    raw = _body(tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None):
+        result = qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert result['ok'] is True
+    assert result['tx_count'] == 1
+    assert result['targets_loaded'] == 1
+    assert result['matched'] == 0
+    assert result['persisted'] == 0
+    assert result['skipped'] == 1
+
+
+def test_summary_response_on_duplicate(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    target = _make_target()
+    existing_row = {'id': str(uuid.uuid4()), 'event_type': 'native_transfer', 'detected_by': 'stable_rpc_polling'}
+    conn = _FakeConnection(targets=[target], existing_telemetry=existing_row)
+    tx = {'tx_hash': TX_HASH, 'from': WALLET_ADDR, 'to': COUNTERPARTY, 'value': '1'}
+    raw = _body(tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None):
+        result = qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert result['matched'] == 1
+    assert result['duplicates'] == 1
+    assert result['persisted'] == 0
+    assert result['skipped'] == 0
+
+
+def test_summary_response_when_no_transactions(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    raw = _body({'unrelated': 'field'})
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    result = qn.process_quicknode_base_stream_webhook(
+        raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+    )
+    assert result['ok'] is True
+    assert result['tx_count'] == 0
+    assert result['targets_loaded'] == 0
+    assert result['matched'] == 0
+    assert result['persisted'] == 0
+    assert result['results'] == []
+
+
+def test_summary_log_emitted(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    target = _make_target()
+    conn = _FakeConnection(targets=[target])
+    tx = {'tx_hash': TX_HASH, 'from': WALLET_ADDR, 'to': COUNTERPARTY, 'value': '1'}
+    raw = _body(tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
+         caplog.at_level('INFO', logger=_QN_LOGGER):
+        qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert (
+        'quicknode_stream_summary ok=True tx_count=1 targets_loaded=1 matched=1 '
+        'persisted=1 duplicates=0 skipped=0'
+    ) in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# No-match diagnostics: on a no-match, log the normalized from/to (public
+# on-chain addresses) and the target wallet fingerprint (last4/hash8) only —
+# never the full monitored wallet.
+# ---------------------------------------------------------------------------
+
+def test_no_match_detail_logs_from_to_and_fingerprint_not_full_wallet(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    target = _make_target()  # monitors WALLET_ADDR
+    conn = _FakeConnection(targets=[target])
+    tx = {'tx_hash': TX_HASH, 'from': UNRELATED_ADDR, 'to': COUNTERPARTY, 'value': '1'}
+    raw = _body(tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
+         caplog.at_level('INFO', logger=_QN_LOGGER):
+        qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert 'quicknode_stream_no_match_detail' in caplog.text
+    assert f'from={UNRELATED_ADDR}' in caplog.text
+    assert f'to={COUNTERPARTY}' in caplog.text
+    # The monitored wallet's last4 appears as a fingerprint, but the FULL
+    # monitored wallet address must never be printed.
+    assert WALLET_ADDR not in caplog.text
+    assert f'{WALLET_ADDR[-4:]}/' in caplog.text
+
+
+def test_no_match_detail_log_is_capped(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    target = _make_target()
+    conn = _FakeConnection(targets=[target])
+    txs = [
+        {'hash': '0x' + f'{i:064x}', 'from': UNRELATED_ADDR, 'to': COUNTERPARTY, 'value': '0x1'}
+        for i in range(qn._NO_MATCH_DETAIL_LOG_LIMIT + 5)
+    ]
+    payload = [{'block': {'number': '0x1', 'transactions': txs}, 'receipts': []}]
+    raw = json.dumps(payload).encode('utf-8')
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
+         caplog.at_level('INFO', logger=_QN_LOGGER):
+        result = qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert result['skipped'] == qn._NO_MATCH_DETAIL_LOG_LIMIT + 5
+    # Per-tx detail is capped; the aggregate no_match line is always emitted.
+    assert caplog.text.count('quicknode_stream_no_match_detail') == qn._NO_MATCH_DETAIL_LOG_LIMIT
+    assert 'quicknode_stream_no_match tx_count=' in caplog.text
+
+
+def test_wallet_fingerprint_is_last4_slash_hash_and_hides_full_wallet():
+    fp = qn._wallet_fingerprint(WALLET_ADDR)
+    last4, sep, hash8 = fp.partition('/')
+    assert sep == '/'
+    assert last4 == WALLET_ADDR[-4:]
+    assert len(hash8) == 8
+    assert WALLET_ADDR not in fp
+
+
+def test_wallet_fingerprint_none_for_empty():
+    assert qn._wallet_fingerprint(None) == 'none'
+    assert qn._wallet_fingerprint('') == 'none'
