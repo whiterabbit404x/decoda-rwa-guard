@@ -3821,6 +3821,14 @@ async def quicknode_streams_base_webhook(request: Request) -> dict[str, Any]:
     nonce = request.headers.get('x-qn-nonce')
     timestamp = request.headers.get('x-qn-timestamp')
     content_encoding = request.headers.get('content-encoding')
+    # Mandatory route-hit marker, logged before any return (including
+    # signature/validation failures) so every QuickNode POST 200 (and every
+    # rejected one) is provable from logs alone.
+    logger.info(
+        'quicknode_stream_route_hit content_length=%s content_encoding=%s '
+        'has_x_qn_nonce=%s has_x_qn_timestamp=%s has_x_qn_signature=%s',
+        len(raw), content_encoding, bool(nonce), bool(timestamp), bool(signature),
+    )
     return with_auth_schema_json(lambda: process_quicknode_base_stream_webhook(
         raw_body=raw,
         signature_header=signature,
