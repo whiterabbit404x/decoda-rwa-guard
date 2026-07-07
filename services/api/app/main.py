@@ -3860,7 +3860,7 @@ async def quicknode_streams_base_webhook(request: Request) -> dict[str, Any]:
     # diagnostics logger so it survives a global LOG_LEVEL=WARNING.
     _quicknode_streams_logger.info(
         'quicknode_stream_route_hit content_length=%s content_encoding=%s '
-        'has_x_qn_nonce=%s has_x_qn_timestamp=%s has_x_qn_signature=%s',
+        'has_nonce=%s has_timestamp=%s has_signature=%s',
         len(raw), content_encoding, bool(nonce), bool(timestamp), bool(signature),
     )
     return with_auth_schema_json(lambda: process_quicknode_base_stream_webhook(
