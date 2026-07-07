@@ -30,6 +30,13 @@ from typing import Any
 from fastapi import HTTPException, status
 
 from services.api.app.evm_activity_provider import resolve_monitored_wallet
+# Reuse the exact asset-context loader the stable RPC polling worker uses to
+# resolve a wallet target whose monitored address lives on the linked asset
+# (monitoring_runner.process_monitoring_target). Importing it here keeps QuickNode's
+# wallet resolution byte-for-byte consistent with stable polling instead of
+# forking a second resolver that could drift. No import cycle: monitoring_runner
+# does not import quicknode_streams (only a comment in worker_status references it).
+from services.api.app.monitoring_runner import _load_target_asset_context
 from services.api.app.pilot import ensure_pilot_schema, pg_connection
 
 logger = logging.getLogger(__name__)
@@ -366,17 +373,90 @@ WHERE deleted_at IS NULL
 """
 
 
+def _resolve_target_monitored_wallet(
+    connection: Any, target: dict[str, Any],
+) -> tuple[str | None, str, str | None]:
+    """Resolve a target's monitored wallet from the same sources stable RPC polling uses.
+
+    Returns ``(wallet, source, reason)``:
+
+    * ``wallet``  – lowercase 0x address, or None when none is configured anywhere.
+    * ``source``  – ``target_config`` (canonical ``wallet_address``, an address typed
+      into ``contract_identifier``, or ``target_metadata``), ``asset`` (resolved only
+      after loading the linked asset's context, exactly as the stable RPC polling
+      worker does), or ``none``.
+    * ``reason``  – set only when ``wallet`` is None, explaining why it is missing.
+
+    QuickNode's target query (:data:`_BASE_WALLET_TARGETS_SQL`) loads the raw target
+    row but does NOT build ``asset_context``, so a wallet target whose monitored
+    address lives on the linked asset — the canonical RWA configuration — resolved
+    to None here until the asset context was loaded. That was the production defect:
+    ``monitored_wallets_count=0`` / ``target_wallets=['none']`` even though stable
+    polling resolved the very same wallet. This reuses ``resolve_monitored_wallet``
+    plus stable polling's ``_load_target_asset_context`` so both paths agree, and
+    writes the resolved wallet back onto ``target['wallet_address']`` so the matcher,
+    persistence, and diagnostics all observe the same wallet (mirroring
+    monitoring_runner writing the fallback wallet back onto the target).
+    """
+    # 1. Direct resolution from the already-loaded target row (no DB round-trip):
+    #    canonical wallet_address, an address typed into contract_identifier, or
+    #    target_metadata. This is the fast path for correctly configured targets.
+    wallet = resolve_monitored_wallet(target)
+    if wallet:
+        target['wallet_address'] = wallet
+        return wallet, 'target_config', None
+    # 2. Fall back to the linked asset's identifier, loading the asset context the
+    #    same workspace-scoped way stable RPC polling does. Only attempted for a
+    #    target that actually links an asset and has no context attached yet.
+    asset_id = target.get('asset_id')
+    if asset_id and target.get('asset_context') is None:
+        asset_context = _load_target_asset_context(
+            connection, workspace_id=str(target.get('workspace_id')), target=target,
+        )
+        if isinstance(asset_context, dict):
+            target['asset_context'] = asset_context
+            wallet = resolve_monitored_wallet(target)
+            if wallet:
+                target['wallet_address'] = wallet
+                return wallet, 'asset', None
+    # 3. No valid wallet in the target config or on the linked asset. Report a
+    #    truthful reason so the miss is diagnosable from logs — never faked.
+    reason = 'no_asset_linked' if not asset_id else 'no_wallet_in_target_or_asset'
+    return None, 'none', reason
+
+
 def _load_all_base_wallet_targets(connection: Any) -> list[dict[str, Any]]:
     """Load every active Base wallet target once per payload and log the result.
 
     Loaded once per webhook call (not once per transaction) since a single
     shared QuickNode Streams webhook covers every workspace's Base wallets —
     the same active-target set is checked against every transaction in the
-    payload. Logs target_ids (opaque UUIDs), never secrets.
+    payload. Each target's monitored wallet is resolved (and written back onto
+    the target) the same way stable RPC polling resolves it, so a wallet stored
+    on the linked asset is matched here too. Logs target_ids (opaque UUIDs) and
+    per-target resolution facts (wallet last4 only), never full wallets or secrets.
     """
     rows = connection.execute(_BASE_WALLET_TARGETS_SQL).fetchall()
     targets = [dict(row) for row in rows]
-    monitored_wallets_count = sum(1 for target in targets if resolve_monitored_wallet(target) is not None)
+    monitored_wallets_count = 0
+    for target in targets:
+        wallet, source, reason = _resolve_target_monitored_wallet(connection, target)
+        if wallet is not None:
+            monitored_wallets_count += 1
+        # Per-target resolution evidence: proves whether each loaded target
+        # produced a monitored wallet and from which source, so a repeat of the
+        # monitored_wallets_count=0 incident is diagnosable from Railway logs
+        # alone. Only the wallet's last 4 chars are logged, never the full address.
+        logger.info(
+            'quicknode_stream_target_wallet_resolution target_id=%s asset_id=%s '
+            'wallet_present=%s wallet_last4=%s wallet_source=%s reason=%s',
+            target.get('id'),
+            target.get('asset_id') or 'none',
+            str(wallet is not None).lower(),
+            wallet[-4:] if wallet else 'none',
+            source,
+            reason or 'none',
+        )
     target_ids = [target.get('id') for target in targets]
     logger.info(
         'quicknode_stream_targets_loaded count=%s monitored_wallets_count=%s target_ids=%s',

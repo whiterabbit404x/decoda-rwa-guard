@@ -93,9 +93,19 @@ class _FakeConnection:
     elsewhere in this test suite (see test_wallet_transfer_telemetry_durability.py).
     """
 
-    def __init__(self, *, targets: list[dict], existing_telemetry: dict | None = None):
+    def __init__(
+        self,
+        *,
+        targets: list[dict],
+        existing_telemetry: dict | None = None,
+        asset_row: dict | None = None,
+    ):
         self._targets = targets
         self._existing_telemetry = existing_telemetry
+        # Served for _load_target_asset_context's `SELECT ... FROM assets` query,
+        # so a wallet target whose monitored wallet lives on the linked asset
+        # resolves through the real stable-polling resolver in these tests.
+        self._asset_row = asset_row
         self.telemetry_inserts: list[tuple] = []
         self.commit_calls = 0
 
@@ -103,6 +113,8 @@ class _FakeConnection:
         q = (query or '').strip().lower()
         if 'from targets' in q:
             return _Rows(self._targets)
+        if 'from assets' in q:
+            return _Rows([self._asset_row] if self._asset_row else [])
         if 'from telemetry_events' in q and 'select' in q:
             return _Rows([self._existing_telemetry] if self._existing_telemetry else [])
         if q.startswith('insert into telemetry_events'):
@@ -1182,3 +1194,270 @@ def test_wallet_fingerprint_is_last4_slash_hash_and_hides_full_wallet():
 def test_wallet_fingerprint_none_for_empty():
     assert qn._wallet_fingerprint(None) == 'none'
     assert qn._wallet_fingerprint('') == 'none'
+
+
+# ---------------------------------------------------------------------------
+# Monitored-wallet resolution from the linked asset — the reported production
+# defect. The active Base target loaded fine (targets_loaded count=1) but its
+# canonical wallet_address column was empty and the monitored wallet lived on
+# the linked asset, so QuickNode logged monitored_wallets_count=0 /
+# target_wallets=['none'] / matched=0 while stable RPC polling resolved the same
+# wallet. The fix reuses resolve_monitored_wallet + stable polling's
+# _load_target_asset_context so both paths agree. These tests pin that behavior.
+# ---------------------------------------------------------------------------
+
+# The exact target/wallet from the production incident report.
+PROD_TARGET_ID = 'e7851a52-8fb1-48cd-84a3-d033f591c5dd'
+
+
+def _make_wallet_on_asset_target(*, target_id: str | None = None, asset_id: str | None = None) -> dict:
+    """A wallet target with an EMPTY wallet_address whose monitored wallet is
+    carried on the linked asset — the shape that produced monitored_wallets_count=0."""
+    return {
+        'id': target_id or str(uuid.uuid4()),
+        'workspace_id': str(uuid.uuid4()),
+        'name': 'Treasury Base Wallet',
+        'target_type': 'wallet',
+        'chain_network': 'base',
+        'chain_id': 8453,
+        'wallet_address': None,          # canonical column empty (the bug trigger)
+        'contract_identifier': None,
+        'asset_id': asset_id or str(uuid.uuid4()),
+        'target_metadata': {},
+        'monitoring_enabled': True,
+        'enabled': True,
+        'is_active': True,
+    }
+
+
+def _asset_row(*, asset_id: str, wallet: str = WALLET_ADDR) -> dict:
+    """Asset row shaped like _load_target_asset_context's SELECT, carrying the
+    monitored wallet in asset_identifier — the same fallback location stable RPC
+    polling reads (see test_wallet_address_resolution.test_resolve_production_wallet_from_fallback)."""
+    return {
+        'id': asset_id,
+        'name': 'Treasury Wallet',
+        'asset_class': 'wallet',
+        'asset_symbol': 'TRW',
+        'identifier': wallet,
+        'asset_identifier': wallet,
+        'token_contract_address': None,
+        'chain_network': 'base',
+        'treasury_ops_wallets': [],
+        'custody_wallets': [],
+        'oracle_sources': [],
+        'venue_labels': [],
+        'expected_flow_patterns': [],
+        'expected_counterparties': [],
+        'expected_approval_patterns': {},
+        'expected_liquidity_baseline': {},
+        'expected_oracle_freshness_seconds': 0,
+        'expected_oracle_update_cadence_seconds': 0,
+        'baseline_status': None,
+        'baseline_source': None,
+        'baseline_updated_at': None,
+        'baseline_confidence': None,
+        'baseline_coverage': None,
+    }
+
+
+def test_resolve_target_wallet_from_linked_asset_matches_stable_polling_fixture():
+    """QuickNode resolves the monitored wallet from the linked asset — the same
+    asset_identifier fallback stable RPC polling uses — and writes it back onto
+    the target so the matcher/persistence observe the identical wallet."""
+    target = _make_wallet_on_asset_target(target_id=PROD_TARGET_ID)
+    conn = _FakeConnection(targets=[target], asset_row=_asset_row(asset_id=target['asset_id']))
+    # Empty canonical column: no direct resolution before the asset is loaded.
+    assert qn.resolve_monitored_wallet(dict(target)) is None
+    wallet, source, reason = qn._resolve_target_monitored_wallet(conn, target)
+    assert wallet == WALLET_ADDR
+    assert source == 'asset'
+    assert reason is None
+    assert target['wallet_address'] == WALLET_ADDR
+
+
+def test_resolve_target_wallet_from_canonical_column_is_target_config():
+    """A correctly configured wallet_address resolves directly (no asset load)."""
+    target = _make_target()  # wallet_address=WALLET_ADDR
+    conn = _FakeConnection(targets=[target], asset_row=None)
+    wallet, source, reason = qn._resolve_target_monitored_wallet(conn, target)
+    assert wallet == WALLET_ADDR
+    assert source == 'target_config'
+    assert reason is None
+
+
+def test_monitored_wallets_count_is_one_for_active_base_target_with_wallet_on_asset(
+    caplog: pytest.LogCaptureFixture,
+):
+    """Acceptance: targets_loaded count=1 monitored_wallets_count=1, and the
+    per-target resolution line proves wallet_present=true wallet_source=asset —
+    no longer the monitored_wallets_count=0 / target_wallets=['none'] incident."""
+    target = _make_wallet_on_asset_target(target_id=PROD_TARGET_ID)
+    conn = _FakeConnection(targets=[target], asset_row=_asset_row(asset_id=target['asset_id']))
+    with caplog.at_level('INFO', logger=_QN_LOGGER):
+        targets = qn._load_all_base_wallet_targets(conn)
+    assert len(targets) == 1
+    assert 'quicknode_stream_targets_loaded count=1 monitored_wallets_count=1' in caplog.text
+    assert (
+        f'quicknode_stream_target_wallet_resolution target_id={PROD_TARGET_ID} '
+        f'asset_id={target["asset_id"]} wallet_present=true '
+        f'wallet_last4={WALLET_ADDR[-4:]} wallet_source=asset reason=none'
+    ) in caplog.text
+    # The full monitored wallet must never be printed — only its last4.
+    assert WALLET_ADDR not in caplog.text
+
+
+def test_wallet_on_asset_matching_tx_persists_quicknode_stream(monkeypatch: pytest.MonkeyPatch):
+    """After the fix, a MetaMask transfer involving the asset-resolved wallet
+    matches and persists detected_by=quicknode_stream (UI would show
+    Detected by = QuickNode Stream instead of Stable RPC Polling)."""
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    target = _make_wallet_on_asset_target(target_id=PROD_TARGET_ID)
+    conn = _FakeConnection(targets=[target], asset_row=_asset_row(asset_id=target['asset_id']))
+    tx = {
+        'tx_hash': TX_HASH,
+        'from': WALLET_ADDR,
+        'to': COUNTERPARTY,
+        'value': '1000000000000000000',
+        'block_number': 47286578,
+        'chain_id': 8453,
+    }
+    raw = _body(tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None):
+        result = qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert result['targets_loaded'] == 1
+    assert result['matched'] == 1
+    assert result['persisted'] == 1
+    assert result['results'][0]['status'] == 'processed'
+    assert result['results'][0]['detected_by'] == 'quicknode_stream'
+    assert len(conn.telemetry_inserts) == 1
+    payload = json.loads(conn.telemetry_inserts[0][9])
+    assert payload['detected_by'] == 'quicknode_stream'
+    assert payload['source_type'] == 'quicknode_stream'
+    assert payload['tx_hash'] == TX_HASH
+    assert payload['from'] == WALLET_ADDR
+
+
+def test_wallet_on_asset_wallet_match_and_persist_logs_emitted(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    """Acceptance: after a matching transfer the logs show quicknode_stream_wallet_match
+    and quicknode_stream_event_persisted for the asset-resolved target."""
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    target = _make_wallet_on_asset_target(target_id=PROD_TARGET_ID)
+    conn = _FakeConnection(targets=[target], asset_row=_asset_row(asset_id=target['asset_id']))
+    tx = {'tx_hash': TX_HASH, 'from': WALLET_ADDR, 'to': COUNTERPARTY, 'value': '1'}
+    raw = _body(tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
+         caplog.at_level('INFO', logger=_QN_LOGGER):
+        qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert f'quicknode_stream_wallet_match tx_hash={TX_HASH} target_id={PROD_TARGET_ID} from_match=True' in caplog.text
+    assert (
+        f'quicknode_stream_event_persisted detected_by=quicknode_stream '
+        f'tx_hash={TX_HASH} target_id={PROD_TARGET_ID}'
+    ) in caplog.text
+
+
+def test_wallet_on_asset_no_match_detail_shows_fingerprint_not_none(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    """Regression: the reported symptom was no_match_detail target_wallets=['none'].
+    With the wallet resolved from the asset, the fingerprint list carries the real
+    last4/hash8, never ['none']."""
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    target = _make_wallet_on_asset_target(target_id=PROD_TARGET_ID)
+    conn = _FakeConnection(targets=[target], asset_row=_asset_row(asset_id=target['asset_id']))
+    tx = {'tx_hash': TX_HASH, 'from': UNRELATED_ADDR, 'to': COUNTERPARTY, 'value': '1'}
+    raw = _body(tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
+         caplog.at_level('INFO', logger=_QN_LOGGER):
+        qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert "target_wallets=['none']" not in caplog.text
+    assert f'{WALLET_ADDR[-4:]}/' in caplog.text
+
+
+def test_missing_wallet_logs_truthful_reason_and_does_not_persist(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    """Fail-closed: when neither the target nor its asset carries a wallet, the
+    target is NOT counted, a truthful reason is logged, and nothing is persisted —
+    the miss is never faked as a detection."""
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    target = _make_wallet_on_asset_target(target_id=PROD_TARGET_ID)
+    # No asset row served and no wallet anywhere → unresolvable.
+    conn = _FakeConnection(targets=[target], asset_row=None)
+    tx = {'tx_hash': TX_HASH, 'from': WALLET_ADDR, 'to': COUNTERPARTY, 'value': '1'}
+    raw = _body(tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
+         caplog.at_level('INFO', logger=_QN_LOGGER):
+        result = qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert 'quicknode_stream_targets_loaded count=1 monitored_wallets_count=0' in caplog.text
+    assert (
+        f'quicknode_stream_target_wallet_resolution target_id={PROD_TARGET_ID} '
+        f'asset_id={target["asset_id"]} wallet_present=false wallet_last4=none '
+        f'wallet_source=none reason=no_wallet_in_target_or_asset'
+    ) in caplog.text
+    assert result['persisted'] == 0
+    assert conn.telemetry_inserts == []
+    assert result['results'][0]['status'] == 'no_match'
+
+
+def test_missing_wallet_no_asset_linked_reason(caplog: pytest.LogCaptureFixture):
+    """A wallet target with no wallet_address and no asset_id reports the truthful
+    reason=no_asset_linked (distinct from an asset that carried no wallet)."""
+    target = _make_wallet_on_asset_target(target_id=PROD_TARGET_ID)
+    target['asset_id'] = None
+    conn = _FakeConnection(targets=[target], asset_row=None)
+    wallet, source, reason = qn._resolve_target_monitored_wallet(conn, target)
+    assert wallet is None
+    assert source == 'none'
+    assert reason == 'no_asset_linked'
+
+
+def test_wallet_on_asset_duplicate_from_stable_polling_is_suppressed(monkeypatch: pytest.MonkeyPatch):
+    """A transfer stable RPC polling already recorded (detected_by=stable_rpc_polling)
+    is duplicate_suppressed for the asset-resolved target — never inserted twice."""
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    target = _make_wallet_on_asset_target(target_id=PROD_TARGET_ID)
+    existing_row = {'id': str(uuid.uuid4()), 'event_type': 'native_transfer', 'detected_by': 'stable_rpc_polling'}
+    conn = _FakeConnection(
+        targets=[target],
+        existing_telemetry=existing_row,
+        asset_row=_asset_row(asset_id=target['asset_id']),
+    )
+    tx = {'tx_hash': TX_HASH, 'from': WALLET_ADDR, 'to': COUNTERPARTY, 'value': '1'}
+    raw = _body(tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None):
+        result = qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert result['matched'] == 1
+    assert result['duplicates'] == 1
+    assert result['persisted'] == 0
+    assert result['results'][0]['status'] == 'duplicate_suppressed'
+    assert result['results'][0]['existing_detected_by'] == 'stable_rpc_polling'
+    assert conn.telemetry_inserts == []
+    assert conn.commit_calls == 0
