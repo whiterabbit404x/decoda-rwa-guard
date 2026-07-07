@@ -10,7 +10,8 @@ https://www.quicknode.com/guides/quicknode-products/streams/validating-incoming-
 
 Covers:
   A. Valid HMAC signature (nonce+timestamp+body) is accepted.
-  B. Invalid HMAC signature is rejected (400).
+  B. Invalid HMAC signature is rejected (401) and logs signature_failed — never
+     a silent 200.
   C. Missing nonce/timestamp/signature header is rejected (400).
   D. Missing configured secret is rejected (503) — fails closed.
   E. A stale/future timestamp is rejected (400) — replay protection.
@@ -148,7 +149,10 @@ def test_invalid_hmac_signature_rejected(monkeypatch: pytest.MonkeyPatch):
         qn.verify_quicknode_stream_signature(
             raw_body=raw, signature_header='deadbeef', nonce_header=NONCE, timestamp_header=timestamp,
         )
-    assert exc.value.status_code == 400
+    # An invalid signature is an authentication failure (the signature is the
+    # webhook's only credential), so it must be rejected as 401 — never 400 and
+    # never a silent 200.
+    assert exc.value.status_code == 401
 
 
 def test_missing_signature_header_rejected(monkeypatch: pytest.MonkeyPatch):
@@ -228,6 +232,84 @@ def test_secret_never_appears_in_exception_detail(monkeypatch: pytest.MonkeyPatc
     assert SECRET not in str(exc.value.detail)
 
 
+_QN_LOGGER_NAME = 'services.api.app.quicknode_streams'
+
+
+def test_invalid_signature_logs_signature_failed_and_returns_401(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    """An invalid signature must (a) log quicknode_stream_signature_failed with a
+    reason and (b) reject with 401 — the mirror of the signature_valid marker, so
+    every rejected QuickNode POST is provable from Railway logs, not a silent 200."""
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    raw = _body({'hash': TX_HASH})
+    with caplog.at_level('WARNING', logger=_QN_LOGGER_NAME):
+        with pytest.raises(HTTPException) as exc:
+            qn.verify_quicknode_stream_signature(
+                raw_body=raw, signature_header='deadbeef', nonce_header=NONCE, timestamp_header=_now_ts(),
+            )
+    assert exc.value.status_code == 401
+    assert 'quicknode_stream_signature_failed reason=signature_mismatch' in caplog.text
+    assert 'quicknode_stream_signature_valid' not in caplog.text
+
+
+@pytest.mark.parametrize(
+    'signature_header,nonce_header,timestamp_header,expected_status,expected_reason',
+    [
+        (None, NONCE, _now_ts(), 400, 'missing_signature_headers'),
+        ('sig', None, _now_ts(), 400, 'missing_signature_headers'),
+        ('sig', NONCE, None, 400, 'missing_signature_headers'),
+        ('sig', NONCE, str(int(time.time()) - 3600), 400, 'timestamp_out_of_tolerance'),
+        ('sig', NONCE, 'not-a-number', 400, 'invalid_timestamp'),
+    ],
+)
+def test_every_rejection_path_logs_signature_failed_reason(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    signature_header, nonce_header, timestamp_header, expected_status, expected_reason,
+):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    raw = _body({'hash': TX_HASH})
+    with caplog.at_level('WARNING', logger=_QN_LOGGER_NAME):
+        with pytest.raises(HTTPException) as exc:
+            qn.verify_quicknode_stream_signature(
+                raw_body=raw,
+                signature_header=signature_header,
+                nonce_header=nonce_header,
+                timestamp_header=timestamp_header,
+            )
+    assert exc.value.status_code == expected_status
+    assert f'quicknode_stream_signature_failed reason={expected_reason}' in caplog.text
+
+
+def test_missing_secret_logs_signature_failed(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
+    monkeypatch.delenv('QUICKNODE_STREAMS_SECRET', raising=False)
+    raw = _body({'hash': TX_HASH})
+    with caplog.at_level('WARNING', logger=_QN_LOGGER_NAME):
+        with pytest.raises(HTTPException) as exc:
+            qn.verify_quicknode_stream_signature(
+                raw_body=raw, signature_header='sig', nonce_header=NONCE, timestamp_header=_now_ts(),
+            )
+    assert exc.value.status_code == 503
+    assert 'quicknode_stream_signature_failed reason=secret_not_configured' in caplog.text
+
+
+def test_signature_failed_log_never_contains_secret_or_signature(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    """The signature_failed diagnostic must carry only a reason token — never the
+    configured secret nor the (attacker-supplied) signature header value."""
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    bogus_signature = 'abc123deadbeefsignaturevalue'
+    raw = _body({'hash': TX_HASH})
+    with caplog.at_level('INFO', logger=_QN_LOGGER_NAME):
+        with pytest.raises(HTTPException):
+            qn.verify_quicknode_stream_signature(
+                raw_body=raw, signature_header=bogus_signature, nonce_header=NONCE, timestamp_header=_now_ts(),
+            )
+    assert SECRET not in caplog.text
+    assert bogus_signature not in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # Gzip body handling
 # ---------------------------------------------------------------------------
@@ -276,7 +358,7 @@ def test_gzip_signature_over_plaintext_is_rejected(monkeypatch: pytest.MonkeyPat
         qn.verify_quicknode_stream_signature(
             raw_body=compressed_body, signature_header=wrong_signature, nonce_header=NONCE, timestamp_header=timestamp,
         )
-    assert exc.value.status_code == 400
+    assert exc.value.status_code == 401
 
 
 # ---------------------------------------------------------------------------
@@ -485,7 +567,7 @@ def test_full_pipeline_logs_shape_normalized_targets_match_and_persist(
             raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
         )
     assert 'quicknode_stream_handler_started' in caplog.text
-    assert 'quicknode_stream_json_parsed' in caplog.text
+    assert 'quicknode_stream_payload_parsed' in caplog.text
     assert 'decoded_type=list' in caplog.text
     assert 'quicknode_stream_payload_shape' in caplog.text
     assert 'top_level_type=list' in caplog.text
@@ -569,12 +651,14 @@ def test_handler_started_log_emitted_even_when_signature_fails(
                 raw_body=raw, signature_header='not-the-right-signature',
                 nonce_header=NONCE, timestamp_header=_now_ts(),
             )
-    assert exc.value.status_code == 400
+    assert exc.value.status_code == 401
     assert 'quicknode_stream_handler_started' in caplog.text
     assert f'raw_body_bytes={len(raw)}' in caplog.text
     assert 'has_signature=True' in caplog.text
-    # Fail-closed: a rejected signature must not emit the "valid" marker.
+    # Fail-closed: a rejected signature must not emit the "valid" marker, but it
+    # must emit the "failed" marker so the rejection is provable from logs.
     assert 'quicknode_stream_signature_valid' not in caplog.text
+    assert 'quicknode_stream_signature_failed reason=signature_mismatch' in caplog.text
 
 
 def test_json_parsed_log_emitted_after_signature_check(
@@ -588,7 +672,7 @@ def test_json_parsed_log_emitted_after_signature_check(
         qn.process_quicknode_base_stream_webhook(
             raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
         )
-    assert 'quicknode_stream_json_parsed' in caplog.text
+    assert 'quicknode_stream_payload_parsed' in caplog.text
     assert 'decoded_type=dict' in caplog.text
     assert f'decoded_bytes={len(raw)}' in caplog.text
 
@@ -623,6 +707,71 @@ def test_qn_module_logger_pinned_to_info_survives_global_warning():
     assert qn.logger.level == logging.INFO
 
 
+def test_full_pipeline_logs_never_leak_secret_or_payload_values(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    """End-to-end: a processed payload logs shapes/counts/hashes/ids only — never
+    the configured secret and never raw payload *values* (task: "no secrets or
+    full payloads in logs"). Key *names* may appear in the shape line; values
+    must not."""
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    target = _make_target()
+    conn = _FakeConnection(targets=[target])
+    secret_value = 'DO_NOT_LOG_THIS_VALUE_9f8e7d'
+    tx = {
+        'hash': TX_HASH,
+        'from': WALLET_ADDR,
+        'to': COUNTERPARTY,
+        'value': '0x1',
+        'sensitive_memo': secret_value,  # a value the diagnostics must never echo
+    }
+    payload = _block_with_receipts_payload(tx=tx)
+    raw = json.dumps(payload).encode('utf-8')
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
+         caplog.at_level('INFO', logger=_QN_LOGGER):
+        result = qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert result['results'][0]['status'] == 'processed'
+    # The secret and the raw payload value must never appear in any log line.
+    assert SECRET not in caplog.text
+    assert secret_value not in caplog.text
+    assert signature not in caplog.text
+
+
+def test_200_response_always_coincides_with_route_hit_log(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    """Task guard: if the endpoint returns 200, the route-hit marker MUST be
+    present. A 200 with no quicknode_stream_route_hit line is the exact failure
+    this test exists to catch (it would mean an un-instrumented build is live)."""
+    from fastapi.testclient import TestClient
+
+    from services.api.app import main as api_main
+
+    monkeypatch.setattr(api_main, 'process_quicknode_base_stream_webhook', lambda **kw: {'received': True, 'results': []})
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    client = TestClient(api_main.app, raise_server_exceptions=False)
+    body = _body({'tx_hash': TX_HASH})
+    with caplog.at_level('INFO', logger='services.api.app.main'):
+        response = client.post(
+            '/api/integrations/quicknode/streams/base',
+            content=body,
+            headers={
+                'content-type': 'application/json',
+                'x-qn-signature': 'anything',
+                'x-qn-nonce': NONCE,
+                'x-qn-timestamp': _now_ts(),
+            },
+        )
+    assert response.status_code == 200
+    # The invariant the production incident violated: 200 without a route-hit log.
+    assert 'quicknode_stream_route_hit' in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # Route-hit logging (services/api/app/main.py) — must fire before any return,
 # including on signature/validation failures.
@@ -650,9 +799,9 @@ def test_route_post_logs_route_hit_on_success(monkeypatch: pytest.MonkeyPatch, c
         )
     assert response.status_code == 200
     assert 'quicknode_stream_route_hit' in caplog.text
-    assert 'has_x_qn_nonce=True' in caplog.text
-    assert 'has_x_qn_timestamp=True' in caplog.text
-    assert 'has_x_qn_signature=True' in caplog.text
+    assert 'has_nonce=True' in caplog.text
+    assert 'has_timestamp=True' in caplog.text
+    assert 'has_signature=True' in caplog.text
     assert f'content_length={len(body)}' in caplog.text
 
 
@@ -677,7 +826,7 @@ def test_route_post_logs_route_hit_even_when_signature_invalid(
                 'x-qn-timestamp': _now_ts(),
             },
         )
-    assert response.status_code == 400
+    assert response.status_code == 401
     assert 'quicknode_stream_route_hit' in caplog.text
 
 
@@ -734,7 +883,9 @@ def test_route_get_health_check():
     assert response.json()['status'] == 'quicknode_streams_base_endpoint_ready'
 
 
-def test_route_post_invalid_signature_rejected(monkeypatch: pytest.MonkeyPatch):
+def test_route_post_invalid_signature_returns_401_not_200(monkeypatch: pytest.MonkeyPatch):
+    """A QuickNode POST with a bad signature must be rejected as 401 — never a
+    silent 200 that would let an unverified payload look accepted."""
     from fastapi.testclient import TestClient
 
     from services.api.app import main as api_main
@@ -752,7 +903,8 @@ def test_route_post_invalid_signature_rejected(monkeypatch: pytest.MonkeyPatch):
             'x-qn-timestamp': _now_ts(),
         },
     )
-    assert response.status_code == 400
+    assert response.status_code == 401
+    assert response.status_code != 200
 
 
 def test_route_post_missing_nonce_rejected(monkeypatch: pytest.MonkeyPatch):

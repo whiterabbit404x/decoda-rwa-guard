@@ -44,7 +44,7 @@ logger.setLevel(logging.INFO)
 # quicknode_streams_webhook_version=... startup log alone (emitted by
 # services/api/app/main.py). Lets an operator confirm the deployed API commit
 # actually includes this code without shell access to the container.
-QUICKNODE_STREAMS_WEBHOOK_VERSION = '2026-07-07-quicknode-stream-diagnostic-logging-v2'
+QUICKNODE_STREAMS_WEBHOOK_VERSION = '2026-07-07-quicknode-stream-signature-failed-401-v3'
 
 BASE_CHAIN_ID = 8453
 BASE_CHAIN_NETWORK = 'base'
@@ -73,15 +73,30 @@ def _quicknode_timestamp_tolerance_seconds() -> int:
         return DEFAULT_QUICKNODE_TIMESTAMP_TOLERANCE_SECONDS
 
 
+def _log_signature_failed(reason: str) -> None:
+    """Record why a QuickNode Streams request failed verification.
+
+    Emitted (at WARNING, so it survives a global LOG_LEVEL=WARNING) on every
+    rejection path before the HTTPException is raised, so a rejected QuickNode
+    POST is always provable *and* diagnosable from Railway logs — the mirror of
+    the ``quicknode_stream_signature_valid`` success marker. Only a stable
+    ``reason`` token is logged; never the secret, signature, nonce, timestamp,
+    or body, so this cannot leak credentials or payloads.
+    """
+    logger.warning('quicknode_stream_signature_failed reason=%s', reason)
+
+
 def _check_quicknode_timestamp_freshness(timestamp_raw: str) -> None:
     try:
         ts = float(timestamp_raw)
     except ValueError as exc:
+        _log_signature_failed('invalid_timestamp')
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid QuickNode Streams timestamp header.') from exc
     if ts > 10 ** 12:  # tolerate milliseconds in addition to seconds
         ts = ts / 1000.0
     now = datetime.now(timezone.utc).timestamp()
     if abs(now - ts) > _quicknode_timestamp_tolerance_seconds():
+        _log_signature_failed('timestamp_out_of_tolerance')
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='QuickNode Streams timestamp outside allowed tolerance.')
 
 
@@ -105,6 +120,7 @@ def verify_quicknode_stream_signature(
     """
     secret = (getenv('QUICKNODE_STREAMS_SECRET') or '').strip()
     if not secret:
+        _log_signature_failed('secret_not_configured')
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail='QuickNode Streams webhook is not configured (QUICKNODE_STREAMS_SECRET missing).',
@@ -113,6 +129,7 @@ def verify_quicknode_stream_signature(
     timestamp_raw = (timestamp_header or '').strip()
     signature = (signature_header or '').strip()
     if not nonce or not timestamp_raw or not signature:
+        _log_signature_failed('missing_signature_headers')
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='Missing QuickNode Streams signature headers (X-QN-Nonce/X-QN-Timestamp/X-QN-Signature).',
@@ -123,7 +140,12 @@ def verify_quicknode_stream_signature(
     signing_input = nonce.encode('utf-8') + timestamp_raw.encode('utf-8') + raw_body
     expected = hmac.new(secret.encode('utf-8'), signing_input, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(signature.strip().lower(), expected.lower()):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid QuickNode Streams signature.')
+        # 401 (not 400, and never a silent 200): the request is well-formed but
+        # its signature — the webhook's only credential — did not verify, so this
+        # is an authentication failure. Logged as signature_failed first so the
+        # rejection is provable from Railway logs.
+        _log_signature_failed('signature_mismatch')
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid QuickNode Streams signature.')
     logger.info('quicknode_stream_signature_valid')
 
 
@@ -471,7 +493,7 @@ def process_quicknode_base_stream_webhook(
     except (UnicodeDecodeError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid JSON payload.') from exc
     logger.info(
-        'quicknode_stream_json_parsed decoded_bytes=%s decoded_type=%s',
+        'quicknode_stream_payload_parsed decoded_bytes=%s decoded_type=%s',
         len(body_bytes), type(body).__name__,
     )
     _log_payload_shape(body)
