@@ -20,6 +20,7 @@ import gzip
 import hashlib
 import hmac
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from os import getenv
@@ -29,6 +30,8 @@ from fastapi import HTTPException, status
 
 from services.api.app.evm_activity_provider import resolve_monitored_wallet
 from services.api.app.pilot import ensure_pilot_schema, pg_connection
+
+logger = logging.getLogger(__name__)
 
 BASE_CHAIN_ID = 8453
 BASE_CHAIN_NETWORK = 'base'
@@ -108,6 +111,7 @@ def verify_quicknode_stream_signature(
     expected = hmac.new(secret.encode('utf-8'), signing_input, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(signature.strip().lower(), expected.lower()):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid QuickNode Streams signature.')
+    logger.info('quicknode_stream_signature_valid')
 
 
 def _maybe_gunzip_quicknode_body(raw_body: bytes, content_encoding: str | None) -> bytes:
@@ -141,13 +145,79 @@ def _hex_or_int(value: Any) -> int | None:
         return None
 
 
+def _describe_payload_shape(body: Any) -> dict[str, Any]:
+    """Summarize a decoded QuickNode Streams payload's shape for diagnostics.
+
+    Never includes values, only types/keys/lengths, so this is safe to log at
+    INFO in production without leaking payload contents or secrets.
+    """
+    top_level_type = type(body).__name__
+    top_level_keys = sorted(body.keys()) if isinstance(body, dict) else None
+    data: Any = body
+    if isinstance(body, dict) and 'data' in body:
+        data = body['data']
+    data_type = type(data).__name__
+    data_length = len(data) if isinstance(data, (list, dict)) else None
+    first_entry: Any = None
+    if isinstance(data, list) and data:
+        first_entry = data[0]
+    elif isinstance(data, dict):
+        first_entry = data
+    elif isinstance(body, dict) and 'data' not in body:
+        first_entry = body
+    first_block_keys = None
+    first_tx_keys = None
+    first_receipt_keys = None
+    if isinstance(first_entry, dict):
+        block = first_entry.get('block') if isinstance(first_entry.get('block'), dict) else None
+        if block is not None:
+            first_block_keys = sorted(block.keys())
+            txs = block.get('transactions')
+        else:
+            txs = first_entry.get('transactions')
+        if isinstance(txs, list) and txs and isinstance(txs[0], dict):
+            first_tx_keys = sorted(txs[0].keys())
+        elif block is None and not isinstance(txs, list):
+            # Not block/transactions-shaped — the entry itself is likely a flat tx object.
+            first_tx_keys = sorted(first_entry.keys())
+        receipts = first_entry.get('receipts')
+        if isinstance(receipts, list) and receipts and isinstance(receipts[0], dict):
+            first_receipt_keys = sorted(receipts[0].keys())
+    return {
+        'top_level_type': top_level_type,
+        'top_level_keys': top_level_keys,
+        'data_type': data_type,
+        'data_length': data_length,
+        'first_block_keys': first_block_keys,
+        'first_tx_keys': first_tx_keys,
+        'first_receipt_keys': first_receipt_keys,
+    }
+
+
+def _log_payload_shape(body: Any) -> None:
+    shape = _describe_payload_shape(body)
+    logger.info(
+        'quicknode_stream_payload_shape top_level_type=%s top_level_keys=%s data_type=%s '
+        'data_length=%s first_block_keys=%s first_tx_keys=%s first_receipt_keys=%s',
+        shape['top_level_type'], shape['top_level_keys'], shape['data_type'], shape['data_length'],
+        shape['first_block_keys'], shape['first_tx_keys'], shape['first_receipt_keys'],
+    )
+
+
 def _extract_tx_dicts(body: Any) -> list[dict[str, Any]]:
     """Flatten a QuickNode Streams Base payload into a list of raw tx dicts.
 
     Accepts a single tx object, a list of tx objects, a ``{"data": [...]}``
-    envelope, or block-shaped entries carrying a ``transactions`` list (the
+    envelope, or block-shaped entries.
+
+    Supports both the real QuickNode "Block with Receipts" dataset shape
+    (``{"block": {..., "transactions": [...]}, "receipts": [...]}``, batch
+    size 1 -> a one-element top-level list) and the older/simpler shape where
+    a ``transactions`` list sits directly on the entry. Either way, the
     block's ``number``/``block_number`` is copied onto each transaction that
-    does not already carry one).
+    does not already carry one, and matching receipt fields (looked up by
+    transaction hash) are merged onto each transaction without overwriting
+    fields the transaction already provides.
     """
     if isinstance(body, dict):
         if isinstance(body.get('data'), list):
@@ -162,14 +232,29 @@ def _extract_tx_dicts(body: Any) -> list[dict[str, Any]]:
     for item in body:
         if not isinstance(item, dict):
             continue
-        if isinstance(item.get('transactions'), list):
-            block = item.get('block') if isinstance(item.get('block'), dict) else item
-            block_number = block.get('number') or block.get('block_number') or block.get('blockNumber')
-            for tx in item['transactions']:
-                if isinstance(tx, dict):
-                    merged = dict(tx)
-                    merged.setdefault('block_number', block_number)
-                    out.append(merged)
+        block = item.get('block') if isinstance(item.get('block'), dict) else None
+        transactions = block.get('transactions') if block is not None and isinstance(block.get('transactions'), list) else None
+        if transactions is None and isinstance(item.get('transactions'), list):
+            transactions = item['transactions']
+            block = block or item
+        if transactions is not None:
+            block_source = block or {}
+            block_number = block_source.get('number') or block_source.get('block_number') or block_source.get('blockNumber')
+            receipts = item.get('receipts') if isinstance(item.get('receipts'), list) else []
+            receipts_by_hash = {
+                str(r.get('transactionHash') or r.get('transaction_hash') or '').lower(): r
+                for r in receipts if isinstance(r, dict)
+            }
+            for tx in transactions:
+                if not isinstance(tx, dict):
+                    continue
+                merged = dict(tx)
+                merged.setdefault('block_number', block_number)
+                receipt = receipts_by_hash.get(str(tx.get('hash') or tx.get('transactionHash') or '').lower())
+                if receipt is not None:
+                    merged.setdefault('status', receipt.get('status'))
+                    merged.setdefault('gas_used', receipt.get('gasUsed'))
+                out.append(merged)
         else:
             out.append(item)
     return out
@@ -221,14 +306,35 @@ WHERE deleted_at IS NULL
 """
 
 
-def _find_matching_base_targets(connection: Any, *, from_address: str, to_address: str | None) -> list[dict[str, Any]]:
+def _load_all_base_wallet_targets(connection: Any) -> list[dict[str, Any]]:
+    """Load every active Base wallet target once per payload and log the result.
+
+    Loaded once per webhook call (not once per transaction) since a single
+    shared QuickNode Streams webhook covers every workspace's Base wallets —
+    the same active-target set is checked against every transaction in the
+    payload. Logs target_ids (opaque UUIDs), never secrets.
+    """
+    rows = connection.execute(_BASE_WALLET_TARGETS_SQL).fetchall()
+    targets = [dict(row) for row in rows]
+    monitored_wallets_count = sum(1 for target in targets if resolve_monitored_wallet(target) is not None)
+    target_ids = [target.get('id') for target in targets]
+    logger.info(
+        'quicknode_stream_targets_loaded count=%s monitored_wallets_count=%s target_ids=%s',
+        len(targets), monitored_wallets_count, target_ids,
+    )
+    if not targets:
+        logger.info('quicknode_stream_no_targets_loaded')
+    return targets
+
+
+def _match_targets_for_tx(
+    targets: list[dict[str, Any]], *, from_address: str, to_address: str | None,
+) -> list[dict[str, Any]]:
     addresses = {a for a in (from_address, to_address) if a}
     if not addresses:
         return []
-    rows = connection.execute(_BASE_WALLET_TARGETS_SQL).fetchall()
     matched: list[dict[str, Any]] = []
-    for row in rows:
-        target = dict(row)
+    for target in targets:
         wallet = resolve_monitored_wallet(target)
         if wallet and wallet in addresses:
             matched.append(target)
@@ -338,21 +444,68 @@ def process_quicknode_base_stream_webhook(
         body = json.loads(body_bytes.decode('utf-8') or '{}')
     except (UnicodeDecodeError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid JSON payload.') from exc
+    _log_payload_shape(body)
+
     raw_txs = _extract_tx_dicts(body)
+    normalized_txs: list[dict[str, Any]] = []
+    for raw_tx in raw_txs:
+        normalized = normalize_base_stream_tx(raw_tx)
+        if normalized is not None:
+            normalized_txs.append(normalized)
+
+    sample = normalized_txs[0] if normalized_txs else {}
+    logger.info(
+        'quicknode_stream_transactions_normalized count=%s sample_tx_hash_present=%s '
+        'sample_from_present=%s sample_to_present=%s sample_value_present=%s '
+        'sample_block_number_present=%s',
+        len(normalized_txs),
+        bool(sample.get('tx_hash')),
+        bool(sample.get('from_address')),
+        bool(sample.get('to_address')),
+        sample.get('value') is not None,
+        sample.get('block_number') is not None,
+    )
+    if not normalized_txs:
+        reason = 'no_raw_transactions_extracted' if not raw_txs else 'raw_transactions_missing_required_fields'
+        logger.info('quicknode_stream_no_transactions_normalized reason=%s', reason)
+        return {'received': True, 'results': []}
+
     results: list[dict[str, Any]] = []
+    match_count = 0
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        for raw_tx in raw_txs:
-            normalized = normalize_base_stream_tx(raw_tx)
-            if normalized is None:
-                continue
-            targets = _find_matching_base_targets(
-                connection, from_address=normalized['from_address'], to_address=normalized['to_address'],
+        targets = _load_all_base_wallet_targets(connection)
+        for normalized in normalized_txs:
+            matched_targets = _match_targets_for_tx(
+                targets, from_address=normalized['from_address'], to_address=normalized['to_address'],
             )
-            if not targets:
+            if not matched_targets:
                 results.append({'tx_hash': normalized['tx_hash'], 'status': 'no_match'})
                 continue
-            for target in targets:
+            for target in matched_targets:
+                match_count += 1
+                target_wallet = resolve_monitored_wallet(target)
+                from_match = target_wallet == normalized['from_address']
+                to_match = target_wallet is not None and target_wallet == normalized.get('to_address')
+                logger.info(
+                    'quicknode_stream_wallet_match tx_hash=%s target_id=%s from_match=%s to_match=%s',
+                    normalized['tx_hash'], target['id'], from_match, to_match,
+                )
                 outcome = _persist_quicknode_wallet_transfer(connection, target=target, tx=normalized)
+                if outcome['status'] == 'processed':
+                    logger.info(
+                        'quicknode_stream_event_persisted detected_by=%s tx_hash=%s',
+                        QUICKNODE_STREAM_SOURCE, normalized['tx_hash'],
+                    )
+                elif outcome['status'] == 'duplicate_suppressed':
+                    logger.info(
+                        'quicknode_stream_duplicate_suppressed tx_hash=%s existing_detected_by=%s',
+                        normalized['tx_hash'], outcome.get('existing_detected_by'),
+                    )
                 results.append({'tx_hash': normalized['tx_hash'], 'target_id': target['id'], **outcome})
+        if match_count == 0:
+            logger.info(
+                'quicknode_stream_no_match tx_count=%s target_count=%s',
+                len(normalized_txs), len(targets),
+            )
     return {'received': True, 'results': results}

@@ -373,6 +373,241 @@ def test_duplicate_tx_is_suppressed(monkeypatch: pytest.MonkeyPatch):
 
 
 # ---------------------------------------------------------------------------
+# Real QuickNode "Block with Receipts" payload shape (Base Mainnet, batch
+# size 1): [{"block": {..., "transactions": [...]}, "receipts": [...]}]
+# ---------------------------------------------------------------------------
+
+def _block_with_receipts_payload(*, tx: dict, block_number_hex: str = '0x2d1a2c6') -> list[dict]:
+    return [
+        {
+            'block': {
+                'hash': '0x' + 'ab' * 32,
+                'number': block_number_hex,
+                'parentHash': '0x' + 'cd' * 32,
+                'timestamp': '0x64abcdef',
+                'transactions': [tx],
+            },
+            'receipts': [
+                {
+                    'transactionHash': tx['hash'],
+                    'status': '0x1',
+                    'gasUsed': '0x5208',
+                },
+            ],
+        },
+    ]
+
+
+def test_extract_tx_dicts_handles_block_with_receipts_shape():
+    tx = {'hash': TX_HASH, 'from': WALLET_ADDR, 'to': COUNTERPARTY, 'value': '0x1'}
+    payload = _block_with_receipts_payload(tx=tx)
+    out = qn._extract_tx_dicts(payload)
+    assert len(out) == 1
+    assert out[0]['hash'] == TX_HASH
+    assert out[0]['block_number'] == '0x2d1a2c6'
+    assert out[0]['status'] == '0x1'
+    assert out[0]['gas_used'] == '0x5208'
+
+
+def test_block_with_receipts_shape_matched_and_persisted(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    target = _make_target()
+    conn = _FakeConnection(targets=[target])
+    tx = {
+        'hash': TX_HASH,
+        'from': WALLET_ADDR,
+        'to': COUNTERPARTY,
+        'value': '0xde0b6b3a7640000',
+        'gas': '0x5208',
+        'gasPrice': '0x3b9aca00',
+        'nonce': '0x1',
+        'input': '0x',
+        'transactionIndex': '0x0',
+        'type': '0x2',
+        'chainId': '0x2105',
+    }
+    payload = _block_with_receipts_payload(tx=tx)
+    raw = json.dumps(payload).encode('utf-8')
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None):
+        result = qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+
+    assert result['received'] is True
+    assert result['results'][0]['status'] == 'processed'
+    assert result['results'][0]['detected_by'] == 'quicknode_stream'
+    assert len(conn.telemetry_inserts) == 1
+    inserted_payload = json.loads(conn.telemetry_inserts[0][9])
+    assert inserted_payload['block_number'] == 0x2d1a2c6
+    assert inserted_payload['tx_hash'] == TX_HASH
+
+
+# ---------------------------------------------------------------------------
+# Mandatory diagnostic logging: every requirement below must be visible in
+# logs so a QuickNode POST 200 with no useful quicknode_stream_* lines can
+# never happen again.
+# ---------------------------------------------------------------------------
+
+_QN_LOGGER = 'services.api.app.quicknode_streams'
+
+
+def test_signature_valid_log_emitted(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    raw = _body({'hash': TX_HASH})
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with caplog.at_level('INFO', logger=_QN_LOGGER):
+        qn.verify_quicknode_stream_signature(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert 'quicknode_stream_signature_valid' in caplog.text
+
+
+def test_full_pipeline_logs_shape_normalized_targets_match_and_persist(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    target = _make_target()
+    conn = _FakeConnection(targets=[target])
+    tx = {'hash': TX_HASH, 'from': WALLET_ADDR, 'to': COUNTERPARTY, 'value': '0x1'}
+    payload = _block_with_receipts_payload(tx=tx)
+    raw = json.dumps(payload).encode('utf-8')
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
+         caplog.at_level('INFO', logger=_QN_LOGGER):
+        qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert 'quicknode_stream_payload_shape' in caplog.text
+    assert 'top_level_type=list' in caplog.text
+    assert 'first_block_keys=' in caplog.text
+    assert 'first_tx_keys=' in caplog.text
+    assert 'first_receipt_keys=' in caplog.text
+    assert 'quicknode_stream_transactions_normalized count=1' in caplog.text
+    assert 'sample_tx_hash_present=True' in caplog.text
+    assert 'quicknode_stream_targets_loaded count=1 monitored_wallets_count=1' in caplog.text
+    assert f'quicknode_stream_wallet_match tx_hash={TX_HASH} target_id={target["id"]} from_match=True' in caplog.text
+    assert f'quicknode_stream_event_persisted detected_by=quicknode_stream tx_hash={TX_HASH}' in caplog.text
+
+
+def test_no_targets_and_no_match_logs(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    conn = _FakeConnection(targets=[])
+    tx = {'tx_hash': TX_HASH, 'from': WALLET_ADDR, 'to': COUNTERPARTY, 'value': '1'}
+    raw = _body(tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
+         caplog.at_level('INFO', logger=_QN_LOGGER):
+        result = qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert result['results'][0]['status'] == 'no_match'
+    assert 'quicknode_stream_no_targets_loaded' in caplog.text
+    assert 'quicknode_stream_no_match tx_count=1 target_count=0' in caplog.text
+
+
+def test_no_transactions_normalized_log_when_payload_has_no_valid_tx(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    raw = _body({'unrelated': 'field'})
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with caplog.at_level('INFO', logger=_QN_LOGGER):
+        result = qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert result['results'] == []
+    assert 'quicknode_stream_no_transactions_normalized reason=raw_transactions_missing_required_fields' in caplog.text
+
+
+def test_duplicate_suppressed_log_includes_existing_detected_by(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    target = _make_target()
+    existing_row = {'id': str(uuid.uuid4()), 'event_type': 'native_transfer', 'detected_by': 'stable_rpc_polling'}
+    conn = _FakeConnection(targets=[target], existing_telemetry=existing_row)
+    tx = {'tx_hash': TX_HASH, 'from': WALLET_ADDR, 'to': COUNTERPARTY, 'value': '1'}
+    raw = _body(tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
+         caplog.at_level('INFO', logger=_QN_LOGGER):
+        qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert f'quicknode_stream_duplicate_suppressed tx_hash={TX_HASH} existing_detected_by=stable_rpc_polling' in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Route-hit logging (services/api/app/main.py) — must fire before any return,
+# including on signature/validation failures.
+# ---------------------------------------------------------------------------
+
+def test_route_post_logs_route_hit_on_success(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
+    from fastapi.testclient import TestClient
+
+    from services.api.app import main as api_main
+
+    monkeypatch.setattr(api_main, 'process_quicknode_base_stream_webhook', lambda **kw: {'received': True, 'results': []})
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    client = TestClient(api_main.app, raise_server_exceptions=False)
+    body = _body({'tx_hash': TX_HASH})
+    with caplog.at_level('INFO', logger='services.api.app.main'):
+        response = client.post(
+            '/api/integrations/quicknode/streams/base',
+            content=body,
+            headers={
+                'content-type': 'application/json',
+                'x-qn-signature': 'anything',
+                'x-qn-nonce': NONCE,
+                'x-qn-timestamp': _now_ts(),
+            },
+        )
+    assert response.status_code == 200
+    assert 'quicknode_stream_route_hit' in caplog.text
+    assert 'has_x_qn_nonce=True' in caplog.text
+    assert 'has_x_qn_timestamp=True' in caplog.text
+    assert 'has_x_qn_signature=True' in caplog.text
+    assert f'content_length={len(body)}' in caplog.text
+
+
+def test_route_post_logs_route_hit_even_when_signature_invalid(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    from fastapi.testclient import TestClient
+
+    from services.api.app import main as api_main
+
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    client = TestClient(api_main.app, raise_server_exceptions=False)
+    body = _body({'tx_hash': TX_HASH, 'from': WALLET_ADDR})
+    with caplog.at_level('INFO', logger='services.api.app.main'):
+        response = client.post(
+            '/api/integrations/quicknode/streams/base',
+            content=body,
+            headers={
+                'content-type': 'application/json',
+                'x-qn-signature': 'not-the-right-signature',
+                'x-qn-nonce': NONCE,
+                'x-qn-timestamp': _now_ts(),
+            },
+        )
+    assert response.status_code == 400
+    assert 'quicknode_stream_route_hit' in caplog.text
+
+
+# ---------------------------------------------------------------------------
 # UI label (backend canonical classification stays in sync with the frontend
 # DETECTED_BY_LABELS map — apps/web/.../telemetry/detected-by.ts)
 # ---------------------------------------------------------------------------
