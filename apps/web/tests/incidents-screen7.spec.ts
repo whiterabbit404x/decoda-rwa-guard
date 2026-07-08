@@ -138,7 +138,7 @@ test('timeline tab columns exist', () => {
 
 test('alerts tab columns exist', () => {
   const panel = appSource('incidents-panel.tsx');
-  expect(panel).toContain("const ALERTS_TAB_HEADERS = ['Alert ID', 'Severity', 'Title', 'Detection Type', 'Confidence', 'Status']");
+  expect(panel).toContain("const ALERTS_TAB_HEADERS = ['Alert ID', 'Severity', 'Title', 'Detection Type', 'Detected By', 'Confidence', 'Status']");
 });
 
 test('evidence tab columns exist', () => {

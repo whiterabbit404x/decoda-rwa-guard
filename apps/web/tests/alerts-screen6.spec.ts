@@ -190,6 +190,11 @@ test('alert detail panel shows on-chain transaction fields', () => {
   expect(panel).toContain('Amount (wei)');
   expect(panel).toContain('Chain ID');
   expect(panel).toContain('Block');
+  // Detection source label (e.g. "QuickNode Stream" / "Stable RPC Polling"),
+  // resolved via the shared canonical Detected By map — never re-invented here.
+  expect(panel).toContain('Detected By');
+  expect(panel).toContain('detectedByLabelOf');
+  expect(panel).toContain('walletTransferDetectedBy');
 });
 
 test('alert detail reads on-chain fields from the alert (top-level or payload)', () => {

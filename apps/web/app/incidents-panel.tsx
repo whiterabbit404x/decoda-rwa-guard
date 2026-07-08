@@ -14,6 +14,15 @@ import {
 } from './components/ui-primitives';
 import { usePilotAuth } from './pilot-auth-context';
 import { useRuntimeSummary } from './runtime-summary-context';
+// Canonical Detected By resolver + label map (single source of truth, mirrors the
+// backend classifier) so an incident's linked wallet-transfer alert names the same
+// detection path — QuickNode Stream / Stable RPC Polling / Realtime — as the alert and
+// telemetry views. Never re-invents the mapping.
+import {
+  formatDetectedBy,
+  walletTransferDetectedBy,
+  type DetectedByRow,
+} from './(product)/monitoring-sources/[targetId]/telemetry/detected-by';
 
 // Same-origin proxy base. The Incidents page MUST NOT call the backend directly: the browser
 // only sees NEXT_PUBLIC_API_URL (often unset in production), so a direct fetch never reaches the
@@ -71,7 +80,14 @@ type AlertRow = {
   title?: string | null;
   severity?: string | null;
   status?: string | null;
-  payload?: { detection_type?: string | null; confidence?: string | null; asset_label?: string | null } | null;
+  detected_by?: string | null;
+  payload?: {
+    detection_type?: string | null;
+    confidence?: string | null;
+    asset_label?: string | null;
+    detected_by?: string | null;
+    source_type?: string | null;
+  } | null;
   detector_kind?: string | null;
   evidence_source?: string | null;
   evidence_origin?: string | null;
@@ -761,7 +777,20 @@ function TimelineTab({ timeline }: { timeline: TimelineEntry[] }) {
 }
 
 /* ── Alerts tab ──────────────────────────────────────────────────── */
-const ALERTS_TAB_HEADERS = ['Alert ID', 'Severity', 'Title', 'Detection Type', 'Confidence', 'Status'];
+const ALERTS_TAB_HEADERS = ['Alert ID', 'Severity', 'Title', 'Detection Type', 'Detected By', 'Confidence', 'Status'];
+
+// Fail-closed Detected By label for a linked wallet-transfer alert, resolved from the
+// same canonical facts the Alerts + Telemetry views use (top-level detected_by, then
+// the alert payload's detected_by / source_type). Never a fake default.
+function linkedAlertDetectedBy(a: AlertRow): string {
+  const rowLike: DetectedByRow = {
+    detected_by: a.detected_by ?? a.payload?.detected_by ?? null,
+    provider_type: null,
+    evidence_source: a.evidence_source ?? null,
+    payload_json: (a.payload ?? null) as Record<string, unknown> | null,
+  };
+  return formatDetectedBy(walletTransferDetectedBy(rowLike));
+}
 
 function AlertsTab({ linkedAlert, hasLinkedAlert, workspaceEvidenceSource }: {
   linkedAlert: AlertRow | null; hasLinkedAlert: boolean; workspaceEvidenceSource: string;
@@ -791,6 +820,7 @@ function AlertsTab({ linkedAlert, hasLinkedAlert, workspaceEvidenceSource }: {
           {linkedAlert.title ?? '-'}
         </td>
         <td style={{ fontSize: '0.78rem' }}>{linkedAlert.payload?.detection_type ?? linkedAlert.detector_kind ?? '-'}</td>
+        <td style={{ fontSize: '0.78rem' }}>{linkedAlertDetectedBy(linkedAlert)}</td>
         <td style={{ fontSize: '0.78rem' }}>{linkedAlert.payload?.confidence ?? '-'}</td>
         <td><StatusPill label={alertStatus} variant="neutral" /></td>
       </tr>

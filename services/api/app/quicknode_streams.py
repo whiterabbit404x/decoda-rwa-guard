@@ -36,7 +36,11 @@ from services.api.app.evm_activity_provider import resolve_monitored_wallet
 # wallet resolution byte-for-byte consistent with stable polling instead of
 # forking a second resolver that could drift. No import cycle: monitoring_runner
 # does not import quicknode_streams (only a comment in worker_status references it).
-from services.api.app.monitoring_runner import _load_target_asset_context
+from services.api.app.monitoring_runner import (
+    _load_target_asset_context,
+    _strategic_infrastructure_guard_alert,
+    _wallet_transfer_smoke_alert,
+)
 from services.api.app.pilot import ensure_pilot_schema, pg_connection
 
 logger = logging.getLogger(__name__)
@@ -359,7 +363,8 @@ def normalize_base_stream_tx(raw: dict[str, Any]) -> dict[str, Any] | None:
 _BASE_WALLET_TARGETS_SQL = """
 SELECT id, workspace_id, name, target_type, chain_network, chain_id,
        wallet_address, contract_identifier, asset_id, target_metadata,
-       monitoring_enabled, enabled, is_active
+       monitoring_enabled, enabled, is_active,
+       monitored_system_id, updated_by_user_id, created_by_user_id
 FROM targets
 WHERE deleted_at IS NULL
   AND target_type = 'wallet'
@@ -578,7 +583,88 @@ def _persist_quicknode_wallet_transfer(connection: Any, *, target: dict[str, Any
         'telemetry_id': telemetry_id,
         'detected_by': QUICKNODE_STREAM_SOURCE,
         'wallet_transfer_direction': direction,
+        # Returned so the caller can drive the same alert/incident chain stable RPC
+        # polling creates for this transfer, without rebuilding the payload.
+        'payload': payload,
     }
+
+
+def _create_wallet_transfer_alert_chain(
+    *, target: dict[str, Any], payload: dict[str, Any], telemetry_id: str,
+) -> dict[str, str | None]:
+    """Create the same alert/incident chain Stable RPC Polling creates for this transfer.
+
+    Reuses the canonical stable-polling rule functions verbatim
+    (:func:`monitoring_runner._wallet_transfer_smoke_alert` and
+    :func:`monitoring_runner._strategic_infrastructure_guard_alert`) rather than
+    forking a second alert path. Those functions:
+
+    * open their own committed connection (independent of this webhook's), exactly
+      as they do when invoked from the polling worker and the tx-hash import path;
+    * are idempotent on ``workspace_id + target_id + chain_id + tx_hash + rule`` —
+      a key that does NOT include the detecting source — so if stable RPC polling
+      already created the alert for the same target + tx_hash, this returns the
+      existing alert instead of a duplicate, and vice versa (cross-source dedupe);
+    * carry ``detected_by`` (``quicknode_stream`` here) into the alert evidence
+      package and only fire on ``evidence_source='live'``.
+
+    The smoke rule fires for every live transfer; the Strategic Infrastructure Guard
+    rule additionally fires for outbound Base ETH movements and drives incident
+    creation through the existing auto-incident / escalation mechanisms, which are
+    source-agnostic. Never raises: an alert-creation failure must not turn a verified,
+    already-persisted QuickNode webhook into a 5xx, so each rule is guarded and logged.
+    """
+    # No authenticated user on a webhook: attribute the alert to the target's owner,
+    # the same way the tx-hash import path (also user-less) does.
+    user_id = str(target.get('updated_by_user_id') or target.get('created_by_user_id') or '')
+    target_wallet = resolve_monitored_wallet(target) or ''
+    target_name = str(target.get('name') or target.get('id') or '')
+    monitored_system_id = str(target['monitored_system_id']) if target.get('monitored_system_id') else None
+    protected_asset_id = str(target['asset_id']) if target.get('asset_id') else None
+    smoke_alert_id: str | None = None
+    sig_alert_id: str | None = None
+    try:
+        smoke_alert_id = _wallet_transfer_smoke_alert(
+            workspace_id=str(target['workspace_id']),
+            user_id=user_id,
+            target_id=str(target['id']),
+            target_name=target_name,
+            payload=payload,
+            evidence_source='live',
+            telemetry_id=telemetry_id,
+            monitored_system_id=monitored_system_id,
+            protected_asset_id=protected_asset_id,
+        )
+    except Exception:  # pragma: no cover - defensive; alert failure must not 5xx the webhook
+        logger.warning(
+            'quicknode_stream_smoke_alert_failed tx_hash=%s target_id=%s',
+            payload.get('tx_hash'), target.get('id'), exc_info=True,
+        )
+    try:
+        sig_alert_id = _strategic_infrastructure_guard_alert(
+            workspace_id=str(target['workspace_id']),
+            user_id=user_id,
+            target_id=str(target['id']),
+            target_name=target_name,
+            target_wallet_address=target_wallet,
+            payload=payload,
+            evidence_source='live',
+            telemetry_id=telemetry_id,
+            monitored_system_id=monitored_system_id,
+            protected_asset_id=protected_asset_id,
+        )
+    except Exception:  # pragma: no cover - defensive; alert failure must not 5xx the webhook
+        logger.warning(
+            'quicknode_stream_sig_alert_failed tx_hash=%s target_id=%s',
+            payload.get('tx_hash'), target.get('id'), exc_info=True,
+        )
+    logger.info(
+        'quicknode_stream_alert_chain_created tx_hash=%s target_id=%s '
+        'smoke_alert_id=%s sig_alert_id=%s',
+        payload.get('tx_hash'), target.get('id'),
+        smoke_alert_id or 'none', sig_alert_id or 'none',
+    )
+    return {'smoke_alert_id': smoke_alert_id, 'sig_alert_id': sig_alert_id}
 
 
 def _summary_response(
@@ -727,12 +813,25 @@ def process_quicknode_base_stream_webhook(
                     normalized['tx_hash'], target['id'], from_match, to_match,
                 )
                 outcome = _persist_quicknode_wallet_transfer(connection, target=target, tx=normalized)
+                # Pull the internal payload out of the outcome before it becomes a
+                # JSON-serialized result entry: it feeds the alert chain but should
+                # not bloat the webhook response body.
+                persisted_payload = outcome.pop('payload', None)
                 if outcome['status'] == 'processed':
                     persisted_count += 1
                     logger.info(
                         'quicknode_stream_event_persisted detected_by=%s tx_hash=%s target_id=%s',
                         QUICKNODE_STREAM_SOURCE, normalized['tx_hash'], target['id'],
                     )
+                    # Same alert/incident chain Stable RPC Polling raises for a live
+                    # wallet transfer — reused verbatim, deduped across sources by tx_hash.
+                    alert_ids = _create_wallet_transfer_alert_chain(
+                        target=target,
+                        payload=persisted_payload if isinstance(persisted_payload, dict) else {},
+                        telemetry_id=str(outcome.get('telemetry_id') or ''),
+                    )
+                    outcome['smoke_alert_id'] = alert_ids.get('smoke_alert_id')
+                    outcome['sig_alert_id'] = alert_ids.get('sig_alert_id')
                 elif outcome['status'] == 'duplicate_suppressed':
                     duplicate_count += 1
                     logger.info(

@@ -743,6 +743,12 @@ def _wallet_transfer_smoke_alert(
     chain_id = payload.get('chain_id')
     block_number = payload.get('block_number')
     direction = str(payload.get('wallet_transfer_direction') or 'unknown')
+    # Carry the detecting source into the alert evidence package so the Alerts /
+    # Incidents UI can label who observed the transfer (stable RPC polling vs
+    # QuickNode Streams vs realtime). Truthful: it reflects the telemetry payload's
+    # own detected_by and never overrides it. Falls back to the canonical stable
+    # polling source when the payload predates source stamping.
+    detected_by = str(payload.get('detected_by') or 'stable_rpc_polling')
     explanation = (
         f'Wallet transfer detected on chain {chain_id}: '
         f'{from_address[:10]}…→{to_address[:10]}… '
@@ -761,6 +767,7 @@ def _wallet_transfer_smoke_alert(
         'source': 'live',
         'degraded': False,
         'evidence_source': evidence_source,
+        'detected_by': detected_by,
         'tx_hash': tx_hash,
         'from_address': from_address,
         'to_address': to_address,
@@ -791,6 +798,7 @@ def _wallet_transfer_smoke_alert(
         'chain_id': chain_id,
         'block_number': block_number,
         'evidence_source': evidence_source,
+        'detected_by': detected_by,
         'telemetry_id': telemetry_id,
         'target_id': target_id,
     }
@@ -1053,10 +1061,16 @@ def _strategic_infrastructure_guard_alert(
         workspace_id=workspace_id, target_id=target_id, chain_id=8453, tx_hash=tx_hash,
     )
 
+    # Carry the detecting source into the SIG alert evidence package too, so a
+    # Strategic Infrastructure Guard alert raised from a QuickNode Streams transfer
+    # is labelled detected_by=quicknode_stream (falls back to stable polling for
+    # payloads that predate source stamping). Never overrides the payload's own value.
+    detected_by = str(payload.get('detected_by') or 'stable_rpc_polling')
     raw_evidence = {
         'evidence_type': 'live_onchain_transaction',
         'event_type': 'wallet_transfer_detected',
         'source': 'rpc_polling',
+        'detected_by': detected_by,
         'detection_type': 'strategic_infrastructure_guard_outbound_transfer',
         'tx_hash': tx_hash,
         'from_address': from_address,
@@ -1087,6 +1101,7 @@ def _strategic_infrastructure_guard_alert(
         'source': 'rpc_polling',
         'degraded': False,
         'evidence_source': evidence_source,
+        'detected_by': detected_by,
         'tx_hash': tx_hash,
         'from_address': from_address,
         'to_address': to_address,
