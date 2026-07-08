@@ -13025,6 +13025,10 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
                 COALESCE(ev_latest.block_number::text, a.payload->>'block_number') AS block_number,
                 a.payload->>'from_address' AS from_address,
                 a.payload->>'to_address' AS to_address,
+                -- Canonical detection source (e.g. quicknode_stream, stable_rpc_polling)
+                -- so the Alerts UI can name the detection path the same way the Target
+                -- Telemetry tab does, from the alert's own payload evidence.
+                COALESCE(a.payload->>'detected_by', ev_latest.raw_payload_json->>'detected_by') AS detected_by,
                 COALESCE(a.payload->>'amount_wei', a.payload->>'value_wei', a.payload->>'amount') AS amount_wei,
                 COALESCE(a.payload->>'chain_id', ev_latest.raw_payload_json->>'chain_id') AS chain_id,
                 COALESCE(a.payload->>'confidence', a.findings->>'confidence') AS confidence,

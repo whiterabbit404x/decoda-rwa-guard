@@ -12,6 +12,15 @@ import {
 } from './components/ui-primitives';
 import { usePilotAuth } from './pilot-auth-context';
 import { useRuntimeSummary } from './runtime-summary-context';
+// Reuse the canonical Detected By resolver + label map (single source of truth,
+// mirrors the backend classifier) so a wallet-transfer alert names the same
+// detection path — Stable RPC Polling / QuickNode Stream / Realtime — that the
+// Target Telemetry tab shows for the very same tx. Never re-invents the mapping.
+import {
+  formatDetectedBy,
+  walletTransferDetectedBy,
+  type DetectedByRow,
+} from './(product)/monitoring-sources/[targetId]/telemetry/detected-by';
 
 // Same-origin proxy base. The Alerts page MUST NOT call the backend directly: the browser
 // only sees NEXT_PUBLIC_API_URL (often unset in production), so a direct fetch never reaches
@@ -46,6 +55,9 @@ type AlertRow = {
   chain_id?: string | number | null;
   confidence?: string | null;
   detection_type?: string | null;
+  // Canonical detection source stamped by the backend rule (e.g. quicknode_stream,
+  // stable_rpc_polling). Present on live wallet-transfer alerts; may also live in payload.
+  detected_by?: string | null;
   payload?: {
     asset_label?: string | null;
     detection_type?: string | null;
@@ -56,6 +68,8 @@ type AlertRow = {
     amount_wei?: string | null;
     chain_id?: string | number | null;
     block_number?: string | number | null;
+    detected_by?: string | null;
+    source_type?: string | null;
   } | null;
   detector_kind?: string | null;
   linked_evidence_count?: number | null;
@@ -67,6 +81,20 @@ type AlertRow = {
 
 function txHashOf(a: AlertRow): string | null {
   return a.tx_hash ?? a.payload?.tx_hash ?? null;
+}
+
+// Fail-closed Detected By label for a wallet-transfer alert, resolved from the
+// same canonical facts the telemetry tab uses (top-level detected_by, then the
+// alert payload's detected_by / source_type). A live alert with no attributable
+// source renders "Unknown" — never a fake "Stable RPC Polling" default.
+function detectedByLabelOf(a: AlertRow): string {
+  const rowLike: DetectedByRow = {
+    detected_by: a.detected_by ?? a.payload?.detected_by ?? null,
+    provider_type: null,
+    evidence_source: a.evidence_source ?? null,
+    payload_json: (a.payload ?? null) as Record<string, unknown> | null,
+  };
+  return formatDetectedBy(walletTransferDetectedBy(rowLike));
 }
 
 function shortHash(hash?: string | null): string {
@@ -868,6 +896,7 @@ function AlertDetailPanel({
             <OnChainField label="From" value={alert.from_address ?? alert.payload?.from_address ?? null} mono />
             <OnChainField label="To" value={alert.to_address ?? alert.payload?.to_address ?? null} mono />
             <OnChainField label="Amount (wei)" value={alert.amount_wei ?? alert.payload?.amount_wei ?? null} mono />
+            <OnChainField label="Detected By" value={detectedByLabelOf(alert)} />
           </div>
         </div>
       ) : null}

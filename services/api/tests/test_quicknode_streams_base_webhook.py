@@ -1461,3 +1461,321 @@ def test_wallet_on_asset_duplicate_from_stable_polling_is_suppressed(monkeypatch
     assert result['results'][0]['existing_detected_by'] == 'stable_rpc_polling'
     assert conn.telemetry_inserts == []
     assert conn.commit_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# Alert / incident chain: a persisted QuickNode Streams wallet_transfer_detected
+# must drive the SAME alert (and incident, where the rule requires it) chain that
+# Stable RPC Polling creates — reusing monitoring_runner's rule functions verbatim,
+# deduped across sources by target_id + tx_hash, evidence_source=live,
+# detected_by=quicknode_stream. Stable RPC Polling and the WebSocket fallback are
+# untouched.
+# ---------------------------------------------------------------------------
+
+def _outbound_tx() -> dict:
+    """An outbound Base ETH transfer from the monitored wallet with value > 0, so
+    BOTH the direction-agnostic smoke rule and the outbound-only Strategic
+    Infrastructure Guard rule fire."""
+    return {
+        'tx_hash': TX_HASH,
+        'from': WALLET_ADDR,
+        'to': COUNTERPARTY,
+        'value': '1000000000000000000',
+        'block_number': 47286578,
+        'chain_id': 8453,
+    }
+
+
+def _run_webhook_with_patched_alert_rules(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    conn: _FakeConnection,
+    tx: dict,
+    smoke_return: str | None = 'smoke-alert-id',
+    sig_return: str | None = 'sig-alert-id',
+):
+    """Drive the webhook with the two stable-polling alert-rule functions patched so
+    the chain is observable without a live DB (they normally open their own
+    committed connection). Returns (result, smoke_mock, sig_mock)."""
+    from unittest.mock import MagicMock
+
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    smoke = MagicMock(return_value=smoke_return)
+    sig = MagicMock(return_value=sig_return)
+    raw = _body(tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
+         patch.object(qn, '_wallet_transfer_smoke_alert', smoke), \
+         patch.object(qn, '_strategic_infrastructure_guard_alert', sig):
+        result = qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    return result, smoke, sig
+
+
+def test_quicknode_transfer_creates_telemetry_and_alert(monkeypatch: pytest.MonkeyPatch):
+    """A matched QuickNode transfer persists telemetry AND invokes the stable-polling
+    smoke + Strategic Infrastructure Guard alert rules, with the ids surfaced on the result."""
+    target = _make_target()
+    conn = _FakeConnection(targets=[target])
+    result, smoke, sig = _run_webhook_with_patched_alert_rules(monkeypatch, conn=conn, tx=_outbound_tx())
+
+    # Telemetry persisted.
+    assert result['persisted'] == 1
+    assert len(conn.telemetry_inserts) == 1
+    # Both stable-polling rule functions were reused (not a forked path).
+    assert smoke.call_count == 1
+    assert sig.call_count == 1
+    # Alert ids surfaced on the per-tx result entry.
+    entry = result['results'][0]
+    assert entry['status'] == 'processed'
+    assert entry['smoke_alert_id'] == 'smoke-alert-id'
+    assert entry['sig_alert_id'] == 'sig-alert-id'
+
+
+def test_quicknode_alert_uses_live_evidence_and_quicknode_detected_by(monkeypatch: pytest.MonkeyPatch):
+    """The alert chain is invoked with evidence_source=live and a payload carrying
+    detected_by=quicknode_stream / source_type=quicknode_stream — never demo/fallback,
+    never mislabeled as stable polling."""
+    target = _make_target()
+    conn = _FakeConnection(targets=[target])
+    _result, smoke, sig = _run_webhook_with_patched_alert_rules(monkeypatch, conn=conn, tx=_outbound_tx())
+
+    smoke_kwargs = smoke.call_args.kwargs
+    assert smoke_kwargs['evidence_source'] == 'live'
+    assert smoke_kwargs['telemetry_id']
+    assert smoke_kwargs['payload']['detected_by'] == 'quicknode_stream'
+    assert smoke_kwargs['payload']['source_type'] == 'quicknode_stream'
+    assert smoke_kwargs['payload']['tx_hash'] == TX_HASH
+    assert smoke_kwargs['payload']['chain_id'] == 8453
+    assert smoke_kwargs['payload']['block_number'] == 47286578
+
+    sig_kwargs = sig.call_args.kwargs
+    assert sig_kwargs['evidence_source'] == 'live'
+    # Outbound: the Strategic Infrastructure Guard rule receives the resolved
+    # monitored wallet as the from-side owner so it can classify the movement.
+    assert sig_kwargs['target_wallet_address'] == WALLET_ADDR
+    assert sig_kwargs['payload']['detected_by'] == 'quicknode_stream'
+
+
+def test_quicknode_alert_chain_passes_workspace_and_target_scope(monkeypatch: pytest.MonkeyPatch):
+    """Workspace-scoped: the alert rules receive the target's own workspace_id/target_id
+    and the target-owner user_id (no authenticated webhook user, no cross-tenant leak)."""
+    target = _make_target()
+    target['updated_by_user_id'] = str(uuid.uuid4())
+    conn = _FakeConnection(targets=[target])
+    _result, smoke, _sig = _run_webhook_with_patched_alert_rules(monkeypatch, conn=conn, tx=_outbound_tx())
+
+    smoke_kwargs = smoke.call_args.kwargs
+    assert smoke_kwargs['workspace_id'] == target['workspace_id']
+    assert smoke_kwargs['target_id'] == target['id']
+    assert smoke_kwargs['user_id'] == target['updated_by_user_id']
+
+
+def test_duplicate_stable_polling_transfer_does_not_create_duplicate_alert(monkeypatch: pytest.MonkeyPatch):
+    """If stable RPC polling already recorded this target + tx_hash, the QuickNode
+    webhook suppresses the duplicate and NEVER invokes the alert chain a second time."""
+    target = _make_target()
+    existing_row = {'id': str(uuid.uuid4()), 'event_type': 'native_transfer', 'detected_by': 'stable_rpc_polling'}
+    conn = _FakeConnection(targets=[target], existing_telemetry=existing_row)
+    result, smoke, sig = _run_webhook_with_patched_alert_rules(monkeypatch, conn=conn, tx=_outbound_tx())
+
+    assert result['duplicates'] == 1
+    assert result['persisted'] == 0
+    assert result['results'][0]['status'] == 'duplicate_suppressed'
+    # No alert chain on a suppressed duplicate — no second alert row.
+    assert smoke.call_count == 0
+    assert sig.call_count == 0
+
+
+def test_alert_chain_failure_does_not_break_webhook_200(monkeypatch: pytest.MonkeyPatch):
+    """An alert-rule exception must not turn a verified, already-persisted webhook into
+    a 5xx: the telemetry stays committed and the response is still a normal summary."""
+    from unittest.mock import MagicMock
+
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    target = _make_target()
+    conn = _FakeConnection(targets=[target])
+    boom = MagicMock(side_effect=RuntimeError('alert engine down'))
+    raw = _body(_outbound_tx())
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
+         patch.object(qn, '_wallet_transfer_smoke_alert', boom), \
+         patch.object(qn, '_strategic_infrastructure_guard_alert', boom):
+        result = qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert result['received'] is True
+    assert result['persisted'] == 1
+    assert result['results'][0]['status'] == 'processed'
+    # Alerts failed to create; ids are None but the transfer is still persisted.
+    assert result['results'][0]['smoke_alert_id'] is None
+    assert result['results'][0]['sig_alert_id'] is None
+
+
+# ---------------------------------------------------------------------------
+# Cross-source dedup + evidence package, asserted directly against the reused
+# monitoring_runner rule functions (the same functions Stable RPC Polling calls).
+# ---------------------------------------------------------------------------
+
+class _AlertStubConn:
+    """Minimal committed-connection stub for the monitoring_runner alert rules,
+    mirroring test_wallet_transfer_alert_escalation._StubConn. Records INSERT tables
+    and can simulate an already-existing detection (ON CONFLICT DO NOTHING) with a
+    linked alert — the state stable RPC polling leaves behind for a given tx."""
+
+    def __init__(self, *, detection_conflict: bool = False, linked_alert_id: str | None = None):
+        self.inserts: list[tuple] = []
+        self.commit_calls = 0
+        self._detection_conflict = detection_conflict
+        self._linked_alert_id = linked_alert_id
+
+    class _R:
+        def __init__(self, rows=None, rowcount=None):
+            self._rows = list(rows or [])
+            self.rowcount = rowcount if rowcount is not None else len(self._rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+        def fetchall(self):
+            return list(self._rows)
+
+    def execute(self, query, params=None):
+        q = (query or '').strip().lower()
+        if q.startswith('insert into'):
+            table = q.split('insert into')[1].strip().split('(')[0].strip().split()[0]
+            self.inserts.append((table, tuple(params or ())))
+            if 'detections' in table and self._detection_conflict:
+                return self._R(rowcount=0)
+            return self._R(rowcount=1)
+        if 'alert_suppression_rules' in q and 'select' in q:
+            return self._R([])
+        if q.startswith('select') and 'from alerts' in q:
+            return self._R([])
+        if 'select' in q and 'linked_alert_id' in q and 'from detections' in q:
+            return self._R([{'linked_alert_id': self._linked_alert_id}])
+        if q.startswith('update'):
+            return self._R(rowcount=1)
+        return self._R()
+
+    def commit(self):
+        self.commit_calls += 1
+
+
+def _quicknode_alert_payload() -> dict:
+    return {
+        'chain_id': 8453,
+        'chain_network': 'base',
+        'block_number': 47286578,
+        'tx_hash': TX_HASH,
+        'from': WALLET_ADDR,
+        'to': COUNTERPARTY,
+        'from_address': WALLET_ADDR,
+        'to_address': COUNTERPARTY,
+        'amount': '1000000000000000000',
+        'value_wei': 1000000000000000000,
+        'wallet_transfer_direction': 'outbound',
+        'event_type': 'wallet_transfer_detected',
+        'source_type': 'quicknode_stream',
+        'detected_by': 'quicknode_stream',
+    }
+
+
+def test_alert_evidence_package_includes_tx_hash_and_quicknode_detected_by(monkeypatch: pytest.MonkeyPatch):
+    """Requirement 5.3: the alert evidence package (alerts.payload + detection
+    raw_evidence) built from a QuickNode transfer carries tx_hash and
+    detected_by=quicknode_stream — provable in the exported evidence."""
+    from contextlib import contextmanager
+
+    from services.api.app import monitoring_runner as mr
+
+    stub = _AlertStubConn()
+    captured_response: list[dict] = []
+    original_upsert = mr._upsert_alert
+
+    def _capturing_upsert(conn, *, response, **kwargs):
+        captured_response.append(dict(response))
+        return original_upsert(conn, response=response, **kwargs)
+
+    @contextmanager
+    def _fake_pg():
+        yield stub
+
+    with patch.object(mr, 'pg_connection', _fake_pg), \
+         patch.object(mr, '_upsert_alert', _capturing_upsert):
+        alert_id = mr._wallet_transfer_smoke_alert(
+            workspace_id=str(uuid.uuid4()),
+            user_id=str(uuid.uuid4()),
+            target_id=str(uuid.uuid4()),
+            target_name='Treasury Base Wallet',
+            payload=_quicknode_alert_payload(),
+            evidence_source='live',
+            telemetry_id=str(uuid.uuid4()),
+        )
+
+    assert alert_id
+    # Alert payload (the stored evidence package) carries tx_hash + detected_by.
+    assert captured_response, 'the smoke rule must call _upsert_alert'
+    r = captured_response[0]
+    assert r['tx_hash'] == TX_HASH
+    assert r['detected_by'] == 'quicknode_stream'
+    assert r['evidence_source'] == 'live'
+    # Detection raw_evidence (the proof-chain record) also carries them.
+    detection_params = [p for t, p in stub.inserts if t == 'detections'][0]
+    raw = json.loads(detection_params[11])
+    assert raw['tx_hash'] == TX_HASH
+    assert raw['detected_by'] == 'quicknode_stream'
+
+
+def test_quicknode_and_stable_polling_share_alert_dedupe_signature():
+    """Cross-source dedup foundation: the smoke and Strategic Infrastructure Guard
+    dedupe signatures depend only on workspace_id + target_id + chain_id + tx_hash +
+    rule — NOT on the detecting source. So a QuickNode alert and a stable-polling
+    alert for the same target + tx collapse onto one signature (no duplicate)."""
+    from services.api.app import monitoring_runner as mr
+
+    ws, tid = str(uuid.uuid4()), str(uuid.uuid4())
+    smoke_sig = mr._smoke_dedupe_signature(workspace_id=ws, target_id=tid, chain_id=8453, tx_hash=TX_HASH)
+    sig_sig = mr._sig_dedupe_signature(workspace_id=ws, target_id=tid, chain_id=8453, tx_hash=TX_HASH)
+    # Recomputing from the "other source" (identical scope) yields the identical key.
+    assert mr._smoke_dedupe_signature(workspace_id=ws, target_id=tid, chain_id=8453, tx_hash=TX_HASH) == smoke_sig
+    assert mr._sig_dedupe_signature(workspace_id=ws, target_id=tid, chain_id=8453, tx_hash=TX_HASH) == sig_sig
+    # A different tx_hash is a different alert (never collapsed by target alone).
+    other = mr._smoke_dedupe_signature(workspace_id=ws, target_id=tid, chain_id=8453, tx_hash='0x' + 'ff' * 32)
+    assert other != smoke_sig
+
+
+def test_quicknode_transfer_dedupes_against_prior_stable_polling_alert():
+    """Requirement 3: when stable RPC polling already created the detection+alert for
+    this target + tx_hash, the QuickNode run (same reused rule function) returns the
+    existing alert id and inserts NO new alert row."""
+    from contextlib import contextmanager
+
+    from services.api.app import monitoring_runner as mr
+
+    existing_alert_id = str(uuid.uuid4())
+    # detection ON CONFLICT DO NOTHING + an already-linked alert = stable polling got here first.
+    stub = _AlertStubConn(detection_conflict=True, linked_alert_id=existing_alert_id)
+
+    @contextmanager
+    def _fake_pg():
+        yield stub
+
+    with patch.object(mr, 'pg_connection', _fake_pg):
+        alert_id = mr._wallet_transfer_smoke_alert(
+            workspace_id=str(uuid.uuid4()),
+            user_id=str(uuid.uuid4()),
+            target_id=str(uuid.uuid4()),
+            target_name='Treasury Base Wallet',
+            payload=_quicknode_alert_payload(),
+            evidence_source='live',
+            telemetry_id=str(uuid.uuid4()),
+        )
+
+    assert alert_id == existing_alert_id, 'must return the stable-polling alert, not a duplicate'
+    assert not [t for t, _ in stub.inserts if t == 'alerts'], 'no second alert row may be inserted'
