@@ -10,9 +10,10 @@ Flow: QuickNode Streams posts a signed payload for matched Base activity ->
 verify HMAC -> normalize tx fields -> match tx.from/tx.to against every
 active Base wallet target's resolved monitored wallet -> persist a
 wallet_transfer_detected telemetry row (detected_by=quicknode_stream,
-source_type=quicknode_stream), deduped against any existing row for the
-same target_id + tx_hash (including rows the stable RPC polling worker
-already wrote).
+source_type=quicknode_stream), deduped against any existing wallet-transfer
+row for the same target_id + chain_id + tx_hash + event_type — regardless of
+detected_by, so a transfer the stable RPC polling worker already wrote (as
+either native_transfer or wallet_transfer_detected) suppresses it.
 """
 from __future__ import annotations
 
@@ -27,6 +28,7 @@ from datetime import datetime, timezone
 from os import getenv
 from typing import Any
 
+import psycopg
 from fastapi import HTTPException, status
 
 from services.api.app.evm_activity_provider import resolve_monitored_wallet
@@ -360,20 +362,33 @@ def normalize_base_stream_tx(raw: dict[str, Any]) -> dict[str, Any] | None:
 # to Base wallet targets. Intentionally unscoped by workspace: a single shared
 # QuickNode Streams webhook covers every workspace's Base wallets, so matching
 # must check every active target the same way the realtime worker does.
+#
+# monitored_system_id is NOT a column on `targets`: the production schema keeps it
+# on `monitored_systems` (keyed by target_id). Selecting it directly off `targets`
+# was the deploy regression that crashed this handler with
+# ``psycopg.errors.UndefinedColumn: column "monitored_system_id" does not exist``.
+# It is derived here via a LEFT JOIN so a target that has no monitored_systems row
+# still loads (monitored_system_id = NULL) and still matches wallet transfers — the
+# join is never required for matching. monitored_systems carries a
+# UNIQUE (workspace_id, target_id) constraint, so the join stays one-to-one (no row
+# fan-out) and is scoped to the target's own workspace (no cross-tenant leak).
 _BASE_WALLET_TARGETS_SQL = """
-SELECT id, workspace_id, name, target_type, chain_network, chain_id,
-       wallet_address, contract_identifier, asset_id, target_metadata,
-       monitoring_enabled, enabled, is_active,
-       monitored_system_id, updated_by_user_id, created_by_user_id
-FROM targets
-WHERE deleted_at IS NULL
-  AND target_type = 'wallet'
-  AND monitoring_enabled = TRUE
-  AND enabled = TRUE
-  AND is_active = TRUE
+SELECT t.id, t.workspace_id, t.name, t.target_type, t.chain_network, t.chain_id,
+       t.wallet_address, t.contract_identifier, t.asset_id, t.target_metadata,
+       t.monitoring_enabled, t.enabled, t.is_active,
+       ms.id AS monitored_system_id, t.updated_by_user_id, t.created_by_user_id
+FROM targets t
+LEFT JOIN monitored_systems ms
+       ON ms.target_id = t.id
+      AND ms.workspace_id = t.workspace_id
+WHERE t.deleted_at IS NULL
+  AND t.target_type = 'wallet'
+  AND t.monitoring_enabled = TRUE
+  AND t.enabled = TRUE
+  AND t.is_active = TRUE
   AND (
-    LOWER(COALESCE(chain_network, 'base')) IN ('base', 'base-mainnet')
-    OR chain_id = 8453
+    LOWER(COALESCE(t.chain_network, 'base')) IN ('base', 'base-mainnet')
+    OR t.chain_id = 8453
   )
 """
 
@@ -503,27 +518,55 @@ def _match_targets_for_tx(
     return matched
 
 
-def _existing_telemetry_for_tx(connection: Any, *, target_id: str, tx_hash: str) -> dict[str, Any] | None:
-    """Any existing telemetry row for this target + tx_hash, regardless of who wrote it.
+# Wallet-transfer telemetry event types that describe the SAME on-chain transfer
+# regardless of which detection path recorded it: stable RPC polling writes
+# 'native_transfer' for a plain ETH move and 'wallet_transfer_detected' otherwise,
+# while QuickNode Streams always writes 'wallet_transfer_detected'. Deduping across
+# this family (and never on detected_by) is what collapses a stable-polling row and
+# a QuickNode row for one tx into a single customer-visible event.
+_WALLET_TRANSFER_EVENT_TYPES = ('wallet_transfer_detected', 'native_transfer')
 
-    Checked before insert so a transfer the stable RPC polling worker already
-    detected (or a QuickNode Streams retry of the same event) is reported as a
-    duplicate instead of creating a second customer-visible row.
+
+def _existing_telemetry_for_tx(
+    connection: Any, *, target_id: str, tx_hash: str, chain_id: Any,
+) -> dict[str, Any] | None:
+    """Any existing wallet-transfer telemetry row for this target + chain + tx_hash.
+
+    Dedupe identity: ``target_id + chain_id + tx_hash + event_type``, matched
+    REGARDLESS of ``detected_by`` — so a transfer the stable RPC polling worker
+    already recorded (or a QuickNode Streams retry of the same event) is reported as
+    a duplicate instead of creating a second customer-visible row. ``event_type`` is
+    matched across the wallet-transfer family (:data:`_WALLET_TRANSFER_EVENT_TYPES`)
+    so a stable-polling ``native_transfer`` still suppresses a QuickNode
+    ``wallet_transfer_detected`` for the identical tx. The chain match tolerates a
+    legacy row that never stamped ``chain_id`` in its payload, so scoping by chain
+    can never re-open a duplicate the previous target_id + tx_hash dedupe caught.
     """
     row = connection.execute(
         '''
         SELECT id, event_type, payload_json->>'detected_by' AS detected_by
         FROM telemetry_events
-        WHERE target_id = %s AND lower(payload_json->>'tx_hash') = lower(%s)
+        WHERE target_id = %s
+          AND lower(payload_json->>'tx_hash') = lower(%s)
+          AND event_type = ANY(%s)
+          AND (
+            payload_json->>'chain_id' IS NULL
+            OR payload_json->>'chain_id' = %s
+          )
         LIMIT 1
         ''',
-        (target_id, tx_hash),
+        (target_id, tx_hash, list(_WALLET_TRANSFER_EVENT_TYPES), str(chain_id)),
     ).fetchone()
     return dict(row) if row is not None else None
 
 
 def _persist_quicknode_wallet_transfer(connection: Any, *, target: dict[str, Any], tx: dict[str, Any]) -> dict[str, Any]:
-    existing = _existing_telemetry_for_tx(connection, target_id=target['id'], tx_hash=tx['tx_hash'])
+    existing = _existing_telemetry_for_tx(
+        connection,
+        target_id=target['id'],
+        tx_hash=tx['tx_hash'],
+        chain_id=tx.get('chain_id') or BASE_CHAIN_ID,
+    )
     if existing is not None:
         return {
             'status': 'duplicate_suppressed',
@@ -667,6 +710,33 @@ def _create_wallet_transfer_alert_chain(
     return {'smoke_alert_id': smoke_alert_id, 'sig_alert_id': sig_alert_id}
 
 
+def _target_load_failed_response(*, tx_count: int) -> dict[str, Any]:
+    """Safe fail-closed 200 body for when Base wallet targets could not be loaded.
+
+    Returned only *after* signature verification has already passed, when the
+    target-loading query itself fails with a database/schema error (e.g. a column
+    the deployed schema does not have). It is a 200, not a 500, so QuickNode Streams
+    does not retry a non-auth / non-client bug forever — but it is truthful and
+    fail-closed: ``ok=false``, ``fail_closed=true``, and every count is zero, so a
+    load failure is never dressed up as a healthy, fully processed webhook. The
+    paired ``quicknode_stream_target_load_failed`` log line makes it provable from
+    Railway logs. Nothing is persisted and no alert is raised on this path.
+    """
+    return {
+        'received': True,
+        'ok': False,
+        'fail_closed': True,
+        'error': 'target_load_failed',
+        'tx_count': tx_count,
+        'targets_loaded': 0,
+        'matched': 0,
+        'persisted': 0,
+        'duplicates': 0,
+        'skipped': 0,
+        'results': [],
+    }
+
+
 def _summary_response(
     *,
     tx_count: int,
@@ -777,7 +847,26 @@ def process_quicknode_base_stream_webhook(
     skipped_count = 0
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        targets = _load_all_base_wallet_targets(connection)
+        try:
+            targets = _load_all_base_wallet_targets(connection)
+        except psycopg.Error as exc:
+            # Target loading hit a database/schema error (e.g. a column the deployed
+            # schema does not have — the monitored_system_id regression this handler
+            # was hardened against). This is neither an auth failure nor a client
+            # error, so a 500 would make QuickNode Streams retry the same broken
+            # request indefinitely. Fail closed instead: roll back the now-aborted
+            # transaction so the connection releases cleanly, log the failure so it is
+            # provable from Railway logs, and return a truthful 200 that asserts
+            # nothing was processed — never a false "healthy".
+            try:
+                connection.rollback()
+            except Exception:  # pragma: no cover - rollback is best-effort on a dead tx
+                pass
+            logger.warning(
+                'quicknode_stream_target_load_failed error_type=%s tx_count=%s',
+                type(exc).__name__, len(normalized_txs), exc_info=True,
+            )
+            return _target_load_failed_response(tx_count=len(normalized_txs))
         # Computed once per payload: last4/hash8 tags for every loaded target
         # wallet, so a no-match tx can be diagnosed against the configured
         # targets from logs without ever printing a full monitored wallet.

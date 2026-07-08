@@ -37,6 +37,7 @@ import uuid
 from contextlib import contextmanager
 from unittest.mock import patch
 
+import psycopg
 import pytest
 from fastapi import HTTPException
 
@@ -1779,3 +1780,356 @@ def test_quicknode_transfer_dedupes_against_prior_stable_polling_alert():
 
     assert alert_id == existing_alert_id, 'must return the stable-polling alert, not a duplicate'
     assert not [t for t, _ in stub.inserts if t == 'alerts'], 'no second alert row may be inserted'
+
+
+# ---------------------------------------------------------------------------
+# Production-schema regression guard for the monitored_system_id crash.
+#
+# The deploy incident: _BASE_WALLET_TARGETS_SQL selected `monitored_system_id`
+# directly from `targets`, but that column does NOT exist on `targets` in the
+# production schema — it lives on `monitored_systems` (keyed by target_id). The
+# handler crashed in _load_all_base_wallet_targets with
+#   psycopg.errors.UndefinedColumn: column "monitored_system_id" does not exist
+# The fix derives monitored_system_id via a LEFT JOIN on monitored_systems, so a
+# target with no monitored_systems row still loads (monitored_system_id = NULL)
+# and still matches wallet transfers (the join is never required for matching).
+#
+# _ProductionSchemaConnection models that real schema: selecting a bare
+# monitored_system_id off `targets` (the old query) raises UndefinedColumn exactly
+# like production, while the fixed JOIN query loads targets and derives the id.
+# ---------------------------------------------------------------------------
+
+# Real production `targets` columns (migration 0006 + later ALTERs). Notably
+# ABSENT: monitored_system_id — that column is only on `monitored_systems`.
+_PROD_TARGET_COLUMNS = frozenset({
+    'id', 'workspace_id', 'name', 'target_type', 'chain_network', 'chain_id',
+    'wallet_address', 'contract_identifier', 'asset_id', 'asset_type',
+    'target_metadata', 'monitoring_enabled', 'enabled', 'is_active',
+    'updated_by_user_id', 'created_by_user_id', 'deleted_at',
+})
+
+
+class _ProductionSchemaConnection:
+    """Fake connection whose `targets` table has NO monitored_system_id column.
+
+    monitored_system_id is derivable only by LEFT JOINing `monitored_systems`
+    (``target_id -> monitored_system id``). A query that selects monitored_system_id
+    without that join raises ``psycopg.errors.UndefinedColumn``, exactly like the
+    production incident; the fixed join query returns each target augmented with
+    monitored_system_id (or None when the target has no monitored_systems row).
+    Set ``fail_target_load=True`` to force a schema error even for the fixed query,
+    exercising the defensive fail-closed path independently of the query shape.
+    """
+
+    def __init__(
+        self,
+        *,
+        targets: list[dict],
+        monitored_systems: dict | None = None,
+        existing_telemetry: dict | None = None,
+        asset_row: dict | None = None,
+        fail_target_load: bool = False,
+    ):
+        self._targets = targets
+        self._monitored_systems = dict(monitored_systems or {})  # target_id -> ms id
+        self._existing_telemetry = existing_telemetry
+        self._asset_row = asset_row
+        self._fail_target_load = fail_target_load
+        self.telemetry_inserts: list[tuple] = []
+        self.commit_calls = 0
+        self.rollback_calls = 0
+
+    def _targets_result(self, q: str) -> _Rows:
+        if self._fail_target_load:
+            raise psycopg.errors.UndefinedColumn('simulated target-load schema error')
+        joins_ms = 'join monitored_systems' in q
+        if 'monitored_system_id' in q and not joins_ms:
+            # Bare targets.monitored_system_id — the column does not exist here.
+            raise psycopg.errors.UndefinedColumn('column "monitored_system_id" does not exist')
+        rows = []
+        for target in self._targets:
+            unknown = set(target) - _PROD_TARGET_COLUMNS
+            assert not unknown, f'test target carries non-production columns: {sorted(unknown)}'
+            row = dict(target)
+            if joins_ms:
+                # LEFT JOIN semantics: NULL when the target has no monitored_systems row.
+                row['monitored_system_id'] = self._monitored_systems.get(target['id'])
+            rows.append(row)
+        return _Rows(rows)
+
+    def execute(self, query, params=None):
+        q = (query or '').strip().lower()
+        if 'from targets' in q:
+            return self._targets_result(q)
+        if 'from assets' in q:
+            return _Rows([self._asset_row] if self._asset_row else [])
+        if 'from telemetry_events' in q and 'select' in q:
+            return _Rows([self._existing_telemetry] if self._existing_telemetry else [])
+        if q.startswith('insert into telemetry_events'):
+            self.telemetry_inserts.append(tuple(params or ()))
+            return _Rows([])
+        return _Rows([])
+
+    def commit(self):
+        self.commit_calls += 1
+
+    def rollback(self):
+        self.rollback_calls += 1
+
+    @contextmanager
+    def transaction(self):
+        yield
+
+
+def test_base_wallet_targets_sql_derives_monitored_system_id_via_join_not_bare_column():
+    """The fix, locked in structurally: monitored_system_id must be derived via a
+    LEFT JOIN on monitored_systems, never selected as a bare column off `targets`
+    (which does not have it). This assertion fails against the crashing old query."""
+    sql = qn._BASE_WALLET_TARGETS_SQL.lower()
+    assert 'left join monitored_systems' in sql
+    assert 'ms.id as monitored_system_id' in sql
+    assert 'ms.target_id = t.id' in sql
+    # A bare, unqualified `monitored_system_id` column selected from targets is the
+    # exact regression — the only occurrence may be the aliased join projection.
+    assert sql.count('monitored_system_id') == 1
+
+
+def test_old_bare_column_query_reproduces_undefined_column_crash():
+    """Guard the guard: the production-schema fake must actually reproduce the
+    incident when handed the OLD query shape (bare monitored_system_id, no join),
+    so a real regression cannot slip past these tests as a false pass."""
+    conn = _ProductionSchemaConnection(targets=[_make_target()])
+    old_query = (
+        'SELECT id, workspace_id, monitored_system_id FROM targets WHERE is_active = TRUE'
+    )
+    with pytest.raises(psycopg.errors.UndefinedColumn):
+        conn.execute(old_query).fetchall()
+
+
+def test_load_targets_on_production_schema_without_monitored_system_id_column():
+    """Requirement: a production-like targets table without a monitored_system_id
+    column still loads (no crash), and wallet resolution still works."""
+    target = _make_target()  # wallet_address set; no monitored_system_id key
+    conn = _ProductionSchemaConnection(targets=[target])
+    loaded = qn._load_all_base_wallet_targets(conn)
+    assert len(loaded) == 1
+    # monitored_system_id derived from the (empty) join is NULL, never a crash.
+    assert loaded[0].get('monitored_system_id') is None
+    # Wallet resolution is unaffected by the schema fix.
+    assert qn.resolve_monitored_wallet(loaded[0]) == WALLET_ADDR
+
+
+def test_load_targets_derives_monitored_system_id_from_join_when_present():
+    """When a monitored_systems row exists for the target, the LEFT JOIN derives its
+    id onto the loaded target (used downstream to link the detection)."""
+    target = _make_target()
+    ms_id = str(uuid.uuid4())
+    conn = _ProductionSchemaConnection(
+        targets=[target], monitored_systems={target['id']: ms_id},
+    )
+    loaded = qn._load_all_base_wallet_targets(conn)
+    assert loaded[0]['monitored_system_id'] == ms_id
+
+
+def test_webhook_no_500_and_no_match_on_production_schema(monkeypatch: pytest.MonkeyPatch):
+    """End-to-end on the production schema (no monitored_system_id column): a tx that
+    matches no monitored wallet returns a normal 200 summary with no_match — never a
+    500 from the absent column."""
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    target = _make_target(wallet_address=WALLET_ADDR)
+    conn = _ProductionSchemaConnection(targets=[target])
+    tx = {'tx_hash': TX_HASH, 'from': UNRELATED_ADDR, 'to': COUNTERPARTY, 'value': '1', 'chain_id': 8453}
+    raw = _body(tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None):
+        result = qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert result['ok'] is True
+    assert result['targets_loaded'] == 1
+    assert result['matched'] == 0
+    assert result['skipped'] == 1
+    assert result['results'][0]['status'] == 'no_match'
+    assert conn.telemetry_inserts == []
+
+
+def test_webhook_persists_on_production_schema_when_tx_matches(monkeypatch: pytest.MonkeyPatch):
+    """End-to-end on the production schema: a tx that matches a monitored wallet
+    returns 200 and persists a quicknode_stream row — proving the schema fix restores
+    the full detection path that the monitored_system_id crash had broken."""
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    target = _make_target(wallet_address=WALLET_ADDR)
+    conn = _ProductionSchemaConnection(targets=[target])
+    tx = {
+        'tx_hash': TX_HASH, 'from': WALLET_ADDR, 'to': COUNTERPARTY,
+        'value': '1000000000000000000', 'block_number': 47286578, 'chain_id': 8453,
+    }
+    raw = _body(tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None):
+        result = qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert result['ok'] is True
+    assert result['persisted'] == 1
+    assert result['results'][0]['status'] == 'processed'
+    assert result['results'][0]['detected_by'] == 'quicknode_stream'
+    assert len(conn.telemetry_inserts) == 1
+    payload = json.loads(conn.telemetry_inserts[0][9])
+    assert payload['detected_by'] == 'quicknode_stream'
+    assert payload['tx_hash'] == TX_HASH
+
+
+def test_matched_target_passes_joined_monitored_system_id_to_alert_chain(monkeypatch: pytest.MonkeyPatch):
+    """The monitored_system_id derived from the LEFT JOIN flows into the alert chain,
+    so the detection is still linked to its monitored_system after the schema fix."""
+    target = _make_target()
+    ms_id = str(uuid.uuid4())
+    conn = _ProductionSchemaConnection(targets=[target], monitored_systems={target['id']: ms_id})
+    _result, smoke, sig = _run_webhook_with_patched_alert_rules(monkeypatch, conn=conn, tx=_outbound_tx())
+    assert smoke.call_args.kwargs['monitored_system_id'] == ms_id
+    assert sig.call_args.kwargs['monitored_system_id'] == ms_id
+
+
+def test_match_and_persist_when_no_monitored_system_row_exists(monkeypatch: pytest.MonkeyPatch):
+    """The join is never required for matching: a target with no monitored_systems row
+    still matches and persists, with monitored_system_id=None passed to the alert chain."""
+    target = _make_target()
+    conn = _ProductionSchemaConnection(targets=[target], monitored_systems={})
+    result, smoke, _sig = _run_webhook_with_patched_alert_rules(monkeypatch, conn=conn, tx=_outbound_tx())
+    assert result['persisted'] == 1
+    assert smoke.call_args.kwargs['monitored_system_id'] is None
+
+
+# ---------------------------------------------------------------------------
+# Defensive target-load handling: a database/schema error while loading targets
+# (after signature verification) must fail closed with a truthful 200 — never a
+# 500 that would make QuickNode Streams retry a non-auth/schema bug forever.
+# ---------------------------------------------------------------------------
+
+def test_target_load_schema_error_returns_fail_closed_200_not_500(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    target = _make_target()
+    conn = _ProductionSchemaConnection(targets=[target], fail_target_load=True)
+    tx = {'tx_hash': TX_HASH, 'from': WALLET_ADDR, 'to': COUNTERPARTY, 'value': '1', 'chain_id': 8453}
+    raw = _body(tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
+         caplog.at_level('WARNING', logger=_QN_LOGGER):
+        # Must NOT raise (no 500): the handler returns a safe body instead.
+        result = qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    # Truthful and fail-closed: never a false "healthy".
+    assert result['ok'] is False
+    assert result['fail_closed'] is True
+    assert result['error'] == 'target_load_failed'
+    assert result['persisted'] == 0
+    assert result['targets_loaded'] == 0
+    assert result['results'] == []
+    # Provable from logs, and the aborted transaction was rolled back cleanly.
+    assert 'quicknode_stream_target_load_failed' in caplog.text
+    assert 'error_type=UndefinedColumn' in caplog.text
+    assert conn.rollback_calls == 1
+    # Nothing was persisted and no alert row was written on the fail-closed path.
+    assert conn.telemetry_inserts == []
+
+
+def test_signature_failure_still_raises_not_swallowed_by_defensive_handler(monkeypatch: pytest.MonkeyPatch):
+    """The fail-closed target-load handler must not soften auth failures: an invalid
+    signature still rejects with 401 before target loading is ever reached."""
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    raw = _body({'tx_hash': TX_HASH, 'from': WALLET_ADDR})
+    with pytest.raises(HTTPException) as exc:
+        qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header='not-the-right-signature',
+            nonce_header=NONCE, timestamp_header=_now_ts(),
+        )
+    assert exc.value.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Duplicate dedupe key (requirement 6): wallet_transfer_detected is deduped by
+# target_id + chain_id + tx_hash + event_type, REGARDLESS of detected_by, so a
+# stable-polling row (any wallet-transfer event type, any source) suppresses a
+# QuickNode row for the identical tx.
+# ---------------------------------------------------------------------------
+
+class _CaptureTelemetryConn:
+    """Captures the dedupe SELECT's SQL + params so the WHERE composition can be
+    asserted directly (the text-dispatching fakes elsewhere ignore the WHERE)."""
+
+    def __init__(self, existing: dict | None = None):
+        self._existing = existing
+        self.telemetry_query: str | None = None
+        self.telemetry_params: tuple = ()
+
+    def execute(self, query, params=None):
+        q = (query or '').strip().lower()
+        if 'from telemetry_events' in q and 'select' in q:
+            self.telemetry_query = q
+            self.telemetry_params = tuple(params or ())
+            return _Rows([self._existing] if self._existing else [])
+        return _Rows([])
+
+
+def test_dedupe_key_is_target_chain_tx_event_type_regardless_of_detected_by():
+    conn = _CaptureTelemetryConn(existing=None)
+    result = qn._existing_telemetry_for_tx(conn, target_id='tgt-1', tx_hash=TX_HASH, chain_id=8453)
+    assert result is None
+    q = conn.telemetry_query
+    assert q is not None
+    where_clause = q.split('where', 1)[1]
+    # Dedupe identity: target_id + chain_id + tx_hash + event_type.
+    assert 'target_id = %s' in where_clause
+    assert "lower(payload_json->>'tx_hash') = lower(%s)" in where_clause
+    assert 'event_type = any(%s)' in where_clause
+    assert "payload_json->>'chain_id'" in where_clause
+    # Regardless of detected_by: it must never appear in the WHERE (only SELECTed).
+    assert 'detected_by' not in where_clause
+    # Params carry the scope and the wallet-transfer event-type family.
+    assert 'tgt-1' in conn.telemetry_params
+    assert TX_HASH in conn.telemetry_params
+    assert '8453' in conn.telemetry_params
+    assert list(qn._WALLET_TRANSFER_EVENT_TYPES) in conn.telemetry_params
+
+
+def test_dedupe_event_type_family_covers_native_transfer_and_wallet_transfer_detected():
+    """Stable RPC polling writes 'native_transfer' for a plain ETH move and
+    'wallet_transfer_detected' otherwise; both must dedupe a QuickNode transfer."""
+    assert 'wallet_transfer_detected' in qn._WALLET_TRANSFER_EVENT_TYPES
+    assert 'native_transfer' in qn._WALLET_TRANSFER_EVENT_TYPES
+
+
+def test_stable_polling_native_transfer_suppresses_quicknode_regardless_of_detected_by(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Cross-source, cross-event-type: a stable-polling 'native_transfer' row for the
+    same target + tx suppresses the QuickNode 'wallet_transfer_detected' — deduped on
+    the on-chain identity, never on detected_by."""
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    target = _make_target()
+    existing_row = {'id': str(uuid.uuid4()), 'event_type': 'native_transfer', 'detected_by': 'stable_rpc_polling'}
+    conn = _ProductionSchemaConnection(targets=[target], existing_telemetry=existing_row)
+    tx = {'tx_hash': TX_HASH, 'from': WALLET_ADDR, 'to': COUNTERPARTY, 'value': '1', 'chain_id': 8453}
+    raw = _body(tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None):
+        result = qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert result['duplicates'] == 1
+    assert result['persisted'] == 0
+    assert result['results'][0]['status'] == 'duplicate_suppressed'
+    assert result['results'][0]['existing_detected_by'] == 'stable_rpc_polling'
+    assert conn.telemetry_inserts == []
