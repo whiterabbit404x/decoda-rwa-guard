@@ -38,16 +38,20 @@ from services.api.app.worker_status import (
     build_worker_status,
     classify_realtime_tx_verdict,
     classify_wallet_transfer_detected_by,
+    collapse_transfer_family_duplicates,
     detected_by_from_ingestion_source as worker_status_detected_by,
+    is_transfer_family_event_type,
     live_coverage_gap_reason,
     realtime_active_by_watcher_facts,
     realtime_enabled,
     resolve_telemetry_detected_by,
     stable_poll_stale_threshold_seconds,
+    transfer_source_priority,
     DEFAULT_REALTIME_HEARTBEAT_TTL_SECONDS,
     DETECTED_BY_BASIS_UNCLASSIFIED,
     REALTIME_DETECTED_BY,
     STABLE_DETECTED_BY,
+    TRANSFER_FAMILY_EVENT_TYPES,
     WALLET_TRANSFER_EVENT_TYPES,
 )
 from services.api.app.workspace_monitoring_summary import (
@@ -621,6 +625,79 @@ def _persist_raw_wallet_transfer_telemetry(
             tx_hash or 'unknown',
         )
         return False
+
+
+def _find_canonical_transfer_duplicate(
+    connection: Any,
+    *,
+    workspace_id: str,
+    target_id: str,
+    tx_hash: str,
+    chain_id: Any,
+    incoming_detected_by: Any,
+) -> dict[str, Any] | None:
+    """Return an existing transfer-family telemetry row that OUTRANKS the incoming one.
+
+    Dedupe identity: ``target_id + chain_id + lower(tx_hash)`` matched across the
+    whole transfer family (:data:`TRANSFER_FAMILY_EVENT_TYPES`) REGARDLESS of
+    ``event_type`` or ``detected_by`` — so a QuickNode ``wallet_transfer_detected``
+    row suppresses a later stable ``native_transfer`` for the same tx. Chain is
+    matched NULL-tolerantly (a legacy row that never stamped ``chain_id`` still
+    counts) so scoping by chain can never re-open a duplicate that target + tx_hash
+    already caught.
+
+    Returns the best (lowest :func:`transfer_source_priority`) existing row ONLY when
+    it strictly outranks ``incoming_detected_by`` — i.e. a canonically-better source
+    already recorded this transfer. Returns ``None`` when nothing better exists, so
+    the caller writes its row normally (the higher-priority writer, or the first
+    writer of this tx, always persists; only the lower-priority late duplicate is
+    suppressed). Never raises: a lookup failure returns ``None`` (fail-open to the
+    existing insert + idempotency-key dedupe) rather than dropping evidence.
+    """
+    tx_hash = str(tx_hash or '').strip()
+    if not tx_hash:
+        return None
+    incoming_priority = transfer_source_priority(incoming_detected_by)
+    try:
+        rows = connection.execute(
+            '''
+            SELECT id, event_type, observed_at,
+                   payload_json->>'detected_by' AS detected_by
+            FROM telemetry_events
+            WHERE workspace_id = %s::uuid
+              AND target_id = %s::uuid
+              AND event_type = ANY(%s)
+              AND lower(COALESCE(payload_json->>'tx_hash', payload_json->>'hash')) = lower(%s)
+              AND (
+                payload_json->>'chain_id' IS NULL
+                OR payload_json->>'chain_id' = %s
+              )
+            ''',
+            (
+                workspace_id,
+                target_id,
+                list(TRANSFER_FAMILY_EVENT_TYPES),
+                tx_hash,
+                str(chain_id) if chain_id not in (None, '') else '',
+            ),
+        ).fetchall()
+    except Exception:
+        logger.warning(
+            'transfer_family_dedupe_lookup_failed workspace_id=%s target_id=%s tx_hash=%s',
+            workspace_id, target_id, tx_hash, exc_info=True,
+        )
+        return None
+    best: dict[str, Any] | None = None
+    best_priority = incoming_priority
+    for row in rows:
+        row_dict = dict(row) if not isinstance(row, dict) else row
+        row_priority = transfer_source_priority(row_dict.get('detected_by'))
+        # Strictly better source already recorded this tx -> the incoming row is the
+        # lower-priority duplicate and must be suppressed in favour of this one.
+        if row_priority < best_priority:
+            best = row_dict
+            best_priority = row_priority
+    return best
 
 
 def _maybe_persist_ingested_wallet_transfer(
@@ -4205,23 +4282,58 @@ def process_monitoring_target(
             ):
                 _ev_payload['detected_by'] = STABLE_DETECTED_BY
                 _ev_payload['detected_by_source'] = 'stable_polling_loop'
-            # Detected wallet transfers are canonical live evidence. Persist and COMMIT the
-            # raw telemetry on a dedicated connection BEFORE threat analysis runs. If analysis
-            # later raises (e.g. analysis_unavailable) the surrounding monitoring transaction
-            # rolls back, but this committed evidence row survives and stays searchable.
-            _wallet_transfer_persisted = _persist_raw_wallet_transfer_telemetry(
-                connection,
-                telemetry_id=_telem_id,
-                workspace_id=str(target['workspace_id']),
-                asset_id=str(target.get('asset_id')) if target.get('asset_id') else None,
-                target_id=str(target['id']),
-                provider_type=str(provider_result.provider_name or 'monitoring_provider'),
-                event_type=_telem_event_type,
-                observed_at=event.observed_at,
-                evidence_source=telemetry_evidence_source,
-                payload=_ev_payload,
-                idempotency_key=telemetry_idempotency_key,
-            )
+            # Transfer-family dedupe (requirement: stable RPC polling must NOT insert a
+            # second telemetry row for a tx a canonically-higher source already recorded).
+            # If QuickNode Streams (or the realtime WSS worker) already persisted this
+            # target + chain + tx_hash — even under a different event_type such as
+            # wallet_transfer_detected vs this loop's native_transfer — suppress the stable
+            # insert and reuse the canonical row's id, so the alert/incident chain below
+            # links the canonical (QuickNode) row and no duplicate customer-visible row is
+            # created. Stable polling stays the backup: it still records the tx (and its
+            # alert) when it is the first/only writer.
+            _canonical_dupe: dict[str, Any] | None = None
+            _stable_tx_hash = str(_ev_payload.get('tx_hash') or _ev_payload.get('hash') or '').strip()
+            if telemetry_evidence_source == 'live' and _stable_tx_hash:
+                _canonical_dupe = _find_canonical_transfer_duplicate(
+                    connection,
+                    workspace_id=str(target['workspace_id']),
+                    target_id=str(target['id']),
+                    tx_hash=_stable_tx_hash,
+                    chain_id=_ev_payload.get('chain_id'),
+                    incoming_detected_by=_ev_payload.get('detected_by') or STABLE_DETECTED_BY,
+                )
+            if _canonical_dupe is not None:
+                # A better source owns this transfer: keep its row as canonical, do not
+                # write a stable duplicate. Point the alert chain at the canonical id.
+                _telem_id = str(_canonical_dupe['id'])
+                _wallet_transfer_persisted = True
+                logger.info(
+                    'stable_transfer_duplicate_suppressed target_id=%s tx_hash=%s '
+                    'canonical_telemetry_id=%s canonical_detected_by=%s suppressed_event_type=%s',
+                    target.get('id'),
+                    _stable_tx_hash,
+                    _telem_id,
+                    str(_canonical_dupe.get('detected_by') or 'unknown'),
+                    _telem_event_type,
+                )
+            else:
+                # Detected wallet transfers are canonical live evidence. Persist and COMMIT the
+                # raw telemetry on a dedicated connection BEFORE threat analysis runs. If analysis
+                # later raises (e.g. analysis_unavailable) the surrounding monitoring transaction
+                # rolls back, but this committed evidence row survives and stays searchable.
+                _wallet_transfer_persisted = _persist_raw_wallet_transfer_telemetry(
+                    connection,
+                    telemetry_id=_telem_id,
+                    workspace_id=str(target['workspace_id']),
+                    asset_id=str(target.get('asset_id')) if target.get('asset_id') else None,
+                    target_id=str(target['id']),
+                    provider_type=str(provider_result.provider_name or 'monitoring_provider'),
+                    event_type=_telem_event_type,
+                    observed_at=event.observed_at,
+                    evidence_source=telemetry_evidence_source,
+                    payload=_ev_payload,
+                    idempotency_key=telemetry_idempotency_key,
+                )
             wallet_transfers_detected += 1
             inserted_telemetry_ids.append(_telem_id)
             logger.info(
@@ -10875,6 +10987,15 @@ def list_target_telemetry(
             )
             _filter_params.extend([_like, _like, _like, _like, _like, _like])
 
+        # Transfer-family dedupe (requirement 3/6): never surface a transfer row that
+        # has been collapsed into a canonical row. The losing duplicate is stamped with
+        # payload_json.duplicate_of_telemetry_id (by the historical cleanup migration or
+        # an insert-time upgrade); the surviving canonical row is never stamped, so this
+        # excludes only duplicates and keeps count / pagination truthful. Applies to
+        # every tab (count and data queries share _filter_sql). Uses ->> IS NULL rather
+        # than the jsonb `?` operator to avoid any DBAPI placeholder ambiguity.
+        _filter_clauses.append("te.payload_json->>'duplicate_of_telemetry_id' IS NULL")
+
         _filter_sql = ''.join(f' AND {c}' for c in _filter_clauses)
         _base_params: list[Any] = [workspace_id, target_id]
 
@@ -10948,6 +11069,32 @@ def list_target_telemetry(
             item['provider_mode'] = payload.get('provider_mode')
             item['observed_latency_seconds'] = payload.get('observed_latency_seconds')
             telemetry.append(item)
+
+        # Transfer-family dedupe (requirement 3): collapse rows that describe the SAME
+        # on-chain transfer (same tx_hash, any transfer-family event_type) down to the
+        # single canonical row — quicknode_stream over realtime_websocket over
+        # stable_rpc_polling — so the production duplicate (a QuickNode
+        # wallet_transfer_detected row and a stable native_transfer row for one tx)
+        # renders as ONE row "Detected by QuickNode Stream". The SQL above already hides
+        # rows explicitly marked duplicate_of_telemetry_id; this is the defence-in-depth
+        # pass that also collapses any not-yet-marked duplicate that shares this page,
+        # and it is what makes the behaviour unit-testable without a live DB. Page-local
+        # by nature (a duplicate whose canonical twin is on another page is caught by the
+        # SQL marker exclusion instead). total_count is reduced by the rows suppressed
+        # here so the count never claims more events than are actually shown.
+        telemetry, _suppressed_transfer_dupes = collapse_transfer_family_duplicates(
+            telemetry,
+            get_event_type=lambda r: r.get('event_type'),
+            get_tx_hash=lambda r: r.get('tx_hash'),
+            get_detected_by=lambda r: r.get('detected_by'),
+            get_sort_key=lambda r: (str(r.get('observed_at') or ''), str(r.get('id') or '')),
+        )
+        if _suppressed_transfer_dupes:
+            total_count = max(len(telemetry), total_count - len(_suppressed_transfer_dupes))
+            logger.info(
+                'telemetry_transfer_family_collapsed target_id=%s suppressed=%s canonical_kept=%s',
+                target_id, len(_suppressed_transfer_dupes), len(telemetry),
+            )
 
         # Debug/diagnosis contract for the newest row: log AND return the exact
         # detection-path fields so a blank customer-facing "Detected By" can be
@@ -12679,6 +12826,11 @@ def backfill_strategic_guard_alerts_for_target(
             WHERE te.workspace_id = %s::uuid
               AND te.target_id = %s::uuid
               AND te.event_type IN ('wallet_transfer_detected', 'native_transfer')
+              -- Requirement 7: an alert must link the CANONICAL transfer row, never a
+              -- collapsed duplicate. Skip rows the dedupe migration / insert-time upgrade
+              -- stamped as duplicate_of_telemetry_id, so the same tx is backfilled once,
+              -- against the surviving canonical (e.g. QuickNode Stream) row only.
+              AND te.payload_json->>'duplicate_of_telemetry_id' IS NULL
             ORDER BY te.observed_at DESC
             LIMIT 500
             ''',

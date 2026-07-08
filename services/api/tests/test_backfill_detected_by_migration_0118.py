@@ -43,9 +43,15 @@ def test_migration_file_exists_and_is_discovered_after_0117():
     assert MIGRATION.is_file(), f'missing migration file: {MIGRATION}'
     versions = sorted(p.name for p in MIGRATION.parent.glob('*.sql'))
     assert MIGRATION.name in versions
-    assert versions.index(MIGRATION.name) == len(versions) - 1, (
-        'expected 0118 to be the newest migration; add a follow-up migration '
-        'instead of editing 0118 once it has shipped'
+    # 0118 must sort immediately after the 0117 migration. A NEW migration always
+    # goes in a higher-numbered file (0119+), so this stays true as the tree grows,
+    # while still failing if someone renumbers or removes 0118. Do NOT edit 0118's
+    # contents once shipped — add a follow-up migration instead.
+    prior = sorted(p.name for p in MIGRATION.parent.glob('0117_*.sql'))
+    assert prior, 'expected a 0117_* migration to precede 0118'
+    assert versions.index(MIGRATION.name) == versions.index(prior[-1]) + 1, (
+        'expected 0118 to be discovered immediately after 0117; add a follow-up '
+        'migration (0119+) instead of editing 0118 once it has shipped'
     )
 
 

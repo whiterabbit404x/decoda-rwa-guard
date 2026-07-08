@@ -44,6 +44,7 @@ from services.api.app.monitoring_runner import (
     _wallet_transfer_smoke_alert,
 )
 from services.api.app.pilot import ensure_pilot_schema, pg_connection
+from services.api.app.worker_status import TRANSFER_FAMILY_EVENT_TYPES
 
 logger = logging.getLogger(__name__)
 # These quicknode_stream_* lines are mandatory operational evidence: the
@@ -523,8 +524,12 @@ def _match_targets_for_tx(
 # 'native_transfer' for a plain ETH move and 'wallet_transfer_detected' otherwise,
 # while QuickNode Streams always writes 'wallet_transfer_detected'. Deduping across
 # this family (and never on detected_by) is what collapses a stable-polling row and
-# a QuickNode row for one tx into a single customer-visible event.
-_WALLET_TRANSFER_EVENT_TYPES = ('wallet_transfer_detected', 'native_transfer')
+# a QuickNode row for one tx into a single customer-visible event. Aliased to the
+# shared worker_status.TRANSFER_FAMILY_EVENT_TYPES so the webhook, the stable-polling
+# insert path, and the telemetry list route all dedupe over the identical family
+# (which also covers the 'wallet_transfer' / 'eth_transfer' / 'base_native_transfer'
+# spellings older writers used).
+_WALLET_TRANSFER_EVENT_TYPES = TRANSFER_FAMILY_EVENT_TYPES
 
 
 def _existing_telemetry_for_tx(
