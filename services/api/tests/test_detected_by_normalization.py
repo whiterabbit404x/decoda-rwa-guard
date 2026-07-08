@@ -261,15 +261,19 @@ def test_api_maps_tx_hash_import_rows_to_realtime_tx_import():
 
 def test_api_maps_details_and_metadata_detected_by():
     ws, tgt = str(uuid.uuid4()), str(uuid.uuid4())
+    # Two DISTINCT transfers (distinct tx_hash) exercising two normalization sources.
+    # Distinct tx_hashes are required so transfer-family dedupe does not (correctly)
+    # collapse them: same-tx rows are duplicates, these are two separate events.
     row_details = _make_row(ws, tgt, payload={
         'tx_hash': TX_HASH, 'details': {'detected_by': 'realtime_websocket'},
     })
     row_metadata = _make_row(ws, tgt, payload={
-        'tx_hash': TX_HASH, 'metadata': {'detected_by': 'stable_rpc_polling'},
+        'tx_hash': f'{TX_HASH[:-4]}beef', 'metadata': {'detected_by': 'stable_rpc_polling'},
     })
     result = _run_telemetry([row_details, row_metadata], ws, tgt)
-    assert result['telemetry'][0]['detected_by'] == 'realtime_websocket'
-    assert result['telemetry'][1]['detected_by'] == 'stable_rpc_polling'
+    detected = {r['tx_hash']: r['detected_by'] for r in result['telemetry']}
+    assert detected[TX_HASH] == 'realtime_websocket'
+    assert detected[f'{TX_HASH[:-4]}beef'] == 'stable_rpc_polling'
 
 
 def test_api_live_wallet_transfer_row_never_blank_detected_by():

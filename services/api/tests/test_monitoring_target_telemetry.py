@@ -100,12 +100,17 @@ def _make_request(workspace_id: str) -> Any:
 
 
 def _make_dummy_row(workspace_id: str, target_id: str, event_type: str = 'wallet_transfer_detected') -> dict:
+    # Each dummy row models a DISTINCT telemetry event, so give it a distinct tx_hash.
+    # Transfer-family dedupe collapses rows that share a tx_hash, so a shared tx_hash
+    # here would (correctly) merge N rows into one and skew the pagination assertions
+    # these dummies exist to exercise.
+    row_id = str(uuid.uuid4())
     return {
-        'id': str(uuid.uuid4()), 'workspace_id': workspace_id, 'target_id': target_id,
+        'id': row_id, 'workspace_id': workspace_id, 'target_id': target_id,
         'provider_type': 'evm_rpc', 'source_type': event_type,
         'evidence_source': 'live', 'observed_at': '2026-06-01T10:00:00Z',
         'ingested_at': '2026-06-01T10:00:01Z',
-        'payload_json': {'tx_hash': '0xabc', 'block_number': 1000},
+        'payload_json': {'tx_hash': f'0x{row_id.replace("-", "")}', 'block_number': 1000},
         'chain_network': 'base', 'receipt_block_number': None,
     }
 

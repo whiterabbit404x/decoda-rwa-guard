@@ -25,6 +25,7 @@ Pure functions only — no DB or network access — so the logic is unit-testabl
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
@@ -99,6 +100,68 @@ _TX_IMPORT_SOURCES: tuple[str, ...] = ('tx_hash_import', 'realtime_tx_import')
 # Telemetry event_type values that render as "Wallet transfer detected" in the UI
 # and therefore must never have a blank detected_by (acceptance rule).
 WALLET_TRANSFER_EVENT_TYPES: tuple[str, ...] = ('wallet_transfer_detected', 'native_transfer')
+
+# The full transfer-family of telemetry event_type values that describe the SAME
+# on-chain value movement regardless of which detection path recorded it. Two rows
+# for one tx are duplicates even when their event_type strings differ: stable RPC
+# polling writes 'native_transfer' for a plain ETH move, QuickNode Streams always
+# writes 'wallet_transfer_detected', and older/alternate writers used the other
+# spellings. Deduping across this family (by target + chain + tx_hash, NEVER by
+# event_type or detected_by) is what collapses a stable-polling row and a QuickNode
+# row for one tx into a single customer-visible event. Superset of
+# WALLET_TRANSFER_EVENT_TYPES: the extra spellings only widen dedupe reach, they do
+# not relax the "wallet rows must carry a detected_by" acceptance rule above.
+TRANSFER_FAMILY_EVENT_TYPES: tuple[str, ...] = (
+    'wallet_transfer_detected',
+    'native_transfer',
+    'wallet_transfer',
+    'eth_transfer',
+    'base_native_transfer',
+)
+
+# Canonical source priority used to pick the single row that survives when a tx has
+# more than one transfer-family telemetry row. LOWER rank wins (index order):
+#   quicknode_stream    — richest push-based realtime detection (keep if present)
+#   realtime_websocket  — the realtime WSS pipeline
+#   realtime_backfill / realtime_tx_import / *_http_fast_tail — realtime
+#     recovery/fallback paths, ranked between websocket and stable
+#   stable_rpc_polling  — the always-on 300s backup loop (kept only when nothing
+#     better recorded the tx; "Stable RPC Polling remains backup")
+# An unknown/blank source ranks last so a classified row always beats an
+# unclassifiable one. Ties (same rank) are broken by EARLIEST observed_at /
+# created_at at the call site, so the winner is deterministic.
+CANONICAL_TRANSFER_SOURCE_PRIORITY: tuple[str, ...] = (
+    'quicknode_stream',
+    'realtime_websocket',
+    'realtime_backfill',
+    'realtime_tx_import',
+    'quicknode_http_fast_tail',
+    'realtime_http_fast_tail',
+    'stable_rpc_polling',
+)
+
+
+def is_transfer_family_event_type(event_type: Any) -> bool:
+    """True when ``event_type`` is a transfer-family telemetry event.
+
+    Used to scope dedupe to value-movement rows: heartbeat/poll/provider-health
+    rows are never collapsed. Case/space-insensitive; blank -> False.
+    """
+    return str(event_type or '').strip().lower() in TRANSFER_FAMILY_EVENT_TYPES
+
+
+def transfer_source_priority(detected_by: Any) -> int:
+    """Rank a transfer row's ``detected_by`` for canonical dedupe (lower = keep).
+
+    Mirrors :data:`CANONICAL_TRANSFER_SOURCE_PRIORITY`. An unknown/blank tag ranks
+    last (``len(priority)``) so a row that names a real detection path always wins
+    over one that names none — never the reverse. Pure and total: never raises.
+    """
+    src = str(detected_by or '').strip().lower()
+    try:
+        return CANONICAL_TRANSFER_SOURCE_PRIORITY.index(src)
+    except ValueError:
+        return len(CANONICAL_TRANSFER_SOURCE_PRIORITY)
 
 
 def _canonical_detected_by_or_none(source: Any) -> str | None:
@@ -225,6 +288,88 @@ def classify_wallet_transfer_detected_by(
     if is_wallet and not ptype and evidence in ('', 'live'):
         return STABLE_DETECTED_BY, DETECTED_BY_BASIS_STABLE_INFERENCE
     return None, DETECTED_BY_BASIS_UNCLASSIFIED
+
+
+def collapse_transfer_family_duplicates(
+    items: list[Any],
+    *,
+    get_event_type: Callable[[Any], Any],
+    get_tx_hash: Callable[[Any], Any],
+    get_detected_by: Callable[[Any], Any],
+    get_sort_key: Callable[[Any], Any] | None = None,
+) -> tuple[list[Any], list[Any]]:
+    """Collapse transfer-family rows that describe the SAME on-chain transfer.
+
+    Two telemetry rows are the same transfer when they share a ``tx_hash`` and both
+    are transfer-family events (:func:`is_transfer_family_event_type`) — even when
+    their ``event_type`` strings differ (QuickNode's ``wallet_transfer_detected`` vs
+    stable polling's ``native_transfer``). Exactly one row per ``tx_hash`` survives:
+
+      * winner = smallest :func:`transfer_source_priority` of ``detected_by``
+        (quicknode_stream > realtime_websocket > ... > stable_rpc_polling);
+      * ties are broken by ``get_sort_key`` ASCENDING — pass earliest
+        observed_at/created_at so the deterministic keep is the earliest-observed
+        row of the winning source.
+
+    Rows that are NOT transfer-family, or that carry no ``tx_hash``, are ALWAYS kept
+    and never grouped (a poll heartbeat or a tx-less row is never a "duplicate").
+    Input order of the kept rows is preserved, so callers keep their sort.
+
+    Callers scope ``items`` to a single target (the telemetry list and the alert
+    backfill are already target-scoped), so ``tx_hash`` is the transfer identity;
+    ``chain_id`` is part of the logical identity but is not split on here because a
+    target monitors one chain and a legacy row may not have stamped ``chain_id``
+    (matching the NULL-tolerant insert-time dedupe). Pure: no DB, never raises.
+
+    Returns ``(kept, suppressed)``.
+    """
+    # First pass: choose the winning item index per tx_hash.
+    winner_by_tx: dict[str, tuple[int, Any, int]] = {}
+    for idx, item in enumerate(items):
+        if not is_transfer_family_event_type(get_event_type(item)):
+            continue
+        tx = str(get_tx_hash(item) or '').strip().lower()
+        if not tx:
+            continue
+        priority = transfer_source_priority(get_detected_by(item))
+        # Fall back to input order when no explicit sort key is provided, so the
+        # tie-break stays deterministic (earliest-seen wins).
+        sort_key = get_sort_key(item) if get_sort_key is not None else idx
+        candidate = (priority, sort_key, idx)
+        current = winner_by_tx.get(tx)
+        if current is None or _transfer_candidate_lt(candidate, current):
+            winner_by_tx[tx] = candidate
+    winning_indexes = {win[2] for win in winner_by_tx.values()}
+
+    # Second pass: keep winners + all non-transfer / tx-less rows, in place.
+    kept: list[Any] = []
+    suppressed: list[Any] = []
+    for idx, item in enumerate(items):
+        tx = str(get_tx_hash(item) or '').strip().lower()
+        if is_transfer_family_event_type(get_event_type(item)) and tx:
+            if idx in winning_indexes:
+                kept.append(item)
+            else:
+                suppressed.append(item)
+        else:
+            kept.append(item)
+    return kept, suppressed
+
+
+def _transfer_candidate_lt(candidate: tuple[int, Any, int], current: tuple[int, Any, int]) -> bool:
+    """Order two dedupe candidates ``(priority, sort_key, idx)``; True if ``candidate``
+    should replace ``current``. Lower priority wins; ties broken by ``sort_key`` then
+    ``idx``. Tolerates non-comparable sort keys (e.g. None vs str) by falling back to
+    the input index, so a missing observed_at never raises mid-dedupe.
+    """
+    if candidate[0] != current[0]:
+        return candidate[0] < current[0]
+    try:
+        if candidate[1] != current[1]:
+            return candidate[1] < current[1]
+    except TypeError:
+        pass
+    return candidate[2] < current[2]
 
 
 def classify_realtime_tx_verdict(
