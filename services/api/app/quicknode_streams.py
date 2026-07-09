@@ -59,7 +59,7 @@ logger.setLevel(logging.INFO)
 # quicknode_streams_webhook_version=... startup log alone (emitted by
 # services/api/app/main.py). Lets an operator confirm the deployed API commit
 # actually includes this code without shell access to the container.
-QUICKNODE_STREAMS_WEBHOOK_VERSION = '2026-07-07-quicknode-stream-nested-envelope-summary-v4'
+QUICKNODE_STREAMS_WEBHOOK_VERSION = '2026-07-08-quicknode-stream-debug-tx-trace-v5'
 
 BASE_CHAIN_ID = 8453
 BASE_CHAIN_NETWORK = 'base'
@@ -199,6 +199,123 @@ def _hex_or_int(value: Any) -> int | None:
         return int(text, 16) if text.lower().startswith('0x') else int(text)
     except ValueError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Debug-tx tracing (QUICKNODE_STREAM_DEBUG_TX_HASH / QUICKNODE_STREAM_DEBUG_TX_BLOCK)
+#
+# Operational instrumentation for the "QuickNode Stream missed a fresh tx"
+# investigation. When a specific tx hash is configured, every QuickNode batch is
+# traced for it so an operator can prove, from Railway logs alone, which of these
+# happened for that tx:
+#   A) QuickNode never delivered the block/tx  — no batch_range ever covers its block.
+#   B) QuickNode delivered the block but the normalizer/filter dropped the tx —
+#      a batch_range covers its block yet quicknode_stream_debug_tx_not_seen fires.
+#   C) QuickNode delivered the tx but the matcher failed —
+#      quicknode_stream_debug_tx_seen with from_matches_target/to_matches_target=false.
+#   D) QuickNode delivered + matched but duplicate suppression fired —
+#      quicknode_stream_debug_tx_seen with duplicate_found=true, persisted=false.
+# The tx from/to and block number logged here are public on-chain facts; the
+# monitored wallet is only ever emitted as its last 4 chars, never in full.
+# ---------------------------------------------------------------------------
+
+
+def _debug_tx_hashes() -> set[str]:
+    """Configured debug tx hashes (QUICKNODE_STREAM_DEBUG_TX_HASH), lowercased.
+
+    Accepts one hash or a comma-separated list; an empty set when unset, so the
+    debug tracing is inert (and cost-free beyond one batch_range line) in every
+    normal deployment.
+    """
+    raw = (getenv('QUICKNODE_STREAM_DEBUG_TX_HASH') or '').strip()
+    if not raw:
+        return set()
+    return {part.strip().lower() for part in raw.split(',') if part.strip()}
+
+
+def _debug_tx_block_number() -> int | None:
+    """Optional known block number of the debug tx (QUICKNODE_STREAM_DEBUG_TX_BLOCK).
+
+    Accepts decimal or 0x-hex. When set, it enables the
+    ``quicknode_stream_debug_tx_not_seen`` check: a batch whose block range covers
+    this block but does NOT contain the debug tx hash proves QuickNode delivered the
+    block *without* the tx (normalizer/filter miss, case B) rather than never
+    delivering it (case A). Unset -> the not_seen check is skipped, since a batch that
+    does not contain the tx cannot reveal the tx's block number on its own.
+    """
+    return _hex_or_int((getenv('QUICKNODE_STREAM_DEBUG_TX_BLOCK') or '').strip() or None)
+
+
+def _log_batch_range_and_debug_tx(normalized_txs: list[dict[str, Any]]) -> None:
+    """Log the block range of a QuickNode batch and whether it carries a debug tx.
+
+    Emitted once per payload (task requirement 2: ``quicknode_stream_batch_range``
+    with first_block / last_block / tx_count / contains_debug_tx). When a debug tx
+    hash is configured, its block is known (QUICKNODE_STREAM_DEBUG_TX_BLOCK), and a
+    batch whose range covers that block does not contain the tx, also emits
+    ``quicknode_stream_debug_tx_not_seen`` (task requirement 4) — the proof that the
+    block was delivered without the tx. Counts and public block numbers only.
+    """
+    block_numbers = [t['block_number'] for t in normalized_txs if t.get('block_number') is not None]
+    first_block = min(block_numbers) if block_numbers else None
+    last_block = max(block_numbers) if block_numbers else None
+    debug_hashes = _debug_tx_hashes()
+    seen_hashes = {t['tx_hash'] for t in normalized_txs}
+    contains_debug_tx = bool(debug_hashes & seen_hashes)
+    logger.info(
+        'quicknode_stream_batch_range first_block=%s last_block=%s tx_count=%s contains_debug_tx=%s',
+        first_block if first_block is not None else 'none',
+        last_block if last_block is not None else 'none',
+        len(normalized_txs),
+        str(contains_debug_tx).lower(),
+    )
+    if not debug_hashes:
+        return
+    debug_block = _debug_tx_block_number()
+    if debug_block is None or first_block is None or last_block is None:
+        return
+    if not (first_block <= debug_block <= last_block):
+        return
+    for debug_hash in sorted(debug_hashes):
+        if debug_hash not in seen_hashes:
+            logger.info(
+                'quicknode_stream_debug_tx_not_seen tx_hash=%s tx_block_number=%s '
+                'batch_first_block=%s batch_last_block=%s',
+                debug_hash, debug_block, first_block, last_block,
+            )
+
+
+def _log_debug_tx_seen(
+    *,
+    normalized: dict[str, Any],
+    target_wallet: str | None,
+    from_matches_target: bool,
+    to_matches_target: bool,
+    duplicate_found: bool,
+    persisted: bool,
+) -> None:
+    """Emit ``quicknode_stream_debug_tx_seen`` for a configured debug tx (task req 3).
+
+    Logs the full per-tx / per-target trace an operator needs to classify the miss:
+    the tx's public from/to and block number, whether the tx matched the monitored
+    wallet (last4 only, never the full address), whether a duplicate already existed,
+    and whether this path persisted a row. Emitted once per matched target, and once
+    with wallet fields cleared when the debug tx matched no monitored wallet.
+    """
+    logger.info(
+        'quicknode_stream_debug_tx_seen tx_hash=%s block_number=%s from=%s to=%s '
+        'target_wallet_last4=%s from_matches_target=%s to_matches_target=%s '
+        'duplicate_found=%s persisted=%s',
+        normalized['tx_hash'],
+        normalized.get('block_number') if normalized.get('block_number') is not None else 'none',
+        normalized['from_address'],
+        normalized.get('to_address') or 'none',
+        target_wallet[-4:] if target_wallet else 'none',
+        str(from_matches_target).lower(),
+        str(to_matches_target).lower(),
+        str(duplicate_found).lower(),
+        str(persisted).lower(),
+    )
 
 
 def _describe_payload_shape(body: Any) -> dict[str, Any]:
@@ -838,6 +955,11 @@ def process_quicknode_base_stream_webhook(
         sample.get('value') is not None,
         sample.get('block_number') is not None,
     )
+    # Task requirement 2 (and 4): every batch logs its block range + whether it
+    # carries the debug tx, and — when the debug tx's block is known but absent from
+    # a covering batch — a debug_tx_not_seen line. Emitted before the empty-batch
+    # early return so a batch that normalized to zero is still traced.
+    _log_batch_range_and_debug_tx(normalized_txs)
     if not normalized_txs:
         reason = 'no_raw_transactions_extracted' if not raw_txs else 'raw_transactions_missing_required_fields'
         logger.info('quicknode_stream_no_transactions_normalized reason=%s', reason)
@@ -877,6 +999,8 @@ def process_quicknode_base_stream_webhook(
         # targets from logs without ever printing a full monitored wallet.
         target_fingerprints = [_wallet_fingerprint(resolve_monitored_wallet(t)) for t in targets]
         no_match_logged = 0
+        # Read once per payload so the hot per-tx loop never re-reads the env.
+        debug_hashes = _debug_tx_hashes()
         for normalized in normalized_txs:
             matched_targets = _match_targets_for_tx(
                 targets, from_address=normalized['from_address'], to_address=normalized['to_address'],
@@ -895,6 +1019,18 @@ def process_quicknode_base_stream_webhook(
                         normalized.get('to_address'), target_fingerprints,
                     )
                     no_match_logged += 1
+                # A configured debug tx that reached normalization but matched no
+                # monitored wallet: log it seen-but-unmatched so case C (matcher
+                # failed / wallet not configured) is provable from logs.
+                if normalized['tx_hash'] in debug_hashes:
+                    _log_debug_tx_seen(
+                        normalized=normalized,
+                        target_wallet=None,
+                        from_matches_target=False,
+                        to_matches_target=False,
+                        duplicate_found=False,
+                        persisted=False,
+                    )
                 results.append({'tx_hash': normalized['tx_hash'], 'status': 'no_match'})
                 continue
             for target in matched_targets:
@@ -932,6 +1068,18 @@ def process_quicknode_base_stream_webhook(
                         'quicknode_stream_duplicate_suppressed tx_hash=%s existing_detected_by=%s',
                         normalized['tx_hash'], outcome.get('existing_detected_by'),
                     )
+                # A configured debug tx that matched a monitored wallet: log the full
+                # per-target trace so case D (matched but duplicate-suppressed) is
+                # distinguishable from a real persist, straight from Railway logs.
+                if normalized['tx_hash'] in debug_hashes:
+                    _log_debug_tx_seen(
+                        normalized=normalized,
+                        target_wallet=target_wallet,
+                        from_matches_target=from_match,
+                        to_matches_target=to_match,
+                        duplicate_found=outcome['status'] == 'duplicate_suppressed',
+                        persisted=outcome['status'] == 'processed',
+                    )
                 results.append({'tx_hash': normalized['tx_hash'], 'target_id': target['id'], **outcome})
         if match_count == 0:
             logger.info(
@@ -942,3 +1090,217 @@ def process_quicknode_base_stream_webhook(
             tx_count=len(normalized_txs), targets_loaded=len(targets), matched=match_count,
             persisted=persisted_count, duplicates=duplicate_count, skipped=skipped_count, results=results,
         )
+
+
+# ---------------------------------------------------------------------------
+# Safe ops endpoint: replay the QuickNode matcher/dedupe logic against a tx
+# fetched live from Base RPC. Read-only by default (dry_run=true); only writes
+# when explicitly asked (dry_run=false), using the exact same persistence + alert
+# chain the live webhook uses. Gated by the QuickNode Streams secret because it
+# re-runs the webhook's intentionally-unscoped matcher across every workspace's
+# Base wallets (task requirement 5).
+# ---------------------------------------------------------------------------
+
+QUICKNODE_OPS_TOKEN_HEADER = 'x-quicknode-ops-token'
+
+
+def verify_quicknode_ops_token(token: str | None) -> None:
+    """Authorize a QuickNode ops/debug request against the Stream's shared secret.
+
+    The debug-tx endpoint re-runs the webhook's (intentionally unscoped) matcher
+    across every workspace's Base wallets, so it is gated by the same credential as
+    the webhook itself — ``QUICKNODE_STREAMS_SECRET`` — rather than workspace RBAC.
+    Fails closed: an unconfigured secret (503) or a missing/incorrect token (401)
+    always rejects, and the secret is never echoed back in the error detail.
+    """
+    secret = (getenv('QUICKNODE_STREAMS_SECRET') or '').strip()
+    if not secret:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='QuickNode Streams ops endpoint is not configured (QUICKNODE_STREAMS_SECRET missing).',
+        )
+    provided = (token or '').strip()
+    if not provided or not hmac.compare_digest(provided, secret):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Invalid or missing QuickNode Streams ops token.',
+        )
+
+
+def run_quicknode_debug_tx(*, tx_hash: str, dry_run: bool = True) -> dict[str, Any]:
+    """Fetch a tx/receipt from Base RPC and replay the QuickNode matcher/dedupe logic.
+
+    Safe ops diagnostic for the "QuickNode Stream missed a fresh tx" investigation
+    (task requirement 5). Fetches the transaction and receipt from the configured
+    Base RPC — the same provider stable RPC polling uses — normalizes it exactly as
+    the webhook does, then runs the identical unscoped target load + wallet match +
+    duplicate check. Nothing is written unless ``dry_run`` is False, in which case it
+    persists via the same :func:`_persist_quicknode_wallet_transfer` + alert chain the
+    live webhook uses (so re-running with dry_run=false is a legitimate one-off import,
+    idempotent against any row the stable poller already wrote).
+
+    Returns a truthful report whose ``conclusion`` classifies the outcome:
+
+    * ``tx_not_found_on_rpc``      — the tx does not exist on the Base RPC (wrong chain
+      / un-indexed); the endpoint cannot decide anything else.
+    * ``tx_missing_required_fields`` — fetched but not normalizable (no hash/from).
+    * ``matcher_no_wallet_match``  — normalized fine but matched no active Base wallet
+      target (case C: matcher/config discrepancy — if the UI still shows the tx via
+      stable polling, the two paths resolve different wallets).
+    * ``duplicate_suppressed``     — matched, but a wallet-transfer row already exists
+      for every matched target (case D: the QuickNode webhook would suppress it).
+    * ``would_match_and_persist`` / ``matched_and_persisted`` — matched with no existing
+      row (dry-run vs. write). Implies a live miss is a delivery/normalizer gap
+      (case A/B), which only the batch_range / debug_tx_* logs can decide.
+
+    Only public tx from/to and the monitored wallet's last4 are returned — never a
+    full monitored wallet or any secret.
+    """
+    from services.api.app.evm_activity_provider import (
+        FailoverJsonRpcClient,
+        _hex_to_int,
+        resolve_chain_rpc,
+    )
+
+    normalized_hash = str(tx_hash or '').strip().lower()
+    if not normalized_hash.startswith('0x') or len(normalized_hash) != 66:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='tx_hash must be a 66-char 0x-prefixed hex string.',
+        )
+
+    chain_rpc = resolve_chain_rpc(BASE_CHAIN_NETWORK)
+    if not chain_rpc.get('rpc_url'):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='EVM RPC not configured for Base (chain 8453).',
+        )
+    client = FailoverJsonRpcClient(chain_rpc['rpc_urls'])
+    try:
+        rpc_chain_id = _hex_to_int(client.call('eth_chainId', []))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f'RPC eth_chainId probe failed: {str(exc)[:200]}',
+        )
+    try:
+        tx = client.call('eth_getTransactionByHash', [normalized_hash])
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f'eth_getTransactionByHash failed: {str(exc)[:200]}',
+        )
+
+    logger.info(
+        'quicknode_stream_debug_tx_endpoint tx_hash=%s dry_run=%s rpc_chain_id=%s tx_found=%s',
+        normalized_hash, str(dry_run).lower(), rpc_chain_id, str(bool(tx)).lower(),
+    )
+
+    if not tx:
+        return {
+            'tx_hash': normalized_hash,
+            'dry_run': dry_run,
+            'rpc_chain_id': rpc_chain_id,
+            'tx_found': False,
+            'conclusion': 'tx_not_found_on_rpc',
+            'message': 'Transaction not found on the Base RPC endpoint (wrong chain, or the RPC does not index it).',
+        }
+
+    try:
+        receipt = client.call('eth_getTransactionReceipt', [normalized_hash]) or {}
+    except Exception:
+        receipt = {}
+
+    normalized = normalize_base_stream_tx(dict(tx))
+    if normalized is None:
+        return {
+            'tx_hash': normalized_hash,
+            'dry_run': dry_run,
+            'rpc_chain_id': rpc_chain_id,
+            'tx_found': True,
+            'conclusion': 'tx_missing_required_fields',
+            'message': 'Transaction fetched but lacks the minimum required fields (hash/from) to normalize.',
+        }
+
+    matched_results: list[dict[str, Any]] = []
+    persisted_count = 0
+    duplicate_count = 0
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        targets = _load_all_base_wallet_targets(connection)
+        targets_loaded = len(targets)
+        matched_targets = _match_targets_for_tx(
+            targets, from_address=normalized['from_address'], to_address=normalized.get('to_address'),
+        )
+        for target in matched_targets:
+            target_wallet = resolve_monitored_wallet(target)
+            from_match = target_wallet == normalized['from_address']
+            to_match = target_wallet is not None and target_wallet == normalized.get('to_address')
+            existing = _existing_telemetry_for_tx(
+                connection,
+                target_id=target['id'],
+                tx_hash=normalized['tx_hash'],
+                chain_id=normalized.get('chain_id') or BASE_CHAIN_ID,
+            )
+            duplicate_found = existing is not None
+            entry: dict[str, Any] = {
+                'target_id': str(target['id']),
+                'workspace_id': str(target.get('workspace_id')),
+                'target_wallet_last4': target_wallet[-4:] if target_wallet else None,
+                'from_matches_target': from_match,
+                'to_matches_target': to_match,
+                'duplicate_found': duplicate_found,
+                'existing_detected_by': existing.get('detected_by') if existing else None,
+                'persisted': False,
+                'telemetry_id': None,
+            }
+            if duplicate_found:
+                duplicate_count += 1
+            elif not dry_run:
+                outcome = _persist_quicknode_wallet_transfer(connection, target=target, tx=normalized)
+                persisted_payload = outcome.pop('payload', None)
+                if outcome['status'] == 'processed':
+                    persisted_count += 1
+                    entry['persisted'] = True
+                    entry['telemetry_id'] = outcome.get('telemetry_id')
+                    alert_ids = _create_wallet_transfer_alert_chain(
+                        target=target,
+                        payload=persisted_payload if isinstance(persisted_payload, dict) else {},
+                        telemetry_id=str(outcome.get('telemetry_id') or ''),
+                    )
+                    entry['smoke_alert_id'] = alert_ids.get('smoke_alert_id')
+                    entry['sig_alert_id'] = alert_ids.get('sig_alert_id')
+                elif outcome['status'] == 'duplicate_suppressed':
+                    # A concurrent writer landed the row between the check above and now.
+                    duplicate_count += 1
+                    entry['duplicate_found'] = True
+                    entry['existing_detected_by'] = outcome.get('existing_detected_by')
+            matched_results.append(entry)
+
+    matched_count = len(matched_results)
+    if matched_count == 0:
+        conclusion = 'matcher_no_wallet_match'
+    elif duplicate_count == matched_count:
+        conclusion = 'duplicate_suppressed'
+    elif dry_run:
+        conclusion = 'would_match_and_persist'
+    else:
+        conclusion = 'matched_and_persisted'
+
+    return {
+        'tx_hash': normalized_hash,
+        'dry_run': dry_run,
+        'rpc_chain_id': rpc_chain_id,
+        'tx_found': True,
+        'block_number': normalized.get('block_number'),
+        'from': normalized['from_address'],
+        'to': normalized.get('to_address'),
+        'value_wei': normalized.get('value'),
+        'receipt_status': receipt.get('status') if isinstance(receipt, dict) else None,
+        'targets_loaded': targets_loaded,
+        'matched_count': matched_count,
+        'persisted_count': persisted_count,
+        'duplicate_count': duplicate_count,
+        'matched_targets': matched_results,
+        'conclusion': conclusion,
+    }
