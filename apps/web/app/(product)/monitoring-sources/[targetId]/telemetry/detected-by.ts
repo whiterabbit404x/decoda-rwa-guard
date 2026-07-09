@@ -22,6 +22,10 @@ export const DETECTED_BY_LABELS: Record<string, string> = {
   quicknode_http_fast_tail: 'Realtime HTTP Fast-Tail',
   realtime_http_fast_tail: 'Realtime HTTP Fast-Tail',
   quicknode_stream: 'QuickNode Stream',
+  // RPC-recovered QuickNode-matcher detections — labeled distinctly from the live
+  // stream so they never read as real-time QuickNode evidence.
+  quicknode_stream_backfill: 'QuickNode Gap Backfill',
+  quicknode_stream_debug_import: 'QuickNode Debug Import',
   stable_rpc_polling: 'Stable RPC Polling',
   tx_hash_import: 'Realtime Tx Import',
   simulator: 'Simulator (not live)',
@@ -44,12 +48,20 @@ export const REALTIME_DETECTED_BY = new Set([
   'quicknode_stream',
 ]);
 
+// QuickNode-matcher detections recovered via Base RPC (gap backfill / debug
+// import). A distinct, truthful path — not realtime, not stable polling —
+// mirrors worker_status.QUICKNODE_RECOVERY_DETECTED_BY on the backend.
+export const QUICKNODE_RECOVERY_DETECTED_BY = new Set([
+  'quicknode_stream_backfill',
+  'quicknode_stream_debug_import',
+]);
+
 // Payload source/ingestion values that map onto a canonical detected_by tag —
 // mirrors worker_status._canonical_detected_by_or_none on the backend.
 export function canonicalDetectedBy(raw: string | null | undefined): string | null {
   const v = (raw ?? '').trim().toLowerCase();
   if (!v) return null;
-  if (REALTIME_DETECTED_BY.has(v) || v === 'stable_rpc_polling') return v;
+  if (REALTIME_DETECTED_BY.has(v) || QUICKNODE_RECOVERY_DETECTED_BY.has(v) || v === 'stable_rpc_polling') return v;
   if (v === 'tx_hash_import') return 'realtime_tx_import';
   if (v === 'polling' || v === 'rpc_polling' || v === 'evm_rpc' || v === 'rpc_backfill') {
     return 'stable_rpc_polling';
