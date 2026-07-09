@@ -32,6 +32,8 @@ from services.api.app.domains.rate_limit import rate_limit_connectivity
 from services.api.app.quicknode_streams import (
     QUICKNODE_STREAMS_WEBHOOK_VERSION,
     process_quicknode_base_stream_webhook,
+    run_quicknode_debug_tx,
+    verify_quicknode_ops_token,
 )
 
 from services.api.app.pilot import (
@@ -3870,6 +3872,28 @@ async def quicknode_streams_base_webhook(request: Request) -> dict[str, Any]:
         timestamp_header=timestamp,
         content_encoding=content_encoding,
     ))
+
+
+@app.get('/api/integrations/quicknode/streams/base/debug-tx', summary='Replay QuickNode matcher/dedupe for a tx fetched from Base RPC (ops, read-only by default)')
+def quicknode_streams_base_debug_tx(request: Request, tx_hash: str, dry_run: bool = True) -> dict[str, Any]:
+    """Safe ops diagnostic for "QuickNode Stream missed a fresh tx".
+
+    Fetches the transaction + receipt from the configured Base RPC, normalizes it
+    exactly as the webhook does, and re-runs the identical (intentionally unscoped)
+    target load + wallet match + duplicate check across every active Base wallet
+    target. Reports whether the tx matches a monitored wallet and whether a telemetry
+    row already exists — WITHOUT writing anything unless ``dry_run=false``, in which
+    case it persists via the same path the live webhook uses.
+
+    Gated by the QuickNode Streams secret (``x-quicknode-ops-token`` header), because
+    it replays the webhook's unscoped matcher rather than a workspace-scoped query.
+
+    Query params: ``tx_hash`` (66-char 0x-prefixed, required), ``dry_run`` (bool,
+    default true).
+    """
+    enforce_auth_rate_limit(request, 'quicknode_streams_debug_tx')
+    verify_quicknode_ops_token(request.headers.get('x-quicknode-ops-token'))
+    return with_auth_schema_json(lambda: run_quicknode_debug_tx(tx_hash=tx_hash, dry_run=dry_run))
 
 
 @app.get('/webhooks', summary='List workspace webhooks')

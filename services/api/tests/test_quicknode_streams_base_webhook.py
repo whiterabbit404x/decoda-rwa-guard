@@ -2133,3 +2133,417 @@ def test_stable_polling_native_transfer_suppresses_quicknode_regardless_of_detec
     assert result['results'][0]['status'] == 'duplicate_suppressed'
     assert result['results'][0]['existing_detected_by'] == 'stable_rpc_polling'
     assert conn.telemetry_inserts == []
+
+
+# ---------------------------------------------------------------------------
+# Debug-tx tracing: QUICKNODE_STREAM_DEBUG_TX_HASH / QUICKNODE_STREAM_DEBUG_TX_BLOCK
+#
+# Instrumentation for the "QuickNode Stream missed a fresh tx" investigation.
+# Every batch logs its block range + whether it carries the debug tx (req 2);
+# a matched/unmatched debug tx logs debug_tx_seen (req 3); a batch whose range
+# covers the debug tx's block but does not contain it logs debug_tx_not_seen
+# (req 4). The four log states map 1:1 to acceptance cases A/B/C/D.
+# ---------------------------------------------------------------------------
+
+OTHER_HASH = '0x' + 'ee' * 32
+DEBUG_BLOCK = 47286578
+# The module's TX_HASH fixture is a short (65-char) stand-in that the webhook path
+# never length-validates. The debug-tx endpoint DOES require a canonical 66-char
+# 0x hash, so endpoint tests use the real production hash from the incident report.
+VALID_TX_HASH = '0x7b09f621698842b1c04f66815318775662b7c48087a6cf6ae4e041c67049948a'
+
+
+def test_debug_tx_hashes_parses_single_and_list(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv('QUICKNODE_STREAM_DEBUG_TX_HASH', raising=False)
+    assert qn._debug_tx_hashes() == set()
+    monkeypatch.setenv('QUICKNODE_STREAM_DEBUG_TX_HASH', TX_HASH.upper())
+    assert qn._debug_tx_hashes() == {TX_HASH.lower()}
+    monkeypatch.setenv('QUICKNODE_STREAM_DEBUG_TX_HASH', f'  {TX_HASH} , {OTHER_HASH} ')
+    assert qn._debug_tx_hashes() == {TX_HASH.lower(), OTHER_HASH.lower()}
+
+
+def test_debug_tx_block_number_parses_decimal_and_hex(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv('QUICKNODE_STREAM_DEBUG_TX_BLOCK', raising=False)
+    assert qn._debug_tx_block_number() is None
+    monkeypatch.setenv('QUICKNODE_STREAM_DEBUG_TX_BLOCK', str(DEBUG_BLOCK))
+    assert qn._debug_tx_block_number() == DEBUG_BLOCK
+    monkeypatch.setenv('QUICKNODE_STREAM_DEBUG_TX_BLOCK', hex(DEBUG_BLOCK))
+    assert qn._debug_tx_block_number() == DEBUG_BLOCK
+
+
+def test_batch_range_logged_for_every_batch_contains_debug_tx_false(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    monkeypatch.delenv('QUICKNODE_STREAM_DEBUG_TX_HASH', raising=False)
+    target = _make_target()
+    conn = _FakeConnection(targets=[target])
+    tx = {'tx_hash': TX_HASH, 'from': WALLET_ADDR, 'to': COUNTERPARTY, 'value': '1', 'block_number': DEBUG_BLOCK}
+    raw = _body(tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
+         caplog.at_level('INFO', logger=_QN_LOGGER):
+        qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert (
+        f'quicknode_stream_batch_range first_block={DEBUG_BLOCK} last_block={DEBUG_BLOCK} '
+        f'tx_count=1 contains_debug_tx=false'
+    ) in caplog.text
+
+
+def test_batch_range_contains_debug_tx_true_when_configured(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    monkeypatch.setenv('QUICKNODE_STREAM_DEBUG_TX_HASH', TX_HASH)
+    target = _make_target()
+    conn = _FakeConnection(targets=[target])
+    tx = {'tx_hash': TX_HASH, 'from': WALLET_ADDR, 'to': COUNTERPARTY, 'value': '1', 'block_number': DEBUG_BLOCK}
+    raw = _body(tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
+         caplog.at_level('INFO', logger=_QN_LOGGER):
+        qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert 'contains_debug_tx=true' in caplog.text
+
+
+def test_debug_tx_seen_on_match_persisted(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
+    """Debug tx matched a monitored wallet and persisted (the healthy path)."""
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    monkeypatch.setenv('QUICKNODE_STREAM_DEBUG_TX_HASH', TX_HASH)
+    target = _make_target()
+    conn = _FakeConnection(targets=[target])
+    tx = {'tx_hash': TX_HASH, 'from': WALLET_ADDR, 'to': COUNTERPARTY, 'value': '1', 'block_number': DEBUG_BLOCK}
+    raw = _body(tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
+         caplog.at_level('INFO', logger=_QN_LOGGER):
+        qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert f'quicknode_stream_debug_tx_seen tx_hash={TX_HASH}' in caplog.text
+    assert f'block_number={DEBUG_BLOCK}' in caplog.text
+    assert f'target_wallet_last4={WALLET_ADDR[-4:]}' in caplog.text
+    assert 'from_matches_target=true' in caplog.text
+    assert 'duplicate_found=false persisted=true' in caplog.text
+
+
+def test_debug_tx_seen_on_duplicate_suppressed(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
+    """Case D: debug tx matched but a prior row already exists -> suppressed."""
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    monkeypatch.setenv('QUICKNODE_STREAM_DEBUG_TX_HASH', TX_HASH)
+    target = _make_target()
+    existing_row = {'id': str(uuid.uuid4()), 'event_type': 'native_transfer', 'detected_by': 'stable_rpc_polling'}
+    conn = _FakeConnection(targets=[target], existing_telemetry=existing_row)
+    tx = {'tx_hash': TX_HASH, 'from': WALLET_ADDR, 'to': COUNTERPARTY, 'value': '1', 'block_number': DEBUG_BLOCK}
+    raw = _body(tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
+         caplog.at_level('INFO', logger=_QN_LOGGER):
+        qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert f'quicknode_stream_debug_tx_seen tx_hash={TX_HASH}' in caplog.text
+    assert 'duplicate_found=true persisted=false' in caplog.text
+
+
+def test_debug_tx_seen_on_no_match(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
+    """Case C: debug tx normalized fine but matched no monitored wallet."""
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    monkeypatch.setenv('QUICKNODE_STREAM_DEBUG_TX_HASH', TX_HASH)
+    target = _make_target()  # monitors WALLET_ADDR
+    conn = _FakeConnection(targets=[target])
+    tx = {'tx_hash': TX_HASH, 'from': UNRELATED_ADDR, 'to': COUNTERPARTY, 'value': '1', 'block_number': DEBUG_BLOCK}
+    raw = _body(tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
+         caplog.at_level('INFO', logger=_QN_LOGGER):
+        qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert f'quicknode_stream_debug_tx_seen tx_hash={TX_HASH}' in caplog.text
+    assert 'target_wallet_last4=none from_matches_target=false to_matches_target=false' in caplog.text
+    assert 'duplicate_found=false persisted=false' in caplog.text
+
+
+def test_debug_tx_not_seen_when_range_covers_block_but_tx_absent(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    """Case B: the batch's block range covers the debug tx's block, but the tx is
+    not in the batch -> QuickNode delivered the block without the tx."""
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    monkeypatch.setenv('QUICKNODE_STREAM_DEBUG_TX_HASH', TX_HASH)
+    monkeypatch.setenv('QUICKNODE_STREAM_DEBUG_TX_BLOCK', str(DEBUG_BLOCK))
+    target = _make_target()
+    conn = _FakeConnection(targets=[target])
+    other_tx = {'tx_hash': OTHER_HASH, 'from': UNRELATED_ADDR, 'to': COUNTERPARTY, 'value': '1', 'block_number': DEBUG_BLOCK}
+    raw = _body(other_tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
+         caplog.at_level('INFO', logger=_QN_LOGGER):
+        qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert (
+        f'quicknode_stream_debug_tx_not_seen tx_hash={TX_HASH} tx_block_number={DEBUG_BLOCK} '
+        f'batch_first_block={DEBUG_BLOCK} batch_last_block={DEBUG_BLOCK}'
+    ) in caplog.text
+
+
+def test_debug_tx_not_seen_skipped_when_block_out_of_batch_range(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    """Case A distinction: the debug tx's block is NOT covered by the batch range,
+    so no not_seen line is emitted (the block was simply never delivered here)."""
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    monkeypatch.setenv('QUICKNODE_STREAM_DEBUG_TX_HASH', TX_HASH)
+    monkeypatch.setenv('QUICKNODE_STREAM_DEBUG_TX_BLOCK', str(DEBUG_BLOCK))
+    target = _make_target()
+    conn = _FakeConnection(targets=[target])
+    # Batch is entirely below the debug tx's block.
+    other_tx = {'tx_hash': OTHER_HASH, 'from': UNRELATED_ADDR, 'to': COUNTERPARTY, 'value': '1', 'block_number': DEBUG_BLOCK - 1000}
+    raw = _body(other_tx)
+    timestamp = _now_ts()
+    signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
+    with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
+         caplog.at_level('INFO', logger=_QN_LOGGER):
+        qn.process_quicknode_base_stream_webhook(
+            raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
+        )
+    assert 'quicknode_stream_debug_tx_not_seen' not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Ops token auth for the debug-tx endpoint (gated by QUICKNODE_STREAMS_SECRET).
+# ---------------------------------------------------------------------------
+
+def test_ops_token_missing_secret_rejected_503(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv('QUICKNODE_STREAMS_SECRET', raising=False)
+    with pytest.raises(HTTPException) as exc:
+        qn.verify_quicknode_ops_token(SECRET)
+    assert exc.value.status_code == 503
+
+
+def test_ops_token_wrong_or_missing_rejected_401(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    with pytest.raises(HTTPException) as exc:
+        qn.verify_quicknode_ops_token('wrong-token')
+    assert exc.value.status_code == 401
+    with pytest.raises(HTTPException) as exc2:
+        qn.verify_quicknode_ops_token(None)
+    assert exc2.value.status_code == 401
+
+
+def test_ops_token_correct_accepted(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    qn.verify_quicknode_ops_token(SECRET)  # no raise
+
+
+def test_ops_token_error_never_leaks_secret(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    with pytest.raises(HTTPException) as exc:
+        qn.verify_quicknode_ops_token('wrong-token')
+    assert SECRET not in str(exc.value.detail)
+
+
+# ---------------------------------------------------------------------------
+# Debug-tx ops endpoint: fetch tx/receipt from Base RPC and re-run the QuickNode
+# matcher/dedupe logic. Read-only unless dry_run=false.
+# ---------------------------------------------------------------------------
+
+def _fake_rpc_client(*, tx, receipt=None, chain_id='0x2105'):
+    """FailoverJsonRpcClient stand-in bound to a fixed tx/receipt/chain_id."""
+    class _C:
+        def __init__(self, urls):
+            self.rpc_urls = urls
+            self.active_host = 'fake-host'
+
+        def call(self, method, params):
+            if method == 'eth_chainId':
+                return chain_id
+            if method == 'eth_getTransactionByHash':
+                return tx
+            if method == 'eth_getTransactionReceipt':
+                return receipt or {}
+            return None
+    return _C
+
+
+def _rpc_tx(*, tx_from, tx_to=COUNTERPARTY, block='0x2d1a2c6', value='0xde0b6b3a7640000', chain_id='0x2105'):
+    return {'hash': VALID_TX_HASH, 'from': tx_from, 'to': tx_to, 'value': value, 'blockNumber': block, 'chainId': chain_id}
+
+
+def _patch_rpc(tx, receipt=None):
+    from services.api.app import evm_activity_provider as eap
+    return [
+        patch.object(eap, 'resolve_chain_rpc', lambda net: {
+            'network': net, 'expected_chain_id': 8453,
+            'rpc_url': 'http://fake', 'rpc_urls': ['http://fake'],
+        }),
+        patch.object(eap, 'FailoverJsonRpcClient', _fake_rpc_client(tx=tx, receipt=receipt)),
+    ]
+
+
+def test_debug_tx_endpoint_matcher_no_wallet_match(monkeypatch: pytest.MonkeyPatch):
+    target = _make_target()  # monitors WALLET_ADDR
+    conn = _FakeConnection(targets=[target])
+    tx = _rpc_tx(tx_from=UNRELATED_ADDR, tx_to=COUNTERPARTY)
+    p1, p2 = _patch_rpc(tx)
+    with p1, p2, \
+         patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None):
+        result = qn.run_quicknode_debug_tx(tx_hash=VALID_TX_HASH, dry_run=True)
+    assert result['tx_found'] is True
+    assert result['matched_count'] == 0
+    assert result['conclusion'] == 'matcher_no_wallet_match'
+    assert conn.telemetry_inserts == []
+
+
+def test_debug_tx_endpoint_would_match_and_persist_dry_run(monkeypatch: pytest.MonkeyPatch):
+    target = _make_target()
+    conn = _FakeConnection(targets=[target])
+    tx = _rpc_tx(tx_from=WALLET_ADDR)
+    p1, p2 = _patch_rpc(tx)
+    with p1, p2, \
+         patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None):
+        result = qn.run_quicknode_debug_tx(tx_hash=VALID_TX_HASH, dry_run=True)
+    assert result['conclusion'] == 'would_match_and_persist'
+    assert result['matched_count'] == 1
+    assert result['persisted_count'] == 0
+    entry = result['matched_targets'][0]
+    assert entry['from_matches_target'] is True
+    assert entry['duplicate_found'] is False
+    assert entry['persisted'] is False
+    assert entry['target_wallet_last4'] == WALLET_ADDR[-4:]
+    # Dry-run must not write.
+    assert conn.telemetry_inserts == []
+
+
+def test_debug_tx_endpoint_duplicate_suppressed(monkeypatch: pytest.MonkeyPatch):
+    target = _make_target()
+    existing_row = {'id': str(uuid.uuid4()), 'event_type': 'native_transfer', 'detected_by': 'stable_rpc_polling'}
+    conn = _FakeConnection(targets=[target], existing_telemetry=existing_row)
+    tx = _rpc_tx(tx_from=WALLET_ADDR)
+    # dry_run False, but a prior row exists -> still no insert.
+    p1, p2 = _patch_rpc(tx)
+    with p1, p2, \
+         patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None):
+        result = qn.run_quicknode_debug_tx(tx_hash=VALID_TX_HASH, dry_run=False)
+    assert result['conclusion'] == 'duplicate_suppressed'
+    assert result['matched_count'] == 1
+    assert result['duplicate_count'] == 1
+    assert result['matched_targets'][0]['duplicate_found'] is True
+    assert result['matched_targets'][0]['existing_detected_by'] == 'stable_rpc_polling'
+    assert conn.telemetry_inserts == []
+
+
+def test_debug_tx_endpoint_matched_and_persisted_when_dry_run_false(monkeypatch: pytest.MonkeyPatch):
+    target = _make_target()
+    conn = _FakeConnection(targets=[target])
+    tx = _rpc_tx(tx_from=WALLET_ADDR)
+    p1, p2 = _patch_rpc(tx)
+    with p1, p2, \
+         patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
+         patch.object(qn, '_create_wallet_transfer_alert_chain', lambda **kw: {'smoke_alert_id': None, 'sig_alert_id': None}):
+        result = qn.run_quicknode_debug_tx(tx_hash=VALID_TX_HASH, dry_run=False)
+    assert result['conclusion'] == 'matched_and_persisted'
+    assert result['persisted_count'] == 1
+    assert result['matched_targets'][0]['persisted'] is True
+    assert len(conn.telemetry_inserts) == 1
+    inserted_payload = json.loads(conn.telemetry_inserts[0][9])
+    assert inserted_payload['detected_by'] == 'quicknode_stream'
+    assert inserted_payload['tx_hash'] == VALID_TX_HASH
+
+
+def test_debug_tx_endpoint_tx_not_found_on_rpc(monkeypatch: pytest.MonkeyPatch):
+    conn = _FakeConnection(targets=[_make_target()])
+    p1, p2 = _patch_rpc(None)
+    with p1, p2, \
+         patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
+         patch.object(qn, 'ensure_pilot_schema', lambda _c: None):
+        result = qn.run_quicknode_debug_tx(tx_hash=VALID_TX_HASH, dry_run=True)
+    assert result['tx_found'] is False
+    assert result['conclusion'] == 'tx_not_found_on_rpc'
+    assert conn.telemetry_inserts == []
+
+
+def test_debug_tx_endpoint_rejects_bad_tx_hash():
+    with pytest.raises(HTTPException) as exc:
+        qn.run_quicknode_debug_tx(tx_hash='not-a-hash', dry_run=True)
+    assert exc.value.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Debug-tx route wiring + ops-token gate (services/api/app/main.py).
+# ---------------------------------------------------------------------------
+
+def test_debug_tx_route_requires_ops_token(monkeypatch: pytest.MonkeyPatch):
+    from fastapi.testclient import TestClient
+
+    from services.api.app import main as api_main
+
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    client = TestClient(api_main.app, raise_server_exceptions=False)
+    response = client.get(
+        '/api/integrations/quicknode/streams/base/debug-tx',
+        params={'tx_hash': TX_HASH},
+    )
+    assert response.status_code == 401
+
+
+def test_debug_tx_route_valid_token_reaches_handler(monkeypatch: pytest.MonkeyPatch):
+    from fastapi.testclient import TestClient
+
+    from services.api.app import main as api_main
+
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    monkeypatch.setattr(api_main, 'run_quicknode_debug_tx', lambda **kw: {'ok': True, 'echo': kw})
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    client = TestClient(api_main.app, raise_server_exceptions=False)
+    response = client.get(
+        '/api/integrations/quicknode/streams/base/debug-tx',
+        params={'tx_hash': TX_HASH, 'dry_run': 'false'},
+        headers={'x-quicknode-ops-token': SECRET},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body['echo']['tx_hash'] == TX_HASH
+    # dry_run query param parses to a real bool.
+    assert body['echo']['dry_run'] is False
+
+
+def test_debug_tx_route_defaults_to_dry_run_true(monkeypatch: pytest.MonkeyPatch):
+    from fastapi.testclient import TestClient
+
+    from services.api.app import main as api_main
+
+    monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    monkeypatch.setattr(api_main, 'run_quicknode_debug_tx', lambda **kw: {'echo': kw})
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    client = TestClient(api_main.app, raise_server_exceptions=False)
+    response = client.get(
+        '/api/integrations/quicknode/streams/base/debug-tx',
+        params={'tx_hash': TX_HASH},
+        headers={'x-quicknode-ops-token': SECRET},
+    )
+    assert response.status_code == 200
+    assert response.json()['echo']['dry_run'] is True
