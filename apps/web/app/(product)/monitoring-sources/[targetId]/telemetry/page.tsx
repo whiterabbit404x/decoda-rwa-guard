@@ -787,12 +787,19 @@ export default function TargetTelemetryPage() {
   const [hasNext, setHasNext] = useState(false);
   const [hasPrev, setHasPrev] = useState(false);
   const [totalCount, setTotalCount] = useState(0);
-  // Separated detection-path facts for the worker-status strip.
+  // Separated detection-path facts for the worker-status strip. The three workers
+  // are distinct: QuickNode Stream (webhook push), Stable RPC Polling (backup), and
+  // the legacy WebSocket realtime ingestor.
   const [realtimeEnabled, setRealtimeEnabled] = useState<boolean | null>(null);
   const [realtimeState, setRealtimeState] = useState<string | null>(null);
   const [realtimeFallbackActive, setRealtimeFallbackActive] = useState<boolean>(false);
   const [lastStablePollAt, setLastStablePollAt] = useState<string | null>(null);
+  const [stablePollingActive, setStablePollingActive] = useState<boolean>(false);
   const [lastRealtimeEventAt, setLastRealtimeEventAt] = useState<string | null>(null);
+  // QuickNode Stream worker facts (separate from the legacy WebSocket worker).
+  const [quicknodeStreamState, setQuicknodeStreamState] = useState<string | null>(null);
+  const [lastStreamEventAt, setLastStreamEventAt] = useState<string | null>(null);
+  const [lastStreamBlock, setLastStreamBlock] = useState<number | null>(null);
 
   const { authHeaders } = usePilotAuth();
 
@@ -841,7 +848,11 @@ export default function TargetTelemetryPage() {
         setRealtimeState(typeof payload.realtime_state === 'string' ? payload.realtime_state : null);
         setRealtimeFallbackActive(payload.realtime_fallback_active === true);
         setLastStablePollAt(typeof payload.last_stable_poll_at === 'string' ? payload.last_stable_poll_at : null);
+        setStablePollingActive(payload.stable_polling_active === true);
         setLastRealtimeEventAt(typeof payload.last_realtime_event_at === 'string' ? payload.last_realtime_event_at : null);
+        setQuicknodeStreamState(typeof payload.quicknode_stream_state === 'string' ? payload.quicknode_stream_state : null);
+        setLastStreamEventAt(typeof payload.last_stream_event_at === 'string' ? payload.last_stream_event_at : null);
+        setLastStreamBlock(typeof payload.last_stream_block === 'number' ? payload.last_stream_block : null);
         if (typeof payload.workspace_id === 'string') {
           setWorkspaceId(payload.workspace_id);
         }
@@ -927,9 +938,12 @@ export default function TargetTelemetryPage() {
         ) : null}
       </div>
 
-      {/* Worker / detection-path status strip: stable RPC polling and realtime
-          WebSocket are distinct. Never collapse a paused realtime worker into a
-          dead source — stable polling keeps detecting transfers. */}
+      {/* Worker / detection-path status strip. Three DISTINCT workers, each on its
+          own row so the legacy WebSocket status never stands in as "the" realtime
+          status: QuickNode Stream (webhook push — the primary realtime path), Stable
+          RPC Polling (always-on backup), and the legacy WebSocket ingestor. When the
+          QuickNode Stream is active, a paused/degraded WebSocket is expected legacy
+          state and is never surfaced as the main realtime status. */}
       {realtimeEnabled !== null ? (
         <div
           data-testid="telemetry-worker-status"
@@ -941,53 +955,171 @@ export default function TargetTelemetryPage() {
             marginBottom: '1.25rem',
             fontSize: '0.82rem',
             display: 'flex',
-            flexWrap: 'wrap',
-            gap: '1.25rem',
-            alignItems: 'center',
+            flexDirection: 'column',
+            gap: '0.75rem',
           }}
         >
-          <span style={{ display: 'inline-flex', flexDirection: 'column', gap: '0.1rem' }}>
-            <span className="muted">Realtime WebSocket</span>
+          {/* Worker 1 — QuickNode Stream (primary realtime path) */}
+          <div
+            data-testid="worker-quicknode-stream"
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '1.25rem',
+              alignItems: 'center',
+            }}
+          >
             <span
               style={{
-                fontWeight: 600,
-                color:
-                  realtimeState === 'active'
-                    ? 'var(--success-fg)'
-                    : realtimeState === 'degraded'
-                      ? 'var(--warning-fg, #d97706)'
-                      : realtimeEnabled
-                        ? 'var(--success-fg)'
-                        : 'var(--warning-fg, #d97706)',
+                display: 'inline-flex',
+                flexDirection: 'column',
+                gap: '0.1rem',
+                minWidth: '11rem',
               }}
             >
-              {realtimeState === 'active'
-                ? 'Active'
-                : realtimeState === 'degraded'
-                  ? realtimeFallbackActive
-                    ? 'Realtime degraded — stable polling fallback active'
-                    : 'Degraded'
-                  : realtimeEnabled
-                    ? 'Enabled'
-                    : 'Paused / Disabled'}
+              <span className="muted" style={{ fontWeight: 600 }}>
+                QuickNode Stream
+              </span>
+              <span
+                style={{
+                  fontWeight: 600,
+                  color:
+                    quicknodeStreamState === 'active'
+                      ? 'var(--success-fg)'
+                      : quicknodeStreamState === 'idle'
+                        ? 'var(--warning-fg, #d97706)'
+                        : 'var(--text-muted)',
+                }}
+              >
+                {quicknodeStreamState === 'active'
+                  ? 'Active'
+                  : quicknodeStreamState === 'idle'
+                    ? 'Idle — no recent stream blocks'
+                    : 'No stream activity'}
+              </span>
             </span>
-          </span>
-          <span style={{ display: 'inline-flex', flexDirection: 'column', gap: '0.1rem' }}>
-            <span className="muted">Last stable poll</span>
-            <span style={{ fontWeight: 600 }}>{fmt(lastStablePollAt)}</span>
-          </span>
-          <span style={{ display: 'inline-flex', flexDirection: 'column', gap: '0.1rem' }}>
-            <span className="muted">Last realtime event</span>
-            <span style={{ fontWeight: 600 }}>{fmt(lastRealtimeEventAt)}</span>
-          </span>
-          {realtimeState === 'degraded' ? (
-            <span className="muted" style={{ fontSize: '0.78rem', flex: '1 1 100%' }}>
+            <span style={{ display: 'inline-flex', flexDirection: 'column', gap: '0.1rem' }}>
+              <span className="muted">Last stream block</span>
+              <span style={{ fontWeight: 600, fontFamily: 'monospace' }}>
+                {lastStreamBlock != null ? String(lastStreamBlock) : '-'}
+              </span>
+            </span>
+            <span style={{ display: 'inline-flex', flexDirection: 'column', gap: '0.1rem' }}>
+              <span className="muted">Last stream event</span>
+              <span style={{ fontWeight: 600 }}>{fmt(lastStreamEventAt)}</span>
+            </span>
+          </div>
+
+          {/* Worker 2 — Stable RPC Polling (always-on backup) */}
+          <div
+            data-testid="worker-stable-rpc-polling"
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '1.25rem',
+              alignItems: 'center',
+              borderTop: '1px solid var(--border)',
+              paddingTop: '0.75rem',
+            }}
+          >
+            <span
+              style={{
+                display: 'inline-flex',
+                flexDirection: 'column',
+                gap: '0.1rem',
+                minWidth: '11rem',
+              }}
+            >
+              <span className="muted" style={{ fontWeight: 600 }}>
+                Stable RPC Polling
+              </span>
+              <span
+                style={{
+                  fontWeight: 600,
+                  color: stablePollingActive
+                    ? 'var(--info-fg)'
+                    : 'var(--warning-fg, #d97706)',
+                }}
+              >
+                {stablePollingActive
+                  ? 'Active fallback'
+                  : lastStablePollAt
+                    ? 'Idle — awaiting next poll'
+                    : 'No poll recorded'}
+              </span>
+            </span>
+            <span style={{ display: 'inline-flex', flexDirection: 'column', gap: '0.1rem' }}>
+              <span className="muted">Last stable poll</span>
+              <span style={{ fontWeight: 600 }}>{fmt(lastStablePollAt)}</span>
+            </span>
+          </div>
+
+          {/* Worker 3 — Legacy WebSocket realtime ingestor */}
+          <div
+            data-testid="worker-legacy-websocket"
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '1.25rem',
+              alignItems: 'center',
+              borderTop: '1px solid var(--border)',
+              paddingTop: '0.75rem',
+            }}
+          >
+            <span
+              style={{
+                display: 'inline-flex',
+                flexDirection: 'column',
+                gap: '0.1rem',
+                minWidth: '11rem',
+              }}
+            >
+              <span className="muted" style={{ fontWeight: 600 }}>
+                Legacy WebSocket
+              </span>
+              <span
+                style={{
+                  fontWeight: 600,
+                  color:
+                    realtimeState === 'active'
+                      ? 'var(--success-fg)'
+                      : realtimeState === 'degraded'
+                        ? 'var(--warning-fg, #d97706)'
+                        : realtimeEnabled
+                          ? 'var(--success-fg)'
+                          : 'var(--text-muted)',
+                }}
+              >
+                {realtimeState === 'active'
+                  ? 'Active'
+                  : realtimeState === 'degraded'
+                    ? realtimeFallbackActive
+                      ? 'Realtime degraded — stable polling fallback active'
+                      : 'Degraded'
+                    : realtimeEnabled
+                      ? 'Enabled'
+                      : 'Paused / Disabled'}
+              </span>
+            </span>
+            <span style={{ display: 'inline-flex', flexDirection: 'column', gap: '0.1rem' }}>
+              <span className="muted">Last realtime event</span>
+              <span style={{ fontWeight: 600 }}>{fmt(lastRealtimeEventAt)}</span>
+            </span>
+          </div>
+
+          {/* Contextual note only when the legacy WebSocket is actually the active
+              realtime path — i.e. the QuickNode Stream is NOT active. When the stream
+              is active, a paused/degraded WebSocket is expected legacy state and must
+              never be surfaced as the main realtime status (nor claim stable polling
+              is the detector when the stream is delivering). */}
+          {quicknodeStreamState !== 'active' && realtimeState === 'degraded' ? (
+            <span className="muted" style={{ fontSize: '0.78rem' }}>
               Realtime WebSocket is degraded (provider failure). Stable RPC polling remains
               active and continues detecting wallet transfers; realtime resumes automatically
               once the provider recovers.
             </span>
-          ) : !realtimeEnabled ? (
-            <span className="muted" style={{ fontSize: '0.78rem', flex: '1 1 100%' }}>
+          ) : quicknodeStreamState !== 'active' && !realtimeEnabled ? (
+            <span className="muted" style={{ fontSize: '0.78rem' }}>
               Realtime paused; stable polling active. Wallet transfers are detected by Stable RPC Polling.
             </span>
           ) : null}

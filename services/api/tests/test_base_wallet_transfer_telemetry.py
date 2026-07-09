@@ -1167,6 +1167,128 @@ def test_list_target_telemetry_exposes_separated_worker_timestamps(monkeypatch):
     assert result['last_realtime_event_at'] == realtime_at.isoformat()
 
 
+# ---------------------------------------------------------------------------
+# QuickNode Stream worker status is separated from the legacy WebSocket worker
+# ---------------------------------------------------------------------------
+
+
+def _run_list_target_telemetry_with_stream(
+    monkeypatch,
+    *,
+    stable_at=None,
+    stream_event_at=None,
+    checkpoint_row=None,
+):
+    """Drive list_target_telemetry with a mocked stream checkpoint + freshness row."""
+    target_id = str(uuid.uuid4())
+    workspace_id = str(uuid.uuid4())
+
+    class _MockConn:
+        def execute(self, query, params=None):
+            q = ' '.join((query or '').split()).lower()
+            if 'count(*) as cnt' in q:
+                return _Rows([{'cnt': 0}])
+            # Separated detection-path freshness aggregate (matched first — it also
+            # references telemetry_events/select).
+            if 'last_stable_poll_at' in q:
+                return _Rows([{
+                    'last_stable_poll_at': stable_at,
+                    'last_realtime_event_at': None,
+                    'last_stream_event_at': stream_event_at,
+                }])
+            # Global stream checkpoint read (SELECT ... FROM quicknode_stream_checkpoints).
+            if 'from quicknode_stream_checkpoints' in q:
+                return _Rows([checkpoint_row] if checkpoint_row else [])
+            if 'telemetry_events' in q and 'select' in q:
+                return _Rows([])
+            return _Rows([])
+
+        @contextmanager
+        def transaction(self):
+            yield
+
+    fake_user = {'id': str(uuid.uuid4()), 'workspace_id': workspace_id}
+    fake_workspace = {'workspace_id': workspace_id, 'workspace': {'id': workspace_id}}
+    fake_request = MagicMock()
+    fake_request.headers = {'x-workspace-id': workspace_id}
+    monkeypatch.delenv('BASE_REALTIME_ENABLED', raising=False)
+
+    with (
+        patch('services.api.app.monitoring_runner.pg_connection') as mock_pg,
+        patch('services.api.app.monitoring_runner.ensure_pilot_schema'),
+        patch('services.api.app.monitoring_runner.authenticate_with_connection', return_value=fake_user),
+        patch('services.api.app.monitoring_runner.resolve_workspace', return_value=fake_workspace),
+    ):
+        mock_pg.return_value.__enter__ = lambda s: _MockConn()
+        mock_pg.return_value.__exit__ = MagicMock(return_value=False)
+        return monitoring_runner.list_target_telemetry(fake_request, target_id=target_id, limit=50)
+
+
+def test_list_target_telemetry_quicknode_stream_active_is_separated(monkeypatch):
+    """A fresh stream checkpoint + fresh stream event yields quicknode_stream_state
+    'active' with its own last_stream_block / last_stream_event_at, distinct from the
+    (empty) legacy WebSocket last_realtime_event_at."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    checkpoint = {
+        'stream_key': 'base',
+        'latest_stream_block': 12345678,
+        'last_processed_block': 12345678,
+        'missed_block_gap': 0,
+        'stream_started_at_block': 12000000,
+        'webhook_received_at': now,
+    }
+    result = _run_list_target_telemetry_with_stream(
+        monkeypatch, stable_at=now, stream_event_at=now, checkpoint_row=checkpoint,
+    )
+
+    assert result['quicknode_stream_state'] == 'active'
+    assert result['last_stream_block'] == 12345678
+    assert result['last_stream_event_at'] == now.isoformat()
+    assert result['quicknode_stream_checkpoint_at'] == now.isoformat()
+    # Stable polling is the always-on backup and its fresh poll proves it active.
+    assert result['stable_polling_active'] is True
+    # QuickNode Stream is NOT collapsed into the legacy WebSocket 'last realtime event'.
+    assert result['last_realtime_event_at'] is None
+
+
+def test_list_target_telemetry_quicknode_stream_idle_when_checkpoint_stale(monkeypatch):
+    """A stale checkpoint (no fresh webhook, no fresh stream event) fails closed to
+    'idle' — never a false 'active'."""
+    from datetime import datetime, timedelta, timezone
+
+    stale = datetime.now(timezone.utc) - timedelta(hours=2)
+    checkpoint = {
+        'stream_key': 'base',
+        'latest_stream_block': 500,
+        'last_processed_block': 500,
+        'missed_block_gap': 0,
+        'stream_started_at_block': 100,
+        'webhook_received_at': stale,
+    }
+    result = _run_list_target_telemetry_with_stream(
+        monkeypatch, stable_at=None, stream_event_at=None, checkpoint_row=checkpoint,
+    )
+
+    assert result['quicknode_stream_state'] == 'idle'
+    assert result['last_stream_block'] == 500
+    # Stable polling has no recorded poll here, so it is not claimed active.
+    assert result['stable_polling_active'] is False
+
+
+def test_list_target_telemetry_quicknode_stream_none_without_activity(monkeypatch):
+    """No checkpoint and no stream events → quicknode_stream_state is None (the block
+    is never fabricated as 'Active')."""
+    result = _run_list_target_telemetry_with_stream(
+        monkeypatch, stable_at=None, stream_event_at=None, checkpoint_row=None,
+    )
+
+    assert result['quicknode_stream_state'] is None
+    assert result['last_stream_block'] is None
+    assert result['last_stream_event_at'] is None
+
+
 def test_list_target_telemetry_realtime_enabled_flag_reflects_env(monkeypatch):
     target_id = str(uuid.uuid4())
     workspace_id = str(uuid.uuid4())

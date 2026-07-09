@@ -1092,6 +1092,20 @@ def _load_stream_checkpoint(connection: Any, *, stream_key: str) -> dict[str, An
     return dict(row) if row else None
 
 
+def load_base_stream_checkpoint(connection: Any) -> dict[str, Any] | None:
+    """Public read-only accessor for the Base QuickNode Stream checkpoint.
+
+    Returns ``{latest_stream_block, last_processed_block, missed_block_gap,
+    stream_started_at_block, webhook_received_at}`` or ``None`` when the stream
+    has never reported a block. Used by the Telemetry list route to surface
+    stream health (last block + last webhook) as a distinct worker status. This
+    is a GLOBAL stream infra fact — the single Base QuickNode Stream serves every
+    workspace, so it carries no tenant data; per-target "last stream event" stays
+    workspace+target scoped in the caller (telemetry rows detected_by=quicknode_stream).
+    """
+    return _load_stream_checkpoint(connection, stream_key=QUICKNODE_STREAM_KEY_BASE)
+
+
 def _classify_stream_coverage(checkpoint: dict[str, Any] | None, tx_block: int | None) -> str:
     """Classify a tx's block against the stream's observed coverage window.
 

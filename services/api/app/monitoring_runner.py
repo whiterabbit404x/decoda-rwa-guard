@@ -49,6 +49,7 @@ from services.api.app.worker_status import (
     transfer_source_priority,
     DEFAULT_REALTIME_HEARTBEAT_TTL_SECONDS,
     DETECTED_BY_BASIS_UNCLASSIFIED,
+    QUICKNODE_STREAM_DETECTED_BY,
     REALTIME_DETECTED_BY,
     STABLE_DETECTED_BY,
     TRANSFER_FAMILY_EVENT_TYPES,
@@ -93,6 +94,11 @@ ALERT_DEDUPE_WINDOW_SECONDS = int(
 )
 WORKER_HEARTBEAT_TTL_SECONDS = int(os.getenv('MONITORING_WORKER_HEARTBEAT_TTL_SECONDS', '180'))
 MONITOR_POLL_INTERVAL_SECONDS = int(os.getenv('MONITOR_POLL_INTERVAL_SECONDS', '30'))
+# Seconds after which a QuickNode Stream fact (checkpoint webhook / matched stream
+# event) is treated as stale. The Base stream pushes on ~every new block, so a fresh
+# webhook within this window PROVES the stream is alive; past it the Telemetry header
+# fails closed to "Idle" rather than a false "Active". Overridable for tuning.
+QUICKNODE_STREAM_STALE_SECONDS = max(60, int(os.getenv('QUICKNODE_STREAM_STALE_SECONDS', '300')))
 
 
 def _min_monitoring_interval_seconds() -> int:
@@ -10824,16 +10830,22 @@ def list_target_telemetry(
             _realtime_state = 'paused'
 
         # Separated detection-path freshness for this target so the Telemetry page can
-        # show "Last stable poll" vs "Last realtime event" distinctly (CLAUDE.md: poll
-        # and realtime telemetry are separate facts). Workspace + target scoped.
-        # detected_by lives in payload_json; stable coverage polls also use the
-        # rpc_polling event_type even when detected_by is absent on older rows.
+        # show "Last stable poll", "Last realtime event" (legacy WebSocket family), and
+        # "Last stream event" (QuickNode Stream) distinctly (CLAUDE.md: poll and realtime
+        # telemetry are separate facts; QuickNode Stream is its own worker). Workspace +
+        # target scoped. detected_by lives in payload_json; stable coverage polls also use
+        # the rpc_polling event_type even when detected_by is absent on older rows.
         # Resolved BEFORE the count/data queries so the telemetry data query stays
         # the last executed statement (same invariant as the watcher-state read).
         last_stable_poll_at: str | None = None
         last_realtime_event_at: str | None = None
+        last_stream_event_at: str | None = None
         try:
-            _rt_placeholders = ', '.join(['%s'] * len(REALTIME_DETECTED_BY))
+            # last_realtime_event_at now means the LEGACY WebSocket realtime family only:
+            # QuickNode Stream is split into its own last_stream_event_at so the header
+            # never attributes a stream detection to the WebSocket worker.
+            _wss_realtime = [d for d in REALTIME_DETECTED_BY if d != QUICKNODE_STREAM_DETECTED_BY]
+            _wss_placeholders = ', '.join(['%s'] * len(_wss_realtime))
             _freshness_row = connection.execute(
                 f'''
                 SELECT
@@ -10842,23 +10854,102 @@ def list_target_telemetry(
                            OR event_type IN ('rpc_polling', 'live_provider')
                     ) AS last_stable_poll_at,
                     MAX(observed_at) FILTER (
-                        WHERE payload_json->>'detected_by' IN ({_rt_placeholders})
-                    ) AS last_realtime_event_at
+                        WHERE payload_json->>'detected_by' IN ({_wss_placeholders})
+                    ) AS last_realtime_event_at,
+                    MAX(observed_at) FILTER (
+                        WHERE payload_json->>'detected_by' = %s
+                    ) AS last_stream_event_at
                 FROM telemetry_events
                 WHERE workspace_id = %s::uuid AND target_id = %s::uuid
                 ''',
-                [STABLE_DETECTED_BY, *REALTIME_DETECTED_BY, workspace_id, target_id],
+                [
+                    STABLE_DETECTED_BY,
+                    *_wss_realtime,
+                    QUICKNODE_STREAM_DETECTED_BY,
+                    workspace_id,
+                    target_id,
+                ],
             ).fetchone()
             if isinstance(_freshness_row, dict):
                 _sp = _freshness_row.get('last_stable_poll_at')
                 _rt = _freshness_row.get('last_realtime_event_at')
+                _st = _freshness_row.get('last_stream_event_at')
                 last_stable_poll_at = _sp.isoformat() if hasattr(_sp, 'isoformat') else (_sp or None)
                 last_realtime_event_at = _rt.isoformat() if hasattr(_rt, 'isoformat') else (_rt or None)
+                last_stream_event_at = _st.isoformat() if hasattr(_st, 'isoformat') else (_st or None)
         except Exception:
             logger.warning(
                 'telemetry_detection_path_freshness_unavailable workspace_id=%s target_id=%s',
                 workspace_id, target_id, exc_info=True,
             )
+
+        # QuickNode Stream worker status — a SEPARATE realtime worker from the legacy
+        # WebSocket ingestor. Stream health (last delivered block + last webhook) comes
+        # from the GLOBAL stream checkpoint (the single Base QuickNode Stream serves every
+        # workspace, so it is infra health, not tenant data); the per-target "last stream
+        # event" above stays workspace+target scoped. Best-effort: a checkpoint read
+        # failure must never break the telemetry list. Read BEFORE the count/data queries
+        # to preserve the "telemetry data query is last" invariant.
+        last_stream_block: int | None = None
+        quicknode_stream_checkpoint_at: str | None = None
+        quicknode_stream_state: str | None = None
+        try:
+            from services.api.app.quicknode_streams import load_base_stream_checkpoint
+
+            _checkpoint = load_base_stream_checkpoint(connection)
+            if isinstance(_checkpoint, dict):
+                _lsb = _checkpoint.get('latest_stream_block')
+                try:
+                    last_stream_block = int(_lsb) if _lsb is not None else None
+                except (TypeError, ValueError):
+                    last_stream_block = None
+                _wr = _checkpoint.get('webhook_received_at')
+                quicknode_stream_checkpoint_at = (
+                    _wr.isoformat() if hasattr(_wr, 'isoformat') else (_wr or None)
+                )
+        except Exception:
+            logger.warning(
+                'telemetry_quicknode_stream_checkpoint_unavailable workspace_id=%s target_id=%s',
+                workspace_id, target_id, exc_info=True,
+            )
+
+        # Fail-closed state: 'active' ONLY when a stream fact is FRESH (a checkpoint
+        # webhook or a matched stream event within the stale window); 'idle' when a
+        # stream has been observed but nothing is fresh; None when no stream activity
+        # has ever been seen (never fabricate "Active" without proof).
+        def _stream_fact_fresh(ts_iso: str | None) -> bool:
+            if not ts_iso:
+                return False
+            try:
+                _ts = datetime.fromisoformat(str(ts_iso).replace('Z', '+00:00'))
+                if _ts.tzinfo is None:
+                    _ts = _ts.replace(tzinfo=timezone.utc)
+                return (utc_now() - _ts).total_seconds() <= QUICKNODE_STREAM_STALE_SECONDS
+            except (TypeError, ValueError):
+                return False
+
+        if _stream_fact_fresh(quicknode_stream_checkpoint_at) or _stream_fact_fresh(last_stream_event_at):
+            quicknode_stream_state = 'active'
+        elif quicknode_stream_checkpoint_at or last_stream_event_at or last_stream_block is not None:
+            quicknode_stream_state = 'idle'
+        else:
+            quicknode_stream_state = None
+
+        # Stable RPC polling is the always-on backup, but "Active fallback" must be a
+        # FACT, not a hardcoded label: derive it from the last stable poll's freshness
+        # against the shared stale threshold (same one the banner / runtime summary use)
+        # so the Telemetry header never claims the backup is active when its poll is stale.
+        stable_polling_active = False
+        if last_stable_poll_at:
+            try:
+                _sp_ts = datetime.fromisoformat(str(last_stable_poll_at).replace('Z', '+00:00'))
+                if _sp_ts.tzinfo is None:
+                    _sp_ts = _sp_ts.replace(tzinfo=timezone.utc)
+                stable_polling_active = (
+                    (utc_now() - _sp_ts).total_seconds() <= stable_poll_stale_threshold_seconds()
+                )
+            except (TypeError, ValueError):
+                stable_polling_active = False
 
         _q = (q or '').strip()
         _effective_limit = max(1, min(limit, 200))
@@ -11166,6 +11257,17 @@ def list_target_telemetry(
             'realtime_provider_mode': _realtime_provider_mode,
             'last_stable_poll_at': last_stable_poll_at,
             'last_realtime_event_at': last_realtime_event_at,
+            # QuickNode Stream worker facts (distinct from the legacy WebSocket worker).
+            # quicknode_stream_state is derived from canonical stream facts so the header
+            # renders "QuickNode Stream: Active" without the legacy WebSocket status ever
+            # standing in as the main realtime status.
+            'quicknode_stream_state': quicknode_stream_state,
+            'last_stream_event_at': last_stream_event_at,
+            'last_stream_block': last_stream_block,
+            'quicknode_stream_checkpoint_at': quicknode_stream_checkpoint_at,
+            # Canonical fact for the always-on backup worker so its status label is
+            # truthful (never a hardcoded "Active").
+            'stable_polling_active': stable_polling_active,
             'top_row_detection_debug': top_row_detection_debug,
             'total_count': total_count,
             'page': _effective_offset // _effective_limit if _effective_limit > 0 else 0,
