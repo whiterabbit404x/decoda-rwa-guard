@@ -49,6 +49,20 @@ REALTIME_DETECTED_BY: tuple[str, ...] = (
 )
 STABLE_DETECTED_BY = 'stable_rpc_polling'
 
+# QuickNode-matcher detections that were recovered via Base RPC rather than
+# delivered on the live QuickNode stream (services/api/app/quicknode_streams.py):
+#   * quicknode_stream_backfill    — automatic gap backfill (a stream block skip).
+#   * quicknode_stream_debug_import — a deliberate one-off import via the ops
+#     debug-tx endpoint.
+# They are a distinct, truthful detection path — NOT realtime telemetry (so they
+# are intentionally absent from REALTIME_DETECTED_BY and never counted as realtime
+# proof), and NOT stable polling. Recognized so a row carrying one of these tags
+# resolves to itself instead of falling through to "unknown".
+QUICKNODE_RECOVERY_DETECTED_BY: tuple[str, ...] = (
+    'quicknode_stream_backfill',
+    'quicknode_stream_debug_import',
+)
+
 # detected_by values that PROVE the realtime WebSocket pipeline delivered a
 # detection. Acceptance rule: a test transaction only counts as realtime proof when
 # Detected By is Realtime WebSocket or Realtime Backfill — quicknode_http_fast_tail
@@ -137,6 +151,11 @@ CANONICAL_TRANSFER_SOURCE_PRIORITY: tuple[str, ...] = (
     'realtime_tx_import',
     'quicknode_http_fast_tail',
     'realtime_http_fast_tail',
+    # QuickNode-matcher recovery paths (gap backfill / debug import): ranked above
+    # stable polling because they are QuickNode-family detections, but below the
+    # live realtime paths since they arrive after the fact via RPC.
+    'quicknode_stream_backfill',
+    'quicknode_stream_debug_import',
     'stable_rpc_polling',
 )
 
@@ -176,6 +195,8 @@ def _canonical_detected_by_or_none(source: Any) -> str | None:
     if not src:
         return None
     if src in REALTIME_DETECTED_BY:
+        return src
+    if src in QUICKNODE_RECOVERY_DETECTED_BY:
         return src
     if src in _TX_IMPORT_SOURCES:
         return 'realtime_tx_import'

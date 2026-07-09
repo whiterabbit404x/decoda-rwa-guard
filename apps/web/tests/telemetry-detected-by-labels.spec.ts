@@ -26,6 +26,23 @@ test('renders fallback and non-live labels truthfully', () => {
   expect(DETECTED_BY_LABELS.tx_hash_import).toBe('Realtime Tx Import');
 });
 
+test('renders QuickNode RPC-recovery labels distinctly from the live stream', () => {
+  // Gap backfill / debug import are QuickNode-matcher detections recovered via
+  // RPC — labeled so they never read as live real-time QuickNode evidence.
+  expect(formatDetectedBy('quicknode_stream_backfill')).toBe('QuickNode Gap Backfill');
+  expect(formatDetectedBy('quicknode_stream_debug_import')).toBe('QuickNode Debug Import');
+  // They resolve to themselves (a truthful path) rather than to null/Unknown.
+  expect(canonicalDetectedBy('quicknode_stream_backfill')).toBe('quicknode_stream_backfill');
+  expect(canonicalDetectedBy('quicknode_stream_debug_import')).toBe('quicknode_stream_debug_import');
+  expect(deriveDetectedBy({ detected_by: 'quicknode_stream_backfill' })).toBe('quicknode_stream_backfill');
+  expect(
+    walletTransferDetectedBy({
+      evidence_source: 'live',
+      payload_json: { detected_by: 'quicknode_stream_backfill', tx_hash: '0xef5324' },
+    }),
+  ).toBe('quicknode_stream_backfill');
+});
+
 test('canonicalDetectedBy maps source/ingestion spellings to canonical tags', () => {
   expect(canonicalDetectedBy('tx_hash_import')).toBe('realtime_tx_import');
   expect(canonicalDetectedBy('rpc_polling')).toBe('stable_rpc_polling');

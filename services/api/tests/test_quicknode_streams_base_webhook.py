@@ -2470,7 +2470,10 @@ def test_debug_tx_endpoint_matched_and_persisted_when_dry_run_false(monkeypatch:
     assert result['matched_targets'][0]['persisted'] is True
     assert len(conn.telemetry_inserts) == 1
     inserted_payload = json.loads(conn.telemetry_inserts[0][9])
-    assert inserted_payload['detected_by'] == 'quicknode_stream'
+    # A manual debug-tx import is tagged distinctly from a live stream detection
+    # (task requirement 4) so it is never mistaken for real-time QuickNode evidence.
+    assert inserted_payload['detected_by'] == 'quicknode_stream_debug_import'
+    assert inserted_payload['source_type'] == 'quicknode_stream_debug_import'
     assert inserted_payload['tx_hash'] == VALID_TX_HASH
 
 

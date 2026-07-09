@@ -64,6 +64,32 @@ QUICKNODE_STREAMS_WEBHOOK_VERSION = '2026-07-08-quicknode-stream-debug-tx-trace-
 BASE_CHAIN_ID = 8453
 BASE_CHAIN_NETWORK = 'base'
 QUICKNODE_STREAM_SOURCE = 'quicknode_stream'
+# detected_by tags for the two RPC-backed recovery paths that reuse the QuickNode
+# matcher/dedupe/persist logic but did NOT arrive on the live QuickNode stream:
+#   * quicknode_stream_backfill — automatic gap backfill when the stream skips
+#     blocks (a jump from block A to B where B > A + 1). Fetched from Base RPC.
+#   * quicknode_stream_debug_import — a deliberate one-off import via the ops
+#     debug-tx endpoint (dry_run=false). Also fetched from Base RPC.
+# Both are deduped against every other transfer-family row for the same
+# target + chain + tx_hash (see _existing_telemetry_for_tx), so they can never
+# create a second customer-visible row for a transfer the stream, the realtime
+# worker, or stable RPC polling already recorded.
+QUICKNODE_STREAM_BACKFILL_SOURCE = 'quicknode_stream_backfill'
+QUICKNODE_STREAM_DEBUG_IMPORT_SOURCE = 'quicknode_stream_debug_import'
+
+# Single logical QuickNode Stream this API ingests (Base wallet transfers). The
+# checkpoint table is keyed by this so a future second stream (another chain)
+# gets its own gap tracking without colliding.
+QUICKNODE_STREAM_KEY_BASE = 'base'
+
+# Upper bound on how many missing blocks a single gap-triggered backfill fetches
+# inline from RPC, so a one-time huge jump (e.g. the stream (re)starting tens of
+# thousands of blocks ahead of a missed tx) cannot turn one webhook into an
+# unbounded RPC scan. The checkpoint still advances past the whole gap, so the
+# same gap is never re-detected; blocks beyond the cap are reported as
+# not-backfilled and remain recoverable via stable RPC polling or the debug-tx
+# endpoint. 0 disables the cap.
+DEFAULT_QUICKNODE_STREAM_BACKFILL_MAX_BLOCKS = 200
 
 # Cap on per-tx quicknode_stream_no_match_detail lines emitted for a single
 # payload, so a misconfigured/unfiltered stream (a whole block of unrelated
@@ -682,7 +708,20 @@ def _existing_telemetry_for_tx(
     return dict(row) if row is not None else None
 
 
-def _persist_quicknode_wallet_transfer(connection: Any, *, target: dict[str, Any], tx: dict[str, Any]) -> dict[str, Any]:
+def _persist_quicknode_wallet_transfer(
+    connection: Any, *, target: dict[str, Any], tx: dict[str, Any],
+    source: str = QUICKNODE_STREAM_SOURCE,
+) -> dict[str, Any]:
+    """Persist one matched wallet-transfer row, deduped across every detection path.
+
+    ``source`` is the detected_by / source_type / provider_type stamped on the row:
+    the live webhook uses ``quicknode_stream``; the gap backfill uses
+    ``quicknode_stream_backfill``; the ops debug-tx import uses
+    ``quicknode_stream_debug_import``. Whatever the source, the row is suppressed
+    when any transfer-family row already exists for the same target + chain +
+    tx_hash (regardless of its detected_by), so a backfill or debug import can never
+    duplicate a transfer the stream or stable RPC polling already recorded.
+    """
     existing = _existing_telemetry_for_tx(
         connection,
         target_id=target['id'],
@@ -712,8 +751,8 @@ def _persist_quicknode_wallet_transfer(connection: Any, *, target: dict[str, Any
         'value_eth': round(value / 10 ** 18, 18),
         'wallet_transfer_direction': direction,
         'event_type': 'wallet_transfer_detected',
-        'source_type': QUICKNODE_STREAM_SOURCE,
-        'detected_by': QUICKNODE_STREAM_SOURCE,
+        'source_type': source,
+        'detected_by': source,
         'observed_at': observed_at.isoformat(),
     }
     telemetry_id = str(uuid.uuid4())
@@ -733,7 +772,7 @@ def _persist_quicknode_wallet_transfer(connection: Any, *, target: dict[str, Any
             target['workspace_id'],
             target.get('asset_id'),
             target['id'],
-            QUICKNODE_STREAM_SOURCE,
+            source,
             'wallet_transfer_detected',
             observed_at,
             'live',
@@ -746,7 +785,7 @@ def _persist_quicknode_wallet_transfer(connection: Any, *, target: dict[str, Any
     return {
         'status': 'processed',
         'telemetry_id': telemetry_id,
-        'detected_by': QUICKNODE_STREAM_SOURCE,
+        'detected_by': source,
         'wallet_transfer_direction': direction,
         # Returned so the caller can drive the same alert/incident chain stable RPC
         # polling creates for this transfer, without rebuilding the payload.
@@ -868,6 +907,7 @@ def _summary_response(
     duplicates: int,
     skipped: int,
     results: list[dict[str, Any]],
+    backfill: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build and log the safe aggregate outcome summary for a processed webhook.
 
@@ -877,14 +917,16 @@ def _summary_response(
     from Railway logs *and* visible to QuickNode in the response. Counts only:
     never wallet addresses, tx hashes, or secrets. ``ok`` is True because the
     request was verified and processed; it does not assert that any transfer
-    matched (that is exactly what ``matched``/``persisted`` report).
+    matched (that is exactly what ``matched``/``persisted`` report). ``backfill``
+    is present only when a stream gap was detected and blocks were re-fetched.
     """
     logger.info(
         'quicknode_stream_summary ok=True tx_count=%s targets_loaded=%s matched=%s '
-        'persisted=%s duplicates=%s skipped=%s',
+        'persisted=%s duplicates=%s skipped=%s gap_backfilled=%s',
         tx_count, targets_loaded, matched, persisted, duplicates, skipped,
+        (backfill or {}).get('persisted', 0) if backfill else 'none',
     )
-    return {
+    summary: dict[str, Any] = {
         'received': True,
         'ok': True,
         'tx_count': tx_count,
@@ -895,6 +937,309 @@ def _summary_response(
         'skipped': skipped,
         'results': results,
     }
+    if backfill is not None:
+        summary['backfill'] = backfill
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# Stream checkpoint tracking + gap detection + backfill-on-gap.
+#
+# The "QuickNode Stream missed a fresh tx" incident had the stream ALIVE but
+# already far past the missed tx's block: only stable RPC polling caught it. A
+# live batch_range log proves the stream is advancing, but nothing proved it
+# advanced WITHOUT skipping blocks. These functions persist a per-stream
+# checkpoint (last_processed_block, latest_stream_block, stream_started_at_block,
+# missed_block_gap, webhook_received_at) so a jump from block A to block B where
+# B > A + 1 is (a) provable from logs (quicknode_stream_gap_detected) and (b)
+# self-healing: the missing blocks A+1..B-1 are fetched from Base RPC and run
+# through the SAME matcher/dedupe/persist path, tagged detected_by=
+# quicknode_stream_backfill. Stable RPC polling remains the always-on backup;
+# this only closes the window between a missed stream block and the next poll.
+# ---------------------------------------------------------------------------
+
+_QUICKNODE_STREAM_CHECKPOINTS_DDL = '''
+CREATE TABLE IF NOT EXISTS quicknode_stream_checkpoints (
+    stream_key TEXT PRIMARY KEY,
+    latest_stream_block BIGINT,
+    last_processed_block BIGINT,
+    missed_block_gap BIGINT NOT NULL DEFAULT 0,
+    stream_started_at_block BIGINT,
+    webhook_received_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)
+'''
+
+
+def _backfill_max_blocks() -> int:
+    raw = (getenv('QUICKNODE_STREAM_BACKFILL_MAX_BLOCKS') or '').strip()
+    if not raw:
+        return DEFAULT_QUICKNODE_STREAM_BACKFILL_MAX_BLOCKS
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return DEFAULT_QUICKNODE_STREAM_BACKFILL_MAX_BLOCKS
+
+
+def _collect_batch_block_numbers(body: Any, normalized_txs: list[dict[str, Any]]) -> list[int]:
+    """Every block number a QuickNode batch touched, from the RAW payload + txs.
+
+    Read from the block entries directly (not just normalized txs) so a filtered
+    stream that delivers a block whose transactions all dropped in normalization
+    still advances the checkpoint by that block. Without this, a run of mat-free
+    blocks would look like a gap and be needlessly re-backfilled. Falls back to the
+    normalized txs' block numbers for the flat-tx payload shape that has no block
+    envelope.
+    """
+    numbers: set[int] = set()
+    for entry in _iter_stream_entries(body):
+        block = entry.get('block') if isinstance(entry.get('block'), dict) else None
+        block_source = block if block is not None else entry
+        block_number = _hex_or_int(
+            block_source.get('number')
+            or block_source.get('block_number')
+            or block_source.get('blockNumber')
+        )
+        if block_number is not None:
+            numbers.add(block_number)
+    for tx in normalized_txs:
+        if tx.get('block_number') is not None:
+            numbers.add(tx['block_number'])
+    return sorted(numbers)
+
+
+def _track_stream_checkpoint_and_detect_gap(
+    connection: Any, *, stream_key: str, batch_first_block: int, batch_last_block: int,
+    received_at: datetime,
+) -> tuple[int, int] | None:
+    """Upsert the stream checkpoint and return an inclusive missing-block range, or None.
+
+    Compares this batch's first block (B) against the previously processed high-water
+    block (A). When B > A + 1 the stream skipped blocks A+1..B-1: logs
+    ``quicknode_stream_gap_detected from_block=A to_block=B missing_count=B-A-1`` and
+    returns ``(A+1, B-1)`` for the caller to backfill. Never regresses the checkpoint
+    (a re-delivered/old batch whose last block is below the high-water mark advances
+    nothing and reports no gap), and records ``stream_started_at_block`` once on the
+    first batch ever seen — the boundary that classifies a tx below it as
+    ``stream_already_past_block``.
+    """
+    connection.execute(_QUICKNODE_STREAM_CHECKPOINTS_DDL)
+    row = connection.execute(
+        'SELECT latest_stream_block, last_processed_block, stream_started_at_block '
+        'FROM quicknode_stream_checkpoints WHERE stream_key = %s',
+        (stream_key,),
+    ).fetchone()
+    prev = dict(row) if row else None
+    prev_last_processed = prev.get('last_processed_block') if prev else None
+    prev_latest = prev.get('latest_stream_block') if prev else None
+    prev_started = prev.get('stream_started_at_block') if prev else None
+
+    gap_range: tuple[int, int] | None = None
+    missing_count = 0
+    if prev_last_processed is not None and batch_first_block > prev_last_processed + 1:
+        missing_count = batch_first_block - prev_last_processed - 1
+        gap_range = (prev_last_processed + 1, batch_first_block - 1)
+        logger.info(
+            'quicknode_stream_gap_detected from_block=%s to_block=%s missing_count=%s',
+            prev_last_processed, batch_first_block, missing_count,
+        )
+
+    new_started = prev_started if prev_started is not None else batch_first_block
+    new_last_processed = batch_last_block if prev_last_processed is None else max(prev_last_processed, batch_last_block)
+    new_latest = batch_last_block if prev_latest is None else max(prev_latest, batch_last_block)
+
+    connection.execute(
+        '''
+        INSERT INTO quicknode_stream_checkpoints (
+            stream_key, latest_stream_block, last_processed_block, missed_block_gap,
+            stream_started_at_block, webhook_received_at, updated_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, NOW())
+        ON CONFLICT (stream_key) DO UPDATE SET
+            latest_stream_block = EXCLUDED.latest_stream_block,
+            last_processed_block = EXCLUDED.last_processed_block,
+            missed_block_gap = EXCLUDED.missed_block_gap,
+            stream_started_at_block = COALESCE(
+                quicknode_stream_checkpoints.stream_started_at_block, EXCLUDED.stream_started_at_block
+            ),
+            webhook_received_at = EXCLUDED.webhook_received_at,
+            updated_at = NOW()
+        ''',
+        (stream_key, new_latest, new_last_processed, missing_count, new_started, received_at),
+    )
+    logger.info(
+        'quicknode_stream_checkpoint stream_key=%s latest_stream_block=%s last_processed_block=%s '
+        'missed_block_gap=%s stream_started_at_block=%s',
+        stream_key, new_latest, new_last_processed, missing_count, new_started,
+    )
+    return gap_range
+
+
+def _load_stream_checkpoint(connection: Any, *, stream_key: str) -> dict[str, Any] | None:
+    """Load a stream's checkpoint row, or None when tracking has not started yet.
+
+    Read-only: used by the debug-tx endpoint to classify why a tx was missed
+    (stream_not_at_block_yet vs stream_already_past_block vs gap). Creates the table
+    if absent so a debug call on a fresh deployment reports ``no_checkpoint`` rather
+    than raising on a missing relation.
+    """
+    connection.execute(_QUICKNODE_STREAM_CHECKPOINTS_DDL)
+    row = connection.execute(
+        'SELECT stream_key, latest_stream_block, last_processed_block, missed_block_gap, '
+        'stream_started_at_block, webhook_received_at '
+        'FROM quicknode_stream_checkpoints WHERE stream_key = %s',
+        (stream_key,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _classify_stream_coverage(checkpoint: dict[str, Any] | None, tx_block: int | None) -> str:
+    """Classify a tx's block against the stream's observed coverage window.
+
+    Returns one of the task's stream-miss reasons for the block dimension:
+
+    * ``no_checkpoint``            — the stream has never reported a block yet.
+    * ``stream_not_at_block_yet``  — tx block is above the highest block the stream
+      has delivered, so a live miss just means the stream has not reached it.
+    * ``stream_already_past_block``— tx block is below where the stream first started,
+      so the stream never covered it (exactly the production incident: the stream
+      started far ahead of the missed tx).
+    * ``within_stream_range``      — tx block sits inside [started, latest] yet was not
+      recorded from the stream, which points at a gap the backfill should have closed.
+    """
+    if not checkpoint or tx_block is None:
+        return 'no_checkpoint'
+    latest = checkpoint.get('latest_stream_block')
+    started = checkpoint.get('stream_started_at_block')
+    if latest is not None and tx_block > latest:
+        return 'stream_not_at_block_yet'
+    if started is not None and tx_block < started:
+        return 'stream_already_past_block'
+    return 'within_stream_range'
+
+
+def _make_base_rpc_client() -> Any | None:
+    """Build a failover RPC client for Base, or None when no Base RPC is configured.
+
+    Reuses the exact provider resolution stable RPC polling uses
+    (:func:`evm_activity_provider.resolve_chain_rpc`) so the backfill fetches from the
+    same endpoint(s) the canonical poller trusts. Imported lazily to avoid a module
+    import cycle and so a deployment without Base RPC still imports this module.
+    """
+    from services.api.app.evm_activity_provider import FailoverJsonRpcClient, resolve_chain_rpc
+
+    chain_rpc = resolve_chain_rpc(BASE_CHAIN_NETWORK)
+    if not chain_rpc.get('rpc_url'):
+        return None
+    return FailoverJsonRpcClient(chain_rpc['rpc_urls'])
+
+
+def _normalize_block_transactions(block: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normalize every transaction in an ``eth_getBlockByNumber`` (full-tx) result.
+
+    Copies the block number onto each tx (RPC txs carry ``blockNumber`` already, but
+    a filtered/edge shape may not) and runs the SAME
+    :func:`normalize_base_stream_tx` the live webhook uses, so a backfilled block is
+    matched byte-for-byte the way a streamed block would have been.
+    """
+    out: list[dict[str, Any]] = []
+    block_number = block.get('number') or block.get('block_number') or block.get('blockNumber')
+    for tx in (block.get('transactions') or []):
+        if not isinstance(tx, dict):
+            continue
+        merged = dict(tx)
+        merged.setdefault('block_number', block_number)
+        normalized = normalize_base_stream_tx(merged)
+        if normalized is not None:
+            out.append(normalized)
+    return out
+
+
+def _backfill_stream_gap(
+    connection: Any, targets: list[dict[str, Any]], *, gap_from: int, gap_to: int,
+    source: str = QUICKNODE_STREAM_BACKFILL_SOURCE,
+) -> dict[str, Any]:
+    """Fetch the missing blocks gap_from..gap_to from Base RPC and run the matcher.
+
+    Closes a detected stream gap: each block is fetched with full transactions, every
+    tx normalized and matched against the already-loaded active Base wallet targets,
+    and a match persisted via the same :func:`_persist_quicknode_wallet_transfer`
+    (source ``quicknode_stream_backfill``) + alert chain the live webhook uses — so a
+    tx the stream skipped (e.g. block 48365342 in the incident) is caught with no
+    duplicate row. Bounded by :func:`_backfill_max_blocks`; a gap larger than the cap
+    is backfilled up to the cap and the remainder reported truncated (still covered by
+    stable RPC polling). RPC/persist failures are per-block and never raise: a
+    backfill error must not turn a verified webhook into a 5xx.
+    """
+    total_blocks = gap_to - gap_from + 1
+    max_blocks = _backfill_max_blocks()
+    capped_to = gap_to
+    truncated = False
+    if max_blocks and total_blocks > max_blocks:
+        capped_to = gap_from + max_blocks - 1
+        truncated = True
+    stats: dict[str, Any] = {
+        'gap_from': gap_from,
+        'gap_to': gap_to,
+        'requested_blocks': total_blocks,
+        'blocks_scanned': 0,
+        'matched': 0,
+        'persisted': 0,
+        'duplicates': 0,
+        'failed_blocks': 0,
+        'truncated': truncated,
+    }
+    logger.info(
+        'quicknode_stream_backfill_started from_block=%s to_block=%s requested_blocks=%s '
+        'capped_to=%s truncated=%s',
+        gap_from, gap_to, total_blocks, capped_to, str(truncated).lower(),
+    )
+    client = _make_base_rpc_client()
+    if client is None:
+        logger.warning(
+            'quicknode_stream_backfill_no_rpc from_block=%s to_block=%s reason=base_rpc_not_configured',
+            gap_from, gap_to,
+        )
+        return stats
+    for block_number in range(gap_from, capped_to + 1):
+        try:
+            block = client.call('eth_getBlockByNumber', [hex(block_number), True]) or {}
+        except Exception:  # pragma: no cover - defensive; a fetch failure must not 5xx
+            stats['failed_blocks'] += 1
+            logger.warning(
+                'quicknode_stream_backfill_block_fetch_failed block_number=%s', block_number, exc_info=True,
+            )
+            continue
+        stats['blocks_scanned'] += 1
+        for normalized in _normalize_block_transactions(block):
+            matched_targets = _match_targets_for_tx(
+                targets, from_address=normalized['from_address'], to_address=normalized.get('to_address'),
+            )
+            for target in matched_targets:
+                stats['matched'] += 1
+                outcome = _persist_quicknode_wallet_transfer(
+                    connection, target=target, tx=normalized, source=source,
+                )
+                persisted_payload = outcome.pop('payload', None)
+                if outcome['status'] == 'processed':
+                    stats['persisted'] += 1
+                    logger.info(
+                        'quicknode_stream_backfill_persisted detected_by=%s tx_hash=%s target_id=%s block_number=%s',
+                        source, normalized['tx_hash'], target['id'], block_number,
+                    )
+                    _create_wallet_transfer_alert_chain(
+                        target=target,
+                        payload=persisted_payload if isinstance(persisted_payload, dict) else {},
+                        telemetry_id=str(outcome.get('telemetry_id') or ''),
+                    )
+                elif outcome['status'] == 'duplicate_suppressed':
+                    stats['duplicates'] += 1
+    logger.info(
+        'quicknode_stream_backfill_complete from_block=%s to_block=%s blocks_scanned=%s matched=%s '
+        'persisted=%s duplicates=%s failed_blocks=%s truncated=%s',
+        gap_from, capped_to, stats['blocks_scanned'], stats['matched'], stats['persisted'],
+        stats['duplicates'], stats['failed_blocks'], str(truncated).lower(),
+    )
+    return stats
 
 
 def process_quicknode_base_stream_webhook(
@@ -960,20 +1305,56 @@ def process_quicknode_base_stream_webhook(
     # a covering batch — a debug_tx_not_seen line. Emitted before the empty-batch
     # early return so a batch that normalized to zero is still traced.
     _log_batch_range_and_debug_tx(normalized_txs)
-    if not normalized_txs:
+
+    # Every block this batch touched, read from the RAW payload (not just matched
+    # txs) so gap tracking still advances across blocks a filtered stream
+    # delivered empty of matches. Drives the checkpoint + gap detector below.
+    batch_block_numbers = _collect_batch_block_numbers(body, normalized_txs)
+    if not normalized_txs and not batch_block_numbers:
         reason = 'no_raw_transactions_extracted' if not raw_txs else 'raw_transactions_missing_required_fields'
         logger.info('quicknode_stream_no_transactions_normalized reason=%s', reason)
         return _summary_response(
             tx_count=0, targets_loaded=0, matched=0, persisted=0, duplicates=0, skipped=0, results=[],
         )
 
+    received_at = datetime.now(timezone.utc)
     results: list[dict[str, Any]] = []
     match_count = 0
     persisted_count = 0
     duplicate_count = 0
     skipped_count = 0
+    backfill_stats: dict[str, Any] | None = None
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
+        # Stream checkpoint + gap detection (task requirements 1 & 2). Auxiliary to
+        # the customer-data path: a checkpoint failure must never fail the webhook,
+        # so it is guarded and rolls back its own aborted transaction so the target
+        # load below still runs on a clean connection.
+        gap_range: tuple[int, int] | None = None
+        if batch_block_numbers:
+            try:
+                gap_range = _track_stream_checkpoint_and_detect_gap(
+                    connection,
+                    stream_key=QUICKNODE_STREAM_KEY_BASE,
+                    batch_first_block=batch_block_numbers[0],
+                    batch_last_block=batch_block_numbers[-1],
+                    received_at=received_at,
+                )
+            except psycopg.Error as exc:
+                try:
+                    connection.rollback()
+                except Exception:  # pragma: no cover - best-effort on a dead tx
+                    pass
+                logger.warning(
+                    'quicknode_stream_checkpoint_failed error_type=%s', type(exc).__name__, exc_info=True,
+                )
+        # Targets are needed to MATCH streamed txs and to BACKFILL a detected gap.
+        # A matchless, gap-free batch (the common single-empty-block case) skips the
+        # load entirely and stays a cheap checkpoint-only update.
+        if not normalized_txs and gap_range is None:
+            return _summary_response(
+                tx_count=0, targets_loaded=0, matched=0, persisted=0, duplicates=0, skipped=0, results=[],
+            )
         try:
             targets = _load_all_base_wallet_targets(connection)
         except psycopg.Error as exc:
@@ -994,6 +1375,14 @@ def process_quicknode_base_stream_webhook(
                 type(exc).__name__, len(normalized_txs), exc_info=True,
             )
             return _target_load_failed_response(tx_count=len(normalized_txs))
+        # Backfill-on-gap (task requirement 3): fetch the skipped blocks from Base
+        # RPC and run the same matcher, so a tx the stream skipped (e.g. block
+        # 48365342 in the incident) is caught here — no duplicate, since the persist
+        # dedupes against any existing transfer-family row for the target + tx_hash.
+        if gap_range is not None:
+            backfill_stats = _backfill_stream_gap(
+                connection, targets, gap_from=gap_range[0], gap_to=gap_range[1],
+            )
         # Computed once per payload: last4/hash8 tags for every loaded target
         # wallet, so a no-match tx can be diagnosed against the configured
         # targets from logs without ever printing a full monitored wallet.
@@ -1089,6 +1478,7 @@ def process_quicknode_base_stream_webhook(
         return _summary_response(
             tx_count=len(normalized_txs), targets_loaded=len(targets), matched=match_count,
             persisted=persisted_count, duplicates=duplicate_count, skipped=skipped_count, results=results,
+            backfill=backfill_stats,
         )
 
 
@@ -1136,8 +1526,15 @@ def run_quicknode_debug_tx(*, tx_hash: str, dry_run: bool = True) -> dict[str, A
     the webhook does, then runs the identical unscoped target load + wallet match +
     duplicate check. Nothing is written unless ``dry_run`` is False, in which case it
     persists via the same :func:`_persist_quicknode_wallet_transfer` + alert chain the
-    live webhook uses (so re-running with dry_run=false is a legitimate one-off import,
-    idempotent against any row the stable poller already wrote).
+    live webhook uses, tagged ``detected_by=quicknode_stream_debug_import`` so a manual
+    recovery is distinguishable from a live stream detection (and still idempotent
+    against any row the stream or stable poller already wrote).
+
+    Also classifies WHY the live stream missed the tx via ``stream_miss_reason`` (task
+    requirement 5): ``matcher_failed``, ``duplicate_suppressed``,
+    ``stream_not_at_block_yet``, ``stream_already_past_block``, or ``gap_detected`` —
+    derived from the matcher/dedupe verdict and the tx block's position relative to the
+    stream checkpoint.
 
     Returns a truthful report whose ``conclusion`` classifies the outcome:
 
@@ -1225,8 +1622,21 @@ def run_quicknode_debug_tx(*, tx_hash: str, dry_run: bool = True) -> dict[str, A
     matched_results: list[dict[str, Any]] = []
     persisted_count = 0
     duplicate_count = 0
+    checkpoint: dict[str, Any] | None = None
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
+        # Read-only stream checkpoint, used only to classify WHY the live QuickNode
+        # stream missed this tx (task requirement 5). Guarded: a checkpoint read
+        # failure must not stop the debug replay — the miss reason falls back to
+        # no_checkpoint and the matcher/dedupe verdict still stands.
+        try:
+            checkpoint = _load_stream_checkpoint(connection, stream_key=QUICKNODE_STREAM_KEY_BASE)
+        except psycopg.Error:
+            try:
+                connection.rollback()
+            except Exception:  # pragma: no cover - best-effort on a dead tx
+                pass
+            checkpoint = None
         targets = _load_all_base_wallet_targets(connection)
         targets_loaded = len(targets)
         matched_targets = _match_targets_for_tx(
@@ -1257,7 +1667,10 @@ def run_quicknode_debug_tx(*, tx_hash: str, dry_run: bool = True) -> dict[str, A
             if duplicate_found:
                 duplicate_count += 1
             elif not dry_run:
-                outcome = _persist_quicknode_wallet_transfer(connection, target=target, tx=normalized)
+                outcome = _persist_quicknode_wallet_transfer(
+                    connection, target=target, tx=normalized,
+                    source=QUICKNODE_STREAM_DEBUG_IMPORT_SOURCE,
+                )
                 persisted_payload = outcome.pop('payload', None)
                 if outcome['status'] == 'processed':
                     persisted_count += 1
@@ -1287,6 +1700,35 @@ def run_quicknode_debug_tx(*, tx_hash: str, dry_run: bool = True) -> dict[str, A
     else:
         conclusion = 'matched_and_persisted'
 
+    # Task requirement 5: name WHY the live QuickNode stream missed this tx, using
+    # one of the fixed reason tokens. Matcher/dedupe outcomes win first (they are
+    # certain); otherwise the block-coverage classification against the checkpoint
+    # explains the miss (stream not at the block yet / already past it / a gap that
+    # the backfill should close).
+    stream_coverage = _classify_stream_coverage(checkpoint, normalized.get('block_number'))
+    if matched_count == 0:
+        stream_miss_reason = 'matcher_failed'
+    elif duplicate_count == matched_count:
+        stream_miss_reason = 'duplicate_suppressed'
+    elif stream_coverage == 'stream_not_at_block_yet':
+        stream_miss_reason = 'stream_not_at_block_yet'
+    elif stream_coverage == 'stream_already_past_block':
+        stream_miss_reason = 'stream_already_past_block'
+    else:
+        # within_stream_range / no_checkpoint: the block sits inside the stream's
+        # window (or tracking is too new to say) yet arrived only via this path —
+        # the signature of a skipped block the gap backfill is meant to catch.
+        stream_miss_reason = 'gap_detected'
+    logger.info(
+        'quicknode_stream_debug_tx_coverage tx_hash=%s tx_block_number=%s stream_coverage=%s '
+        'stream_miss_reason=%s latest_stream_block=%s stream_started_at_block=%s',
+        normalized_hash,
+        normalized.get('block_number') if normalized.get('block_number') is not None else 'none',
+        stream_coverage, stream_miss_reason,
+        (checkpoint or {}).get('latest_stream_block') if checkpoint else 'none',
+        (checkpoint or {}).get('stream_started_at_block') if checkpoint else 'none',
+    )
+
     return {
         'tx_hash': normalized_hash,
         'dry_run': dry_run,
@@ -1303,4 +1745,6 @@ def run_quicknode_debug_tx(*, tx_hash: str, dry_run: bool = True) -> dict[str, A
         'duplicate_count': duplicate_count,
         'matched_targets': matched_results,
         'conclusion': conclusion,
+        'stream_coverage': stream_coverage,
+        'stream_miss_reason': stream_miss_reason,
     }
