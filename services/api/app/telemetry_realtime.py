@@ -88,6 +88,16 @@ def publish_telemetry_event(workspace_id: str, event: dict[str, Any]) -> bool:
     """
     if not workspace_id:
         return False
+    # Canonical post-commit evidence (task "Redis publication requirements"):
+    # event=telemetry_persisted ... committed=true is emitted here because this
+    # function is only ever called AFTER a durable commit, so it is the single
+    # provable "row is safe" marker every detection path shares.
+    logger.info(
+        'event=telemetry_persisted telemetry_id=%s workspace_id=%s target_id=%s tx_hash=%s '
+        'detected_by=%s observed_at=%s committed=true',
+        event.get('telemetry_id'), workspace_id, event.get('target_id'), event.get('tx_hash'),
+        event.get('detected_by'), event.get('observed_at'),
+    )
     # No Redis configured (e.g. local/dev/tests): stay quiet — the row is durable
     # and HTTP polling is the fallback. Debug-level so a real deployment missing
     # REDIS_URL is still discoverable without flooding normal logs. Checked via the
@@ -102,13 +112,17 @@ def publish_telemetry_event(workspace_id: str, event: dict[str, Any]) -> bool:
     try:
         from services.api.app.domains import alert_stream
 
+        # alert_stream.publish_telemetry emits the success-case
+        # event=telemetry_redis_publish ... success=true redis_event_id=... line.
         alert_stream.publish_telemetry(str(workspace_id), event)
         return True
     except Exception as exc:  # pragma: no cover - defensive; publish must never 5xx a commit
+        # Failure-case counterpart of the success log, so a dropped push is provable
+        # (the frontend HTTP refresh then recovers the already-durable row).
         logger.warning(
-            'telemetry_stream_publish_failed workspace_id=%s telemetry_id=%s target_id=%s '
-            'error_type=%s error=%s',
-            workspace_id, event.get('telemetry_id'), event.get('target_id'),
+            'event=telemetry_redis_publish telemetry_id=%s workspace_id=%s target_id=%s success=false '
+            'redis_event_id=none error_type=%s error=%s',
+            event.get('telemetry_id'), workspace_id, event.get('target_id'),
             type(exc).__name__, str(exc)[:200],
         )
         return False

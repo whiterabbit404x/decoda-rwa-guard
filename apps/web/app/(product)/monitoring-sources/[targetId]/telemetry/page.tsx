@@ -746,6 +746,11 @@ function TelemetryDetailModal({
 
 const PAGE_SIZE = 50;
 
+// Interval for the HTTP refresh fallback that runs only while the SSE stream is not
+// live. Short enough to surface a row persisted during an SSE outage within seconds,
+// but only paid while the stream is actually down (cleared once it reconnects).
+const HTTP_FALLBACK_POLL_MS = 10000;
+
 // Map quick filters to backend event_type_filter values for server-side scoping.
 // wallet_transfers → backend maps to IN('wallet_transfer_detected','native_transfer')
 // alerts_only → backend joins with alerts to return only alert-linked telemetry
@@ -1036,6 +1041,22 @@ export default function TargetTelemetryPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [targetId, authHeaders]);
+
+  // Periodic HTTP refresh fallback — active ONLY while the SSE stream is NOT live
+  // (connecting / reconnecting / disconnected). This is what makes the
+  // "HTTP refresh fallback active" label truthful and what surfaces a row that was
+  // persisted while the browser's SSE was down (the production symptom: Stable RPC
+  // persisted the transfer but the disconnected page only showed it "later"). Once
+  // the stream is live the interval is cleared, so a healthy connection does not
+  // aggressively poll — SSE push carries new rows and the merge dedupes them.
+  useEffect(() => {
+    if (!targetId) return;
+    if (streamStatus === 'live') return;
+    const timer = setInterval(() => {
+      void fetchTelemetryRef.current({ silent: true });
+    }, HTTP_FALLBACK_POLL_MS);
+    return () => clearInterval(timer);
+  }, [targetId, streamStatus]);
 
   // Merge live SSE rows onto the fetched page. Live events are newest, so they only
   // inject on page 0; they must also match the active search/filter (requirement 4)

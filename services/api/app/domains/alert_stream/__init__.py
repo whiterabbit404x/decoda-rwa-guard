@@ -24,7 +24,26 @@ STREAM_SUFFIX = ':alerts'
 # health machinery are reused for both.
 TELEMETRY_STREAM_SUFFIX = ':telemetry'
 DEFAULT_MAX_LENGTH = 1000
-DEFAULT_BLOCK_MS = 25_000
+# Redis xread block interval == the SSE heartbeat cadence: when no event arrives
+# within this window the subscriber yields a ``(None, None)`` tick and the SSE
+# endpoint writes a ``: heartbeat`` comment. The task requires a heartbeat at least
+# every 15–25s so an idle-timeout proxy (Railway edge / Next.js fetch) never treats
+# a quiet-but-healthy stream as dead and forces a reconnect. 25s sat at the very
+# edge of that window (the production "Reconnecting…" flap); 15s keeps every idle
+# connection well inside it. Overridable for ops tuning via SSE_HEARTBEAT_INTERVAL_SECONDS.
+DEFAULT_BLOCK_MS = 15_000
+
+
+def heartbeat_block_ms() -> int:
+    """SSE heartbeat/xread block interval in ms, clamped to the 5–25s safe window."""
+    raw = (os.getenv('SSE_HEARTBEAT_INTERVAL_SECONDS', '') or '').strip()
+    if not raw:
+        return DEFAULT_BLOCK_MS
+    try:
+        seconds = int(raw)
+    except ValueError:
+        return DEFAULT_BLOCK_MS
+    return max(5, min(25, seconds)) * 1000
 
 _sync_client: Any | None = None
 _async_client: Any | None = None
@@ -121,17 +140,23 @@ def publish_telemetry(workspace_id: str, telemetry_data: dict[str, Any]) -> str:
     invoke this only AFTER the telemetry row is durably committed, and to treat a
     raised exception as non-fatal (persistence already succeeded).
     """
+    stream = telemetry_stream_key(workspace_id)
     event_id = str(
         _get_sync_client().xadd(
-            telemetry_stream_key(workspace_id),
+            stream,
             {'payload': json.dumps(telemetry_data, separators=(',', ':'))},
             maxlen=stream_max_length(),
             approximate=False,
         )
     )
+    # Canonical structured evidence (task "Redis publication requirements"):
+    # event=telemetry_redis_publish with telemetry_id / stream_key / success /
+    # redis_event_id so a delivered row is provable from Railway logs alone. No
+    # secrets — only the opaque telemetry_id, the workspace stream key, and the
+    # Redis-assigned event id.
     logger.info(
-        'event=telemetry_stream_publish workspace_id=%s stream=%s event_id=%s',
-        workspace_id, telemetry_stream_key(workspace_id), event_id,
+        'event=telemetry_redis_publish telemetry_id=%s workspace_id=%s stream_key=%s success=true redis_event_id=%s',
+        telemetry_data.get('telemetry_id'), workspace_id, stream, event_id,
     )
     return event_id
 
@@ -197,14 +222,19 @@ async def _subscribe_stream(
     workspace_id: str,
     kind: str,
     last_event_id: str = '$',
-    block_ms: int = DEFAULT_BLOCK_MS,
+    block_ms: int | None = None,
 ) -> AsyncIterator[tuple[str | None, dict[str, Any] | None]]:
     """Read a bounded workspace stream, reconnecting with the last delivered ID.
 
     Shared by :func:`subscribe` (``:alerts``) and :func:`subscribe_telemetry`
     (``:telemetry``); ``kind`` only tags the log lines so the two streams are
     distinguishable in Railway logs while reusing one reconnect/health path.
+
+    ``block_ms`` defaults to :func:`heartbeat_block_ms` so a quiet stream still
+    ticks a heartbeat inside the 15–25s proxy-idle window.
     """
+    if block_ms is None:
+        block_ms = heartbeat_block_ms()
     cursor = last_event_id or '$'
     delay = 0.1
     connected = False
@@ -275,7 +305,7 @@ async def subscribe(
     workspace_id: str,
     *,
     last_event_id: str = '$',
-    block_ms: int = DEFAULT_BLOCK_MS,
+    block_ms: int | None = None,
 ) -> AsyncIterator[tuple[str | None, dict[str, Any] | None]]:
     """Read a workspace ALERT stream, reconnecting with the last delivered ID."""
     async for item in _subscribe_stream(
@@ -289,7 +319,7 @@ async def subscribe_telemetry(
     workspace_id: str,
     *,
     last_event_id: str = '$',
-    block_ms: int = DEFAULT_BLOCK_MS,
+    block_ms: int | None = None,
 ) -> AsyncIterator[tuple[str | None, dict[str, Any] | None]]:
     """Read a workspace TELEMETRY stream, reconnecting with the last delivered ID."""
     async for item in _subscribe_stream(

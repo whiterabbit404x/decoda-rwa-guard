@@ -7,6 +7,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 import types
 from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager, suppress
@@ -6237,21 +6238,61 @@ class CanonicalRiskResponse(TypedDict):
 # ---------------------------------------------------------------------------
 # Task 1: SSE streaming endpoint
 # ---------------------------------------------------------------------------
+def _sse_response_headers(request: Request) -> dict[str, str]:
+    """Response headers that keep an SSE stream unbuffered end-to-end.
+
+    ``no-transform`` (in addition to ``no-cache``) stops an intermediary proxy
+    (Railway edge / Cloudflare-type) from compressing or coalescing the event
+    stream, which delays or closes it; ``X-Accel-Buffering: no`` disables nginx-style
+    proxy buffering; ``Connection: keep-alive`` asks the hop to hold the socket open.
+    Together with the immediate connect preamble + 15s heartbeat these are the fix
+    for the production "Reconnecting…" flap.
+    """
+    headers: dict[str, str] = {
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+    }
+    trace_id = getattr(request.state, 'trace_id', None)
+    if trace_id:
+        headers['X-Trace-ID'] = trace_id
+    return headers
+
+
 async def _sse_heartbeat_generator(
     workspace_id: str, last_event_id: str, request: Request, subscribe_factory=None,
+    stream_name: str = 'alerts',
 ):
     """Yield resumable Redis Stream events and heartbeats.
 
     ``subscribe_factory`` selects which workspace stream to read (defaults to the
     alert stream); the telemetry SSE endpoint passes ``alert_stream.subscribe_telemetry``
     so the same heartbeat/replay/backpressure machinery serves both streams.
+
+    An immediate ``retry:`` + ``: connected`` preamble is written BEFORE the first
+    (blocking) Redis read so proxy buffers (Railway edge / Next.js fetch) flush and
+    the browser sees a live, non-empty stream within milliseconds instead of after a
+    full heartbeat window — the root of the production "Reconnecting…" flap where the
+    connection idled long enough for a proxy to drop it before the first byte.
     """
     global _SSE_CONNECTION_COUNT, _SSE_EVENTS_DELIVERED
     _SSE_CONNECTION_COUNT += 1
     if subscribe_factory is None:
         subscribe_factory = alert_stream.subscribe
+    connected_at = time.monotonic()
+    disconnect_reason = 'client_closed'
+    # Structured connect evidence (task: event=telemetry_sse_connected workspace_id
+    # deployment_commit_sha). Names the stream so alert vs telemetry connections are
+    # distinguishable in Railway logs.
+    logger.info(
+        'event=%s_sse_connected workspace_id=%s deployment_commit_sha=%s',
+        stream_name, workspace_id, BACKEND_GIT_COMMIT or 'unavailable',
+    )
     iterator = subscribe_factory(workspace_id, last_event_id=last_event_id).__aiter__()
     try:
+        # retry: hints the browser's native EventSource reconnect backoff; the
+        # comment frame proves liveness and forces the proxy chain to flush headers.
+        yield 'retry: 3000\n: connected\n\n'
         while True:
             try:
                 event_id, data = await iterator.__anext__()
@@ -6262,13 +6303,29 @@ async def _sse_heartbeat_generator(
             else:
                 payload = json.dumps(data, separators=(',', ':'))
                 _SSE_EVENTS_DELIVERED += 1
+                # Per-row delivery evidence (task: event=telemetry_sse_delivery
+                # telemetry_id workspace_id success). Only meaningful for telemetry
+                # events, which carry telemetry_id; harmless (telemetry_id=none) for
+                # alerts.
+                if stream_name == 'telemetry':
+                    logger.info(
+                        'event=telemetry_sse_delivery telemetry_id=%s workspace_id=%s '
+                        'redis_event_id=%s success=true',
+                        data.get('telemetry_id'), workspace_id, event_id,
+                    )
                 yield f'id: {event_id}\ndata: {payload}\n\n'
             if await request.is_disconnected():
                 break
     except asyncio.CancelledError:
-        pass
+        disconnect_reason = 'cancelled'
+    except Exception as exc:  # pragma: no cover - defensive; never leak a 500 mid-stream
+        disconnect_reason = f'error:{type(exc).__name__}'
     finally:
         _SSE_CONNECTION_COUNT = max(0, _SSE_CONNECTION_COUNT - 1)
+        logger.info(
+            'event=%s_sse_disconnected workspace_id=%s duration_seconds=%.1f reason=%s',
+            stream_name, workspace_id, max(0.0, time.monotonic() - connected_at), disconnect_reason,
+        )
         with suppress(Exception):
             await iterator.aclose()
 
@@ -6295,12 +6352,9 @@ async def stream_alerts(request: Request):
             status_code=503,
         )
     last_event_id = request.headers.get('last-event-id', '').strip() or '$'
-    headers: dict[str, str] = {'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
-    trace_id = getattr(request.state, 'trace_id', None)
-    if trace_id:
-        headers['X-Trace-ID'] = trace_id
+    headers = _sse_response_headers(request)
     return StreamingResponse(
-        _sse_heartbeat_generator(workspace_id, last_event_id, request),
+        _sse_heartbeat_generator(workspace_id, last_event_id, request, stream_name='alert'),
         media_type='text/event-stream',
         headers=headers,
     )
@@ -6337,14 +6391,12 @@ async def stream_telemetry(request: Request):
             status_code=503,
         )
     last_event_id = request.headers.get('last-event-id', '').strip() or '$'
-    headers: dict[str, str] = {'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
-    trace_id = getattr(request.state, 'trace_id', None)
-    if trace_id:
-        headers['X-Trace-ID'] = trace_id
+    headers = _sse_response_headers(request)
     return StreamingResponse(
         _sse_heartbeat_generator(
             workspace_id, last_event_id, request,
             subscribe_factory=alert_stream.subscribe_telemetry,
+            stream_name='telemetry',
         ),
         media_type='text/event-stream',
         headers=headers,

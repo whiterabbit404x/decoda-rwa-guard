@@ -1649,6 +1649,49 @@ def run_live_tip_ingest(
     return stats
 
 
+def backfill_start_block() -> int | None:
+    """Historical backfill seed block (QUICKNODE_BACKFILL_START_BLOCK), or None.
+
+    The backfill lane is dormant until it has a checkpoint to resume from — with no
+    seed there is no historical work and the live lane covers the tip. Set this to
+    the missed-block incident's first block (or the stream's old
+    ``stream_started_at_block``) so the lower-priority lane walks the gap the live
+    lane deliberately skips. Accepts decimal or 0x-hex.
+    """
+    return _hex_or_int((getenv('QUICKNODE_BACKFILL_START_BLOCK') or '').strip() or None)
+
+
+def seed_backfill_checkpoint(connection: Any, *, start_block: int) -> bool:
+    """Seed the BACKFILL checkpoint at ``start_block`` iff it has none yet.
+
+    Idempotent and never regresses an already-advancing backfill cursor: it only
+    inserts when no ``quicknode:base:backfill`` row exists (``ON CONFLICT DO
+    NOTHING``). ``last_processed_block = start_block - 1`` so the very next
+    :func:`run_backfill_step` begins AT ``start_block``. Returns True when it seeded.
+    """
+    connection.execute(_QUICKNODE_STREAM_CHECKPOINTS_DDL)
+    existing = _load_stream_checkpoint(connection, stream_key=QUICKNODE_STREAM_KEY_BASE_BACKFILL)
+    if existing is not None:
+        return False
+    seed_prev = max(0, int(start_block) - 1)
+    connection.execute(
+        '''
+        INSERT INTO quicknode_stream_checkpoints (
+            stream_key, latest_stream_block, last_processed_block, missed_block_gap,
+            stream_started_at_block, webhook_received_at, updated_at
+        ) VALUES (%s, %s, %s, 0, %s, NOW(), NOW())
+        ON CONFLICT (stream_key) DO NOTHING
+        ''',
+        (QUICKNODE_STREAM_KEY_BASE_BACKFILL, seed_prev, seed_prev, start_block),
+    )
+    connection.commit()
+    logger.info(
+        'quicknode_backfill_lane stream_lane=backfill status=seeded start_block=%s checkpoint_block=%s',
+        start_block, seed_prev,
+    )
+    return True
+
+
 def run_backfill_step(
     connection: Any, *, rpc_client: Any, targets: list[dict[str, Any]],
     live_start_block: int | None = None, now: datetime | None = None,
