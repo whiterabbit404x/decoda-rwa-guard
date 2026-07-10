@@ -23,7 +23,17 @@ export type TelemetryStreamCallbacks = {
 };
 
 const SSE_PROXY_PATH = '/api/stream/telemetry';
-const RECONNECT_DELAY_MS = 3000;
+// Exponential reconnect backoff: base delay, doubling each failed attempt, capped.
+// Reset to the base as soon as a connection succeeds so a single blip does not push
+// the next retry to the ceiling. RECONNECT_DELAY_MS stays the base (referenced by
+// the telemetry-realtime-stream spec).
+const RECONNECT_DELAY_MS = 1000;
+const MAX_RECONNECT_DELAY_MS = 15000;
+
+export function reconnectDelayMs(attempt: number): number {
+  const exp = RECONNECT_DELAY_MS * 2 ** Math.max(0, attempt);
+  return Math.min(exp, MAX_RECONNECT_DELAY_MS);
+}
 
 export function parseSseLine(line: string): { field: string; value: string } | null {
   if (!line) return null;
@@ -49,6 +59,9 @@ export function connectTelemetryStream(
   const abortController = new AbortController();
   let closed = false;
   let lastEventId: string | undefined;
+  // Reset to 0 on every successful connect so backoff only grows across a run of
+  // consecutive failures, never permanently after one recovered blip.
+  let reconnectAttempt = 0;
 
   async function connectOnce(): Promise<boolean> {
     const requestHeaders: Record<string, string> = {
@@ -78,6 +91,7 @@ export function connectTelemetryStream(
       return true; // retry
     }
 
+    reconnectAttempt = 0;
     callbacks.onConnected();
     callbacks.onStatusChange('live');
 
@@ -153,8 +167,10 @@ export function connectTelemetryStream(
       const shouldRetry = await connectOnce();
       if (!shouldRetry || closed) break;
       callbacks.onStatusChange('reconnecting');
+      const delay = reconnectDelayMs(reconnectAttempt);
+      reconnectAttempt += 1;
       await new Promise<void>((resolve) => {
-        const t = setTimeout(resolve, RECONNECT_DELAY_MS);
+        const t = setTimeout(resolve, delay);
         abortController.signal.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
       });
     }

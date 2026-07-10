@@ -66,9 +66,11 @@ def run_one_tick() -> dict[str, object]:
     from services.api.app.quicknode_streams import (
         _load_all_base_wallet_targets,
         _make_base_rpc_client,
+        backfill_start_block,
         release_live_lane_lock,
         run_backfill_step,
         run_live_tip_ingest,
+        seed_backfill_checkpoint,
         try_acquire_live_lane_lock,
     )
 
@@ -85,6 +87,13 @@ def run_one_tick() -> dict[str, object]:
             if rpc_client is None:
                 logger.warning('quicknode_live_worker_tick status=base_rpc_not_configured')
                 return {'status': 'no_rpc'}
+            # Seed the historical backfill lane from QUICKNODE_BACKFILL_START_BLOCK on
+            # the first tick that finds it unseeded, so the lower-priority lane walks
+            # the missed range the live lane deliberately skips. Idempotent + never
+            # regresses an advancing cursor.
+            seed_block = backfill_start_block()
+            if seed_block is not None:
+                seed_backfill_checkpoint(connection, start_block=seed_block)
             targets = _load_all_base_wallet_targets(connection)
             live_stats = run_live_tip_ingest(
                 connection, rpc_client=rpc_client, targets=targets, now=now,
@@ -101,11 +110,16 @@ def run_one_tick() -> dict[str, object]:
 def main() -> int:
     logging.basicConfig(level=logging.INFO)
     if not _bool_env('QUICKNODE_LIVE_ENABLED', False):
-        logger.info(
-            'quicknode_live_disabled set QUICKNODE_LIVE_ENABLED=true to enable the '
-            'chain-tip lane (stable RPC polling remains the fallback)'
-        )
+        # Emit the disabled marker on EVERY idle tick (not just once at boot) so an
+        # operator can prove from a fresh Railway log tail that the live lane is
+        # deployed-but-off — the most likely reason QuickNode is not detecting at the
+        # chain tip in production — rather than seeing silence and guessing.
         while True:  # keep the container alive without burning RPC budget
+            logger.info(
+                'quicknode_live_disabled deployment_has_worker=true enabled=false '
+                'set QUICKNODE_LIVE_ENABLED=true to run the chain-tip lane '
+                '(stable RPC polling remains the fallback)'
+            )
             time.sleep(DEFAULT_IDLE_INTERVAL_SECONDS)
     interval = _poll_interval_seconds()
     logger.info('quicknode_live_worker_started poll_interval_seconds=%s', interval)

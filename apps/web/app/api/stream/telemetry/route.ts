@@ -86,7 +86,11 @@ export async function GET(request: Request) {
     status: 200,
     headers: {
       'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
+      // no-transform stops the Railway/Next.js edge from compressing or coalescing
+      // the event stream (which delays or closes it); X-Accel-Buffering disables
+      // nginx-style proxy buffering; keep-alive holds the upstream socket open.
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
     },
   });

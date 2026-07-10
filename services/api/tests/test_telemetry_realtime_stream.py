@@ -97,11 +97,15 @@ class _LaneConn:
             key, latest, last_processed = p[0], p[1], p[2]
             # _advance_lane_checkpoint uses a literal 0 gap -> 5 params
             # (key, latest, block, block, received_at); the gap detector passes gap
-            # as a param -> 6 params (key, latest, last_processed, gap, started, at).
+            # as a param -> 6 params (key, latest, last_processed, gap, started, at);
+            # seed_backfill_checkpoint inlines NOW() -> 4 params
+            # (key, latest, last_processed, started).
             if len(p) == 6:
                 started, received_at = p[4], p[5]
-            else:
+            elif len(p) == 5:
                 started, received_at = p[3], p[4]
+            else:
+                started, received_at = p[3], None
             prev = self.checkpoints.get(key) or {}
             self.checkpoints[key] = {
                 'stream_key': key,
@@ -556,3 +560,160 @@ def test_build_lane_status_reports_live_from_checkpoints():
     assert status['lag_blocks'] == 2
     assert status['chain_head'] == 1000
     assert status['live_checkpoint_block'] == 998
+
+
+# ---------------------------------------------------------------------------
+# SSE heartbeat cadence stays inside the 15–25s proxy-idle window (Problem B).
+# ---------------------------------------------------------------------------
+
+def test_heartbeat_interval_default_is_15s(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv('SSE_HEARTBEAT_INTERVAL_SECONDS', raising=False)
+    assert alert_stream.heartbeat_block_ms() == 15_000
+
+
+def test_heartbeat_interval_env_override_is_clamped(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv('SSE_HEARTBEAT_INTERVAL_SECONDS', '20')
+    assert alert_stream.heartbeat_block_ms() == 20_000
+    # Never above the 25s proxy-idle ceiling, never a 0/negative busy-loop.
+    monkeypatch.setenv('SSE_HEARTBEAT_INTERVAL_SECONDS', '600')
+    assert alert_stream.heartbeat_block_ms() == 25_000
+    monkeypatch.setenv('SSE_HEARTBEAT_INTERVAL_SECONDS', '0')
+    assert alert_stream.heartbeat_block_ms() == 5_000
+
+
+# ---------------------------------------------------------------------------
+# Redis publication structured logs (task "Redis publication requirements").
+# ---------------------------------------------------------------------------
+
+def test_publish_emits_persisted_and_redis_publish_success_logs(
+    monkeypatch: pytest.MonkeyPatch, caplog
+):
+    monkeypatch.setenv('REDIS_URL', 'redis://localhost:6379/0')
+    event = tr.build_telemetry_stream_event(
+        telemetry_id='t-99', workspace_id='w1', target_id='tg1',
+        event_type='wallet_transfer_detected', detected_by='quicknode_stream',
+        tx_hash='0xabc', from_address='0xfrom', to_address='0xto', amount=1,
+        chain_id=8453, block_number=1, observed_at='2026-07-10T20:55:31Z',
+        evidence_source='live',
+    )
+    with caplog.at_level('INFO'):
+        with patch.object(alert_stream, '_get_sync_client', lambda: _FakeRedis()):
+            assert tr.publish_telemetry_event('w1', event) is True
+    text = caplog.text
+    assert 'event=telemetry_persisted' in text and 'committed=true' in text
+    assert 'event=telemetry_redis_publish' in text
+    assert 'success=true' in text
+    assert 'redis_event_id=' in text and 'telemetry_id=t-99' in text
+
+
+def test_publish_failure_emits_redis_publish_success_false(
+    monkeypatch: pytest.MonkeyPatch, caplog
+):
+    monkeypatch.setenv('REDIS_URL', 'redis://localhost:6379/0')
+    with caplog.at_level('WARNING'):
+        with patch.object(alert_stream, '_get_sync_client', lambda: _FakeRedis(fail=True)):
+            assert tr.publish_telemetry_event('w1', {'telemetry_id': 't-1', 'target_id': 'tg1'}) is False
+    assert 'event=telemetry_redis_publish' in caplog.text
+    assert 'success=false' in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# SSE generator: immediate connect preamble + heartbeat + delivery logging.
+# ---------------------------------------------------------------------------
+
+class _FakeSseRequest:
+    """Minimal Request stand-in: is_disconnected() stays False for the generator."""
+
+    def __init__(self):
+        self.state = type('S', (), {'trace_id': None})()
+
+    async def is_disconnected(self):
+        return False
+
+
+def _drive_sse(events: list[tuple], *, stream_name: str) -> list[str]:
+    from services.api.app import main
+
+    async def factory(workspace_id, last_event_id='$'):
+        for item in events:
+            yield item
+
+    async def scenario() -> list[str]:
+        out: list[str] = []
+        gen = main._sse_heartbeat_generator(
+            'ws-1', '$', _FakeSseRequest(), subscribe_factory=factory, stream_name=stream_name,
+        )
+        async for chunk in gen:
+            out.append(chunk)
+        return out
+
+    import asyncio
+    return asyncio.run(scenario())
+
+
+def test_sse_generator_writes_immediate_connect_preamble_then_heartbeat():
+    chunks = _drive_sse([(None, None)], stream_name='telemetry')
+    # First byte the browser sees proves liveness + flushes proxy buffers.
+    assert chunks[0] == 'retry: 3000\n: connected\n\n'
+    assert ': heartbeat\n\n' in chunks
+
+
+def test_sse_generator_emits_event_and_delivery_log(caplog):
+    event = {'type': 'telemetry', 'telemetry_id': 't-77', 'target_id': 'tg1'}
+    with caplog.at_level('INFO'):
+        chunks = _drive_sse([('9-0', event)], stream_name='telemetry')
+    data_frame = [c for c in chunks if c.startswith('id: 9-0')]
+    assert data_frame and '"telemetry_id":"t-77"' in data_frame[0]
+    assert 'event=telemetry_sse_connected' in caplog.text
+    assert 'event=telemetry_sse_delivery' in caplog.text and 'telemetry_id=t-77' in caplog.text
+    assert 'event=telemetry_sse_disconnected' in caplog.text
+
+
+def test_sse_generator_alerts_do_not_emit_telemetry_delivery_log(caplog):
+    with caplog.at_level('INFO'):
+        chunks = _drive_sse([('1-0', {'type': 'alert', 'id': 'a1'})], stream_name='alert')
+    assert any(c.startswith('id: 1-0') for c in chunks)
+    # Only telemetry connections emit the per-row telemetry_sse_delivery line.
+    assert 'event=telemetry_sse_delivery' not in caplog.text
+    assert 'event=alert_sse_connected' in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Historical backfill lane seeding (task requirement 9 support).
+# ---------------------------------------------------------------------------
+
+def test_backfill_start_block_parses_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv('QUICKNODE_BACKFILL_START_BLOCK', raising=False)
+    assert qn.backfill_start_block() is None
+    monkeypatch.setenv('QUICKNODE_BACKFILL_START_BLOCK', '48365342')
+    assert qn.backfill_start_block() == 48365342
+    monkeypatch.setenv('QUICKNODE_BACKFILL_START_BLOCK', '0x2e2c4de')
+    assert qn.backfill_start_block() == 0x2e2c4de
+
+
+def test_seed_backfill_checkpoint_seeds_when_absent():
+    conn = _LaneConn()
+    assert qn.seed_backfill_checkpoint(conn, start_block=48365342) is True
+    cp = conn.checkpoints[BACKFILL_KEY]
+    # Next backfill step resumes AT start_block (checkpoint is start_block - 1).
+    assert cp['last_processed_block'] == 48365341
+    assert cp['stream_started_at_block'] == 48365342
+
+
+def test_seed_backfill_checkpoint_is_idempotent_and_never_regresses():
+    conn = _LaneConn()
+    conn.checkpoints[BACKFILL_KEY] = {
+        'stream_key': BACKFILL_KEY, 'latest_stream_block': 48400000,
+        'last_processed_block': 48399999, 'stream_started_at_block': 48365342,
+        'webhook_received_at': _now(),
+    }
+    assert qn.seed_backfill_checkpoint(conn, start_block=48365342) is False
+    # An advancing backfill cursor is untouched by a re-seed.
+    assert conn.checkpoints[BACKFILL_KEY]['last_processed_block'] == 48399999
+
+
+def test_seed_does_not_touch_live_checkpoint():
+    conn = _LaneConn()
+    qn.seed_backfill_checkpoint(conn, start_block=100)
+    assert LIVE_KEY not in conn.checkpoints
+    assert BACKFILL_KEY in conn.checkpoints

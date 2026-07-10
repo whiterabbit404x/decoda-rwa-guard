@@ -39,6 +39,17 @@ test('telemetry stream client reconnects with backoff and resumes with Last-Even
   expect(streamClientSource).toContain("requestHeaders['Last-Event-ID'] = lastEventId");
 });
 
+test('telemetry stream client uses EXPONENTIAL backoff, reset on connect', () => {
+  // Delay grows across consecutive failures and is capped, not a fixed interval.
+  expect(streamClientSource).toContain('MAX_RECONNECT_DELAY_MS');
+  expect(streamClientSource).toContain('export function reconnectDelayMs');
+  expect(streamClientSource).toContain('Math.min(exp, MAX_RECONNECT_DELAY_MS)');
+  expect(streamClientSource).toContain('reconnectDelayMs(reconnectAttempt)');
+  // A successful connect resets the attempt counter so one blip never pins the
+  // next retry at the ceiling.
+  expect(streamClientSource).toContain('reconnectAttempt = 0;');
+});
+
 // --- Proxy route ----------------------------------------------------------------
 
 test('telemetry SSE proxy route forwards auth + workspace and disables caching', () => {
@@ -49,6 +60,14 @@ test('telemetry SSE proxy route forwards auth + workspace and disables caching',
   expect(proxyRouteSource).toContain("'x-workspace-id'");
   expect(proxyRouteSource).toContain("'last-event-id'");
   expect(proxyRouteSource).toContain("'Content-Type': 'text/event-stream'");
+});
+
+test('telemetry SSE proxy disables proxy buffering/compression on the stream', () => {
+  // no-transform stops Railway/Next.js edge from compressing/coalescing the stream;
+  // X-Accel-Buffering + keep-alive keep the socket open and unbuffered.
+  expect(proxyRouteSource).toContain("'Cache-Control': 'no-cache, no-transform'");
+  expect(proxyRouteSource).toContain("Connection: 'keep-alive'");
+  expect(proxyRouteSource).toContain("'X-Accel-Buffering': 'no'");
 });
 
 // --- Page subscribes and prepends ----------------------------------------------
@@ -115,6 +134,22 @@ test('the page keeps a periodic HTTP fetch as the fallback and never re-sorts', 
   expect(fetchSection).toContain("cache: 'no-store'");
   const rowSection = telemetryPageSource.slice(telemetryPageSource.indexOf('filteredRows.map'));
   expect(rowSection).not.toContain('.sort(');
+});
+
+test('HTTP refresh fallback runs ONLY while the SSE stream is not live', () => {
+  // The label "HTTP refresh fallback active" must be truthful: a real periodic
+  // refetch runs while disconnected (surfacing a row persisted during an SSE
+  // outage — the production symptom) and is cleared once the stream is live so a
+  // healthy connection does not aggressively poll.
+  expect(telemetryPageSource).toContain('HTTP_FALLBACK_POLL_MS');
+  const fallbackEffect = telemetryPageSource.slice(
+    telemetryPageSource.indexOf('Periodic HTTP refresh fallback'),
+  );
+  expect(fallbackEffect).toContain("if (streamStatus === 'live') return;");
+  expect(fallbackEffect).toContain('setInterval(');
+  expect(fallbackEffect).toContain('fetchTelemetryRef.current({ silent: true })');
+  expect(fallbackEffect).toContain('clearInterval(timer)');
+  expect(fallbackEffect).toContain('}, [targetId, streamStatus]);');
 });
 
 test('real-time status is truthful and does not claim paused while connected', () => {
