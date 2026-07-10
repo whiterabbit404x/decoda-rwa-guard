@@ -516,3 +516,165 @@ def test_invalid_uuid_via_http_returns_400():
     client = TestClient(api_main.app)
     response = client.get('/monitoring/targets/not-a-uuid/telemetry')
     assert response.status_code == 400
+
+
+# --- Deterministic newest-first ordering (requirements 2, 3, 4) ---
+
+# The single deterministic ORDER BY that every telemetry code path must share so the
+# newest observed event is always row 1 and equal-timestamp rows keep a stable order
+# across pages (fixes the reported bug where a newer stable-polling native_transfer
+# sorted BELOW older QuickNode wallet_transfer_detected rows).
+_EXPECTED_ORDER_FRAGMENTS = [
+    'te.observed_at DESC NULLS LAST',
+    'te.ingested_at DESC NULLS LAST',
+    'te.id DESC',
+]
+
+
+def _data_sql_for(**kwargs: Any) -> str:
+    """Return the LAST SQL executed by list_target_telemetry (the telemetry data
+    query) for the given call kwargs."""
+    target_id = str(uuid.uuid4())
+    ws_id = str(uuid.uuid4())
+    conn = CapturingConn(count=0)
+    _run_telemetry(target_id, ws_id, conn, **kwargs)
+    return conn.executed_sqls[-1]
+
+
+def _order_tail(sql: str) -> str:
+    """Normalize and return everything from the OUTER ORDER BY onward (the LATERAL
+    subquery's inner ORDER BY is earlier, so rindex isolates the outer clause)."""
+    idx = sql.upper().rindex('ORDER BY')
+    return ' '.join(sql[idx:].split())
+
+
+def test_default_order_is_deterministic_newest_first():
+    data_sql = _data_sql_for()
+    for frag in _EXPECTED_ORDER_FRAGMENTS:
+        assert frag in data_sql, f'default data query missing order fragment {frag!r}'
+
+
+def test_default_order_drops_wallet_transfer_event_type_tiering():
+    # The old ordering tiered wallet_transfer_detected first, which pushed a newer
+    # native_transfer BELOW older QuickNode rows. That CASE tiering must be gone so
+    # ordering is purely recency-based.
+    data_sql = _data_sql_for()
+    assert "CASE WHEN te.event_type = 'wallet_transfer_detected'" not in data_sql
+
+
+def test_order_clause_applied_to_every_code_path():
+    # Default list, tx-hash search, wallet-transfer / rpc-polling / alerts-only /
+    # exact event_type filters must ALL apply the same deterministic order so rows
+    # never reorder between the unfiltered list and any filter/search (requirement 3).
+    paths: list[dict[str, Any]] = [
+        {},
+        {'q': '0xd15be56fb89bf3f8320a762e99d76324bba24f5420899367307df14ae2bc38e5'},
+        {'event_type_filter': 'wallet_transfers'},
+        {'event_type_filter': 'rpc_polling'},
+        {'event_type_filter': 'alerts_only'},
+        {'event_type_filter': 'wallet_transfer_detected'},
+    ]
+    for kwargs in paths:
+        data_sql = _data_sql_for(**kwargs)
+        for frag in _EXPECTED_ORDER_FRAGMENTS:
+            assert frag in data_sql, f'missing {frag!r} for path {kwargs}'
+
+
+def test_search_and_unfiltered_lists_use_identical_order():
+    # Identical ORDER BY tails guarantee a row searched by tx_hash sorts into the same
+    # position it holds in the unfiltered list (requirement 3 / acceptance criterion:
+    # searchable AND newest-first in the "All" table).
+    default_tail = _order_tail(_data_sql_for())
+    search_tail = _order_tail(_data_sql_for(q='0xd15be5'))
+    assert default_tail == search_tail
+
+
+def test_pagination_order_precedes_limit_and_has_unique_tiebreaker():
+    # A unique final tie-breaker (id) plus ORDER BY before LIMIT/OFFSET guarantees rows
+    # cannot swap between pages when observed_at/ingested_at collide (requirement 4).
+    data_sql = _data_sql_for(limit=50, offset=50)
+    assert 'te.id DESC' in data_sql
+    order_idx = data_sql.upper().rindex('ORDER BY')
+    limit_idx = data_sql.upper().rindex('LIMIT')
+    assert order_idx < limit_idx
+
+
+class _RealRowResult:
+    """Result whose fetchone/fetchall return real dicts (not MagicMocks), so the
+    normalization layer sees genuine field values and row order can be asserted."""
+
+    def __init__(self, one: dict | None, many: list[dict]):
+        self._one = one
+        self._many = many
+
+    def fetchone(self):
+        return self._one
+
+    def fetchall(self):
+        return list(self._many)
+
+
+class _OrderingConn:
+    """Fake connection that returns two REAL telemetry rows (newest-first, as the DB's
+    deterministic ORDER BY would) for the data query and safe stubs for the auxiliary
+    reads, so the test verifies the Python layer preserves DB order without re-tiering."""
+
+    def __init__(self, data_rows: list[dict], count: int):
+        self._data_rows = data_rows
+        self._count = count
+        self.executed_sqls: list[str] = []
+
+    def execute(self, sql: str, params: Any = None):
+        self.executed_sqls.append(sql)
+        q = ' '.join((sql or '').split()).lower()
+        if 'count(*) as cnt' in q:
+            return _RealRowResult({'cnt': self._count}, [])
+        if 'last_stable_poll_at' in q:
+            return _RealRowResult(
+                {'last_stable_poll_at': None, 'last_realtime_event_at': None, 'last_stream_event_at': None},
+                [],
+            )
+        if 'from quicknode_stream_checkpoints' in q:
+            return _RealRowResult(None, [])
+        # The telemetry data query is the SELECT te.id ... FROM telemetry_events te.
+        if 'from telemetry_events te' in q and 'te.id' in q:
+            return _RealRowResult(None, self._data_rows)
+        # _target_row (FROM targets), watcher_state, DDL, everything else → empty.
+        return _RealRowResult(None, [])
+
+
+def test_python_layer_preserves_db_order_no_event_type_reordering():
+    # The DB returns newest-first; the Python normalization/dedupe layer must NOT
+    # re-tier by event_type. A newer stable-polling native_transfer (July 10) must stay
+    # ABOVE an older QuickNode wallet_transfer_detected (July 7) exactly as returned —
+    # this is the end-to-end guarantee behind the acceptance criterion.
+    target_id = str(uuid.uuid4())
+    ws_id = str(uuid.uuid4())
+    newer_native = {
+        'id': str(uuid.uuid4()), 'workspace_id': ws_id, 'target_id': target_id,
+        'provider_type': 'evm_rpc', 'source_type': 'native_transfer',
+        'evidence_source': 'live', 'observed_at': '2026-07-10T10:00:00Z',
+        'ingested_at': '2026-07-10T10:00:01Z',
+        'payload_json': {
+            'tx_hash': '0xd15be56fb89bf3f8320a762e99d76324bba24f5420899367307df14ae2bc38e5',
+            'block_number': 2000, 'detected_by': 'stable_rpc_polling',
+        },
+        'chain_network': 'base', 'receipt_block_number': None,
+    }
+    older_wallet = {
+        'id': str(uuid.uuid4()), 'workspace_id': ws_id, 'target_id': target_id,
+        'provider_type': 'evm_rpc', 'source_type': 'wallet_transfer_detected',
+        'evidence_source': 'live', 'observed_at': '2026-07-07T10:00:00Z',
+        'ingested_at': '2026-07-07T10:00:01Z',
+        'payload_json': {'tx_hash': '0xolder07', 'block_number': 1000, 'detected_by': 'quicknode_stream'},
+        'chain_network': 'base', 'receipt_block_number': None,
+    }
+    # DB returns newest-first (July 10 native_transfer, then July 7 wallet_transfer).
+    conn = _OrderingConn(data_rows=[newer_native, older_wallet], count=2)
+    result = _run_telemetry(target_id, ws_id, conn)
+
+    ids = [r['id'] for r in result['telemetry']]
+    assert ids == [newer_native['id'], older_wallet['id']]
+    assert result['telemetry'][0]['tx_hash'] == (
+        '0xd15be56fb89bf3f8320a762e99d76324bba24f5420899367307df14ae2bc38e5'
+    )

@@ -80,3 +80,26 @@ test('backend names QuickNode Stream as its own detection worker and reads the c
   expect(quicknodeStreamsPy).toContain('def load_base_stream_checkpoint');
   expect(monitoringRunnerPy).toContain('load_base_stream_checkpoint');
 });
+
+// --- Requirement 7: a stale / non-matching stream is never shown as "Active" -------
+
+test('QuickNode Stream renders receiving and stale states, not just active', () => {
+  // A green "Active" is reserved for a fresh MATCHED stream event; the two non-green
+  // states ('receiving' — blocks flow but no matched transfer; 'stale' — stream
+  // stopped) must both be rendered so the header never over-claims.
+  expect(telemetryPageSource).toContain("quicknodeStreamState === 'receiving'");
+  expect(telemetryPageSource).toContain("quicknodeStreamState === 'stale'");
+  expect(telemetryPageSource).toContain('Receiving blocks — no recent matched transfer');
+  expect(telemetryPageSource).toContain('Stale — stream not delivering');
+});
+
+test('backend derives active only from a fresh MATCHED stream event, else receiving / stale', () => {
+  // 'active' requires a fresh per-target matched stream event; a fresh GLOBAL webhook
+  // checkpoint alone yields 'receiving' (blocks flowing, no matched transfer for this
+  // target) so a target served only by Stable RPC Polling never shows a green Active.
+  expect(monitoringRunnerPy).toContain('_stream_event_fresh = _stream_fact_fresh(last_stream_event_at)');
+  expect(monitoringRunnerPy).toContain('_stream_checkpoint_fresh = _stream_fact_fresh(quicknode_stream_checkpoint_at)');
+  expect(monitoringRunnerPy).toContain("quicknode_stream_state = 'active'");
+  expect(monitoringRunnerPy).toContain("quicknode_stream_state = 'receiving'");
+  expect(monitoringRunnerPy).toContain("quicknode_stream_state = 'stale'");
+});
