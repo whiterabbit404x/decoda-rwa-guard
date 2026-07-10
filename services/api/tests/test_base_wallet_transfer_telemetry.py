@@ -1253,9 +1253,10 @@ def test_list_target_telemetry_quicknode_stream_active_is_separated(monkeypatch)
     assert result['last_realtime_event_at'] is None
 
 
-def test_list_target_telemetry_quicknode_stream_idle_when_checkpoint_stale(monkeypatch):
+def test_list_target_telemetry_quicknode_stream_stale_when_checkpoint_stale(monkeypatch):
     """A stale checkpoint (no fresh webhook, no fresh stream event) fails closed to
-    'idle' — never a false 'active'."""
+    'stale' — never a false 'active' — so the header renders "Stale — stream not
+    delivering" (degraded), matching requirement 7."""
     from datetime import datetime, timedelta, timezone
 
     stale = datetime.now(timezone.utc) - timedelta(hours=2)
@@ -1271,10 +1272,39 @@ def test_list_target_telemetry_quicknode_stream_idle_when_checkpoint_stale(monke
         monkeypatch, stable_at=None, stream_event_at=None, checkpoint_row=checkpoint,
     )
 
-    assert result['quicknode_stream_state'] == 'idle'
+    assert result['quicknode_stream_state'] == 'stale'
     assert result['last_stream_block'] == 500
     # Stable polling has no recorded poll here, so it is not claimed active.
     assert result['stable_polling_active'] is False
+
+
+def test_list_target_telemetry_quicknode_stream_receiving_not_active_without_matched_event(monkeypatch):
+    """The reported bug: the GLOBAL stream checkpoint is FRESH (blocks flowing) but no
+    matched stream event has arrived for THIS target — the new transfer was caught by
+    Stable RPC Polling instead. The stream must be reported 'receiving' (blocks flow,
+    no recent matched transfer), NOT a green 'active' (requirement 7: do not falsely
+    attribute Stable RPC Polling events to QuickNode)."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    checkpoint = {
+        'stream_key': 'base',
+        'latest_stream_block': 22222222,
+        'last_processed_block': 22222222,
+        'missed_block_gap': 0,
+        'stream_started_at_block': 22000000,
+        'webhook_received_at': now,  # global stream is delivering blocks right now
+    }
+    # stream_event_at is None: no QuickNode-detected telemetry event for this target.
+    result = _run_list_target_telemetry_with_stream(
+        monkeypatch, stable_at=now, stream_event_at=None, checkpoint_row=checkpoint,
+    )
+
+    assert result['quicknode_stream_state'] == 'receiving'
+    assert result['quicknode_stream_state'] != 'active'
+    assert result['last_stream_block'] == 22222222
+    # Stable RPC Polling is the actual detector here and stays truthfully active.
+    assert result['stable_polling_active'] is True
 
 
 def test_list_target_telemetry_quicknode_stream_none_without_activity(monkeypatch):

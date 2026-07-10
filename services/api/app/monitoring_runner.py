@@ -10913,10 +10913,22 @@ def list_target_telemetry(
                 workspace_id, target_id, exc_info=True,
             )
 
-        # Fail-closed state: 'active' ONLY when a stream fact is FRESH (a checkpoint
-        # webhook or a matched stream event within the stale window); 'idle' when a
-        # stream has been observed but nothing is fresh; None when no stream activity
-        # has ever been seen (never fabricate "Active" without proof).
+        # Fail-closed multi-state model so the header never claims the QuickNode Stream
+        # is the active detector for THIS target when it is not (CLAUDE.md: no fallback
+        # data shown as live; do not falsely attribute Stable RPC Polling events to
+        # QuickNode). The global webhook checkpoint advances on EVERY delivered block —
+        # even batches that matched no wallet transfer for this workspace — so its
+        # freshness alone must NOT paint a green "Active": that is exactly how a target
+        # served only by Stable RPC Polling ended up showing "QuickNode Stream: Active".
+        #   'active'    — a QuickNode-detected telemetry event for THIS target is fresh
+        #                 (proof the stream is actually detecting this target's transfers).
+        #   'receiving' — the GLOBAL stream is still delivering blocks (webhook
+        #                 checkpoint fresh) but NO matched stream event has arrived for
+        #                 this target recently; blocks flow, yet this target's transfers
+        #                 are being caught elsewhere — never a green "Active".
+        #   'stale'     — a stream fact exists but the freshest one is older than the
+        #                 stale window: the stream has stopped delivering → degraded.
+        #   None        — no stream activity has ever been observed for this stream.
         def _stream_fact_fresh(ts_iso: str | None) -> bool:
             if not ts_iso:
                 return False
@@ -10928,10 +10940,14 @@ def list_target_telemetry(
             except (TypeError, ValueError):
                 return False
 
-        if _stream_fact_fresh(quicknode_stream_checkpoint_at) or _stream_fact_fresh(last_stream_event_at):
+        _stream_event_fresh = _stream_fact_fresh(last_stream_event_at)
+        _stream_checkpoint_fresh = _stream_fact_fresh(quicknode_stream_checkpoint_at)
+        if _stream_event_fresh:
             quicknode_stream_state = 'active'
+        elif _stream_checkpoint_fresh:
+            quicknode_stream_state = 'receiving'
         elif quicknode_stream_checkpoint_at or last_stream_event_at or last_stream_block is not None:
-            quicknode_stream_state = 'idle'
+            quicknode_stream_state = 'stale'
         else:
             quicknode_stream_state = None
 
@@ -11002,11 +11018,23 @@ def list_target_telemetry(
             WHERE te.workspace_id = %s::uuid
               AND te.target_id = %s::uuid
         '''
-        # Wallet-transfer rows always surface first; within each tier sort by recency.
+        # Deterministic newest-first ordering shared by EVERY telemetry code path
+        # (default list, tx-hash / wallet / block-number search, wallet-transfer,
+        # rpc-polling, alerts-only and live-evidence filters, and pagination) — the
+        # single _order string is appended to the data query only, so no path can
+        # drift. observed_at is the canonical recency fact; ingested_at (row write
+        # time) then id break ties so equal-timestamp rows keep a stable order across
+        # pages and never move/duplicate/disappear (requirement 4). Crucially this
+        # drops the old "wallet_transfer_detected first" event_type tiering, which
+        # pushed a newer stable-polling native_transfer BELOW older QuickNode
+        # wallet_transfer_detected rows (the reported bug). NULLS LAST is defensive:
+        # observed_at is NOT NULL in schema, but under plain DESC a null would float
+        # to the top, which must never outrank a real newest event.
         _order = '''
             ORDER BY
-                CASE WHEN te.event_type = 'wallet_transfer_detected' THEN 0 ELSE 1 END,
-                te.observed_at DESC
+                te.observed_at DESC NULLS LAST,
+                te.ingested_at DESC NULLS LAST,
+                te.id DESC
         '''
 
         # Build additive WHERE clauses so filters compose cleanly.
@@ -11236,6 +11264,39 @@ def list_target_telemetry(
                 top_row_detection_debug['ingestion_source'] or 'none',
                 top_row_detection_debug['ingestion_method'] or 'none',
             )
+
+        # Structured ordering + cache/stream diagnostic (requirement 8): one line that
+        # proves the newest observed event is row 1, names the deterministic ORDER BY,
+        # and records the QuickNode last-delivery facts + derived state so a "why is the
+        # new tx not on top / why is QuickNode green" question is answerable from logs.
+        _top_for_order = telemetry[0] if telemetry else {}
+        logger.info(
+            'telemetry_list_ordering_debug target_id=%s workspace_id=%s q=%s event_type_filter=%s '
+            'order=observed_at_desc_nulls_last,ingested_at_desc,id_desc '
+            'returned_rows=%s total_count=%s offset=%s limit=%s '
+            'top_telemetry_id=%s top_tx_hash=%s top_detected_by=%s top_observed_at=%s top_ingested_at=%s '
+            'quicknode_stream_state=%s quicknode_last_stream_event_at=%s quicknode_checkpoint_at=%s '
+            'quicknode_last_stream_block=%s last_stable_poll_at=%s stable_polling_active=%s',
+            target_id,
+            workspace_id,
+            _q or 'none',
+            _etf or 'none',
+            len(telemetry),
+            total_count,
+            _effective_offset,
+            _effective_limit,
+            _top_for_order.get('id') or 'none',
+            _top_for_order.get('tx_hash') or 'none',
+            _top_for_order.get('detected_by') or 'none',
+            _top_for_order.get('observed_at') or 'none',
+            _top_for_order.get('ingested_at') or 'none',
+            quicknode_stream_state or 'none',
+            last_stream_event_at or 'none',
+            quicknode_stream_checkpoint_at or 'none',
+            last_stream_block if last_stream_block is not None else 'none',
+            last_stable_poll_at or 'none',
+            stable_polling_active,
+        )
 
         result: dict[str, Any] = {
             'telemetry': telemetry,

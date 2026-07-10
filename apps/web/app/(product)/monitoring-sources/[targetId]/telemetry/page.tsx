@@ -986,16 +986,20 @@ export default function TargetTelemetryPage() {
                   color:
                     quicknodeStreamState === 'active'
                       ? 'var(--success-fg)'
-                      : quicknodeStreamState === 'idle'
-                        ? 'var(--warning-fg, #d97706)'
-                        : 'var(--text-muted)',
+                      : quicknodeStreamState === 'receiving'
+                        ? 'var(--info-fg)'
+                        : quicknodeStreamState === 'stale'
+                          ? 'var(--warning-fg, #d97706)'
+                          : 'var(--text-muted)',
                 }}
               >
                 {quicknodeStreamState === 'active'
                   ? 'Active'
-                  : quicknodeStreamState === 'idle'
-                    ? 'Idle — no recent stream blocks'
-                    : 'No stream activity'}
+                  : quicknodeStreamState === 'receiving'
+                    ? 'Receiving blocks — no recent matched transfer'
+                    : quicknodeStreamState === 'stale'
+                      ? 'Stale — stream not delivering'
+                      : 'No stream activity'}
               </span>
             </span>
             <span style={{ display: 'inline-flex', flexDirection: 'column', gap: '0.1rem' }}>
