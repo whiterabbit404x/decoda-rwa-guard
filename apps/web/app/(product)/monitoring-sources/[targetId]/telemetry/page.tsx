@@ -1,11 +1,12 @@
 'use client';
 
-import { Fragment, useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 
 import { TableShell } from '../../../../components/ui-primitives';
 import { usePilotAuth } from '../../../../pilot-auth-context';
+import { connectTelemetryStream, type TelemetryStreamStatus } from '../../../../telemetry-stream-client';
 import {
   REALTIME_DETECTED_BY,
   deriveDetectedBy,
@@ -769,6 +770,115 @@ function buildTelemetryUrl(
   return `${base}?${params.toString()}`;
 }
 
+// --- Real-time telemetry (SSE) helpers -------------------------------------
+// The /stream/telemetry SSE pushes a compact event per newly-persisted row (see
+// services/api/app/telemetry_realtime.build_telemetry_stream_event). These map it
+// into the same TelemetryRow shape the table already renders, and decide whether a
+// live event belongs in the current view (so an active search/filter is respected).
+
+const WALLET_TRANSFER_EVENT_TYPES = new Set(['wallet_transfer_detected', 'native_transfer']);
+
+type TelemetryStreamPayload = {
+  type?: string;
+  telemetry_id?: string;
+  target_id?: string;
+  workspace_id?: string;
+  event_type?: string;
+  detected_by?: string | null;
+  tx_hash?: string | null;
+  from?: string | null;
+  to?: string | null;
+  amount?: string | null;
+  chain_id?: string | null;
+  block_number?: number | null;
+  observed_at?: string | null;
+  ingested_at?: string | null;
+  evidence_source?: string | null;
+};
+
+// Deterministic dedupe key so the same transfer seen by two paths (or an SSE event
+// that also arrives via the next HTTP refetch) collapses to one row.
+function liveRowKey(row: TelemetryRow): string {
+  const payload = row.payload_json ?? {};
+  const tx = String((payload as Record<string, unknown>).tx_hash ?? '').toLowerCase();
+  if (tx) return `${row.chain_id ?? ''}:${tx}:${(row.source_type ?? '').toLowerCase()}`;
+  return `id:${row.id}`;
+}
+
+// Turn a validated SSE telemetry envelope into a table row, or null if it is not a
+// telemetry event for this target. Cross-target / cross-workspace / non-telemetry
+// envelopes are rejected here so they never reach the table.
+function normalizeLiveTelemetry(payload: unknown, targetId: string): TelemetryRow | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const p = payload as TelemetryStreamPayload;
+  if (p.type !== 'telemetry') return null;
+  if (!p.telemetry_id || String(p.target_id ?? '') !== targetId) return null;
+  const eventType = String(p.event_type ?? 'wallet_transfer_detected');
+  return {
+    id: String(p.telemetry_id),
+    workspace_id: p.workspace_id ?? null,
+    target_id: p.target_id ?? null,
+    provider_type: p.detected_by ?? null,
+    source_type: eventType,
+    detected_by: p.detected_by ?? null,
+    evidence_source: p.evidence_source ?? null,
+    chain_id: p.chain_id ?? null,
+    block_number: typeof p.block_number === 'number' ? p.block_number : null,
+    observed_at: p.observed_at ?? null,
+    ingested_at: p.ingested_at ?? null,
+    payload_json: {
+      tx_hash: p.tx_hash ?? null,
+      from: p.from ?? null,
+      to: p.to ?? null,
+      amount: p.amount ?? null,
+      chain_id: p.chain_id ?? null,
+      block_number: p.block_number ?? null,
+      detected_by: p.detected_by ?? null,
+      event_type: eventType,
+      source_type: eventType,
+      observed_at: p.observed_at ?? null,
+    },
+  };
+}
+
+function liveRowMatchesQuery(row: TelemetryRow, q: string): boolean {
+  const trimmed = q.trim().toLowerCase();
+  if (!trimmed) return true;
+  const payload = (row.payload_json ?? {}) as Record<string, unknown>;
+  const haystacks = [
+    String(payload.tx_hash ?? ''),
+    String(payload.from ?? ''),
+    String(payload.to ?? ''),
+    String(row.block_number ?? ''),
+    String(row.source_type ?? ''),
+    String(row.id ?? ''),
+  ].map((s) => s.toLowerCase());
+  return haystacks.some((h) => h.includes(trimmed));
+}
+
+function liveRowMatchesQuickFilter(row: TelemetryRow, quickFilter: QuickFilter): boolean {
+  const eventType = String(row.source_type ?? '').toLowerCase();
+  switch (quickFilter) {
+    case 'wallet_transfers':
+      return WALLET_TRANSFER_EVENT_TYPES.has(eventType);
+    case 'rpc_polling':
+      return eventType === 'rpc_polling';
+    case 'live_evidence_only':
+      return row.evidence_source === 'live';
+    case 'alerts_only':
+      // Alert linkage is a server-side join we cannot evaluate client-side; the
+      // recovery refetch surfaces the row once its alert exists.
+      return false;
+    case 'all':
+    default:
+      return true;
+  }
+}
+
+function liveRowMatchesView(row: TelemetryRow, q: string, quickFilter: QuickFilter): boolean {
+  return liveRowMatchesQuickFilter(row, quickFilter) && liveRowMatchesQuery(row, q);
+}
+
 export default function TargetTelemetryPage() {
   const params = useParams();
   const targetId = typeof params?.targetId === 'string' ? params.targetId : '';
@@ -800,6 +910,15 @@ export default function TargetTelemetryPage() {
   const [quicknodeStreamState, setQuicknodeStreamState] = useState<string | null>(null);
   const [lastStreamEventAt, setLastStreamEventAt] = useState<string | null>(null);
   const [lastStreamBlock, setLastStreamBlock] = useState<number | null>(null);
+  // QuickNode LIVE chain-tip lane facts (distinct from the webhook stream checkpoint):
+  // live / catching_up / degraded / stale / failed + lag in blocks from chain head.
+  const [quicknodeLiveLaneState, setQuicknodeLiveLaneState] = useState<string | null>(null);
+  const [quicknodeLiveLagBlocks, setQuicknodeLiveLagBlocks] = useState<number | null>(null);
+  // Real-time telemetry SSE connection status + the live rows it has pushed for this
+  // target since mount (newest-first, deduped). Merged onto page 0 so a new transfer
+  // appears without a manual refresh, search, or navigation.
+  const [streamStatus, setStreamStatus] = useState<TelemetryStreamStatus | 'connecting'>('connecting');
+  const [liveRows, setLiveRows] = useState<TelemetryRow[]>([]);
 
   const { authHeaders } = usePilotAuth();
 
@@ -814,29 +933,23 @@ export default function TargetTelemetryPage() {
     setCurrentPage(0);
   }, [debouncedQuery, quickFilter]);
 
-  // When a server-side filter handles the event_type, no client-side filter needed.
-  // For live_evidence_only we still filter client-side since it's not an event_type.
-  const filteredRows =
-    quickFilter === 'live_evidence_only'
-      ? rows.filter((row) => row.evidence_source === 'live')
-      : rows;
-
-  useEffect(() => {
-    if (!targetId) return;
-    const controller = new AbortController();
-    setLoading(true);
-    setLoadError('');
-
-    fetch(buildTelemetryUrl(targetId, debouncedQuery, quickFilter, currentPage), {
-      headers: authHeaders(),
-      cache: 'no-store',
-      signal: controller.signal,
-    })
-      .then(async (res) => {
+  // One fetch of the telemetry list. `silent` skips the loading flash so the
+  // reconnect recovery refetch does not blank the table. Always a no-store fetch so
+  // a newly persisted event is never served stale.
+  const fetchTelemetry = useCallback(
+    async (options?: { signal?: AbortSignal; silent?: boolean }) => {
+      if (!targetId) return;
+      if (!options?.silent) setLoading(true);
+      setLoadError('');
+      try {
+        const res = await fetch(buildTelemetryUrl(targetId, debouncedQuery, quickFilter, currentPage), {
+          headers: authHeaders(),
+          cache: 'no-store',
+          signal: options?.signal,
+        });
         const payload = await res.json().catch(() => ({}));
         if (!res.ok) {
-          const detail =
-            typeof payload?.detail === 'string' ? payload.detail : `HTTP ${res.status}`;
+          const detail = typeof payload?.detail === 'string' ? payload.detail : `HTTP ${res.status}`;
           setLoadError(`Unable to load telemetry: ${detail}`);
           return;
         }
@@ -853,24 +966,151 @@ export default function TargetTelemetryPage() {
         setQuicknodeStreamState(typeof payload.quicknode_stream_state === 'string' ? payload.quicknode_stream_state : null);
         setLastStreamEventAt(typeof payload.last_stream_event_at === 'string' ? payload.last_stream_event_at : null);
         setLastStreamBlock(typeof payload.last_stream_block === 'number' ? payload.last_stream_block : null);
+        setQuicknodeLiveLaneState(typeof payload.quicknode_live_lane_state === 'string' ? payload.quicknode_live_lane_state : null);
+        setQuicknodeLiveLagBlocks(typeof payload.quicknode_live_lag_blocks === 'number' ? payload.quicknode_live_lag_blocks : null);
         if (typeof payload.workspace_id === 'string') {
           setWorkspaceId(payload.workspace_id);
         }
         setMonitoredAddress(
           typeof payload.monitored_address === 'string' ? payload.monitored_address : null,
         );
-      })
-      .catch((err: unknown) => {
+      } catch (err: unknown) {
         if ((err as { name?: string }).name === 'AbortError') return;
-        setLoadError(
-          `Network error: ${err instanceof Error ? err.message : 'unknown error'}`,
-        );
-      })
-      .finally(() => setLoading(false));
+        setLoadError(`Network error: ${err instanceof Error ? err.message : 'unknown error'}`);
+      } finally {
+        if (!options?.silent) setLoading(false);
+      }
+    },
+    [targetId, debouncedQuery, quickFilter, currentPage, authHeaders],
+  );
 
+  // Keep the latest fetch in a ref so the SSE subscription can trigger a recovery
+  // refetch on reconnect WITHOUT re-subscribing on every search keystroke.
+  const fetchTelemetryRef = useRef(fetchTelemetry);
+  useEffect(() => {
+    fetchTelemetryRef.current = fetchTelemetry;
+  }, [fetchTelemetry]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetchTelemetry({ signal: controller.signal });
     return () => controller.abort();
+  }, [fetchTelemetry]);
+
+  // A new target resets the accumulated live rows so events never leak across targets.
+  useEffect(() => {
+    setLiveRows([]);
+  }, [targetId]);
+
+  // Subscribe to the real-time telemetry SSE stream. On each event for THIS target,
+  // prepend it to the live buffer (deduped). On reconnect, run one silent recovery
+  // refetch to catch anything missed while disconnected. Keyed only on targetId so a
+  // search/filter/page change never tears down the stream.
+  useEffect(() => {
+    if (!targetId) return;
+    let sawDisconnect = false;
+    const disconnect = connectTelemetryStream(authHeaders(), {
+      onConnected: () => {
+        if (sawDisconnect) {
+          sawDisconnect = false;
+          void fetchTelemetryRef.current({ silent: true });
+        }
+      },
+      onEvent: ({ payload }) => {
+        const row = normalizeLiveTelemetry(payload, targetId);
+        if (!row) return;
+        setLiveRows((prev) => {
+          const key = liveRowKey(row);
+          if (prev.some((r) => r.id === row.id || liveRowKey(r) === key)) return prev;
+          return [row, ...prev].slice(0, 200);
+        });
+      },
+      onHeartbeat: () => {},
+      onStatusChange: (status) => {
+        setStreamStatus(status);
+        if (status === 'reconnecting' || status === 'disconnected') sawDisconnect = true;
+      },
+    });
+    return () => {
+      disconnect();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targetId, debouncedQuery, quickFilter, currentPage, authHeaders]);
+  }, [targetId, authHeaders]);
+
+  // Merge live SSE rows onto the fetched page. Live events are newest, so they only
+  // inject on page 0; they must also match the active search/filter (requirement 4)
+  // and are deduped against the fetched rows by id / deterministic tx key so the
+  // same row never appears twice once the next HTTP refetch includes it.
+  const mergedRows = useMemo<TelemetryRow[]>(() => {
+    if (currentPage !== 0) return rows;
+    const matching = liveRows.filter((r) => liveRowMatchesView(r, debouncedQuery, quickFilter));
+    if (matching.length === 0) return rows;
+    const seen = new Set<string>();
+    const out: TelemetryRow[] = [];
+    for (const r of [...matching, ...rows]) {
+      const idKey = `id:${r.id}`;
+      const txKey = liveRowKey(r);
+      if (seen.has(idKey) || seen.has(txKey)) continue;
+      seen.add(idKey);
+      seen.add(txKey);
+      out.push(r);
+    }
+    return out;
+  }, [rows, liveRows, currentPage, debouncedQuery, quickFilter]);
+
+  // Number of live rows injected beyond the fetched page, so the row count stays
+  // truthful when a real-time event arrives before the next HTTP refresh.
+  const injectedLiveCount = currentPage === 0 ? Math.max(0, mergedRows.length - rows.length) : 0;
+  const displayTotalCount = totalCount + injectedLiveCount;
+
+  // When a server-side filter handles the event_type, no client-side filter needed.
+  // For live_evidence_only we still filter client-side since it's not an event_type.
+  const filteredRows =
+    quickFilter === 'live_evidence_only'
+      ? mergedRows.filter((row) => row.evidence_source === 'live')
+      : mergedRows;
+
+  const telemetryStreamConnected = streamStatus === 'live';
+
+  // QuickNode Stream status label. The live chain-tip lane is authoritative when it
+  // has reported (live / catching_up / degraded / stale / failed); otherwise we fall
+  // back to the webhook delivery state. Historical backfill ("catching up") is never
+  // shown as a green "live" — only chain-tip proximity is.
+  const quicknodeStatus: { label: string; tone: 'success' | 'info' | 'warning' | 'danger' | 'muted' } = (() => {
+    switch (quicknodeLiveLaneState) {
+      case 'live':
+        return { label: 'Live at chain tip', tone: 'success' };
+      case 'catching_up':
+        return { label: 'Catching up (historical backfill)', tone: 'info' };
+      case 'degraded':
+        return {
+          label:
+            quicknodeLiveLagBlocks != null
+              ? `Degraded — ${quicknodeLiveLagBlocks} blocks behind (stable polling fallback)`
+              : 'Degraded — stable polling fallback',
+          tone: 'warning',
+        };
+      case 'stale':
+        return { label: 'Stale — live lane not advancing', tone: 'warning' };
+      case 'failed':
+        return { label: 'Failed — provider error (stable polling fallback)', tone: 'danger' };
+      default:
+        break;
+    }
+    // No live-lane report yet — fall back to the webhook stream delivery state.
+    if (quicknodeStreamState === 'active') return { label: 'Active', tone: 'success' };
+    if (quicknodeStreamState === 'receiving')
+      return { label: 'Receiving blocks — no recent matched transfer', tone: 'info' };
+    if (quicknodeStreamState === 'stale') return { label: 'Stale — stream not delivering', tone: 'warning' };
+    return { label: 'No stream activity', tone: 'muted' };
+  })();
+  const TONE_COLOR: Record<string, string> = {
+    success: 'var(--success-fg)',
+    info: 'var(--info-fg)',
+    warning: 'var(--warning-fg, #d97706)',
+    danger: 'var(--danger-fg)',
+    muted: 'var(--text-muted)',
+  };
 
   return (
     <main className="productPage">
@@ -959,9 +1199,11 @@ export default function TargetTelemetryPage() {
             gap: '0.75rem',
           }}
         >
-          {/* Worker 1 — QuickNode Stream (primary realtime path) */}
+          {/* Real-time telemetry push (SSE). The PRIMARY realtime indicator now:
+              when connected, new transfers stream into the table with no refresh.
+              Truthful degraded state on disconnect, with HTTP polling as fallback. */}
           <div
-            data-testid="worker-quicknode-stream"
+            data-testid="telemetry-stream-status"
             style={{
               display: 'flex',
               flexWrap: 'wrap',
@@ -978,28 +1220,54 @@ export default function TargetTelemetryPage() {
               }}
             >
               <span className="muted" style={{ fontWeight: 600 }}>
-                QuickNode Stream
+                Real-time telemetry
               </span>
               <span
                 style={{
                   fontWeight: 600,
-                  color:
-                    quicknodeStreamState === 'active'
-                      ? 'var(--success-fg)'
-                      : quicknodeStreamState === 'receiving'
-                        ? 'var(--info-fg)'
-                        : quicknodeStreamState === 'stale'
-                          ? 'var(--warning-fg, #d97706)'
-                          : 'var(--text-muted)',
+                  color: telemetryStreamConnected
+                    ? 'var(--success-fg)'
+                    : streamStatus === 'reconnecting' || streamStatus === 'connecting'
+                      ? 'var(--warning-fg, #d97706)'
+                      : 'var(--text-muted)',
                 }}
               >
-                {quicknodeStreamState === 'active'
-                  ? 'Active'
-                  : quicknodeStreamState === 'receiving'
-                    ? 'Receiving blocks — no recent matched transfer'
-                    : quicknodeStreamState === 'stale'
-                      ? 'Stale — stream not delivering'
-                      : 'No stream activity'}
+                {telemetryStreamConnected
+                  ? 'Live — streaming new events'
+                  : streamStatus === 'reconnecting'
+                    ? 'Reconnecting… (HTTP refresh fallback active)'
+                    : streamStatus === 'connecting'
+                      ? 'Connecting…'
+                      : 'Offline — HTTP refresh fallback active'}
+              </span>
+            </span>
+          </div>
+
+          {/* Worker 1 — QuickNode Stream (primary realtime path) */}
+          <div
+            data-testid="worker-quicknode-stream"
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '1.25rem',
+              alignItems: 'center',
+              borderTop: '1px solid var(--border)',
+              paddingTop: '0.75rem',
+            }}
+          >
+            <span
+              style={{
+                display: 'inline-flex',
+                flexDirection: 'column',
+                gap: '0.1rem',
+                minWidth: '11rem',
+              }}
+            >
+              <span className="muted" style={{ fontWeight: 600 }}>
+                QuickNode Stream
+              </span>
+              <span style={{ fontWeight: 600, color: TONE_COLOR[quicknodeStatus.tone] }}>
+                {quicknodeStatus.label}
               </span>
             </span>
             <span style={{ display: 'inline-flex', flexDirection: 'column', gap: '0.1rem' }}>
@@ -1116,7 +1384,11 @@ export default function TargetTelemetryPage() {
               is active, a paused/degraded WebSocket is expected legacy state and must
               never be surfaced as the main realtime status (nor claim stable polling
               is the detector when the stream is delivering). */}
-          {quicknodeStreamState !== 'active' && realtimeState === 'degraded' ? (
+          {/* The legacy-WebSocket note is suppressed whenever the real-time telemetry
+              SSE is connected (requirement 7): while events are streaming to the page,
+              a paused/degraded legacy WebSocket is expected and must never be surfaced
+              as "realtime is down". */}
+          {telemetryStreamConnected ? null : quicknodeStreamState !== 'active' && realtimeState === 'degraded' ? (
             <span className="muted" style={{ fontSize: '0.78rem' }}>
               Realtime WebSocket is degraded (provider failure). Stable RPC polling remains
               active and continues detecting wallet transfers; realtime resumes automatically
@@ -1193,7 +1465,7 @@ export default function TargetTelemetryPage() {
       </div>
 
       {/* Pagination info */}
-      {!loading && !loadError && rows.length > 0 && (
+      {!loading && !loadError && filteredRows.length > 0 && (
         <div
           style={{
             display: 'flex',
@@ -1205,7 +1477,7 @@ export default function TargetTelemetryPage() {
           }}
         >
           <span>
-            Page {currentPage + 1} &middot; {filteredRows.length} of {totalCount} row{totalCount !== 1 ? 's' : ''}
+            Page {currentPage + 1} &middot; {filteredRows.length} of {displayTotalCount} row{displayTotalCount !== 1 ? 's' : ''}
           </span>
           <div style={{ display: 'flex', gap: '0.4rem' }}>
             <button
@@ -1250,7 +1522,11 @@ export default function TargetTelemetryPage() {
         </p>
       ) : null}
 
-      {!loading && !loadError && rows.length === 0 ? (
+      {!loading && !loadError && filteredRows.length === 0 && (debouncedQuery.trim() !== '' || quickFilter !== 'all') ? (
+        // Active search/filter with no matches — must NOT claim the target has no
+        // telemetry (requirement 10). A live event that arrives while a search is
+        // active is added only if it matches; clearing the search re-includes the
+        // already-cached live rows.
         <div
           style={{
             padding: '2.5rem 1.5rem',
@@ -1260,9 +1536,9 @@ export default function TargetTelemetryPage() {
             color: 'var(--text-muted)',
           }}
         >
-          <p style={{ margin: 0, fontWeight: 600, fontSize: '1rem' }}>No telemetry data</p>
+          <p style={{ margin: 0, fontWeight: 600, fontSize: '1rem' }}>No matching telemetry</p>
           <p style={{ margin: '0.5rem 0 0', fontSize: '0.875rem' }}>
-            No live telemetry has been persisted for this target yet.
+            No telemetry matches this search. Clear the search or filter to see all events for this target.
           </p>
         </div>
       ) : !loading && !loadError && filteredRows.length === 0 ? (
@@ -1275,9 +1551,10 @@ export default function TargetTelemetryPage() {
             color: 'var(--text-muted)',
           }}
         >
-          <p style={{ margin: 0, fontWeight: 600, fontSize: '1rem' }}>No results</p>
+          <p style={{ margin: 0, fontWeight: 600, fontSize: '1rem' }}>No telemetry data</p>
           <p style={{ margin: '0.5rem 0 0', fontSize: '0.875rem' }}>
-            No wallet transfer found yet. Try searching by tx hash or wait for the next polling cycle.
+            No live telemetry has been persisted for this target yet. New transfers stream in
+            automatically once detected — no refresh needed.
           </p>
         </div>
       ) : (

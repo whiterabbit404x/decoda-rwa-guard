@@ -16,6 +16,13 @@ logger = logging.getLogger(__name__)
 
 STREAM_PREFIX = 'decoda:workspace:'
 STREAM_SUFFIX = ':alerts'
+# Separate workspace-scoped stream for real-time telemetry rows. Kept distinct
+# from ':alerts' so a telemetry subscriber never receives alert/incident events
+# (and vice versa) and each stream is bounded independently — the task's
+# "telemetry event type clearly distinguishable from alerts/incidents" and
+# "no cross-workspace leakage" requirements. Same transport, reconnect, and
+# health machinery are reused for both.
+TELEMETRY_STREAM_SUFFIX = ':telemetry'
 DEFAULT_MAX_LENGTH = 1000
 DEFAULT_BLOCK_MS = 25_000
 
@@ -39,6 +46,10 @@ def redis_url() -> str | None:
 
 def stream_key(workspace_id: str) -> str:
     return f'{STREAM_PREFIX}{workspace_id}{STREAM_SUFFIX}'
+
+
+def telemetry_stream_key(workspace_id: str) -> str:
+    return f'{STREAM_PREFIX}{workspace_id}{TELEMETRY_STREAM_SUFFIX}'
 
 
 def stream_max_length() -> int:
@@ -101,6 +112,30 @@ def publish(workspace_id: str, alert_data: dict[str, Any]) -> str:
         raise
 
 
+def publish_telemetry(workspace_id: str, telemetry_data: dict[str, Any]) -> str:
+    """Append a telemetry event to the bounded workspace :telemetry stream.
+
+    Mirrors :func:`publish` but targets the workspace's telemetry stream so a
+    live wallet-transfer row can be pushed to the Target Telemetry page without a
+    refetch. Same bounded ``maxlen`` and JSON envelope. The caller is expected to
+    invoke this only AFTER the telemetry row is durably committed, and to treat a
+    raised exception as non-fatal (persistence already succeeded).
+    """
+    event_id = str(
+        _get_sync_client().xadd(
+            telemetry_stream_key(workspace_id),
+            {'payload': json.dumps(telemetry_data, separators=(',', ':'))},
+            maxlen=stream_max_length(),
+            approximate=False,
+        )
+    )
+    logger.info(
+        'event=telemetry_stream_publish workspace_id=%s stream=%s event_id=%s',
+        workspace_id, telemetry_stream_key(workspace_id), event_id,
+    )
+    return event_id
+
+
 def connectivity_sync() -> dict[str, Any]:
     """Synchronous connectivity probe for operational health endpoints."""
     configured = redis_url() is not None
@@ -156,20 +191,27 @@ def _health_change(**changes: Any) -> None:
                 _health[key] = value
 
 
-async def subscribe(
-    workspace_id: str,
+async def _subscribe_stream(
+    key: str,
     *,
+    workspace_id: str,
+    kind: str,
     last_event_id: str = '$',
     block_ms: int = DEFAULT_BLOCK_MS,
 ) -> AsyncIterator[tuple[str | None, dict[str, Any] | None]]:
-    """Read a workspace stream, reconnecting with the last delivered ID."""
+    """Read a bounded workspace stream, reconnecting with the last delivered ID.
+
+    Shared by :func:`subscribe` (``:alerts``) and :func:`subscribe_telemetry`
+    (``:telemetry``); ``kind`` only tags the log lines so the two streams are
+    distinguishable in Railway logs while reusing one reconnect/health path.
+    """
     cursor = last_event_id or '$'
     delay = 0.1
     connected = False
     _health_change(active_subscribers_delta=1)
     logger.info(
-        'event=alert_stream_subscribe workspace_id=%s stream=%s cursor=%s',
-        workspace_id, stream_key(workspace_id), cursor,
+        'event=%s_stream_subscribe workspace_id=%s stream=%s cursor=%s',
+        kind, workspace_id, key, cursor,
     )
     try:
         while True:
@@ -180,10 +222,10 @@ async def subscribe(
                     connected = True
                     _health_change(connected_subscribers_delta=1)
                     logger.info(
-                        'event=alert_stream_connected workspace_id=%s stream=%s',
-                        workspace_id, stream_key(workspace_id),
+                        'event=%s_stream_connected workspace_id=%s stream=%s',
+                        kind, workspace_id, key,
                     )
-                rows = await client.xread({stream_key(workspace_id): cursor}, block=block_ms, count=100)
+                rows = await client.xread({key: cursor}, block=block_ms, count=100)
                 delay = 0.1
                 if not rows:
                     yield None, None
@@ -200,8 +242,8 @@ async def subscribe(
                             continue
                         _health_change(last_message_at=_utc_now())
                         logger.debug(
-                            'event=alert_stream_delivery workspace_id=%s event_id=%s',
-                            workspace_id, event_id,
+                            'event=%s_stream_delivery workspace_id=%s event_id=%s',
+                            kind, workspace_id, event_id,
                         )
                         yield cursor, payload
             except asyncio.CancelledError:
@@ -216,8 +258,8 @@ async def subscribe(
                     last_subscriber_error={'at': _utc_now(), 'type': type(exc).__name__},
                 )
                 logger.warning(
-                    'event=alert_stream_reconnect workspace_id=%s error=%s error_type=%s delay_seconds=%.1f',
-                    workspace_id, str(exc)[:200], type(exc).__name__, delay,
+                    'event=%s_stream_reconnect workspace_id=%s error=%s error_type=%s delay_seconds=%.1f',
+                    kind, workspace_id, str(exc)[:200], type(exc).__name__, delay,
                 )
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 5.0)
@@ -226,4 +268,32 @@ async def subscribe(
         _health_change(active_subscribers_delta=-1)
         if connected:
             _health_change(connected_subscribers_delta=-1)
-        logger.info('event=alert_stream_unsubscribe workspace_id=%s stream=%s', workspace_id, stream_key(workspace_id))
+        logger.info('event=%s_stream_unsubscribe workspace_id=%s stream=%s', kind, workspace_id, key)
+
+
+async def subscribe(
+    workspace_id: str,
+    *,
+    last_event_id: str = '$',
+    block_ms: int = DEFAULT_BLOCK_MS,
+) -> AsyncIterator[tuple[str | None, dict[str, Any] | None]]:
+    """Read a workspace ALERT stream, reconnecting with the last delivered ID."""
+    async for item in _subscribe_stream(
+        stream_key(workspace_id), workspace_id=workspace_id, kind='alert',
+        last_event_id=last_event_id, block_ms=block_ms,
+    ):
+        yield item
+
+
+async def subscribe_telemetry(
+    workspace_id: str,
+    *,
+    last_event_id: str = '$',
+    block_ms: int = DEFAULT_BLOCK_MS,
+) -> AsyncIterator[tuple[str | None, dict[str, Any] | None]]:
+    """Read a workspace TELEMETRY stream, reconnecting with the last delivered ID."""
+    async for item in _subscribe_stream(
+        telemetry_stream_key(workspace_id), workspace_id=workspace_id, kind='telemetry',
+        last_event_id=last_event_id, block_ms=block_ms,
+    ):
+        yield item

@@ -1146,10 +1146,13 @@ def test_no_match_detail_logs_from_to_and_fingerprint_not_full_wallet(
     signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
     with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
          patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
-         caplog.at_level('INFO', logger=_QN_LOGGER):
+         caplog.at_level('DEBUG', logger=_QN_LOGGER):
         qn.process_quicknode_base_stream_webhook(
             raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
         )
+    # Per-tx no-match detail was DEMOTED to DEBUG (production flood removed); it is
+    # still emitted — with public from/to and a wallet FINGERPRINT, never the full
+    # wallet — and captured here by raising the module logger to DEBUG.
     assert 'quicknode_stream_no_match_detail' in caplog.text
     assert f'from={UNRELATED_ADDR}' in caplog.text
     assert f'to={COUNTERPARTY}' in caplog.text
@@ -1173,12 +1176,12 @@ def test_no_match_detail_log_is_capped(monkeypatch: pytest.MonkeyPatch, caplog: 
     signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
     with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
          patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
-         caplog.at_level('INFO', logger=_QN_LOGGER):
+         caplog.at_level('DEBUG', logger=_QN_LOGGER):
         result = qn.process_quicknode_base_stream_webhook(
             raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
         )
     assert result['skipped'] == qn._NO_MATCH_DETAIL_LOG_LIMIT + 5
-    # Per-tx detail is capped; the aggregate no_match line is always emitted.
+    # Per-tx detail (now DEBUG) is still capped; the aggregate no_match line stays at INFO.
     assert caplog.text.count('quicknode_stream_no_match_detail') == qn._NO_MATCH_DETAIL_LOG_LIMIT
     assert 'quicknode_stream_no_match tx_count=' in caplog.text
 
@@ -1384,10 +1387,12 @@ def test_wallet_on_asset_no_match_detail_shows_fingerprint_not_none(
     signature = _sign(SECRET, nonce=NONCE, timestamp=timestamp, body=raw)
     with patch.object(qn, 'pg_connection', lambda: _mock_pg(conn)), \
          patch.object(qn, 'ensure_pilot_schema', lambda _c: None), \
-         caplog.at_level('INFO', logger=_QN_LOGGER):
+         caplog.at_level('DEBUG', logger=_QN_LOGGER):
         qn.process_quicknode_base_stream_webhook(
             raw_body=raw, signature_header=signature, nonce_header=NONCE, timestamp_header=timestamp,
         )
+    # DEBUG capture of the demoted per-tx detail: the fingerprint carries the real
+    # last4/hash8 (the regression was target_wallets=['none']), never ['none'].
     assert "target_wallets=['none']" not in caplog.text
     assert f'{WALLET_ADDR[-4:]}/' in caplog.text
 

@@ -44,6 +44,7 @@ from services.api.app.monitoring_runner import (
     _wallet_transfer_smoke_alert,
 )
 from services.api.app.pilot import ensure_pilot_schema, pg_connection
+from services.api.app import telemetry_realtime
 from services.api.app.worker_status import TRANSFER_FAMILY_EVENT_TYPES
 
 logger = logging.getLogger(__name__)
@@ -79,8 +80,49 @@ QUICKNODE_STREAM_DEBUG_IMPORT_SOURCE = 'quicknode_stream_debug_import'
 
 # Single logical QuickNode Stream this API ingests (Base wallet transfers). The
 # checkpoint table is keyed by this so a future second stream (another chain)
-# gets its own gap tracking without colliding.
+# gets its own gap tracking without colliding. This checkpoint tracks the
+# webhook's *delivery* high-water mark (whatever blocks QuickNode pushes, in the
+# order it pushes them) and is what the historical gap-backfill uses.
 QUICKNODE_STREAM_KEY_BASE = 'base'
+
+# Two SEPARATE checkpoint identities for the real-time fix. The production
+# incident was a single lane that replays blocks sequentially from an old
+# ``stream_started_at_block`` (48391739) and is tens of thousands of blocks
+# behind the chain tip, so a freshly-confirmed tx is ``stream_not_at_block_yet``
+# for a long time and only Stable RPC Polling catches it. The live lane is
+# decoupled from that backlog:
+#
+#   * LIVE ('quicknode:base:live')     — a chain-tip consumer that begins at the
+#     current safe head and only ever moves forward at the tip. Its checkpoint is
+#     the lag reference (chain_head - live_checkpoint). It is NEVER overwritten by
+#     the backfill lane, so historical catch-up cannot drag the live cursor
+#     backwards or make the UI claim the provider is behind when it is at the tip.
+#   * BACKFILL ('quicknode:base:backfill') — the lower-priority lane that walks the
+#     missed historical range separately, deduped against whatever the live lane
+#     and Stable RPC Polling already recorded.
+QUICKNODE_STREAM_KEY_BASE_LIVE = 'quicknode:base:live'
+QUICKNODE_STREAM_KEY_BASE_BACKFILL = 'quicknode:base:backfill'
+
+# Confirmation offset applied to the chain head before the live lane treats a
+# block as "safe" to process, so a reorg near the tip cannot persist a transfer
+# that later disappears. Small by design — Base has fast, deep finality — so the
+# live lane still lands a confirmed tx within a few seconds.
+DEFAULT_QUICKNODE_LIVE_CONFIRMATIONS = 2
+
+# Upper bound on how many blocks the live lane processes per tick, so a tick can
+# never turn into an unbounded scan if the consumer briefly falls behind; the
+# remaining blocks are picked up on the next tick (still at the tip).
+DEFAULT_QUICKNODE_LIVE_MAX_BLOCKS_PER_TICK = 25
+
+# Bounded batch for one historical backfill step (lower priority than live).
+DEFAULT_QUICKNODE_BACKFILL_MAX_BLOCKS_PER_TICK = 50
+
+# Lag (chain_head - live_checkpoint) at or below which the live lane is reported
+# "Live"; above it the lane is "Degraded" and Stable RPC Polling is the fallback.
+DEFAULT_QUICKNODE_LIVE_LAG_THRESHOLD_BLOCKS = 10
+
+# No advance of the live checkpoint for longer than this marks the lane "Stale".
+DEFAULT_QUICKNODE_LIVE_STALE_SECONDS = 300
 
 # Upper bound on how many missing blocks a single gap-triggered backfill fetches
 # inline from RPC, so a one-time huge jump (e.g. the stream (re)starting tens of
@@ -782,6 +824,28 @@ def _persist_quicknode_wallet_transfer(
         ),
     )
     connection.commit()
+    # Real-time push AFTER the commit (task requirement 10): the row is durable, so
+    # the open Target Telemetry page prepends it without a refetch. Fail-safe —
+    # a Redis failure only logs and the frontend HTTP refresh remains the fallback
+    # (requirement 11); it never rolls back this already-committed telemetry row.
+    telemetry_realtime.publish_telemetry_event(
+        str(target['workspace_id']),
+        telemetry_realtime.build_telemetry_stream_event(
+            telemetry_id=telemetry_id,
+            workspace_id=str(target['workspace_id']),
+            target_id=str(target['id']),
+            event_type='wallet_transfer_detected',
+            detected_by=source,
+            tx_hash=tx['tx_hash'],
+            from_address=tx['from_address'],
+            to_address=tx.get('to_address'),
+            amount=value,
+            chain_id=tx.get('chain_id') or BASE_CHAIN_ID,
+            block_number=tx.get('block_number'),
+            observed_at=observed_at.isoformat(),
+            evidence_source='live',
+        ),
+    )
     return {
         'status': 'processed',
         'telemetry_id': telemetry_id,
@@ -1106,6 +1170,77 @@ def load_base_stream_checkpoint(connection: Any) -> dict[str, Any] | None:
     return _load_stream_checkpoint(connection, stream_key=QUICKNODE_STREAM_KEY_BASE)
 
 
+def load_live_lane_checkpoint(connection: Any) -> dict[str, Any] | None:
+    """Public read-only accessor for the QuickNode LIVE chain-tip checkpoint."""
+    return _load_stream_checkpoint(connection, stream_key=QUICKNODE_STREAM_KEY_BASE_LIVE)
+
+
+def load_backfill_lane_checkpoint(connection: Any) -> dict[str, Any] | None:
+    """Public read-only accessor for the QuickNode historical BACKFILL checkpoint."""
+    return _load_stream_checkpoint(connection, stream_key=QUICKNODE_STREAM_KEY_BASE_BACKFILL)
+
+
+def _coerce_checkpoint_dt(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def build_quicknode_live_lane_status(
+    connection: Any, *, now: datetime | None = None,
+) -> dict[str, Any]:
+    """Load the live + backfill checkpoints and derive the live lane's health.
+
+    Returns ``{state, lag_blocks, chain_head, live_checkpoint_block,
+    live_checkpoint_at, backfill_checkpoint_block}`` for the Target Telemetry
+    header. ``chain_head`` is the head the live worker last observed (stored in the
+    live checkpoint's ``latest_stream_block``) — no RPC call is made on the read
+    path. Best-effort and side-effect free: a missing checkpoint yields
+    ``state=None`` (no live activity yet), never an exception.
+    """
+    now = now or datetime.now(timezone.utc)
+    live = load_live_lane_checkpoint(connection)
+    backfill = load_backfill_lane_checkpoint(connection)
+    live_block = _checkpoint_last_block(live)
+    backfill_block = _checkpoint_last_block(backfill)
+    chain_head = None
+    if live is not None and live.get('latest_stream_block') is not None:
+        try:
+            chain_head = int(live['latest_stream_block'])
+        except (TypeError, ValueError):
+            chain_head = None
+    live_at = _coerce_checkpoint_dt((live or {}).get('webhook_received_at'))
+    backfill_at = _coerce_checkpoint_dt((backfill or {}).get('webhook_received_at'))
+    backfill_advancing = (
+        backfill_block is not None
+        and backfill_at is not None
+        and (now - backfill_at).total_seconds() <= live_stale_seconds()
+    )
+    state, lag_blocks = classify_quicknode_lane_state(
+        chain_head=chain_head,
+        live_checkpoint_block=live_block,
+        live_checkpoint_at=live_at,
+        now=now,
+        lag_threshold=live_lag_threshold_blocks(),
+        stale_seconds=live_stale_seconds(),
+        backfill_advancing=backfill_advancing,
+    )
+    return {
+        'state': state,
+        'lag_blocks': lag_blocks,
+        'chain_head': chain_head,
+        'live_checkpoint_block': live_block,
+        'live_checkpoint_at': live_at.isoformat() if live_at else None,
+        'backfill_checkpoint_block': backfill_block,
+    }
+
+
 def _classify_stream_coverage(checkpoint: dict[str, Any] | None, tx_block: int | None) -> str:
     """Classify a tx's block against the stream's observed coverage window.
 
@@ -1254,6 +1389,440 @@ def _backfill_stream_gap(
         stats['duplicates'], stats['failed_blocks'], str(truncated).lower(),
     )
     return stats
+
+
+# ---------------------------------------------------------------------------
+# Chain-tip LIVE lane + historical BACKFILL lane (the real-time fix).
+#
+# The webhook above ingests whatever QuickNode pushes, in push order. When the
+# provider stream replays from an old block it stays far behind the tip, so a
+# freshly-confirmed tx is not delivered for a long time. These two lanes fix that
+# by decoupling detection from the push backlog and from each other:
+#
+#   run_live_tip_ingest  — starts at the CURRENT safe head and walks forward at
+#                          the tip only. Reads/writes ONLY the live checkpoint.
+#   run_backfill_step    — walks the missed historical range at lower priority.
+#                          Reads/writes ONLY the backfill checkpoint.
+#
+# Because the live lane derives its start from the chain head (not from any
+# backfill cursor), a backfill that is 40k blocks behind can never delay the live
+# lane: the live lane's very next tick still processes the tip. Both persist
+# through the same matcher/dedupe/publish path as the webhook, so a transfer seen
+# first by Stable RPC Polling is never duplicated.
+# ---------------------------------------------------------------------------
+
+
+def _quicknode_env_int(name: str, default: int) -> int:
+    raw = (getenv(name) or '').strip()
+    if not raw:
+        return default
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return default
+
+
+def live_confirmations() -> int:
+    return _quicknode_env_int('QUICKNODE_LIVE_CONFIRMATIONS', DEFAULT_QUICKNODE_LIVE_CONFIRMATIONS)
+
+
+def live_max_blocks_per_tick() -> int:
+    return max(1, _quicknode_env_int(
+        'QUICKNODE_LIVE_MAX_BLOCKS_PER_TICK', DEFAULT_QUICKNODE_LIVE_MAX_BLOCKS_PER_TICK,
+    ))
+
+
+def backfill_max_blocks_per_tick() -> int:
+    return max(1, _quicknode_env_int(
+        'QUICKNODE_BACKFILL_MAX_BLOCKS_PER_TICK', DEFAULT_QUICKNODE_BACKFILL_MAX_BLOCKS_PER_TICK,
+    ))
+
+
+def live_lag_threshold_blocks() -> int:
+    return _quicknode_env_int(
+        'QUICKNODE_LIVE_LAG_THRESHOLD_BLOCKS', DEFAULT_QUICKNODE_LIVE_LAG_THRESHOLD_BLOCKS,
+    )
+
+
+def live_stale_seconds() -> int:
+    return max(30, _quicknode_env_int(
+        'QUICKNODE_LIVE_STALE_SECONDS', DEFAULT_QUICKNODE_LIVE_STALE_SECONDS,
+    ))
+
+
+def compute_live_start_block(chain_head: int, confirmations: int) -> int:
+    """Safe head = chain_head - confirmations, floored at 0.
+
+    The confirmation offset keeps the live lane a few blocks behind the absolute
+    head so a reorg at the very tip cannot persist a transfer that later vanishes.
+    """
+    return max(0, int(chain_head) - max(0, int(confirmations)))
+
+
+def get_base_chain_head(rpc_client: Any) -> int | None:
+    """Current Base chain head (``eth_blockNumber``) as an int, or None on failure.
+
+    Never raises: a provider hiccup returns None so the caller reports the lane
+    ``failed`` for this tick and Stable RPC Polling stays the fallback, rather
+    than 5xx-ing a worker loop.
+    """
+    try:
+        return _hex_or_int(rpc_client.call('eth_blockNumber', []))
+    except Exception:  # pragma: no cover - defensive; provider failure must not raise
+        logger.warning('quicknode_live_chain_head_failed', exc_info=True)
+        return None
+
+
+def _advance_lane_checkpoint(
+    connection: Any, *, stream_key: str, block: int, received_at: datetime,
+    latest_block: int | None = None,
+) -> None:
+    """Monotonically advance ONE lane's checkpoint (never regresses).
+
+    Distinct from :func:`_track_stream_checkpoint_and_detect_gap` (the webhook's
+    gap detector keyed ``base``): this is the simple high-water upsert the live and
+    backfill lanes use on their OWN keys, so neither lane can overwrite the other's
+    cursor.
+
+    ``last_processed_block`` is the lane's progress cursor. ``latest_stream_block``
+    stores ``latest_block`` when given — the live lane passes the observed CHAIN
+    HEAD there so the telemetry list route can compute lag (head - cursor) and the
+    live/degraded/stale state WITHOUT an extra RPC call. ``webhook_received_at`` is
+    refreshed to ``received_at`` on every advance (including a caught-up tick that
+    does not move the cursor), so freshness reflects the last successful tick.
+    """
+    latest = block if latest_block is None else latest_block
+    connection.execute(_QUICKNODE_STREAM_CHECKPOINTS_DDL)
+    connection.execute(
+        '''
+        INSERT INTO quicknode_stream_checkpoints (
+            stream_key, latest_stream_block, last_processed_block, missed_block_gap,
+            stream_started_at_block, webhook_received_at, updated_at
+        ) VALUES (%s, %s, %s, 0, %s, %s, NOW())
+        ON CONFLICT (stream_key) DO UPDATE SET
+            latest_stream_block = GREATEST(
+                COALESCE(quicknode_stream_checkpoints.latest_stream_block, -1), EXCLUDED.latest_stream_block
+            ),
+            last_processed_block = GREATEST(
+                COALESCE(quicknode_stream_checkpoints.last_processed_block, -1), EXCLUDED.last_processed_block
+            ),
+            stream_started_at_block = COALESCE(
+                quicknode_stream_checkpoints.stream_started_at_block, EXCLUDED.stream_started_at_block
+            ),
+            webhook_received_at = EXCLUDED.webhook_received_at,
+            updated_at = NOW()
+        ''',
+        (stream_key, latest, block, block, received_at),
+    )
+
+
+def _checkpoint_last_block(checkpoint: dict[str, Any] | None) -> int | None:
+    if not checkpoint:
+        return None
+    value = checkpoint.get('last_processed_block')
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def run_live_tip_ingest(
+    connection: Any, *, rpc_client: Any, targets: list[dict[str, Any]],
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Process new Base blocks at the chain tip, independent of any backlog.
+
+    Reads the LIVE checkpoint, derives the safe head from the CURRENT chain head
+    (``head - confirmations``), and processes the small forward window
+    ``[live_checkpoint+1 .. safe_head]`` (bounded by
+    :func:`live_max_blocks_per_tick`). On the very first tick — when no live
+    checkpoint exists — it starts at the safe head itself rather than replaying
+    history, so the lane is live within one tick no matter how far behind the
+    historical backfill is. Matched transfers persist ``detected_by=
+    quicknode_stream`` and publish to the telemetry stream after commit (via
+    :func:`_persist_quicknode_wallet_transfer`). Advances ONLY the live checkpoint.
+    """
+    received_at = now or datetime.now(timezone.utc)
+    confirmations = live_confirmations()
+    checkpoint = _load_stream_checkpoint(connection, stream_key=QUICKNODE_STREAM_KEY_BASE_LIVE)
+    prev_block = _checkpoint_last_block(checkpoint)
+
+    stats: dict[str, Any] = {
+        'lane': 'live',
+        'chain_head': None,
+        'safe_head': None,
+        'checkpoint_before': prev_block,
+        'checkpoint_after': prev_block,
+        'blocks_scanned': 0,
+        'matched': 0,
+        'persisted': 0,
+        'duplicates': 0,
+        'failed_blocks': 0,
+        'lag_blocks': None,
+        'failed': False,
+    }
+
+    head = get_base_chain_head(rpc_client)
+    if head is None:
+        stats['failed'] = True
+        logger.warning('quicknode_live_lane stream_lane=live status=chain_head_unavailable')
+        return stats
+    safe_head = compute_live_start_block(head, confirmations)
+    stats['chain_head'] = head
+    stats['safe_head'] = safe_head
+
+    if prev_block is None:
+        # First run: begin AT the tip, do not replay history. Process just the
+        # current safe head so the very first tick establishes the live cursor
+        # at the top of the chain.
+        start_block = safe_head
+    else:
+        start_block = prev_block + 1
+    end_block = min(safe_head, start_block + live_max_blocks_per_tick() - 1)
+
+    if start_block > safe_head:
+        # Caught up: nothing new at the tip yet. Refresh the observed head +
+        # last-tick time (without moving the cursor) so freshness/lag stay truthful
+        # — a healthy caught-up lane must not drift to "stale".
+        _advance_lane_checkpoint(
+            connection, stream_key=QUICKNODE_STREAM_KEY_BASE_LIVE,
+            block=prev_block, latest_block=head, received_at=received_at,
+        )
+        connection.commit()
+        stats['lag_blocks'] = max(0, head - prev_block) if prev_block is not None else None
+        logger.info(
+            'quicknode_live_lane stream_lane=live chain_head=%s checkpoint_block=%s lag_blocks=%s '
+            'payload_block_range=none tx_count=0 targets_loaded=%s matched_count=0 persisted_count=0 '
+            'duplicate_count=0 status=caught_up',
+            head, prev_block, stats['lag_blocks'], len(targets),
+        )
+        return stats
+
+    for block_number in range(start_block, end_block + 1):
+        try:
+            block = rpc_client.call('eth_getBlockByNumber', [hex(block_number), True]) or {}
+        except Exception:  # pragma: no cover - defensive; a fetch failure must not stop the lane
+            stats['failed_blocks'] += 1
+            logger.warning('quicknode_live_block_fetch_failed block_number=%s', block_number, exc_info=True)
+            continue
+        stats['blocks_scanned'] += 1
+        for normalized in _normalize_block_transactions(block):
+            matched_targets = _match_targets_for_tx(
+                targets, from_address=normalized['from_address'], to_address=normalized.get('to_address'),
+            )
+            for target in matched_targets:
+                stats['matched'] += 1
+                outcome = _persist_quicknode_wallet_transfer(
+                    connection, target=target, tx=normalized, source=QUICKNODE_STREAM_SOURCE,
+                )
+                persisted_payload = outcome.pop('payload', None)
+                if outcome['status'] == 'processed':
+                    stats['persisted'] += 1
+                    logger.info(
+                        'quicknode_live_persisted stream_lane=live detected_by=%s tx_hash=%s target_id=%s block_number=%s',
+                        QUICKNODE_STREAM_SOURCE, normalized['tx_hash'], target['id'], block_number,
+                    )
+                    _create_wallet_transfer_alert_chain(
+                        target=target,
+                        payload=persisted_payload if isinstance(persisted_payload, dict) else {},
+                        telemetry_id=str(outcome.get('telemetry_id') or ''),
+                    )
+                elif outcome['status'] == 'duplicate_suppressed':
+                    stats['duplicates'] += 1
+
+    # Advance ONLY the live checkpoint — never the backfill key. Records the
+    # observed chain head in latest_stream_block so the UI can compute lag.
+    _advance_lane_checkpoint(
+        connection, stream_key=QUICKNODE_STREAM_KEY_BASE_LIVE, block=end_block,
+        latest_block=head, received_at=received_at,
+    )
+    connection.commit()
+    stats['checkpoint_after'] = end_block
+    stats['lag_blocks'] = max(0, head - end_block)
+    logger.info(
+        'quicknode_live_lane stream_lane=live chain_head=%s checkpoint_block=%s lag_blocks=%s '
+        'payload_block_range=%s-%s tx_count=%s targets_loaded=%s matched_count=%s persisted_count=%s '
+        'duplicate_count=%s status=processed',
+        head, end_block, stats['lag_blocks'], start_block, end_block, stats['blocks_scanned'],
+        len(targets), stats['matched'], stats['persisted'], stats['duplicates'],
+    )
+    return stats
+
+
+def run_backfill_step(
+    connection: Any, *, rpc_client: Any, targets: list[dict[str, Any]],
+    live_start_block: int | None = None, now: datetime | None = None,
+) -> dict[str, Any]:
+    """Process one bounded batch of the historical backfill range (lower priority).
+
+    Walks forward from the BACKFILL checkpoint, bounded by
+    :func:`backfill_max_blocks_per_tick`, and never past ``live_start_block`` (the
+    block the live lane began at) so the two lanes cover disjoint ranges and never
+    fight over the same block. Matched transfers persist ``detected_by=
+    quicknode_stream_backfill`` and are deduped against anything the live lane or
+    Stable RPC Polling already recorded. Advances ONLY the backfill checkpoint.
+    """
+    received_at = now or datetime.now(timezone.utc)
+    checkpoint = _load_stream_checkpoint(connection, stream_key=QUICKNODE_STREAM_KEY_BASE_BACKFILL)
+    prev_block = _checkpoint_last_block(checkpoint)
+
+    stats: dict[str, Any] = {
+        'lane': 'backfill',
+        'checkpoint_before': prev_block,
+        'checkpoint_after': prev_block,
+        'blocks_scanned': 0,
+        'matched': 0,
+        'persisted': 0,
+        'duplicates': 0,
+        'failed_blocks': 0,
+    }
+
+    if prev_block is None:
+        # No backfill cursor yet — nothing to resume. A deployment seeds this from
+        # the webhook's delivery checkpoint / the missed-block incident range; with
+        # no seed there is no historical work to do and the live lane covers the tip.
+        logger.info('quicknode_backfill_lane stream_lane=backfill status=no_checkpoint')
+        return stats
+
+    start_block = prev_block + 1
+    end_block = start_block + backfill_max_blocks_per_tick() - 1
+    if live_start_block is not None:
+        end_block = min(end_block, int(live_start_block) - 1)
+    if start_block > end_block:
+        logger.info(
+            'quicknode_backfill_lane stream_lane=backfill checkpoint_block=%s status=caught_up_to_live',
+            prev_block,
+        )
+        return stats
+
+    for block_number in range(start_block, end_block + 1):
+        try:
+            block = rpc_client.call('eth_getBlockByNumber', [hex(block_number), True]) or {}
+        except Exception:  # pragma: no cover - defensive
+            stats['failed_blocks'] += 1
+            logger.warning('quicknode_backfill_block_fetch_failed block_number=%s', block_number, exc_info=True)
+            continue
+        stats['blocks_scanned'] += 1
+        for normalized in _normalize_block_transactions(block):
+            matched_targets = _match_targets_for_tx(
+                targets, from_address=normalized['from_address'], to_address=normalized.get('to_address'),
+            )
+            for target in matched_targets:
+                stats['matched'] += 1
+                outcome = _persist_quicknode_wallet_transfer(
+                    connection, target=target, tx=normalized, source=QUICKNODE_STREAM_BACKFILL_SOURCE,
+                )
+                persisted_payload = outcome.pop('payload', None)
+                if outcome['status'] == 'processed':
+                    stats['persisted'] += 1
+                    _create_wallet_transfer_alert_chain(
+                        target=target,
+                        payload=persisted_payload if isinstance(persisted_payload, dict) else {},
+                        telemetry_id=str(outcome.get('telemetry_id') or ''),
+                    )
+                elif outcome['status'] == 'duplicate_suppressed':
+                    stats['duplicates'] += 1
+
+    _advance_lane_checkpoint(
+        connection, stream_key=QUICKNODE_STREAM_KEY_BASE_BACKFILL, block=end_block, received_at=received_at,
+    )
+    connection.commit()
+    stats['checkpoint_after'] = end_block
+    logger.info(
+        'quicknode_backfill_lane stream_lane=backfill checkpoint_block=%s payload_block_range=%s-%s '
+        'tx_count=%s matched_count=%s persisted_count=%s duplicate_count=%s status=processed',
+        end_block, start_block, end_block, stats['blocks_scanned'], stats['matched'],
+        stats['persisted'], stats['duplicates'],
+    )
+    return stats
+
+
+def classify_quicknode_lane_state(
+    *,
+    chain_head: int | None,
+    live_checkpoint_block: int | None,
+    live_checkpoint_at: datetime | None,
+    now: datetime,
+    lag_threshold: int,
+    stale_seconds: int,
+    backfill_advancing: bool = False,
+    failed: bool = False,
+) -> tuple[str | None, int | None]:
+    """Classify the live QuickNode lane's health from canonical checkpoint facts.
+
+    Returns ``(state, lag_blocks)`` where state is one of:
+
+      * ``'live'``        — lag = chain_head - live_checkpoint is within threshold.
+      * ``'catching_up'`` — the live lane has no checkpoint yet but the historical
+                            backfill lane is advancing (live path not established).
+      * ``'degraded'``    — the live lane exists but lag exceeds the threshold, so
+                            Stable RPC Polling is carrying detection.
+      * ``'stale'``       — the live checkpoint has not moved for ``stale_seconds``.
+      * ``'failed'``      — the last tick could not reach the provider.
+      * ``None``          — no live activity and no backfill activity to report.
+
+    Historical backfill progress can move the lane to ``catching_up`` but NEVER to
+    ``live`` — only chain-tip proximity does — so a backfill that is catching up can
+    never paint a false green "live" (task: "Historical backfill activity must not
+    make the UI claim the provider is live").
+    """
+    lag_blocks: int | None = None
+    if chain_head is not None and live_checkpoint_block is not None:
+        lag_blocks = max(0, int(chain_head) - int(live_checkpoint_block))
+
+    if failed:
+        return 'failed', lag_blocks
+
+    if live_checkpoint_block is None:
+        return ('catching_up' if backfill_advancing else None), lag_blocks
+
+    # Live lane established: staleness (no movement) wins over the lag reading.
+    if live_checkpoint_at is not None:
+        try:
+            age_seconds = (now - live_checkpoint_at).total_seconds()
+        except (TypeError, ValueError):
+            age_seconds = 0.0
+        if age_seconds > stale_seconds:
+            return 'stale', lag_blocks
+
+    if lag_blocks is not None and lag_blocks <= lag_threshold:
+        return 'live', lag_blocks
+    return 'degraded', lag_blocks
+
+
+# ---------------------------------------------------------------------------
+# Multi-replica safety for the live lane: a Postgres session-scoped advisory lock
+# (the same primitive migrations and the reconcile job use). Only one replica ever
+# runs the live tip tick at a time, so two Railway replicas cannot both process —
+# and double-persist — the same tip block. Session-scoped (not xact-scoped) so it
+# survives the per-block commits the lane performs; the caller MUST release it.
+# ---------------------------------------------------------------------------
+
+_QUICKNODE_LIVE_LANE_LOCK_KEYS: tuple[int, int] = (
+    int.from_bytes(hashlib.sha256(b'quicknode:base:live').digest()[0:4], 'big', signed=False),
+    int.from_bytes(hashlib.sha256(b'quicknode:base:live').digest()[4:8], 'big', signed=False),
+)
+
+
+def try_acquire_live_lane_lock(connection: Any) -> bool:
+    """Try to take the global live-lane lock; True when this replica may run the tick."""
+    row = connection.execute(
+        'SELECT pg_try_advisory_lock(%s, %s) AS acquired',
+        _QUICKNODE_LIVE_LANE_LOCK_KEYS,
+    ).fetchone()
+    if not row:
+        return False
+    if isinstance(row, dict):
+        return bool(row.get('acquired', False))
+    return bool(getattr(row, 'acquired', False))
+
+
+def release_live_lane_lock(connection: Any) -> None:
+    """Release the live-lane advisory lock taken by :func:`try_acquire_live_lane_lock`."""
+    try:
+        connection.execute('SELECT pg_advisory_unlock(%s, %s)', _QUICKNODE_LIVE_LANE_LOCK_KEYS)
+    except Exception:  # pragma: no cover - unlock is best-effort; the session ending frees it
+        logger.warning('quicknode_live_lane_unlock_failed', exc_info=True)
 
 
 def process_quicknode_base_stream_webhook(
@@ -1410,13 +1979,16 @@ def process_quicknode_base_stream_webhook(
             )
             if not matched_targets:
                 skipped_count += 1
-                # Per-tx no-match diagnostics (task: on no-match "log the
-                # normalized from/to addresses and target wallet hash/last4
-                # only"). from/to come from the on-chain payload (public); the
-                # monitored wallets are fingerprinted, never printed in full.
-                # Capped so an unfiltered stream cannot flood Railway logs.
-                if no_match_logged < _NO_MATCH_DETAIL_LOG_LIMIT:
-                    logger.info(
+                # Per-tx no-match diagnostics. DEMOTED to DEBUG (task: "Remove or
+                # demote the current flood of quicknode_stream_no_match_detail logs
+                # in production") and still capped per payload, so a replay batch of
+                # hundreds of unrelated txs no longer floods Railway at INFO — the
+                # aggregate quicknode_stream_no_match line below carries the counts.
+                # from/to are public on-chain facts; wallets are fingerprinted (never
+                # printed in full). Suppressed while this module logger sits at its
+                # pinned INFO level; drop it to DEBUG to re-enable when diagnosing a miss.
+                if no_match_logged < _NO_MATCH_DETAIL_LOG_LIMIT and logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
                         'quicknode_stream_no_match_detail tx_hash=%s from=%s to=%s target_wallets=%s',
                         normalized['tx_hash'], normalized['from_address'],
                         normalized.get('to_address'), target_fingerprints,

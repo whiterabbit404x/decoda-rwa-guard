@@ -44,9 +44,12 @@ test('telemetry page renders rows in backend order (no client-side sort)', () =>
   // the telemetry list, so the backend newest-first order is what the user sees.
   const rowSection = telemetryPageSource.slice(telemetryPageSource.indexOf('filteredRows.map'));
   expect(rowSection).not.toContain('.sort(');
-  // For the default "All" filter, filteredRows is exactly the fetched rows.
+  // For the default "All" filter, filteredRows derives from mergedRows — the fetched
+  // rows with live SSE events PREPENDED (newest-first) and deduped, never a
+  // client-side re-sort of the backend order.
   expect(telemetryPageSource).toContain('const filteredRows =');
-  expect(telemetryPageSource).toContain(': rows;');
+  expect(telemetryPageSource).toContain(': mergedRows;');
+  expect(telemetryPageSource).toContain('const mergedRows =');
 });
 
 // --- Fresh, uncached fetch (no stale default list) ------------------------------
@@ -77,5 +80,7 @@ test('telemetry page keeps loading, empty, and error states', () => {
   expect(telemetryPageSource).toContain('Loading telemetry...');
   expect(telemetryPageSource).toContain('No telemetry data');
   expect(telemetryPageSource).toContain('Unable to load telemetry');
-  expect(telemetryPageSource).toContain('rows.length === 0');
+  // Empty state now keys off filteredRows (fetched + merged live rows), so a live
+  // event on an otherwise-empty page still renders instead of a false "no data".
+  expect(telemetryPageSource).toContain('filteredRows.length === 0');
 });

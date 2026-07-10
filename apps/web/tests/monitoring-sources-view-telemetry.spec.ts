@@ -78,8 +78,11 @@ test('telemetry page shows truthful empty state when no telemetry exists', () =>
   );
 });
 
-test('telemetry page empty state guard checks rows.length === 0', () => {
-  expect(telemetryPageSource).toContain('rows.length === 0');
+test('telemetry page empty state guard checks filteredRows.length === 0', () => {
+  // The empty state now keys off filteredRows (fetched rows + merged live SSE rows),
+  // so a real-time event on an otherwise-empty page renders instead of a false
+  // "no data" state.
+  expect(telemetryPageSource).toContain('filteredRows.length === 0');
 });
 
 test('telemetry page does not fake telemetry (no mock/demo/simulator data)', () => {
@@ -355,15 +358,18 @@ test('table tx hash column links to Basescan for chain_id 8453', () => {
 // --- Filtered empty state ---
 
 test('telemetry page shows filtered empty state when search has no results', () => {
-  expect(telemetryPageSource).toContain(
-    'No wallet transfer found yet. Try searching by tx hash or wait for the next polling cycle.',
-  );
+  // Requirement 10: an active-search empty state must say the search has no match,
+  // never that the target has no telemetry.
+  expect(telemetryPageSource).toContain('No telemetry matches this search');
 });
 
-test('filtered empty state only shows when rows exist but filter returns none', () => {
-  // Guard: rows.length === 0 triggers the no-data state, not the filtered-empty state
-  expect(telemetryPageSource).toContain('rows.length === 0');
-  expect(telemetryPageSource).toContain('filteredRows.length === 0');
+test('filtered empty state only shows when a search/filter is active', () => {
+  // The "No telemetry matches this search" state is gated on an active search/filter;
+  // with no search/filter an empty page shows the truthful "no telemetry persisted yet".
+  expect(telemetryPageSource).toContain(
+    "filteredRows.length === 0 && (debouncedQuery.trim() !== '' || quickFilter !== 'all')",
+  );
+  expect(telemetryPageSource).toContain('No live telemetry has been persisted for this target yet');
 });
 
 // --- New table columns ---

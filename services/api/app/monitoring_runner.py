@@ -61,6 +61,7 @@ from services.api.app.workspace_monitoring_summary import (
     build_workspace_monitoring_summary,
     build_workspace_monitoring_summary_fallback,
 )
+from services.api.app import telemetry_realtime
 from services.api.app.pilot import (
     _json_dumps,
     _json_safe_value,
@@ -612,6 +613,32 @@ def _persist_raw_wallet_transfer_telemetry(
             safe_payload.get('block_number'),
             str(persisted).lower(),
         )
+        # Real-time push AFTER the durable commit (task requirement 10) so the open
+        # Target Telemetry page prepends this stable/realtime detection without a
+        # refetch — the same fix applies to every live detection path, not just
+        # QuickNode. Only LIVE evidence is published (never simulator/replay —
+        # CLAUDE.md truthfulness), and only once the dedicated commit is confirmed.
+        # Fail-safe: a Redis failure only logs; the row is already durable
+        # (requirement 11).
+        if persisted and evidence_source == 'live' and event_type in WALLET_TRANSFER_EVENT_TYPES:
+            telemetry_realtime.publish_telemetry_event(
+                str(workspace_id),
+                telemetry_realtime.build_telemetry_stream_event(
+                    telemetry_id=telemetry_id,
+                    workspace_id=str(workspace_id),
+                    target_id=str(target_id),
+                    event_type=event_type,
+                    detected_by=safe_payload.get('detected_by'),
+                    tx_hash=tx_hash or None,
+                    from_address=safe_payload.get('from') or safe_payload.get('from_address'),
+                    to_address=safe_payload.get('to') or safe_payload.get('to_address'),
+                    amount=safe_payload.get('amount') or safe_payload.get('value'),
+                    chain_id=safe_payload.get('chain_id'),
+                    block_number=safe_payload.get('block_number'),
+                    observed_at=observed_at.isoformat() if hasattr(observed_at, 'isoformat') else observed_at,
+                    evidence_source=evidence_source,
+                ),
+            )
         return persisted
     except Exception:
         logger.exception(
@@ -10913,6 +10940,31 @@ def list_target_telemetry(
                 workspace_id, target_id, exc_info=True,
             )
 
+        # QuickNode LIVE chain-tip lane health — distinct from the webhook delivery
+        # checkpoint above. Derives lag (chain_head - live_checkpoint) and the
+        # Live/Catching up/Degraded/Stale state from the separate live/backfill
+        # checkpoints WITHOUT an RPC call (the live worker records the observed head
+        # into its checkpoint). Best-effort: a read failure leaves the lane fields
+        # absent and the header falls back to the webhook stream state.
+        quicknode_live_lane_state: str | None = None
+        quicknode_live_lag_blocks: int | None = None
+        quicknode_live_checkpoint_block: int | None = None
+        quicknode_chain_head: int | None = None
+        try:
+            from services.api.app.quicknode_streams import build_quicknode_live_lane_status
+
+            _lane = build_quicknode_live_lane_status(connection, now=utc_now())
+            if isinstance(_lane, dict):
+                quicknode_live_lane_state = _lane.get('state')
+                quicknode_live_lag_blocks = _lane.get('lag_blocks')
+                quicknode_live_checkpoint_block = _lane.get('live_checkpoint_block')
+                quicknode_chain_head = _lane.get('chain_head')
+        except Exception:
+            logger.warning(
+                'telemetry_quicknode_live_lane_unavailable workspace_id=%s target_id=%s',
+                workspace_id, target_id, exc_info=True,
+            )
+
         # Fail-closed multi-state model so the header never claims the QuickNode Stream
         # is the active detector for THIS target when it is not (CLAUDE.md: no fallback
         # data shown as live; do not falsely attribute Stable RPC Polling events to
@@ -11326,6 +11378,14 @@ def list_target_telemetry(
             'last_stream_event_at': last_stream_event_at,
             'last_stream_block': last_stream_block,
             'quicknode_stream_checkpoint_at': quicknode_stream_checkpoint_at,
+            # QuickNode LIVE chain-tip lane facts (separate from the webhook stream
+            # checkpoint). Lets the header distinguish "live at tip" from "catching
+            # up / degraded / stale" using lag = chain_head - live_checkpoint, so
+            # historical backfill activity never paints a false green "live".
+            'quicknode_live_lane_state': quicknode_live_lane_state,
+            'quicknode_live_lag_blocks': quicknode_live_lag_blocks,
+            'quicknode_live_checkpoint_block': quicknode_live_checkpoint_block,
+            'quicknode_chain_head': quicknode_chain_head,
             # Canonical fact for the always-on backup worker so its status label is
             # truthful (never a hardcoded "Active").
             'stable_polling_active': stable_polling_active,
