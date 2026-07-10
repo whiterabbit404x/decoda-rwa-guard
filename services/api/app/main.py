@@ -6238,12 +6238,19 @@ class CanonicalRiskResponse(TypedDict):
 # Task 1: SSE streaming endpoint
 # ---------------------------------------------------------------------------
 async def _sse_heartbeat_generator(
-    workspace_id: str, last_event_id: str, request: Request
+    workspace_id: str, last_event_id: str, request: Request, subscribe_factory=None,
 ):
-    """Yield resumable Redis Stream events and heartbeats."""
+    """Yield resumable Redis Stream events and heartbeats.
+
+    ``subscribe_factory`` selects which workspace stream to read (defaults to the
+    alert stream); the telemetry SSE endpoint passes ``alert_stream.subscribe_telemetry``
+    so the same heartbeat/replay/backpressure machinery serves both streams.
+    """
     global _SSE_CONNECTION_COUNT, _SSE_EVENTS_DELIVERED
     _SSE_CONNECTION_COUNT += 1
-    iterator = alert_stream.subscribe(workspace_id, last_event_id=last_event_id).__aiter__()
+    if subscribe_factory is None:
+        subscribe_factory = alert_stream.subscribe
+    iterator = subscribe_factory(workspace_id, last_event_id=last_event_id).__aiter__()
     try:
         while True:
             try:
@@ -6294,6 +6301,51 @@ async def stream_alerts(request: Request):
         headers['X-Trace-ID'] = trace_id
     return StreamingResponse(
         _sse_heartbeat_generator(workspace_id, last_event_id, request),
+        media_type='text/event-stream',
+        headers=headers,
+    )
+
+
+@app.get('/stream/telemetry', summary='SSE stream of real-time telemetry events for a workspace')
+async def stream_telemetry(request: Request):
+    """Server-Sent Events stream of live telemetry rows for the Target Telemetry page.
+
+    Same authenticated, workspace-scoped, Redis-backed (multi-replica), resumable
+    transport as ``/stream/alerts`` but reads the workspace ``:telemetry`` stream, so
+    a newly persisted wallet-transfer row is pushed to the open page within a few
+    seconds — no manual refresh, tx-hash search, or wait for the next stable poll.
+    Telemetry events carry ``type='telemetry'`` and are scoped by workspace here; the
+    frontend additionally filters to the current ``target_id``. No cross-workspace
+    leakage: the stream key embeds the resolved workspace id.
+    """
+    try:
+        user = authenticate_request(request)
+    except HTTPException as exc:
+        return JSONResponse({'detail': exc.detail, 'code': 'UNAUTHENTICATED'}, status_code=401)
+    requested_workspace_id = request.headers.get('x-workspace-id', '').strip()
+    try:
+        with pg_connection() as connection:
+            ensure_pilot_schema(connection)
+            workspace_context = resolve_workspace(connection, str(user['id']), requested_workspace_id)
+        workspace_id = str(workspace_context['workspace_id'])
+    except HTTPException as exc:
+        return JSONResponse({'detail': exc.detail, 'code': 'WORKSPACE_ACCESS_DENIED'}, status_code=exc.status_code)
+    backend = await alert_stream.connectivity()
+    if not backend['connected']:
+        return JSONResponse(
+            {'detail': 'Shared telemetry stream backend unavailable', 'code': 'TELEMETRY_STREAM_UNAVAILABLE'},
+            status_code=503,
+        )
+    last_event_id = request.headers.get('last-event-id', '').strip() or '$'
+    headers: dict[str, str] = {'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
+    trace_id = getattr(request.state, 'trace_id', None)
+    if trace_id:
+        headers['X-Trace-ID'] = trace_id
+    return StreamingResponse(
+        _sse_heartbeat_generator(
+            workspace_id, last_event_id, request,
+            subscribe_factory=alert_stream.subscribe_telemetry,
+        ),
         media_type='text/event-stream',
         headers=headers,
     )
