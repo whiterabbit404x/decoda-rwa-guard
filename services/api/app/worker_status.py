@@ -47,6 +47,12 @@ REALTIME_DETECTED_BY: tuple[str, ...] = (
     # worker, but still realtime *telemetry* like the other tags in this tuple.
     'quicknode_stream',
 )
+# The QuickNode Streams webhook push path is realtime *telemetry* (a member of
+# REALTIME_DETECTED_BY above) but a SEPARATE worker from the legacy WebSocket
+# ingestor. Named here so the Telemetry list route can split "QuickNode Stream"
+# out of the WSS-family "last realtime event" and surface it as its own status
+# line ("QuickNode Stream: Active") distinct from "Legacy WebSocket".
+QUICKNODE_STREAM_DETECTED_BY = 'quicknode_stream'
 STABLE_DETECTED_BY = 'stable_rpc_polling'
 
 # QuickNode-matcher detections that were recovered via Base RPC rather than
