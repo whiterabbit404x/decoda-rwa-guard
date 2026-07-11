@@ -103,6 +103,34 @@ QUICKNODE_STREAM_KEY_BASE = 'base'
 QUICKNODE_STREAM_KEY_BASE_LIVE = 'quicknode:base:live'
 QUICKNODE_STREAM_KEY_BASE_BACKFILL = 'quicknode:base:backfill'
 
+# Explicit lane identities passed into process_quicknode_base_stream_webhook by the
+# three dedicated production routes (services/api/app/main.py). The lane is NEVER
+# inferred from a mutable DB checkpoint (task step 3): the route the request arrived
+# on decides which lane owns it, which checkpoint identity it advances, and which
+# detected_by tag it stamps.
+#
+#   LANE_BASE     POST /api/integrations/quicknode/streams/base       — legacy delivery
+#                 high-water lane. Whatever the single stream pushes, in push order —
+#                 the historical-replay incident (stream_started_at_block=48391739).
+#                 Kept for backward compatibility + gap backfill. Its checkpoint
+#                 (stream_key='base') MUST NOT be treated as live-chain health.
+#   LANE_LIVE     POST /api/integrations/quicknode/streams/base-live  — a QuickNode
+#                 stream configured to start at the CURRENT Base block. Owns
+#                 quicknode:base:live; detected_by=quicknode_stream; marks itself
+#                 degraded when the pushed blocks are far behind the chain head.
+#   LANE_BACKFILL POST /api/integrations/quicknode/streams/base-backfill — an optional
+#                 second stream / replay for history. Owns quicknode:base:backfill;
+#                 detected_by=quicknode_stream_backfill. Never controls live health.
+LANE_BASE = 'base'
+LANE_LIVE = 'live'
+LANE_BACKFILL = 'backfill'
+_VALID_STREAM_LANES = (LANE_BASE, LANE_LIVE, LANE_BACKFILL)
+
+
+def _normalize_lane(lane: str | None) -> str:
+    value = (lane or LANE_BASE).strip().lower()
+    return value if value in _VALID_STREAM_LANES else LANE_BASE
+
 # Confirmation offset applied to the chain head before the live lane treats a
 # block as "safe" to process, so a reorg near the tip cannot persist a transfer
 # that later disappears. Small by design — Base has fast, deep finality — so the
@@ -828,7 +856,7 @@ def _persist_quicknode_wallet_transfer(
     # the open Target Telemetry page prepends it without a refetch. Fail-safe —
     # a Redis failure only logs and the frontend HTTP refresh remains the fallback
     # (requirement 11); it never rolls back this already-committed telemetry row.
-    telemetry_realtime.publish_telemetry_event(
+    redis_published = telemetry_realtime.publish_telemetry_event(
         str(target['workspace_id']),
         telemetry_realtime.build_telemetry_stream_event(
             telemetry_id=telemetry_id,
@@ -851,6 +879,10 @@ def _persist_quicknode_wallet_transfer(
         'telemetry_id': telemetry_id,
         'detected_by': source,
         'wallet_transfer_direction': direction,
+        # Whether the post-commit Redis publish was accepted, so the live lane's
+        # quicknode_live_match log can prove SSE delivery started (task step 4). A
+        # False here only means the browser picks the row up on its next HTTP refresh.
+        'redis_published': redis_published,
         # Returned so the caller can drive the same alert/incident chain stable RPC
         # polling creates for this transfer, without rebuilding the payload.
         'payload': payload,
@@ -1422,8 +1454,61 @@ def _quicknode_env_int(name: str, default: int) -> int:
         return default
 
 
+def _quicknode_env_int_alias(names: tuple[str, ...], default: int) -> int:
+    """First present+valid int env among ``names`` (preferred name first), else default.
+
+    Lets a canonical variable name (e.g. QUICKNODE_LIVE_CONFIRMATION_BLOCKS) take
+    precedence while keeping the older name (QUICKNODE_LIVE_CONFIRMATIONS) working, so a
+    rename never silently changes behavior on an existing deployment.
+    """
+    for name in names:
+        raw = (getenv(name) or '').strip()
+        if raw:
+            try:
+                return max(0, int(raw))
+            except ValueError:
+                continue
+    return default
+
+
+# Human-readable stream-key LABELS used in structured logs + the readiness marker
+# (distinct from the checkpoint IDENTITIES quicknode:base:live / :backfill, which are
+# fixed). Overridable so an operator can name the QuickNode dashboard streams, but the
+# defaults are the canonical route names.
+DEFAULT_QUICKNODE_LIVE_STREAM_KEY = 'base-live'
+DEFAULT_QUICKNODE_BACKFILL_STREAM_KEY = 'base-backfill'
+
+
+def quicknode_live_stream_key() -> str:
+    return (getenv('QUICKNODE_LIVE_STREAM_KEY') or '').strip() or DEFAULT_QUICKNODE_LIVE_STREAM_KEY
+
+
+def quicknode_backfill_stream_key() -> str:
+    return (getenv('QUICKNODE_BACKFILL_STREAM_KEY') or '').strip() or DEFAULT_QUICKNODE_BACKFILL_STREAM_KEY
+
+
+def quicknode_backfill_enabled() -> bool:
+    """Whether the lower-priority historical BACKFILL lane runs (default on).
+
+    Set QUICKNODE_BACKFILL_ENABLED=false to suspend historical catch-up entirely (the
+    live lane at the tip and Stable RPC Polling are unaffected) — e.g. to keep RPC
+    budget on the tip during an incident.
+    """
+    raw = (getenv('QUICKNODE_BACKFILL_ENABLED') or '').strip().lower()
+    if raw in ('0', 'false', 'no', 'off'):
+        return False
+    return True
+
+
+def _deployment_commit_sha() -> str:
+    return (getenv('BACKEND_GIT_COMMIT') or getenv('RAILWAY_GIT_COMMIT_SHA') or '').strip() or 'unavailable'
+
+
 def live_confirmations() -> int:
-    return _quicknode_env_int('QUICKNODE_LIVE_CONFIRMATIONS', DEFAULT_QUICKNODE_LIVE_CONFIRMATIONS)
+    return _quicknode_env_int_alias(
+        ('QUICKNODE_LIVE_CONFIRMATION_BLOCKS', 'QUICKNODE_LIVE_CONFIRMATIONS'),
+        DEFAULT_QUICKNODE_LIVE_CONFIRMATIONS,
+    )
 
 
 def live_max_blocks_per_tick() -> int:
@@ -1439,8 +1524,9 @@ def backfill_max_blocks_per_tick() -> int:
 
 
 def live_lag_threshold_blocks() -> int:
-    return _quicknode_env_int(
-        'QUICKNODE_LIVE_LAG_THRESHOLD_BLOCKS', DEFAULT_QUICKNODE_LIVE_LAG_THRESHOLD_BLOCKS,
+    return _quicknode_env_int_alias(
+        ('QUICKNODE_LIVE_MAX_LAG_BLOCKS', 'QUICKNODE_LIVE_LAG_THRESHOLD_BLOCKS'),
+        DEFAULT_QUICKNODE_LIVE_LAG_THRESHOLD_BLOCKS,
     )
 
 
@@ -1868,6 +1954,256 @@ def release_live_lane_lock(connection: Any) -> None:
         logger.warning('quicknode_live_lane_unlock_failed', exc_info=True)
 
 
+def _realtime_lane_config(lane: str) -> dict[str, str]:
+    """Map an explicit real-time lane to its checkpoint identity + detected_by tag.
+
+    The lane is decided by the ROUTE the webhook arrived on (task step 3), never
+    inferred from a mutable checkpoint, so a live batch can never be mis-attributed
+    to the backfill checkpoint or vice versa.
+    """
+    if lane == LANE_LIVE:
+        return {
+            'lane': LANE_LIVE,
+            'checkpoint_key': QUICKNODE_STREAM_KEY_BASE_LIVE,
+            'source': QUICKNODE_STREAM_SOURCE,
+            'route_stream_key': quicknode_live_stream_key(),
+        }
+    return {
+        'lane': LANE_BACKFILL,
+        'checkpoint_key': QUICKNODE_STREAM_KEY_BASE_BACKFILL,
+        'source': QUICKNODE_STREAM_BACKFILL_SOURCE,
+        'route_stream_key': quicknode_backfill_stream_key(),
+    }
+
+
+def quicknode_live_configuration_valid() -> bool:
+    """True when the live webhook lane can authenticate and persist a chain-tip batch.
+
+    The minimum the /base-live route needs to accept and durably record a live batch
+    is the shared QuickNode Streams signing secret (the webhook's only credential). A
+    Base RPC endpoint is only used to compute lag for the live/degraded classification,
+    so its absence degrades observability, not detection.
+    """
+    return bool((getenv('QUICKNODE_STREAMS_SECRET') or '').strip())
+
+
+def _process_realtime_lane_batch(
+    *, lane: str, normalized_txs: list[dict[str, Any]], batch_block_numbers: list[int],
+) -> dict[str, Any]:
+    """Process one live- or backfill-lane batch on that lane's OWN checkpoint.
+
+    Independent of the legacy ``base`` delivery lane: it loads the active Base wallet
+    targets, matches every normalized tx against ``tx.from``/``tx.to``, persists a
+    match with the lane's detected_by tag (deduped across every detection path), and
+    advances ONLY this lane's checkpoint. For the live lane it also reads the current
+    chain head so lag (head - last_block) and the degraded threshold are computed from
+    canonical facts, and emits the mandatory ``quicknode_live_match`` +
+    ``quicknode_stream_batch`` structured logs (task steps 3 & 4).
+    """
+    config = _realtime_lane_config(lane)
+    checkpoint_key = config['checkpoint_key']
+    source = config['source']
+    route_stream_key = config['route_stream_key']
+    received_at = datetime.now(timezone.utc)
+    first_block = batch_block_numbers[0] if batch_block_numbers else None
+    last_block = batch_block_numbers[-1] if batch_block_numbers else None
+
+    match_count = 0
+    persisted_count = 0
+    duplicate_count = 0
+    skipped_count = 0
+    targets: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
+
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        # Chain head only for the LIVE lane's lag / degraded classification: the head
+        # proves whether the pushed blocks are actually at the tip. Best-effort — no
+        # RPC configured means lag is unknown, not that the batch is dropped.
+        chain_head: int | None = None
+        if lane == LANE_LIVE:
+            rpc_client = _make_base_rpc_client()
+            if rpc_client is not None:
+                chain_head = get_base_chain_head(rpc_client)
+        lag_blocks: int | None = None
+        if chain_head is not None and last_block is not None:
+            lag_blocks = max(0, int(chain_head) - int(last_block))
+
+        try:
+            targets = _load_all_base_wallet_targets(connection)
+        except psycopg.Error as exc:
+            try:
+                connection.rollback()
+            except Exception:  # pragma: no cover - best-effort on a dead tx
+                pass
+            logger.warning(
+                'event=quicknode_stream_batch stream_lane=%s stream_key=%s checkpoint_identity=%s '
+                'status=target_load_failed error_type=%s tx_count=%s',
+                lane, route_stream_key, checkpoint_key, type(exc).__name__, len(normalized_txs),
+            )
+            return _target_load_failed_response(tx_count=len(normalized_txs))
+
+        for normalized in normalized_txs:
+            matched_targets = _match_targets_for_tx(
+                targets, from_address=normalized['from_address'], to_address=normalized.get('to_address'),
+            )
+            if not matched_targets:
+                skipped_count += 1
+                results.append({'tx_hash': normalized['tx_hash'], 'status': 'no_match'})
+                continue
+            for target in matched_targets:
+                match_count += 1
+                outcome = _persist_quicknode_wallet_transfer(
+                    connection, target=target, tx=normalized, source=source,
+                )
+                persisted_payload = outcome.pop('payload', None)
+                is_persisted = outcome['status'] == 'processed'
+                is_duplicate = outcome['status'] == 'duplicate_suppressed'
+                if is_persisted:
+                    persisted_count += 1
+                    _create_wallet_transfer_alert_chain(
+                        target=target,
+                        payload=persisted_payload if isinstance(persisted_payload, dict) else {},
+                        telemetry_id=str(outcome.get('telemetry_id') or ''),
+                    )
+                elif is_duplicate:
+                    duplicate_count += 1
+                if lane == LANE_LIVE:
+                    logger.info(
+                        'event=quicknode_live_match tx_hash=%s workspace_id=%s target_id=%s '
+                        'chain_id=%s from=%s to=%s block_number=%s chain_head=%s lag_blocks=%s '
+                        'persisted=%s duplicate=%s redis_publish_success=%s',
+                        normalized['tx_hash'], target['workspace_id'], target['id'],
+                        normalized.get('chain_id') or BASE_CHAIN_ID,
+                        normalized['from_address'], normalized.get('to_address'),
+                        normalized.get('block_number'), chain_head, lag_blocks,
+                        str(is_persisted).lower(), str(is_duplicate).lower(),
+                        str(bool(outcome.get('redis_published'))).lower(),
+                    )
+                results.append({'tx_hash': normalized['tx_hash'], 'target_id': target['id'], **outcome})
+
+        # Advance ONLY this lane's checkpoint — never the other lane's key. The live
+        # lane records the observed chain head in latest_stream_block so the Telemetry
+        # header can compute lag with no RPC call; the backfill lane leaves it at the
+        # block itself (its progress is not a live-health signal).
+        if last_block is not None:
+            _advance_lane_checkpoint(
+                connection, stream_key=checkpoint_key, block=last_block,
+                latest_block=chain_head if lane == LANE_LIVE else None,
+                received_at=received_at,
+            )
+            connection.commit()
+
+    degraded = (
+        lane == LANE_LIVE and lag_blocks is not None and lag_blocks > live_lag_threshold_blocks()
+    )
+    logger.info(
+        'event=quicknode_stream_batch deployment_commit_sha=%s stream_lane=%s stream_key=%s '
+        'checkpoint_identity=%s first_block=%s last_block=%s checkpoint_block=%s chain_head=%s '
+        'lag_blocks=%s tx_count=%s matched=%s persisted=%s duplicates=%s degraded=%s',
+        _deployment_commit_sha(), lane, route_stream_key, checkpoint_key, first_block, last_block,
+        last_block, chain_head, lag_blocks, len(normalized_txs), match_count, persisted_count,
+        duplicate_count, str(degraded).lower(),
+    )
+    if degraded:
+        # The live stream is pushing blocks far behind the chain head — it is NOT at
+        # the tip, so the UI must not paint it green. Stable RPC Polling stays the
+        # fallback; the Telemetry header derives "Degraded" from the same lag.
+        logger.warning(
+            'event=quicknode_live_lane_degraded stream_key=%s checkpoint_identity=%s chain_head=%s '
+            'last_block=%s lag_blocks=%s threshold=%s reason=stream_far_behind_head '
+            '(stable RPC polling remains the fallback)',
+            route_stream_key, checkpoint_key, chain_head, last_block, lag_blocks,
+            live_lag_threshold_blocks(),
+        )
+    return _summary_response(
+        tx_count=len(normalized_txs), targets_loaded=len(targets), matched=match_count,
+        persisted=persisted_count, duplicates=duplicate_count, skipped=skipped_count, results=results,
+    )
+
+
+def seed_backfill_from_base_checkpoint(connection: Any) -> bool:
+    """Migrate the legacy ``base`` delivery checkpoint into the BACKFILL lane.
+
+    Task steps 5 & 6: the historical progress the single stream accumulated on
+    ``stream_key='base'`` becomes the backfill lane's starting cursor, so the missed
+    range is walked exactly once — WITHOUT ever seeding the live lane from that old
+    block. Idempotent and fail-safe: it only seeds when the backfill checkpoint does
+    not yet exist (never regresses an advancing backfill cursor) and never touches the
+    live checkpoint. Returns True when it copied the base cursor into the backfill lane.
+    """
+    connection.execute(_QUICKNODE_STREAM_CHECKPOINTS_DDL)
+    existing = _load_stream_checkpoint(connection, stream_key=QUICKNODE_STREAM_KEY_BASE_BACKFILL)
+    if existing is not None:
+        return False
+    base = _load_stream_checkpoint(connection, stream_key=QUICKNODE_STREAM_KEY_BASE)
+    base_block = _checkpoint_last_block(base)
+    if base_block is None:
+        return False
+    started = (base or {}).get('stream_started_at_block') or base_block
+    connection.execute(
+        '''
+        INSERT INTO quicknode_stream_checkpoints (
+            stream_key, latest_stream_block, last_processed_block, missed_block_gap,
+            stream_started_at_block, webhook_received_at, updated_at
+        ) VALUES (%s, %s, %s, 0, %s, NOW(), NOW())
+        ON CONFLICT (stream_key) DO NOTHING
+        ''',
+        (QUICKNODE_STREAM_KEY_BASE_BACKFILL, base_block, base_block, started),
+    )
+    connection.commit()
+    logger.info(
+        'event=quicknode_backfill_seeded_from_base checkpoint_identity=%s base_checkpoint_block=%s',
+        QUICKNODE_STREAM_KEY_BASE_BACKFILL, base_block,
+    )
+    return True
+
+
+def emit_quicknode_live_lane_started(
+    connection: Any, *, rpc_client: Any = None, deployment_commit_sha: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Emit the mandatory ``quicknode_live_lane_started`` readiness marker (task step 4).
+
+    Proves from logs alone that the live chain-tip lane is deployed and configured:
+    the live checkpoint identity, the observed chain head, the current live checkpoint
+    block, the lag between them, and whether the live configuration is valid. When no
+    RPC is supplied it falls back to the head the live lane last observed (stored in
+    the checkpoint's ``latest_stream_block``). Best-effort and side-effect free — a
+    missing RPC or checkpoint yields None fields, never an exception — so it is safe at
+    API startup and on the worker's first tick.
+    """
+    now = now or datetime.now(timezone.utc)
+    chain_head = get_base_chain_head(rpc_client) if rpc_client is not None else None
+    try:
+        checkpoint = load_live_lane_checkpoint(connection)
+    except Exception:  # pragma: no cover - readiness log must never raise
+        checkpoint = None
+    checkpoint_block = _checkpoint_last_block(checkpoint)
+    if chain_head is None and checkpoint is not None:
+        try:
+            chain_head = int(checkpoint['latest_stream_block'])
+        except (TypeError, KeyError, ValueError):
+            chain_head = None
+    lag_blocks: int | None = None
+    if chain_head is not None and checkpoint_block is not None:
+        lag_blocks = max(0, int(chain_head) - int(checkpoint_block))
+    config_valid = quicknode_live_configuration_valid()
+    logger.info(
+        'event=quicknode_live_lane_started deployment_commit_sha=%s stream_lane=live stream_key=%s '
+        'checkpoint_identity=%s chain_head=%s checkpoint_block=%s lag_blocks=%s configuration_valid=%s',
+        deployment_commit_sha or _deployment_commit_sha(), quicknode_live_stream_key(),
+        QUICKNODE_STREAM_KEY_BASE_LIVE, chain_head, checkpoint_block, lag_blocks,
+        str(config_valid).lower(),
+    )
+    return {
+        'chain_head': chain_head,
+        'checkpoint_block': checkpoint_block,
+        'lag_blocks': lag_blocks,
+        'configuration_valid': config_valid,
+    }
+
+
 def process_quicknode_base_stream_webhook(
     *,
     raw_body: bytes,
@@ -1875,15 +2211,26 @@ def process_quicknode_base_stream_webhook(
     nonce_header: str | None = None,
     timestamp_header: str | None = None,
     content_encoding: str | None = None,
+    lane: str = LANE_BASE,
 ) -> dict[str, Any]:
-    """Verify, parse, match, and persist a QuickNode Streams Base webhook payload."""
+    """Verify, parse, match, and persist a QuickNode Streams Base webhook payload.
+
+    ``lane`` is set by the ROUTE the request arrived on (task step 3): ``base`` for the
+    legacy delivery lane, ``live`` for the chain-tip /base-live route, ``backfill`` for
+    the /base-backfill route. Signature verification, decoding, and normalization are
+    shared; the live/backfill lanes then process on their own checkpoint identity via
+    :func:`_process_realtime_lane_batch`, leaving the legacy ``base`` gap-detection path
+    untouched.
+    """
+    lane = _normalize_lane(lane)
     # First handler line, logged *before* signature verification so a handler
     # entry is provable from logs even when verification then rejects the
     # request (missing/invalid signature, stale timestamp). Only sizes and
     # header-presence booleans — never the body or any secret.
     logger.info(
-        'quicknode_stream_handler_started raw_body_bytes=%s content_encoding=%s '
+        'quicknode_stream_handler_started stream_lane=%s raw_body_bytes=%s content_encoding=%s '
         'has_signature=%s has_nonce=%s has_timestamp=%s',
+        lane,
         len(raw_body),
         (content_encoding or '').strip().lower() or None,
         bool((signature_header or '').strip()),
@@ -1941,6 +2288,14 @@ def process_quicknode_base_stream_webhook(
         logger.info('quicknode_stream_no_transactions_normalized reason=%s', reason)
         return _summary_response(
             tx_count=0, targets_loaded=0, matched=0, persisted=0, duplicates=0, skipped=0, results=[],
+        )
+
+    # Real-time lanes (task step 3): the dedicated /base-live and /base-backfill routes
+    # pass an explicit lane, so it is handled on its own checkpoint identity + detected_by
+    # tag here — never mixed with the legacy `base` delivery lane's gap detector below.
+    if lane in (LANE_LIVE, LANE_BACKFILL):
+        return _process_realtime_lane_batch(
+            lane=lane, normalized_txs=normalized_txs, batch_block_numbers=batch_block_numbers,
         )
 
     received_at = datetime.now(timezone.utc)
