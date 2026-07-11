@@ -1530,10 +1530,44 @@ def emit_quicknode_streams_webhook_version() -> None:
     )
 
 
+def emit_quicknode_live_lane_started_at_startup() -> None:
+    """Emit the mandatory quicknode_live_lane_started readiness marker at API boot.
+
+    The live chain-tip lane is served by the /base-live route (this API process), which
+    is event-driven and has no "start", so this boot-time emission is the proof — from
+    Railway logs alone — that the live lane is deployed and its configuration is valid,
+    with the live checkpoint identity, observed chain head, current checkpoint block,
+    and lag. Best-effort: a missing DB/RPC never blocks or fails startup.
+    """
+    try:
+        from services.api.app.quicknode_streams import (
+            _make_base_rpc_client,
+            emit_quicknode_live_lane_started,
+        )
+        from services.api.app.pilot import pg_connection
+
+        rpc_client = None
+        try:
+            rpc_client = _make_base_rpc_client()
+        except Exception:  # pragma: no cover - RPC resolution must never fail boot
+            rpc_client = None
+        with pg_connection() as connection:
+            emit_quicknode_live_lane_started(
+                connection,
+                rpc_client=rpc_client,
+                deployment_commit_sha=BACKEND_GIT_COMMIT or None,
+            )
+    except Exception:  # pragma: no cover - readiness marker is best-effort at boot
+        _quicknode_streams_logger.warning('quicknode_live_lane_started_emit_failed', exc_info=True)
+
+
 def emit_startup_fixture_diagnostics() -> None:
     # Emitted first, outside the try below, so a fixture-diagnostics failure can
     # never suppress the deployed-build marker.
     emit_quicknode_streams_webhook_version()
+    # Live chain-tip lane readiness marker (task step 4). After the version marker so a
+    # live-lane readiness failure can never suppress the deployed-build proof.
+    emit_quicknode_live_lane_started_at_startup()
     try:
         diagnostics = fixture_diagnostics()
         identity = runtime_environment_identity()
@@ -3872,6 +3906,68 @@ async def quicknode_streams_base_webhook(request: Request) -> dict[str, Any]:
         nonce_header=nonce,
         timestamp_header=timestamp,
         content_encoding=content_encoding,
+    ))
+
+
+@app.get('/api/integrations/quicknode/streams/base-live', summary='QuickNode live chain-tip stream webhook health check')
+def quicknode_streams_base_live_health() -> dict[str, Any]:
+    return {'status': 'quicknode_streams_base_live_endpoint_ready'}
+
+
+@app.post('/api/integrations/quicknode/streams/base-live', summary='QuickNode live chain-tip stream webhook (Base current-block wallet transfers)')
+async def quicknode_streams_base_live_webhook(request: Request) -> dict[str, Any]:
+    """Dedicated LIVE lane: a QuickNode stream configured to start at the CURRENT Base
+    block posts here. The lane is explicit (``lane='live'``) — never inferred from a
+    mutable checkpoint — so it advances only quicknode:base:live and reports degraded
+    when the pushed blocks fall behind the chain head. Stable RPC Polling is unchanged."""
+    raw = await request.body()
+    signature = request.headers.get('x-qn-signature')
+    nonce = request.headers.get('x-qn-nonce')
+    timestamp = request.headers.get('x-qn-timestamp')
+    content_encoding = request.headers.get('content-encoding')
+    _quicknode_streams_logger.info(
+        'quicknode_stream_route_hit stream_lane=live stream_key=base-live content_length=%s '
+        'content_encoding=%s has_nonce=%s has_timestamp=%s has_signature=%s',
+        len(raw), content_encoding, bool(nonce), bool(timestamp), bool(signature),
+    )
+    return with_auth_schema_json(lambda: process_quicknode_base_stream_webhook(
+        raw_body=raw,
+        signature_header=signature,
+        nonce_header=nonce,
+        timestamp_header=timestamp,
+        content_encoding=content_encoding,
+        lane='live',
+    ))
+
+
+@app.get('/api/integrations/quicknode/streams/base-backfill', summary='QuickNode historical backfill stream webhook health check')
+def quicknode_streams_base_backfill_health() -> dict[str, Any]:
+    return {'status': 'quicknode_streams_base_backfill_endpoint_ready'}
+
+
+@app.post('/api/integrations/quicknode/streams/base-backfill', summary='QuickNode historical backfill stream webhook (Base wallet transfers)')
+async def quicknode_streams_base_backfill_webhook(request: Request) -> dict[str, Any]:
+    """Dedicated BACKFILL lane: an optional second QuickNode stream replaying history
+    posts here (``lane='backfill'``). It advances only quicknode:base:backfill,
+    persists detected_by=quicknode_stream_backfill, and NEVER controls live health — so
+    a historical catch-up can never paint the UI's QuickNode status green."""
+    raw = await request.body()
+    signature = request.headers.get('x-qn-signature')
+    nonce = request.headers.get('x-qn-nonce')
+    timestamp = request.headers.get('x-qn-timestamp')
+    content_encoding = request.headers.get('content-encoding')
+    _quicknode_streams_logger.info(
+        'quicknode_stream_route_hit stream_lane=backfill stream_key=base-backfill content_length=%s '
+        'content_encoding=%s has_nonce=%s has_timestamp=%s has_signature=%s',
+        len(raw), content_encoding, bool(nonce), bool(timestamp), bool(signature),
+    )
+    return with_auth_schema_json(lambda: process_quicknode_base_stream_webhook(
+        raw_body=raw,
+        signature_header=signature,
+        nonce_header=nonce,
+        timestamp_header=timestamp,
+        content_encoding=content_encoding,
+        lane='backfill',
     ))
 
 
