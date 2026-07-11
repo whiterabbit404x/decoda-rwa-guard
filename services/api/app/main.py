@@ -277,6 +277,7 @@ from services.api.app.monitoring_runner import (
     run_monitoring_once,
     set_background_loop_health,
 )
+from services.api.app import ai_triage
 from services.api.app.workspace_monitoring_summary import build_workspace_monitoring_summary_fallback
 from services.api.app.threat_payloads import normalize_threat_payload
 from services.api.app.db_failure import (
@@ -1660,6 +1661,8 @@ async def lifespan(_: FastAPI):
     global MONITORING_BACKGROUND_TASK, MONITORING_LOOP_RUNTIME_STATE, ALERT_EVENT_BACKGROUND_TASK, DEFERRED_STARTUP_RECONCILE_TASK
     validate_secret_encryption_key_at_startup()
     validate_signing_secret_at_startup()
+    for _warning in ai_triage.configuration_warnings():
+        logger.warning('event=ai_triage_configuration_warning detail=%s', _warning)
     if _is_local_dev_mode():
         seed_service(SERVICE_NAME, PORT, DETAIL, DEFAULT_METRICS)
         seed_embedded_dependency_registry()
@@ -4657,6 +4660,42 @@ def response_actions_rollback(action_id: str, request: Request) -> dict[str, Any
 @app.post('/incidents/{incident_id}/response-actions/recommend', summary='Create or return a recommended response action for an incident')
 def incident_recommend_response_action(incident_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: recommend_response_action_for_incident(incident_id, request))
+
+
+# --- Evidence-grounded AI incident investigation (policy-controlled) ---------
+@app.post('/incidents/{incident_id}/ai-triage', summary='Queue an evidence-grounded AI triage job for an incident')
+def incident_ai_triage_create(incident_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: ai_triage.request_triage(incident_id, request))
+
+
+@app.get('/incidents/{incident_id}/ai-triage', summary='Get the latest AI triage job, structured result, and recommendations')
+def incident_ai_triage_get(incident_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: ai_triage.get_triage(incident_id, request))
+
+
+@app.post('/incidents/{incident_id}/ai-triage/regenerate', summary='Regenerate AI triage (requires a reason)')
+def incident_ai_triage_regenerate(incident_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: ai_triage.regenerate_triage(incident_id, payload, request))
+
+
+@app.get('/incidents/{incident_id}/ai-report', summary='Get the AI incident report (machine JSON + human markdown)')
+def incident_ai_report_get(incident_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: ai_triage.get_report(incident_id, request))
+
+
+@app.post('/incidents/{incident_id}/recommendations/{recommendation_id}/approve', summary='Approve an AI recommendation (records decision; does not execute)')
+def incident_recommendation_approve(incident_id: str, recommendation_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: ai_triage.approve_recommendation(incident_id, recommendation_id, payload, request))
+
+
+@app.post('/incidents/{incident_id}/recommendations/{recommendation_id}/reject', summary='Reject an AI recommendation')
+def incident_recommendation_reject(incident_id: str, recommendation_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: ai_triage.reject_recommendation(incident_id, recommendation_id, payload, request))
+
+
+@app.get('/incidents/ai-triage/usage', summary='Workspace AI triage usage and estimated cost')
+def incident_ai_triage_usage(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: ai_triage.usage_metrics(request))
 
 
 @app.post('/response/actions/{action_id}/simulate', summary='Mark response action as simulated (dry-run, no on-chain effect)')
