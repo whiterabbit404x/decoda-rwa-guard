@@ -6,3 +6,8 @@ cryptography==46.0.5
 boto3==1.36.26
 pytest==8.4.2
 httpx>=0.27
+# Official OpenAI SDK for AI_PROVIDER=openai (Responses API). Imported lazily by
+# services.api.app.ai_providers.OpenAITriageProvider, so it is only needed when
+# the AI triage agent is enabled with the OpenAI provider; tests use a mock
+# client and never import or call the real SDK.
+openai>=1.66.0

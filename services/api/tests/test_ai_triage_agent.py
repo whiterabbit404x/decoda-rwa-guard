@@ -164,6 +164,7 @@ def test_configuration_warning_when_anthropic_without_key(monkeypatch):
     monkeypatch.setenv('AI_TRIAGE_ENABLED', 'true')
     monkeypatch.setenv('AI_PROVIDER', 'anthropic')
     monkeypatch.delenv('AI_API_KEY', raising=False)
+    monkeypatch.delenv('OPENAI_API_KEY', raising=False)
     monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
     warnings = ai_triage.configuration_warnings()
     assert any('AI_API_KEY' in w for w in warnings)
