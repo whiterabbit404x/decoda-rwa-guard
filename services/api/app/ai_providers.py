@@ -5,23 +5,35 @@ server-selected evidence snapshot, hands it to a provider implementing
 ``IncidentTriageProvider.analyze``, and validates whatever raw text comes back.
 No provider is called directly from a route handler.
 
-Two providers ship here:
+Providers that ship here:
 
 * ``MockTriageProvider`` — deterministic, offline, grounded. Used by every unit
-  and integration test (and as the default when ``AI_PROVIDER`` is unset), so
+  and integration test (and as the default when ``AI_PROVIDER`` is empty), so
   tests never depend on live model output or a network call.
-* ``AnthropicTriageProvider`` — the initial concrete provider. Calls the
-  Anthropic Messages API with strict-JSON instructions and hard timeouts. The
-  ``anthropic``/``httpx`` clients are intentionally NOT imported at module load;
-  the call uses the stdlib ``urllib`` so importing this module never requires a
-  network client to be installed (keeping the test harness import-safe).
+* ``OpenAITriageProvider`` — the initial PRODUCTION provider. Calls the official
+  OpenAI Python SDK's Responses API with a strict JSON Schema structured output,
+  an explicit per-request timeout, and bounded exponential-backoff retries. The
+  ``openai`` SDK is intentionally imported lazily inside the call, so importing
+  this module never requires the SDK to be installed (keeping the test harness
+  import-safe) and no automated test ever touches the real OpenAI API.
+* ``AnthropicTriageProvider`` — retained, optional. Uses the stdlib ``urllib`` so
+  importing this module never pulls a network client.
+
+Unknown provider names fail closed (``_UnknownTriageProvider`` raises a
+non-retryable configuration error) — a misconfigured ``AI_PROVIDER`` never
+silently produces a completed result.
 
 Security invariants enforced regardless of provider:
   * The provider only ever receives the server-built evidence snapshot plus the
-    agent policy — never a user-controlled system prompt, DB handle, or tool.
+    agent policy — never a user-controlled system prompt, DB handle, or tool. No
+    tools, web browsing, shell, SQL, wallet signing, contract calls, or arbitrary
+    URL fetching are ever enabled on the model call.
   * Evidence content is embedded as clearly-fenced UNTRUSTED DATA, never as
     system-level instructions (see ``ai_triage.build_prompt``).
   * API keys are read from the environment inside the provider and never logged.
+  * Only the validated structured result text and operational metadata are
+    returned — never hidden reasoning / chain-of-thought (``store=False`` and
+    reasoning items are never persisted or surfaced).
 """
 from __future__ import annotations
 
@@ -306,18 +318,235 @@ class AnthropicTriageProvider:
         )
 
 
+# ---------------------------------------------------------------------------
+# OpenAI provider (initial production implementation, Responses API)
+# ---------------------------------------------------------------------------
+_OPENAI_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+
+
+def _classify_openai_error(exc: Exception) -> tuple[str, bool]:
+    """Map an OpenAI SDK exception to a stable (error_code, retryable) pair.
+
+    Duck-typed on ``status_code`` and the exception class name so this module
+    never needs to import the ``openai`` package (kept import-safe / test-safe).
+    The raw exception message/body is deliberately NOT propagated to callers.
+    """
+    status_code = getattr(exc, 'status_code', None)
+    if status_code is None:
+        status_code = getattr(exc, 'status', None)
+    name = type(exc).__name__.lower()
+    if isinstance(exc, TimeoutError) or 'timeout' in name:
+        return 'provider_timeout', True
+    if status_code == 429 or 'ratelimit' in name:
+        return 'provider_rate_limited', True
+    if isinstance(status_code, int) and status_code >= 500:
+        return 'provider_unavailable', True
+    if 'connection' in name:  # APIConnectionError / connection reset
+        return 'provider_unavailable', True
+    if isinstance(status_code, int) and 400 <= status_code < 500:
+        return 'provider_bad_request', False
+    # Unknown failure: fail closed, do not retry blindly.
+    return 'provider_error', False
+
+
+def _openai_output_text(response: Any) -> str:
+    """Extract ONLY the final structured text from a Responses API result.
+
+    Never returns reasoning / chain-of-thought items — only ``output_text`` /
+    ``output_text`` content blocks. Works with both the real SDK object and a
+    plain dict/namespace (used by the mocked-client tests).
+    """
+    def _get(obj: Any, key: str) -> Any:
+        if isinstance(obj, dict):
+            return obj.get(key)
+        return getattr(obj, key, None)
+
+    direct = _get(response, 'output_text')
+    if isinstance(direct, str) and direct.strip():
+        return direct
+    chunks: list[str] = []
+    for item in (_get(response, 'output') or []):
+        for part in (_get(item, 'content') or []):
+            if _get(part, 'type') in ('output_text', 'text'):
+                text = _get(part, 'text')
+                if isinstance(text, str):
+                    chunks.append(text)
+    return ''.join(chunks).strip()
+
+
+def _openai_usage(response: Any) -> tuple[int, int]:
+    usage = response.get('usage') if isinstance(response, dict) else getattr(response, 'usage', None)
+    if usage is None:
+        return 0, 0
+
+    def _u(key: str) -> int:
+        val = usage.get(key) if isinstance(usage, dict) else getattr(usage, key, None)
+        try:
+            return int(val or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    return _u('input_tokens'), _u('output_tokens')
+
+
+class OpenAITriageProvider:
+    """Calls the OpenAI Responses API and returns the raw structured JSON text.
+
+    * Model comes from ``AI_MODEL_TRIAGE`` (passed in as ``model``).
+    * API key is read from ``AI_API_KEY`` (canonical) or ``OPENAI_API_KEY`` at
+      call time and never logged.
+    * Structured output is enforced with a strict JSON Schema (the
+      ``IncidentTriageResult`` contract) supplied on the prompt.
+    * The call is stateless (``store=False``), tool-free, and reasoning is never
+      requested or surfaced — only the final structured text is returned.
+    * Retryable transport errors (timeout / 429 / 5xx / connection) are retried
+      with bounded exponential backoff; on exhaustion a stable
+      ``TriageProviderError`` is raised (no provider body/secret in the message).
+
+    ``client`` (a pre-built OpenAI client) and ``sleep`` are injectable so unit
+    tests exercise every path with a mock — no automated test calls the real API.
+    """
+
+    name = 'openai'
+
+    def __init__(self, *, client: Any = None, max_attempts: int = 3,
+                 backoff_base_seconds: float = 0.5, sleep: Any = None):
+        self._client = client
+        self._max_attempts = max(1, int(max_attempts))
+        self._backoff_base = float(backoff_base_seconds)
+        self._sleep = sleep or time.sleep
+
+    def _resolve_client(self, timeout_seconds: float) -> Any:
+        if self._client is not None:
+            return self._client
+        import os
+        api_key = (os.getenv('AI_API_KEY') or os.getenv('OPENAI_API_KEY') or '').strip()
+        if not api_key:
+            raise TriageProviderError(
+                'AI_API_KEY (or OPENAI_API_KEY) is not configured for the OpenAI provider.',
+                error_code='missing_api_key', retryable=False,
+            )
+        try:
+            from openai import OpenAI  # lazy: importing this module must not need the SDK
+        except Exception:
+            raise TriageProviderError(
+                'The openai SDK is not installed; AI_PROVIDER=openai cannot run.',
+                error_code='provider_sdk_missing', retryable=False,
+            ) from None
+        # max_retries=0: we own retry/backoff so it is bounded and observable.
+        return OpenAI(api_key=api_key, timeout=timeout_seconds, max_retries=0)
+
+    def analyze(
+        self,
+        *,
+        prompt: dict[str, str],
+        model: str,
+        timeout_seconds: float,
+        max_output_tokens: int,
+    ) -> ProviderRawResult:
+        model_name = (model or '').strip()
+        if not model_name:
+            raise TriageProviderError(
+                'AI_MODEL_TRIAGE is not configured for the OpenAI provider.',
+                error_code='missing_model', retryable=False,
+            )
+        client = self._resolve_client(timeout_seconds)
+
+        schema = prompt.get('json_schema')
+        if schema:
+            text_format = {'format': {
+                'type': 'json_schema',
+                'name': prompt.get('json_schema_name') or 'incident_triage_result',
+                'schema': schema,
+                'strict': True,
+            }}
+        else:  # defensive: still force a JSON object even without the schema
+            text_format = {'format': {'type': 'json_object'}}
+
+        request_kwargs = {
+            'model': model_name,
+            'input': [
+                {'role': 'system', 'content': prompt.get('system', '')},
+                {'role': 'user', 'content': prompt.get('user', '')},
+            ],
+            'text': text_format,
+            'max_output_tokens': int(max_output_tokens),
+            # No tools / web browsing / code interpreter / file search are enabled.
+            'store': False,  # stateless: never persist prompt or hidden reasoning.
+            'timeout': timeout_seconds,
+        }
+
+        started = time.monotonic()
+        for attempt in range(self._max_attempts):
+            try:
+                response = client.responses.create(**request_kwargs)
+            except TriageProviderError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - classify + collapse, never leak body
+                error_code, retryable = _classify_openai_error(exc)
+                if retryable and attempt < self._max_attempts - 1:
+                    self._sleep(self._backoff_base * (2 ** attempt))
+                    continue
+                raise TriageProviderError(
+                    f'OpenAI Responses API request failed ({error_code}).',
+                    error_code=error_code, retryable=retryable,
+                ) from None
+
+            latency_ms = int((time.monotonic() - started) * 1000)
+            raw_text = _openai_output_text(response)
+            input_tokens, output_tokens = _openai_usage(response)
+            resolved_model = response.get('model') if isinstance(response, dict) else getattr(response, 'model', None)
+            return ProviderRawResult(
+                raw_text=raw_text,
+                provider=self.name,
+                model=str(resolved_model or model_name),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                latency_ms=latency_ms,
+                prompt_version=prompt.get('prompt_version', ''),
+            )
+        # Unreachable: the loop either returns or raises.
+        raise TriageProviderError('OpenAI Responses API request failed.', error_code='provider_error', retryable=False)
+
+
+class _UnknownTriageProvider:
+    """Fail-closed provider for an unrecognized ``AI_PROVIDER`` value.
+
+    Returned by ``get_triage_provider`` for any non-empty, unknown name so the
+    triage job lands in a safe ``failed`` state (error_code ``unknown_provider``)
+    instead of crashing the worker or silently reaching a live API.
+    """
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def analyze(self, **_kwargs: Any) -> ProviderRawResult:
+        raise TriageProviderError(
+            f'Configured AI_PROVIDER "{self.name}" is not a recognized provider.',
+            error_code='unknown_provider', retryable=False,
+        )
+
+
 _PROVIDERS: dict[str, Any] = {
     'mock': MockTriageProvider,
+    'openai': OpenAITriageProvider,
     'anthropic': AnthropicTriageProvider,
 }
 
 
 def get_triage_provider(name: str | None) -> IncidentTriageProvider:
-    """Return a provider instance by name. Unknown/empty -> deterministic mock.
+    """Return a provider instance by name.
 
-    Keeping the fallback on the mock means a misconfigured ``AI_PROVIDER`` never
-    silently reaches a live API; the configuration warning surfaces separately.
+    * empty/unset -> deterministic offline mock (safe default; no network).
+    * ``mock`` / ``openai`` / ``anthropic`` -> the concrete provider.
+    * anything else -> a fail-closed provider whose ``analyze`` raises a
+      non-retryable ``unknown_provider`` error (never silently uses the mock,
+      never reaches a live API).
     """
     key = (name or '').strip().lower()
-    factory = _PROVIDERS.get(key, MockTriageProvider)
+    if not key:
+        return MockTriageProvider()
+    factory = _PROVIDERS.get(key)
+    if factory is None:
+        return _UnknownTriageProvider(key)
     return factory()

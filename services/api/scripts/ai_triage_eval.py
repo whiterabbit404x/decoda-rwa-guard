@@ -5,8 +5,8 @@ lets an operator exercise the configured live provider against the same
 deterministic RWA fixtures and see whether each response passes grounding/schema
 validation. It never touches the database and executes no action.
 
-Usage:
-    AI_TRIAGE_ENABLED=true AI_PROVIDER=anthropic AI_MODEL_TRIAGE=claude-opus-4-8 \
+Usage (OpenAI is the initial production provider):
+    AI_TRIAGE_ENABLED=true AI_PROVIDER=openai AI_MODEL_TRIAGE=<openai-model> \
         AI_API_KEY=sk-... python -m services.api.scripts.ai_triage_eval
 
 Exit code is non-zero if any fixture fails validation, so it can gate a manual

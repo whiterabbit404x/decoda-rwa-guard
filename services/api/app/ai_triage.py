@@ -129,6 +129,83 @@ RUNBOOK_CATALOG: dict[str, dict[str, Any]] = {
 
 
 # --------------------------------------------------------------------------
+# Strict JSON Schema for provider structured output (the IncidentTriageResult
+# contract). Providers that support structured output (OpenAI Responses API) are
+# handed this schema so the model MUST return this exact shape. It is a
+# defense-in-depth shape constraint only — the backend still fully re-validates
+# and grounds every value in validate_triage_output(); a schema-valid response is
+# never trusted merely because it parsed.
+#
+# OpenAI strict mode requires: every property listed in "required", and
+# "additionalProperties": false on every object. Optional values are expressed as
+# nullable types rather than omitted keys.
+# --------------------------------------------------------------------------
+def _build_incident_triage_result_schema() -> dict[str, Any]:
+    string = {'type': 'string'}
+    nullable_string = {'type': ['string', 'null']}
+    number = {'type': 'number'}
+    ref_array = {'type': 'array', 'items': {'type': 'string'}}
+
+    def obj(required: list[str], props: dict[str, Any]) -> dict[str, Any]:
+        return {'type': 'object', 'additionalProperties': False, 'required': required, 'properties': props}
+
+    return obj(
+        ['schema_version', 'incident_id', 'summary', 'reason_triggered', 'severity_assessment',
+         'affected_entities', 'timeline', 'risk_findings', 'missing_information',
+         'recommended_runbook_id', 'recommended_actions', 'citations'],
+        {
+            'schema_version': string,
+            'incident_id': string,
+            'summary': string,
+            'reason_triggered': string,
+            'severity_assessment': obj(
+                ['recommended_severity', 'confidence', 'reason'],
+                {
+                    'recommended_severity': {'type': 'string', 'enum': sorted(SEVERITY_ENUM)},
+                    'confidence': number,
+                    'reason': string,
+                },
+            ),
+            'affected_entities': {'type': 'array', 'items': obj(
+                ['type', 'value', 'evidence_refs'],
+                {
+                    'type': {'type': 'string', 'enum': sorted(AFFECTED_ENTITY_TYPES)},
+                    'value': string,
+                    'evidence_refs': ref_array,
+                },
+            )},
+            'timeline': {'type': 'array', 'items': obj(
+                ['timestamp', 'event', 'evidence_refs'],
+                {'timestamp': nullable_string, 'event': string, 'evidence_refs': ref_array},
+            )},
+            'risk_findings': {'type': 'array', 'items': obj(
+                ['title', 'description', 'confidence', 'evidence_refs'],
+                {'title': string, 'description': string, 'confidence': number, 'evidence_refs': ref_array},
+            )},
+            'missing_information': {'type': 'array', 'items': string},
+            'recommended_runbook_id': nullable_string,
+            'recommended_actions': {'type': 'array', 'items': obj(
+                ['action_type', 'reason', 'risk_level', 'requires_human_approval', 'evidence_refs'],
+                {
+                    'action_type': {'type': 'string', 'enum': sorted(ALLOWED_ACTION_TYPES)},
+                    'reason': string,
+                    'risk_level': {'type': 'string', 'enum': sorted(RISK_LEVEL_ENUM)},
+                    'requires_human_approval': {'type': 'boolean'},
+                    'evidence_refs': ref_array,
+                },
+            )},
+            'citations': {'type': 'array', 'items': obj(
+                ['ref', 'description'], {'ref': string, 'description': string},
+            )},
+        },
+    )
+
+
+INCIDENT_TRIAGE_RESULT_SCHEMA: dict[str, Any] = _build_incident_triage_result_schema()
+STRUCTURED_OUTPUT_SCHEMA_NAME = 'incident_triage_result'
+
+
+# --------------------------------------------------------------------------
 # Configuration
 # --------------------------------------------------------------------------
 def _env_float(name: str, default: float) -> float:
@@ -151,7 +228,10 @@ def triage_config() -> dict[str, Any]:
         'enabled': pilot.env_flag('AI_TRIAGE_ENABLED', default=False),
         'provider': (os.getenv('AI_PROVIDER', '') or '').strip().lower(),
         'model': (os.getenv('AI_MODEL_TRIAGE', '') or '').strip(),
-        'has_api_key': bool((os.getenv('AI_API_KEY') or os.getenv('ANTHROPIC_API_KEY') or '').strip()),
+        # AI_API_KEY is the canonical secret; OPENAI_API_KEY (OpenAI's own default
+        # variable) and ANTHROPIC_API_KEY are also honored so an operator can use
+        # the provider's conventional secret name.
+        'has_api_key': bool((os.getenv('AI_API_KEY') or os.getenv('OPENAI_API_KEY') or os.getenv('ANTHROPIC_API_KEY') or '').strip()),
         'request_timeout_seconds': _env_float('AI_REQUEST_TIMEOUT_SECONDS', 30.0),
         'max_input_tokens': _env_int('AI_MAX_INPUT_TOKENS', 12000),
         'max_output_tokens': _env_int('AI_MAX_OUTPUT_TOKENS', 2000),
@@ -166,6 +246,14 @@ def triage_config() -> dict[str, Any]:
     }
 
 
+# Providers the agent knows how to construct. OpenAI is the documented initial
+# production provider; mock is the offline default used by every test; anthropic
+# is retained but optional. Anything else fails closed.
+KNOWN_PROVIDERS = frozenset({'mock', 'openai', 'anthropic'})
+# Providers that require a live API key + model (i.e. actually call a network API).
+LIVE_PROVIDERS = frozenset({'openai', 'anthropic'})
+
+
 def configuration_warnings(config: dict[str, Any] | None = None) -> list[str]:
     """Return human-readable configuration problems for the startup diagnostics.
 
@@ -175,15 +263,44 @@ def configuration_warnings(config: dict[str, Any] | None = None) -> list[str]:
     warnings: list[str] = []
     if not cfg['enabled']:
         return warnings
-    if not cfg['provider']:
+    provider = cfg['provider']
+    if not provider:
         warnings.append('AI_TRIAGE_ENABLED is true but AI_PROVIDER is not set (falling back to the offline mock provider).')
-    if cfg['provider'] == 'anthropic' and not cfg['has_api_key']:
+    elif provider not in KNOWN_PROVIDERS:
+        warnings.append(f'AI_PROVIDER={provider} is not a recognized provider; triage will fail closed (unknown_provider) until it is corrected.')
+    if provider == 'openai' and not cfg['has_api_key']:
+        warnings.append('AI_PROVIDER=openai requires AI_API_KEY (or OPENAI_API_KEY); triage will fail closed until it is configured.')
+    if provider == 'openai' and not cfg['model']:
+        warnings.append('AI_PROVIDER=openai requires AI_MODEL_TRIAGE to select the OpenAI model; triage will fail closed until it is set.')
+    if provider == 'anthropic' and not cfg['has_api_key']:
         warnings.append('AI_PROVIDER=anthropic requires AI_API_KEY; triage will fail closed until it is configured.')
-    if cfg['provider'] and cfg['provider'] not in {'mock', 'anthropic'}:
-        warnings.append(f"AI_PROVIDER={cfg['provider']} is not a recognized provider; falling back to the offline mock provider.")
-    if not cfg['model'] and cfg['provider'] == 'anthropic':
+    if provider == 'anthropic' and not cfg['model']:
         warnings.append('AI_MODEL_TRIAGE is not set; the provider default model will be used.')
     return warnings
+
+
+def blocking_configuration_errors(config: dict[str, Any] | None = None) -> list[str]:
+    """Hard configuration errors that must FAIL the worker startup (not just warn).
+
+    Returned only when AI triage is enabled. An empty provider (mock fallback) is
+    NOT a hard error — the offline mock is always safe. A configured live provider
+    without its key/model, or an unknown provider name, IS a hard error so the
+    dedicated worker exits non-zero and Railway surfaces the misconfiguration
+    instead of silently idling or reaching a live API half-configured.
+    """
+    cfg = config or triage_config()
+    errors: list[str] = []
+    if not cfg['enabled']:
+        return errors
+    provider = cfg['provider']
+    if provider and provider not in KNOWN_PROVIDERS:
+        errors.append(f'AI_PROVIDER={provider} is not a recognized provider (expected one of: {", ".join(sorted(KNOWN_PROVIDERS))}).')
+        return errors
+    if provider in LIVE_PROVIDERS and not cfg['has_api_key']:
+        errors.append(f'AI_PROVIDER={provider} requires an API key (AI_API_KEY or the provider secret) but none is configured.')
+    if provider == 'openai' and not cfg['model']:
+        errors.append('AI_PROVIDER=openai requires AI_MODEL_TRIAGE to select the OpenAI model.')
+    return errors
 
 
 def estimate_cost_usd(input_tokens: int, output_tokens: int, config: dict[str, Any]) -> float:
@@ -464,6 +581,10 @@ def build_prompt(snapshot: dict[str, Any], policy: dict[str, Any], *, prompt_ver
         'user': user,
         'evidence_obj': snapshot,
         'prompt_version': prompt_version,
+        # Structured-output contract for providers that enforce a JSON Schema
+        # (OpenAI Responses API). Providers that don't (mock, anthropic) ignore it.
+        'json_schema': INCIDENT_TRIAGE_RESULT_SCHEMA,
+        'json_schema_name': STRUCTURED_OUTPUT_SCHEMA_NAME,
     }
 
 
