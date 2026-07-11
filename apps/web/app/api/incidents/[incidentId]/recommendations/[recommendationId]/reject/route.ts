@@ -1,0 +1,17 @@
+import { proxyJsonToBackend } from 'app/api/_shared/backend-proxy';
+
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
+// Reject an AI recommendation. Records the human decision; executes no on-chain action.
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ incidentId: string; recommendationId: string }> },
+): Promise<Response> {
+  const { incidentId, recommendationId } = await params;
+  return proxyJsonToBackend(request, {
+    backendPath: `/incidents/${encodeURIComponent(incidentId)}/recommendations/${encodeURIComponent(recommendationId)}/reject`,
+    method: 'POST',
+    forwardBody: true,
+  });
+}

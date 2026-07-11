@@ -23,6 +23,12 @@ STREAM_SUFFIX = ':alerts'
 # "no cross-workspace leakage" requirements. Same transport, reconnect, and
 # health machinery are reused for both.
 TELEMETRY_STREAM_SUFFIX = ':telemetry'
+# Dedicated workspace-scoped stream for incident AI-investigation events
+# (triage queued/running/completed/failed, report generated, recommendation
+# reviewed). Kept distinct from ':alerts' and ':telemetry' so an incident-page
+# subscriber never receives unrelated envelopes and each stream is bounded
+# independently. Same transport/health machinery is reused.
+INCIDENTS_STREAM_SUFFIX = ':incidents'
 DEFAULT_MAX_LENGTH = 1000
 # Redis xread block interval == the SSE heartbeat cadence: when no event arrives
 # within this window the subscriber yields a ``(None, None)`` tick and the SSE
@@ -69,6 +75,10 @@ def stream_key(workspace_id: str) -> str:
 
 def telemetry_stream_key(workspace_id: str) -> str:
     return f'{STREAM_PREFIX}{workspace_id}{TELEMETRY_STREAM_SUFFIX}'
+
+
+def incidents_stream_key(workspace_id: str) -> str:
+    return f'{STREAM_PREFIX}{workspace_id}{INCIDENTS_STREAM_SUFFIX}'
 
 
 def stream_max_length() -> int:
@@ -157,6 +167,31 @@ def publish_telemetry(workspace_id: str, telemetry_data: dict[str, Any]) -> str:
     logger.info(
         'event=telemetry_redis_publish telemetry_id=%s workspace_id=%s stream_key=%s success=true redis_event_id=%s',
         telemetry_data.get('telemetry_id'), workspace_id, stream, event_id,
+    )
+    return event_id
+
+
+def publish_incident(workspace_id: str, incident_data: dict[str, Any]) -> str:
+    """Append an incident AI-investigation event to the workspace :incidents stream.
+
+    Mirrors :func:`publish` but targets the incidents stream so the incident
+    details page can update the AI Investigation section in real time. The caller
+    invokes this only AFTER the database commit and treats a raised exception as
+    non-fatal (the stored analysis is already durable; the page recovers on its
+    next HTTP fetch).
+    """
+    stream = incidents_stream_key(workspace_id)
+    event_id = str(
+        _get_sync_client().xadd(
+            stream,
+            {'payload': json.dumps(incident_data, separators=(',', ':'))},
+            maxlen=stream_max_length(),
+            approximate=False,
+        )
+    )
+    logger.info(
+        'event=incident_redis_publish incident_id=%s workspace_id=%s stream_key=%s success=true redis_event_id=%s event_type=%s',
+        incident_data.get('incident_id'), workspace_id, stream, event_id, incident_data.get('event_type'),
     )
     return event_id
 

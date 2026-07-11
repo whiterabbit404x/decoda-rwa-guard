@@ -1,5 +1,6 @@
 import RuntimeSummaryPanel from '../../../runtime-summary-panel';
 import IncidentsPanel from '../../../incidents-panel';
+import AiInvestigationPanel from '../../../ai-investigation-panel';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,6 +26,7 @@ export default async function IncidentDetailPage({
         </div>
       </section>
       <IncidentsPanel initialSelectedId={incidentId} />
+      <AiInvestigationPanel incidentId={incidentId} />
     </main>
   );
 }
