@@ -12,6 +12,7 @@ import {
   TableShell,
   type PillVariant,
 } from './components/ui-primitives';
+import AiInvestigationPanel from './ai-investigation-panel';
 import { usePilotAuth } from './pilot-auth-context';
 import { useRuntimeSummary } from './runtime-summary-context';
 // Canonical Detected By resolver + label map (single source of truth, mirrors the
@@ -197,6 +198,7 @@ const DETAIL_TABS = [
   { key: 'alerts',            label: 'Alerts' },
   { key: 'evidence',          label: 'Evidence' },
   { key: 'response-actions',  label: 'Response Actions' },
+  { key: 'ai-investigation',  label: 'AI Investigation' },
 ] as const;
 
 type TabKey = typeof DETAIL_TABS[number]['key'];
@@ -681,6 +683,11 @@ function IncidentDetailPanel({ incident, timeline, linkedAlert, evidence, respon
             recommendError={recommendError}
           />
         )}
+        {/* Evidence-grounded AI investigation for the selected incident. The panel is
+            workspace-scoped, polls its own state, and exposes the Start AI Investigation
+            button; it fails closed to a disabled/unavailable message when triage is off
+            or migration 0123 is not yet applied. */}
+        {activeTab === 'ai-investigation' && <AiInvestigationPanel incidentId={incident.id} />}
       </div>
     </aside>
   );
