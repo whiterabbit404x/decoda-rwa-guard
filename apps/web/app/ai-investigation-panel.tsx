@@ -48,6 +48,9 @@ type TriageState = {
   output_tokens?: number | null;
   estimated_cost_usd?: number | null;
   error_code?: string | null;
+  simulated?: boolean;
+  version_count?: number;
+  regenerated_from_job_id?: string | null;
   result?: TriageResult;
   warnings?: string[];
   recommendations?: Recommendation[];
@@ -74,6 +77,10 @@ export default function AiInvestigationPanel({ incidentId }: { incidentId: strin
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // In-app regeneration modal state (replaces the browser prompt()).
+  const [regenOpen, setRegenOpen] = useState(false);
+  const [regenReason, setRegenReason] = useState('');
+  const [regenError, setRegenError] = useState('');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(async () => {
@@ -131,27 +138,44 @@ export default function AiInvestigationPanel({ incidentId }: { incidentId: strin
     }
   }, [incidentId, authHeaders, load]);
 
-  const regenerate = useCallback(async () => {
-    const reason = window.prompt('Reason for regenerating the AI analysis?');
-    if (!reason || !reason.trim()) return;
+  const openRegenerate = useCallback(() => {
+    setRegenReason('');
+    setRegenError('');
+    setRegenOpen(true);
+  }, []);
+
+  const closeRegenerate = useCallback(() => {
+    setRegenOpen(false);
+    setRegenError('');
+  }, []);
+
+  const submitRegenerate = useCallback(async () => {
+    const reason = regenReason.trim();
+    if (!reason) {
+      // In-app validation message — never a raw browser alert.
+      setRegenError('A reason is required to regenerate the analysis.');
+      return;
+    }
     setBusy(true);
     setError('');
     try {
       const res = await fetch(`${API_PROXY_BASE}/incidents/${encodeURIComponent(incidentId)}/ai-triage/regenerate`, {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason: reason.trim() }),
+        body: JSON.stringify({ reason }),
         cache: 'no-store',
       });
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-        setError(String(body.detail ?? 'Unable to regenerate AI triage.'));
+        setRegenError(String(body.detail ?? 'Unable to regenerate AI triage.'));
+        return;
       }
+      setRegenOpen(false);
       await load();
     } finally {
       setBusy(false);
     }
-  }, [incidentId, authHeaders, load]);
+  }, [incidentId, authHeaders, load, regenReason]);
 
   const review = useCallback(
     async (recommendationId: string, decision: 'approve' | 'reject') => {
@@ -310,13 +334,62 @@ export default function AiInvestigationPanel({ incidentId }: { incidentId: strin
           )}
 
           <div className="aiMeta">
-            <p><strong>Model:</strong> {state?.provider} / {state?.model ?? 'default'} · <strong>prompt:</strong> {state?.prompt_version}</p>
+            <p>
+              <strong>Model:</strong> {state?.provider} / {state?.model ?? 'default'}
+              {state?.simulated && (
+                <span className="pill" style={{ marginLeft: '0.4rem' }} title="Deterministic offline mock — no live model was called.">
+                  Simulated (mock)
+                </span>
+              )}
+              {' '}· <strong>prompt:</strong> {state?.prompt_version}
+            </p>
             <p><strong>Generated at:</strong> {state?.completed_at ?? 'n/a'} · <strong>latency:</strong> {state?.latency_ms ?? 'n/a'}ms</p>
-            <p><strong>Tokens:</strong> {state?.input_tokens ?? 0} in / {state?.output_tokens ?? 0} out · <strong>est. cost:</strong> ${state?.estimated_cost_usd ?? 0}</p>
+            <p><strong>Tokens:</strong> {state?.input_tokens ?? 0} in / {state?.output_tokens ?? 0} out · <strong>est. cost:</strong> ${state?.estimated_cost_usd ?? 0}{state?.simulated ? ' (synthetic — not billed)' : ''}</p>
             <p><strong>Evidence snapshot hash:</strong> <code>{state?.evidence_snapshot_hash}</code></p>
+            {(state?.version_count ?? 0) > 1 && (
+              <p><strong>Analysis version:</strong> {state?.version_count} (prior versions preserved)</p>
+            )}
           </div>
 
-          <button type="button" className="secondaryButton" onClick={regenerate} disabled={busy}>Regenerate (requires reason)</button>
+          <button type="button" className="secondaryButton" onClick={openRegenerate} disabled={busy}>Regenerate (requires reason)</button>
+        </div>
+      )}
+
+      {regenOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Regenerate AI analysis"
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}
+          onClick={closeRegenerate}
+        >
+          <div
+            style={{ background: 'var(--card-bg, #0d1627)', border: '1px solid var(--border)', borderRadius: '12px', padding: '1.5rem', maxWidth: '520px', width: '100%' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="eyebrow">Regenerate analysis</p>
+            <h3 style={{ margin: '0.25rem 0 0.75rem' }}>Regenerate AI investigation</h3>
+            <p style={{ fontSize: '0.9rem', marginBottom: '0.75rem' }}>
+              Regeneration creates a new analysis version and preserves the previous result. A reason is required and recorded in the audit log.
+            </p>
+            <label htmlFor="regen-reason" style={{ display: 'block', fontWeight: 600, marginBottom: '0.35rem' }}>Reason<span aria-hidden="true"> *</span></label>
+            <textarea
+              id="regen-reason"
+              value={regenReason}
+              onChange={(e) => { setRegenReason(e.target.value); if (regenError) setRegenError(''); }}
+              rows={3}
+              required
+              aria-required="true"
+              aria-invalid={regenError ? true : undefined}
+              placeholder="Why is this analysis being regenerated?"
+              style={{ width: '100%', boxSizing: 'border-box', padding: '0.5rem', borderRadius: '8px', border: '1px solid var(--border)', background: 'rgba(255,255,255,0.04)', color: 'inherit' }}
+            />
+            {regenError && <p role="alert" className="errorText" style={{ marginTop: '0.5rem' }}>{regenError}</p>}
+            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '1rem' }}>
+              <button type="button" className="secondaryButton" onClick={closeRegenerate} disabled={busy}>Cancel</button>
+              <button type="button" className="primaryButton" onClick={submitRegenerate} disabled={busy}>{busy ? 'Regenerating…' : 'Regenerate'}</button>
+            </div>
+          </div>
         </div>
       )}
     </section>

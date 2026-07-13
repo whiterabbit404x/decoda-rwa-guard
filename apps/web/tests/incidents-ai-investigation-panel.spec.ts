@@ -90,6 +90,34 @@ test('AI panel labels generated content and surfaces grounded citations', async 
   expect(panel).toContain("review(r.recommendation_id, 'reject')");
 });
 
+test('regeneration uses an in-app modal, not a raw browser prompt()', async () => {
+  const panel = read('ai-investigation-panel.tsx');
+
+  // The browser prompt()/alert() flow is removed.
+  expect(panel).not.toContain('window.prompt');
+  expect(panel).not.toContain('window.alert');
+
+  // An accessible in-app modal drives regeneration with a required reason field,
+  // an in-app validation message, and Cancel / Regenerate controls.
+  expect(panel).toContain('role="dialog"');
+  expect(panel).toContain('aria-modal="true"');
+  expect(panel).toContain('id="regen-reason"');
+  expect(panel).toContain('A reason is required to regenerate the analysis.');
+  expect(panel).toContain('onClick={closeRegenerate}');
+  expect(panel).toContain('onClick={submitRegenerate}');
+  // The reason is sent to the regenerate endpoint.
+  expect(panel).toContain('/ai-triage/regenerate');
+});
+
+test('a mock/simulated run is labelled truthfully in the UI', async () => {
+  const panel = read('ai-investigation-panel.tsx');
+  // The panel surfaces the synthetic marker so a mock run is never shown as a real
+  // model call, and prior analysis versions are indicated after regeneration.
+  expect(panel).toContain('Simulated (mock)');
+  expect(panel).toContain('state?.simulated');
+  expect(panel).toContain('prior versions preserved');
+});
+
 test('incident detail route renders the drawer (no duplicate standalone AI panel)', async () => {
   const detail = read('(product)/incidents/[incidentId]/page.tsx');
   expect(detail).toContain('<IncidentsPanel initialSelectedId={incidentId} />');

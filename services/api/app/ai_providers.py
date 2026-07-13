@@ -72,6 +72,10 @@ class ProviderRawResult:
     output_tokens: int = 0
     latency_ms: int = 0
     prompt_version: str = ''
+    # True when the output is deterministic/offline (the mock provider), not a real
+    # model call. The domain layer uses this to keep cost at exactly 0 and to never
+    # apply live pricing or surface a live model name for a synthetic result.
+    simulated: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -99,11 +103,18 @@ class MockTriageProvider:
     parsed dict on ``prompt['evidence']``) and echoes grounded references, so the
     validator's grounding checks pass. It deliberately ignores any instruction
     text embedded in evidence fields (the prompt-injection defense is proven by
-    this indifference). Token counts are derived from payload size so budget and
-    usage-accounting tests have stable, non-zero numbers.
+    this indifference).
+
+    Truthful synthetic metadata (task requirement): a mock run is NOT a real model
+    call, so it always reports ``provider='mock'`` and ``model='mock'`` (never the
+    configured live ``AI_MODEL_TRIAGE`` value such as an OpenAI model name), zero
+    token usage, and ``simulated=True`` so the domain layer keeps cost at exactly 0
+    and never applies live pricing. Latency stays deterministic/observable.
     """
 
     name = 'mock'
+    # Canonical model label for a synthetic run. Never the live AI_MODEL_TRIAGE.
+    MODEL_LABEL = 'mock'
 
     def analyze(
         self,
@@ -123,17 +134,19 @@ class MockTriageProvider:
         result = _deterministic_result_from_snapshot(snapshot)
         raw_text = json.dumps(result, separators=(',', ':'))
         latency_ms = int((time.monotonic() - started) * 1000)
-        # Stable, size-derived token estimates (never a real tokenizer here).
-        input_tokens = max(1, len(prompt.get('user', '')) // 4)
-        output_tokens = max(1, len(raw_text) // 4)
+        # A mock run consumes no real tokens: report zero and mark the result
+        # simulated. The domain layer forces estimated_cost_usd to 0 for a simulated
+        # result and applies no OpenAI pricing. The configured ``model`` argument is
+        # intentionally ignored so a mock run is never mislabeled with a live model.
         return ProviderRawResult(
             raw_text=raw_text,
             provider=self.name,
-            model=model or 'mock-deterministic',
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
+            model=self.MODEL_LABEL,
+            input_tokens=0,
+            output_tokens=0,
             latency_ms=latency_ms,
             prompt_version=prompt.get('prompt_version', ''),
+            simulated=True,
         )
 
 
@@ -191,6 +204,24 @@ def _deterministic_result_from_snapshot(snapshot: dict[str, Any]) -> dict[str, A
     missing_information: list[str] = []
     if not telemetry:
         missing_information.append('No telemetry events were present in the evidence snapshot.')
+    for missing in snapshot.get('missing_information') or []:
+        detail = missing.get('detail') if isinstance(missing, dict) else missing
+        if detail:
+            missing_information.append(str(detail))
+
+    # Truthful summary: without telemetry there is no factual transfer to conclude
+    # from, so the deterministic result states insufficient evidence (and emits no
+    # cited factual findings) rather than asserting a transfer occurred.
+    if telemetry:
+        summary = (
+            'A monitored wallet transfer produced a deterministic alert and this incident. '
+            'Findings below are grounded only in the supplied evidence snapshot.'
+        )
+    else:
+        summary = (
+            'Insufficient evidence: no telemetry event could be resolved for this incident, '
+            'so no factual transfer conclusion is asserted. See missing information.'
+        )
 
     recommended_actions: list[dict[str, Any]] = [{
         'action_type': 'notify_security_team',
@@ -203,10 +234,7 @@ def _deterministic_result_from_snapshot(snapshot: dict[str, Any]) -> dict[str, A
     return {
         'schema_version': '1.0',
         'incident_id': incident_id,
-        'summary': (
-            'A monitored wallet transfer produced a deterministic alert and this incident. '
-            'Findings below are grounded only in the supplied evidence snapshot.'
-        ),
+        'summary': summary,
         'reason_triggered': str(rule.get('description') or rule.get('name') or 'Deterministic monitoring rule matched the telemetry event.'),
         'severity_assessment': {
             'recommended_severity': severity if severity in {'low', 'medium', 'high', 'critical'} else 'medium',

@@ -367,6 +367,21 @@ def ai_triage_schema_ready(connection: Any) -> bool:
         return False
 
 
+def _effective_provider_model(config: dict[str, Any]) -> tuple[str, str | None]:
+    """Resolve the truthful provider/model to persist on a triage job.
+
+    For the offline mock provider (AI_PROVIDER=mock or unset) the run is synthetic,
+    so it is always recorded as provider='mock', model='mock' — never the configured
+    live ``AI_MODEL_TRIAGE`` value (e.g. an OpenAI model name), which would otherwise
+    surface in the UI for a run that never called that model. Live providers keep
+    their configured model unchanged.
+    """
+    provider = (config.get('provider') or 'mock').strip().lower() or 'mock'
+    if provider == 'mock':
+        return 'mock', 'mock'
+    return provider, (config.get('model') or None)
+
+
 def estimate_cost_usd(input_tokens: int, output_tokens: int, config: dict[str, Any]) -> float:
     """Deterministic cost estimate in USD from token counts and configured pricing."""
     cost = (
@@ -379,6 +394,271 @@ def estimate_cost_usd(input_tokens: int, output_tokens: int, config: dict[str, A
 # --------------------------------------------------------------------------
 # Evidence snapshot assembly (trusted, server-only)
 # --------------------------------------------------------------------------
+# Canonical telemetry lives in ``telemetry_events`` (workspace + target scoped);
+# the legacy monitoring path also wrote ``evidence`` rows keyed by ``alert_id``.
+# Both are normalized to the same telemetry entry shape for the snapshot.
+_TELEMETRY_EVENT_COLUMNS = (
+    'id, workspace_id, target_id, provider_type, event_type, observed_at, '
+    'ingested_at, evidence_source, payload_json'
+)
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    """Return a dict from a value that may already be a dict or a JSON string."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        import json as _json
+        try:
+            parsed = _json.loads(value)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _payload_chain(*sources: Any) -> list[dict[str, Any]]:
+    """Collect the persisted response payload dicts from alert/incident rows.
+
+    The live wallet-transfer rule stores the same ``response`` dict on both the
+    alert and the incident; it carries the canonical linking identifiers
+    (telemetry_id, tx_hash, chain_id, detection_type, rule_key) — never parsed
+    from the human-readable title.
+    """
+    chain: list[dict[str, Any]] = []
+    for src in sources:
+        if not src:
+            continue
+        payload = _as_dict(src.get('payload'))
+        if payload:
+            chain.append(payload)
+    return chain
+
+
+def _first_payload_value(payloads: list[dict[str, Any]], key: str) -> Any:
+    for payload in payloads:
+        value = payload.get(key)
+        if value not in (None, ''):
+            return value
+    return None
+
+
+def _resolve_incident_rule_id(detection: Any, alert: Any, incident: Any) -> str | None:
+    """Resolve a truthful, groundable rule identifier for the incident.
+
+    Prefers the canonical detector code; otherwise falls back to the concrete rule
+    key the deterministic rule carried in the alert/incident payload (e.g.
+    ``smoke_wallet_transfer``) so the rule-trigger explanation stays citeable
+    instead of collapsing to a null ``rule:`` reference.
+    """
+    canonical = pilot.resolve_rule_identifier(
+        (detection or {}).get('detection_type'), (incident or {}).get('event_type')
+    )
+    if canonical:
+        return canonical
+    for payload in _payload_chain(alert, incident):
+        rule_key = str(payload.get('rule_key') or '').strip()
+        if rule_key:
+            return rule_key
+        for pattern in payload.get('matched_patterns') or []:
+            if isinstance(pattern, dict) and str(pattern.get('rule_id') or '').strip():
+                return str(pattern['rule_id']).strip()
+        detection_type = str(payload.get('detection_type') or '').strip()
+        if detection_type:
+            return detection_type
+    dtype = str((detection or {}).get('detection_type') or '').strip()
+    return dtype or (str((incident or {}).get('event_type') or '').strip() or None)
+
+
+def _canonical_telemetry_key(entry: dict[str, Any]) -> tuple:
+    """Canonical dedup identity for one telemetry entry.
+
+    QuickNode and Stable RPC observe the same transfer; the canonical identity is
+    (target_id, tx_hash, event_type). Events without a tx_hash fall back to their
+    own telemetry_id so distinct non-transfer events are never merged.
+    """
+    tx = str(entry.get('tx_hash') or '').strip().lower()
+    if tx:
+        return ('tx', str(entry.get('target_id') or ''), tx, str(entry.get('event_type') or ''))
+    return ('id', str(entry.get('telemetry_id') or ''))
+
+
+def _normalize_telemetry_event(row: dict[str, Any], *, default_target_id: Any, target_chain_id: Any) -> dict[str, Any]:
+    """Normalize a canonical ``telemetry_events`` row to the snapshot telemetry shape."""
+    raw = _as_dict(row.get('payload_json'))
+    detected_by = str(raw.get('detected_by') or raw.get('source_type') or row.get('provider_type') or 'unknown')
+    chain_id = raw.get('chain_id') if raw.get('chain_id') is not None else target_chain_id
+    value = raw.get('amount')
+    if value in (None, '') and raw.get('value') not in (None, ''):
+        value = raw.get('value')
+    if value in (None, '') and raw.get('value_wei') is not None:
+        value = str(raw.get('value_wei'))
+    target_id = row.get('target_id') or default_target_id
+    return {
+        'telemetry_id': str(row.get('id')),
+        'event_type': row.get('event_type'),
+        'detected_by': detected_by,
+        'tx_hash': raw.get('tx_hash'),
+        'from': raw.get('from_address') or raw.get('from'),
+        'to': raw.get('to_address') or raw.get('to'),
+        'value': value,
+        'block_number': raw.get('block_number'),
+        'chain_id': chain_id,
+        'observed_at': _iso(row.get('observed_at')),
+        'ingested_at': _iso(row.get('ingested_at')),
+        'evidence_source': pilot.normalize_evidence_source(row.get('evidence_source') or raw.get('evidence_source')),
+        'target_id': str(target_id) if target_id else None,
+    }
+
+
+def _normalize_legacy_evidence(row: dict[str, Any], *, default_target_id: Any, target_chain_id: Any) -> dict[str, Any]:
+    """Normalize a legacy ``evidence`` row to the snapshot telemetry shape."""
+    raw = _as_dict(row.get('raw_payload_json'))
+    detected_by = str(raw.get('detected_by') or row.get('source_provider') or 'unknown')
+    chain_id = raw.get('chain_id') if raw.get('chain_id') is not None else target_chain_id
+    target_id = row.get('target_id') or default_target_id
+    return {
+        'telemetry_id': str(row.get('id')),
+        'event_type': row.get('event_type'),
+        'detected_by': detected_by,
+        'tx_hash': row.get('tx_hash') or raw.get('tx_hash'),
+        'from': raw.get('from_address') or raw.get('from'),
+        'to': raw.get('to_address') or raw.get('to') or row.get('counterparty'),
+        'value': row.get('amount_text') or raw.get('amount') or raw.get('value'),
+        'block_number': row.get('block_number') if row.get('block_number') is not None else raw.get('block_number'),
+        'chain_id': chain_id,
+        'observed_at': _iso(row.get('observed_at')),
+        'ingested_at': _iso(row.get('created_at')),
+        'evidence_source': pilot.normalize_evidence_source(row.get('source_provider') or raw.get('evidence_source')),
+        'target_id': str(target_id) if target_id else None,
+    }
+
+
+def _provider_observation(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        'telemetry_id': entry['telemetry_id'],
+        'detected_by': entry.get('detected_by'),
+        'tx_hash': entry.get('tx_hash'),
+        'observed_at': entry.get('observed_at'),
+        'evidence_source': entry.get('evidence_source'),
+    }
+
+
+def _resolve_incident_telemetry(
+    connection: Any, *, workspace_id: str, incident: dict[str, Any], alert: Any,
+    alert_id: Any, detection: Any, target: Any, target_id: Any,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
+    """Resolve the incident's actual telemetry through canonical identifiers.
+
+    Ordered strategies (first that yields canonical rows wins), all workspace-scoped
+    and never dependent on title parsing:
+
+      1. direct telemetry_id reference   — alert/incident payload ``telemetry_id``
+      2. alert-to-telemetry relation     — legacy ``evidence`` rows keyed by alert_id
+      3. linked_detection relation       — ``detection_events.telemetry_event_id``
+      4. workspace + target + chain_id + tx_hash — canonical ``telemetry_events`` match
+      5. canonical dedup/event identity  — ``telemetry_events.idempotency_key``
+
+    Upstream telemetry dedup already collapses QuickNode and Stable RPC observations
+    of the same transfer into ONE canonical ``telemetry_events`` row
+    (idempotency_key = workspace:target:tx_hash). This resolver additionally
+    de-duplicates whatever rows it gathers by canonical identity so a duplicate
+    observation can never appear twice in the snapshot, while every raw observation
+    is still surfaced under ``provider_observations`` for transparency.
+
+    Returns ``(telemetry, provider_observations, resolution_method)``.
+    """
+    payloads = _payload_chain(alert, incident)
+    direct_telemetry_id = _first_payload_value(payloads, 'telemetry_id')
+    tx_hash = _first_payload_value(payloads, 'tx_hash')
+    chain_id = _first_payload_value(payloads, 'chain_id')
+    detection_telemetry_id = (detection or {}).get('telemetry_event_id')
+    target_chain_id = (target or {}).get('chain_id')
+
+    def _query_events(where: str, params: tuple) -> list[dict[str, Any]]:
+        return connection.execute(
+            f'SELECT {_TELEMETRY_EVENT_COLUMNS} FROM telemetry_events WHERE {where} '
+            'ORDER BY observed_at DESC NULLS LAST, ingested_at DESC LIMIT 50',
+            params,
+        ).fetchall() or []
+
+    canonical_rows: list[dict[str, Any]] = []
+    method: str | None = None
+
+    # 1. direct telemetry_id reference
+    if direct_telemetry_id:
+        canonical_rows = _query_events('workspace_id = %s AND id = %s', (workspace_id, str(direct_telemetry_id)))
+        if canonical_rows:
+            method = 'direct_telemetry_id'
+    # 3. linked_detection relation
+    if not canonical_rows and detection_telemetry_id:
+        canonical_rows = _query_events('workspace_id = %s AND id = %s', (workspace_id, str(detection_telemetry_id)))
+        if canonical_rows:
+            method = 'linked_detection'
+    # 4. workspace + target + chain_id + tx_hash
+    if not canonical_rows and target_id and tx_hash:
+        if chain_id not in (None, ''):
+            canonical_rows = _query_events(
+                "workspace_id = %s AND target_id = %s AND lower(payload_json->>'tx_hash') = lower(%s) "
+                "AND payload_json->>'chain_id' = %s",
+                (workspace_id, str(target_id), str(tx_hash), str(chain_id)),
+            )
+        if not canonical_rows:
+            canonical_rows = _query_events(
+                "workspace_id = %s AND target_id = %s AND lower(payload_json->>'tx_hash') = lower(%s)",
+                (workspace_id, str(target_id), str(tx_hash)),
+            )
+        if canonical_rows:
+            method = 'workspace_target_chain_tx'
+    # 5. canonical dedup/event identity (idempotency_key = workspace:target:tx_hash)
+    if not canonical_rows and target_id and tx_hash:
+        canonical_rows = _query_events(
+            'workspace_id = %s AND idempotency_key = %s',
+            (workspace_id, f'{workspace_id}:{target_id}:{tx_hash}'),
+        )
+        if canonical_rows:
+            method = 'canonical_dedup_identity'
+
+    # 2. alert-to-telemetry relation via the legacy evidence table.
+    legacy_rows: list[dict[str, Any]] = []
+    if alert_id:
+        legacy_rows = connection.execute(
+            '''
+            SELECT id, target_id, event_type, source_provider, tx_hash, counterparty,
+                   amount_text, block_number, chain, observed_at, created_at, raw_payload_json
+            FROM evidence
+            WHERE workspace_id = %s AND alert_id = %s
+            ORDER BY observed_at DESC, created_at DESC
+            LIMIT 50
+            ''',
+            (workspace_id, alert_id),
+        ).fetchall() or []
+        if legacy_rows and method is None:
+            method = 'alert_evidence_relation'
+
+    telemetry: list[dict[str, Any]] = []
+    provider_observations: list[dict[str, Any]] = []
+    seen: set[tuple] = set()
+    for row in canonical_rows:
+        entry = _normalize_telemetry_event(row, default_target_id=target_id, target_chain_id=target_chain_id)
+        provider_observations.append(_provider_observation(entry))
+        key = _canonical_telemetry_key(entry)
+        if key in seen:
+            continue
+        seen.add(key)
+        telemetry.append(entry)
+    for row in legacy_rows:
+        entry = _normalize_legacy_evidence(row, default_target_id=target_id, target_chain_id=target_chain_id)
+        provider_observations.append(_provider_observation(entry))
+        key = _canonical_telemetry_key(entry)
+        if key in seen:
+            continue
+        seen.add(key)
+        telemetry.append(entry)
+
+    return telemetry, provider_observations, method
+
+
 def build_evidence_snapshot(connection: Any, *, workspace_id: str, incident_id: str) -> dict[str, Any]:
     """Assemble the immutable, versioned evidence snapshot for one incident.
 
@@ -389,7 +669,7 @@ def build_evidence_snapshot(connection: Any, *, workspace_id: str, incident_id: 
     incident = connection.execute(
         '''
         SELECT id, workspace_id, target_id, source_alert_id, linked_alert_ids,
-               event_type, severity, status, workflow_status, summary, created_at
+               event_type, severity, status, workflow_status, summary, payload, created_at
         FROM incidents
         WHERE id = %s AND workspace_id = %s
         ''',
@@ -416,7 +696,8 @@ def build_evidence_snapshot(connection: Any, *, workspace_id: str, incident_id: 
     if detection_event_id:
         detection = connection.execute(
             '''
-            SELECT id, detection_type, severity, confidence, evidence_summary, evidence_source
+            SELECT id, detection_type, severity, confidence, evidence_summary,
+                   evidence_source, telemetry_event_id
             FROM detection_events
             WHERE id = %s AND workspace_id = %s
             ''',
@@ -436,52 +717,16 @@ def build_evidence_snapshot(connection: Any, *, workspace_id: str, incident_id: 
             (target_id, workspace_id),
         ).fetchone()
 
-    # Telemetry / evidence rows linked to the incident's alert. Bounded so a
-    # runaway incident never produces an unbounded prompt. from/to live inside
-    # raw_payload_json (the evidence table itself only carries a counterparty).
-    evidence_rows = connection.execute(
-        '''
-        SELECT id, event_type, source_provider, tx_hash, counterparty,
-               amount_text, block_number, chain, observed_at, created_at, raw_payload_json
-        FROM evidence
-        WHERE workspace_id = %s AND alert_id = %s
-        ORDER BY observed_at DESC, created_at DESC
-        LIMIT 50
-        ''',
-        (workspace_id, alert_id),
-    ).fetchall() if alert_id else []
-
-    telemetry: list[dict[str, Any]] = []
-    provider_observations: list[dict[str, Any]] = []
-    for row in evidence_rows:
-        raw = row.get('raw_payload_json') if isinstance(row.get('raw_payload_json'), dict) else {}
-        detected_by = str(raw.get('detected_by') or row.get('source_provider') or 'unknown')
-        evidence_source = pilot.normalize_evidence_source(row.get('source_provider') or raw.get('evidence_source'))
-        entry = {
-            'telemetry_id': str(row.get('id')),
-            'event_type': row.get('event_type'),
-            'detected_by': detected_by,
-            'tx_hash': row.get('tx_hash') or raw.get('tx_hash'),
-            'from': raw.get('from_address') or raw.get('from'),
-            'to': raw.get('to_address') or raw.get('to') or row.get('counterparty'),
-            'value': row.get('amount_text') or raw.get('amount') or raw.get('value'),
-            'block_number': row.get('block_number') if row.get('block_number') is not None else raw.get('block_number'),
-            'chain_id': (target or {}).get('chain_id'),
-            'observed_at': _iso(row.get('observed_at')),
-            'ingested_at': _iso(row.get('created_at')),
-            'evidence_source': evidence_source,
-        }
-        telemetry.append(entry)
-        provider_observations.append({
-            'telemetry_id': entry['telemetry_id'],
-            'detected_by': detected_by,
-            'tx_hash': entry['tx_hash'],
-            'observed_at': entry['observed_at'],
-        })
-
-    rule_identifier = pilot.resolve_rule_identifier(
-        (detection or {}).get('detection_type'), incident.get('event_type')
+    # Resolve the incident's ACTUAL telemetry through canonical identifiers (never by
+    # title parsing). See _resolve_incident_telemetry for the ordered strategy list.
+    # Every query is workspace-scoped and QuickNode/Stable RPC duplicate observations
+    # collapse to one canonical telemetry event.
+    telemetry, provider_observations, telemetry_resolution = _resolve_incident_telemetry(
+        connection, workspace_id=workspace_id, incident=incident, alert=alert,
+        alert_id=alert_id, detection=detection, target=target, target_id=target_id,
     )
+
+    rule_identifier = _resolve_incident_rule_id(detection, alert, incident)
     snapshot = {
         'schema_version': EVIDENCE_SCHEMA_VERSION,
         'workspace_id': str(workspace_id),
@@ -495,7 +740,13 @@ def build_evidence_snapshot(connection: Any, *, workspace_id: str, incident_id: 
         'rule': {
             'rule_id': rule_identifier,
             'name': pilot.rule_label(rule_identifier),
-            'description': str((detection or {}).get('evidence_summary') or 'Deterministic monitoring rule.'),
+            'description': str(
+                (detection or {}).get('evidence_summary')
+                or _first_payload_value(_payload_chain(alert, incident), 'explanation')
+                or (alert or {}).get('summary')
+                or incident.get('summary')
+                or 'Deterministic monitoring rule.'
+            ),
             'conditions': {},
             'version': '1',
         },
@@ -516,20 +767,45 @@ def build_evidence_snapshot(connection: Any, *, workspace_id: str, incident_id: 
         'audit_references': [],
     }
 
+    # Completeness is fail-closed: missing telemetry is stated explicitly and
+    # structured so the UI can distinguish "no data" from "safe". A structured
+    # missing-information reason is recorded so a factual transfer conclusion is
+    # never presented without grounding evidence.
     incomplete_reasons: list[str] = []
+    missing_information: list[dict[str, Any]] = []
     if alert_id is None:
         incomplete_reasons.append('incident has no linked source alert')
+        missing_information.append({
+            'code': 'alert_unlinked',
+            'detail': 'The incident has no linked source alert, so its detection/telemetry chain could not be traced.',
+        })
     if not telemetry:
         incomplete_reasons.append('no telemetry evidence linked to the incident alert')
+        missing_information.append({
+            'code': 'telemetry_unresolved',
+            'detail': (
+                'No canonical telemetry event could be resolved for this incident via '
+                'telemetry_id, alert/detection linkage, or target + chain_id + tx_hash identity.'
+            ),
+        })
     if target is None:
         incomplete_reasons.append('monitored target metadata unavailable')
+        missing_information.append({
+            'code': 'target_metadata_unavailable',
+            'detail': 'The monitored target record could not be loaded, so chain/address context is missing.',
+        })
     snapshot['evidence_complete'] = not incomplete_reasons
+    snapshot['evidence_incomplete'] = bool(incomplete_reasons)
     snapshot['incomplete_reasons'] = incomplete_reasons
+    snapshot['missing_information'] = missing_information
+    snapshot['telemetry_resolution'] = telemetry_resolution
 
     return {
         'snapshot': snapshot,
         'is_complete': not incomplete_reasons,
         'incomplete_reasons': incomplete_reasons,
+        'missing_information': missing_information,
+        'telemetry_resolution': telemetry_resolution,
         'evidence_count': len(telemetry),
         'source_record_ids': {
             'incident_id': str(incident_id),
@@ -537,6 +813,7 @@ def build_evidence_snapshot(connection: Any, *, workspace_id: str, incident_id: 
             'detection_event_id': str(detection_event_id) if detection_event_id else None,
             'target_id': str(target_id) if target_id else None,
             'telemetry_ids': [t['telemetry_id'] for t in telemetry],
+            'telemetry_resolution': telemetry_resolution,
         },
     }
 
@@ -831,10 +1108,29 @@ def validate_triage_output(raw_text: str, snapshot: dict[str, Any], policy: dict
     parsed['recommended_actions'] = parsed.get('recommended_actions') or []
 
     # citations
-    for citation in parsed.get('citations') or []:
+    citations = parsed.get('citations') or []
+    for citation in citations:
         ref = str(citation.get('ref') or '')
         if ref not in valid['refs']:
             raise TriageValidationError('invalid_evidence_reference', f'citation references unknown evidence "{ref}".')
+
+    # Grounded-citation enforcement (aggregate backstop to the per-finding checks
+    # above): a result that asserts ANY factual finding — an affected entity, a
+    # timeline event, or a risk finding — MUST carry at least one valid evidence
+    # citation. A factual result with citation_count=0 is rejected here and lands in
+    # the validation_failed state, never completed. A truthful "insufficient
+    # evidence" result (no factual findings, only missing_information) is allowed to
+    # complete without citations so the missing-telemetry path stays honest.
+    has_factual_findings = bool(
+        (parsed.get('risk_findings') or [])
+        or (parsed.get('affected_entities') or [])
+        or (parsed.get('timeline') or [])
+    )
+    if has_factual_findings and not citations:
+        raise TriageValidationError(
+            'missing_citation',
+            'Result asserts factual findings but provides no grounded evidence citations.',
+        )
 
     parsed.setdefault('missing_information', [])
     parsed['schema_version'] = RESULT_SCHEMA_VERSION
@@ -946,6 +1242,10 @@ def _serialize_job(row: dict[str, Any]) -> dict[str, Any]:
         'estimated_cost_usd': float(row['estimated_cost_usd']) if row.get('estimated_cost_usd') is not None else None,
         'error_code': row.get('error_code'),
         'retry_count': row.get('retry_count'),
+        # Truthful synthetic marker so the UI never presents a mock run as a real
+        # model call (and never displays a live model name for it).
+        'simulated': str(row.get('provider') or '').strip().lower() == 'mock',
+        'regenerated_from_job_id': str(row['regenerated_from_job_id']) if row.get('regenerated_from_job_id') else None,
         'created_at': _iso(row.get('created_at')),
     }
 
@@ -989,6 +1289,22 @@ def request_triage(incident_id: str, request: Any, *, regenerate: bool = False, 
                 'message': 'AI triage is disabled for this deployment (AI_TRIAGE_ENABLED=false).',
             }
 
+        # On regeneration, link the new job/version back to the most recent prior job
+        # (regenerated_from_job_id). The prior job, its immutable evidence snapshot,
+        # and its result are ALL preserved — regeneration only ever appends a new
+        # version, it never overwrites earlier analysis.
+        regenerated_from_job_id: str | None = None
+        if regenerate:
+            prior = connection.execute(
+                '''
+                SELECT id FROM ai_triage_jobs
+                WHERE incident_id = %s AND workspace_id = %s
+                ORDER BY created_at DESC LIMIT 1
+                ''',
+                (incident_id, workspace_id),
+            ).fetchone()
+            regenerated_from_job_id = str(prior['id']) if prior else None
+
         active = connection.execute(
             '''
             SELECT id FROM ai_triage_jobs
@@ -1017,20 +1333,21 @@ def request_triage(incident_id: str, request: Any, *, regenerate: bool = False, 
         assembled = build_evidence_snapshot(connection, workspace_id=workspace_id, incident_id=incident_id)
         snapshot_row = store_evidence_snapshot(connection, workspace_id=workspace_id, incident_id=incident_id, assembled=assembled)
 
+        effective_provider, effective_model = _effective_provider_model(config)
         job_id = str(uuid.uuid4())
         connection.execute(
             '''
             INSERT INTO ai_triage_jobs (
                 id, workspace_id, incident_id, evidence_snapshot_id, status, provider, model,
                 prompt_version, evidence_schema_version, evidence_snapshot_hash, max_retries,
-                regenerate_reason, created_by, created_at, updated_at, next_attempt_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW())
+                regenerate_reason, regenerated_from_job_id, created_by, created_at, updated_at, next_attempt_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW())
             ''',
             (
                 job_id, workspace_id, incident_id, snapshot_row['id'], JOB_QUEUED,
-                config['provider'] or 'mock', config['model'] or None, config['prompt_version'],
+                effective_provider, effective_model, config['prompt_version'],
                 EVIDENCE_SCHEMA_VERSION, snapshot_row['snapshot_hash'], config['max_retries'],
-                (reason or None), user['id'],
+                (reason or None), regenerated_from_job_id, user['id'],
             ),
         )
 
@@ -1040,7 +1357,17 @@ def request_triage(incident_id: str, request: Any, *, regenerate: bool = False, 
                          'evidence_count': snapshot_row['evidence_count'], 'is_complete': snapshot_row['is_complete']})
         _audit(connection, request=request, action='incident.ai_triage.queued', incident_id=incident_id,
                workspace_id=workspace_id, user_id=user['id'],
-               metadata={'triage_job_id': job_id, 'regenerate': bool(regenerate)})
+               metadata={'triage_job_id': job_id, 'regenerate': bool(regenerate),
+                         'provider': effective_provider, 'model': effective_model,
+                         'simulated': effective_provider == 'mock',
+                         'regenerated_from_job_id': regenerated_from_job_id, 'reason': (reason or None)})
+        if regenerate:
+            # Dedicated regeneration audit record: the required reason and the prior
+            # version this analysis supersedes are both captured for the audit trail.
+            _audit(connection, request=request, action='incident.ai_triage.regenerated', incident_id=incident_id,
+                   workspace_id=workspace_id, user_id=user['id'],
+                   metadata={'triage_job_id': job_id, 'regenerated_from_job_id': regenerated_from_job_id,
+                             'reason': (reason or None)})
         logger.info(
             'event=incident_evidence_snapshot_created workspace_id=%s incident_id=%s snapshot_id=%s snapshot_hash=%s evidence_count=%s',
             workspace_id, incident_id, snapshot_row['id'], snapshot_row['snapshot_hash'], snapshot_row['evidence_count'],
@@ -1188,7 +1515,10 @@ def _run_provider_and_persist(connection, *, claimed, job_id, workspace_id, inci
         post_commit.append(_incident_event('incident.ai_triage.failed', incident_id, workspace_id, {'triage_job_id': str(job_id), 'error_code': exc.error_code}))
         return {'status': JOB_FAILED, 'error_code': exc.error_code}
 
-    cost = estimate_cost_usd(raw.input_tokens, raw.output_tokens, config)
+    # A simulated (mock) result consumes no real tokens and incurs no provider cost:
+    # force estimated_cost_usd to exactly 0 and apply NO live (OpenAI) pricing. Real
+    # provider accounting is untouched — simulated is False for an actual API call.
+    cost = 0.0 if getattr(raw, 'simulated', False) else estimate_cost_usd(raw.input_tokens, raw.output_tokens, config)
     model_response_hash = 'sha256:' + hashlib.sha256((raw.raw_text or '').encode('utf-8')).hexdigest()
 
     try:
@@ -1262,6 +1592,14 @@ def _run_provider_and_persist(connection, *, claimed, job_id, workspace_id, inci
     _record_usage(connection, workspace_id=workspace_id, incident_id=incident_id, triage_job_id=job_id,
                   config=config, input_tokens=raw.input_tokens, output_tokens=raw.output_tokens, cost=cost,
                   outcome=status_final, provider=raw.provider, model=raw.model)
+    # Completion audit whose metadata clearly identifies whether the result is
+    # synthetic (mock) vs a real model call, with the grounded citation count.
+    _audit(connection, request=None, action='incident.ai_triage.completed', incident_id=incident_id,
+           workspace_id=workspace_id, user_id=None,
+           metadata={'triage_job_id': str(job_id), 'result_id': result_id, 'status': status_final,
+                     'provider': raw.provider, 'model': raw.model, 'simulated': bool(getattr(raw, 'simulated', False)),
+                     'estimated_cost_usd': cost, 'input_tokens': raw.input_tokens, 'output_tokens': raw.output_tokens,
+                     'citation_count': len(result.get('citations') or [])})
     logger.info(
         'event=ai_triage_completed workspace_id=%s incident_id=%s triage_job_id=%s latency_ms=%s input_tokens=%s output_tokens=%s estimated_cost_usd=%s citation_count=%s warning_count=%s',
         workspace_id, incident_id, job_id, raw.latency_ms, raw.input_tokens, raw.output_tokens, cost,
@@ -1294,6 +1632,9 @@ def _finalize_job(connection, *, job_id, workspace_id, incident_id, status_value
 
 def _record_usage(connection, *, workspace_id, incident_id, triage_job_id, config, input_tokens, output_tokens,
                   cost, outcome, provider=None, model=None) -> None:
+    # Fall back to the truthful effective provider/model (mock/mock for a synthetic
+    # run) so accounting rows never carry the configured live model for a mock run.
+    eff_provider, eff_model = _effective_provider_model(config)
     connection.execute(
         '''
         INSERT INTO ai_usage_events (
@@ -1301,8 +1642,8 @@ def _record_usage(connection, *, workspace_id, incident_id, triage_job_id, confi
             estimated_cost_usd, outcome, created_at
         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
         ''',
-        (str(uuid.uuid4()), workspace_id, incident_id, triage_job_id, provider or config['provider'] or 'mock',
-         model or config['model'], int(input_tokens), int(output_tokens), float(cost), outcome),
+        (str(uuid.uuid4()), workspace_id, incident_id, triage_job_id, provider or eff_provider,
+         model if model is not None else eff_model, int(input_tokens), int(output_tokens), float(cost), outcome),
     )
 
 
@@ -1358,7 +1699,7 @@ def get_triage(incident_id: str, request: Any) -> dict[str, Any]:
             '''
             SELECT id, incident_id, status, provider, model, prompt_version, evidence_schema_version,
                    evidence_snapshot_hash, started_at, completed_at, latency_ms, input_tokens, output_tokens,
-                   estimated_cost_usd, error_code, retry_count, created_at
+                   estimated_cost_usd, error_code, retry_count, regenerated_from_job_id, created_at
             FROM ai_triage_jobs
             WHERE incident_id = %s AND workspace_id = %s
             ORDER BY created_at DESC LIMIT 1
@@ -1369,6 +1710,12 @@ def get_triage(incident_id: str, request: Any) -> dict[str, Any]:
             return {'status': JOB_NOT_REQUESTED, 'incident_id': str(incident_id), 'enabled': triage_config()['enabled']}
         payload = _serialize_job(dict(job))
         payload['enabled'] = triage_config()['enabled']
+        # Count prior versions so the UI can show that regeneration preserved history.
+        version_row = connection.execute(
+            'SELECT COUNT(*) AS n FROM ai_triage_jobs WHERE incident_id = %s AND workspace_id = %s',
+            (incident_id, workspace_id),
+        ).fetchone()
+        payload['version_count'] = int((version_row or {}).get('n') or 1)
         result = connection.execute(
             '''
             SELECT id, result_json, warnings, missing_information, result_hash, created_at
@@ -1453,6 +1800,8 @@ def build_machine_report(*, job: dict[str, Any], result_json: dict[str, Any], re
         'result_hash': result_hash,
         'model_metadata': {
             'provider': job.get('provider'), 'model': job.get('model'), 'prompt_version': job.get('prompt_version'),
+            # Synthetic marker: true for an offline mock run (no real model call).
+            'simulated': str(job.get('provider') or '').strip().lower() == 'mock',
             'latency_ms': job.get('latency_ms'), 'input_tokens': job.get('input_tokens'),
             'output_tokens': job.get('output_tokens'),
             'estimated_cost_usd': float(job['estimated_cost_usd']) if job.get('estimated_cost_usd') is not None else None,
