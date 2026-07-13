@@ -67,10 +67,17 @@ class FakeConn:
         self.budget_ws = kw.get('budget_ws', 0)
         self.budget_global = kw.get('budget_global', 0)
         self.rec_row = kw.get('rec_row')
+        self.queued_job_row = kw.get('queued_job_row')
+        # Migration 0123 schema presence (to_regclass probe). Defaults to applied.
+        self.schema_present = kw.get('schema_present', True)
 
     def execute(self, query, params=None):
         n = ' '.join(str(query).split())
         self.executed.append((n, params))
+        if 'to_regclass' in n:
+            return FakeResult(row={'present': self.schema_present})
+        if n.startswith('SELECT id FROM ai_triage_jobs') and "status = 'queued'" in n:
+            return FakeResult(row=self.queued_job_row)
         if n.startswith("UPDATE ai_triage_jobs SET status = 'running'"):
             return FakeResult(row=self.claim_row)
         if 'FROM incident_evidence_snapshots WHERE id' in n:
@@ -396,6 +403,93 @@ def test_process_job_completes_and_persists_result_citations_recommendations_usa
     assert len(conn.inserts['citations']) >= 1
     assert len(conn.inserts['recommendations']) == 1
     assert len(conn.inserts['usage']) == 1
+
+
+def test_worker_once_claims_and_completes_mock_job(monkeypatch):
+    """End-to-end worker entrypoint: a queued mock job is claimed (running) and completed."""
+    monkeypatch.setenv('AI_TRIAGE_ENABLED', 'true')
+    monkeypatch.setenv('AI_PROVIDER', 'mock')
+    conn = FakeConn(queued_job_row={'id': 'job-1'}, claim_row=_claim_row(), snapshot_json=_snapshot())
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
+    summary = ai_triage.run_ai_triage_worker_once()
+    assert summary['processed'] == 1
+    assert summary['job']['status'] in ('completed', 'completed_with_warnings')
+    assert len(conn.inserts['results']) == 1
+
+
+def test_worker_once_idle_when_no_queued_job(monkeypatch):
+    monkeypatch.setenv('AI_TRIAGE_ENABLED', 'true')
+    monkeypatch.setenv('AI_PROVIDER', 'mock')
+    conn = FakeConn(queued_job_row=None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
+    assert ai_triage.run_ai_triage_worker_once() == {'processed': 0}
+
+
+# --------------------------------------------------------------------------
+# Workspace authorization + migration-0123 schema gating (Start-button safety)
+# --------------------------------------------------------------------------
+def test_request_triage_enforces_workspace_permission(monkeypatch):
+    monkeypatch.setenv('AI_TRIAGE_ENABLED', 'true')
+    conn = FakeConn(incident_row={'id': 'inc-1', 'workspace_id': 'ws-1'})
+    _bootstrap(monkeypatch, conn, permission_ok=False)
+    monkeypatch.setattr(pilot, 'log_audit', lambda *a, **k: None)
+    with pytest.raises(pilot.HTTPException) as exc:
+        ai_triage.request_triage('inc-1', _req())
+    assert exc.value.status_code == 403
+    assert conn.inserts['jobs'] == []
+
+
+def test_request_triage_queues_job_when_enabled_and_schema_ready(monkeypatch):
+    monkeypatch.setenv('AI_TRIAGE_ENABLED', 'true')
+    monkeypatch.setenv('AI_PROVIDER', 'mock')
+    conn = FakeConn(incident_row={'id': 'inc-1', 'workspace_id': 'ws-1'})  # schema_present defaults True
+    _bootstrap(monkeypatch, conn)
+    monkeypatch.setattr(pilot, 'log_audit', lambda *a, **k: None)
+    # Isolate the queue logic from the full snapshot-assembly SQL.
+    monkeypatch.setattr(ai_triage, 'build_evidence_snapshot',
+                        lambda *a, **k: {'snapshot': {}, 'is_complete': True, 'incomplete_reasons': [], 'evidence_count': 1, 'source_record_ids': {}})
+    monkeypatch.setattr(ai_triage, 'store_evidence_snapshot',
+                        lambda *a, **k: {'id': 'snap-1', 'snapshot_hash': 'sha256:abc', 'schema_version': '1.0', 'is_complete': True, 'evidence_count': 1})
+    out = ai_triage.request_triage('inc-1', _req())
+    assert out['status'] == 'queued'
+    assert out['enabled'] is True
+    assert len(conn.inserts['jobs']) == 1
+    # Workspace-scoped insert: the job row carries ws-1.
+    assert conn.inserts['jobs'][0][1] == 'ws-1'
+
+
+def test_request_triage_blocked_when_migration_0123_missing(monkeypatch):
+    monkeypatch.setenv('AI_TRIAGE_ENABLED', 'true')
+    conn = FakeConn(incident_row={'id': 'inc-1', 'workspace_id': 'ws-1'}, schema_present=False)
+    _bootstrap(monkeypatch, conn)
+    monkeypatch.setattr(pilot, 'log_audit', lambda *a, **k: None)
+    with pytest.raises(pilot.HTTPException) as exc:
+        ai_triage.request_triage('inc-1', _req())
+    assert exc.value.status_code == 503
+    assert 'migration' in str(exc.value.detail).lower()
+    assert conn.inserts['jobs'] == []
+
+
+def test_ai_triage_schema_ready_detects_missing_and_present_tables():
+    class _C:
+        def __init__(self, present):
+            self.present = present
+
+        def execute(self, _q, _p=None):
+            return FakeResult(row={'present': self.present})
+
+    assert ai_triage.ai_triage_schema_ready(_C(True)) is True
+    assert ai_triage.ai_triage_schema_ready(_C(False)) is False
+
+
+def test_get_triage_reports_unavailable_when_schema_missing(monkeypatch):
+    monkeypatch.setenv('AI_TRIAGE_ENABLED', 'true')
+    conn = FakeConn(schema_present=False)
+    _bootstrap(monkeypatch, conn)
+    out = ai_triage.get_triage('inc-1', _req())
+    assert out['status'] == 'unavailable'
+    assert out['schema_ready'] is False
+    assert '0123' in out['message']
 
 
 def test_process_job_disabled_does_not_call_provider(monkeypatch):

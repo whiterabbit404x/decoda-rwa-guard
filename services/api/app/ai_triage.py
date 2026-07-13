@@ -303,6 +303,70 @@ def blocking_configuration_errors(config: dict[str, Any] | None = None) -> list[
     return errors
 
 
+def database_configuration_errors(config: dict[str, Any] | None = None) -> list[str]:
+    """Hard database / live-mode errors that must FAIL the worker startup once.
+
+    Returned only when AI triage is enabled — a disabled worker needs no database.
+
+    The dedicated worker opens Postgres through ``pilot.pg_connection()``, whose
+    ONLY requirement is ``DATABASE_URL`` (an unset/empty value is exactly the
+    condition that raises the 503 "Live pilot mode is not configured." at
+    pilot.py:622, which — without this startup gate — is caught by the worker loop
+    and re-raised every ``AI_TRIAGE_WORKER_INTERVAL_SECONDS`` in an endless
+    ``ai_triage_worker_cycle_failed`` loop). The worker also only ever has jobs to
+    claim when the incidents API queued them in live mode
+    (``pilot.require_live_mode()`` -> ``runtime_mode_config_summary()``), so the
+    canonical live-mode flag is validated here too.
+
+    Never returns a connection string or secret — only the missing variable names,
+    so the loud ``ai_triage_worker_configuration_error`` log carries no credentials.
+    """
+    cfg = config or triage_config()
+    errors: list[str] = []
+    if not cfg['enabled']:
+        return errors
+    if not pilot.database_url():
+        errors.append(
+            'DATABASE_URL is not set. The AI triage worker opens Postgres via '
+            'pilot.pg_connection(), which requires DATABASE_URL; without it every '
+            'cycle raises 503 "Live pilot mode is not configured."'
+        )
+        return errors  # nothing else can be validated without a connection string
+    mode = pilot.runtime_mode_config_summary()
+    if mode['postgres_required_for_live_mode']:
+        errors.append(
+            'DATABASE_URL must be a Postgres connection string for live mode '
+            '(LIVE_MODE_ENABLED=true but the configured DATABASE_URL is not Postgres).'
+        )
+    elif not mode['live_mode_enabled']:
+        errors.append(
+            'LIVE_MODE_ENABLED must be true for AI triage. The incidents API only '
+            'queues triage jobs in live mode (pilot.require_live_mode()), so with '
+            'live mode off the worker can never receive work.'
+        )
+    return errors
+
+
+# Tables introduced by migration 0123 (0123_ai_triage_agent.sql). The Start AI
+# Investigation button must only be exposed once this schema exists, otherwise the
+# first triage write would fail; checking the two tables the request path writes to
+# reliably proves the (atomically-applied) migration ran.
+AI_TRIAGE_SCHEMA_MIGRATION = '0123_ai_triage_agent'
+AI_TRIAGE_REQUIRED_TABLES = ('incident_evidence_snapshots', 'ai_triage_jobs')
+
+
+def ai_triage_schema_ready(connection: Any) -> bool:
+    """True when migration 0123's core AI-triage tables exist. Fail-closed on error."""
+    try:
+        for table in AI_TRIAGE_REQUIRED_TABLES:
+            row = connection.execute('SELECT to_regclass(%s) IS NOT NULL AS present', (f'public.{table}',)).fetchone()
+            if not bool((row or {}).get('present')):
+                return False
+        return True
+    except Exception:  # pragma: no cover - any probe failure is treated as not-ready
+        return False
+
+
 def estimate_cost_usd(input_tokens: int, output_tokens: int, config: dict[str, Any]) -> float:
     """Deterministic cost estimate in USD from token counts and configured pricing."""
     cost = (
@@ -941,6 +1005,15 @@ def request_triage(incident_id: str, request: Any, *, regenerate: bool = False, 
                 (active['id'], workspace_id),
             )
 
+        # Fail closed if migration 0123 has not been applied: the immutable-snapshot
+        # and job-queue writes below target tables that only exist after 0123, so a
+        # missing schema must surface as a clear 503, never a raw insert error.
+        if not ai_triage_schema_ready(connection):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f'AI investigation storage is not initialized. Apply database migration {AI_TRIAGE_SCHEMA_MIGRATION}.',
+            )
+
         assembled = build_evidence_snapshot(connection, workspace_id=workspace_id, incident_id=incident_id)
         snapshot_row = store_evidence_snapshot(connection, workspace_id=workspace_id, incident_id=incident_id, assembled=assembled)
 
@@ -1272,6 +1345,15 @@ def get_triage(incident_id: str, request: Any) -> dict[str, Any]:
         user = pilot.authenticate_with_connection(connection, request)
         workspace_context = pilot.resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         workspace_id = workspace_context['workspace_id']
+        # Fail closed (and hide the Start button in the UI) until migration 0123 is
+        # applied, rather than 500-ing on a query against a non-existent table.
+        if not ai_triage_schema_ready(connection):
+            return {
+                'status': 'unavailable', 'enabled': triage_config()['enabled'], 'schema_ready': False,
+                'incident_id': str(incident_id),
+                'message': f'AI investigation is unavailable: database migration {AI_TRIAGE_SCHEMA_MIGRATION} is not applied.',
+                'label': 'AI-generated analysis — verify before action.',
+            }
         job = connection.execute(
             '''
             SELECT id, incident_id, status, provider, model, prompt_version, evidence_schema_version,

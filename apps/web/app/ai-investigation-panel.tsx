@@ -35,6 +35,8 @@ type TriageResult = {
 type TriageState = {
   status: string;
   enabled?: boolean;
+  schema_ready?: boolean;
+  message?: string;
   triage_job_id?: string;
   provider?: string;
   model?: string;
@@ -55,6 +57,7 @@ type TriageState = {
 const STATUS_LABELS: Record<string, string> = {
   not_requested: 'Ready to analyze',
   disabled: 'AI triage disabled',
+  unavailable: 'Unavailable',
   queued: 'Queued',
   running: 'Investigating…',
   completed: 'Completed',
@@ -203,9 +206,15 @@ export default function AiInvestigationPanel({ incidentId }: { incidentId: strin
         <p>AI triage is disabled for this deployment. An administrator can enable it via configuration.</p>
       )}
 
+      {!loading && state?.status === 'unavailable' && (
+        <p role="alert" className="errorText">
+          {state?.message ?? 'AI investigation is currently unavailable for this deployment.'}
+        </p>
+      )}
+
       {!loading && state && (state.status === 'not_requested') && (
         <button type="button" className="primaryButton" onClick={startAnalysis} disabled={busy}>
-          {busy ? 'Starting…' : 'Start AI analysis'}
+          {busy ? 'Starting…' : 'Start AI Investigation'}
         </button>
       )}
 

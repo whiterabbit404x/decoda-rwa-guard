@@ -10,10 +10,13 @@ Startup states (deliberately distinct and visible in the logs):
                         periodic ``ai_triage_worker_disabled`` heartbeat. It does
                         NOT exit, so the Railway service stays up in a clear
                         disabled state.
-  * configuration_error enabled but the provider is unknown / missing its key or
-                        model — the worker logs ``ai_triage_worker_configuration_error``
-                        and exits non-zero so Railway restarts it and the
-                        misconfiguration is loud instead of silently idle.
+  * configuration_error enabled but misconfigured — an unknown provider / a live
+                        provider missing its key or model, OR the database/live-mode
+                        configuration is unavailable (no DATABASE_URL, or LIVE_MODE
+                        off). The worker logs ``ai_triage_worker_configuration_error``
+                        (with the missing variable names, never credentials) and
+                        exits non-zero so Railway restarts it and the misconfiguration
+                        is loud instead of looping on pg_connection() 503s forever.
   * enabled             enabled and valid — the processing loop runs.
 
 This worker runs as its OWN Railway service (railway-ai-triage-worker.json). A
@@ -55,11 +58,21 @@ def main() -> int:
     config = ai_triage.triage_config()
     state, detail = resolve_startup_state(config)
 
-    if state == 'configuration_error':
-        for item in detail:
+    # Validate the database / live-mode configuration ONCE at startup for an
+    # otherwise-enabled worker. Without this, a missing DATABASE_URL (or live-mode
+    # flag) is only discovered inside the loop, where pg_connection() raises 503
+    # "Live pilot mode is not configured." every cycle forever. A disabled worker
+    # needs no database, and a provider-misconfigured worker already fails below.
+    config_errors = list(detail)
+    if state == 'enabled':
+        config_errors.extend(ai_triage.database_configuration_errors(config))
+
+    if state == 'configuration_error' or config_errors:
+        for item in config_errors:
             logger.error('event=ai_triage_worker_configuration_error detail=%s', item)
         logger.error('event=ai_triage_worker_exiting reason=configuration_error provider=%s', config['provider'] or 'unset')
-        # Non-zero exit -> Railway restarts the service; the error stays loud.
+        # Non-zero exit -> Railway restarts the service; the error stays loud and the
+        # worker NEVER enters the five-second cycle-failure loop.
         return 1
 
     logger.info(

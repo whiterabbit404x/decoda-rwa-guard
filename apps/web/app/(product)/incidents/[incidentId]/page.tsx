@@ -1,12 +1,13 @@
 import RuntimeSummaryPanel from '../../../runtime-summary-panel';
 import IncidentsPanel from '../../../incidents-panel';
-import AiInvestigationPanel from '../../../ai-investigation-panel';
 
 export const dynamic = 'force-dynamic';
 
 // Incident detail route. "View Incident" / "Open Incident" on the Alerts page route here with the
 // persisted incident_id, so a linked incident always has a real, loadable destination (not just
-// the /incidents list). IncidentsPanel preselects and, if needed, deep-fetches the incident.
+// the /incidents list). IncidentsPanel preselects and, if needed, deep-fetches the incident; its
+// case-file drawer now carries the AI Investigation tab, so the panel is not rendered separately
+// here (that would double-render it on this route).
 export default async function IncidentDetailPage({
   params,
 }: {
@@ -26,7 +27,6 @@ export default async function IncidentDetailPage({
         </div>
       </section>
       <IncidentsPanel initialSelectedId={incidentId} />
-      <AiInvestigationPanel incidentId={incidentId} />
     </main>
   );
 }
