@@ -113,9 +113,20 @@ type ResponseActionRow = {
   requires_approval?: boolean;
   evidence_source?: string;
   mode?: string;
+  record_type?: string;
 };
 
 /* ── Helpers ────────────────────────────────────────────────────── */
+
+// The Response Actions list now also returns AI recommendation-review records.
+// Those are immutable human-review records (never executed), surfaced on the
+// Response Actions page and the AI Investigation drawer — not real response
+// actions. Exclude them here so the incident drawer's "Response Initiated"
+// workflow marker and action list keep their existing (executable-action) meaning.
+function onlyResponseActions(rows: unknown): ResponseActionRow[] {
+  const list = Array.isArray(rows) ? (rows as ResponseActionRow[]) : [];
+  return list.filter((a) => a?.record_type !== 'ai_recommendation_review');
+}
 
 function severityPill(severity?: string | null): { label: string; variant: PillVariant } {
   const s = (severity ?? 'unknown').toLowerCase();
@@ -258,7 +269,7 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
       });
       if (actionsRes.ok) {
         const actionsJson = await actionsRes.json() as Record<string, unknown>;
-        setResponseActions((actionsJson.actions ?? []) as ResponseActionRow[]);
+        setResponseActions(onlyResponseActions(actionsJson.actions));
       }
       router.push(`/response-actions?incident_id=${encodeURIComponent(selectedId)}${data.response_action_id ? `&action_id=${encodeURIComponent(data.response_action_id)}` : ''}`);
     } catch {
@@ -407,7 +418,7 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
       cache: 'no-store',
     })
       .then((r) => (r.ok ? r.json() : null))
-      .then((json) => setResponseActions((json as any)?.actions ?? []))
+      .then((json) => setResponseActions(onlyResponseActions((json as any)?.actions)))
       .catch(() => setResponseActions([]));
   }, [apiUrl, authHeaders, selectedId]);
 

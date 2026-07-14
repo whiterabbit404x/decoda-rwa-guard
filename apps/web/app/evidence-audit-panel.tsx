@@ -135,6 +135,17 @@ function evidenceSourcePill(
   if (raw === 'response_action' || raw === 'proof_bundle') {
     return { label: 'Response action export', variant: 'success' };
   }
+  // AI investigation recommendation decisions are grounded in the incident's AI
+  // evidence snapshot — a truthful source, never "Unknown source" and never live-chain.
+  if (raw === 'ai_investigation') {
+    return { label: 'AI investigation', variant: 'info' };
+  }
+  if (raw === 'ai_evidence_snapshot') {
+    return { label: 'AI evidence snapshot', variant: 'info' };
+  }
+  if (raw === 'ai_recommendation_review' || raw === 'human_recommendation_review') {
+    return { label: 'Human recommendation review', variant: 'info' };
+  }
   return { label: 'Unknown source', variant: 'neutral' };
 }
 
@@ -290,7 +301,15 @@ export default function EvidenceAuditPanel() {
             response_actions?: unknown[];
           };
           const actions = ra.actions ?? ra.response_actions ?? [];
-          setResponseActionsCount(Array.isArray(actions) ? actions.length : 0);
+          // Count only real response actions. AI recommendation reviews are immutable
+          // human-review records (never executed), so they must not flip the evidence
+          // package readiness gate that expects an actual response_action to exist.
+          const materialActions = Array.isArray(actions)
+            ? actions.filter(
+                (a) => (a as { record_type?: string })?.record_type !== 'ai_recommendation_review',
+              )
+            : [];
+          setResponseActionsCount(materialActions.length);
         } else {
           setResponseActionsCount(0);
         }

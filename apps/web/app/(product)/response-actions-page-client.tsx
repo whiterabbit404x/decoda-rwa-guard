@@ -38,6 +38,16 @@ type ActionRow = {
   eta?: string | null;
   approvalState?: string | null;
   createdAt?: string | null;
+  // AI recommendation-review record fields (record_type === 'ai_recommendation_review').
+  recordType?: string;
+  sourceType?: string;
+  decision?: string | null;
+  executed?: boolean;
+  reviewer?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  evidenceSnapshotId?: string | null;
+  evidenceRefsCount?: number;
 };
 
 type HistoryRow = {
@@ -49,6 +59,16 @@ type HistoryRow = {
   time: string | null;
   evidenceSource: string;
   simulated: boolean;
+  // AI recommendation-review extensions. Legacy audit rows leave these undefined.
+  recordType?: string;
+  sourceType?: string;
+  decision?: string | null;
+  executed?: boolean;
+  linkedIncident?: string | null;
+  evidenceSnapshotId?: string | null;
+  evidenceRefsCount?: number;
+  provider?: string | null;
+  model?: string | null;
 };
 
 const RECOMMENDED_HEADERS = [
@@ -70,6 +90,9 @@ const HISTORY_HEADERS = [
   'Actor/System',
   'Time',
   'Evidence Source',
+  'Decision',
+  'Executed',
+  'Links',
 ];
 
 function evidenceSourcePill(
@@ -94,6 +117,11 @@ function evidenceSourcePill(
     return { label: 'live_provider', variant: 'success' };
   }
 
+  // AI investigation recommendation reviews carry AI evidence — never simulator, never live-chain.
+  if (raw === 'ai_investigation' || raw === 'ai_evidence_snapshot') {
+    return { label: 'AI investigation', variant: 'info' };
+  }
+
   return { label: 'none', variant: 'neutral' };
 }
 
@@ -102,9 +130,11 @@ function actionStatusPill(status: string, simulated: boolean): { label: string; 
   const tag = simulated ? ' 路 SIMULATED' : '';
 
   if (base === 'recommended') return { label: `Recommended${tag}`, variant: 'info' };
-  if (base === 'pending_approval' || base === 'pending approval') {
+  if (base === 'pending_approval' || base === 'pending approval' || base === 'pending_review') {
     return { label: `Pending Approval${tag}`, variant: 'warning' };
   }
+  if (base === 'accepted') return { label: `Accepted${tag}`, variant: 'success' };
+  if (base === 'rejected') return { label: `Rejected${tag}`, variant: 'neutral' };
   if (base === 'approved') return { label: `Approved${tag}`, variant: 'success' };
   if (base === 'simulated') return { label: `Simulated${tag}`, variant: 'info' };
   if (base === 'executed') return { label: `Executed${tag}`, variant: 'success' };
@@ -170,9 +200,15 @@ function normalizeActionRow(input: any, validIncidentIds: Set<string>): ActionRo
     : (rawIncidentId && validIncidentIds.has(rawIncidentId) ? rawIncidentId : null);
   const linkedAlert = rawAlertId || null;
 
+  const isAiReview = String(input?.record_type || '') === 'ai_recommendation_review';
+  // AI review records carry a human-readable title; legacy rows keep action_type/action.
+  const displayAction = isAiReview
+    ? String(input?.title || input?.action_type || 'AI recommendation')
+    : String(input?.action_type || input?.action || 'Response action');
+
   return {
     id: String(input?.id || `${input?.action_type || 'action'}-${rawIncidentId || 'none'}`),
-    action: String(input?.action_type || input?.action || 'Response action'),
+    action: displayAction,
     type: String(input?.category || input?.type || 'Other'),
     impact: String(input?.impact || input?.severity || 'medium'),
     status: simulated ? `${rawStatus} 路 SIMULATED` : rawStatus,
@@ -186,6 +222,21 @@ function normalizeActionRow(input: any, validIncidentIds: Set<string>): ActionRo
     approvalState:
       input?.approval_state ?? (input?.requires_approval === false ? 'not_required' : 'pending_approval'),
     createdAt: input?.created_at ?? input?.timestamp ?? null,
+    recordType: input?.record_type ?? undefined,
+    sourceType: input?.source_type ?? undefined,
+    decision: input?.decision ?? null,
+    // A recommendation review is never an executed action.
+    executed: isAiReview ? false : input?.executed === true,
+    reviewer: input?.reviewer_email ?? input?.reviewer_id ?? null,
+    provider: input?.provider ?? null,
+    model: input?.model ?? null,
+    evidenceSnapshotId: input?.evidence_snapshot_id ?? null,
+    evidenceRefsCount:
+      typeof input?.evidence_refs_count === 'number'
+        ? input.evidence_refs_count
+        : Array.isArray(input?.evidence_refs)
+          ? input.evidence_refs.length
+          : 0,
   };
 }
 
@@ -205,6 +256,38 @@ function normalizeHistoryRow(input: any): HistoryRow {
     time: input?.created_at ?? input?.timestamp ?? null,
     evidenceSource: String(input?.details_json?.source || input?.evidence_source || input?.source || 'runtime'),
     simulated,
+  };
+}
+
+// Accepted / rejected AI recommendation reviews are immutable human-review records,
+// not executed actions. They render in Action History with a truthful AI source, the
+// decision, executed=No, the reviewer, and links to the incident and its evidence.
+function normalizeAiReviewHistoryRow(input: any): HistoryRow {
+  const decision = String(input?.decision || input?.review_state || '').toLowerCase();
+  return {
+    id: String(input?.recommendation_id || input?.id || '-'),
+    action: String(input?.title || input?.action_type || 'AI recommendation'),
+    type: 'AI recommendation review',
+    result: decision === 'accepted' ? 'Accepted' : decision === 'rejected' ? 'Rejected' : 'Reviewed',
+    actorSystem: String(input?.reviewer_email || input?.reviewer_id || 'Reviewer'),
+    time: input?.reviewed_at ?? input?.created_at ?? null,
+    // AI investigation evidence — never simulator, never live-chain.
+    evidenceSource: String(input?.evidence_source || 'ai_investigation'),
+    simulated: false,
+    recordType: 'ai_recommendation_review',
+    sourceType: String(input?.source_type || 'ai_investigation'),
+    decision: decision === 'accepted' ? 'accepted' : decision === 'rejected' ? 'rejected' : null,
+    executed: false,
+    linkedIncident: input?.incident_id ? String(input.incident_id) : null,
+    evidenceSnapshotId: input?.evidence_snapshot_id ? String(input.evidence_snapshot_id) : null,
+    evidenceRefsCount:
+      typeof input?.evidence_refs_count === 'number'
+        ? input.evidence_refs_count
+        : Array.isArray(input?.evidence_refs)
+          ? input.evidence_refs.length
+          : 0,
+    provider: input?.provider ?? null,
+    model: input?.model ?? null,
   };
 }
 
@@ -293,17 +376,39 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
         // Always trust the incident_id that came from the URL — the action was just created against it.
         if (incidentIdFilter) validIncidentIds.add(incidentIdFilter);
 
-        const recommended = (Array.isArray(actionsPayload?.actions) ? actionsPayload.actions : []).map(
-          (item: any) => normalizeActionRow(item, validIncidentIds),
+        const allActions = Array.isArray(actionsPayload?.actions) ? actionsPayload.actions : [];
+        // AI recommendation reviews are returned in the same list but split by decision:
+        // pending reviews belong in Recommended Actions; accepted/rejected reviews are
+        // immutable history records and belong in Action History. Legacy policy-engine
+        // response_actions keep their existing behavior (all in Recommended Actions).
+        const aiReviews = allActions.filter(
+          (item: any) => String(item?.record_type || '') === 'ai_recommendation_review',
+        );
+        const legacyActions = allActions.filter(
+          (item: any) => String(item?.record_type || '') !== 'ai_recommendation_review',
+        );
+        const pendingAiReviews = aiReviews.filter(
+          (item: any) => String(item?.review_state || 'pending_review') === 'pending_review',
+        );
+        const decidedAiReviews = aiReviews.filter(
+          (item: any) =>
+            String(item?.review_state || '') === 'accepted' ||
+            String(item?.review_state || '') === 'rejected',
         );
 
-        const history = (Array.isArray(historyPayload?.history) ? historyPayload.history : [])
+        const recommended = [...legacyActions, ...pendingAiReviews].map((item: any) =>
+          normalizeActionRow(item, validIncidentIds),
+        );
+
+        const auditHistory = (Array.isArray(historyPayload?.history) ? historyPayload.history : [])
           .filter(
             (item: any) =>
               String(item?.object_type || '').includes('response_action') ||
               String(item?.action_type || '').includes('response'),
           )
           .map(normalizeHistoryRow);
+        // Decided AI reviews first (most relevant), then legacy audit-derived history.
+        const history = [...decidedAiReviews.map(normalizeAiReviewHistoryRow), ...auditHistory];
 
         if (!cancelled) {
           setRecommendedRows(recommended);
@@ -381,8 +486,9 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
 
   function getBlocker(): Blocker | null {
     // If actions already exist, never block the table — pipeline checks are only relevant
-    // when there are truly zero actions.
-    if (recommendedRows.length > 0) return null;
+    // when there are truly zero actions. Decided AI recommendation reviews live only in
+    // Action History, so their presence must also keep the tabs visible.
+    if (recommendedRows.length > 0 || historyRows.length > 0) return null;
 
     if (!telemetryOk) {
       return {
@@ -606,22 +712,64 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
                 <TableShell headers={HISTORY_HEADERS}>
                   {filteredHistory.map((row) => {
                     const evSrc = evidenceSourcePill(row.evidenceSource, workspaceEvidenceSource);
+                    const isAiReview = row.recordType === 'ai_recommendation_review';
 
                     return (
                       <tr key={row.id}>
                         <td style={{ fontFamily: 'monospace', fontSize: '0.75rem', whiteSpace: 'nowrap', maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis' }} title={row.id}>
                           {row.id}
                         </td>
-                        <td style={{ maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <td style={{ maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {row.action}
+                          {isAiReview ? (
+                            <div style={{ marginTop: '0.2rem' }}>
+                              <StatusPill label="AI recommendation" variant="info" />
+                            </div>
+                          ) : null}
                         </td>
-                        <td style={{ fontSize: '0.8rem' }}>{row.type}</td>
+                        <td style={{ fontSize: '0.8rem' }}>
+                          {isAiReview ? 'AI Investigation' : row.type}
+                        </td>
                         <td style={{ fontSize: '0.8rem', maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {row.result}
                         </td>
                         <td style={{ fontSize: '0.8rem' }}>{row.actorSystem}</td>
                         <td style={{ fontSize: '0.78rem', whiteSpace: 'nowrap' }}>{fmt(row.time)}</td>
                         <td><StatusPill label={evSrc.label} variant={evSrc.variant} /></td>
+                        <td>
+                          {row.decision === 'accepted' ? (
+                            <StatusPill label="Accepted" variant="success" />
+                          ) : row.decision === 'rejected' ? (
+                            <StatusPill label="Rejected" variant="neutral" />
+                          ) : (
+                            <span className="muted" style={{ fontSize: '0.78rem' }}>—</span>
+                          )}
+                        </td>
+                        <td>
+                          {isAiReview ? (
+                            <StatusPill label="No" variant="neutral" />
+                          ) : (
+                            <span className="muted" style={{ fontSize: '0.78rem' }}>—</span>
+                          )}
+                        </td>
+                        <td style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}>
+                          {isAiReview && row.linkedIncident ? (
+                            <span style={{ display: 'inline-flex', gap: '0.5rem' }}>
+                              <Link href={`/incidents/${row.linkedIncident}`} prefetch={false} style={{ fontSize: '0.75rem' }}>
+                                View Incident
+                              </Link>
+                              <Link
+                                href={`/evidence?incident_id=${row.linkedIncident}`}
+                                prefetch={false}
+                                style={{ fontSize: '0.75rem' }}
+                              >
+                                View Evidence
+                              </Link>
+                            </span>
+                          ) : (
+                            <span className="muted" style={{ fontSize: '0.78rem' }}>—</span>
+                          )}
+                        </td>
                       </tr>
                     );
                   })}
@@ -674,10 +822,13 @@ function ActionDetailPanel({
   const st = actionStatusPill(action.status, action.simulated);
   const imp = impactPill(action.impact);
   const evSrc = evidenceSourcePill(action.evidenceSource, workspaceEvidenceSource);
-  const isSimulatorAction = action.simulated || evSrc.label === 'simulator';
+  // AI recommendation reviews are human-review records, not simulator/executable actions.
+  const isAiReview = action.recordType === 'ai_recommendation_review';
+  const isSimulatorAction = !isAiReview && (action.simulated || evSrc.label === 'simulator');
 
   // Do not show Execute Action when backend only supports simulator mode.
-  const canExecute = liveExecutionAllowed && !isSimulatorAction;
+  // AI review records are never executable — reviewing records a decision only.
+  const canExecute = liveExecutionAllowed && !isSimulatorAction && !isAiReview;
 
   const approvalBlocked =
     action.requiresApproval &&
@@ -802,7 +953,21 @@ function ActionDetailPanel({
         </div>
       ) : null}
 
-      {approvalBlocked ? (
+      {isAiReview ? (
+        <div style={{ marginBottom: '0.6rem', display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+          <StatusPill label="AI recommendation" variant="info" />
+          {action.decision === 'accepted' ? (
+            <StatusPill label="Accepted" variant="success" />
+          ) : action.decision === 'rejected' ? (
+            <StatusPill label="Rejected" variant="neutral" />
+          ) : (
+            <StatusPill label="Pending review" variant="warning" />
+          )}
+          <StatusPill label="Not executed" variant="neutral" />
+        </div>
+      ) : null}
+
+      {approvalBlocked && !isAiReview ? (
         <div style={{ marginBottom: '0.6rem' }}>
           <StatusPill label="Requires Approval" variant="warning" />
           <span className="muted" style={{ fontSize: '0.75rem', marginLeft: '0.4rem' }}>
@@ -861,7 +1026,7 @@ function ActionDetailPanel({
       <div style={{ marginBottom: '0.5rem' }}>
         <p className="tableMeta" style={{ marginBottom: '0.1rem' }}>Linked Incident</p>
         {action.linkedIncident ? (
-          <Link href="/incidents" prefetch={false} style={{ fontSize: '0.78rem' }}>
+          <Link href={`/incidents/${action.linkedIncident}`} prefetch={false} style={{ fontSize: '0.78rem' }}>
             {action.linkedIncident}
           </Link>
         ) : (
@@ -871,12 +1036,44 @@ function ActionDetailPanel({
         )}
       </div>
 
-      <div style={{ marginBottom: '0.5rem' }}>
-        <p className="tableMeta" style={{ marginBottom: '0.1rem' }}>Approval State</p>
-        <p style={{ fontSize: '0.8rem', margin: 0 }}>
-          {action.approvalState ?? (action.requiresApproval ? 'Pending approval' : 'Not required')}
-        </p>
-      </div>
+      {isAiReview ? (
+        <div style={{ marginBottom: '0.5rem' }}>
+          <p className="tableMeta" style={{ marginBottom: '0.1rem' }}>Decision</p>
+          <p style={{ fontSize: '0.8rem', margin: 0 }}>
+            {action.decision === 'accepted'
+              ? 'Accepted · Not executed'
+              : action.decision === 'rejected'
+                ? 'Rejected · Not executed'
+                : 'Pending review · Not executed'}
+          </p>
+          {action.reviewer ? (
+            <>
+              <p className="tableMeta" style={{ marginTop: '0.4rem', marginBottom: '0.1rem' }}>Reviewer</p>
+              <p style={{ fontSize: '0.8rem', margin: 0 }}>{action.reviewer}</p>
+            </>
+          ) : null}
+          {action.provider || action.model ? (
+            <>
+              <p className="tableMeta" style={{ marginTop: '0.4rem', marginBottom: '0.1rem' }}>Provider / Model</p>
+              <p style={{ fontSize: '0.8rem', margin: 0 }}>
+                {[action.provider, action.model].filter(Boolean).join(' / ')}
+              </p>
+            </>
+          ) : null}
+          <p className="tableMeta" style={{ marginTop: '0.4rem', marginBottom: '0.1rem' }}>Evidence Citations</p>
+          <p style={{ fontSize: '0.8rem', margin: 0 }}>
+            {action.evidenceRefsCount ?? 0} citation{(action.evidenceRefsCount ?? 0) === 1 ? '' : 's'}
+            {action.evidenceSnapshotId ? ' · snapshot linked' : ''}
+          </p>
+        </div>
+      ) : (
+        <div style={{ marginBottom: '0.5rem' }}>
+          <p className="tableMeta" style={{ marginBottom: '0.1rem' }}>Approval State</p>
+          <p style={{ fontSize: '0.8rem', margin: 0 }}>
+            {action.approvalState ?? (action.requiresApproval ? 'Pending approval' : 'Not required')}
+          </p>
+        </div>
+      )}
 
       {action.eta ? (
         <div style={{ marginBottom: '0.5rem' }}>
@@ -888,41 +1085,81 @@ function ActionDetailPanel({
       <div style={{ marginBottom: '0.75rem' }}>
         <p className="tableMeta" style={{ marginBottom: '0.1rem' }}>Audit Trail</p>
         <p className="muted" style={{ fontSize: '0.78rem', margin: 0 }}>
-          {action.createdAt ? `Action recorded ${fmt(action.createdAt)}.` : 'Audit trail recorded in evidence.'}
+          {isAiReview
+            ? `Human recommendation review recorded ${action.createdAt ? fmt(action.createdAt) : ''}. No action was executed.`
+            : action.createdAt
+              ? `Action recorded ${fmt(action.createdAt)}.`
+              : 'Audit trail recorded in evidence.'}
           {isSimulatorAction ? ' Simulator record only.' : ''}
         </p>
       </div>
 
-      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-        {canExecute ? (
-          <button
-            type="button"
+      {isAiReview ? (
+        // AI recommendation reviews are immutable human-review records. Never offer
+        // Simulate/Execute here — only neutral read links to the underlying evidence.
+        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <Link
+            href={action.linkedIncident ? `/incidents/${action.linkedIncident}` : '/incidents'}
+            prefetch={false}
             className="btn btn-primary"
             style={{ fontSize: '0.8rem' }}
-            disabled={approvalBlocked}
-            onClick={() => onMessage('Execution initiated.')}
           >
-            Execute Action
-          </button>
-        ) : (
-          <button type="button" className="btn btn-primary" style={{ fontSize: '0.8rem' }} onClick={() => void simulateAction()}>
-            Simulate Action
-          </button>
-        )}
+            View investigation
+          </Link>
+          <Link
+            href={action.linkedIncident ? `/incidents/${action.linkedIncident}` : '/incidents'}
+            prefetch={false}
+            className="btn btn-secondary"
+            style={{ fontSize: '0.8rem' }}
+          >
+            View recommendation
+          </Link>
+          <Link
+            href={action.linkedIncident ? `/evidence?incident_id=${action.linkedIncident}` : '/evidence'}
+            prefetch={false}
+            className="btn btn-secondary"
+            style={{ fontSize: '0.8rem' }}
+          >
+            View evidence
+          </Link>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          {canExecute ? (
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ fontSize: '0.8rem' }}
+              disabled={approvalBlocked}
+              onClick={() => onMessage('Execution initiated.')}
+            >
+              Execute Action
+            </button>
+          ) : (
+            <button type="button" className="btn btn-primary" style={{ fontSize: '0.8rem' }} onClick={() => void simulateAction()}>
+              Simulate Action
+            </button>
+          )}
 
-        <Link href="/incidents" prefetch={false} className="btn btn-secondary" style={{ fontSize: '0.8rem' }}>
-          {action.linkedIncident ? 'View Incident' : 'View Incidents'}
-        </Link>
+          <Link
+            href={action.linkedIncident ? `/incidents/${action.linkedIncident}` : '/incidents'}
+            prefetch={false}
+            className="btn btn-secondary"
+            style={{ fontSize: '0.8rem' }}
+          >
+            {action.linkedIncident ? 'View Incident' : 'View Incidents'}
+          </Link>
 
-        <button
-          type="button"
-          className="btn btn-secondary"
-          style={{ fontSize: '0.8rem' }}
-          onClick={() => void handleEvidenceExport()}
-        >
-          Evidence Export
-        </button>
-      </div>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            style={{ fontSize: '0.8rem' }}
+            onClick={() => void handleEvidenceExport()}
+          >
+            Evidence Export
+          </button>
+        </div>
+      )}
     </aside>
   );
 }
