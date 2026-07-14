@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager as _contextmanager
+from types import SimpleNamespace as _SimpleNamespace
+
 import pytest
 from fastapi import HTTPException
 
@@ -180,80 +183,159 @@ def test_report_template_artifact_types_cover_required_exports() -> None:
     }
 
 
-def test_create_export_job_viewer_is_forbidden(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Viewers must not be allowed to create export jobs; only owner/admin may."""
-    from contextlib import contextmanager
-    from fastapi import Request
+# ---------------------------------------------------------------------------
+# create_export_job authN / authZ boundary.
+#
+# The gate is a single call in create_export_job:
+#     _require_workspace_permission(connection, request, 'evidence.export')
+# whose order is: authenticate_with_connection() [401 on missing/invalid bearer]
+# -> resolve_workspace() [builds principal + role] -> _workspace_permission_granted()
+# [403 when the role lacks evidence.export]. These tests exercise that real order so
+# the 401 (unauthenticated) vs 403 (authenticated-but-unauthorized) distinction is
+# actually verified — rather than stubbing the whole gate, which hides it.
+# ---------------------------------------------------------------------------
+def _authenticated_request():
+    """A request carrying a bearer token. Authentication is mocked to accept it in
+    the role tests, so this stands in for an already-authenticated principal — never
+    an anonymous request. Production code only ever calls ``request.headers.get(...)``,
+    so a headers mapping is a faithful, framework-agnostic stand-in."""
+    return _SimpleNamespace(headers={'authorization': 'Bearer test-session-token', 'x-workspace-id': 'ws-1'})
 
-    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
 
-    def deny_non_admin(connection, request, permission=None):
-        raise HTTPException(status_code=403, detail='Owner or admin role is required for this action.')
+class _RecordingExportConn:
+    """Fake connection that records SQL and returns no rows for the RBAC/policy
+    lookups, so the REAL ``_workspace_permission_granted`` falls back to
+    ``DEFAULT_ROLE_PERMISSIONS`` (viewer -> denied, owner/admin -> allowed). Export-job
+    reads return a completed row for the owner/admin happy path."""
 
-    @contextmanager
-    def fake_pg():
-        class _C:
-            def execute(self, *a, **k):
-                pass
-            def commit(self):
-                pass
-        yield _C()
+    def __init__(self):
+        self.queries: list[str] = []
+        self.committed = False
 
-    monkeypatch.setattr(pilot, 'pg_connection', fake_pg)
+    def execute(self, query, params=None):
+        q = ' '.join(str(query).split())
+        self.queries.append(q)
+
+        class _R:
+            def fetchone(self_inner):
+                if 'FROM export_jobs WHERE id = %s AND workspace_id = %s' in q:
+                    return {'id': 'exp-x', 'export_type': 'alerts', 'format': 'csv', 'filters': {}}
+                if 'SELECT status, error_message' in q:
+                    return {'status': 'completed', 'error_message': None}
+                # workspace_role_permissions override + workspace_auth_policies: no row,
+                # so the real default-role permission logic and 'optional' MFA policy apply.
+                return None
+
+            def fetchall(self_inner):
+                return []
+
+        return _R()
+
+    def commit(self):
+        self.committed = True
+
+    def inserted_export_job(self) -> bool:
+        return any('INSERT INTO export_jobs' in q for q in self.queries)
+
+    def ran_permission_lookup(self) -> bool:
+        return any('workspace_role_permissions' in q for q in self.queries)
+
+
+def _bind_pg(monkeypatch, conn):
+    @_contextmanager
+    def _pg():
+        yield conn
+    monkeypatch.setattr(pilot, 'pg_connection', _pg)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda c: None)
-    monkeypatch.setattr(pilot, '_require_workspace_permission', deny_non_admin)
 
-    req = Request({'type': 'http', 'headers': []})
+
+def test_create_export_job_missing_bearer_token_returns_401(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No credentials -> 401 (unauthenticated), through the REAL authentication path."""
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    conn = _RecordingExportConn()
+    _bind_pg(monkeypatch, conn)
+    req = _SimpleNamespace(headers={})  # no Authorization header at all
     with pytest.raises(HTTPException) as exc_info:
         pilot.create_export_job('alerts', {'format': 'csv'}, request=req)
+    assert exc_info.value.status_code == 401
+    assert not conn.inserted_export_job() and conn.committed is False
+
+
+def test_create_export_job_invalid_bearer_token_returns_401(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A malformed/garbage bearer token -> 401, through the REAL token decoder."""
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    conn = _RecordingExportConn()
+    _bind_pg(monkeypatch, conn)
+    req = _SimpleNamespace(headers={'authorization': 'Bearer not-a-valid-token'})
+    with pytest.raises(HTTPException) as exc_info:
+        pilot.create_export_job('alerts', {'format': 'csv'}, request=req)
+    assert exc_info.value.status_code == 401
+    assert not conn.inserted_export_job() and conn.committed is False
+
+
+def test_create_export_job_viewer_is_forbidden(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An AUTHENTICATED viewer is rejected by the REAL RBAC gate with 403 (not 401).
+
+    Authentication + workspace resolution are mocked to return an authenticated
+    viewer principal; the permission decision (_workspace_permission_granted) is left
+    REAL, so this asserts the authenticated-but-unauthorized path, not an anonymous one.
+    """
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    # Authentication SUCCEEDS and yields a viewer-role principal.
+    monkeypatch.setattr(pilot, 'authenticate_with_connection', lambda c, r: {'id': 'viewer-1'})
+    monkeypatch.setattr(pilot, 'resolve_workspace',
+                        lambda c, u, w=None: {'workspace_id': 'ws-1', 'role': 'viewer', 'workspace': {'id': 'ws-1'}})
+    conn = _RecordingExportConn()
+    _bind_pg(monkeypatch, conn)
+    with pytest.raises(HTTPException) as exc_info:
+        pilot.create_export_job('alerts', {'format': 'csv'}, request=_authenticated_request())
     assert exc_info.value.status_code == 403
+    # The real RBAC decision ran (permission lookup happened) and nothing was written.
+    assert conn.ran_permission_lookup()
+    assert not conn.inserted_export_job() and conn.committed is False
+
+
+def test_create_export_job_authorization_precedes_insert(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The authorization check runs BEFORE any export job is inserted or committed.
+
+    A forbidden viewer must fail at the RBAC gate — before the entitlement check and
+    the INSERT. The plan check (which runs only after the gate allows the action) is
+    booby-trapped to prove ordering.
+    """
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'authenticate_with_connection', lambda c, r: {'id': 'viewer-1'})
+    monkeypatch.setattr(pilot, 'resolve_workspace',
+                        lambda c, u, w=None: {'workspace_id': 'ws-1', 'role': 'viewer', 'workspace': {'id': 'ws-1'}})
+    conn = _RecordingExportConn()
+    _bind_pg(monkeypatch, conn)
+
+    def _must_not_run(*a, **k):
+        raise AssertionError('entitlement/plan check ran before RBAC rejected the viewer')
+
+    monkeypatch.setattr(pilot, '_workspace_plan', _must_not_run)
+    with pytest.raises(HTTPException) as exc_info:
+        pilot.create_export_job('alerts', {'format': 'csv'}, request=_authenticated_request())
+    assert exc_info.value.status_code == 403
+    assert not conn.inserted_export_job() and conn.committed is False
 
 
 def test_create_export_job_admin_is_permitted(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Owner/admin role allows export job creation."""
-    from contextlib import contextmanager
-    from fastapi import Request
-
+    """An AUTHENTICATED owner/admin passes the REAL RBAC gate and the job is created."""
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
-    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda c, r, perm: ({'id': 'u1'}, {'workspace_id': 'ws-1', 'role': 'admin'}))
-
-    inserted: list[str] = []
-
-    class _Conn:
-        def execute(self, query, params=None):
-            q = str(query)
-            inserted.append(q)
-
-            class _R:
-                def fetchone(self_inner):
-                    if 'FROM export_jobs WHERE id = %s AND workspace_id = %s' in ' '.join(q.split()):
-                        return {'id': 'exp-x', 'export_type': 'alerts', 'format': 'csv', 'filters': {}}
-                    if 'SELECT status, error_message' in q:
-                        return {'status': 'completed', 'error_message': None}
-                    return None
-
-                def fetchall(self_inner):
-                    return []
-
-            return _R()
-
-        def commit(self):
-            pass
-
-    @contextmanager
-    def fake_pg():
-        yield _Conn()
-
-    monkeypatch.setattr(pilot, 'pg_connection', fake_pg)
-    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda c: None)
+    monkeypatch.setattr(pilot, 'authenticate_with_connection', lambda c, r: {'id': 'admin-1'})
+    monkeypatch.setattr(pilot, 'resolve_workspace',
+                        lambda c, u, w=None: {'workspace_id': 'ws-1', 'role': 'admin', 'workspace': {'id': 'ws-1'}})
+    conn = _RecordingExportConn()
+    _bind_pg(monkeypatch, conn)
     monkeypatch.setattr(pilot, '_workspace_plan', lambda c, wid: {'exports_enabled': True})
     monkeypatch.setattr(pilot, '_generate_export_artifact', lambda c, workspace_id, export_id: None)
     monkeypatch.setattr(pilot, 'log_audit', lambda *a, **k: None)
 
-    req = Request({'type': 'http', 'headers': []})
-    result = pilot.create_export_job('alerts', {'format': 'csv'}, request=req)
+    result = pilot.create_export_job('alerts', {'format': 'csv'}, request=_authenticated_request())
     assert result['status'] == 'completed'
-    assert any('INSERT INTO export_jobs' in q for q in inserted)
+    # The real RBAC gate ran (admin is granted evidence.export) and the job was written.
+    assert conn.ran_permission_lookup()
+    assert conn.inserted_export_job()
 
 
 def test_list_exports_exposes_proof_bundle_metadata(monkeypatch: pytest.MonkeyPatch) -> None:

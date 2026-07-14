@@ -62,6 +62,12 @@ if 'fastapi' not in sys.modules:
         class _Request:
             def __init__(self, headers=None):
                 self.headers = headers or {}
+                # A real Starlette/FastAPI Request exposes query_params (an empty
+                # multidict when no query string is present). The stub previously
+                # omitted it, so any handler that reads request.query_params raised
+                # AttributeError under the offline stub. Provide an empty mapping so
+                # the stub matches real-Request behavior for the no-query-string case.
+                self.query_params = {}
 
         class _Status:
             HTTP_200_OK = 200

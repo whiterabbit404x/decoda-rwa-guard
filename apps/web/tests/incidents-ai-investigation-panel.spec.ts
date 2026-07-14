@@ -118,6 +118,35 @@ test('a mock/simulated run is labelled truthfully in the UI', async () => {
   expect(panel).toContain('prior versions preserved');
 });
 
+test('mock provider/model/cost are displayed truthfully (Mock / Mock / $0.00 / not billed)', async () => {
+  const panel = read('ai-investigation-panel.tsx');
+  // Provider + model render through truthful formatters: a simulated run reads "Mock",
+  // never a live model name (e.g. gpt-5.6-luna).
+  expect(panel).toContain('formatProviderLabel(state?.provider)');
+  expect(panel).toContain('formatModelLabel(state?.simulated, state?.model)');
+  expect(panel).toContain("if (simulated) return 'Mock';");
+  expect(panel).toContain("if (p === 'mock') return 'Mock';");
+  // Cost is always formatted to two decimals -> "$0.00" for a mock run (never $0.02862).
+  expect(panel).toContain('Number(state?.estimated_cost_usd ?? 0).toFixed(2)');
+  // Explicit synthetic / not-billed label for a simulated run.
+  expect(panel).toContain('Synthetic test result — not billed');
+});
+
+test('citations link to their telemetry/evidence record and missing evidence is shown', async () => {
+  const panel = read('ai-investigation-panel.tsx');
+  // Evidence citations render their ref (e.g. telemetry:<id>) so a citation links to
+  // the concrete evidence record it grounds.
+  expect(panel).toContain('Evidence citations');
+  expect(panel).toContain('renderRefs');
+  expect(panel).toContain('c.ref');
+  // Missing information (evidence incomplete) is surfaced rather than hidden.
+  expect(panel).toContain('Missing information');
+  expect(panel).toContain('result.missing_information');
+  // A validation failure renders its own branch and is never shown as a completed result.
+  expect(panel).toContain("state.status === 'validation_failed'");
+  expect(panel).toContain("['completed', 'completed_with_warnings'].includes(state?.status ?? '')");
+});
+
 test('incident detail route renders the drawer (no duplicate standalone AI panel)', async () => {
   const detail = read('(product)/incidents/[incidentId]/page.tsx');
   expect(detail).toContain('<IncidentsPanel initialSelectedId={incidentId} />');

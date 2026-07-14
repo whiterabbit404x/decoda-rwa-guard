@@ -204,9 +204,15 @@ def _deterministic_result_from_snapshot(snapshot: dict[str, Any]) -> dict[str, A
     missing_information: list[str] = []
     if not telemetry:
         missing_information.append('No telemetry events were present in the evidence snapshot.')
-    for missing in snapshot.get('missing_information') or []:
-        detail = missing.get('detail') if isinstance(missing, dict) else missing
-        if detail:
+    # Prefer the structured missing_evidence contract ({code, description, required_for});
+    # fall back to the legacy missing_information ({code, detail}) for older snapshots.
+    _missing_source = snapshot.get('missing_evidence') or snapshot.get('missing_information') or []
+    for missing in _missing_source:
+        if isinstance(missing, dict):
+            detail = missing.get('description') or missing.get('detail')
+        else:
+            detail = missing
+        if detail and str(detail) not in missing_information:
             missing_information.append(str(detail))
 
     # Truthful summary: without telemetry there is no factual transfer to conclude

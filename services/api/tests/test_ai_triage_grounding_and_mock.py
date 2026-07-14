@@ -72,18 +72,30 @@ def _pj(row):
     return pj if isinstance(pj, dict) else {}
 
 
+class _UpdateResult(FakeResult):
+    """FakeResult that also carries a rowcount (for UPDATE ... repair assertions)."""
+
+    def __init__(self, rowcount=0):
+        super().__init__(row=None, rows=[])
+        self.rowcount = rowcount
+
+
 class _AssemblerConn:
     """Fake DB for the real build_evidence_snapshot. Enforces workspace scoping."""
 
-    def __init__(self, *, incident, alert=None, detection=None, target=None,
+    def __init__(self, *, incident, alert=None, detection=None, detections_row=None, target=None,
                  telemetry_events=None, evidence_rows=None):
         self.incident = incident
         self.alert = alert
-        self.detection = detection
+        self.detection = detection  # detection_events row
+        self.detections_row = detections_row  # detections-table row (alerts.detection_id)
         self.target = target
         self.telemetry_events = list(telemetry_events or [])
         self.evidence_rows = list(evidence_rows or [])
         self.queries: list = []
+        self.incident_updates: list = []
+        # Rowcount returned by the incident-payload repair UPDATE (default: linked one row).
+        self.repair_rowcount = 1
 
     def execute(self, query, params=None):
         n = ' '.join(str(query).split())
@@ -94,6 +106,9 @@ class _AssemblerConn:
             if self.incident and str(self.incident['id']) == str(inc_id) and str(self.incident['workspace_id']) == str(ws):
                 return FakeResult(row=self.incident)
             return FakeResult(row=None)
+        if n.startswith('UPDATE incidents SET payload'):
+            self.incident_updates.append((n, p))
+            return _UpdateResult(rowcount=self.repair_rowcount)
         if 'FROM alerts WHERE id' in n:
             aid, ws = p
             if self.alert and str(self.alert['id']) == str(aid) and str(self.alert['workspace_id']) == str(ws):
@@ -103,6 +118,11 @@ class _AssemblerConn:
             did, ws = p
             if self.detection and str(self.detection['id']) == str(did) and str(self.detection.get('workspace_id', ws)) == str(ws):
                 return FakeResult(row=self.detection)
+            return FakeResult(row=None)
+        if 'FROM detections WHERE id' in n:
+            did, ws = p
+            if self.detections_row and str(self.detections_row['id']) == str(did) and str(self.detections_row.get('workspace_id', ws)) == str(ws):
+                return FakeResult(row=self.detections_row)
             return FakeResult(row=None)
         if 'FROM targets WHERE id' in n:
             tid, ws = p
@@ -215,6 +235,163 @@ def test_snapshot_resolves_telemetry_via_linked_detection():
     assert assembled['evidence_count'] == 1
 
 
+def _detections_row(**over):
+    """A row from the `detections` table (linked via alerts.detection_id).
+
+    This is the detection table the live wallet-transfer rules (smoke + Strategic
+    Infrastructure Guard) actually write; its raw_evidence_json carries the
+    telemetry_id / tx_hash the resolver needs for escalated/historical incidents.
+    """
+    base = {'id': 'detn-1', 'workspace_id': 'ws-1', 'detection_type': 'strategic_infrastructure_guard_outbound_transfer',
+            'source_rule': 'strategic_infrastructure_guard_wallet_outbound_transfer',
+            'evidence_summary': 'Outbound ETH movement from a monitored treasury wallet.',
+            'evidence_source': 'live',
+            'raw_evidence_json': {'telemetry_id': None, 'tx_hash': '0xdead', 'chain_id': 8453,
+                                  'from_address': '0xfrom', 'to_address': '0xto', 'target_id': 'tgt-1',
+                                  'detection_type': 'strategic_infrastructure_guard_outbound_transfer'}}
+    base.update(over)
+    return base
+
+
+# --------------------------------------------------------------------------
+# 1b. Wallet-transfer alerts link their detection via alerts.detection_id into the
+# `detections` table (NOT detection_events). The resolver must consult it — this is
+# the concrete fix for incidents that previously returned zero telemetry.
+# --------------------------------------------------------------------------
+def test_snapshot_resolves_telemetry_via_detections_table_direct_id():
+    # Detection raw_evidence carries the telemetry_id; incident/alert payloads do not.
+    tel = _telemetry_event(id='tel-detn')
+    conn = _AssemblerConn(
+        incident=_incident(payload={'source': 'alert_escalation', 'alert_id': 'alert-1', 'detection_id': 'detn-1'}),
+        alert=_alert(payload={}, detection_id='detn-1'),
+        detections_row=_detections_row(raw_evidence_json={'telemetry_id': 'tel-detn', 'tx_hash': '0xdead', 'chain_id': 8453}),
+        target=_target(), telemetry_events=[tel],
+    )
+    assembled = ai_triage.build_evidence_snapshot(conn, workspace_id='ws-1', incident_id='inc-1')
+    assert assembled['evidence_count'] == 1
+    assert assembled['snapshot']['telemetry_resolution'] == 'direct_telemetry_id'
+    assert assembled['snapshot']['telemetry'][0]['telemetry_id'] == 'tel-detn'
+    # The rule id is recovered from the detections row (not a null rule).
+    assert assembled['snapshot']['rule']['rule_id']
+
+
+def test_historical_escalated_incident_resolves_via_detection_tx():
+    # The exact production shape: an escalated incident whose payload has only
+    # {source, alert_id, detection_id} (NO telemetry_id / tx_hash), an alert whose
+    # payload also predates identifier stamping, and a detections row that only
+    # carries tx_hash. Telemetry still resolves via workspace + target + tx.
+    tel = _telemetry_event(id='tel-hist', tx_hash='0xbeef')
+    conn = _AssemblerConn(
+        incident=_incident(target_id='tgt-1',
+                           payload={'source': 'alert_escalation', 'alert_id': 'alert-1', 'detection_id': 'detn-1'}),
+        alert=_alert(payload={}, detection_id='detn-1', target_id='tgt-1'),
+        detections_row=_detections_row(raw_evidence_json={'tx_hash': '0xbeef', 'chain_id': 8453, 'target_id': 'tgt-1'}),
+        target=_target(), telemetry_events=[tel],
+    )
+    assembled = ai_triage.build_evidence_snapshot(conn, workspace_id='ws-1', incident_id='inc-1')
+    assert assembled['evidence_count'] == 1
+    assert assembled['snapshot']['telemetry_resolution'] == 'workspace_target_chain_tx'
+    entry = assembled['snapshot']['telemetry'][0]
+    assert entry['telemetry_id'] == 'tel-hist' and entry['tx_hash'] == '0xbeef'
+    assert assembled['is_complete'] is True
+
+
+# --------------------------------------------------------------------------
+# 1c. Backward-compatible repair stamps the resolved canonical telemetry_id back
+# onto an unlinked historical incident (idempotent, unambiguous-only, no guessing).
+# --------------------------------------------------------------------------
+def test_repair_stamps_canonical_telemetry_id_onto_incident():
+    tel = _telemetry_event(id='tel-hist', tx_hash='0xbeef')
+    conn = _AssemblerConn(
+        incident=_incident(target_id='tgt-1',
+                           payload={'source': 'alert_escalation', 'alert_id': 'alert-1', 'detection_id': 'detn-1'}),
+        alert=_alert(payload={}, detection_id='detn-1', target_id='tgt-1'),
+        detections_row=_detections_row(raw_evidence_json={'tx_hash': '0xbeef', 'chain_id': 8453, 'target_id': 'tgt-1'}),
+        target=_target(), telemetry_events=[tel],
+    )
+    assembled = ai_triage.build_evidence_snapshot(conn, workspace_id='ws-1', incident_id='inc-1')
+    out = ai_triage.repair_incident_telemetry_link(conn, workspace_id='ws-1', incident_id='inc-1', assembled=assembled)
+    assert out['repaired'] is True and out['telemetry_id'] == 'tel-hist'
+    # A workspace-scoped UPDATE was issued that only fills a NULL/empty telemetry_id.
+    assert conn.incident_updates
+    upd_sql, upd_params = conn.incident_updates[0]
+    assert "NULLIF(payload->>'telemetry_id', '') IS NULL" in upd_sql
+    assert 'ws-1' in upd_params and 'inc-1' in upd_params
+    assert 'tel-hist' in upd_params[0]  # the JSON patch carries the canonical telemetry_id
+
+
+def test_repair_is_idempotent_noop_when_already_linked():
+    tel = _telemetry_event(id='tel-hist', tx_hash='0xbeef')
+    conn = _AssemblerConn(
+        incident=_incident(target_id='tgt-1', payload=_payload(telemetry_id='tel-hist', tx_hash='0xbeef')),
+        alert=_alert(payload=_payload(telemetry_id='tel-hist', tx_hash='0xbeef')),
+        target=_target(), telemetry_events=[tel],
+    )
+    conn.repair_rowcount = 0  # the guarded UPDATE matches no row when already linked
+    assembled = ai_triage.build_evidence_snapshot(conn, workspace_id='ws-1', incident_id='inc-1')
+    out = ai_triage.repair_incident_telemetry_link(conn, workspace_id='ws-1', incident_id='inc-1', assembled=assembled)
+    assert out['repaired'] is False and out['reason'] == 'already_linked'
+
+
+def test_repair_never_guesses_when_no_telemetry():
+    conn = _AssemblerConn(incident=_incident(), alert=_alert(), target=_target(), telemetry_events=[])
+    assembled = ai_triage.build_evidence_snapshot(conn, workspace_id='ws-1', incident_id='inc-1')
+    out = ai_triage.repair_incident_telemetry_link(conn, workspace_id='ws-1', incident_id='inc-1', assembled=assembled)
+    assert out['repaired'] is False and out['reason'] == 'no_telemetry_resolved'
+    assert not conn.incident_updates  # nothing written
+
+
+def test_repair_never_guesses_when_ambiguous():
+    # Two DISTINCT candidate transactions resolve -> ambiguous -> do not guess.
+    tel_a = _telemetry_event(id='tel-a', tx_hash='0xaaaa')
+    tel_b = _telemetry_event(id='tel-b', tx_hash='0xbbbb')
+    conn = _AssemblerConn(
+        incident=_incident(payload=_payload(tx_hash='0xaaaa')),
+        alert=_alert(payload=_payload(tx_hash='0xaaaa')),
+        target=_target(),
+        # Both share target+event_type but have different tx hashes; strategy 4 matches
+        # only 0xaaaa, so to force ambiguity we resolve directly by two telemetry ids.
+        telemetry_events=[tel_a, tel_b],
+    )
+    # Force the snapshot to carry two distinct-tx telemetry rows to exercise the guard.
+    assembled = ai_triage.build_evidence_snapshot(conn, workspace_id='ws-1', incident_id='inc-1')
+    assembled['snapshot']['telemetry'] = [
+        {'telemetry_id': 'tel-a', 'tx_hash': '0xaaaa'},
+        {'telemetry_id': 'tel-b', 'tx_hash': '0xbbbb'},
+    ]
+    assembled['telemetry_ambiguous'] = True
+    out = ai_triage.repair_incident_telemetry_link(conn, workspace_id='ws-1', incident_id='inc-1', assembled=assembled)
+    assert out['repaired'] is False and out['reason'] == 'ambiguous_multiple_candidates'
+    assert not conn.incident_updates
+
+
+def test_ambiguous_multiple_transactions_marked_incomplete_not_guessed():
+    # When resolution yields two DISTINCT candidate transactions (here two legacy
+    # evidence rows for the same alert with different tx hashes), the snapshot is
+    # marked incomplete with a structured ambiguity reason — never silently picks one.
+    legacy_a = {'id': 'ev-a', 'workspace_id': 'ws-1', 'alert_id': 'alert-1', 'target_id': 'tgt-1',
+                'event_type': 'wallet_transfer_detected', 'source_provider': 'stable_rpc_polling',
+                'tx_hash': '0xaaaa', 'counterparty': '0xto', 'amount_text': '1', 'block_number': 10,
+                'chain': 'base', 'observed_at': '2026-07-11T00:00:00+00:00', 'created_at': '2026-07-11T00:00:00+00:00',
+                'raw_payload_json': {'from_address': '0xfrom', 'to_address': '0xto'}}
+    legacy_b = {**legacy_a, 'id': 'ev-b', 'tx_hash': '0xbbbb', 'block_number': 11}
+    conn = _AssemblerConn(
+        incident=_incident(payload={}), alert=_alert(payload={}),
+        target=_target(), telemetry_events=[], evidence_rows=[legacy_a, legacy_b],
+    )
+    assembled = ai_triage.build_evidence_snapshot(conn, workspace_id='ws-1', incident_id='inc-1')
+    snap = assembled['snapshot']
+    assert assembled['telemetry_ambiguous'] is True
+    assert snap['evidence_incomplete'] is True
+    codes = {m['code'] for m in snap['missing_evidence']}
+    assert 'telemetry_ambiguous' in codes
+    # Both candidate rows are still surfaced (data is not dropped), but the incident
+    # is not repaired to either one.
+    assert len(snap['telemetry']) == 2
+    out = ai_triage.repair_incident_telemetry_link(conn, workspace_id='ws-1', incident_id='inc-1', assembled=assembled)
+    assert out['repaired'] is False and out['reason'] == 'ambiguous_multiple_candidates'
+
+
 # --------------------------------------------------------------------------
 # 2. QuickNode / Stable RPC duplicate observations resolve to ONE canonical event
 # --------------------------------------------------------------------------
@@ -309,6 +486,32 @@ def test_missing_telemetry_is_explicitly_marked():
     codes = {m['code'] for m in snap['missing_information']}
     assert 'telemetry_unresolved' in codes
     assert 'no telemetry evidence linked to the incident alert' in assembled['incomplete_reasons']
+
+
+def test_missing_evidence_uses_code_description_required_for_schema():
+    # Problem B: the snapshot exposes a structured missing_evidence contract with
+    # {code, description, required_for}, plus the evidence_complete boolean.
+    conn = _AssemblerConn(incident=_incident(), alert=_alert(), target=_target(), telemetry_events=[])
+    snap = ai_triage.build_evidence_snapshot(conn, workspace_id='ws-1', incident_id='inc-1')['snapshot']
+    assert snap['evidence_complete'] is False
+    assert isinstance(snap['missing_evidence'], list) and snap['missing_evidence']
+    entry = next(m for m in snap['missing_evidence'] if m['code'] == 'telemetry_unresolved')
+    assert set(entry.keys()) == {'code', 'description', 'required_for'}
+    assert entry['required_for'] == 'factual_transfer_findings'
+    assert entry['description']
+
+
+def test_complete_snapshot_reports_evidence_complete_true_and_no_missing():
+    tel = _telemetry_event(id='tel-1')
+    conn = _AssemblerConn(
+        incident=_incident(payload=_payload(telemetry_id='tel-1')),
+        alert=_alert(payload=_payload(telemetry_id='tel-1')),
+        target=_target(), telemetry_events=[tel],
+    )
+    snap = ai_triage.build_evidence_snapshot(conn, workspace_id='ws-1', incident_id='inc-1')['snapshot']
+    assert snap['evidence_complete'] is True
+    assert snap['missing_evidence'] == []
+    assert snap['telemetry_ambiguous'] is False
 
 
 # --------------------------------------------------------------------------
@@ -492,6 +695,51 @@ def test_mock_acceptance_end_to_end_grounded_and_truthful():
     cfg = _enabled_cfg(provider='mock', price_input_per_mtok=15.0, price_output_per_mtok=75.0)
     cost = 0.0 if raw.simulated else ai_triage.estimate_cost_usd(raw.input_tokens, raw.output_tokens, cfg)
     assert cost == 0.0
+
+
+def test_production_incident_shape_end_to_end_acceptance():
+    # The exact production failure shape: an ESCALATED wallet-transfer incident whose
+    # stored payload has only {source, alert_id, detection_id} (no telemetry_id / tx_hash),
+    # an alert whose payload predates identifier stamping (empty), and a detections-table
+    # row that carries only the tx_hash. Previously this produced zero telemetry; it must
+    # now resolve the real canonical event and pass every mock-acceptance criterion.
+    tx = '0xabc123feed'
+    tel = _telemetry_event(id='tel-real', tx_hash=tx, from_addr='0xowner', to_addr='0xdest', block_number=27341122)
+    conn = _AssemblerConn(
+        incident=_incident(event_type='alert_escalation',
+                           payload={'source': 'alert_escalation', 'alert_id': 'alert-1', 'detection_id': 'detn-1'}),
+        alert=_alert(payload={}, detection_id='detn-1'),  # legacy alert payload: no tx_hash/telemetry_id
+        detections_row=_detections_row(raw_evidence_json={'tx_hash': tx, 'chain_id': 8453, 'target_id': 'tgt-1'}),
+        target=_target(), telemetry_events=[tel],
+    )
+    assembled = ai_triage.build_evidence_snapshot(conn, workspace_id='ws-1', incident_id='inc-1')
+    snap = assembled['snapshot']
+    # Telemetry now resolves (via detection tx -> canonical telemetry_events) and is complete.
+    assert assembled['evidence_count'] == 1
+    assert snap['telemetry_resolution'] == 'workspace_target_chain_tx'
+    assert snap['evidence_complete'] is True
+    entry = snap['telemetry'][0]
+    assert entry['tx_hash'] == tx and entry['block_number'] == 27341122
+    assert entry['from'] == '0xowner' and entry['to'] == '0xdest' and entry['chain_id'] == 8453
+
+    # Backward-compatible repair stamps the canonical telemetry_id onto the incident.
+    repair = ai_triage.repair_incident_telemetry_link(conn, workspace_id='ws-1', incident_id='inc-1', assembled=assembled)
+    assert repair['repaired'] is True and repair['telemetry_id'] == 'tel-real'
+
+    # Mock run: grounded, cited, and truthful metadata.
+    prompt = ai_triage.build_prompt(snap, ai_triage.AGENT_POLICY, prompt_version='v1')
+    raw = ai_providers.MockTriageProvider().analyze(prompt=prompt, model='gpt-5.6-luna', timeout_seconds=5, max_output_tokens=2000)
+    assert (raw.provider, raw.model, raw.simulated) == ('mock', 'mock', True)
+    validated = ai_triage.validate_triage_output(raw.raw_text, snap, ai_triage.AGENT_POLICY)
+    result = validated['result']
+    assert len(result['citations']) >= 1
+    assert result['risk_findings'] and all(f['evidence_refs'] for f in result['risk_findings'])
+    assert all(a['requires_human_approval'] for a in result['recommended_actions'])
+    assert not (set(a['action_type'] for a in result['recommended_actions']) & ai_triage.PROHIBITED_ACTION_TYPES)
+    cost = 0.0 if raw.simulated else 1.0
+    assert cost == 0.0
+    # The summary is grounded (a real transfer), not the "insufficient evidence" fallback.
+    assert 'insufficient evidence' not in result['summary'].lower()
 
 
 # --------------------------------------------------------------------------
