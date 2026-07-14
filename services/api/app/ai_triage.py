@@ -443,19 +443,29 @@ def _first_payload_value(payloads: list[dict[str, Any]], key: str) -> Any:
     return None
 
 
-def _resolve_incident_rule_id(detection: Any, alert: Any, incident: Any) -> str | None:
+def _resolve_incident_rule_id(detection: Any, alert: Any, incident: Any, *, detection_row: Any = None) -> str | None:
     """Resolve a truthful, groundable rule identifier for the incident.
 
     Prefers the canonical detector code; otherwise falls back to the concrete rule
     key the deterministic rule carried in the alert/incident payload (e.g.
     ``smoke_wallet_transfer``) so the rule-trigger explanation stays citeable
-    instead of collapsing to a null ``rule:`` reference.
+    instead of collapsing to a null ``rule:`` reference. ``detection_row`` is the
+    ``detections``-table row that wallet-transfer alerts link via
+    ``alerts.detection_id``; its ``detection_type`` / ``source_rule`` are consulted
+    so an incident whose only detection lives in that table still cites a real rule.
     """
     canonical = pilot.resolve_rule_identifier(
-        (detection or {}).get('detection_type'), (incident or {}).get('event_type')
+        (detection or {}).get('detection_type') or (detection_row or {}).get('detection_type'),
+        (incident or {}).get('event_type'),
     )
     if canonical:
         return canonical
+    for candidate in (
+        str((detection_row or {}).get('source_rule') or '').strip(),
+        str((detection_row or {}).get('detection_type') or '').strip(),
+    ):
+        if candidate:
+            return candidate
     for payload in _payload_chain(alert, incident):
         rule_key = str(payload.get('rule_key') or '').strip()
         if rule_key:
@@ -546,18 +556,27 @@ def _provider_observation(entry: dict[str, Any]) -> dict[str, Any]:
 
 def _resolve_incident_telemetry(
     connection: Any, *, workspace_id: str, incident: dict[str, Any], alert: Any,
-    alert_id: Any, detection: Any, target: Any, target_id: Any,
+    alert_id: Any, detection: Any, target: Any, target_id: Any, detection_row: Any = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
     """Resolve the incident's actual telemetry through canonical identifiers.
 
     Ordered strategies (first that yields canonical rows wins), all workspace-scoped
     and never dependent on title parsing:
 
-      1. direct telemetry_id reference   — alert/incident payload ``telemetry_id``
+      1. direct telemetry_id reference   — alert / incident / detection payload ``telemetry_id``
       2. alert-to-telemetry relation     — legacy ``evidence`` rows keyed by alert_id
-      3. linked_detection relation       — ``detection_events.telemetry_event_id``
+      3. linked_detection relation       — ``detection_events.telemetry_event_id`` /
+                                           ``detections.raw_evidence_json.telemetry_id``
       4. workspace + target + chain_id + tx_hash — canonical ``telemetry_events`` match
       5. canonical dedup/event identity  — ``telemetry_events.idempotency_key``
+
+    ``detection_row`` is the ``detections``-table row wallet-transfer alerts link via
+    ``alerts.detection_id`` (the newer ``detection_events`` table is often empty for
+    these). Its ``raw_evidence_json`` carries the same telemetry_id / tx_hash / chain_id
+    the alert response does, so an escalated or historical incident whose stored
+    payload lacks those identifiers can still resolve its real telemetry from the
+    detection evidence — the concrete fix for incidents that previously returned zero
+    telemetry.
 
     Upstream telemetry dedup already collapses QuickNode and Stable RPC observations
     of the same transfer into ONE canonical ``telemetry_events`` row
@@ -569,10 +588,18 @@ def _resolve_incident_telemetry(
     Returns ``(telemetry, provider_observations, resolution_method)``.
     """
     payloads = _payload_chain(alert, incident)
+    # Fold the detections-table raw_evidence into the identifier search so a
+    # telemetry_id / tx_hash / chain_id present ONLY on the detection (not on the
+    # incident/alert payload) is still found. Never a title — structured evidence only.
+    detection_evidence = _as_dict((detection_row or {}).get('raw_evidence_json'))
+    if detection_evidence:
+        payloads = payloads + [detection_evidence]
     direct_telemetry_id = _first_payload_value(payloads, 'telemetry_id')
     tx_hash = _first_payload_value(payloads, 'tx_hash')
     chain_id = _first_payload_value(payloads, 'chain_id')
-    detection_telemetry_id = (detection or {}).get('telemetry_event_id')
+    detection_telemetry_id = (detection or {}).get('telemetry_event_id') or (
+        detection_evidence.get('telemetry_id') or None
+    )
     target_chain_id = (target or {}).get('chain_id')
 
     def _query_events(where: str, params: tuple) -> list[dict[str, Any]]:
@@ -684,7 +711,7 @@ def build_evidence_snapshot(connection: Any, *, workspace_id: str, incident_id: 
         alert = connection.execute(
             '''
             SELECT id, workspace_id, severity, status, created_at, alert_type, title,
-                   summary, target_id, detection_event_id, payload
+                   summary, target_id, detection_event_id, detection_id, payload
             FROM alerts
             WHERE id = %s AND workspace_id = %s
             ''',
@@ -702,6 +729,30 @@ def build_evidence_snapshot(connection: Any, *, workspace_id: str, incident_id: 
             WHERE id = %s AND workspace_id = %s
             ''',
             (detection_event_id, workspace_id),
+        ).fetchone()
+
+    # The live wallet-transfer rules (smoke + Strategic Infrastructure Guard) and most
+    # monitoring rules link their detection through ``alerts.detection_id`` into the
+    # ``detections`` table — NOT the newer ``detection_events`` table the block above
+    # reads. Historical / escalated incidents (create_incident_from_alert,
+    # escalate_alert_to_incident) also only carry ``detection_id`` in their payload, not
+    # a telemetry_id or tx_hash. Load that detection row too so its raw_evidence_json
+    # (telemetry_id, tx_hash, chain_id) and detection_type/source_rule can ground the
+    # telemetry + rule resolution for exactly the incidents that were previously
+    # returning zero telemetry. Workspace-scoped; never parsed from a title.
+    detection_row = None
+    detection_id = (alert or {}).get('detection_id') or _first_payload_value(
+        _payload_chain(alert, incident), 'detection_id'
+    )
+    if detection_id:
+        detection_row = connection.execute(
+            '''
+            SELECT id, detection_type, source_rule, evidence_summary, evidence_source,
+                   raw_evidence_json
+            FROM detections
+            WHERE id = %s AND workspace_id = %s
+            ''',
+            (detection_id, workspace_id),
         ).fetchone()
 
     target = None
@@ -723,10 +774,11 @@ def build_evidence_snapshot(connection: Any, *, workspace_id: str, incident_id: 
     # collapse to one canonical telemetry event.
     telemetry, provider_observations, telemetry_resolution = _resolve_incident_telemetry(
         connection, workspace_id=workspace_id, incident=incident, alert=alert,
-        alert_id=alert_id, detection=detection, target=target, target_id=target_id,
+        alert_id=alert_id, detection=detection, detection_row=detection_row,
+        target=target, target_id=target_id,
     )
 
-    rule_identifier = _resolve_incident_rule_id(detection, alert, incident)
+    rule_identifier = _resolve_incident_rule_id(detection, alert, incident, detection_row=detection_row)
     snapshot = {
         'schema_version': EVIDENCE_SCHEMA_VERSION,
         'workspace_id': str(workspace_id),
@@ -742,6 +794,7 @@ def build_evidence_snapshot(connection: Any, *, workspace_id: str, incident_id: 
             'name': pilot.rule_label(rule_identifier),
             'description': str(
                 (detection or {}).get('evidence_summary')
+                or (detection_row or {}).get('evidence_summary')
                 or _first_payload_value(_payload_chain(alert, incident), 'explanation')
                 or (alert or {}).get('summary')
                 or incident.get('summary')
@@ -769,48 +822,76 @@ def build_evidence_snapshot(connection: Any, *, workspace_id: str, incident_id: 
 
     # Completeness is fail-closed: missing telemetry is stated explicitly and
     # structured so the UI can distinguish "no data" from "safe". A structured
-    # missing-information reason is recorded so a factual transfer conclusion is
-    # never presented without grounding evidence.
+    # missing-evidence reason is recorded so a factual transfer conclusion is
+    # never presented without grounding evidence. ``missing_evidence`` carries the
+    # {code, description, required_for} contract; ``missing_information`` is kept as
+    # a backward-compatible {code, detail} alias for existing consumers.
     incomplete_reasons: list[str] = []
-    missing_information: list[dict[str, Any]] = []
+    missing_evidence: list[dict[str, Any]] = []
     if alert_id is None:
         incomplete_reasons.append('incident has no linked source alert')
-        missing_information.append({
+        missing_evidence.append({
             'code': 'alert_unlinked',
-            'detail': 'The incident has no linked source alert, so its detection/telemetry chain could not be traced.',
+            'description': 'The incident has no linked source alert, so its detection/telemetry chain could not be traced.',
+            'required_for': 'detection_and_telemetry_resolution',
         })
     if not telemetry:
         incomplete_reasons.append('no telemetry evidence linked to the incident alert')
-        missing_information.append({
+        missing_evidence.append({
             'code': 'telemetry_unresolved',
-            'detail': (
+            'description': (
                 'No canonical telemetry event could be resolved for this incident via '
                 'telemetry_id, alert/detection linkage, or target + chain_id + tx_hash identity.'
             ),
+            'required_for': 'factual_transfer_findings',
         })
     if target is None:
         incomplete_reasons.append('monitored target metadata unavailable')
-        missing_information.append({
+        missing_evidence.append({
             'code': 'target_metadata_unavailable',
-            'detail': 'The monitored target record could not be loaded, so chain/address context is missing.',
+            'description': 'The monitored target record could not be loaded, so chain/address context is missing.',
+            'required_for': 'chain_and_address_context',
         })
+    # Ambiguity guard (task: "if more than one candidate exists, do not guess"):
+    # a wallet-transfer incident has ONE canonical transfer, so more than one
+    # DISTINCT transaction resolving is treated as an unresolved ambiguity rather
+    # than silently picking one. The rows are still surfaced, but the snapshot is
+    # marked incomplete with a structured reason so no single transfer is asserted.
+    distinct_tx = sorted({str(t.get('tx_hash') or '').lower() for t in telemetry if t.get('tx_hash')})
+    telemetry_ambiguous = len(distinct_tx) > 1
+    if telemetry_ambiguous:
+        incomplete_reasons.append('multiple distinct candidate transactions resolved for the incident')
+        missing_evidence.append({
+            'code': 'telemetry_ambiguous',
+            'description': (
+                'More than one distinct candidate transaction resolved for this incident '
+                f'({len(distinct_tx)} tx hashes); the canonical transfer is ambiguous and was not guessed.'
+            ),
+            'required_for': 'unambiguous_transfer_identity',
+        })
+    missing_information = [{'code': m['code'], 'detail': m['description']} for m in missing_evidence]
     snapshot['evidence_complete'] = not incomplete_reasons
     snapshot['evidence_incomplete'] = bool(incomplete_reasons)
     snapshot['incomplete_reasons'] = incomplete_reasons
+    snapshot['missing_evidence'] = missing_evidence
     snapshot['missing_information'] = missing_information
     snapshot['telemetry_resolution'] = telemetry_resolution
+    snapshot['telemetry_ambiguous'] = telemetry_ambiguous
 
     return {
         'snapshot': snapshot,
         'is_complete': not incomplete_reasons,
         'incomplete_reasons': incomplete_reasons,
+        'missing_evidence': missing_evidence,
         'missing_information': missing_information,
         'telemetry_resolution': telemetry_resolution,
+        'telemetry_ambiguous': telemetry_ambiguous,
         'evidence_count': len(telemetry),
         'source_record_ids': {
             'incident_id': str(incident_id),
             'alert_id': str(alert_id) if alert_id else None,
             'detection_event_id': str(detection_event_id) if detection_event_id else None,
+            'detection_id': str(detection_id) if detection_id else None,
             'target_id': str(target_id) if target_id else None,
             'telemetry_ids': [t['telemetry_id'] for t in telemetry],
             'telemetry_resolution': telemetry_resolution,
@@ -849,6 +930,69 @@ def store_evidence_snapshot(connection: Any, *, workspace_id: str, incident_id: 
         'is_complete': bool(assembled['is_complete']),
         'evidence_count': int(assembled['evidence_count']),
     }
+
+
+def repair_incident_telemetry_link(connection: Any, *, workspace_id: str, incident_id: str,
+                                   assembled: dict[str, Any]) -> dict[str, Any]:
+    """Backward-compatible, idempotent repair of a missing incident→telemetry link.
+
+    Historical / escalated incidents (create_incident_from_alert,
+    escalate_alert_to_incident) persist a payload WITHOUT a ``telemetry_id`` — the
+    resolver still recovers the telemetry from the alert/detection at snapshot time,
+    but the stored incident row stays unlinked. When the just-assembled snapshot
+    resolved EXACTLY ONE canonical telemetry event (unambiguous), stamp that
+    canonical ``telemetry_id`` back onto the incident payload so future reads resolve
+    it directly (strategy 1) instead of re-deriving it.
+
+    Safety:
+      * Workspace-scoped UPDATE; never touches another tenant's row.
+      * Idempotent — only fills a NULL/empty ``payload.telemetry_id`` (guarded in SQL),
+        so re-running is a no-op and it never overwrites an existing link.
+      * Never guesses: skipped when the snapshot is ambiguous (>1 candidate) or did
+        not resolve exactly one telemetry event. No destructive/bulk backfill.
+
+    Returns ``{'repaired': bool, 'telemetry_id': str|None, 'reason': str}``. Never
+    raises — a repair failure must not break the triage request.
+    """
+    telemetry = (assembled.get('snapshot') or {}).get('telemetry') or []
+    if assembled.get('telemetry_ambiguous'):
+        return {'repaired': False, 'telemetry_id': None, 'reason': 'ambiguous_multiple_candidates'}
+    if len(telemetry) != 1:
+        return {'repaired': False, 'telemetry_id': None,
+                'reason': 'no_telemetry_resolved' if not telemetry else 'multiple_telemetry_events'}
+    entry = telemetry[0]
+    telemetry_id = str(entry.get('telemetry_id') or '').strip()
+    if not telemetry_id:
+        return {'repaired': False, 'telemetry_id': None, 'reason': 'resolved_telemetry_has_no_id'}
+    patch = {
+        'telemetry_id': telemetry_id,
+        'tx_hash': entry.get('tx_hash'),
+        'telemetry_link_repair': {
+            'linked_at': pilot.utc_now_iso(),
+            'telemetry_id': telemetry_id,
+            'resolution': assembled.get('telemetry_resolution'),
+            'reason': 'backfilled_unambiguous_canonical_telemetry',
+        },
+    }
+    try:
+        result = connection.execute(
+            '''
+            UPDATE incidents
+            SET payload = COALESCE(payload, '{}'::jsonb) || %s::jsonb, updated_at = NOW()
+            WHERE id = %s AND workspace_id = %s
+              AND NULLIF(payload->>'telemetry_id', '') IS NULL
+            ''',
+            (pilot._json_dumps(patch), incident_id, workspace_id),
+        )
+        rowcount = getattr(result, 'rowcount', None)
+    except Exception:  # pragma: no cover - repair is best-effort, never breaks triage
+        logger.warning('event=incident_telemetry_repair_failed workspace_id=%s incident_id=%s', workspace_id, incident_id)
+        return {'repaired': False, 'telemetry_id': telemetry_id, 'reason': 'update_failed'}
+    if rowcount == 0:
+        return {'repaired': False, 'telemetry_id': telemetry_id, 'reason': 'already_linked'}
+    logger.info('event=incident_telemetry_repaired workspace_id=%s incident_id=%s telemetry_id=%s resolution=%s',
+                workspace_id, incident_id, telemetry_id, assembled.get('telemetry_resolution'))
+    return {'repaired': True, 'telemetry_id': telemetry_id, 'reason': 'linked'}
 
 
 def _iso(value: Any) -> Any:
@@ -1331,6 +1475,12 @@ def request_triage(incident_id: str, request: Any, *, regenerate: bool = False, 
             )
 
         assembled = build_evidence_snapshot(connection, workspace_id=workspace_id, incident_id=incident_id)
+        # Backward-compatible repair: if this incident predates direct telemetry
+        # linkage but resolved exactly one canonical telemetry event, stamp that
+        # telemetry_id onto the incident payload now (idempotent, unambiguous-only).
+        telemetry_repair = repair_incident_telemetry_link(
+            connection, workspace_id=workspace_id, incident_id=incident_id, assembled=assembled,
+        )
         snapshot_row = store_evidence_snapshot(connection, workspace_id=workspace_id, incident_id=incident_id, assembled=assembled)
 
         effective_provider, effective_model = _effective_provider_model(config)
@@ -1354,7 +1504,10 @@ def request_triage(incident_id: str, request: Any, *, regenerate: bool = False, 
         _audit(connection, request=request, action='incident.evidence_snapshot.created', incident_id=incident_id,
                workspace_id=workspace_id, user_id=user['id'],
                metadata={'snapshot_id': snapshot_row['id'], 'snapshot_hash': snapshot_row['snapshot_hash'],
-                         'evidence_count': snapshot_row['evidence_count'], 'is_complete': snapshot_row['is_complete']})
+                         'evidence_count': snapshot_row['evidence_count'], 'is_complete': snapshot_row['is_complete'],
+                         'telemetry_resolution': assembled.get('telemetry_resolution'),
+                         'telemetry_link_repaired': bool(telemetry_repair.get('repaired')),
+                         'telemetry_link_reason': telemetry_repair.get('reason')})
         _audit(connection, request=request, action='incident.ai_triage.queued', incident_id=incident_id,
                workspace_id=workspace_id, user_id=user['id'],
                metadata={'triage_job_id': job_id, 'regenerate': bool(regenerate),

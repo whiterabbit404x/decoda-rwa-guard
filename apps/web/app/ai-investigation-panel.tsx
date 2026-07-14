@@ -335,7 +335,7 @@ export default function AiInvestigationPanel({ incidentId }: { incidentId: strin
 
           <div className="aiMeta">
             <p>
-              <strong>Model:</strong> {state?.provider} / {state?.model ?? 'default'}
+              <strong>Provider:</strong> {formatProviderLabel(state?.provider)} · <strong>Model:</strong> {formatModelLabel(state?.simulated, state?.model)}
               {state?.simulated && (
                 <span className="pill" style={{ marginLeft: '0.4rem' }} title="Deterministic offline mock — no live model was called.">
                   Simulated (mock)
@@ -344,7 +344,11 @@ export default function AiInvestigationPanel({ incidentId }: { incidentId: strin
               {' '}· <strong>prompt:</strong> {state?.prompt_version}
             </p>
             <p><strong>Generated at:</strong> {state?.completed_at ?? 'n/a'} · <strong>latency:</strong> {state?.latency_ms ?? 'n/a'}ms</p>
-            <p><strong>Tokens:</strong> {state?.input_tokens ?? 0} in / {state?.output_tokens ?? 0} out · <strong>est. cost:</strong> ${state?.estimated_cost_usd ?? 0}{state?.simulated ? ' (synthetic — not billed)' : ''}</p>
+            <p>
+              <strong>Tokens:</strong> {state?.input_tokens ?? 0} in / {state?.output_tokens ?? 0} out{state?.simulated ? ' (synthetic)' : ''}
+              {' '}· <strong>est. cost:</strong> ${Number(state?.estimated_cost_usd ?? 0).toFixed(2)}
+              {state?.simulated ? ' — Synthetic test result — not billed' : ''}
+            </p>
             <p><strong>Evidence snapshot hash:</strong> <code>{state?.evidence_snapshot_hash}</code></p>
             {(state?.version_count ?? 0) > 1 && (
               <p><strong>Analysis version:</strong> {state?.version_count} (prior versions preserved)</p>
@@ -399,4 +403,22 @@ export default function AiInvestigationPanel({ incidentId }: { incidentId: strin
 function renderRefs(refs?: string[]) {
   if (!refs || refs.length === 0) return null;
   return <span className="refs">[{refs.join(', ')}]</span>;
+}
+
+// Truthful provider label: a synthetic (mock) run must read "Mock", never a live
+// model name. OpenAI keeps its conventional capitalization.
+function formatProviderLabel(provider?: string) {
+  const p = (provider ?? '').trim().toLowerCase();
+  if (!p) return 'n/a';
+  if (p === 'mock') return 'Mock';
+  if (p === 'openai') return 'OpenAI';
+  if (p === 'anthropic') return 'Anthropic';
+  return p;
+}
+
+// A simulated run always displays model "Mock" — never the configured live
+// AI_MODEL_TRIAGE value (e.g. an OpenAI model name) for a run that never called it.
+function formatModelLabel(simulated?: boolean, model?: string) {
+  if (simulated) return 'Mock';
+  return model && model.trim() ? model : 'default';
 }
