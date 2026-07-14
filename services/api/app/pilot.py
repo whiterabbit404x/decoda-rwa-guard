@@ -15532,6 +15532,166 @@ def rollback_enforcement_action(action_id: str, request: Request) -> dict[str, A
         return {'id': action_id, 'status': 'canceled', 'compensating_action_id': rollback_id, 'compensating_action_type': compensating_type}
 
 
+# --------------------------------------------------------------------------
+# AI recommendation-review read model.
+#
+# Accepted / rejected / pending AI investigation recommendations live in the
+# canonical ``ai_recommendations`` review table (migration 0123). They are NOT
+# executed actions — reviewing a recommendation records a human decision only.
+# The Response Actions read API surfaces them as immutable, normalized review
+# records alongside the legacy policy-engine ``response_actions`` rows so the
+# customer can see the accept/reject history. We read straight from the review
+# table (no materialized duplicate, no backfill) so historical decisions appear
+# automatically. Every field below is derived from stored review facts; nothing
+# is invented, and ``executed`` is always False for a review record.
+# --------------------------------------------------------------------------
+AI_RECOMMENDATION_REVIEW_TABLES = ('ai_recommendations', 'ai_triage_results', 'ai_triage_jobs')
+
+
+def _ai_recommendation_review_schema_ready(connection: Any) -> bool:
+    """True when the AI recommendation review tables exist. Fail-closed on error."""
+    try:
+        for table in AI_RECOMMENDATION_REVIEW_TABLES:
+            row = connection.execute('SELECT to_regclass(%s) IS NOT NULL AS present', (f'public.{table}',)).fetchone()
+            if not bool((row or {}).get('present')):
+                return False
+        return True
+    except Exception:  # pragma: no cover - any probe failure is treated as not-ready
+        return False
+
+
+def _recommendation_title(action_type: str | None, runbook_id: str | None) -> str:
+    """Human title for a recommendation, preferring the canonical runbook name."""
+    try:  # lazy import: ai_triage imports pilot, so avoid a module-level cycle.
+        from services.api.app import ai_triage
+        if runbook_id and str(runbook_id) in ai_triage.RUNBOOK_CATALOG:
+            return str(ai_triage.RUNBOOK_CATALOG[str(runbook_id)]['name'])
+    except Exception:  # pragma: no cover - defensive; fall back to humanized type
+        pass
+    humanized = str(action_type or '').replace('_', ' ').strip()
+    return (humanized[:1].upper() + humanized[1:]) if humanized else 'AI recommendation'
+
+
+def _ai_review_status(review_state: str | None) -> str:
+    state = str(review_state or 'pending_review').strip().lower()
+    if state == 'accepted':
+        return 'accepted'
+    if state == 'rejected':
+        return 'rejected'
+    return 'pending_approval'
+
+
+def _ai_recommendation_review_payload(row: dict[str, Any]) -> dict[str, Any]:
+    """Normalize an ``ai_recommendations`` (+ triage job/result) row into a review record."""
+    safe = _json_safe_value(dict(row))
+    review_state = str(safe.get('review_state') or 'pending_review')
+    decision = review_state if review_state in {'accepted', 'rejected'} else None
+    action_type = safe.get('action_type')
+    runbook_id = safe.get('runbook_id')
+    evidence_refs = safe.get('evidence_refs') if isinstance(safe.get('evidence_refs'), list) else []
+    reviewer_id = str(safe['reviewed_by_user_id']) if safe.get('reviewed_by_user_id') else None
+    recommendation_id = str(safe.get('recommendation_id') or safe.get('id') or '')
+    return {
+        # Identity + record classification (keeps legacy vs AI records distinguishable).
+        'id': recommendation_id,
+        'record_type': 'ai_recommendation_review',
+        'source_type': 'ai_investigation',
+        'recommendation_id': recommendation_id,
+        'triage_job_id': str(safe['triage_job_id']) if safe.get('triage_job_id') else None,
+        'triage_result_id': str(safe['triage_result_id']) if safe.get('triage_result_id') else None,
+        'runbook_id': runbook_id,
+        # Presentation.
+        'action_type': action_type,
+        'title': _recommendation_title(action_type, runbook_id),
+        'category': 'AI recommendation review',
+        'type': 'AI recommendation review',
+        'impact': safe.get('risk_level') or 'low',
+        'severity': safe.get('risk_level') or 'low',
+        # Review / execution semantics — a review is NEVER an executed action.
+        'decision': decision,
+        'review_state': review_state,
+        'status': _ai_review_status(review_state),
+        'requires_approval': bool(safe.get('requires_human_approval', True)),
+        'requires_human_approval': bool(safe.get('requires_human_approval', True)),
+        'executed': False,
+        'mode': 'review',
+        'is_simulated': False,
+        'simulated': False,
+        # Provenance.
+        'incident_id': str(safe['incident_id']) if safe.get('incident_id') else None,
+        'reviewer_id': reviewer_id,
+        'reviewed_by_user_id': reviewer_id,
+        'reviewer_email': safe.get('reviewer_email'),
+        'reviewed_at': safe.get('reviewed_at'),
+        'review_note': safe.get('review_reason'),
+        'recommended_by': 'AI investigation',
+        'provider': safe.get('provider'),
+        'model': safe.get('model'),
+        # Evidence linkage.
+        'evidence_snapshot_id': str(safe['evidence_snapshot_id']) if safe.get('evidence_snapshot_id') else None,
+        'evidence_snapshot_hash': safe.get('evidence_snapshot_hash'),
+        'evidence_refs': evidence_refs,
+        'evidence_refs_count': len(evidence_refs),
+        'evidence_source': 'ai_investigation',
+        'created_at': safe.get('created_at'),
+    }
+
+
+def _list_ai_recommendation_reviews(
+    connection: Any,
+    *,
+    workspace_id: str,
+    incident_id: str | None,
+    action_id: str | None,
+    status_value: str | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Return workspace-scoped AI recommendation-review records as normalized actions.
+
+    Reads directly from the canonical ``ai_recommendations`` review table joined to
+    its triage result/job for provider/model/evidence-snapshot linkage. Workspace
+    isolation is enforced in the WHERE clause and on every join — ``incident_id``
+    alone never bypasses the workspace check, so no cross-tenant record is returned.
+    """
+    if not _ai_recommendation_review_schema_ready(connection):
+        return []
+    rows = connection.execute(
+        '''
+        SELECT r.id AS recommendation_id, r.incident_id, r.triage_result_id, r.action_type,
+               r.runbook_id, r.reason, r.risk_level, r.requires_human_approval, r.evidence_refs,
+               r.review_state, r.reviewed_by_user_id, r.reviewed_at, r.review_reason, r.created_at,
+               res.triage_job_id AS triage_job_id,
+               j.provider AS provider, j.model AS model,
+               j.evidence_snapshot_id AS evidence_snapshot_id,
+               j.evidence_snapshot_hash AS evidence_snapshot_hash,
+               u.email AS reviewer_email
+        FROM ai_recommendations r
+        JOIN ai_triage_results res ON res.id = r.triage_result_id AND res.workspace_id = r.workspace_id
+        JOIN ai_triage_jobs j ON j.id = res.triage_job_id AND j.workspace_id = r.workspace_id
+        LEFT JOIN users u ON u.id = r.reviewed_by_user_id
+        WHERE r.workspace_id = %s
+          AND (%s::uuid IS NULL OR r.incident_id = %s::uuid)
+          AND (%s::uuid IS NULL OR r.id = %s::uuid)
+        ORDER BY r.created_at DESC
+        LIMIT %s
+        ''',
+        (workspace_id, incident_id, incident_id, action_id, action_id, limit),
+    ).fetchall()
+    reviews: list[dict[str, Any]] = []
+    for row in rows:
+        payload = _ai_recommendation_review_payload(dict(row))
+        # Honor an explicit legacy status filter without ever mislabeling a review:
+        # only pending reviews map onto the "pending" bucket; accepted/rejected reviews
+        # are never "executed"/"failed"/"canceled", so they drop out of those filters.
+        if status_value:
+            if status_value == 'pending' and payload['status'] != 'pending_approval':
+                continue
+            if status_value != 'pending':
+                continue
+        reviews.append(payload)
+    return reviews
+
+
 def list_enforcement_actions(
     request: Request,
     *,
@@ -15548,6 +15708,7 @@ def list_enforcement_actions(
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        workspace_id = workspace_context['workspace_id']
         rows = connection.execute(
             '''
             SELECT id, action_type, mode, status, result_status, execution_state, result_summary, operator_notes, created_at, approved_at, executed_at, failed_at, rolled_back_at, incident_id, alert_id, safe_tx_hash, tx_hash, execution_metadata
@@ -15561,13 +15722,32 @@ def list_enforcement_actions(
             ORDER BY created_at DESC
             LIMIT %s
             ''',
-            (workspace_context['workspace_id'], action_id, action_id, incident_id, incident_id, alert_id, alert_id, normalized_status, normalized_status, max_limit),
+            (workspace_id, action_id, action_id, incident_id, incident_id, alert_id, alert_id, normalized_status, normalized_status, max_limit),
         ).fetchall()
         actions: list[dict[str, Any]] = []
         for row in rows:
             action = _json_safe_value(dict(row))
+            action['source_type'] = 'policy_engine'
+            action['record_type'] = 'response_action'
             action['capability'] = resolve_response_action_capability(str(action.get('action_type') or ''), str(action.get('mode') or ''))
             actions.append(_response_action_payload(action))
+        # Surface AI investigation recommendation reviews (immutable, never executed).
+        # An alert_id filter is a legacy-action concept; AI reviews are incident-scoped,
+        # so we only include them when the caller is not narrowing to a specific alert.
+        if alert_id is None:
+            try:
+                actions.extend(
+                    _list_ai_recommendation_reviews(
+                        connection,
+                        workspace_id=workspace_id,
+                        incident_id=incident_id,
+                        action_id=action_id,
+                        status_value=normalized_status,
+                        limit=max_limit,
+                    )
+                )
+            except Exception:  # pragma: no cover - never let the AI read break the legacy list
+                logger.warning('event=ai_recommendation_review_read_failed workspace_id=%s incident_id=%s', workspace_id, incident_id)
         return {'actions': actions}
 
 
@@ -17365,6 +17545,25 @@ def list_exports(request: Request) -> dict[str, Any]:
         return {'exports': exports}
 
 
+def _resolve_audit_evidence_source(action: Any, metadata: Any) -> str | None:
+    """Map an audit action to a truthful evidence-source label, or None to leave as-is.
+
+    AI recommendation accept/reject decisions (and other AI-investigation audit
+    events) are grounded in the incident's AI evidence snapshot, so they are labeled
+    ``ai_investigation`` rather than falling through to "Unknown source" in the UI.
+    Returns None for events we should not relabel (their existing source stands).
+    """
+    action_name = str(action or '')
+    meta = metadata if isinstance(metadata, dict) else {}
+    if action_name.startswith('incident.recommendation.'):
+        return 'ai_investigation'
+    if 'ai_triage' in action_name or action_name.startswith('incident.ai'):
+        return 'ai_investigation'
+    if meta.get('recommendation_id') or meta.get('triage_job_id') or meta.get('triage_result_id'):
+        return 'ai_investigation'
+    return None
+
+
 def list_audit_events(request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
@@ -17393,6 +17592,13 @@ def list_audit_events(request: Request) -> dict[str, Any]:
             item['result'] = meta.get('result') or 'success'
             item['source_ip'] = item.get('ip_address')
             item['timestamp'] = item.get('created_at')
+            # Resolve a truthful evidence source so audit rows for AI recommendation
+            # decisions no longer render as "Unknown source". Never claims live-chain
+            # evidence — it only names where the decision's evidence actually came from.
+            resolved_source = _resolve_audit_evidence_source(item.get('action'), meta)
+            if resolved_source:
+                item['evidence_source_type'] = resolved_source
+                item['evidence_source'] = resolved_source
             events.append(item)
         return {'events': events}
 

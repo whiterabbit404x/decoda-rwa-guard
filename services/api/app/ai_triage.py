@@ -2080,9 +2080,16 @@ def review_recommendation(incident_id: str, recommendation_id: str, request: Any
         event_type = 'incident.recommendation.approved' if decision == 'accepted' else 'incident.recommendation.rejected'
         post_commit.append(_incident_event(event_type, incident_id, workspace_id,
                            {'recommendation_id': str(recommendation_id), 'decision': decision}))
+        # Return the normalized review record so the AI panel and the Response Actions
+        # page share the same server truth after a decision (no optimistic-only state).
+        # A review is a human decision, never an executed action: executed is always False.
         response_payload = {
             'recommendation_id': str(recommendation_id), 'incident_id': str(incident_id),
-            'review_state': decision, 'executed': False,
+            'review_state': decision, 'decision': decision, 'executed': False,
+            'record_type': 'ai_recommendation_review', 'source_type': 'ai_investigation',
+            'action_type': rec.get('action_type'), 'runbook_id': rec.get('runbook_id'),
+            'status': 'accepted' if decision == 'accepted' else 'rejected',
+            'reviewed_by_user_id': str(user['id']), 'review_note': (reason or None),
             'message': 'Decision recorded. No on-chain action was executed (human-approved runbooks only).',
         }
     for event in post_commit:
