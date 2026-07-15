@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
 import { usePilotAuth } from './pilot-auth-context';
 import { fetchRuntimeStatusDeduped } from './runtime-status-client';
@@ -35,6 +35,7 @@ type RuntimeSummaryContextValue = {
   fixCtaLabel: string;
   providerHealth: ProviderHealthInfo;
   workerHealth: WorkerHealthInfo;
+  refresh: () => Promise<void>;
 };
 
 const REASON_CODE_MESSAGES: Record<string, string> = {
@@ -155,18 +156,33 @@ export function RuntimeSummaryProvider({ children }: { children: React.ReactNode
   const [rawPayload, setRawPayload] = useState<import('./monitoring-status-contract').MonitoringRuntimeStatus | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  const load = useCallback(async (forceRefresh = false): Promise<void> => {
     if (!isAuthenticated) return;
     setLoading(true);
-    void fetchRuntimeStatusDeduped(authHeaders())
-      .then((payload) => {
-        setSummary(resolveWorkspaceMonitoringTruth(payload));
-        setRuntime(payload?.workspace_monitoring_runtime ?? null);
-        setRawPayload(payload ?? null);
-      })
-      .catch(() => { setSummary(resolveWorkspaceMonitoringTruth(null)); setRuntime(null); setRawPayload(null); })
-      .finally(() => setLoading(false));
+    try {
+      const payload = await fetchRuntimeStatusDeduped(authHeaders(), forceRefresh ? { forceRefresh: true } : undefined);
+      setSummary(resolveWorkspaceMonitoringTruth(payload));
+      setRuntime(payload?.workspace_monitoring_runtime ?? null);
+      setRawPayload(payload ?? null);
+    } catch {
+      setSummary(resolveWorkspaceMonitoringTruth(null));
+      setRuntime(null);
+      setRawPayload(null);
+    } finally {
+      setLoading(false);
+    }
   }, [authHeaders, isAuthenticated]);
+
+  // `refresh` forces a fresh runtime-status fetch, bypassing the freshness cache, so callers
+  // (e.g. after activation or a monitored-systems repair) see canonical counts and the global
+  // setup banner stops reporting "no protected assets" once one exists.
+  const refresh = useCallback(async (): Promise<void> => {
+    await load(true);
+  }, [load]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const value = useMemo<RuntimeSummaryContextValue>(() => {
     const reasons = summary.continuity_reason_codes ?? [];
@@ -182,8 +198,8 @@ export function RuntimeSummaryProvider({ children }: { children: React.ReactNode
       : 'Review monitoring setup';
     const providerHealth = deriveProviderHealth(rawPayload);
     const workerHealth = deriveWorkerHealth(rawPayload, summary);
-    return { summary, runtime, loading, reasonMessageForCode, evidenceLabel, existsLabel, missingLabel, nextActionLabel, fixCtaLabel, providerHealth, workerHealth };
-  }, [summary, runtime, rawPayload, loading]);
+    return { summary, runtime, loading, reasonMessageForCode, evidenceLabel, existsLabel, missingLabel, nextActionLabel, fixCtaLabel, providerHealth, workerHealth, refresh };
+  }, [summary, runtime, rawPayload, loading, refresh]);
 
   return <RuntimeSummaryContext.Provider value={value}>{children}</RuntimeSummaryContext.Provider>;
 }
