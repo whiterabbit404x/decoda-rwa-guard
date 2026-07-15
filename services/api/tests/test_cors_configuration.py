@@ -167,6 +167,35 @@ def test_preflight_for_monitoring_system_reconcile_supports_post_and_auth_header
     assert 'content-type' in allowed_headers
 
 
+def test_preflight_for_onboarding_sessions_supports_post_and_auth_headers(monkeypatch):
+    # The Autonomous Onboarding Agent is reached through the same-origin Next.js proxy in
+    # production, but the backend must still answer the credentialed preflight for the
+    # production frontend origin so any direct/proxied call succeeds instead of surfacing a
+    # browser "Failed to fetch". Covers POST /api/onboarding/sessions.
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.setenv('CORS_ALLOWED_ORIGINS', 'https://rwa.decodasecurity.com')
+
+    api_main = load_api_main_module()
+    client = TestClient(api_main.app)
+
+    preflight = client.options(
+        '/api/onboarding/sessions',
+        headers={
+            'Origin': 'https://rwa.decodasecurity.com',
+            'Access-Control-Request-Method': 'POST',
+            'Access-Control-Request-Headers': 'authorization,x-workspace-id,x-csrf-token,content-type',
+        },
+    )
+
+    assert preflight.status_code == 200
+    assert preflight.headers.get('access-control-allow-origin') == 'https://rwa.decodasecurity.com'
+    allowed_headers = (preflight.headers.get('access-control-allow-headers') or '').lower()
+    assert 'authorization' in allowed_headers
+    assert 'x-workspace-id' in allowed_headers
+    assert 'x-csrf-token' in allowed_headers
+    assert 'content-type' in allowed_headers
+
+
 def test_post_and_get_operations_include_cors_headers_for_allowed_origin(monkeypatch):
     monkeypatch.setenv('APP_ENV', 'production')
     monkeypatch.setenv('CORS_ALLOWED_ORIGINS', 'https://rwa.decodasecurity.com')

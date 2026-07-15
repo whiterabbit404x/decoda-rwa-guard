@@ -113,6 +113,131 @@ export type StreamStatus = 'live' | 'polling' | 'disconnected';
 
 export const ACTIVE_STATUSES: SessionStatus[] = ['discovering', 'benchmarking', 'activating'];
 
+// ---------------------------------------------------------------------------
+// Structured, customer-safe error taxonomy.
+//
+// The backend returns machine-readable error codes (snake_case in discovery step
+// results, and the documented SCREAMING_SNAKE taxonomy for API-level failures). The
+// browser must NEVER show a raw exception, an HTML error page, or a transport-level
+// "Failed to fetch" string. describeOnboardingError() maps a code to an actionable,
+// fail-closed message plus an optional recovery affordance.
+// ---------------------------------------------------------------------------
+export const MONITORING_SOURCES_ROUTE = '/monitoring-sources';
+export const INTEGRATIONS_ROUTE = '/integrations';
+
+// Shown whenever the browser fetch itself rejects (offline, DNS, proxy down, aborted)
+// or the same-origin proxy cannot reach the backend — never the raw TypeError.
+export const ONBOARDING_TRANSPORT_MESSAGE =
+  'Decoda could not reach the onboarding service. Please retry shortly.';
+
+export type OnboardingErrorInfo = {
+  code: string | null;
+  message: string;
+  recoverable: boolean;
+  correlationId?: string | null;
+  suggestion?: { label: string; href: string } | null;
+};
+
+// Error thrown by the onboarding client's request helper. Carries the resolved,
+// customer-safe OnboardingErrorInfo so callers never re-derive a message from a raw
+// Error string. `silent` marks failures already surfaced by dedicated UI (401 →
+// session-expired card) so the generic error banner is not double-rendered.
+export class OnboardingRequestError extends Error {
+  readonly info: OnboardingErrorInfo;
+  readonly silent: boolean;
+  constructor(info: OnboardingErrorInfo, silent = false) {
+    super(info.message);
+    this.name = 'OnboardingRequestError';
+    this.info = info;
+    this.silent = silent;
+  }
+}
+
+// Detects browser-level transport failures (the classic "Failed to fetch" TypeError)
+// so they can be converted into ONBOARDING_TRANSPORT_MESSAGE instead of leaking.
+export function isTransportError(err: unknown): boolean {
+  if (err instanceof TypeError) return true;
+  const msg = (err instanceof Error ? err.message : String(err ?? '')).toLowerCase();
+  return (
+    msg.includes('failed to fetch') ||
+    msg.includes('load failed') ||
+    msg.includes('networkerror') ||
+    msg.includes('network request failed')
+  );
+}
+
+function safeBackendMessage(message: string | null | undefined): string | null {
+  const normalized = (message ?? '').trim();
+  if (!normalized) return null;
+  // Never surface raw JSON blobs, HTML documents, or Python tracebacks to the customer.
+  if (normalized.startsWith('{') || normalized.startsWith('[') || normalized.startsWith('<')) return null;
+  if (normalized.toLowerCase().includes('traceback')) return null;
+  return normalized;
+}
+
+export function describeOnboardingError(
+  code: string | null | undefined,
+  backendMessage?: string | null,
+): OnboardingErrorInfo {
+  const normalized = (code ?? '').trim().toLowerCase();
+  const safe = safeBackendMessage(backendMessage);
+  switch (normalized) {
+    case 'address_required':
+    case 'invalid_address_format':
+    case 'invalid_address':
+      return { code: 'INVALID_ADDRESS', recoverable: true,
+        message: 'Enter a valid 0x-prefixed, 40-character EVM contract address.' };
+    case 'zero_address':
+      return { code: 'ZERO_ADDRESS', recoverable: true,
+        message: 'The zero address is not a valid contract. Enter the deployed contract address.' };
+    case 'no_deployed_contract':
+    case 'no_contract_bytecode':
+      return { code: 'NO_CONTRACT_BYTECODE', recoverable: false,
+        message: 'No smart contract was found at this address. It appears to be a wallet account. Add it through Monitoring Sources to monitor wallet transfers.',
+        suggestion: { label: 'Go to Monitoring Sources', href: MONITORING_SOURCES_ROUTE } };
+    case 'no_rpc_endpoint':
+    case 'rpc_not_configured':
+      return { code: 'RPC_NOT_CONFIGURED', recoverable: true,
+        message: 'No RPC provider is configured for this network. Add an RPC endpoint above, or configure one in Integrations.',
+        suggestion: { label: 'Open Integrations', href: INTEGRATIONS_ROUTE } };
+    case 'chain_mismatch':
+    case 'rpc_chain_mismatch':
+    case 'wrong_chain':
+      return { code: 'RPC_CHAIN_MISMATCH', recoverable: true,
+        message: 'This contract was not found on the selected network. Check the selected network, or the chain your RPC endpoint serves.' };
+    case 'invalid_chain_response':
+    case 'rpc_unreachable':
+    case 'rpc_unavailable':
+      return { code: 'RPC_UNAVAILABLE', recoverable: true,
+        message: 'Decoda could not reach an RPC provider for this network. Please retry shortly.' };
+    case 'unauthenticated':
+    case 'authentication_required':
+      return { code: 'AUTHENTICATION_REQUIRED', recoverable: false,
+        message: 'Your session has expired. Sign in again to continue.' };
+    case 'workspace_access_denied':
+      return { code: 'WORKSPACE_ACCESS_DENIED', recoverable: false,
+        message: 'You do not have access to this workspace.' };
+    case 'discovery_already_running':
+      return { code: 'DISCOVERY_ALREADY_RUNNING', recoverable: true,
+        message: 'Discovery is already running for this workspace. Please wait for it to finish.' };
+    case 'rate_limited':
+      return { code: 'RATE_LIMITED', recoverable: true,
+        message: 'Too many requests. Please wait a moment and try again.' };
+    case 'backend_unreachable':
+    case 'backend_timeout':
+      return { code: 'RPC_UNAVAILABLE', recoverable: true, message: ONBOARDING_TRANSPORT_MESSAGE };
+    case 'invalid_runtime_config':
+      return { code: 'INTERNAL_ERROR', recoverable: false,
+        message: 'The onboarding service is not configured for this deployment. Please contact support.' };
+    default:
+      return {
+        code: normalized ? normalized.toUpperCase() : 'INTERNAL_ERROR',
+        recoverable: true,
+        message: safe ?? 'Something went wrong while starting discovery. Please retry.',
+      };
+  }
+}
+
 // The 5-phase progress header maps to the 10 backend steps.
 export const PHASES: Array<{ key: string; label: string; steps: string[] }> = [
   { key: 'connect', label: 'Connect Workspace', steps: ['validate_inputs', 'connect_chain'] },
@@ -179,11 +304,12 @@ export function recommendationVariant(rec: BenchmarkResult['recommendation']): '
   }
 }
 
-// Connect to the backend SSE stream. Returns a disconnect function. On every
-// server event (or heartbeat) the caller's callbacks fire; the caller refetches
-// the authoritative session snapshot rather than trusting event bodies.
+// Connect to the onboarding SSE stream through the same-origin proxy
+// (/api/onboarding/sessions/{id}/events). The browser never opens a cross-origin
+// EventSource against the backend. Returns a disconnect function. On every server
+// event (or heartbeat) the caller's callbacks fire; the caller refetches the
+// authoritative session snapshot rather than trusting event bodies.
 export function connectOnboardingStream(
-  apiUrl: string,
   sessionId: string,
   headers: Record<string, string>,
   callbacks: { onEvent: () => void; onStatus: (s: StreamStatus) => void },
@@ -195,7 +321,7 @@ export function connectOnboardingStream(
     while (!closed) {
       let response: Response;
       try {
-        response = await fetch(`${apiUrl}/api/onboarding/sessions/${sessionId}/events`, {
+        response = await fetch(`/api/onboarding/sessions/${encodeURIComponent(sessionId)}/events`, {
           headers: { ...headers, Accept: 'text/event-stream', 'Cache-Control': 'no-cache' },
           signal: abort.signal,
           cache: 'no-store',

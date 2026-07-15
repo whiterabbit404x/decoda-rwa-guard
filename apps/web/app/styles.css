@@ -7142,6 +7142,10 @@ a.mktTrustBadge:hover {
 /* Notices + skeleton */
 .onbNotice { padding: 0.85rem 1.1rem; margin-top: 1rem; }
 .onbWarn { margin: 0; color: var(--warning-fg); font-size: 0.85rem; }
+.onbErrorNotice { display: flex; flex-direction: column; gap: 0.55rem; }
+.onbErrorMeta { display: flex; flex-wrap: wrap; gap: 0.35rem 0.9rem; }
+.onbErrorCode, .onbErrorRef { font-size: 0.72rem; letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.onbErrorActions { margin-top: 0.15rem; gap: 0.6rem; }
 .onbSkeleton { padding: 1.25rem 1.4rem; display: flex; flex-direction: column; gap: 0.6rem; }
 .skeletonRow { height: 14px; border-radius: 6px; background: linear-gradient(90deg, rgba(255,255,255,0.05), rgba(255,255,255,0.1), rgba(255,255,255,0.05)); background-size: 200% 100%; animation: onbShimmer 1.4s ease-in-out infinite; }
 .skeletonRow:nth-child(2) { width: 80%; }

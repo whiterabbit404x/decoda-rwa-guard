@@ -6,8 +6,10 @@ import { usePilotAuth } from '../pilot-auth-context';
 import { SurfaceCard, StatusPill, Button, TableShell, Select } from '../components/ui-primitives';
 import {
   ACTIVE_STATUSES, connectOnboardingStream, confidenceVariant, derivePhaseStatuses,
+  describeOnboardingError, isTransportError, ONBOARDING_TRANSPORT_MESSAGE, OnboardingRequestError,
   recommendationVariant, stepVariant,
-  type BenchmarkResult, type OnboardingFinding, type OnboardingSnapshot, type StreamStatus,
+  type BenchmarkResult, type OnboardingErrorInfo, type OnboardingFinding, type OnboardingSession,
+  type OnboardingSnapshot, type StreamStatus,
 } from '../onboarding-agent-client';
 
 const CHAINS = [
@@ -27,6 +29,12 @@ const MODES = [
 const STORAGE_KEY = 'decoda.onboarding.session';
 const HEX_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
+// Same-origin proxy base. All onboarding requests go through the Next.js /api/onboarding/*
+// proxy routes; the browser must NEVER call the backend origin directly (in production it is
+// not browser-reachable, which surfaces as a raw "Failed to fetch"). Onboarding paths already
+// carry the /api prefix, so the base is empty. Mirrors the alerts / incidents / targets transport.
+const API_PROXY_BASE = '';
+
 type Busy = null | 'create' | 'discover' | 'approve' | 'activate' | 'retry' | 'benchmark' | 'report' | 'refresh';
 
 function findValue(findings: OnboardingFinding[], type: string): OnboardingFinding | undefined {
@@ -42,11 +50,12 @@ function fmtTime(iso: string | null): string {
   }
 }
 
-export default function OnboardingPageClient({ apiUrl }: { apiUrl: string }) {
+export default function OnboardingPageClient() {
   const { authHeaders } = usePilotAuth();
   const [snapshot, setSnapshot] = useState<OnboardingSnapshot | null>(null);
   const [busy, setBusy] = useState<Busy>(null);
-  const [error, setError] = useState<string>('');
+  const [error, setError] = useState<OnboardingErrorInfo | null>(null);
+  const [lastAction, setLastAction] = useState<{ kind: Busy; fn: () => Promise<unknown> } | null>(null);
   const [sessionExpired, setSessionExpired] = useState(false);
   const [streamStatus, setStreamStatus] = useState<StreamStatus>('disconnected');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -63,28 +72,51 @@ export default function OnboardingPageClient({ apiUrl }: { apiUrl: string }) {
   const isActive = status !== null && ACTIVE_STATUSES.includes(status);
 
   const api = useCallback(async (path: string, method: 'GET' | 'POST' = 'GET', body?: unknown) => {
-    const res = await fetch(`${apiUrl}${path}`, {
-      method,
-      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-      body: body ? JSON.stringify(body) : undefined,
-      cache: 'no-store',
-    });
-    if (res.status === 401) { setSessionExpired(true); throw new Error('unauthenticated'); }
-    const data = await res.json().catch(() => ({}));
+    let res: Response;
+    try {
+      res = await fetch(`${API_PROXY_BASE}${path}`, {
+        method,
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined,
+        cache: 'no-store',
+      });
+    } catch (err) {
+      // Browser-level transport failure (offline / DNS / proxy down / aborted). Convert the
+      // raw "Failed to fetch" TypeError into a customer-safe, recoverable message.
+      throw new OnboardingRequestError(describeOnboardingError(isTransportError(err) ? 'backend_unreachable' : null));
+    }
+    if (res.status === 401) {
+      setSessionExpired(true);
+      // Surfaced by the dedicated session-expired card, so mark silent to avoid a duplicate banner.
+      throw new OnboardingRequestError(describeOnboardingError('unauthenticated'), true);
+    }
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     if (!res.ok) {
-      const detail = (data && (data.detail?.message || data.detail)) || 'Request failed.';
-      throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+      const detail = (data as { detail?: unknown }).detail;
+      const detailObj = detail && typeof detail === 'object' ? (detail as Record<string, unknown>) : null;
+      const code = (detailObj?.code as string | undefined) ?? (data.code as string | undefined) ?? null;
+      const backendMessage = detailObj
+        ? (detailObj.message as string | undefined) ?? null
+        : (typeof detail === 'string' ? detail : null);
+      const correlationId = (data.correlation_id as string | undefined)
+        ?? (detailObj?.correlation_id as string | undefined)
+        ?? null;
+      throw new OnboardingRequestError({ ...describeOnboardingError(code, backendMessage), correlationId });
     }
     return data;
-  }, [apiUrl, authHeaders]);
+  }, [authHeaders]);
 
   const refresh = useCallback(async (id: string) => {
     try {
       const data = await api(`/api/onboarding/sessions/${id}`) as OnboardingSnapshot;
       setSnapshot(data);
-      setError('');
+      setError(null);
     } catch (err) {
-      if (err instanceof Error && err.message !== 'unauthenticated') setError(err.message);
+      // Background refresh: surface genuine structured errors, but never clobber the last good
+      // snapshot (or flicker the banner) on a transient transport blip during polling.
+      if (err instanceof OnboardingRequestError && !err.silent && err.info.message !== ONBOARDING_TRANSPORT_MESSAGE) {
+        setError(err.info);
+      }
     }
   }, [api]);
 
@@ -109,12 +141,12 @@ export default function OnboardingPageClient({ apiUrl }: { apiUrl: string }) {
   // Live SSE stream; on any event refetch the authoritative snapshot.
   useEffect(() => {
     if (!sessionId) return;
-    const disconnect = connectOnboardingStream(apiUrl, sessionId, authHeaders(), {
+    const disconnect = connectOnboardingStream(sessionId, authHeaders(), {
       onEvent: () => { void refresh(sessionId); },
       onStatus: (s) => setStreamStatus(s),
     });
     return () => { disconnect(); setStreamStatus('disconnected'); };
-  }, [apiUrl, sessionId, authHeaders, refresh]);
+  }, [sessionId, authHeaders, refresh]);
 
   // Polling fallback while active and SSE is not live. Progress is never simulated.
   useEffect(() => {
@@ -126,13 +158,32 @@ export default function OnboardingPageClient({ apiUrl }: { apiUrl: string }) {
   const persist = (id: string) => { try { window.localStorage.setItem(STORAGE_KEY, id); } catch { /* ignore */ } };
 
   async function run<T>(kind: Busy, fn: () => Promise<T>) {
-    if (busy) return; // duplicate-submit protection
+    if (busy) return; // duplicate-submit protection: only one in-flight request at a time
+    setLastAction({ kind, fn });
     setBusy(kind);
-    setError('');
-    try { await fn(); } catch (err) {
-      if (err instanceof Error && err.message !== 'unauthenticated') setError(err.message);
-    } finally { setBusy(null); }
+    setError(null);
+    try {
+      await fn();
+      setError(null);
+    } catch (err) {
+      if (err instanceof OnboardingRequestError) {
+        if (!err.silent) setError(err.info);
+      } else if (isTransportError(err)) {
+        setError(describeOnboardingError('backend_unreachable'));
+      } else {
+        setError(describeOnboardingError(null, err instanceof Error ? err.message : null));
+      }
+    } finally {
+      // Always re-enable the form so a recoverable failure can be retried.
+      setBusy(null);
+    }
   }
+
+  // Retry the most recent user-initiated action (create / discover / approve / …).
+  const onRetryAction = () => {
+    if (!lastAction || busy) return;
+    void run(lastAction.kind, lastAction.fn);
+  };
 
   const contractValid = HEX_ADDRESS.test(form.primary_contract.trim());
 
@@ -183,7 +234,7 @@ export default function OnboardingPageClient({ apiUrl }: { apiUrl: string }) {
 
   const onReset = () => {
     try { window.localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
-    setSnapshot(null); setError(''); setStreamStatus('disconnected');
+    setSnapshot(null); setError(null); setLastAction(null); setStreamStatus('disconnected');
   };
 
   const phases = useMemo(() => derivePhaseStatuses(snapshot), [snapshot]);
@@ -234,7 +285,10 @@ export default function OnboardingPageClient({ apiUrl }: { apiUrl: string }) {
           </SurfaceCard>
         ) : null}
 
-        {error ? <SurfaceCard className="onbNotice"><p className="onboardingError" data-testid="onboarding-error">{error}</p></SurfaceCard> : null}
+        {error ? <ErrorNotice error={error} onRetry={onRetryAction} busy={busy} /> : null}
+        {snapshot && snapshot.session.error_code && (status === 'partial' || status === 'failed') ? (
+          <SessionErrorNotice session={snapshot.session} onRetry={onRetry} busy={busy} />
+        ) : null}
         {snapshot?.warnings?.length ? (
           <SurfaceCard className="onbNotice"><p className="onbWarn" data-testid="onboarding-warning">{snapshot.warnings.join(' ')}</p></SurfaceCard>
         ) : null}
@@ -278,6 +332,67 @@ function StreamBadge({ status, active }: { status: StreamStatus; active: boolean
   if (status === 'live') return <StatusPill label="Live updates" variant="success" />;
   if (active) return <StatusPill label="Polling" variant="info" />;
   return <StatusPill label="Idle" variant="neutral" />;
+}
+
+// Actionable, customer-safe error banner: message + error code + correlation reference, with a
+// Retry for recoverable failures and a recovery link (e.g. Monitoring Sources for a wallet
+// address). Never renders a raw exception, HTML body, or "Failed to fetch" string.
+function ErrorNotice({ error, onRetry, busy }: { error: OnboardingErrorInfo; onRetry: () => void; busy: Busy }) {
+  return (
+    <SurfaceCard className="onbNotice">
+      <div className="onbErrorNotice" data-testid="onboarding-error-notice" data-error-code={error.code ?? undefined}>
+        <p className="onboardingError" data-testid="onboarding-error">{error.message}</p>
+        <div className="onbErrorMeta">
+          {error.code ? <span className="onbErrorCode" data-testid="onboarding-error-code">Error code: {error.code}</span> : null}
+          {error.correlationId ? <span className="onbErrorRef" data-testid="onboarding-error-ref">Reference: {error.correlationId}</span> : null}
+        </div>
+        {error.recoverable || error.suggestion ? (
+          <div className="buttonRow onbErrorActions">
+            {error.recoverable ? (
+              <Button variant="secondary" onClick={onRetry} disabled={busy !== null} data-testid="onboarding-retry">
+                {busy !== null ? 'Retrying…' : 'Retry'}
+              </Button>
+            ) : null}
+            {error.suggestion ? (
+              <Link href={error.suggestion.href} prefetch={false} className="btn btn-secondary" data-testid="onboarding-error-suggestion">
+                {error.suggestion.label}
+              </Link>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </SurfaceCard>
+  );
+}
+
+// Discovery gating failures (EOA / missing RPC / wrong chain) are returned inside the session
+// snapshot (status 'partial' / 'failed'), not as an HTTP error. Map the canonical backend code
+// to the same actionable UX so a normal wallet address explains itself instead of looking healthy.
+function SessionErrorNotice({ session, onRetry, busy }: { session: OnboardingSession; onRetry: () => void; busy: Busy }) {
+  const info = describeOnboardingError(session.error_code, session.error_message);
+  return (
+    <SurfaceCard className="onbNotice">
+      <div className="onbErrorNotice" data-testid="onboarding-session-error" data-error-code={session.error_code ?? undefined}>
+        <p className="onboardingError">{info.message}</p>
+        <div className="onbErrorMeta">
+          {info.code ? <span className="onbErrorCode">Error code: {info.code}</span> : null}
+          {session.correlation_id ? <span className="onbErrorRef">Reference: {session.correlation_id}</span> : null}
+        </div>
+        <div className="buttonRow onbErrorActions">
+          {info.recoverable ? (
+            <Button variant="secondary" onClick={onRetry} disabled={busy !== null} data-testid="onboarding-session-retry">
+              {busy === 'retry' ? 'Retrying…' : 'Retry discovery'}
+            </Button>
+          ) : null}
+          {info.suggestion ? (
+            <Link href={info.suggestion.href} prefetch={false} className="btn btn-secondary" data-testid="onboarding-session-suggestion">
+              {info.suggestion.label}
+            </Link>
+          ) : null}
+        </div>
+      </div>
+    </SurfaceCard>
+  );
 }
 
 function IntakeForm({ form, setForm, onCreate, busy, contractValid }: {
