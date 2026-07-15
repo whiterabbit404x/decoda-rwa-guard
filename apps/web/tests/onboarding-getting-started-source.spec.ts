@@ -1,86 +1,93 @@
 /**
- * Source-level contract tests for the Onboarding / Getting Started screen.
- * These verify structural requirements without needing a running server.
+ * Source-level contract tests for the rebuilt Onboarding / Getting Started
+ * screen (the Autonomous Onboarding Agent). These verify structural + behavioral
+ * requirements without needing a running server.
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 
 const clientSrc = () =>
-  readFileSync(
-    path.join(__dirname, '..', 'app', '(product)', 'onboarding-page-client.tsx'),
-    'utf-8',
-  );
+  readFileSync(path.join(__dirname, '..', 'app', '(product)', 'onboarding-page-client.tsx'), 'utf-8');
+const moduleSrc = () =>
+  readFileSync(path.join(__dirname, '..', 'app', 'onboarding-agent-client.ts'), 'utf-8');
 
-const stepsSrc = () =>
-  readFileSync(path.join(__dirname, '..', 'app', 'workflow-steps.ts'), 'utf-8');
-
-test('page title "Welcome to Decoda RWA Guard" is present', () => {
-  expect(clientSrc()).toContain('Welcome to Decoda RWA Guard');
+test('page title and subtitle match the reference design', () => {
+  const src = clientSrc();
+  expect(src).toContain('Welcome to Decoda RWA Guard');
+  expect(src).toContain('AI-powered protection for your digital asset infrastructure.');
 });
 
-test('subtitle prompts user to complete the setup', () => {
-  expect(clientSrc()).toContain('Complete the setup below to start monitoring your protected assets.');
+test('main panel is the AI Onboarding Agent', () => {
+  expect(clientSrc()).toContain('AI Onboarding Agent');
+  expect(clientSrc()).toContain('Automated infrastructure discovery and security configuration');
 });
 
-test('5 setup steps are defined in ONBOARDING_TOP_STEPPER', () => {
-  const src = stepsSrc();
-  const labels = ['Workspace', 'Add Asset', 'Connect Monitoring', 'Enable System', 'First Signal'];
-  for (const label of labels) {
-    expect(src).toContain(`label: '${label}'`);
+test('five-step progress header is present and backend-driven', () => {
+  const src = clientSrc();
+  expect(src).toContain('data-testid="onboarding-top-stepper"');
+  expect(src).toContain('aria-label="Onboarding steps"');
+  // Phases derive from backend session/step state, not local UI state.
+  expect(src).toContain('derivePhaseStatuses(snapshot)');
+  const mod = moduleSrc();
+  for (const label of ['Connect Workspace', 'Detect Assets', 'Configure Monitoring', 'Review & Secure', "You're Protected"]) {
+    expect(mod).toContain(label);
   }
 });
 
-test('stepper renders all 5 steps from ONBOARDING_TOP_STEPPER', () => {
+test('execution timeline renders backend steps with evidence + retry', () => {
   const src = clientSrc();
-  // Component maps over topStepperSteps which is derived from ONBOARDING_TOP_STEPPER (5 items)
-  expect(src).toContain('ONBOARDING_TOP_STEPPER');
-  expect(src).toContain('topStepperSteps.map');
+  expect(src).toContain('data-testid="agent-timeline"');
+  expect(src).toContain('data-testid="evidence-toggle"');
+  expect(src).toContain('data-testid="evidence-body"');
+  expect(src).toContain('data-testid="btn-retry"');
 });
 
-test('step visual states cover complete, current, and upcoming', () => {
+test('discovery summary + RPC benchmark + provider explanation are rendered', () => {
   const src = clientSrc();
-  expect(src).toContain("'complete'");
-  expect(src).toContain("'current'");
-  expect(src).toContain("'upcoming'");
+  expect(src).toContain('data-testid="discovery-summary"');
+  expect(src).toContain('data-testid="rpc-row"');
+  expect(src).toContain('data-testid="rpc-explanation"');
 });
 
-test('Next Step card exists with testid', () => {
-  expect(clientSrc()).toContain('data-testid="next-step-card"');
-});
-
-test('Next Step card ActionPanel title is "Next Step"', () => {
-  expect(clientSrc()).toContain('ActionPanel title="Next Step"');
-});
-
-test('Resources card exists with testid', () => {
-  expect(clientSrc()).toContain('data-testid="resources-card"');
-});
-
-test('Resources card contains all four resource links', () => {
+test('proposal review requires approval before activation', () => {
   const src = clientSrc();
-  expect(src).toContain('Documentation');
-  expect(src).toContain('Integration Guide');
-  expect(src).toContain('API Reference');
-  expect(src).toContain('Help Center');
+  expect(src).toContain('data-testid="approval-summary"');
+  expect(src).toContain('data-testid="btn-approve"');
+  expect(src).toContain('data-testid="btn-activate"');
+  // Activation is gated on approval.
+  expect(src).toContain('const canActivate = p.approved');
+  expect(src).toContain('disabled={!canActivate');
 });
 
-test('CTA button carries data-next-required-action attribute derived from backend state', () => {
+test('contextual agent panel is operational, not a chatbot', () => {
   const src = clientSrc();
-  // The CTA link must expose which next_required_action key drove the label
-  expect(src).toContain('data-next-required-action={nextActionKey');
-  // The label must be resolved from NEXT_ACTION_CTA (backend-driven map)
-  expect(src).toContain('nextRequiredActionCta');
-  expect(src).toContain('NEXT_ACTION_CTA');
+  expect(src).toContain('data-testid="agent-state"');
+  expect(src).toContain('data-testid="agent-actions"');
+  expect(src).toContain('Ask about this setup');
+  // The "ask" answer is grounded in discovery evidence, never generated free-form.
+  expect(src).toContain('groundedAnswer');
 });
 
-test('step completion is never hardcoded — it derives from backend progress', () => {
+test('confirmed / probable / unknown / requires-review are distinguished truthfully', () => {
+  const mod = moduleSrc();
+  expect(mod).toContain("case 'confirmed': return 'success'");
+  expect(mod).toContain("case 'probable': return 'info'");
+  expect(mod).toContain("case 'requires_review': return 'warning'");
+});
+
+test('primary actions vary by backend state (discovery / activate / dashboard)', () => {
   const src = clientSrc();
-  // workflowCompletionFromState must exist and use the OnboardingProgress state
-  expect(src).toContain('workflowCompletionFromState');
-  expect(src).toContain('byKey.get(');
+  expect(src).toContain('Run Automated Discovery');
+  expect(src).toContain('Activate Protection');
+  expect(src).toContain('Open Security Dashboard');
+  expect(src).toContain('data-testid="btn-dashboard"');
 });
 
-test('onboarding progress endpoint is called', () => {
-  expect(clientSrc()).toContain('/onboarding/progress');
+test('empty, loading, and failure states are all handled', () => {
+  const src = clientSrc();
+  expect(src).toContain('IntakeForm');          // empty / new-session state
+  expect(src).toContain('onbSkeleton');          // loading skeleton
+  expect(src).toContain('data-testid="onboarding-error"'); // failure state
+  expect(src).toContain('data-testid="step-error"');       // per-step failure
 });

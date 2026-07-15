@@ -29,6 +29,11 @@ TELEMETRY_STREAM_SUFFIX = ':telemetry'
 # subscriber never receives unrelated envelopes and each stream is bounded
 # independently. Same transport/health machinery is reused.
 INCIDENTS_STREAM_SUFFIX = ':incidents'
+# Dedicated workspace-scoped stream for Onboarding Agent progress events
+# (session/step lifecycle, discovery, benchmark, proposal, activation). Kept
+# distinct from the other streams so an onboarding subscriber never receives
+# unrelated envelopes. Same transport/health machinery is reused.
+ONBOARDING_STREAM_SUFFIX = ':onboarding'
 DEFAULT_MAX_LENGTH = 1000
 # Redis xread block interval == the SSE heartbeat cadence: when no event arrives
 # within this window the subscriber yields a ``(None, None)`` tick and the SSE
@@ -79,6 +84,10 @@ def telemetry_stream_key(workspace_id: str) -> str:
 
 def incidents_stream_key(workspace_id: str) -> str:
     return f'{STREAM_PREFIX}{workspace_id}{INCIDENTS_STREAM_SUFFIX}'
+
+
+def onboarding_stream_key(workspace_id: str) -> str:
+    return f'{STREAM_PREFIX}{workspace_id}{ONBOARDING_STREAM_SUFFIX}'
 
 
 def stream_max_length() -> int:
@@ -194,6 +203,45 @@ def publish_incident(workspace_id: str, incident_data: dict[str, Any]) -> str:
         incident_data.get('incident_id'), workspace_id, stream, event_id, incident_data.get('event_type'),
     )
     return event_id
+
+
+def publish_onboarding(workspace_id: str, onboarding_data: dict[str, Any]) -> str:
+    """Append an Onboarding Agent progress event to the workspace :onboarding stream.
+
+    Mirrors :func:`publish` but targets the onboarding stream so the Screen 1
+    execution timeline / stepper updates live. The caller invokes this only AFTER
+    the corresponding Postgres state is committed and treats a raised exception as
+    non-fatal (Postgres is the source of truth; the page recovers on its next
+    HTTP fetch / polling tick).
+    """
+    stream = onboarding_stream_key(workspace_id)
+    event_id = str(
+        _get_sync_client().xadd(
+            stream,
+            {'payload': json.dumps(onboarding_data, separators=(',', ':'))},
+            maxlen=stream_max_length(),
+            approximate=False,
+        )
+    )
+    logger.info(
+        'event=onboarding_redis_publish session_id=%s workspace_id=%s stream_key=%s success=true redis_event_id=%s event_type=%s',
+        onboarding_data.get('session_id'), workspace_id, stream, event_id, onboarding_data.get('event_type'),
+    )
+    return event_id
+
+
+async def subscribe_onboarding(
+    workspace_id: str,
+    *,
+    last_event_id: str = '$',
+    block_ms: int | None = None,
+) -> AsyncIterator[tuple[str | None, dict[str, Any] | None]]:
+    """Read a workspace ONBOARDING stream, reconnecting with the last delivered ID."""
+    async for item in _subscribe_stream(
+        onboarding_stream_key(workspace_id), workspace_id=workspace_id, kind='onboarding',
+        last_event_id=last_event_id, block_ms=block_ms,
+    ):
+        yield item
 
 
 def connectivity_sync() -> dict[str, Any]:
