@@ -133,6 +133,39 @@ export function isKnownSessionStatus(status: string | null | undefined): status 
   return typeof status === 'string' && (KNOWN_SESSION_STATUSES as string[]).includes(status);
 }
 
+// ---------------------------------------------------------------------------
+// Stale / abandoned draft restore guard.
+//
+// The intake form persists the new session id in localStorage and restores it after a
+// refresh. A `draft` session is one whose discovery was never started (0 steps run) —
+// e.g. a session created by a PRE-FIX bundle that stopped after POST …/sessions and
+// never called …/discover, or one whose /discover call hard-failed. Restoring such a
+// draft shows the exact trapped LIVE symptom — "Ready", 0/10, every step pending, the
+// Run button still enabled — with no path forward across refreshes.
+//
+// So a restored draft that has made no progress and has been sitting untouched past
+// this window is treated as abandoned/incompatible: the caller discards the persisted
+// id and returns the user to a fresh intake form. Any session that actually started
+// (discovering / partial / benchmarking / proposal_ready / approved / activating /
+// completed / failed) is ALWAYS restored — we never discard real progress. A very
+// recently-created draft is kept briefly so a genuine refresh mid-submit still resumes.
+export const STALE_DRAFT_MS = 10 * 60 * 1000;
+
+export function isAbandonedDraftSession(
+  snapshot: OnboardingSnapshot | null,
+  now: number = Date.now(),
+): boolean {
+  const session = snapshot?.session;
+  if (!session || session.status !== 'draft') return false;
+  // Any completed step means discovery genuinely ran — never discard that.
+  if ((snapshot?.agent?.completed_steps ?? 0) > 0) return false;
+  const stamp = session.updated_at ?? session.created_at;
+  if (!stamp) return true; // no timestamp -> cannot prove freshness; fail closed and discard
+  const ts = new Date(stamp).getTime();
+  if (!Number.isFinite(ts)) return true;
+  return now - ts > STALE_DRAFT_MS;
+}
+
 export function agentStateLabel(status: string | null): string {
   switch (status) {
     case null:
