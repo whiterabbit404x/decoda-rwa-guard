@@ -15,7 +15,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   await headers();
 
   return (
-    <html lang="en">
+    <html lang="en" data-theme="dark">
       <body>
         <PilotAuthProvider>{children}</PilotAuthProvider>
       </body>

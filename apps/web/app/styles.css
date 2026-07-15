@@ -1,6 +1,10 @@
 ﻿/* --- Design tokens ----------------------------------------------- */
 :root {
-  color-scheme: dark;
+  /* Fallback so any remaining native controls (scrollbars, date pickers,
+     autofill, un-migrated <select>s) follow the active theme. The app is
+     pinned dark today via <html data-theme="dark">; the theme-scoped rules
+     below let future Light / System themes flip it in one place. */
+  color-scheme: light dark;
   font-family: Inter, system-ui, Arial, sans-serif;
 
   /* backgrounds */
@@ -51,6 +55,25 @@
 
   /* sidebar */
   --sidebar-w: 240px;
+
+  /* semantic surface aliases used by shared controls (Select popover, etc.).
+     Aliased to existing tokens so future Light / System themes override in
+     one place rather than hard-coding control colours. */
+  --popover:     var(--bg-surface);
+  --popover-fg:  var(--text-primary);
+  --ring:        var(--accent-blue);
+}
+
+/* Theme pinning + native control colour scheme.
+   Default (:root) follows the system; an explicit theme wins when set. */
+[data-theme="dark"],
+.dark {
+  color-scheme: dark;
+}
+
+[data-theme="light"],
+.light {
+  color-scheme: light;
 }
 
 * {
@@ -1734,6 +1757,75 @@ td .tableMeta {
   border: 1px solid rgba(124, 156, 196, 0.24);
   box-shadow: 0 20px 45px rgba(1, 7, 19, 0.35);
   backdrop-filter: blur(8px);
+}
+
+/* ── Shared Select (accessible custom listbox) ──────────────────────
+   The opened menu is rendered inside the app (not the native OS popup)
+   so it follows the Decoda theme instead of a bright white popup. All
+   colours come from semantic theme tokens for Light / Dark / System. */
+.dcSelect { position: relative; width: 100%; }
+
+.dcSelectTrigger {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+  width: 100%; text-align: left; cursor: pointer;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 0.55rem 0.7rem;
+  font-size: 0.88rem; font-family: inherit; line-height: 1.3;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.dcSelectTrigger:hover:not(:disabled) { border-color: var(--border-hover); }
+.dcSelectTrigger[aria-expanded="true"] { border-color: var(--border-hover); }
+.dcSelectTrigger:focus-visible {
+  outline: 2px solid var(--ring); outline-offset: 2px; border-color: var(--border-hover);
+}
+.dcSelectTrigger[data-error="true"] { border-color: var(--danger-bdr); }
+.dcSelectTrigger[data-error="true"]:focus-visible { outline-color: var(--danger-fg); }
+.dcSelectTrigger:disabled { opacity: 0.55; cursor: not-allowed; }
+.dcSelectTrigger[data-placeholder] .dcSelectValue { color: var(--text-muted); }
+.dcSelectValue { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dcSelectArrow {
+  display: inline-flex; flex-shrink: 0; color: var(--text-secondary);
+  transition: transform 0.15s ease;
+}
+.dcSelectTrigger[aria-expanded="true"] .dcSelectArrow { transform: rotate(180deg); }
+
+.dcSelectMenu {
+  margin: 6px 0 0; padding: 4px; list-style: none;
+  background: var(--popover);
+  color: var(--popover-fg);
+  border: 1px solid var(--border-accent);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 12px 34px rgba(1, 7, 19, 0.55);
+  overflow-y: auto; z-index: 1000;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(124, 156, 196, 0.45) transparent;
+}
+.dcSelectMenu--up { margin: 0 0 6px; }
+.dcSelectMenu::-webkit-scrollbar { width: 10px; }
+.dcSelectMenu::-webkit-scrollbar-track { background: transparent; }
+.dcSelectMenu::-webkit-scrollbar-thumb {
+  background: rgba(124, 156, 196, 0.35); border-radius: 999px;
+  border: 2px solid transparent; background-clip: content-box;
+}
+
+.dcSelectOption {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.5rem 0.6rem; border-radius: var(--radius-xs);
+  font-size: 0.86rem; color: var(--text-primary); cursor: pointer;
+  user-select: none;
+}
+.dcSelectOptionLabel { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dcSelectOptionDetail { color: var(--text-muted); font-size: 0.74rem; }
+.dcSelectCheck { width: 1rem; text-align: center; color: var(--text-accent); flex-shrink: 0; }
+/* hover / keyboard-active share the blue highlight */
+.dcSelectOption[data-active] { background: var(--accent-blue-bg); color: var(--text-primary); }
+.dcSelectOption[data-selected] { color: var(--text-accent); font-weight: 600; }
+.dcSelectOption[data-disabled] { opacity: 0.45; cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) {
+  .dcSelectArrow, .dcSelectTrigger { transition: none; }
 }
 
 .sharedStatusPill {
