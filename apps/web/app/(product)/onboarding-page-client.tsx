@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { usePilotAuth } from '../pilot-auth-context';
-import { SurfaceCard, StatusPill, Button, TableShell } from '../components/ui-primitives';
+import { SurfaceCard, StatusPill, Button, TableShell, Select } from '../components/ui-primitives';
 import {
   ACTIVE_STATUSES, connectOnboardingStream, confidenceVariant, derivePhaseStatuses,
   recommendationVariant, stepVariant,
@@ -303,12 +303,16 @@ function IntakeForm({ form, setForm, onCreate, busy, contractValid }: {
           <input value={form.workspace_name} onChange={(e) => setForm({ ...form, workspace_name: e.target.value })}
             placeholder="Acme Capital" data-testid="input-workspace-name" />
         </label>
-        <label className="onbField">
-          <span>Network</span>
-          <select value={form.chain_id} onChange={(e) => setForm({ ...form, chain_id: Number(e.target.value) })} data-testid="input-chain">
-            {CHAINS.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
-          </select>
-        </label>
+        <div className="onbField">
+          <span id="onb-field-network">Network</span>
+          <Select
+            testId="input-chain"
+            ariaLabelledBy="onb-field-network"
+            value={String(form.chain_id)}
+            onValueChange={(v) => setForm({ ...form, chain_id: Number(v) })}
+            options={CHAINS.map((c) => ({ value: String(c.id), label: c.label }))}
+          />
+        </div>
         <label className="onbField onbFieldWide">
           <span>Primary contract address <em className="req">required</em></span>
           <input value={form.primary_contract} onChange={(e) => setForm({ ...form, primary_contract: e.target.value })}
@@ -323,13 +327,17 @@ function IntakeForm({ form, setForm, onCreate, busy, contractValid }: {
           <textarea value={form.rpc_endpoints} onChange={(e) => setForm({ ...form, rpc_endpoints: e.target.value })}
             placeholder="https://…" rows={3} spellCheck={false} data-testid="input-rpc" />
         </label>
-        <label className="onbField">
-          <span>Monitoring mode</span>
-          <select value={form.monitoring_mode} onChange={(e) => setForm({ ...form, monitoring_mode: e.target.value })} data-testid="input-mode">
-            {MODES.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
-          </select>
+        <div className="onbField">
+          <span id="onb-field-mode">Monitoring mode</span>
+          <Select
+            testId="input-mode"
+            ariaLabelledBy="onb-field-mode"
+            value={form.monitoring_mode}
+            onValueChange={(v) => setForm({ ...form, monitoring_mode: v })}
+            options={MODES.map((m) => ({ value: m.id, label: m.label }))}
+          />
           <span className="onbFieldHint">{MODES.find((m) => m.id === form.monitoring_mode)?.detail}</span>
-        </label>
+        </div>
         <label className="onbField">
           <span>Protocol name <em className="hint">optional</em></span>
           <input value={form.protocol_name} onChange={(e) => setForm({ ...form, protocol_name: e.target.value })} placeholder="e.g. Acme RWA" />
