@@ -278,6 +278,7 @@ from services.api.app.monitoring_runner import (
     set_background_loop_health,
 )
 from services.api.app import ai_triage
+from services.api.app import onboarding_agent
 from services.api.app.workspace_monitoring_summary import build_workspace_monitoring_summary_fallback
 from services.api.app.threat_payloads import normalize_threat_payload
 from services.api.app.db_failure import (
@@ -3831,6 +3832,95 @@ def onboarding_progress(request: Request) -> dict[str, Any]:
 @app.patch('/onboarding/state', summary='Update onboarding checklist step for current workspace')
 def onboarding_state_patch(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: update_onboarding_state(payload, request))
+
+
+# ---------------------------------------------------------------------------
+# Autonomous Onboarding Agent (Screen 1) — durable session lifecycle.
+# ---------------------------------------------------------------------------
+@app.post('/api/onboarding/sessions', summary='Create or resume an onboarding session')
+def onboarding_agent_create_session(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: onboarding_agent.create_or_resume_session(payload, request))
+
+
+@app.get('/api/onboarding/sessions/{session_id}', summary='Get onboarding session state, steps, findings, proposal')
+def onboarding_agent_get_session(session_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: onboarding_agent.get_session(session_id, request))
+
+
+@app.post('/api/onboarding/sessions/{session_id}/discover', summary='Start deterministic discovery for a session')
+def onboarding_agent_discover(session_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: onboarding_agent.start_discovery(session_id, request))
+
+
+@app.post('/api/onboarding/sessions/{session_id}/rpc-benchmark', summary='Re-benchmark configured RPC endpoints')
+def onboarding_agent_rpc_benchmark(session_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: onboarding_agent.rerun_rpc_benchmark(session_id, request))
+
+
+@app.post('/api/onboarding/sessions/{session_id}/generate-proposal', summary='Generate the proposed workspace configuration')
+def onboarding_agent_generate_proposal(session_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: onboarding_agent.generate_proposal(session_id, request))
+
+
+@app.post('/api/onboarding/sessions/{session_id}/approve', summary='Record approval of the generated proposal')
+def onboarding_agent_approve(payload: dict[str, Any], session_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: onboarding_agent.approve_session(session_id, payload, request))
+
+
+@app.post('/api/onboarding/sessions/{session_id}/activate', summary='Idempotently activate the approved proposal')
+def onboarding_agent_activate(session_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: onboarding_agent.activate_session(session_id, request))
+
+
+@app.post('/api/onboarding/sessions/{session_id}/retry', summary='Retry only failed or incomplete onboarding steps')
+def onboarding_agent_retry(session_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: onboarding_agent.retry_session(session_id, request))
+
+
+@app.get('/api/onboarding/sessions/{session_id}/report', summary='Export the onboarding discovery report (SHA-256 hashed)')
+def onboarding_agent_report(session_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: onboarding_agent.export_report(session_id, request))
+
+
+@app.get('/api/onboarding/sessions/{session_id}/events', summary='SSE stream of live onboarding progress for a session')
+async def onboarding_agent_events(session_id: str, request: Request):
+    """Server-Sent Events stream of Onboarding Agent progress. Authenticates via
+    Bearer token + X-Workspace-Id and is workspace-scoped (Redis-backed, resumable,
+    multi-replica). The frontend falls back to polling GET /sessions/{id} when SSE
+    is unavailable."""
+    try:
+        user = authenticate_request(request)
+    except HTTPException as exc:
+        return JSONResponse({'detail': exc.detail, 'code': 'UNAUTHENTICATED'}, status_code=401)
+    requested_workspace_id = request.headers.get('x-workspace-id', '').strip()
+    try:
+        with pg_connection() as connection:
+            ensure_pilot_schema(connection)
+            workspace_context = resolve_workspace(connection, str(user['id']), requested_workspace_id)
+            # Enforce that the session belongs to this workspace before streaming.
+            session_row = connection.execute(
+                'SELECT id FROM onboarding_sessions WHERE id = %s AND workspace_id = %s',
+                (session_id, workspace_context['workspace_id']),
+            ).fetchone()
+        workspace_id = str(workspace_context['workspace_id'])
+    except HTTPException as exc:
+        return JSONResponse({'detail': exc.detail, 'code': 'WORKSPACE_ACCESS_DENIED'}, status_code=exc.status_code)
+    if session_row is None:
+        return JSONResponse({'detail': 'Onboarding session not found.', 'code': 'NOT_FOUND'}, status_code=404)
+    backend = await alert_stream.connectivity()
+    if not backend['connected']:
+        return JSONResponse(
+            {'detail': 'Shared event stream backend unavailable; use polling fallback.', 'code': 'ONBOARDING_STREAM_UNAVAILABLE'},
+            status_code=503,
+        )
+    last_event_id = request.headers.get('last-event-id', '').strip() or '$'
+    headers = _sse_response_headers(request)
+    return StreamingResponse(
+        _sse_heartbeat_generator(workspace_id, last_event_id, request,
+                                 subscribe_factory=alert_stream.subscribe_onboarding, stream_name='onboarding'),
+        media_type='text/event-stream',
+        headers=headers,
+    )
 
 
 @app.get('/billing/plans', summary='List billing plans')

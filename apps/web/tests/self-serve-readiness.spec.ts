@@ -79,15 +79,17 @@ test('onboarding wizard and help/legal pages are present for self-serve setup', 
   const securitySettingsRoute = read('(product)/settings/security/page.tsx');
   const settingsPage = read('settings-page-client.tsx');
 
-  expect(onboarding).toContain('Self-serve setup wizard');
-  expect(onboarding).toContain('/onboarding/progress');
+  // Screen 1 is the Autonomous Onboarding Agent, wired to the durable backend
+  // onboarding session API and rendering the backend-driven progress stepper.
+  expect(onboarding).toContain('AI Onboarding Agent');
+  expect(onboarding).toContain('/api/onboarding/sessions');
   expect(onboarding).toContain('data-testid="onboarding-top-stepper"');
   expect(onboarding).toContain('Workspace');
   expect(workflowSteps).toContain("label: 'Add Asset'");
   expect(workflowSteps).toContain("label: 'Connect Monitoring'");
   expect(workflowSteps).toContain("label: 'Enable System'");
   expect(workflowSteps).toContain("label: 'First Signal'");
-  expect(onboarding).toContain('ActionPanel title="Next Action"');
+  expect(onboarding).toContain('data-testid="agent-actions"');
   expect(help).toContain('self-serve workspace onboarding');
   expect(nav).toContain("{ href: '/onboarding', label: 'Onboarding' }");
   expect(nav).toContain("{ href: '/response-actions', label: 'Response Actions' }");
