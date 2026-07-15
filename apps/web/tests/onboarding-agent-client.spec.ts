@@ -5,7 +5,8 @@
  */
 import { expect, test } from '@playwright/test';
 import {
-  ACTIVE_STATUSES, confidenceVariant, derivePhaseStatuses, recommendationVariant, stepVariant,
+  ACTIVE_STATUSES, agentStateLabel, confidenceVariant, deriveAgentView, derivePhaseStatuses,
+  isKnownSessionStatus, KNOWN_SESSION_STATUSES, recommendationVariant, stepVariant,
   type OnboardingSnapshot,
 } from '../app/onboarding-agent-client';
 
@@ -94,4 +95,71 @@ test('active statuses drive the polling fallback', () => {
   expect(ACTIVE_STATUSES).toContain('discovering');
   expect(ACTIVE_STATUSES).toContain('activating');
   expect(ACTIVE_STATUSES).not.toContain('completed');
+});
+
+// ---------------------------------------------------------------------------
+// Right-panel truthfulness (deriveAgentView). The invalid combination
+// "Ready" + current operation "Validating contract address" + 0/10 pending was
+// the visible symptom of discovery never starting; the view must never produce it.
+// ---------------------------------------------------------------------------
+test('a not-started draft is Ready with NO current operation (never a fake step)', () => {
+  const s = snap({
+    session: { ...snap().session, status: 'draft', current_step: 'validate_inputs' },
+    steps: [
+      { ...step('validate_inputs', 'pending'), title: 'Validating contract address' },
+      { ...step('connect_chain', 'pending'), title: 'Connecting to network' },
+    ],
+  });
+  const view = deriveAgentView(s);
+  expect(view.stateLabel).toBe('Ready');
+  expect(view.currentOperation).toBeNull(); // NOT "Validating contract address"
+  expect(view.running).toBe(false);
+  expect(view.unknownStatus).toBe(false);
+});
+
+test('an active run surfaces the running step as the current operation', () => {
+  const s = snap({
+    session: { ...snap().session, status: 'discovering', current_step: 'verify_bytecode' },
+    steps: [
+      { ...step('validate_inputs', 'completed'), title: 'Validating contract address' },
+      { ...step('verify_bytecode', 'running'), title: 'Verifying deployed bytecode' },
+    ],
+  });
+  const view = deriveAgentView(s);
+  expect(view.stateLabel).toBe('Discovering infrastructure');
+  expect(view.currentOperation).toBe('Verifying deployed bytecode');
+  expect(view.running).toBe(true);
+});
+
+test('a queued run (no running step yet) still reads as running via current_step', () => {
+  const s = snap({
+    session: { ...snap().session, status: 'discovering', current_step: 'validate_inputs' },
+    steps: [{ ...step('validate_inputs', 'pending'), title: 'Validating contract address' }],
+  });
+  const view = deriveAgentView(s);
+  expect(view.running).toBe(true);
+  expect(view.currentOperation).toBe('Validating contract address');
+});
+
+test('an unknown backend status is surfaced, never silently Ready/pending', () => {
+  const s = snap({ session: { ...snap().session, status: 'quarantined' as any } });
+  const view = deriveAgentView(s);
+  expect(view.unknownStatus).toBe(true);
+  expect(view.stateLabel).toBe('Status unavailable');
+});
+
+test('isKnownSessionStatus covers exactly the canonical statuses', () => {
+  expect(KNOWN_SESSION_STATUSES).toContain('discovering');
+  expect(isKnownSessionStatus('discovering')).toBe(true);
+  expect(isKnownSessionStatus('proposal_ready')).toBe(true);
+  expect(isKnownSessionStatus('quarantined')).toBe(false);
+  expect(isKnownSessionStatus(null)).toBe(false);
+});
+
+test('agentStateLabel maps draft/null to Ready and unknown to a surfaced diagnostic', () => {
+  expect(agentStateLabel('draft')).toBe('Ready');
+  expect(agentStateLabel(null)).toBe('Ready');
+  expect(agentStateLabel('discovering')).toBe('Discovering infrastructure');
+  expect(agentStateLabel('partial')).toBe('Needs attention');
+  expect(agentStateLabel('mystery')).toBe('Status unavailable');
 });

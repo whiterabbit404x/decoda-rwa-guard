@@ -61,8 +61,13 @@ def main() -> int:
         logger.error('event=onboarding_worker_exiting reason=configuration_error')
         return 1
 
-    logger.info('event=onboarding_worker_started interval_seconds=%s worker_id=%s',
-                args.interval_seconds, onboarding_agent._worker_id())
+    # Startup marker so worker health is distinguishable from API health: a healthy API
+    # does NOT imply the onboarding job handler is imported/registered and draining the
+    # queue. onboarding_worker_registered=true confirms this process will claim runs.
+    logger.info(
+        'event=onboarding_worker_started onboarding_worker_registered=true interval_seconds=%s worker_id=%s app_commit_sha=%s',
+        args.interval_seconds, onboarding_agent._worker_id(), onboarding_agent._commit_sha() or 'unknown',
+    )
     interval = max(1, args.interval_seconds)
     while True:
         try:
