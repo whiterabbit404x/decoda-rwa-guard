@@ -6,8 +6,8 @@ import { usePilotAuth } from '../pilot-auth-context';
 import { SurfaceCard, StatusPill, Button, TableShell, Select } from '../components/ui-primitives';
 import {
   ACTIVE_STATUSES, connectOnboardingStream, confidenceVariant, deriveAgentView, derivePhaseStatuses,
-  describeOnboardingError, isTransportError, ONBOARDING_TRANSPORT_MESSAGE, OnboardingRequestError,
-  recommendationVariant, stepVariant,
+  describeOnboardingError, isAbandonedDraftSession, isTransportError, ONBOARDING_TRANSPORT_MESSAGE,
+  OnboardingRequestError, recommendationVariant, stepVariant,
   type BenchmarkResult, type OnboardingErrorInfo, type OnboardingFinding, type OnboardingSession,
   type OnboardingSnapshot, type StreamStatus,
 } from '../onboarding-agent-client';
@@ -128,7 +128,13 @@ export default function OnboardingPageClient() {
     (async () => {
       try {
         const data = await api(`/api/onboarding/sessions/${stored}`) as OnboardingSnapshot;
-        setSnapshot(data);
+        // Do not trap the user on an abandoned/incompatible pre-discovery draft (the
+        // "Ready 0/10 pending" symptom): discard the persisted id and start fresh.
+        if (isAbandonedDraftSession(data)) {
+          try { window.localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
+        } else {
+          setSnapshot(data);
+        }
       } catch {
         try { window.localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
       } finally {
