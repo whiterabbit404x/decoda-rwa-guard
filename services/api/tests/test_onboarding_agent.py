@@ -48,6 +48,7 @@ class FakeConn:
         self.existing_activation = kw.get('existing_activation')  # {'status','result'}
         self.existing_asset = kw.get('existing_asset')            # row or None
         self.existing_target = kw.get('existing_target')          # row or None
+        self.active_run = kw.get('active_run')                    # dedupe SELECT row or None
         self._finding_keys = set()
 
     def execute(self, query, params=None):
@@ -63,6 +64,9 @@ class FakeConn:
             return FakeResult(row=({'x': 1} if self.approved else None))
         if 'FROM onboarding_agent_runs WHERE idempotency_key' in n:
             return FakeResult(row=self.existing_activation)
+        # Active-run dedupe lookup used by _enqueue_run(dedupe_active=True).
+        if n.startswith('SELECT id, idempotency_key FROM onboarding_agent_runs'):
+            return FakeResult(row=self.active_run)
         if n.startswith('SELECT id FROM assets WHERE workspace_id'):
             return FakeResult(row=self.existing_asset)
         if n.startswith('SELECT id FROM targets WHERE workspace_id'):
@@ -260,6 +264,73 @@ def test_retry_resets_only_failed_steps(monkeypatch):
     assert any("status = 'pending'" in s and "status IN ('failed', 'running', 'needs_attention')" in s
                for s in step_updates)
     assert len(conn.inserts['runs']) == 1  # a new discover run was enqueued
+
+
+# ---------------------------------------------------------------------------
+# start_discovery: the fix for "stuck at 0/10 pending". Clicking Run must move the
+# session out of `draft` and enqueue exactly one durable discovery job.
+# ---------------------------------------------------------------------------
+def test_start_discovery_transitions_draft_and_enqueues_single_run(monkeypatch):
+    conn = FakeConn(session_row=_session_row(status='draft', current_step='validate_inputs'))
+    _bootstrap(monkeypatch, conn)
+    monkeypatch.setattr(oa, 'build_session_snapshot', lambda *a, **k: {'session': {}})
+    monkeypatch.setattr(oa, 'publish_event', lambda *a, **k: None)
+    monkeypatch.setattr(oa, '_maybe_run_inline', lambda *a, **k: None)
+    monkeypatch.setattr(oa, '_reload_snapshot', lambda *a, **k: {'session': {'status': 'discovering'}})
+
+    oa.start_discovery('11111111-1111-1111-1111-111111111111', _req())
+
+    # Exactly one durable discovery job was enqueued, queued and typed 'discover'.
+    assert len(conn.inserts['runs']) == 1
+    run_params = conn.inserts['runs'][0]
+    assert run_params[3] == 'discover'   # run_type
+    assert run_params[4] == 'queued'     # initial status (claim=False)
+    # The session was moved to 'discovering' (never left 'draft'/'ready' with all steps pending).
+    assert any('discovering' in params for _, params in conn.inserts['session_updates'])
+
+
+def test_start_discovery_dedupes_when_a_run_is_already_active(monkeypatch):
+    # A repeated click while a discover run is queued/running must NOT enqueue a duplicate.
+    conn = FakeConn(session_row=_session_row(status='discovering'),
+                    active_run={'id': 'run-existing', 'idempotency_key': 'discover:sess-1:dead'})
+    _bootstrap(monkeypatch, conn)
+    monkeypatch.setattr(oa, 'build_session_snapshot', lambda *a, **k: {'session': {}})
+    monkeypatch.setattr(oa, 'publish_event', lambda *a, **k: None)
+    monkeypatch.setattr(oa, '_maybe_run_inline', lambda *a, **k: None)
+    monkeypatch.setattr(oa, '_reload_snapshot', lambda *a, **k: {'session': {}})
+
+    oa.start_discovery('11111111-1111-1111-1111-111111111111', _req())
+    assert conn.inserts['runs'] == []  # existing active run reused; no duplicate job
+
+
+def test_start_discovery_rejected_after_activation(monkeypatch):
+    conn = FakeConn(session_row=_session_row(status='completed'))
+    _bootstrap(monkeypatch, conn)
+    with pytest.raises(pilot.HTTPException) as ei:
+        oa.start_discovery('11111111-1111-1111-1111-111111111111', _req())
+    assert ei.value.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Discovery pipeline: a missing RPC endpoint fails-closed (RPC_NOT_CONFIGURED),
+# marking the step + session failed instead of leaving every step pending forever.
+# ---------------------------------------------------------------------------
+def test_discovery_pipeline_missing_rpc_fails_closed(monkeypatch):
+    conn = FakeConn(session_row=_session_row(status='discovering'))
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(oa, 'publish_event', lambda *a, **k: None)
+    monkeypatch.setattr(oa, '_default_rpc_urls', lambda *a, **k: [])  # no server-side RPC configured
+
+    result = oa.run_discovery_pipeline('sess-1')
+
+    assert result['ok'] is False
+    assert result['reason'] == 'no_rpc_endpoint'  # -> frontend RPC_NOT_CONFIGURED
+    # The session moved to 'partial' with the structured error, not left silently pending.
+    assert any('partial' in params and 'no_rpc_endpoint' in params
+               for _, params in conn.inserts['session_updates'])
+    # The connect_chain step is recorded 'failed' (never left pending).
+    assert any("status = %s" in sql and 'failed' in params and 'no_rpc_endpoint' in params
+               for sql, params in conn.inserts['step_updates'])
 
 
 # ---------------------------------------------------------------------------

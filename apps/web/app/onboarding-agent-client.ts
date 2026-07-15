@@ -114,6 +114,79 @@ export type StreamStatus = 'live' | 'polling' | 'disconnected';
 export const ACTIVE_STATUSES: SessionStatus[] = ['discovering', 'benchmarking', 'activating'];
 
 // ---------------------------------------------------------------------------
+// Canonical session-status handling for the right-side Agent panel.
+//
+// The panel must be TRUTHFUL and internally consistent. It is INVALID to show
+// "Ready" + current operation "Validating contract address" + 0/10 pending + an
+// enabled Run button at the same time — that combination was the visible symptom
+// of discovery never starting. An unknown / missing backend status is surfaced as
+// a diagnostic ("Status unavailable") rather than being silently mapped to a benign
+// idle state. Everything below is derived from canonical backend session + step
+// state; progress is never simulated.
+// ---------------------------------------------------------------------------
+export const KNOWN_SESSION_STATUSES: SessionStatus[] = [
+  'draft', 'discovering', 'partial', 'benchmarking',
+  'proposal_ready', 'approved', 'activating', 'completed', 'failed',
+];
+
+export function isKnownSessionStatus(status: string | null | undefined): status is SessionStatus {
+  return typeof status === 'string' && (KNOWN_SESSION_STATUSES as string[]).includes(status);
+}
+
+export function agentStateLabel(status: string | null): string {
+  switch (status) {
+    case null:
+    case 'draft': return 'Ready';
+    case 'discovering': return 'Discovering infrastructure';
+    case 'benchmarking': return 'Benchmarking providers';
+    case 'proposal_ready': return 'Awaiting your review';
+    case 'approved': return 'Ready to activate';
+    case 'activating': return 'Activating protection';
+    case 'completed': return 'Protection active';
+    case 'partial': return 'Needs attention';
+    case 'failed': return 'Discovery failed';
+    // Unknown / unmapped backend status: surface it, never silently show "Ready".
+    default: return 'Status unavailable';
+  }
+}
+
+export type AgentView = {
+  stateLabel: string;
+  running: boolean;
+  currentOperation: string | null;  // null => none in flight; the UI renders "—"
+  unknownStatus: boolean;
+};
+
+// Derive the right-panel view from canonical backend session + step state only.
+export function deriveAgentView(snapshot: OnboardingSnapshot | null): AgentView {
+  const session = snapshot?.session ?? null;
+  const status = session?.status ?? null;
+  const steps = snapshot?.steps ?? [];
+  const runningStep = steps.find((s) => s.status === 'running') ?? null;
+  const active = status !== null && ACTIVE_STATUSES.includes(status);
+  const unknownStatus = status !== null && !isKnownSessionStatus(status);
+
+  // Current operation is surfaced ONLY when the backend actually has work in flight:
+  // a step whose status is `running`, or — in the brief window after a run is queued
+  // but before the first step flips — the session's current_step while the status is
+  // active. A draft / idle / terminal session reports no current operation, so a
+  // not-yet-started draft never claims to be "Validating contract address".
+  let currentOperation: string | null = null;
+  if (runningStep) {
+    currentOperation = runningStep.title ?? null;
+  } else if (active && session?.current_step) {
+    currentOperation = steps.find((s) => s.step_key === session.current_step)?.title ?? null;
+  }
+
+  return {
+    stateLabel: agentStateLabel(status),
+    running: active || runningStep !== null,
+    currentOperation,
+    unknownStatus,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Structured, customer-safe error taxonomy.
 //
 // The backend returns machine-readable error codes (snake_case in discovery step

@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { usePilotAuth } from '../pilot-auth-context';
 import { SurfaceCard, StatusPill, Button, TableShell, Select } from '../components/ui-primitives';
 import {
-  ACTIVE_STATUSES, connectOnboardingStream, confidenceVariant, derivePhaseStatuses,
+  ACTIVE_STATUSES, connectOnboardingStream, confidenceVariant, deriveAgentView, derivePhaseStatuses,
   describeOnboardingError, isTransportError, ONBOARDING_TRANSPORT_MESSAGE, OnboardingRequestError,
   recommendationVariant, stepVariant,
   type BenchmarkResult, type OnboardingErrorInfo, type OnboardingFinding, type OnboardingSession,
@@ -187,9 +187,15 @@ export default function OnboardingPageClient() {
 
   const contractValid = HEX_ADDRESS.test(form.primary_contract.trim());
 
+  // The single "Run Automated Discovery" button must (1) create/resume the session,
+  // (2) persist the returned session id, and (3) START discovery via the canonical
+  // discover endpoint. Creating the session alone leaves it in `draft` with every step
+  // pending (the reported "stuck at 0/10" state), because the backend only enqueues the
+  // durable discovery job on POST …/discover. Progress is never simulated: we render the
+  // authoritative snapshot the backend returns (running/partial/failed/proposal_ready).
   const onCreate = () => run('create', async () => {
     const rpc = form.rpc_endpoints.split('\n').map((s) => s.trim()).filter(Boolean);
-    const data = await api('/api/onboarding/sessions', 'POST', {
+    const created = await api('/api/onboarding/sessions', 'POST', {
       workspace_name: form.workspace_name || undefined,
       chain_id: form.chain_id,
       primary_contract: form.primary_contract.trim(),
@@ -198,8 +204,14 @@ export default function OnboardingPageClient() {
       protocol_name: form.protocol_name || undefined,
       force_new: true,
     }) as OnboardingSnapshot;
-    setSnapshot(data);
-    persist(data.session.id);
+    persist(created.session.id);
+    setSnapshot(created);
+    // Immediately transition the just-created draft into a running backend discovery job.
+    // If this call raises (HTTP-level error) the created draft stays visible so the panel's
+    // own "Run Automated Discovery" / Retry can re-drive discovery on the same session; a
+    // gating failure (EOA / RPC not configured / chain mismatch) comes back as a 200 snapshot
+    // with status `partial` + a structured error_code, rendered by SessionErrorNotice.
+    setSnapshot(await api(`/api/onboarding/sessions/${created.session.id}/discover`, 'POST') as OnboardingSnapshot);
   });
 
   const onDiscover = () => run('discover', async () => {
@@ -460,7 +472,7 @@ function IntakeForm({ form, setForm, onCreate, busy, contractValid }: {
       </div>
       <div className="buttonRow">
         <Button variant="primary" onClick={onCreate} disabled={!canSubmit} data-testid="btn-create">
-          {busy === 'create' ? 'Creating session…' : 'Run Automated Discovery'}
+          {busy === 'create' ? 'Starting discovery…' : 'Run Automated Discovery'}
         </Button>
       </div>
     </SurfaceCard>
@@ -728,20 +740,28 @@ function AgentPanel({ snapshot, streamStatus, busy, onDiscover, onBenchmark, onA
 }) {
   const s = snapshot?.session;
   const agent = snapshot?.agent;
-  const stateLabel = agentStateLabel(s?.status ?? null);
-  const currentStep = snapshot?.steps.find((x) => x.step_key === s?.current_step);
+  // Truthful, canonical view: state label + current operation derived from backend
+  // session + step state. A not-started draft never shows a fake "current operation",
+  // and an unknown backend status is surfaced instead of silently reading as "Ready".
+  const view = deriveAgentView(snapshot);
   const totalSteps = agent?.total_steps ?? 10;
   const completed = agent?.completed_steps ?? 0;
   const answer = useMemo(() => groundedAnswer(ask, snapshot), [ask, snapshot]);
 
   return (
     <SurfaceCard className="onbCard onbAgentPanel">
-      <div className="onbCardHead"><div><p className="sectionEyebrow">Onboarding Agent</p><h2 className="onbCardTitle">{stateLabel}</h2></div></div>
+      <div className="onbCardHead"><div><p className="sectionEyebrow">Onboarding Agent</p><h2 className="onbCardTitle">{view.stateLabel}</h2></div></div>
+
+      {view.unknownStatus ? (
+        <p className="onbWarn" data-testid="agent-unknown-status">
+          Unrecognized session status “{s?.status}”. Showing the last known details; refresh to reconcile the timeline.
+        </p>
+      ) : null}
 
       {s ? (
         <>
           <div className="onbAgentState" data-testid="agent-state">
-            <Row label="Current operation" value={currentStep?.title ?? '—'} />
+            <Row label="Current operation" value={view.currentOperation ?? '—'} />
             <Row label="Overall progress" value={`${completed}/${totalSteps} steps`} />
             <Row label="Confidence" value={confidenceLabel(agent)} />
             <Row label="Verified findings" value={agent?.verified_findings ?? 0} />
@@ -791,20 +811,6 @@ function AgentPanel({ snapshot, streamStatus, busy, onDiscover, onBenchmark, onA
 
 function Row({ label, value }: { label: string; value: unknown }) {
   return <div className="onbAgentRow"><span>{label}</span><strong>{String(value)}</strong></div>;
-}
-
-function agentStateLabel(status: string | null): string {
-  switch (status) {
-    case 'discovering': return 'Discovering infrastructure';
-    case 'benchmarking': return 'Benchmarking providers';
-    case 'proposal_ready': return 'Awaiting your review';
-    case 'approved': return 'Ready to activate';
-    case 'activating': return 'Activating protection';
-    case 'completed': return 'Protection active';
-    case 'partial': return 'Needs attention';
-    case 'failed': return 'Discovery failed';
-    default: return 'Ready';
-  }
 }
 
 function confidenceLabel(agent: OnboardingSnapshot['agent'] | undefined): string {
