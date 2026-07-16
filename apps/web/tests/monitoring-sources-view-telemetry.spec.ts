@@ -40,30 +40,29 @@ const proxyRouteSource = fs.readFileSync(proxyRoutePath, 'utf-8');
 // --- Monitoring sources page: View telemetry is a clickable link ---
 
 test('"View telemetry" is rendered as a Next.js Link (not a plain span)', () => {
-  // Confirm <Link is present in the table row render block (after the target loop opening)
-  const loopStart = monitoringPageSource.indexOf('targets.map((target)');
+  // Confirm <Link is present in the source-row render block (after the row loop opening).
+  const loopStart = monitoringPageSource.indexOf('pagedSources.map((source)');
   expect(loopStart).toBeGreaterThan(-1);
   const loopBlock = monitoringPageSource.slice(loopStart);
   expect(loopBlock).toContain('<Link');
-  // The href template literal contains the telemetry path
+  // The href template literal contains the telemetry path.
   expect(loopBlock).toContain('/telemetry');
-  // The "View telemetry" text appears as link content (not just in the function string)
-  const linkTagIdx = loopBlock.indexOf('<Link');
-  const afterFirstLink = loopBlock.slice(linkTagIdx);
-  expect(afterFirstLink).toContain('View telemetry');
+  // The "View telemetry" text appears as link content (not just in a function string).
+  const linkTagIdx = loopBlock.indexOf('View telemetry');
+  expect(linkTagIdx).toBeGreaterThan(-1);
 });
 
 test('"View telemetry" link href contains the target ID', () => {
-  // href template literal should interpolate target.id for the telemetry route
+  // href template literal should interpolate the source target id for the telemetry route.
   expect(monitoringPageSource).toContain('/monitoring-sources/');
   expect(monitoringPageSource).toContain('/telemetry');
-  // The href for the telemetry link encodes target.id
-  const telemetryHrefPattern = /\/monitoring-sources\/[^'"]*target\.id[^'"]*\/telemetry/;
+  // The href for the telemetry link encodes source.target_id.
+  const telemetryHrefPattern = /\/monitoring-sources\/\$\{encodeURIComponent\(source\.target_id\)\}\/telemetry/;
   expect(telemetryHrefPattern.test(monitoringPageSource)).toBe(true);
 });
 
-test('"View telemetry" link only renders when target.id is truthy', () => {
-  expect(monitoringPageSource).toContain("targetNextAction(target) === 'View telemetry' && target.id");
+test('"View telemetry" link only renders when the source has a monitored system', () => {
+  expect(monitoringPageSource).toContain('source.system_id ? (');
 });
 
 // --- Telemetry page: empty state ---

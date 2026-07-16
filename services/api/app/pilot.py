@@ -11178,6 +11178,176 @@ def _load_latest_block_by_system(connection: Any, *, workspace_id: str) -> dict[
     return result
 
 
+# ── Source Optimization Agent: persisted settings + evidence-backed decisions ──
+# Absence of a persisted row is fail-closed: Auto-Routing OFF, spec-default
+# thresholds. Nothing here fabricates a metric or a health value.
+_SOURCE_SETTINGS_DEFAULTS: dict[str, Any] = {
+    'auto_routing_enabled': False,
+    'failover_cooldown_seconds': 300,
+    'route_recovery_seconds': 900,
+    'thresholds': {},
+}
+
+
+def _commit_sha() -> str | None:
+    return (
+        os.getenv('RAILWAY_GIT_COMMIT_SHA')
+        or os.getenv('GIT_COMMIT_SHA')
+        or os.getenv('SOURCE_VERSION')
+        or ''
+    ).strip() or None
+
+
+def _coerce_datetime(value: Any) -> datetime | None:
+    """Best-effort parse of a timestamp (datetime or ISO string) to a datetime.
+
+    Returns None on anything unparseable so downstream age math never raises.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.endswith('Z'):
+            text = text[:-1] + '+00:00'
+        try:
+            return datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    return None
+
+
+def _load_source_settings(connection: Any, *, workspace_id: str) -> dict[str, Any]:
+    """Load the persisted Auto-Routing / failover / threshold settings for a workspace.
+
+    Returns the spec defaults when no row exists or the table is not yet present
+    (a drifted schema before migration 0127) — never raising, so the Screen-4 page
+    always renders with honest, fail-closed defaults.
+    """
+    try:
+        row = connection.execute(
+            '''
+            SELECT auto_routing_enabled, failover_cooldown_seconds, route_recovery_seconds,
+                   thresholds, updated_at, updated_by_user_id
+            FROM workspace_source_settings
+            WHERE workspace_id = %s::uuid
+            ''',
+            (workspace_id,),
+        ).fetchone()
+    except Exception:
+        logger.warning('source_settings_unavailable workspace_id=%s', workspace_id, exc_info=True)
+        return {**_SOURCE_SETTINGS_DEFAULTS, 'persisted': False}
+    if row is None:
+        return {**_SOURCE_SETTINGS_DEFAULTS, 'persisted': False}
+    thresholds = row.get('thresholds')
+    if not isinstance(thresholds, dict):
+        thresholds = {}
+    return {
+        'auto_routing_enabled': bool(row.get('auto_routing_enabled')),
+        'failover_cooldown_seconds': int(row.get('failover_cooldown_seconds') or 300),
+        'route_recovery_seconds': int(row.get('route_recovery_seconds') or 900),
+        'thresholds': thresholds,
+        'updated_at': _isoformat_or_none(row.get('updated_at')),
+        'updated_by_user_id': str(row.get('updated_by_user_id')) if row.get('updated_by_user_id') else None,
+        'persisted': True,
+    }
+
+
+def _load_recent_agent_decisions(
+    connection: Any, *, workspace_id: str, limit: int = 20
+) -> list[dict[str, Any]]:
+    """Latest agent decisions for the workspace (evidence-backed; measured only)."""
+    try:
+        rows = connection.execute(
+            '''
+            SELECT id, target_id, system_id, provider_id, decision_type, triggered_rule, status,
+                   approval_required, confidence, health_status, health_score, previous_route, new_route,
+                   correlation_id, actor_type, summary, created_at, executed_at
+            FROM source_agent_decisions
+            WHERE workspace_id = %s::uuid
+            ORDER BY created_at DESC
+            LIMIT %s
+            ''',
+            (workspace_id, int(limit)),
+        ).fetchall()
+    except Exception:
+        logger.warning('source_agent_decisions_unavailable workspace_id=%s', workspace_id, exc_info=True)
+        return []
+    return [_json_safe_value(dict(row)) for row in rows]
+
+
+def _count_agent_activity(connection: Any, *, workspace_id: str) -> dict[str, Any]:
+    """Real Agent Activity counters for the summary card (never fabricated)."""
+    try:
+        row = connection.execute(
+            '''
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE actor_type = 'agent' AND created_at >= NOW() - INTERVAL '24 hours'
+                ) AS autonomous_actions_24h,
+                COUNT(*) FILTER (WHERE status = 'pending_approval') AS approvals_required,
+                MAX(created_at) AS last_optimization_at
+            FROM source_agent_decisions
+            WHERE workspace_id = %s::uuid
+            ''',
+            (workspace_id,),
+        ).fetchone()
+    except Exception:
+        logger.warning('source_agent_activity_unavailable workspace_id=%s', workspace_id, exc_info=True)
+        return {'autonomous_actions_24h': None, 'approvals_required': None, 'last_optimization_at': None}
+    if row is None:
+        return {'autonomous_actions_24h': 0, 'approvals_required': 0, 'last_optimization_at': None}
+    return {
+        'autonomous_actions_24h': int(row.get('autonomous_actions_24h') or 0),
+        'approvals_required': int(row.get('approvals_required') or 0),
+        'last_optimization_at': _isoformat_or_none(row.get('last_optimization_at')),
+    }
+
+
+def _count_route_changes_24h(connection: Any, *, workspace_id: str) -> int | None:
+    """Count route changes (failover / restore) in the last 24h. None when unmeasurable."""
+    try:
+        row = connection.execute(
+            '''
+            SELECT COUNT(*) AS count
+            FROM source_agent_decisions
+            WHERE workspace_id = %s::uuid
+              AND created_at >= NOW() - INTERVAL '24 hours'
+              AND decision_type IN ('failover_initiated', 'failover_completed', 'route_restored')
+            ''',
+            (workspace_id,),
+        ).fetchone()
+    except Exception:
+        logger.warning('source_route_changes_unavailable workspace_id=%s', workspace_id, exc_info=True)
+        return None
+    return int((row or {}).get('count') or 0)
+
+
+def _publish_source_event(workspace_id: str, event_type: str, extra: dict[str, Any] | None = None) -> None:
+    """Best-effort Redis fan-out of a Source Optimization Agent event.
+
+    Reuses the shared alert_stream backbone (onboarding stream) so the frontend's
+    existing authenticated SSE mechanism receives it. Postgres remains the source
+    of truth; a Redis outage never blocks a decision from being recorded.
+    """
+    try:
+        from services.api.app.domains import alert_stream
+        payload = {
+            'type': 'source',
+            'event_type': event_type,
+            'workspace_id': workspace_id,
+            'at': utc_now_iso(),
+        }
+        if extra:
+            payload.update(extra)
+        alert_stream.publish_onboarding(workspace_id, payload)
+    except Exception as exc:  # pragma: no cover - Redis optional
+        logger.info('source_sse_publish_skipped event=%s reason=%s', event_type, type(exc).__name__)
+
+
 def _load_latest_provider_health_by_target(
     connection: Any, *, workspace_id: str, canonical_ids: list[str]
 ) -> dict[str, dict[str, Any]]:
@@ -11234,13 +11404,22 @@ def _build_monitoring_sources_enrichment(
     assets: list[dict[str, Any]],
     targets: list[dict[str, Any]],
     systems: list[dict[str, Any]],
+    settings: dict[str, Any] | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Assemble Screen-4 monitoring-source rows + provider health + agent state.
+    """Assemble Screen-4 monitoring-source rows + provider health + agent state + summary cards.
 
     Every value is derived from canonical backend records (targets, monitored_systems,
-    monitor_checkpoint, provider_health_records, target_coverage_records) or left as null
-    when no measured record exists. No percentages or health values are invented.
+    monitor_checkpoint, provider_health_records, target_coverage_records, source_agent_decisions)
+    or left as null when no measured record exists. Health scores come from the deterministic
+    monitoring_health_engine — no percentages or health values are invented.
     """
+    from services.api.app import monitoring_health_engine as _he
+
+    now = now or utc_now()
+    settings = settings or {**_SOURCE_SETTINGS_DEFAULTS, 'persisted': False}
+    thresholds = _he.HealthThresholds.from_overrides(settings.get('thresholds'))
+
     systems_by_target: dict[str, dict[str, Any]] = {}
     for system in systems:
         target_id = str(system.get('target_id') or '')
@@ -11272,6 +11451,17 @@ def _build_monitoring_sources_enrichment(
     fallback_host_counts: dict[str, int] = {}
     latest_routing_decision: str | None = None
     fresh_telemetry_present = False
+
+    # Summary-card counters (measured only; None-safe).
+    primary_route_count = 0
+    fallback_route_count = 0
+    telemetry_fresh_count = 0
+    telemetry_stale_count = 0
+    telemetry_eligible_count = 0
+    oracle_healthy = 0
+    oracle_delayed = 0
+    oracle_missed = 0
+    health_scores: list[float] = []
 
     for target in targets:
         target_id = str(target.get('id') or '')
@@ -11308,6 +11498,29 @@ def _build_monitoring_sources_enrichment(
             or 'none'
         ).strip().lower()
 
+        # Deterministic health assessment from measured metrics only. Unmeasured
+        # dimensions stay `unknown` (never inflated to healthy); a source with no
+        # live evidence can never score as healthy.
+        provider_status_raw = str(provider_health.get('status') or '').strip().lower()
+        endpoint_unavailable = provider_status_raw == 'unavailable' or (
+            str((system or {}).get('runtime_status') or '').strip().lower() == 'failed'
+        )
+        last_telemetry_dt = _coerce_datetime(last_telemetry_at)
+        engine_metrics = _he.SourceMetrics(
+            p95_latency_ms=float(latency_ms) if isinstance(latency_ms, (int, float)) else None,
+            heartbeat_present=bool((system or {}).get('last_heartbeat')),
+            last_telemetry_at=last_telemetry_dt,
+            endpoint_unavailable=endpoint_unavailable,
+        )
+        assessment = _he.assess_source_health(engine_metrics, thresholds=thresholds, now=now)
+        if assessment.score is not None:
+            health_scores.append(assessment.score)
+
+        freshness = str((system or {}).get('freshness_status') or '').strip().lower()
+        is_oracle = 'oracle' in ' '.join(
+            str(target.get(k) or '') for k in ('target_type', 'monitoring_mode', 'source_type')
+        ).lower()
+
         if status in {_SOURCE_STATUS_DEGRADED, _SOURCE_STATUS_FAILED}:
             degraded_or_failed += 1
         elif status == _SOURCE_STATUS_HEALTHY:
@@ -11319,12 +11532,32 @@ def _build_monitoring_sources_enrichment(
 
         if primary_provider:
             primary_host_counts[primary_provider] = primary_host_counts.get(primary_provider, 0) + 1
+            primary_route_count += 1
         if fallback_provider:
             fallback_host_counts[fallback_provider] = fallback_host_counts.get(fallback_provider, 0) + 1
+            fallback_route_count += 1
         if routing_explanation and latest_routing_decision is None:
             latest_routing_decision = routing_explanation
-        if str((system or {}).get('freshness_status') or '').strip().lower() == 'fresh' and last_telemetry_at:
-            fresh_telemetry_present = True
+
+        # Telemetry-coverage card: only count sources that are expected to report.
+        if system is not None and monitored_system_row_enabled(system):
+            telemetry_eligible_count += 1
+            if freshness == 'fresh' and last_telemetry_at:
+                telemetry_fresh_count += 1
+                fresh_telemetry_present = True
+            elif freshness == 'stale' or (last_telemetry_dt is not None
+                                          and (now - _he._as_aware(last_telemetry_dt)).total_seconds()
+                                          > thresholds.telemetry_freshness_seconds):
+                telemetry_stale_count += 1
+
+        # Oracle-heartbeat card: classify oracle sources by their measured status.
+        if is_oracle:
+            if status == _SOURCE_STATUS_HEALTHY:
+                oracle_healthy += 1
+            elif status in {_SOURCE_STATUS_WARNING, _SOURCE_STATUS_DEGRADED}:
+                oracle_delayed += 1
+            elif status in {_SOURCE_STATUS_FAILED, _SOURCE_STATUS_MISSING_CONFIG}:
+                oracle_missed += 1
 
         # Aggregate provider health for the summary panel (measured records only).
         if provider_host:
@@ -11365,14 +11598,25 @@ def _build_monitoring_sources_enrichment(
             'latest_block': latest_block,
             'block_lag': None,  # chain-tip lag requires a live RPC head; not fabricated here.
             'median_latency_ms': latency_ms,
+            'error_rate': None,     # not measured by the current probe path; never fabricated.
+            'timeout_rate': None,
             'last_poll_at': last_poll_at,
+            'last_heartbeat': (system or {}).get('last_heartbeat'),
             'last_telemetry_at': last_telemetry_at,
+            'provider_checked_at': _isoformat_or_none(provider_health.get('checked_at')),
+            'provider_health_record_id': None,
             'routing': 'primary' if primary_provider else ('fallback' if fallback_provider else None),
             'routing_explanation': routing_explanation,
             'coverage_state': coverage.get('coverage_status') or (system or {}).get('coverage_reason'),
             'evidence_source': evidence_source,
             'enabled': bool(target.get('enabled')),
             'monitoring_enabled': bool(target.get('monitoring_enabled')),
+            # Deterministic engine output (aux signal; primary status stays authoritative).
+            'health_score': None if assessment.score is None else round(assessment.score, 1),
+            'health_status': assessment.status,
+            'has_live_evidence': assessment.has_live_evidence,
+            'triggered_rules': assessment.triggered_rules,
+            'is_oracle': is_oracle,
         }))
 
     providers = list(provider_agg.values())
@@ -11428,9 +11672,58 @@ def _build_monitoring_sources_enrichment(
     elif missing_target_links > 0 or degraded_or_failed > 0:
         agent_state = 'attention_required'
     elif provisioning_sources > 0 and healthy_sources == 0:
-        agent_state = 'provisioning'
+        agent_state = 'monitoring' if provisioning_sources == 0 else 'provisioning'
     else:
         agent_state = 'monitoring'
+
+    total_sources = len(targets)
+    # Overall source-health percentage from the deterministic engine scores; None
+    # (not a fabricated 100%) when no source produced a measurable score.
+    overall_health_pct = round(sum(health_scores) / len(health_scores), 1) if health_scores else None
+    activity = _count_agent_activity(connection, workspace_id=workspace_id)
+    route_changes_24h = _count_route_changes_24h(connection, workspace_id=workspace_id)
+    decisions = _load_recent_agent_decisions(connection, workspace_id=workspace_id, limit=15)
+
+    telemetry_coverage_pct = (
+        round(telemetry_fresh_count / telemetry_eligible_count * 100, 1)
+        if telemetry_eligible_count > 0 else None
+    )
+
+    summary = {
+        # Card 1 — Source Health
+        'source_health': {
+            'healthy': healthy_sources,
+            'total': total_sources,
+            'health_pct': overall_health_pct,
+            'trend_24h': None,   # no historical snapshot table yet — honest null, never fabricated
+        },
+        # Card 2 — Active Routes
+        'active_routes': {
+            'primary': primary_route_count,
+            'fallback': fallback_route_count,
+            'changed_24h': route_changes_24h,
+        },
+        # Card 3 — Telemetry Coverage
+        'telemetry_coverage': {
+            'coverage_pct': telemetry_coverage_pct,
+            'fresh': telemetry_fresh_count,
+            'stale': telemetry_stale_count,
+            'eligible': telemetry_eligible_count,
+        },
+        # Card 4 — Oracle Heartbeats
+        'oracle_heartbeats': {
+            'healthy': oracle_healthy,
+            'delayed': oracle_delayed,
+            'missed': oracle_missed,
+            'total': oracle_healthy + oracle_delayed + oracle_missed,
+        },
+        # Card 5 — Agent Activity
+        'agent_activity': {
+            'autonomous_actions_24h': activity['autonomous_actions_24h'],
+            'approvals_required': activity['approvals_required'],
+            'last_optimization_at': activity['last_optimization_at'],
+        },
+    }
 
     return {
         'sources': sources,
@@ -11452,7 +11745,11 @@ def _build_monitoring_sources_enrichment(
             'confidence': confidence,
             'confidence_basis': confidence_basis,
             'recommendations': recommendations,
+            'activity': activity,
+            'auto_routing_enabled': bool(settings.get('auto_routing_enabled')),
         }),
+        'summary': _json_safe_value(summary),
+        'decisions': decisions,
     }
 
 
@@ -11472,14 +11769,19 @@ def list_monitoring_sources(request: Request) -> dict[str, Any]:
     assets = list_assets(request).get('assets', [])
     targets = list_targets(request).get('targets', [])
     systems = list_monitored_systems(request).get('systems', [])
-    enrichment: dict[str, Any] = {'sources': [], 'provider_health': None, 'agent': None}
+    enrichment: dict[str, Any] = {
+        'sources': [], 'provider_health': None, 'agent': None, 'summary': None, 'decisions': [],
+    }
+    settings = {**_SOURCE_SETTINGS_DEFAULTS, 'persisted': False}
     try:
         with pg_connection() as connection:
             ensure_pilot_schema(connection)
             _, workspace_context, _ = resolve_workspace_context_for_request(connection, request)
             workspace_id = workspace_context['workspace_id']
+            settings = _load_source_settings(connection, workspace_id=workspace_id)
             enrichment = _build_monitoring_sources_enrichment(
                 connection, workspace_id=workspace_id, assets=assets, targets=targets, systems=systems,
+                settings=settings,
             )
     except HTTPException:
         raise
@@ -11494,7 +11796,440 @@ def list_monitoring_sources(request: Request) -> dict[str, Any]:
         'sources': enrichment.get('sources', []),
         'provider_health': enrichment.get('provider_health'),
         'agent': enrichment.get('agent'),
+        'summary': enrichment.get('summary'),
+        'decisions': enrichment.get('decisions', []),
+        'settings': _public_source_settings(settings),
+        'server_time': utc_now_iso(),
     }
+
+
+def _public_source_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """Client-safe view of the persisted source settings (no internal-only keys)."""
+    return {
+        'auto_routing_enabled': bool(settings.get('auto_routing_enabled')),
+        'failover_cooldown_seconds': int(settings.get('failover_cooldown_seconds') or 300),
+        'route_recovery_seconds': int(settings.get('route_recovery_seconds') or 900),
+        'thresholds': settings.get('thresholds') or {},
+        'persisted': bool(settings.get('persisted')),
+        'updated_at': settings.get('updated_at'),
+    }
+
+
+def get_source_optimization_settings(request: Request) -> dict[str, Any]:
+    """Read the persisted Auto-Routing / failover / threshold settings (workspace member)."""
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        _, workspace_context, _ = resolve_workspace_context_for_request(connection, request)
+        settings = _load_source_settings(connection, workspace_id=workspace_context['workspace_id'])
+        return {'settings': _public_source_settings(settings)}
+
+
+# Threshold override keys an admin may persist. Each is bounded to a safe policy
+# range so a routing-sensitive threshold can never be pushed to an unsafe value
+# from the browser. Keys map 1:1 to monitoring_health_engine.HealthThresholds.
+_SOURCE_THRESHOLD_BOUNDS: dict[str, tuple[float, float, bool]] = {
+    # key: (min, max, is_int)
+    'block_lag_healthy_max': (0, 10, True),
+    'block_lag_warning_max': (1, 50, True),
+    'error_rate_healthy_max': (0.0, 0.5, False),
+    'error_rate_warning_max': (0.0, 0.9, False),
+    'timeout_rate_healthy_max': (0.0, 0.5, False),
+    'timeout_rate_warning_max': (0.0, 0.9, False),
+    'p95_latency_healthy_max_ms': (50, 10000, False),
+    'p95_latency_warning_max_ms': (100, 30000, False),
+    'availability_healthy_min': (0.5, 1.0, False),
+    'availability_warning_min': (0.0, 1.0, False),
+    'telemetry_freshness_seconds': (30, 86400, True),
+}
+
+
+def _validate_threshold_overrides(raw: Any) -> dict[str, Any]:
+    """Validate + clamp a thresholds override map to allowed policy ranges."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='thresholds must be an object.')
+    cleaned: dict[str, Any] = {}
+    for key, value in raw.items():
+        if key not in _SOURCE_THRESHOLD_BOUNDS:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f'Unsupported threshold key: {key}.')
+        low, high, is_int = _SOURCE_THRESHOLD_BOUNDS[key]
+        try:
+            num = float(value)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f'Threshold {key} must be numeric.')
+        if not (low <= num <= high):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f'Threshold {key} must be between {low} and {high}.',
+            )
+        cleaned[key] = int(num) if is_int else num
+    return cleaned
+
+
+def update_source_optimization_settings(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Persist the Auto-Routing / failover / threshold settings (workspace admin only).
+
+    Idempotent upsert of the desired state, audited. Changing security-sensitive
+    thresholds beyond the allowed policy range is rejected (autonomy boundary).
+    """
+    require_live_mode()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Request body must be an object.')
+
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        workspace_id = workspace_context['workspace_id']
+        current = _load_source_settings(connection, workspace_id=workspace_id)
+
+        auto_routing = current['auto_routing_enabled']
+        if 'auto_routing_enabled' in payload:
+            if not isinstance(payload['auto_routing_enabled'], bool):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='auto_routing_enabled must be a boolean.')
+            auto_routing = payload['auto_routing_enabled']
+
+        cooldown = current['failover_cooldown_seconds']
+        if 'failover_cooldown_seconds' in payload:
+            try:
+                cooldown = int(payload['failover_cooldown_seconds'])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='failover_cooldown_seconds must be an integer.')
+            if not (30 <= cooldown <= 3600):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='failover_cooldown_seconds must be between 30 and 3600.')
+
+        recovery = current['route_recovery_seconds']
+        if 'route_recovery_seconds' in payload:
+            try:
+                recovery = int(payload['route_recovery_seconds'])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='route_recovery_seconds must be an integer.')
+            if not (60 <= recovery <= 86400):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='route_recovery_seconds must be between 60 and 86400.')
+
+        thresholds = current['thresholds']
+        if 'thresholds' in payload:
+            thresholds = _validate_threshold_overrides(payload['thresholds'])
+
+        connection.execute(
+            '''
+            INSERT INTO workspace_source_settings
+                (workspace_id, auto_routing_enabled, failover_cooldown_seconds, route_recovery_seconds,
+                 thresholds, updated_by_user_id, created_at, updated_at)
+            VALUES (%s::uuid, %s, %s, %s, %s::jsonb, %s::uuid, NOW(), NOW())
+            ON CONFLICT (workspace_id) DO UPDATE SET
+                auto_routing_enabled = EXCLUDED.auto_routing_enabled,
+                failover_cooldown_seconds = EXCLUDED.failover_cooldown_seconds,
+                route_recovery_seconds = EXCLUDED.route_recovery_seconds,
+                thresholds = EXCLUDED.thresholds,
+                updated_by_user_id = EXCLUDED.updated_by_user_id,
+                updated_at = NOW()
+            ''',
+            (workspace_id, auto_routing, cooldown, recovery, _json_dumps(thresholds), user['id']),
+        )
+        log_audit(
+            connection,
+            action='source.settings.update',
+            entity_type='workspace_source_settings',
+            entity_id=workspace_id,
+            request=request,
+            user_id=user['id'],
+            workspace_id=workspace_id,
+            metadata={
+                'auto_routing_enabled': auto_routing,
+                'failover_cooldown_seconds': cooldown,
+                'route_recovery_seconds': recovery,
+                'threshold_keys': sorted(thresholds.keys()),
+            },
+        )
+        connection.commit()
+
+    if auto_routing != current['auto_routing_enabled']:
+        _publish_source_event(
+            workspace_id,
+            'source.settings.auto_routing' + ('.enabled' if auto_routing else '.disabled'),
+            {'auto_routing_enabled': auto_routing},
+        )
+
+    return {
+        'settings': _public_source_settings({
+            'auto_routing_enabled': auto_routing,
+            'failover_cooldown_seconds': cooldown,
+            'route_recovery_seconds': recovery,
+            'thresholds': thresholds,
+            'persisted': True,
+            'updated_at': utc_now_iso(),
+        }),
+    }
+
+
+def list_source_agent_decisions(request: Request, *, limit: int = 50) -> dict[str, Any]:
+    """List evidence-backed Source Optimization Agent decisions (workspace member)."""
+    require_live_mode()
+    limit = max(1, min(int(limit or 50), 200))
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        _, workspace_context, _ = resolve_workspace_context_for_request(connection, request)
+        decisions = _load_recent_agent_decisions(
+            connection, workspace_id=workspace_context['workspace_id'], limit=limit,
+        )
+        return {'decisions': decisions}
+
+
+def _record_source_agent_decision(
+    connection: Any,
+    *,
+    workspace_id: str,
+    decision_type: str,
+    input_snapshot: dict[str, Any],
+    target_id: str | None = None,
+    system_id: str | None = None,
+    provider_id: str | None = None,
+    triggered_rule: str | None = None,
+    status_value: str = 'recorded',
+    approval_required: bool = False,
+    confidence: str | None = None,
+    health_status: str | None = None,
+    health_score: float | None = None,
+    previous_route: str | None = None,
+    new_route: str | None = None,
+    correlation_id: str | None = None,
+    actor_type: str = 'agent',
+    actor_user_id: str | None = None,
+    summary: str | None = None,
+) -> str:
+    """Insert one evidence-backed agent decision. Returns the new decision id."""
+    decision_id = str(uuid.uuid4())
+    connection.execute(
+        '''
+        INSERT INTO source_agent_decisions (
+            id, workspace_id, target_id, system_id, provider_id, decision_type, triggered_rule,
+            status, approval_required, confidence, health_status, health_score, previous_route, new_route,
+            input_snapshot, correlation_id, actor_type, actor_user_id, software_version, summary
+        ) VALUES (
+            %s::uuid, %s::uuid, %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s, %s,
+            %s::jsonb, %s, %s, %s, %s, %s
+        )
+        ''',
+        (
+            decision_id, workspace_id,
+            _uuid_or_none(target_id), _uuid_or_none(system_id), provider_id, decision_type, triggered_rule,
+            status_value, approval_required, confidence, health_status, health_score, previous_route, new_route,
+            _json_dumps(input_snapshot), correlation_id, actor_type, _uuid_or_none(actor_user_id),
+            _commit_sha(), summary,
+        ),
+    )
+    return decision_id
+
+
+def _uuid_or_none(value: Any) -> str | None:
+    """Return a value only if it is a valid UUID string, else None (defensive cast)."""
+    if not value:
+        return None
+    try:
+        return str(uuid.UUID(str(value)))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def run_source_health_check(request: Request) -> dict[str, Any]:
+    """Run a deterministic health check across the workspace's sources and record
+    evidence-backed agent decisions.
+
+    This is an autonomous, non-destructive agent action: it evaluates each source
+    with the deterministic engine, decides (per persisted Auto-Routing policy)
+    whether a failover would be authorised, and records a decision with the exact
+    metric snapshot it used. It never fabricates health, and it never switches a
+    live route by itself here — a route change that would require human approval is
+    recorded as an escalation instead. Real route execution is performed by the
+    monitoring worker; this endpoint records the agent's deterministic verdict.
+    """
+    require_live_mode()
+    from services.api.app import monitoring_health_engine as _he
+
+    assets = list_assets(request).get('assets', [])
+    targets = list_targets(request).get('targets', [])
+    systems = list_monitored_systems(request).get('systems', [])
+    correlation_id = str(uuid.uuid4())
+    now = utc_now()
+
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context, _ = resolve_workspace_context_for_request(connection, request)
+        workspace_id = workspace_context['workspace_id']
+        _rate_limit_source_health_check(connection, workspace_id=workspace_id, user_id=str(user['id']))
+        settings = _load_source_settings(connection, workspace_id=workspace_id)
+        enrichment = _build_monitoring_sources_enrichment(
+            connection, workspace_id=workspace_id, assets=assets, targets=targets, systems=systems,
+            settings=settings, now=now,
+        )
+        sources = enrichment.get('sources', [])
+        auto_routing = bool(settings.get('auto_routing_enabled'))
+
+        recorded: list[dict[str, Any]] = []
+        warnings = criticals = escalations = failovers_recommended = 0
+        for source in sources:
+            health_status = str(source.get('health_status') or 'unknown')
+            if health_status not in {_he.HEALTH_WARNING, _he.HEALTH_CRITICAL}:
+                continue
+            snapshot = {
+                'health_status': health_status,
+                'health_score': source.get('health_score'),
+                'triggered_rules': source.get('triggered_rules'),
+                'median_latency_ms': source.get('median_latency_ms'),
+                'last_telemetry_at': source.get('last_telemetry_at'),
+                'evidence_source': source.get('evidence_source'),
+                'status': source.get('status'),
+                'status_reason': source.get('status_reason'),
+            }
+            primary = source.get('primary_provider')
+            fallback = source.get('fallback_provider')
+
+            if health_status == _he.HEALTH_CRITICAL:
+                criticals += 1
+                # A route change would switch the primary provider. Without measured
+                # fallback health we cannot auto-authorise it — escalate for approval.
+                if auto_routing and fallback:
+                    decision_type = 'failover_recommended'
+                    approval_required = False
+                    triggered_rule = ','.join(source.get('triggered_rules') or []) or 'critical_health'
+                    summary_txt = f"{source.get('name')}: critical health; approved fallback route recommended."
+                    failovers_recommended += 1
+                else:
+                    decision_type = 'escalation_created'
+                    approval_required = True
+                    triggered_rule = 'no_approved_fallback' if not fallback else 'auto_routing_disabled'
+                    summary_txt = f"{source.get('name')}: critical health; engineering escalation created."
+                    escalations += 1
+            else:
+                warnings += 1
+                decision_type = 'warning_opened'
+                approval_required = False
+                triggered_rule = ','.join(source.get('triggered_rules') or []) or 'degraded_health'
+                summary_txt = f"{source.get('name')}: degraded source health warning opened."
+
+            decision_id = _record_source_agent_decision(
+                connection,
+                workspace_id=workspace_id,
+                target_id=source.get('target_id'),
+                system_id=source.get('system_id'),
+                provider_id=primary or fallback,
+                decision_type=decision_type,
+                triggered_rule=triggered_rule,
+                status_value='pending_approval' if approval_required else 'recorded',
+                approval_required=approval_required,
+                confidence=str(enrichment.get('agent', {}).get('confidence') or 'medium'),
+                health_status=health_status,
+                health_score=source.get('health_score'),
+                previous_route=primary,
+                new_route=fallback if decision_type == 'failover_recommended' else None,
+                input_snapshot=snapshot,
+                correlation_id=correlation_id,
+                actor_type='agent',
+                actor_user_id=str(user['id']),
+                summary=summary_txt,
+            )
+            recorded.append({'id': decision_id, 'decision_type': decision_type, 'target_id': source.get('target_id')})
+
+        # Always record a completion decision summarising the run (evidence-backed).
+        completion_snapshot = {
+            'summary': enrichment.get('summary'),
+            'sources_evaluated': len(sources),
+            'warnings': warnings,
+            'criticals': criticals,
+            'escalations': escalations,
+            'failovers_recommended': failovers_recommended,
+            'auto_routing_enabled': auto_routing,
+        }
+        completion_id = _record_source_agent_decision(
+            connection,
+            workspace_id=workspace_id,
+            decision_type='health_check_completed',
+            triggered_rule='manual_health_check',
+            input_snapshot=completion_snapshot,
+            confidence=str(enrichment.get('agent', {}).get('confidence') or 'medium'),
+            correlation_id=correlation_id,
+            actor_type='agent',
+            actor_user_id=str(user['id']),
+            summary=(
+                f"Health check evaluated {len(sources)} source(s): "
+                f"{criticals} critical, {warnings} warning."
+            ),
+        )
+        log_audit(
+            connection,
+            action='source.health_check.run',
+            entity_type='workspace_source_settings',
+            entity_id=workspace_id,
+            request=request,
+            user_id=user['id'],
+            workspace_id=workspace_id,
+            metadata={
+                'correlation_id': correlation_id,
+                'sources_evaluated': len(sources),
+                'criticals': criticals,
+                'warnings': warnings,
+                'escalations': escalations,
+            },
+        )
+        connection.commit()
+
+    _publish_source_event(workspace_id, 'source.health.updated', {
+        'correlation_id': correlation_id,
+        'criticals': criticals,
+        'warnings': warnings,
+    })
+    for item in recorded:
+        if item['decision_type'] in {'failover_recommended', 'escalation_created'}:
+            _publish_source_event(workspace_id, 'agent.recommendation.created', {
+                'decision_id': item['id'], 'target_id': item['target_id'],
+            })
+
+    return {
+        'ran_at': utc_now_iso(),
+        'correlation_id': correlation_id,
+        'completion_decision_id': completion_id,
+        'sources_evaluated': len(enrichment.get('sources', [])),
+        'criticals': criticals,
+        'warnings': warnings,
+        'escalations': escalations,
+        'failovers_recommended': failovers_recommended,
+        'decisions_recorded': len(recorded) + 1,
+    }
+
+
+# Manual health-check / diagnostic rate limit: at most one run per workspace every
+# few seconds, enforced from the durable decision log so it holds across replicas.
+_SOURCE_HEALTH_CHECK_MIN_INTERVAL_SECONDS = 5
+
+
+def _rate_limit_source_health_check(connection: Any, *, workspace_id: str, user_id: str) -> None:
+    try:
+        row = connection.execute(
+            '''
+            SELECT created_at FROM source_agent_decisions
+            WHERE workspace_id = %s::uuid AND decision_type = 'health_check_completed'
+            ORDER BY created_at DESC LIMIT 1
+            ''',
+            (workspace_id,),
+        ).fetchone()
+    except Exception:
+        return
+    last = _coerce_datetime((row or {}).get('created_at')) if row else None
+    if last is None:
+        return
+    elapsed = (utc_now() - _as_aware_utc(last)).total_seconds()
+    if elapsed < _SOURCE_HEALTH_CHECK_MIN_INTERVAL_SECONDS:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail='A health check ran moments ago. Please wait a few seconds before retrying.',
+        )
+
+
+def _as_aware_utc(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
 def create_asset(payload: dict[str, Any], request: Request) -> dict[str, Any]:

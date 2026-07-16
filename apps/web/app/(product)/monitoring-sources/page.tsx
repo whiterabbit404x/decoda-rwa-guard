@@ -1,8 +1,9 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { connectAlertStream, type AlertStreamStatus } from '../../alert-stream-client';
 import {
   EmptyStateBlocker,
   StatusPill,
@@ -13,154 +14,41 @@ import {
 import { usePilotAuth } from '../../pilot-auth-context';
 import { useRuntimeSummary } from '../../runtime-summary-context';
 import RuntimeSummaryPanel from '../../runtime-summary-panel';
+import { SourceOptimizationAgentPanel } from './agent-panel';
+import { DecisionEvidenceDrawer, SourceDetailDrawer } from './detail-drawer';
+import { SummaryCards } from './summary-cards';
+import {
+  fmtExact,
+  fmtLatency,
+  fmtRelative,
+  type AgentDecision,
+  type AgentState,
+  type MonitoredSystemRow,
+  type ProviderHealthSummary,
+  type SourceRow,
+  type SourceSettings,
+  type SourceSummary,
+  type SourcesPayload,
+} from './source-types';
 
-type TabKey = 'targets' | 'systems' | 'providers';
+type TabKey = 'targets' | 'systems';
 
-type AssetRow = {
-  id: string;
-  name?: string;
-};
+const PAGE_SIZE = 8;
+const POLL_INTERVAL_MS = 30_000;
 
-type TargetRow = {
-  id: string;
-  name?: string;
-  target_type?: string;
-  provider?: string;
-  enabled?: boolean;
-  monitoring_enabled?: boolean;
-  last_checked_at?: string | null;
-  health_status?: string | null;
-  next_action?: string | null;
-  monitored_system_id?: string | null;
-  systems_count?: number;
-};
-
-type MonitoredSystemRow = {
-  id: string;
-  asset_name?: string;
-  target_name?: string;
-  target_id?: string;
-  is_enabled?: boolean;
-  runtime_status?: string | null;
-  last_heartbeat?: string | null;
-  last_event_at?: string | null;
-  coverage_reason?: string | null;
-  freshness_status?: string | null;
-  evidence_source?: string | null;
-};
-
-// Canonical monitoring-source row (backend-derived; every value comes from real records).
-type SourceRow = {
-  target_id: string;
-  system_id?: string | null;
-  name?: string;
-  asset_id?: string | null;
-  asset_name?: string | null;
-  network?: string | null;
-  chain_id?: number | string | null;
-  address?: string | null;
-  address_kind?: 'contract' | 'wallet' | null;
-  provider?: string | null;
-  primary_provider?: string | null;
-  fallback_provider?: string | null;
-  source_type?: string | null;
-  status?: string | null;
-  status_reason?: string | null;
-  runtime_status?: string | null;
-  latest_block?: number | null;
-  block_lag?: number | null;
-  median_latency_ms?: number | null;
-  last_poll_at?: string | null;
-  last_telemetry_at?: string | null;
-  routing?: 'primary' | 'fallback' | null;
-  routing_explanation?: string | null;
-  coverage_state?: string | null;
-  evidence_source?: string | null;
-  enabled?: boolean;
-  monitoring_enabled?: boolean;
-};
-
-type ProviderHealthRow = {
-  host: string;
-  status?: string | null;
-  latency_ms?: number | null;
-  checked_at?: string | null;
-  evidence_source?: string | null;
-  target_count?: number;
-};
-
-type ProviderHealthSummary = {
-  providers: ProviderHealthRow[];
-  healthy_count: number;
-  degraded_count: number;
-  unknown_count: number;
-  total: number;
-};
-
-type AgentRecommendation = { kind: string; detail: string; target_id?: string };
-
-type AgentState = {
-  state: string;
-  healthy_providers: number;
-  degraded_providers: number;
-  missing_target_links: number;
-  primary_provider?: string | null;
-  recommended_fallback?: string | null;
-  latest_routing_decision?: string | null;
-  confidence: string;
-  confidence_basis?: string | null;
-  recommendations: AgentRecommendation[];
-};
-
-type SourcesPayload = {
-  assets?: AssetRow[];
-  targets?: TargetRow[];
-  systems?: MonitoredSystemRow[];
-  sources?: SourceRow[];
-  provider_health?: ProviderHealthSummary | null;
-  agent?: AgentState | null;
-};
-
-function fmt(value?: string | null): string {
-  if (!value) return '—';
-
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return '—';
-
-  const diff = Date.now() - parsed.getTime();
-  if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`;
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-
-  return parsed.toLocaleDateString();
-}
-
-function fmtBlock(value?: number | null): string {
-  if (value == null) return '—';
-  return `#${value.toLocaleString()}`;
-}
-
-function fmtLatency(value?: number | null): string {
-  if (value == null) return '—';
-  return `${value.toLocaleString()} ms`;
-}
-
-function shortAddress(value?: string | null): string {
-  if (!value) return '—';
-  if (value.length <= 14) return value;
-  return `${value.slice(0, 8)}…${value.slice(-4)}`;
-}
-
-// Map the canonical source-status vocabulary to a truthful badge. Unknown/absent statuses are
-// never rendered as "healthy" — they fall through to a neutral state.
+// ── Truthful status/badge helpers ────────────────────────────────────────────
 const SOURCE_STATUS_LABELS: Record<string, { label: string; variant: PillVariant }> = {
   healthy: { label: 'Healthy', variant: 'success' },
   provisioning: { label: 'Provisioning', variant: 'info' },
   warning: { label: 'Warning', variant: 'warning' },
   degraded: { label: 'Degraded', variant: 'warning' },
-  failed: { label: 'Failed', variant: 'danger' },
+  failed: { label: 'Critical', variant: 'danger' },
+  critical: { label: 'Critical', variant: 'danger' },
+  failover_active: { label: 'Failover Active', variant: 'warning' },
+  paused: { label: 'Paused', variant: 'neutral' },
   disabled: { label: 'Disabled', variant: 'neutral' },
-  missing_configuration: { label: 'Missing configuration', variant: 'danger' },
+  missing_configuration: { label: 'Configuration Required', variant: 'danger' },
+  unknown: { label: 'Unknown', variant: 'neutral' },
 };
 
 function sourceStatusBadge(status?: string | null): { label: string; variant: PillVariant } {
@@ -171,55 +59,47 @@ function sourceStatusBadge(status?: string | null): { label: string; variant: Pi
 function routingBadge(source: SourceRow): { label: string; variant: PillVariant } {
   if (source.routing === 'primary') return { label: 'Primary', variant: 'info' };
   if (source.routing === 'fallback') return { label: 'Fallback', variant: 'warning' };
-  return { label: 'Unrouted', variant: 'neutral' };
+  if (!source.enabled && !source.monitoring_enabled) return { label: 'Disabled', variant: 'neutral' };
+  return { label: 'Standby', variant: 'neutral' };
 }
 
-function coverageBadge(source: SourceRow): { label: string; variant: PillVariant } {
-  const raw = (source.coverage_state ?? '').trim().toLowerCase();
-  if (!raw) return { label: '—', variant: 'neutral' };
-  if (raw === 'reporting' || raw === 'covered' || raw === 'full') return { label: 'Reporting', variant: 'success' };
-  if (raw === 'stale') return { label: 'Stale', variant: 'warning' };
-  if (raw === 'partial') return { label: 'Partial', variant: 'warning' };
-  if (raw === 'silent' || raw === 'missing') return { label: 'Silent', variant: 'danger' };
-  if (raw === 'unavailable') return { label: 'Unavailable', variant: 'neutral' };
-  // Fall back to a humanized reason string without asserting a positive coverage state.
-  return { label: raw.replace(/_/g, ' '), variant: 'neutral' };
+function healthScoreCell(source: SourceRow) {
+  if (source.health_score == null) {
+    return <span className="muted" title="No live health evidence received">No live evidence</span>;
+  }
+  const score = source.health_score;
+  const color = score >= 80 ? 'var(--success-fg)' : score >= 50 ? 'var(--warning-fg)' : 'var(--danger-fg)';
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
+      <span style={{ fontWeight: 700, color }}>{score.toFixed(0)}</span>
+      <span aria-hidden style={{ width: 34, height: 5, borderRadius: 3, background: 'var(--surface-subtle, rgba(148,163,184,0.25))', position: 'relative', overflow: 'hidden' }}>
+        <span style={{ position: 'absolute', inset: 0, width: `${Math.max(4, Math.min(100, score))}%`, background: color }} />
+      </span>
+    </span>
+  );
 }
 
-function evidenceBadge(evidence?: string | null): { label: string; variant: PillVariant } {
-  const raw = (evidence ?? 'none').trim().toLowerCase();
-  if (raw === 'live') return { label: 'live', variant: 'success' };
-  if (raw === 'simulator' || raw === 'replay') return { label: raw, variant: 'info' };
-  return { label: 'none', variant: 'neutral' };
-}
-
-// ── Monitored Systems tab (runtime-focused) ──────────────────────────────────
+// ── Monitored Systems tab helpers (runtime-focused, fail-closed) ─────────────
 function runtimeStatusPill(system: MonitoredSystemRow): { label: string; variant: PillVariant } {
   if (!system.is_enabled) return { label: 'Disabled', variant: 'neutral' };
   if (!system.last_heartbeat) return { label: 'Provisioning', variant: 'info' };
-
   const runtimeStatus = (system.runtime_status ?? '').toLowerCase();
-
   if (runtimeStatus === 'healthy' || runtimeStatus === 'reporting') return { label: 'Reporting', variant: 'success' };
   if (runtimeStatus === 'degraded') return { label: 'Degraded', variant: 'warning' };
   if (runtimeStatus === 'failed' || runtimeStatus === 'offline') return { label: 'Failed', variant: 'danger' };
   if (runtimeStatus === 'provisioning' || runtimeStatus === 'idle') return { label: 'Provisioning', variant: 'info' };
-
   return { label: 'Unknown', variant: 'neutral' };
 }
 
 function coveragePill(system: MonitoredSystemRow): { label: string; variant: PillVariant } {
   if (!system.is_enabled) return { label: 'Missing', variant: 'danger' };
   if (!system.last_heartbeat) return { label: 'Unknown', variant: 'neutral' };
-
   const coverageReason = (system.coverage_reason ?? '').toLowerCase();
-
   if (coverageReason === 'covered' || coverageReason === 'full') return { label: 'Covered', variant: 'success' };
   if (coverageReason === 'partial') return { label: 'Partial', variant: 'warning' };
   if (coverageReason === 'stale') return { label: 'Stale', variant: 'warning' };
   if (coverageReason === 'missing') return { label: 'Missing', variant: 'danger' };
   if (system.last_event_at) return { label: 'Partial', variant: 'warning' };
-
   return { label: 'Unknown', variant: 'neutral' };
 }
 
@@ -233,251 +113,394 @@ function resolveEvidenceSource(system: MonitoredSystemRow): { label: string; var
   return { label: 'none', variant: 'neutral' };
 }
 
-const SOURCE_HEADERS = [
-  'Source', 'Asset', 'Network', 'Chain ID', 'Address', 'Provider', 'Type', 'Status',
-  'Latest Block', 'Block Lag', 'Median Latency', 'Last Poll', 'Last Telemetry', 'Routing', 'Coverage', 'Actions',
+function systemType(system: MonitoredSystemRow): string {
+  const raw = (system.system_type ?? '').toLowerCase();
+  if (raw) return raw;
+  const name = (system.asset_name ?? system.target_name ?? '').toLowerCase();
+  if (name.includes('oracle')) return 'Oracle feed';
+  if (name.includes('ws') || name.includes('websocket')) return 'WebSocket';
+  if (name.includes('custod')) return 'Custodian API';
+  return 'RPC endpoint';
+}
+
+const TARGET_HEADERS = [
+  'Target / System', 'Network', 'Source Provider', 'Role', 'Status', 'Health Score',
+  'P95 Latency', 'Block Lag', 'Error Rate', 'Last Event', 'Last Heartbeat', 'Routing', 'Actions',
 ];
 
 const SYSTEM_HEADERS = [
-  'System Name', 'Linked Target', 'Enabled', 'Runtime Status', 'Last Heartbeat', 'Last Telemetry', 'Coverage State', 'Evidence Source',
+  'System', 'Type', 'Environment', 'Provider', 'Status', 'Availability',
+  'Response Time', 'Last Successful Check', 'Last Failure', 'Current Route', 'Actions',
 ];
-
-const PROVIDER_HEADERS = ['Provider', 'Status', 'Median Latency', 'Last Check', 'Evidence', 'Sources'];
 
 const TABS = [
   { key: 'targets', label: 'Monitoring Targets' },
   { key: 'systems', label: 'Monitored Systems' },
-  { key: 'providers', label: 'Provider Health' },
 ];
 
-function confidenceVariant(confidence: string): PillVariant {
-  switch (confidence.toLowerCase()) {
-    case 'high': return 'success';
-    case 'medium': return 'warning';
-    case 'low': return 'danger';
-    default: return 'neutral';
-  }
-}
+type SortKey = 'name' | 'health' | 'latency' | 'lag' | 'error' | 'heartbeat';
 
-function agentStateLabel(state: string): { label: string; variant: PillVariant } {
-  switch (state) {
-    case 'monitoring': return { label: 'Monitoring', variant: 'success' };
-    case 'provisioning': return { label: 'Provisioning', variant: 'info' };
-    case 'attention_required': return { label: 'Attention required', variant: 'warning' };
-    default: return { label: 'Idle', variant: 'neutral' };
+function streamStatusPill(status: AlertStreamStatus): { label: string; variant: PillVariant } {
+  switch (status) {
+    case 'live': return { label: 'Live', variant: 'success' };
+    case 'reconnecting': return { label: 'Reconnecting…', variant: 'warning' };
+    case 'polling-fallback': return { label: 'Polling', variant: 'info' };
+    default: return { label: 'Offline', variant: 'neutral' };
   }
 }
 
 export default function MonitoringSourcesPage() {
   const [activeTab, setActiveTab] = useState<TabKey>('targets');
-  const [assets, setAssets] = useState<AssetRow[]>([]);
-  const [targets, setTargets] = useState<TargetRow[]>([]);
   const [systems, setSystems] = useState<MonitoredSystemRow[]>([]);
   const [sources, setSources] = useState<SourceRow[]>([]);
   const [providerHealth, setProviderHealth] = useState<ProviderHealthSummary | null>(null);
   const [agent, setAgent] = useState<AgentState | null>(null);
-  const [loadError, setLoadError] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [busyTargetId, setBusyTargetId] = useState<string | null>(null);
-  const [actionError, setActionError] = useState('');
-  const [repairing, setRepairing] = useState(false);
-  const [repairResult, setRepairResult] = useState('');
-  const [showRouting, setShowRouting] = useState(false);
+  const [summary, setSummary] = useState<SourceSummary | null>(null);
+  const [decisions, setDecisions] = useState<AgentDecision[]>([]);
+  const [settings, setSettings] = useState<SourceSettings | null>(null);
+  const [assetsCount, setAssetsCount] = useState(0);
+  const [targetsCount, setTargetsCount] = useState(0);
 
-  const { authHeaders } = usePilotAuth();
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [actionError, setActionError] = useState('');
+  const [lastRefreshed, setLastRefreshed] = useState<string | null>(null);
+  const [streamStatus, setStreamStatus] = useState<AlertStreamStatus>('polling-fallback');
+
+  // Filters / search / sort / pagination.
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [networkFilter, setNetworkFilter] = useState('all');
+  const [providerFilter, setProviderFilter] = useState('all');
+  const [routingFilter, setRoutingFilter] = useState('all');
+  const [sortKey, setSortKey] = useState<SortKey>('health');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const [page, setPage] = useState(1);
+
+  // Action state.
+  const [busyTargetId, setBusyTargetId] = useState<string | null>(null);
+  const [autoRoutingBusy, setAutoRoutingBusy] = useState(false);
+  const [healthCheckBusy, setHealthCheckBusy] = useState(false);
+  const [healthCheckResult, setHealthCheckResult] = useState('');
+  const [selectedSource, setSelectedSource] = useState<SourceRow | null>(null);
+  const [selectedDecision, setSelectedDecision] = useState<AgentDecision | null>(null);
+  const [mobileAgentOpen, setMobileAgentOpen] = useState(false);
+
+  const { authHeaders, refreshCsrfToken } = usePilotAuth();
   const { refresh: refreshRuntimeSummary } = useRuntimeSummary();
 
+  const applyPayload = useCallback((payload: SourcesPayload) => {
+    setSystems(payload.systems ?? []);
+    setSources(payload.sources ?? []);
+    setProviderHealth(payload.provider_health ?? null);
+    setAgent(payload.agent ?? null);
+    setSummary(payload.summary ?? null);
+    setDecisions(payload.decisions ?? []);
+    setSettings(payload.settings ?? null);
+    setAssetsCount((payload.assets ?? []).length);
+    setTargetsCount((payload.targets ?? []).length);
+    setLastRefreshed(payload.server_time ?? new Date().toISOString());
+  }, []);
+
   const loadSources = useCallback(
-    async (signal?: AbortSignal) => {
-      setLoading(true);
+    async (signal?: AbortSignal, opts?: { quiet?: boolean }) => {
+      if (!opts?.quiet) setLoading(true);
       try {
-        const response = await fetch('/api/monitoring/sources', {
-          headers: authHeaders(),
-          cache: 'no-store',
-          signal,
-        });
+        const response = await fetch('/api/monitoring/sources', { headers: authHeaders(), cache: 'no-store', signal });
         const payload: SourcesPayload = await response.json().catch(() => ({}));
         if (!response.ok) {
-          const detail = typeof payload === 'object' && payload && 'detail' in payload && typeof (payload as { detail?: unknown }).detail === 'string'
-            ? (payload as { detail: string }).detail
-            : `HTTP ${response.status}`;
-          setLoadError(`Unable to load monitoring sources: ${detail}`);
+          const detail = (payload as { detail?: unknown }).detail;
+          setLoadError(`Unable to load monitoring sources: ${typeof detail === 'string' ? detail : `HTTP ${response.status}`}`);
           return;
         }
-        setAssets(payload.assets ?? []);
-        setTargets(payload.targets ?? []);
-        setSystems(payload.systems ?? []);
-        setSources(payload.sources ?? []);
-        setProviderHealth(payload.provider_health ?? null);
-        setAgent(payload.agent ?? null);
+        applyPayload(payload);
         setLoadError('');
       } catch (error) {
         if ((error as { name?: string }).name === 'AbortError') return;
         setLoadError(`Network error loading monitoring sources: ${error instanceof Error ? error.message : 'unknown error'}`);
       } finally {
-        setLoading(false);
+        if (!opts?.quiet) setLoading(false);
       }
     },
-    [authHeaders],
+    [authHeaders, applyPayload],
   );
 
+  // Initial load + read tab from URL.
   useEffect(() => {
     const controller = new AbortController();
     void loadSources(controller.signal);
+    if (typeof window !== 'undefined') {
+      const tabParam = new URLSearchParams(window.location.search).get('tab');
+      if (tabParam === 'systems' || tabParam === 'targets') setActiveTab(tabParam);
+    }
     return () => controller.abort();
   }, [loadSources]);
 
-  // After any activation/repair mutation, invalidate the global runtime summary so the setup
-  // banner, workspace health, and rule counts reflect the newly linked records.
+  // Persist selected tab to the URL query string (no full navigation).
+  const changeTab = useCallback((key: TabKey) => {
+    setActiveTab(key);
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      url.searchParams.set('tab', key);
+      window.history.replaceState(null, '', url.toString());
+    }
+  }, []);
+
+  // Live updates via the shared Redis-backed SSE backbone; refetch canonical data
+  // on each source event (replay-safe — the DB is the source of truth, so a
+  // replayed event only triggers an idempotent refetch, never a duplicate record).
+  const refetchRef = useRef(loadSources);
+  refetchRef.current = loadSources;
+  useEffect(() => {
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+    const disconnect = connectAlertStream(
+      authHeaders(),
+      {
+        onConnected: () => setStreamStatus('live'),
+        onHeartbeat: () => undefined,
+        onStatusChange: (status) => setStreamStatus(status),
+        onEvent: (event) => {
+          const payload = event.payload as { type?: string } | null;
+          if (payload && payload.type === 'source') {
+            if (debounce) clearTimeout(debounce);
+            debounce = setTimeout(() => void refetchRef.current(undefined, { quiet: true }), 400);
+          }
+        },
+      },
+      '/api/stream/sources',
+    );
+    return () => {
+      if (debounce) clearTimeout(debounce);
+      disconnect();
+    };
+  }, [authHeaders]);
+
+  // Polling fallback: only poll when the live stream is NOT connected.
+  useEffect(() => {
+    if (streamStatus === 'live') return;
+    const id = setInterval(() => void loadSources(undefined, { quiet: true }), POLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [streamStatus, loadSources]);
+
   const refreshAll = useCallback(async () => {
     await loadSources();
     await refreshRuntimeSummary().catch(() => undefined);
   }, [loadSources, refreshRuntimeSummary]);
 
-  async function handleEnableTarget(targetId: string) {
-    setBusyTargetId(targetId);
+  // ── Mutations ───────────────────────────────────────────────
+  async function mutate(url: string, method: 'POST' | 'PUT', body?: unknown): Promise<Response> {
+    await refreshCsrfToken().catch(() => undefined);
+    return fetch(url, {
+      method,
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  }
+
+  async function handleToggleAutoRouting() {
+    if (!settings) return;
+    setAutoRoutingBusy(true);
     setActionError('');
-    const url = `/api/monitoring/targets/${encodeURIComponent(targetId)}/enable`;
     try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        cache: 'no-store',
+      const response = await mutate('/api/monitoring/sources/settings', 'PUT', {
+        auto_routing_enabled: !settings.auto_routing_enabled,
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const detailObj = (payload as { detail?: unknown }).detail;
-        const detail =
-          typeof detailObj === 'string'
-            ? detailObj
-            : typeof detailObj === 'object' && detailObj !== null
-              ? ((detailObj as { message?: string }).message ?? `HTTP ${response.status}`)
-              : `HTTP ${response.status}`;
-        setActionError(`Enable failed: ${detail}`);
+        const detail = (payload as { detail?: unknown }).detail;
+        setActionError(`Auto-Routing update failed: ${typeof detail === 'string' ? detail : `HTTP ${response.status}`}`);
         return;
       }
-      await refreshAll();
+      if ((payload as { settings?: SourceSettings }).settings) {
+        setSettings((payload as { settings: SourceSettings }).settings);
+      }
+      await loadSources(undefined, { quiet: true });
     } catch (error) {
-      setActionError(`Network error enabling target: ${error instanceof Error ? error.message : 'unknown error'}`);
+      setActionError(`Network error updating Auto-Routing: ${error instanceof Error ? error.message : 'unknown error'}`);
     } finally {
-      setBusyTargetId(null);
+      setAutoRoutingBusy(false);
     }
   }
 
-  async function handleDisableTarget(targetId: string) {
-    setBusyTargetId(targetId);
+  async function handleRunHealthCheck() {
+    setHealthCheckBusy(true);
     setActionError('');
-    const url = `/api/monitoring/targets/${encodeURIComponent(targetId)}/disable`;
+    setHealthCheckResult('');
     try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        cache: 'no-store',
-      });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        const detail = typeof (payload as { detail?: unknown }).detail === 'string' ? (payload as { detail: string }).detail : `HTTP ${response.status}`;
-        setActionError(`Disable failed: ${detail}`);
-        return;
-      }
-      await refreshAll();
-    } catch (error) {
-      setActionError(`Network error disabling target: ${error instanceof Error ? error.message : 'unknown error'}`);
-    } finally {
-      setBusyTargetId(null);
-    }
-  }
-
-  // "Repair monitored systems" — reconcile the workspace so every enabled target is bridged to
-  // a monitored system, links are resolved by contract address + chain, and an audit row is
-  // written on the backend. Then refetch canonical data everywhere.
-  async function handleRepair() {
-    setRepairing(true);
-    setRepairResult('');
-    setActionError('');
-    try {
-      const response = await fetch('/api/monitoring/systems/reconcile', {
-        method: 'POST',
-        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        cache: 'no-store',
-      });
+      const response = await mutate('/api/monitoring/sources/health-check', 'POST');
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const detail = typeof (payload as { detail?: unknown }).detail === 'string' ? (payload as { detail: string }).detail : `HTTP ${response.status}`;
-        setRepairResult(`Repair failed: ${detail}`);
+        const detail = (payload as { detail?: unknown }).detail;
+        setActionError(`Health check failed: ${typeof detail === 'string' ? detail : `HTTP ${response.status}`}`);
         return;
       }
-      const reconcile = ((payload as { reconcile?: Record<string, unknown> }).reconcile ?? payload) as Record<string, unknown>;
-      const relinked = Number(reconcile.targets_relinked ?? 0);
-      const created = Number(reconcile.assets_created ?? 0);
-      const updated = Number(reconcile.created_or_updated ?? reconcile.eligible_targets ?? 0);
-      setRepairResult(
-        `Repair complete: ${relinked} target(s) relinked, ${created} asset(s) created, ${updated} monitored system(s) updated.`,
+      const p = payload as { sources_evaluated?: number; criticals?: number; warnings?: number };
+      setHealthCheckResult(
+        `Health check evaluated ${p.sources_evaluated ?? 0} source(s): ${p.criticals ?? 0} critical, ${p.warnings ?? 0} warning.`,
       );
       await refreshAll();
     } catch (error) {
-      setRepairResult(`Network error during repair: ${error instanceof Error ? error.message : 'unknown error'}`);
+      setActionError(`Network error running health check: ${error instanceof Error ? error.message : 'unknown error'}`);
     } finally {
-      setRepairing(false);
+      setHealthCheckBusy(false);
     }
   }
 
-  const noAssets = !loading && assets.length === 0;
-  const hasAssetsNoTargets = !loading && assets.length > 0 && targets.length === 0;
+  async function handleToggleTarget(source: SourceRow) {
+    const targetId = source.target_id;
+    const enable = !(source.enabled || source.monitoring_enabled);
+    setBusyTargetId(targetId);
+    setActionError('');
+    try {
+      const response = await mutate(
+        `/api/monitoring/targets/${encodeURIComponent(targetId)}/${enable ? 'enable' : 'disable'}`,
+        'POST',
+      );
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        const detail = (payload as { detail?: unknown }).detail;
+        setActionError(`${enable ? 'Enable' : 'Disable'} failed: ${typeof detail === 'string' ? detail : `HTTP ${response.status}`}`);
+        return;
+      }
+      await refreshAll();
+    } catch (error) {
+      setActionError(`Network error: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      setBusyTargetId(null);
+    }
+  }
 
-  const firstTelemetryTargetId = useMemo(
-    () => sources.find((s) => s.system_id)?.target_id ?? sources[0]?.target_id ?? null,
+  // ── Derived: filter options + filtered/sorted/paged sources ──
+  const networkOptions = useMemo(
+    () => Array.from(new Set(sources.map((s) => s.network).filter(Boolean))) as string[],
     [sources],
+  );
+  const providerOptions = useMemo(
+    () => Array.from(new Set(sources.map((s) => s.provider || s.primary_provider).filter(Boolean))) as string[],
+    [sources],
+  );
+  const statusOptions = useMemo(
+    () => Array.from(new Set(sources.map((s) => (s.status ?? '').toLowerCase()).filter(Boolean))),
+    [sources],
+  );
+
+  const filteredSources = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const filtered = sources.filter((s) => {
+      if (statusFilter !== 'all' && (s.status ?? '').toLowerCase() !== statusFilter) return false;
+      if (networkFilter !== 'all' && s.network !== networkFilter) return false;
+      if (providerFilter !== 'all' && (s.provider || s.primary_provider) !== providerFilter) return false;
+      if (routingFilter !== 'all') {
+        const role = s.routing ?? 'standby';
+        if (routingFilter === 'unrouted' ? Boolean(s.routing) : role !== routingFilter) return false;
+      }
+      if (q) {
+        const haystack = [s.name, s.address, s.provider, s.primary_provider, s.network, String(s.chain_id ?? '')]
+          .join(' ')
+          .toLowerCase();
+        if (!haystack.includes(q)) return false;
+      }
+      return true;
+    });
+
+    const dir = sortDir === 'asc' ? 1 : -1;
+    const nullLast = (v: number | null | undefined) => (v == null ? Number.POSITIVE_INFINITY : v);
+    const timeVal = (v?: string | null) => (v ? new Date(v).getTime() : Number.POSITIVE_INFINITY);
+    const sorted = [...filtered].sort((a, b) => {
+      switch (sortKey) {
+        case 'health': return dir * (nullLast(b.health_score) - nullLast(a.health_score)) * -1;
+        case 'latency': return dir * (nullLast(a.median_latency_ms) - nullLast(b.median_latency_ms));
+        case 'lag': return dir * (nullLast(a.block_lag) - nullLast(b.block_lag));
+        case 'error': return dir * (nullLast(a.error_rate) - nullLast(b.error_rate));
+        case 'heartbeat': return dir * (timeVal(a.last_heartbeat) - timeVal(b.last_heartbeat));
+        default: return dir * (a.name ?? '').localeCompare(b.name ?? '');
+      }
+    });
+    return sorted;
+  }, [sources, search, statusFilter, networkFilter, providerFilter, routingFilter, sortKey, sortDir]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredSources.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pagedSources = filteredSources.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
+  // Reset to first page whenever the filter set changes.
+  useEffect(() => setPage(1), [search, statusFilter, networkFilter, providerFilter, routingFilter, sortKey, sortDir]);
+
+  const routingHistoryForSelected = useMemo(
+    () => (selectedSource ? decisions.filter((d) => d.target_id === selectedSource.target_id) : []),
+    [decisions, selectedSource],
+  );
+
+  const noAssets = !loading && assetsCount === 0;
+  const hasAssetsNoTargets = !loading && assetsCount > 0 && targetsCount === 0;
+  const streamPill = streamStatusPill(streamStatus);
+
+  const agentPanel = (
+    <SourceOptimizationAgentPanel
+      agent={agent}
+      providerHealth={providerHealth}
+      summary={summary}
+      settings={settings}
+      decisions={decisions}
+      loading={loading}
+      autoRoutingBusy={autoRoutingBusy}
+      healthCheckBusy={healthCheckBusy}
+      onToggleAutoRouting={() => void handleToggleAutoRouting()}
+      onRunHealthCheck={() => void handleRunHealthCheck()}
+      onOpenDecision={(decision) => setSelectedDecision(decision)}
+    />
   );
 
   return (
     <main className="productPage">
       <RuntimeSummaryPanel />
 
-      <div className="listHeader" style={{ marginBottom: '1.25rem', alignItems: 'flex-start' }}>
+      {/* ── Header ─────────────────────────────────────────── */}
+      <div className="listHeader" style={{ marginBottom: '1rem', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.75rem' }}>
         <div>
           <h1 style={{ margin: 0, fontSize: '1.45rem', fontWeight: 700 }}>Monitoring Sources</h1>
           <p className="muted" style={{ margin: '0.35rem 0 0', fontSize: '0.9rem' }}>
-            Targets, monitored systems, and provider health for this workspace. Every value is derived from canonical backend records.
+            Continuously monitor provider health, ingestion coverage, routing status, and telemetry reliability.
           </p>
         </div>
-
-        <Link href="/monitoring-sources/targets" prefetch={false} className="btn btn-primary">
-          Add Target
-        </Link>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <span title={fmtExact(lastRefreshed)} style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+            Last refreshed {fmtRelative(lastRefreshed)}
+          </span>
+          <StatusPill label={streamPill.label} variant={streamPill.variant} />
+          <button type="button" className="btn btn-secondary" style={{ fontSize: '0.8rem' }} disabled={healthCheckBusy} onClick={() => void handleRunHealthCheck()}>
+            {healthCheckBusy ? 'Running…' : 'Run Health Check'}
+          </button>
+          <Link href="/monitoring-sources/targets" prefetch={false} className="btn btn-primary" style={{ fontSize: '0.8rem' }}>
+            Add Source
+          </Link>
+        </div>
       </div>
 
-      {loadError ? (
-        <p className="statusLine" style={{ color: 'var(--danger-fg)' }}>{loadError}</p>
-      ) : null}
-
-      {actionError ? (
-        <p className="statusLine" style={{ color: 'var(--danger-fg)', fontSize: '0.85rem' }}>{actionError}</p>
-      ) : null}
-
-      {repairResult ? (
-        <p
-          className="statusLine"
-          style={{
-            color: repairResult.startsWith('Repair failed') ? 'var(--danger-fg)' : 'var(--success-fg)',
-            fontSize: '0.85rem',
-          }}
-        >
-          {repairResult}
+      {loadError ? <p className="statusLine" style={{ color: 'var(--danger-fg)' }}>{loadError}</p> : null}
+      {actionError ? <p className="statusLine" style={{ color: 'var(--danger-fg)', fontSize: '0.85rem' }}>{actionError}</p> : null}
+      {healthCheckResult ? <p className="statusLine" style={{ color: 'var(--success-fg)', fontSize: '0.85rem' }}>{healthCheckResult}</p> : null}
+      {streamStatus === 'reconnecting' ? (
+        <p className="statusLine" style={{ color: 'var(--warning-fg)', fontSize: '0.8rem' }}>
+          Live updates are reconnecting. Data is temporarily refreshed by polling.
         </p>
       ) : null}
 
+      {/* ── Summary cards ──────────────────────────────────── */}
+      <SummaryCards summary={summary} loading={loading} />
+
       <div style={{ display: 'flex', gap: '1.25rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
-        {/* ── Main content ─────────────────────────────────────────── */}
+        {/* ── Main content ─────────────────────────────────── */}
         <div style={{ flex: '1 1 640px', minWidth: 0 }}>
-          <TabStrip tabs={TABS} active={activeTab} onChange={(key) => setActiveTab(key as TabKey)} />
+          <TabStrip tabs={TABS} active={activeTab} onChange={(key) => changeTab(key as TabKey)} />
 
           {activeTab === 'targets' ? (
             <div role="tabpanel" aria-label="Monitoring Targets">
               {noAssets ? (
                 <EmptyStateBlocker
-                  title="No protected assets yet"
-                  body="Add a protected asset before configuring monitoring sources."
+                  title="No monitoring source is configured"
+                  body="Add an RPC, oracle, custodian, or telemetry provider to begin source-health monitoring."
                   ctaHref="/assets"
                   ctaLabel="Add Asset"
                 />
@@ -489,122 +512,108 @@ export default function MonitoringSourcesPage() {
                   ctaLabel="Create monitoring target"
                 />
               ) : (
-                <TableShell headers={SOURCE_HEADERS} compact>
-                  {loading ? (
-                    <tr>
-                      <td colSpan={SOURCE_HEADERS.length} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>
-                        Loading monitoring sources…
-                      </td>
-                    </tr>
-                  ) : sources.length === 0 ? (
-                    <tr>
-                      <td colSpan={SOURCE_HEADERS.length} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>
-                        {targets.length > 0
-                          ? 'Monitoring source details are temporarily unavailable. Retry shortly.'
-                          : 'No monitoring sources found for this workspace.'}
-                      </td>
-                    </tr>
-                  ) : (
-                    sources.map((source) => {
-                      const status = sourceStatusBadge(source.status);
-                      const routing = routingBadge(source);
-                      const coverage = coverageBadge(source);
-                      const busy = busyTargetId === source.target_id;
-                      return (
-                        <tr key={source.target_id}>
-                          <td style={{ fontWeight: 600 }}>{source.name || 'Unnamed target'}</td>
-                          <td>{source.asset_name || <span className="muted">Unlinked</span>}</td>
-                          <td>{source.network || '—'}</td>
-                          <td>{source.chain_id != null ? String(source.chain_id) : '—'}</td>
-                          <td>
-                            <span style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: '0.78rem' }} title={source.address ?? undefined}>
-                              {shortAddress(source.address)}
-                            </span>
-                          </td>
-                          <td>
-                            {source.provider ? (
-                              <span style={{ fontSize: '0.8rem' }}>{source.provider}</span>
-                            ) : (
-                              <span className="muted">—</span>
-                            )}
-                          </td>
-                          <td>{source.source_type || '—'}</td>
-                          <td>
-                            <StatusPill label={status.label} variant={status.variant} />
-                            {source.status_reason && status.variant !== 'success' ? (
-                              <div className="muted" style={{ fontSize: '0.68rem', marginTop: '0.15rem' }}>
-                                {source.status_reason.replace(/_/g, ' ')}
-                              </div>
-                            ) : null}
-                          </td>
-                          <td style={{ whiteSpace: 'nowrap' }}>{fmtBlock(source.latest_block)}</td>
-                          <td style={{ whiteSpace: 'nowrap' }} title={source.block_lag == null ? 'Requires a live chain-head read' : undefined}>
-                            {source.block_lag == null ? '—' : source.block_lag.toLocaleString()}
-                          </td>
-                          <td style={{ whiteSpace: 'nowrap' }}>{fmtLatency(source.median_latency_ms)}</td>
-                          <td style={{ whiteSpace: 'nowrap' }}>{fmt(source.last_poll_at)}</td>
-                          <td style={{ whiteSpace: 'nowrap' }}>{fmt(source.last_telemetry_at)}</td>
-                          <td><StatusPill label={routing.label} variant={routing.variant} /></td>
-                          <td><StatusPill label={coverage.label} variant={coverage.variant} /></td>
-                          <td>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
-                              {source.system_id ? (
-                                <Link
-                                  href={`/monitoring-sources/${encodeURIComponent(source.target_id)}/telemetry`}
-                                  prefetch={false}
-                                  style={{ color: 'var(--text-accent)', fontSize: '0.78rem', textDecoration: 'none' }}
-                                >
-                                  Telemetry
-                                </Link>
+                <>
+                  <SourceFilters
+                    search={search}
+                    onSearch={setSearch}
+                    statusFilter={statusFilter}
+                    onStatus={setStatusFilter}
+                    statusOptions={statusOptions}
+                    networkFilter={networkFilter}
+                    onNetwork={setNetworkFilter}
+                    networkOptions={networkOptions}
+                    providerFilter={providerFilter}
+                    onProvider={setProviderFilter}
+                    providerOptions={providerOptions}
+                    routingFilter={routingFilter}
+                    onRouting={setRoutingFilter}
+                    sortKey={sortKey}
+                    onSortKey={setSortKey}
+                    sortDir={sortDir}
+                    onSortDir={setSortDir}
+                    onRefresh={() => void loadSources(undefined, { quiet: true })}
+                  />
+                  <TableShell headers={TARGET_HEADERS} compact>
+                    {loading ? (
+                      <tr>
+                        <td colSpan={TARGET_HEADERS.length} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>
+                          Loading monitoring sources…
+                        </td>
+                      </tr>
+                    ) : pagedSources.length === 0 ? (
+                      <tr>
+                        <td colSpan={TARGET_HEADERS.length} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>
+                          {sources.length === 0 ? 'No monitoring sources found for this workspace.' : 'No sources match the current filters.'}
+                        </td>
+                      </tr>
+                    ) : (
+                      pagedSources.map((source) => {
+                        const status = sourceStatusBadge(source.status);
+                        const routing = routingBadge(source);
+                        const busy = busyTargetId === source.target_id;
+                        return (
+                          <tr key={source.target_id} style={{ cursor: 'pointer' }} onClick={() => setSelectedSource(source)}>
+                            <td style={{ fontWeight: 600 }}>{source.name || 'Unnamed target'}</td>
+                            <td>{source.network || '—'}</td>
+                            <td>{source.provider || source.primary_provider || <span className="muted">—</span>}</td>
+                            <td>{source.source_type || '—'}</td>
+                            <td>
+                              <StatusPill label={status.label} variant={status.variant} />
+                              {source.status_reason && status.variant !== 'success' ? (
+                                <div className="muted" style={{ fontSize: '0.66rem', marginTop: '0.15rem' }}>{source.status_reason.replace(/_/g, ' ')}</div>
                               ) : null}
-                              {source.enabled || source.monitoring_enabled ? (
-                                <button
-                                  type="button"
-                                  className="btn btn-secondary"
-                                  style={{ fontSize: '0.75rem', padding: '0.18rem 0.55rem' }}
-                                  disabled={busy}
-                                  onClick={() => void handleDisableTarget(source.target_id)}
-                                >
-                                  {busy ? '…' : 'Disable'}
+                            </td>
+                            <td>{healthScoreCell(source)}</td>
+                            <td style={{ whiteSpace: 'nowrap' }}>{fmtLatency(source.median_latency_ms)}</td>
+                            <td style={{ whiteSpace: 'nowrap' }} title={source.block_lag == null ? 'Requires a live chain-head read' : undefined}>
+                              {source.block_lag == null ? '—' : source.block_lag.toLocaleString()}
+                            </td>
+                            <td style={{ whiteSpace: 'nowrap' }} title={source.error_rate == null ? 'Not measured by current probe path' : undefined}>
+                              {source.error_rate == null ? '—' : `${(source.error_rate * 100).toFixed(2)}%`}
+                            </td>
+                            <td style={{ whiteSpace: 'nowrap' }} title={fmtExact(source.last_telemetry_at)}>{fmtRelative(source.last_telemetry_at)}</td>
+                            <td style={{ whiteSpace: 'nowrap' }} title={fmtExact(source.last_heartbeat)}>{fmtRelative(source.last_heartbeat)}</td>
+                            <td><StatusPill label={routing.label} variant={routing.variant} /></td>
+                            <td onClick={(e) => e.stopPropagation()}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
+                                <button type="button" className="btn btn-secondary" style={{ fontSize: '0.72rem', padding: '0.16rem 0.5rem' }} onClick={() => setSelectedSource(source)}>
+                                  Details
                                 </button>
-                              ) : (
-                                <button
-                                  type="button"
-                                  className="btn btn-secondary"
-                                  style={{ fontSize: '0.75rem', padding: '0.18rem 0.55rem' }}
-                                  disabled={busy}
-                                  onClick={() => void handleEnableTarget(source.target_id)}
-                                >
-                                  {busy ? '…' : 'Enable'}
+                                {source.system_id ? (
+                                  <Link
+                                    href={`/monitoring-sources/${encodeURIComponent(source.target_id)}/telemetry`}
+                                    prefetch={false}
+                                    style={{ color: 'var(--text-accent)', fontSize: '0.72rem', textDecoration: 'none' }}
+                                  >
+                                    View telemetry
+                                  </Link>
+                                ) : null}
+                                <button type="button" className="btn btn-secondary" style={{ fontSize: '0.72rem', padding: '0.16rem 0.5rem' }} disabled={busy} onClick={() => void handleToggleTarget(source)}>
+                                  {busy ? '…' : source.enabled || source.monitoring_enabled ? 'Disable' : 'Enable'}
                                 </button>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </TableShell>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </TableShell>
+                  {filteredSources.length > PAGE_SIZE ? (
+                    <Pagination page={currentPage} totalPages={totalPages} total={filteredSources.length} onPage={setPage} />
+                  ) : null}
+                </>
               )}
             </div>
           ) : null}
 
           {activeTab === 'systems' ? (
             <div role="tabpanel" aria-label="Monitored Systems">
-              {noAssets ? (
-                <EmptyStateBlocker
-                  title="No protected assets yet"
-                  body="Add a protected asset before configuring monitoring sources."
-                  ctaHref="/assets"
-                  ctaLabel="Add Asset"
-                />
-              ) : !loading && systems.length === 0 ? (
+              {!loading && systems.length === 0 ? (
                 <EmptyStateBlocker
                   title="No monitored system is enabled yet"
                   body="Enable a monitored system to start heartbeat, polling, and telemetry collection."
-                  ctaOnClick={() => void handleRepair()}
-                  ctaLabel={repairing ? 'Repairing…' : 'Repair monitored systems'}
-                  ctaDisabled={repairing}
+                  ctaHref="/monitoring-sources/targets"
+                  ctaLabel="Configure monitoring"
                 />
               ) : (
                 <TableShell headers={SYSTEM_HEADERS} compact>
@@ -619,19 +628,19 @@ export default function MonitoringSourcesPage() {
                       const runtimeStatus = runtimeStatusPill(system);
                       const coverage = coveragePill(system);
                       const evidence = resolveEvidenceSource(system);
-                      const linkedTarget = system.target_name || 'Unlinked';
                       return (
                         <tr key={system.id}>
                           <td style={{ fontWeight: 600 }}>{system.asset_name || `System ${system.id.slice(0, 8)}`}</td>
-                          <td>{linkedTarget}</td>
-                          <td>
-                            <StatusPill label={system.is_enabled ? 'Yes' : 'No'} variant={system.is_enabled ? 'success' : 'neutral'} />
-                          </td>
+                          <td>{systemType(system)}</td>
+                          <td>{system.environment || 'production'}</td>
+                          <td>{system.target_name || <span className="muted">Unlinked</span>}</td>
                           <td><StatusPill label={runtimeStatus.label} variant={runtimeStatus.variant} /></td>
-                          <td style={{ whiteSpace: 'nowrap' }}>{fmt(system.last_heartbeat)}</td>
-                          <td style={{ whiteSpace: 'nowrap' }}>{fmt(system.last_event_at)}</td>
                           <td><StatusPill label={coverage.label} variant={coverage.variant} /></td>
+                          <td className="muted" title="Response time requires a live probe worker">—</td>
+                          <td style={{ whiteSpace: 'nowrap' }} title={fmtExact(system.last_event_at)}>{fmtRelative(system.last_event_at)}</td>
+                          <td className="muted">—</td>
                           <td><StatusPill label={evidence.label} variant={evidence.variant} /></td>
+                          <td className="muted">—</td>
                         </tr>
                       );
                     })
@@ -640,241 +649,122 @@ export default function MonitoringSourcesPage() {
               )}
             </div>
           ) : null}
-
-          {activeTab === 'providers' ? (
-            <div role="tabpanel" aria-label="Provider Health">
-              {loading ? (
-                <p className="muted" style={{ padding: '1.5rem' }}>Loading provider health…</p>
-              ) : !providerHealth || providerHealth.providers.length === 0 ? (
-                <EmptyStateBlocker
-                  title="No provider health records yet"
-                  body="Provider health appears once a monitoring source has an RPC provider configured and the worker has run a health check."
-                  ctaHref="/integrations"
-                  ctaLabel="Configure providers"
-                />
-              ) : (
-                <TableShell headers={PROVIDER_HEADERS} compact>
-                  {providerHealth.providers.map((provider) => {
-                    const raw = (provider.status ?? '').toLowerCase();
-                    const variant: PillVariant =
-                      raw === 'healthy' ? 'success'
-                        : raw === 'degraded' ? 'warning'
-                        : raw === 'unavailable' || raw === 'error' ? 'danger'
-                        : 'neutral';
-                    const label = provider.status ? provider.status[0].toUpperCase() + provider.status.slice(1) : 'Unknown';
-                    return (
-                      <tr key={provider.host}>
-                        <td style={{ fontWeight: 600, fontSize: '0.82rem' }}>{provider.host}</td>
-                        <td><StatusPill label={label} variant={variant} /></td>
-                        <td>{fmtLatency(provider.latency_ms)}</td>
-                        <td style={{ whiteSpace: 'nowrap' }}>{fmt(provider.checked_at)}</td>
-                        <td>{(() => { const e = evidenceBadge(provider.evidence_source); return <StatusPill label={e.label} variant={e.variant} />; })()}</td>
-                        <td>{provider.target_count ?? 0}</td>
-                      </tr>
-                    );
-                  })}
-                </TableShell>
-              )}
-            </div>
-          ) : null}
         </div>
 
-        {/* ── Right rail: Source Optimization Agent + Provider Health ── */}
-        <div style={{ flex: '0 1 320px', minWidth: '280px', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          <SourceOptimizationAgentPanel
-            agent={agent}
-            loading={loading}
-            repairing={repairing}
-            showRouting={showRouting}
-            onToggleRouting={() => setShowRouting((v) => !v)}
-            onRepair={() => void handleRepair()}
-            onRetest={() => void refreshAll()}
-            telemetryTargetId={firstTelemetryTargetId}
-          />
-          <ProviderHealthCard providerHealth={providerHealth} loading={loading} onViewAll={() => setActiveTab('providers')} />
-        </div>
+        {/* ── Right rail (desktop) ──────────────────────────── */}
+        <aside style={{ flex: '0 1 320px', minWidth: '280px' }} className="sourceAgentRail">
+          {agentPanel}
+        </aside>
       </div>
+
+      {/* ── Mobile agent drawer toggle ────────────────────── */}
+      <button
+        type="button"
+        className="btn btn-primary sourceAgentMobileToggle"
+        onClick={() => setMobileAgentOpen(true)}
+        style={{ position: 'fixed', bottom: 16, right: 16, zIndex: 40, display: 'none' }}
+      >
+        Agent
+      </button>
+      {mobileAgentOpen ? (
+        <div role="dialog" aria-modal="true" aria-label="Source Optimization Agent" style={{ position: 'fixed', inset: 0, zIndex: 60, display: 'flex', justifyContent: 'flex-end' }}>
+          <button type="button" aria-label="Close" onClick={() => setMobileAgentOpen(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(2,6,23,0.6)', border: 'none' }} />
+          <div style={{ position: 'relative', width: 'min(360px, 100%)', height: '100%', overflowY: 'auto', background: 'var(--surface, #0b1220)', padding: '1rem' }}>
+            <button type="button" className="btn btn-secondary" style={{ marginBottom: '0.75rem', fontSize: '0.75rem' }} onClick={() => setMobileAgentOpen(false)}>Close</button>
+            {agentPanel}
+          </div>
+        </div>
+      ) : null}
+
+      {/* ── Detail drawers ────────────────────────────────── */}
+      {selectedSource ? (
+        <SourceDetailDrawer
+          source={selectedSource}
+          routingHistory={routingHistoryForSelected}
+          onClose={() => setSelectedSource(null)}
+          onRunHealthCheck={() => void handleRunHealthCheck()}
+          healthCheckBusy={healthCheckBusy}
+        />
+      ) : null}
+      {selectedDecision ? (
+        <DecisionEvidenceDrawer decision={selectedDecision} onClose={() => setSelectedDecision(null)} />
+      ) : null}
+
+      <style>{`
+        @media (max-width: 900px) {
+          .sourceAgentRail { display: none; }
+          .sourceAgentMobileToggle { display: inline-flex !important; }
+        }
+      `}</style>
     </main>
   );
 }
 
-function StatRow({ label, value }: { label: string; value: ReactNode }) {
+// ── Filters toolbar ──────────────────────────────────────────────────────────
+function SourceFilters(props: {
+  search: string; onSearch: (v: string) => void;
+  statusFilter: string; onStatus: (v: string) => void; statusOptions: string[];
+  networkFilter: string; onNetwork: (v: string) => void; networkOptions: string[];
+  providerFilter: string; onProvider: (v: string) => void; providerOptions: string[];
+  routingFilter: string; onRouting: (v: string) => void;
+  sortKey: SortKey; onSortKey: (v: SortKey) => void;
+  sortDir: 'asc' | 'desc'; onSortDir: (v: 'asc' | 'desc') => void;
+  onRefresh: () => void;
+}) {
+  const selectStyle = { fontSize: '0.76rem', padding: '0.28rem 0.4rem', background: 'var(--surface-subtle, #0f172a)', color: 'inherit', border: '1px solid var(--border-subtle, rgba(148,163,184,0.25))', borderRadius: 6 };
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '0.5rem', padding: '0.2rem 0' }}>
-      <span className="muted" style={{ fontSize: '0.78rem' }}>{label}</span>
-      <span style={{ fontSize: '0.82rem', fontWeight: 600, textAlign: 'right' }}>{value}</span>
+    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center', margin: '0.75rem 0' }}>
+      <input
+        type="search"
+        aria-label="Search sources"
+        placeholder="Search name, address, provider, chain…"
+        value={props.search}
+        onChange={(e) => props.onSearch(e.target.value)}
+        style={{ ...selectStyle, flex: '1 1 220px', minWidth: 160 }}
+      />
+      <select aria-label="Filter by status" value={props.statusFilter} onChange={(e) => props.onStatus(e.target.value)} style={selectStyle}>
+        <option value="all">All statuses</option>
+        {props.statusOptions.map((s) => <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>)}
+      </select>
+      <select aria-label="Filter by network" value={props.networkFilter} onChange={(e) => props.onNetwork(e.target.value)} style={selectStyle}>
+        <option value="all">All networks</option>
+        {props.networkOptions.map((n) => <option key={n} value={n}>{n}</option>)}
+      </select>
+      <select aria-label="Filter by provider" value={props.providerFilter} onChange={(e) => props.onProvider(e.target.value)} style={selectStyle}>
+        <option value="all">All providers</option>
+        {props.providerOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+      </select>
+      <select aria-label="Filter by routing role" value={props.routingFilter} onChange={(e) => props.onRouting(e.target.value)} style={selectStyle}>
+        <option value="all">All routing</option>
+        <option value="primary">Primary</option>
+        <option value="fallback">Fallback</option>
+        <option value="unrouted">Unrouted</option>
+      </select>
+      <select aria-label="Sort by" value={props.sortKey} onChange={(e) => props.onSortKey(e.target.value as SortKey)} style={selectStyle}>
+        <option value="health">Sort: Health</option>
+        <option value="latency">Sort: Latency</option>
+        <option value="lag">Sort: Block lag</option>
+        <option value="error">Sort: Error rate</option>
+        <option value="heartbeat">Sort: Last heartbeat</option>
+      </select>
+      <button type="button" className="btn btn-secondary" style={{ fontSize: '0.74rem', padding: '0.24rem 0.5rem' }} onClick={() => props.onSortDir(props.sortDir === 'asc' ? 'desc' : 'asc')}>
+        {props.sortDir === 'asc' ? '↑' : '↓'}
+      </button>
+      <button type="button" className="btn btn-secondary" style={{ fontSize: '0.74rem', padding: '0.24rem 0.5rem' }} onClick={props.onRefresh}>
+        Refresh
+      </button>
     </div>
   );
 }
 
-function SourceOptimizationAgentPanel({
-  agent,
-  loading,
-  repairing,
-  showRouting,
-  onToggleRouting,
-  onRepair,
-  onRetest,
-  telemetryTargetId,
-}: {
-  agent: AgentState | null;
-  loading: boolean;
-  repairing: boolean;
-  showRouting: boolean;
-  onToggleRouting: () => void;
-  onRepair: () => void;
-  onRetest: () => void;
-  telemetryTargetId: string | null;
-}) {
-  const stateBadge = agent ? agentStateLabel(agent.state) : { label: '—', variant: 'neutral' as PillVariant };
-  const hasApprovedRoutingChange = false; // No production provider is replaced without an explicit approved change.
-
+function Pagination({ page, totalPages, total, onPage }: { page: number; totalPages: number; total: number; onPage: (p: number) => void }) {
   return (
-    <article className="dataCard" style={{ padding: '1rem' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-        <p className="sectionEyebrow" style={{ margin: 0 }}>Source Optimization Agent</p>
-        <StatusPill label={stateBadge.label} variant={stateBadge.variant} />
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.6rem', fontSize: '0.76rem' }}>
+      <span className="muted">{total} source(s) · page {page} of {totalPages}</span>
+      <div style={{ display: 'flex', gap: '0.35rem' }}>
+        <button type="button" className="btn btn-secondary" style={{ fontSize: '0.74rem', padding: '0.2rem 0.55rem' }} disabled={page <= 1} onClick={() => onPage(page - 1)}>Previous</button>
+        <button type="button" className="btn btn-secondary" style={{ fontSize: '0.74rem', padding: '0.2rem 0.55rem' }} disabled={page >= totalPages} onClick={() => onPage(page + 1)}>Next</button>
       </div>
-      <p className="muted" style={{ margin: '0 0 0.75rem', fontSize: '0.75rem' }}>
-        Diagnoses linkage, provider health, and routing from measured records. Provider replacement requires approval.
-      </p>
-
-      {loading ? (
-        <p className="muted" style={{ fontSize: '0.8rem' }}>Reading canonical monitoring state…</p>
-      ) : !agent ? (
-        <p className="muted" style={{ fontSize: '0.8rem' }}>Agent state unavailable.</p>
-      ) : (
-        <>
-          <div style={{ borderTop: '1px solid var(--border-subtle, rgba(148,163,184,0.2))', paddingTop: '0.5rem' }}>
-            <StatRow label="Healthy providers" value={agent.healthy_providers} />
-            <StatRow label="Degraded providers" value={
-              agent.degraded_providers > 0
-                ? <span style={{ color: 'var(--warning-fg)' }}>{agent.degraded_providers}</span>
-                : agent.degraded_providers
-            } />
-            <StatRow label="Missing target links" value={
-              agent.missing_target_links > 0
-                ? <span style={{ color: 'var(--danger-fg)' }}>{agent.missing_target_links}</span>
-                : 0
-            } />
-            <StatRow label="Primary provider" value={agent.primary_provider || '—'} />
-            <StatRow label="Recommended fallback" value={agent.recommended_fallback || '—'} />
-            <StatRow
-              label="Confidence"
-              value={<StatusPill label={agent.confidence} variant={confidenceVariant(agent.confidence)} />}
-            />
-          </div>
-          {agent.confidence_basis ? (
-            <p className="muted" style={{ fontSize: '0.72rem', margin: '0.4rem 0 0' }}>{agent.confidence_basis}</p>
-          ) : null}
-
-          {agent.recommendations.length > 0 ? (
-            <div style={{ marginTop: '0.75rem' }}>
-              <p className="sectionEyebrow" style={{ margin: '0 0 0.35rem', fontSize: '0.7rem' }}>Recommendations</p>
-              <ul style={{ margin: 0, paddingLeft: '1rem', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                {agent.recommendations.map((rec, index) => (
-                  <li key={`${rec.kind}-${index}`} style={{ padding: '0.15rem 0' }}>{rec.detail}</li>
-                ))}
-              </ul>
-            </div>
-          ) : (
-            <p className="muted" style={{ fontSize: '0.75rem', margin: '0.6rem 0 0' }}>
-              No linkage or routing issues detected in canonical records.
-            </p>
-          )}
-
-          {showRouting ? (
-            <div style={{ marginTop: '0.6rem', background: 'var(--surface-subtle)', borderRadius: '6px', padding: '0.5rem 0.65rem' }}>
-              <p className="sectionEyebrow" style={{ margin: '0 0 0.25rem', fontSize: '0.68rem' }}>Latest routing decision</p>
-              <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                {agent.latest_routing_decision || 'No routing benchmark recorded for these sources yet.'}
-              </p>
-            </div>
-          ) : null}
-        </>
-      )}
-
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginTop: '0.85rem' }}>
-        <button type="button" className="btn btn-primary" style={{ fontSize: '0.76rem', padding: '0.28rem 0.7rem' }} disabled={repairing} onClick={onRepair}>
-          {repairing ? 'Repairing…' : 'Repair monitored systems'}
-        </button>
-        <button type="button" className="btn btn-secondary" style={{ fontSize: '0.76rem', padding: '0.28rem 0.7rem' }} disabled={loading} onClick={onRetest}>
-          Re-test provider
-        </button>
-        <button type="button" className="btn btn-secondary" style={{ fontSize: '0.76rem', padding: '0.28rem 0.7rem' }} onClick={onToggleRouting}>
-          {showRouting ? 'Hide routing' : 'Review routing recommendation'}
-        </button>
-        <Link href="/integrations" prefetch={false} className="btn btn-secondary" style={{ fontSize: '0.76rem', padding: '0.28rem 0.7rem' }}>
-          Add fallback provider
-        </Link>
-        {telemetryTargetId ? (
-          <Link
-            href={`/monitoring-sources/${encodeURIComponent(telemetryTargetId)}/telemetry`}
-            prefetch={false}
-            className="btn btn-secondary"
-            style={{ fontSize: '0.76rem', padding: '0.28rem 0.7rem' }}
-          >
-            View telemetry
-          </Link>
-        ) : null}
-        <button
-          type="button"
-          className="btn btn-secondary"
-          style={{ fontSize: '0.76rem', padding: '0.28rem 0.7rem' }}
-          disabled={!hasApprovedRoutingChange}
-          title={hasApprovedRoutingChange ? undefined : 'No approved routing change is pending. Provider replacement requires approval.'}
-        >
-          Apply approved routing change
-        </button>
-      </div>
-    </article>
-  );
-}
-
-function ProviderHealthCard({
-  providerHealth,
-  loading,
-  onViewAll,
-}: {
-  providerHealth: ProviderHealthSummary | null;
-  loading: boolean;
-  onViewAll: () => void;
-}) {
-  return (
-    <article className="dataCard" style={{ padding: '1rem' }}>
-      <p className="sectionEyebrow" style={{ margin: '0 0 0.5rem' }}>Provider Health</p>
-      {loading ? (
-        <p className="muted" style={{ fontSize: '0.8rem' }}>Loading…</p>
-      ) : !providerHealth || providerHealth.total === 0 ? (
-        <p className="muted" style={{ fontSize: '0.8rem' }}>
-          No RPC provider records yet. Provider health is measured once a source has a provider configured.
-        </p>
-      ) : (
-        <>
-          <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.5rem' }}>
-            <div style={{ flex: 1, textAlign: 'center' }}>
-              <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--success-fg)' }}>{providerHealth.healthy_count}</div>
-              <div className="muted" style={{ fontSize: '0.68rem' }}>Healthy</div>
-            </div>
-            <div style={{ flex: 1, textAlign: 'center' }}>
-              <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--warning-fg)' }}>{providerHealth.degraded_count}</div>
-              <div className="muted" style={{ fontSize: '0.68rem' }}>Degraded</div>
-            </div>
-            <div style={{ flex: 1, textAlign: 'center' }}>
-              <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--text-muted)' }}>{providerHealth.unknown_count}</div>
-              <div className="muted" style={{ fontSize: '0.68rem' }}>Unknown</div>
-            </div>
-          </div>
-          <button
-            type="button"
-            className="btn btn-secondary"
-            style={{ fontSize: '0.76rem', padding: '0.28rem 0.7rem', width: '100%' }}
-            onClick={onViewAll}
-          >
-            View provider details
-          </button>
-        </>
-      )}
-    </article>
+    </div>
   );
 }

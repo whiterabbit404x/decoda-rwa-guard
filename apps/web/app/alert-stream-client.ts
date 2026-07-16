@@ -42,6 +42,7 @@ export function parseSseLine(line: string): { field: string; value: string } | n
 export function connectAlertStream(
   headers: Record<string, string>,
   callbacks: AlertStreamCallbacks,
+  proxyPath: string = SSE_PROXY_PATH,
 ): () => void {
   const abortController = new AbortController();
   let closed = false;
@@ -59,7 +60,7 @@ export function connectAlertStream(
 
     let response: Response;
     try {
-      response = await fetch(SSE_PROXY_PATH, {
+      response = await fetch(proxyPath, {
         headers: requestHeaders,
         signal: abortController.signal,
         cache: 'no-store',

@@ -38,8 +38,11 @@ test('product route contracts keep required IA labels, page copy, tables, and tr
   const monitoringSourcesPage = productSource('monitoring-sources/page.tsx');
   expect(monitoringSourcesPage).toContain('Monitoring Targets');
   expect(monitoringSourcesPage).toContain('Monitored Systems');
-  expect(monitoringSourcesPage).toContain('<th>Target Name</th><th>Type</th><th>Provider</th><th>Systems</th><th>Status</th><th>Last Poll</th><th>Next Action</th>');
-  expect(monitoringSourcesPage).toContain('<th>System Name</th><th>Linked Target</th><th>Enabled</th><th>Runtime Status</th><th>Last Heartbeat</th><th>Last Telemetry</th><th>Coverage State</th><th>Evidence Source</th>');
+  // Screen-4 target columns (rendered from the TARGET_HEADERS array via TableShell).
+  ['Target / System', 'Network', 'Source Provider', 'Role', 'Status', 'Health Score', 'P95 Latency', 'Block Lag', 'Error Rate', 'Last Event', 'Last Heartbeat', 'Routing', 'Actions']
+    .forEach((label) => expect(monitoringSourcesPage).toContain(label));
+  ['System', 'Type', 'Environment', 'Provider', 'Status', 'Availability', 'Response Time', 'Last Successful Check', 'Last Failure', 'Current Route', 'Actions']
+    .forEach((label) => expect(monitoringSourcesPage).toContain(label));
 
   expect(monitoringLinkStatusLabel({ monitoring_link_status: 'system_missing', monitoring_target_count: 1, has_linked_monitored_system: false })).not.toBe('Monitoring attached');
 
