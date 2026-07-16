@@ -163,6 +163,10 @@ from services.api.app.pilot import (
     upsert_alert_routing_rule,
     list_targets,
     list_monitoring_sources,
+    get_source_optimization_settings,
+    update_source_optimization_settings,
+    run_source_health_check,
+    list_source_agent_decisions,
     list_assets,
     create_asset,
     get_asset,
@@ -4127,6 +4131,26 @@ def monitoring_sources_list(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_monitoring_sources(request))
 
 
+@app.get('/monitoring/sources/settings', summary='Read Auto-Routing / failover / threshold settings')
+def monitoring_source_settings_get(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_source_optimization_settings(request))
+
+
+@app.put('/monitoring/sources/settings', summary='Update Auto-Routing / failover / threshold settings (admin)')
+def monitoring_source_settings_update(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: update_source_optimization_settings(payload, request))
+
+
+@app.post('/monitoring/sources/health-check', summary='Run a deterministic source health check and record agent decisions')
+def monitoring_source_health_check(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: run_source_health_check(request))
+
+
+@app.get('/monitoring/sources/decisions', summary='List Source Optimization Agent decisions')
+def monitoring_source_decisions_list(request: Request, limit: int = 50) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_source_agent_decisions(request, limit=limit))
+
+
 @app.get('/monitoring/runs', summary='List recent monitoring runs for workspace')
 def monitoring_runs_list(request: Request, limit: int = 20) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_monitoring_runs(request, limit=limit))
@@ -6633,6 +6657,48 @@ async def stream_telemetry(request: Request):
             workspace_id, last_event_id, request,
             subscribe_factory=alert_stream.subscribe_telemetry,
             stream_name='telemetry',
+        ),
+        media_type='text/event-stream',
+        headers=headers,
+    )
+
+
+@app.get('/stream/sources', summary='SSE stream of Source Optimization Agent events for a workspace')
+async def stream_sources(request: Request):
+    """Server-Sent Events stream of Source Optimization Agent events (Screen 4).
+
+    Reuses the same authenticated, workspace-scoped, Redis-backed, resumable
+    backbone as ``/stream/alerts``. Source events (``type='source'``) are published
+    to the workspace stream by the health-check / routing decision paths; the
+    frontend filters to ``type='source'`` and falls back to polling when the shared
+    stream backend is unavailable. No cross-workspace leakage: the stream key embeds
+    the resolved workspace id.
+    """
+    try:
+        user = authenticate_request(request)
+    except HTTPException as exc:
+        return JSONResponse({'detail': exc.detail, 'code': 'UNAUTHENTICATED'}, status_code=401)
+    requested_workspace_id = request.headers.get('x-workspace-id', '').strip()
+    try:
+        with pg_connection() as connection:
+            ensure_pilot_schema(connection)
+            workspace_context = resolve_workspace(connection, str(user['id']), requested_workspace_id)
+        workspace_id = str(workspace_context['workspace_id'])
+    except HTTPException as exc:
+        return JSONResponse({'detail': exc.detail, 'code': 'WORKSPACE_ACCESS_DENIED'}, status_code=exc.status_code)
+    backend = await alert_stream.connectivity()
+    if not backend['connected']:
+        return JSONResponse(
+            {'detail': 'Shared source stream backend unavailable; use polling fallback.', 'code': 'SOURCE_STREAM_UNAVAILABLE'},
+            status_code=503,
+        )
+    last_event_id = request.headers.get('last-event-id', '').strip() or '$'
+    headers = _sse_response_headers(request)
+    return StreamingResponse(
+        _sse_heartbeat_generator(
+            workspace_id, last_event_id, request,
+            subscribe_factory=alert_stream.subscribe_onboarding,
+            stream_name='onboarding',
         ),
         media_type='text/event-stream',
         headers=headers,
