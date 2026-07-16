@@ -9,6 +9,7 @@ import hmac
 import io
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -11350,26 +11351,155 @@ def _publish_source_event(workspace_id: str, event_type: str, extra: dict[str, A
 
 def _load_latest_provider_health_by_target(
     connection: Any, *, workspace_id: str, canonical_ids: list[str]
-) -> dict[str, dict[str, Any]]:
-    """Latest provider_health_records row per canonical target id (measured, never invented)."""
+) -> dict[str, list[dict[str, Any]]]:
+    """Latest provider_health_records row per (target, provider), newest first.
+
+    Returns ``target_id -> [records]`` (measured, never invented). Keeping one row per
+    provider — not just the single newest overall — lets the enrichment keep the
+    PRIMARY route's health as the source headline even when a degraded secondary /
+    stream provider wrote a more recent row (so a lagging QuickNode stream never
+    overwrites healthy Alchemy polling evidence). Scoped to workspace_id, so evidence
+    from another workspace can never satisfy this workspace's status.
+    """
     if not canonical_ids:
         return {}
     try:
         rows = connection.execute(
             '''
-            SELECT DISTINCT ON (target_id)
+            SELECT DISTINCT ON (target_id, provider_type)
                    target_id, status, latency_ms, checked_at, evidence_source, provider_type, error_message
             FROM provider_health_records
             WHERE workspace_id = %s::uuid
               AND target_id = ANY(%s::uuid[])
-            ORDER BY target_id, checked_at DESC
+            ORDER BY target_id, provider_type, checked_at DESC
             ''',
             (workspace_id, canonical_ids),
         ).fetchall()
     except Exception:
         logger.warning('monitoring_sources_provider_health_unavailable workspace_id=%s', workspace_id, exc_info=True)
         return {}
-    return {str(row['target_id']): dict(row) for row in rows if row.get('target_id')}
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        tid = str(row.get('target_id') or '')
+        if not tid:
+            continue
+        grouped.setdefault(tid, []).append(dict(row))
+    for records in grouped.values():
+        records.sort(key=lambda r: str(r.get('checked_at') or ''), reverse=True)
+    return grouped
+
+
+def _pick_provider_health_record(
+    records: list[dict[str, Any]], primary_host: str | None
+) -> dict[str, Any]:
+    """Choose the headline provider-health record for a source.
+
+    Prefers the record whose ``provider_type`` matches the target's primary provider
+    host (the current/primary route), so a more recent but degraded secondary/stream
+    provider record never becomes the source's headline health. Falls back to the
+    newest record overall, then to an empty dict when no record exists.
+    """
+    if not records:
+        return {}
+    if primary_host:
+        host = str(primary_host).strip().lower()
+        for record in records:  # records are newest-first
+            if str(record.get('provider_type') or '').strip().lower() == host:
+                return record
+    return records[0]
+
+
+# Canonical provider_health_records.status vocabulary (schema CHECK constraint).
+_PROVIDER_HEALTH_STATUSES = {'healthy', 'degraded', 'unavailable', 'error'}
+
+
+def persist_provider_health_evidence(
+    connection: Any,
+    *,
+    workspace_id: str,
+    target_id: str,
+    provider_host: str | None,
+    status: str,
+    success: bool,
+    latency_ms: int | None,
+    chain_id: int | None = None,
+    latest_block: int | None = None,
+    error_message: str | None = None,
+    error_category: str | None = None,
+    evidence_source: str = 'none',
+    role: str = 'primary',
+    actor_type: str = 'worker',
+    trigger: str = 'scheduled_poll',
+    checked_at: Any = None,
+    extra_metadata: dict[str, Any] | None = None,
+) -> str:
+    """Canonical provider-health persistence — shared by the scheduled monitoring worker
+    and the Run Diagnostic action so both write the SAME evidence shape.
+
+    Writes ONE provider_health_records row keyed by the RAW targets(id) (so Screen 4
+    reads it back — migration 0082) carrying the OBSERVED provider-request latency, the
+    provider host (redacted to hostname — never a URL/secret), chain id, latest block,
+    success/failure and the consecutive success/failure streak (kept in metadata; no
+    schema migration needed). Truthfulness rules enforced here:
+      * ``latency_ms`` MUST be None when no RPC call executed — never invent latency;
+      * a failed / unreachable poll is recorded with a non-healthy status;
+      * ``actor_type`` / ``trigger`` tag WHO produced the row so a manual diagnostic can
+        never be mistaken for a continuous scheduled-worker poll.
+    Returns the new record id.
+    """
+    status_value = status if status in _PROVIDER_HEALTH_STATUSES else ('healthy' if success else 'error')
+    if evidence_source not in {'live', 'simulator', 'replay', 'none'}:
+        evidence_source = 'none'
+    host = str(provider_host).strip() if provider_host else None
+    # Consecutive streaks come from the previous same-(target, provider) record.
+    prev_success = prev_failure = 0
+    try:
+        prev = connection.execute(
+            '''
+            SELECT metadata FROM provider_health_records
+            WHERE workspace_id = %s::uuid AND target_id = %s::uuid AND provider_type = %s
+            ORDER BY checked_at DESC LIMIT 1
+            ''',
+            (workspace_id, target_id, host or 'monitoring_provider'),
+        ).fetchone()
+        prev_meta = (dict(prev).get('metadata') if prev else None) or {}
+        if isinstance(prev_meta, str):
+            try:
+                prev_meta = json.loads(prev_meta)
+            except Exception:
+                prev_meta = {}
+        prev_success = int(prev_meta.get('consecutive_success') or 0)
+        prev_failure = int(prev_meta.get('consecutive_failure') or 0)
+    except Exception:
+        prev_success = prev_failure = 0
+    consecutive_success = (prev_success + 1) if success else 0
+    consecutive_failure = 0 if success else (prev_failure + 1)
+    metadata: dict[str, Any] = {
+        'provider_host': host,
+        'chain_id': chain_id,
+        'latest_block': latest_block,
+        'success': bool(success),
+        'error_category': error_category,
+        'role': role,
+        'actor_type': actor_type,
+        'trigger': trigger,
+        'consecutive_success': consecutive_success,
+        'consecutive_failure': consecutive_failure,
+    }
+    if extra_metadata:
+        metadata.update(extra_metadata)
+    record_id = str(uuid.uuid4())
+    connection.execute(
+        '''
+        INSERT INTO provider_health_records (
+            id, workspace_id, provider_type, target_id, status, checked_at, latency_ms, error_message, evidence_source, metadata
+        )
+        VALUES (%s::uuid, %s::uuid, %s, %s::uuid, %s, COALESCE(%s, NOW()), %s, %s, %s, %s::jsonb)
+        ''',
+        (record_id, workspace_id, host or 'monitoring_provider', target_id, status_value,
+         checked_at, latency_ms, error_message, evidence_source, _json_dumps(metadata)),
+    )
+    return record_id
 
 
 def _load_latest_coverage_by_target(
@@ -11395,6 +11525,70 @@ def _load_latest_coverage_by_target(
         logger.warning('monitoring_sources_coverage_unavailable workspace_id=%s', workspace_id, exc_info=True)
         return {}
     return {str(row['target_id']): dict(row) for row in rows if row.get('target_id')}
+
+
+# Minimum measured latency samples required before a P95 is statistically meaningful.
+# Below this the UI shows "Insufficient samples" rather than presenting a single (or
+# few) observed latencies as a fabricated P95 (Screen 4 truthfulness rule).
+_P95_MIN_SAMPLES = 20
+# Cap the per-target latency window read for P95 so the enrichment query stays bounded.
+_P95_SAMPLE_WINDOW = 200
+
+
+def _load_provider_latency_samples_by_target(
+    connection: Any, *, workspace_id: str, target_ids: list[str]
+) -> dict[str, list[float]]:
+    """Recent measured provider latencies (ms) per target id, newest first.
+
+    Reads only rows that carry a real ``latency_ms`` (the diagnostic / probe path
+    records it; the legacy worker poll wrote NULL). Used to compute a truthful P95
+    with an explicit sample count — never to invent a value from too few samples.
+    """
+    if not target_ids:
+        return {}
+    try:
+        rows = connection.execute(
+            '''
+            SELECT target_id, latency_ms
+            FROM provider_health_records
+            WHERE workspace_id = %s::uuid
+              AND target_id = ANY(%s::uuid[])
+              AND latency_ms IS NOT NULL
+            ORDER BY target_id, checked_at DESC
+            LIMIT %s
+            ''',
+            (workspace_id, target_ids, _P95_SAMPLE_WINDOW * max(1, len(target_ids))),
+        ).fetchall()
+    except Exception:
+        logger.warning('monitoring_sources_latency_samples_unavailable workspace_id=%s', workspace_id, exc_info=True)
+        return {}
+    samples: dict[str, list[float]] = {}
+    for row in rows:
+        tid = str(row.get('target_id') or '')
+        if not tid:
+            continue
+        try:
+            value = float(row.get('latency_ms'))
+        except (TypeError, ValueError):
+            continue
+        bucket = samples.setdefault(tid, [])
+        if len(bucket) < _P95_SAMPLE_WINDOW:
+            bucket.append(value)
+    return samples
+
+
+def _p95_from_samples(samples: list[float]) -> float | None:
+    """Nearest-rank P95 of measured latencies, or None when below the sample floor.
+
+    Returns None (never a guessed number) until at least ``_P95_MIN_SAMPLES`` real
+    samples exist, so the UI can show "Insufficient samples" truthfully.
+    """
+    if not samples or len(samples) < _P95_MIN_SAMPLES:
+        return None
+    ordered = sorted(samples)
+    # Nearest-rank method: index of the ceil(0.95 * n)-th value (1-indexed).
+    rank = max(1, math.ceil(0.95 * len(ordered)))
+    return round(float(ordered[min(rank, len(ordered)) - 1]), 1)
 
 
 def _build_monitoring_sources_enrichment(
@@ -11426,19 +11620,30 @@ def _build_monitoring_sources_enrichment(
         if target_id and target_id not in systems_by_target:
             systems_by_target[target_id] = system
 
+    # provider_health_records and target_coverage_records are keyed by the RAW
+    # targets(id) — migration 0082 repointed their FK at targets(id), and the
+    # monitoring worker (process_monitoring_target) + run-once + Run Diagnostic all
+    # write them with targets.id. Older rows may still exist under the uuid5-derived
+    # monitored_targets(id). Query BOTH id spaces and prefer the raw-id row so the
+    # worker's real runtime evidence is never invisible on Screen 4 (the drift that
+    # made a freshly polled target still read 0/1 with no latency).
     canonical_by_target: dict[str, str] = {
         str(t.get('id')): _canonical_target_uuid(workspace_id, str(t.get('id')))
         for t in targets
         if t.get('id')
     }
-    canonical_ids = list({v for v in canonical_by_target.values()})
+    raw_target_ids = [str(t.get('id')) for t in targets if t.get('id')]
+    lookup_ids = list({*raw_target_ids, *canonical_by_target.values()})
 
     latest_block_by_system = _load_latest_block_by_system(connection, workspace_id=workspace_id)
-    provider_health_by_canonical = _load_latest_provider_health_by_target(
-        connection, workspace_id=workspace_id, canonical_ids=canonical_ids
+    provider_health_by_target = _load_latest_provider_health_by_target(
+        connection, workspace_id=workspace_id, canonical_ids=lookup_ids
     )
-    coverage_by_canonical = _load_latest_coverage_by_target(
-        connection, workspace_id=workspace_id, canonical_ids=canonical_ids
+    coverage_by_target = _load_latest_coverage_by_target(
+        connection, workspace_id=workspace_id, canonical_ids=lookup_ids
+    )
+    latency_samples_by_target = _load_provider_latency_samples_by_target(
+        connection, workspace_id=workspace_id, target_ids=lookup_ids
     )
 
     sources: list[dict[str, Any]] = []
@@ -11467,11 +11672,31 @@ def _build_monitoring_sources_enrichment(
         target_id = str(target.get('id') or '')
         system = systems_by_target.get(target_id)
         canonical_id = canonical_by_target.get(target_id)
-        provider_health = provider_health_by_canonical.get(canonical_id or '') or {}
-        coverage = coverage_by_canonical.get(canonical_id or '') or {}
+        # Prefer evidence written under the raw targets(id); fall back to any legacy
+        # row written under the uuid5 canonical monitored_targets(id). A target may
+        # have a record per provider (primary poll + secondary/stream) — keep them all.
+        provider_health_records = (
+            provider_health_by_target.get(target_id)
+            or provider_health_by_target.get(canonical_id or '')
+            or []
+        )
+        coverage = (
+            coverage_by_target.get(target_id)
+            or coverage_by_target.get(canonical_id or '')
+            or {}
+        )
+        latency_samples = (
+            latency_samples_by_target.get(target_id)
+            or latency_samples_by_target.get(canonical_id or '')
+            or []
+        )
 
         status, status_reason = _derive_source_status(target, system)
         primary_provider, fallback_provider, routing_explanation = _target_provider_routing(target)
+        # The source headline reflects the PRIMARY route's health. Selecting the
+        # primary-provider record (not merely the newest) means a lagging QuickNode
+        # stream record can never overwrite healthy Alchemy polling evidence.
+        provider_health = _pick_provider_health_record(provider_health_records, primary_provider)
         provider_host = (
             str(provider_health.get('provider_type') or '').strip()
             or primary_provider
@@ -11598,6 +11823,13 @@ def _build_monitoring_sources_enrichment(
             'latest_block': latest_block,
             'block_lag': None,  # chain-tip lag requires a live RPC head; not fabricated here.
             'median_latency_ms': latency_ms,
+            # P95 latency is only truthful once enough samples exist. Below the
+            # minimum, p95_latency_ms is None and p95_insufficient=True so the UI
+            # shows "Insufficient samples" instead of presenting a single observed
+            # latency as a fabricated P95.
+            'p95_latency_ms': _p95_from_samples(latency_samples),
+            'p95_sample_count': len(latency_samples),
+            'p95_insufficient': len(latency_samples) < _P95_MIN_SAMPLES,
             'error_rate': None,     # not measured by the current probe path; never fabricated.
             'timeout_rate': None,
             'last_poll_at': last_poll_at,
@@ -12197,6 +12429,441 @@ def run_source_health_check(request: Request) -> dict[str, Any]:
         'escalations': escalations,
         'failovers_recommended': failovers_recommended,
         'decisions_recorded': len(recorded) + 1,
+    }
+
+
+# ── Run Diagnostic: a REAL bounded provider probe that persists runtime evidence ──
+#
+# The deterministic health-check above only *evaluates* existing records. A freshly
+# onboarded target that has never been polled therefore has nothing to evaluate and
+# stays at 0/1 / "No live evidence" forever. Run Diagnostic closes that gap: it calls
+# the configured RPC provider for each in-scope target, confirms chain id + latest
+# block + deployed bytecode, and writes a provider-health record + heartbeat +
+# coverage record so Screen 4 reflects real, measured evidence on demand. It never
+# fabricates health — an unreachable or wrong-chain provider is recorded truthfully.
+_SOURCE_DIAGNOSTIC_MAX_TARGETS = 10
+
+
+def _try_acquire_diagnostic_lock(connection: Any, *, workspace_id: str) -> bool:
+    """Best-effort cross-replica guard against duplicate concurrent diagnostic runs.
+
+    Uses a session-level Postgres advisory lock keyed by workspace. Returns True when
+    the lock was acquired (this caller may run), False when another run currently
+    holds it. Falls OPEN (True) when advisory locks are unavailable or the backend
+    returns no row, so a diagnostic is never permanently blocked by infra quirks.
+    """
+    try:
+        row = connection.execute(
+            'SELECT pg_try_advisory_lock(hashtext(%s)) AS locked',
+            (f'source_diagnostic:{workspace_id}',),
+        ).fetchone()
+    except Exception:
+        return True
+    if row is None:
+        return True
+    try:
+        return bool(dict(row).get('locked'))
+    except Exception:
+        return True
+
+
+def _release_diagnostic_lock(connection: Any, *, workspace_id: str) -> None:
+    try:
+        connection.execute(
+            'SELECT pg_advisory_unlock(hashtext(%s))',
+            (f'source_diagnostic:{workspace_id}',),
+        )
+    except Exception:
+        logger.debug('diagnostic_advisory_unlock_failed workspace_id=%s', workspace_id)
+
+
+def _diagnostic_probe(rpc_url: str, *, address: str | None, is_contract: bool) -> dict[str, Any]:
+    """Timed, bounded RPC probe against a single provider URL.
+
+    Runs eth_chainId + eth_blockNumber (via the shared probe) and, for a contract
+    target, eth_getCode to confirm deployed bytecode. Measures wall-clock latency.
+    Never raises — a failure is returned as ``ok=False`` with a short error string so
+    the caller can record truthful degraded/error evidence.
+    """
+    from services.api.app.evm_activity_provider import probe_rpc_health, JsonRpcClient
+
+    started = monotonic()
+    try:
+        health = probe_rpc_health(rpc_url)
+    except Exception as exc:  # pragma: no cover - defensive
+        return {
+            'ok': False, 'latency_ms': None, 'chain_id': None, 'latest_block': None,
+            'bytecode_present': None, 'error': str(exc)[:200],
+        }
+    latency_ms = int(round((monotonic() - started) * 1000))
+    if not health.get('ok'):
+        return {
+            'ok': False, 'latency_ms': latency_ms,
+            'chain_id': health.get('chain_id_int'), 'latest_block': health.get('block_number_int'),
+            'bytecode_present': None, 'error': str(health.get('error') or 'rpc_unavailable')[:200],
+        }
+    bytecode_present: bool | None = None
+    if is_contract and address:
+        try:
+            code = JsonRpcClient(rpc_url).call('eth_getCode', [address, 'latest'])
+            bytecode_present = bool(code) and str(code).strip().lower() not in ('0x', '0x0', '')
+        except Exception:
+            # A reachable provider that failed the getCode read is still reachable;
+            # leave bytecode unverified (None) rather than claiming absence.
+            bytecode_present = None
+    return {
+        'ok': True, 'latency_ms': latency_ms,
+        'chain_id': health.get('chain_id_int'), 'latest_block': health.get('block_number_int'),
+        'bytecode_present': bytecode_present, 'error': None,
+    }
+
+
+def _load_diagnostic_targets(
+    connection: Any, *, workspace_id: str, target_id: str | None
+) -> list[dict[str, Any]]:
+    """Load enabled targets (optionally one) with their linkage facts for a diagnostic."""
+    clauses = ['t.workspace_id = %s::uuid', 't.deleted_at IS NULL', 'COALESCE(t.enabled, FALSE) = TRUE']
+    params: list[Any] = [workspace_id]
+    if target_id:
+        clauses.append('t.id = %s::uuid')
+        params.append(target_id)
+    params.append(_SOURCE_DIAGNOSTIC_MAX_TARGETS)
+    rows = connection.execute(
+        f'''
+        SELECT t.id, t.workspace_id, t.name, t.chain_network, t.chain_id, t.target_type,
+               t.contract_identifier, t.wallet_address, t.asset_id,
+               COALESCE(t.enabled, FALSE) AS enabled, COALESCE(t.monitoring_enabled, FALSE) AS monitoring_enabled,
+               a.id AS linked_asset_id, a.name AS asset_name,
+               ms.id AS monitored_system_id, COALESCE(ms.is_enabled, FALSE) AS monitored_system_enabled,
+               mc.id AS monitoring_config_id, COALESCE(mc.enabled, FALSE) AS monitoring_config_enabled,
+               LOWER(COALESCE(mc.provider_type, '')) AS provider_type
+        FROM targets t
+        LEFT JOIN assets a ON a.id = t.asset_id AND a.workspace_id = t.workspace_id AND a.deleted_at IS NULL
+        LEFT JOIN monitored_systems ms ON ms.target_id = t.id AND ms.workspace_id = t.workspace_id
+        LEFT JOIN monitoring_configs mc ON mc.target_id = t.id AND mc.workspace_id = t.workspace_id
+        WHERE {' AND '.join(clauses)}
+        ORDER BY t.created_at ASC
+        LIMIT %s
+        ''',
+        tuple(params),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _diagnose_target(
+    connection: Any, *, workspace_id: str, target: dict[str, Any], correlation_id: str, now: datetime
+) -> dict[str, Any]:
+    """Run the bounded diagnostic for one target and persist real runtime evidence.
+
+    Steps: verify linkage → verify provider config → call provider → confirm chain id
+    → read latest block → confirm bytecode → write provider-health → write heartbeat.
+    Contract targets are proven via chain id + bytecode; the diagnostic never requires
+    a matching native transfer before it can report provider/polling health.
+    """
+    from services.api.app.evm_activity_provider import resolve_chain_rpc
+    from urllib.parse import urlparse as _urlparse
+
+    target_id = str(target.get('id'))
+    monitored_system_id = str(target.get('monitored_system_id') or '') or None
+    chain_network = str(target.get('chain_network') or '').strip().lower()
+    is_contract = bool(target.get('contract_identifier'))
+    address = str(target.get('contract_identifier') or target.get('wallet_address') or '').strip() or None
+    steps: list[dict[str, Any]] = []
+
+    # Structured safe log line (workspace, target, monitored-system, chain) for tracing.
+    logger.info(
+        'source_diagnostic_target workspace_id=%s target_id=%s monitored_system_id=%s chain_network=%s correlation_id=%s',
+        workspace_id, target_id, monitored_system_id or 'none', chain_network or 'none', correlation_id,
+    )
+
+    # Step 1 — verify target linkage (asset, monitored system, monitoring config).
+    linkage_ok = bool(target.get('linked_asset_id')) and bool(monitored_system_id) and bool(target.get('monitoring_config_id'))
+    linkage_gaps = []
+    if not target.get('linked_asset_id'):
+        linkage_gaps.append('asset_link_missing')
+    if not monitored_system_id:
+        linkage_gaps.append('monitored_system_missing')
+    if not target.get('monitoring_config_id'):
+        linkage_gaps.append('monitoring_config_missing')
+    elif not bool(target.get('monitoring_config_enabled')):
+        linkage_gaps.append('monitoring_config_disabled')
+    steps.append({
+        'step': 'verify_linkage',
+        'status': 'pass' if linkage_ok and not linkage_gaps else 'fail',
+        'detail': 'asset → monitored system → monitoring config linked' if not linkage_gaps else ', '.join(linkage_gaps),
+        'gaps': linkage_gaps,
+    })
+
+    # Step 2 — verify provider configuration for the target's chain.
+    resolved = resolve_chain_rpc(chain_network)
+    expected_chain_id = resolved.get('expected_chain_id')
+    rpc_url = str(resolved.get('rpc_url') or '').strip()
+    try:
+        provider_host = _urlparse(rpc_url).hostname if rpc_url else None
+    except Exception:
+        provider_host = None
+    provider_configured = bool(rpc_url) and expected_chain_id is not None
+    steps.append({
+        'step': 'verify_provider_config',
+        'status': 'pass' if provider_configured else 'fail',
+        'detail': (
+            f'{chain_network} routed to provider host {provider_host}' if provider_configured
+            else (f'no RPC endpoint configured for chain {chain_network}' if expected_chain_id is not None
+                  else f'chain {chain_network or "unknown"} is not an EVM chain the diagnostic can probe')
+        ),
+        'provider_host': provider_host,
+        'expected_chain_id': expected_chain_id,
+    })
+
+    probe: dict[str, Any] = {'ok': False, 'latency_ms': None, 'chain_id': None, 'latest_block': None, 'bytecode_present': None, 'error': 'provider_not_configured'}
+    if provider_configured:
+        # Steps 3-6 — call provider, confirm chain id, read block, confirm bytecode.
+        probe = _diagnostic_probe(rpc_url, address=address, is_contract=is_contract)
+
+    chain_id_ok = bool(probe.get('ok')) and expected_chain_id is not None and probe.get('chain_id') == expected_chain_id
+    steps.append({
+        'step': 'call_provider',
+        'status': 'pass' if probe.get('ok') else 'fail',
+        'detail': 'provider responded' if probe.get('ok') else f"provider unreachable: {probe.get('error')}",
+        'latency_ms': probe.get('latency_ms'),
+    })
+    steps.append({
+        'step': 'confirm_chain_id',
+        'status': 'pass' if chain_id_ok else 'fail',
+        'expected': expected_chain_id,
+        'actual': probe.get('chain_id'),
+        'detail': 'chain id matches target chain' if chain_id_ok else 'chain id mismatch or unavailable',
+    })
+    steps.append({
+        'step': 'read_latest_block',
+        'status': 'pass' if probe.get('latest_block') is not None else 'fail',
+        'latest_block': probe.get('latest_block'),
+    })
+    if is_contract:
+        bytecode_present = probe.get('bytecode_present')
+        steps.append({
+            'step': 'confirm_bytecode',
+            'status': 'pass' if bytecode_present else ('unknown' if bytecode_present is None else 'fail'),
+            'bytecode_present': bytecode_present,
+            'detail': (
+                'deployed bytecode present at contract address' if bytecode_present
+                else ('bytecode could not be read (provider still reachable)' if bytecode_present is None
+                      else 'no deployed bytecode at contract address')
+            ),
+        })
+
+    # Truthful status: healthy only when reachable AND on the right chain AND (for a
+    # contract) bytecode is not definitively absent. Reachable-but-wrong is degraded;
+    # unreachable is error. Never healthy without a real successful observation.
+    reachable = bool(probe.get('ok'))
+    contract_bytecode_absent = bool(is_contract and probe.get('bytecode_present') is False)
+    if not reachable:
+        provider_health_status = 'error'
+    elif not chain_id_ok or contract_bytecode_absent:
+        provider_health_status = 'degraded'
+    else:
+        provider_health_status = 'healthy'
+    evidence_source = 'live' if reachable else 'none'
+    runtime_status = {'healthy': 'healthy', 'degraded': 'degraded', 'error': 'failed'}[provider_health_status]
+    system_status = 'error' if provider_health_status == 'error' else 'active'
+    coverage_status = 'reporting' if provider_health_status == 'healthy' else ('stale' if reachable else 'unavailable')
+    error_message = None if reachable else str(probe.get('error') or 'provider_unavailable')
+    if reachable and not chain_id_ok:
+        error_message = 'chain_id_mismatch'
+    elif contract_bytecode_absent:
+        error_message = 'contract_bytecode_absent'
+
+    provider_type = provider_host or str(target.get('provider_type') or 'monitoring_provider')
+
+    # Step 7 — write provider-health evidence via the SAME canonical helper the
+    # scheduled worker uses, keyed by the RAW targets(id) so the Screen 4 enrichment
+    # (which prefers targets.id, migration 0082) reads it back. Tagged as a manual
+    # diagnostic so it can never be mistaken for a continuous scheduled-worker poll.
+    record_id = persist_provider_health_evidence(
+        connection,
+        workspace_id=workspace_id,
+        target_id=target_id,
+        provider_host=provider_type,
+        status=provider_health_status,
+        success=reachable,
+        latency_ms=probe.get('latency_ms'),
+        chain_id=probe.get('chain_id'),
+        latest_block=probe.get('latest_block'),
+        error_message=error_message,
+        error_category=(None if reachable else str(probe.get('error') or 'provider_unavailable')),
+        evidence_source=evidence_source,
+        role='primary',
+        actor_type='diagnostic',
+        trigger='manual_diagnostic',
+        extra_metadata={
+            'diagnostic': True,
+            'correlation_id': correlation_id,
+            'expected_chain_id': expected_chain_id,
+            'bytecode_present': probe.get('bytecode_present'),
+            'target_type': str(target.get('target_type') or ''),
+        },
+    )
+
+    # Step 8 — write heartbeat/coverage evidence (workspace + monitored system).
+    heartbeat_written = False
+    if monitored_system_id:
+        try:
+            connection.execute(
+                '''
+                UPDATE monitored_systems
+                SET last_heartbeat = NOW(), runtime_status = %s, status = %s
+                WHERE id = %s::uuid AND workspace_id = %s::uuid
+                ''',
+                (runtime_status, system_status, monitored_system_id, workspace_id),
+            )
+            heartbeat_written = True
+        except Exception:
+            logger.warning('source_diagnostic_system_heartbeat_failed target_id=%s workspace_id=%s', target_id, workspace_id)
+    try:
+        connection.execute(
+            '''
+            INSERT INTO target_coverage_records (
+                id, workspace_id, asset_id, target_id, coverage_status, last_poll_at, last_heartbeat_at,
+                last_telemetry_at, last_detection_at, evidence_source, computed_at, metadata
+            )
+            VALUES (%s::uuid, %s::uuid, %s, %s::uuid, %s, NOW(), NOW(), NULL, NULL, %s, NOW(), %s::jsonb)
+            ''',
+            (str(uuid.uuid4()), workspace_id, target.get('linked_asset_id'), target_id, coverage_status,
+             evidence_source, _json_dumps({'diagnostic': True, 'correlation_id': correlation_id})),
+        )
+    except Exception:
+        logger.warning('source_diagnostic_coverage_write_failed target_id=%s workspace_id=%s', target_id, workspace_id)
+    # NB: the diagnostic deliberately does NOT touch targets.last_checked_at — that column
+    # is the SCHEDULED worker's due-selection cursor. Advancing it here would let a manual
+    # diagnostic delay the continuous worker's own first poll, blurring the worker-versus-
+    # diagnostic distinction and leaving a newly onboarded target waiting a full interval
+    # for scheduled evidence. Diagnostic evidence lives in the (diagnostic-tagged)
+    # provider_health / coverage / heartbeat rows instead.
+
+    steps.append({
+        'step': 'write_provider_health',
+        'status': 'pass',
+        'record_id': record_id,
+        'provider_health_status': provider_health_status,
+        'latency_ms': probe.get('latency_ms'),
+    })
+    steps.append({
+        'step': 'write_heartbeat',
+        'status': 'pass' if heartbeat_written else 'skipped',
+        'detail': 'workspace + monitored-system heartbeat written' if heartbeat_written else 'no monitored system linked; workspace heartbeat only',
+    })
+
+    logger.info(
+        'source_diagnostic_result workspace_id=%s target_id=%s monitored_system_id=%s '
+        'provider_host=%s reachable=%s chain_id_ok=%s latest_block=%s latency_ms=%s '
+        'provider_health_status=%s heartbeat_written=%s correlation_id=%s',
+        workspace_id, target_id, monitored_system_id or 'none', provider_host or 'none',
+        reachable, chain_id_ok, probe.get('latest_block'), probe.get('latency_ms'),
+        provider_health_status, heartbeat_written, correlation_id,
+    )
+
+    return {
+        'target_id': target_id,
+        'monitored_system_id': monitored_system_id,
+        'name': target.get('name') or 'Unnamed target',
+        'network': chain_network or None,
+        'chain_id': target.get('chain_id'),
+        'address': address,
+        'address_kind': 'contract' if is_contract else ('wallet' if target.get('wallet_address') else None),
+        'provider_host': provider_host,
+        'provider_health_status': provider_health_status,
+        'reachable': reachable,
+        'chain_id_ok': chain_id_ok,
+        'latest_block': probe.get('latest_block'),
+        'latency_ms': probe.get('latency_ms'),
+        'bytecode_present': probe.get('bytecode_present'),
+        'evidence_source': evidence_source,
+        'provider_health_record_id': record_id,
+        'steps': steps,
+    }
+
+
+def run_source_diagnostic(request: Request, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Execute a REAL bounded provider diagnostic and persist canonical runtime evidence.
+
+    Unlike ``run_source_health_check`` (which only evaluates existing records), this
+    calls the configured RPC provider for each in-scope target, confirms chain id +
+    latest block + deployed bytecode, and writes a provider-health record + heartbeat
+    + coverage record — real measured evidence, never fabricated. Idempotent: a
+    per-workspace advisory lock prevents duplicate concurrent runs.
+    """
+    require_live_mode()
+    body = payload if isinstance(payload, dict) else {}
+    requested_target_id = str(body.get('target_id') or '').strip() or None
+    correlation_id = str(uuid.uuid4())
+
+    with pg_connection() as connection:
+        # Autocommit: the diagnostic performs slow RPC I/O and standalone evidence
+        # writes; never hold the connection idle-in-transaction across the probe.
+        try:
+            connection.autocommit = True
+        except Exception:
+            logger.warning('source_diagnostic_autocommit_unavailable action=continue_default_isolation')
+        ensure_pilot_schema(connection)
+        user, workspace_context = require_ops_rbac_guard(connection, request)
+        workspace_id = workspace_context['workspace_id']
+
+        if not _try_acquire_diagnostic_lock(connection, workspace_id=workspace_id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail='A diagnostic is already running for this workspace. Please wait for it to finish.',
+            )
+        try:
+            targets = _load_diagnostic_targets(connection, workspace_id=workspace_id, target_id=requested_target_id)
+            if requested_target_id and not targets:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Target not found or not enabled.')
+            # NB: the diagnostic deliberately does NOT write monitoring_heartbeats — that
+            # table is the CONTINUOUS monitoring worker's liveness signal, and runtime-status
+            # resolves the workspace heartbeat as MAX(last_heartbeat_at) across it without
+            # filtering worker_name. Writing here would let a manual "Run Diagnostic" click
+            # make the continuous worker appear alive when it is not. The diagnostic proves
+            # PROVIDER connectivity via provider_health_records (tagged actor_type=diagnostic);
+            # the scheduled worker remains the sole author of the worker heartbeat.
+
+            results: list[dict[str, Any]] = []
+            for target in targets:
+                results.append(_diagnose_target(
+                    connection, workspace_id=workspace_id, target=target,
+                    correlation_id=correlation_id, now=utc_now(),
+                ))
+
+            summary = {
+                'targets_evaluated': len(results),
+                'reachable': sum(1 for r in results if r.get('reachable')),
+                'unreachable': sum(1 for r in results if not r.get('reachable')),
+                'healthy': sum(1 for r in results if r.get('provider_health_status') == 'healthy'),
+                'degraded': sum(1 for r in results if r.get('provider_health_status') == 'degraded'),
+                'errors': sum(1 for r in results if r.get('provider_health_status') == 'error'),
+            }
+            log_audit(
+                connection,
+                action='source.diagnostic.run',
+                entity_type='workspace_source_settings',
+                entity_id=workspace_id,
+                request=request,
+                user_id=user['id'],
+                workspace_id=workspace_id,
+                metadata={'correlation_id': correlation_id, **summary},
+            )
+        finally:
+            _release_diagnostic_lock(connection, workspace_id=workspace_id)
+
+    _publish_source_event(workspace_id, 'source.diagnostic.completed', {
+        'correlation_id': correlation_id,
+        'targets_evaluated': summary['targets_evaluated'],
+        'healthy': summary['healthy'],
+    })
+
+    return {
+        'ran_at': utc_now_iso(),
+        'correlation_id': correlation_id,
+        'summary': summary,
+        'results': _json_safe_value(results),
     }
 
 

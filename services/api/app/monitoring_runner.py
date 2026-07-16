@@ -85,6 +85,7 @@ from services.api.app.pilot import (
     evaluate_workspace_monitoring_continuity,
     resolve_response_action_capability,
     normalize_workspace_header_value,
+    persist_provider_health_evidence,
     promote_wallet_transfer_alerts,
 )
 from services.api.app.threat_payloads import ThreatKind, normalize_threat_payload
@@ -113,6 +114,24 @@ def _min_monitoring_interval_seconds() -> int:
         return max(1, int(os.getenv('MIN_EVM_POLLING_INTERVAL_SECONDS', '60')))
     except (TypeError, ValueError):
         return 60
+
+
+def _target_selected_for_live_poll(
+    last_checked_at: 'datetime | None', interval_seconds: int, now: 'datetime'
+) -> bool:
+    """True when a target is due for a scheduled worker poll.
+
+    A newly activated target that has never been polled has ``last_checked_at IS NULL``
+    and is due IMMEDIATELY — its FIRST scheduled poll never waits on a poll interval or
+    on an old / inherited scheduling timestamp. Otherwise it becomes due once
+    ``interval_seconds`` have elapsed since the last successful check. This is the single
+    canonical due rule, kept as a helper so it is unit-testable and cannot drift.
+    """
+    if last_checked_at is None:
+        return True
+    return last_checked_at <= now - timedelta(seconds=interval_seconds)
+
+
 MONITORED_SYSTEM_HEARTBEAT_TOUCH_SECONDS = max(15, int(os.getenv('MONITORED_SYSTEM_HEARTBEAT_TOUCH_SECONDS', '60')))
 MONITORING_DUE_SELECTION_BACKFILL_COOLDOWN_SECONDS = max(
     120,
@@ -4073,8 +4092,20 @@ def process_monitoring_target(
                 target.get('id'), _resolved_wallet,
             )
             target['wallet_address'] = _resolved_wallet
+    # Measure REAL provider-request latency with a monotonic clock around the RPC
+    # fetch only. fetch_target_activity_result -> fetch_evm_activity does pure RPC
+    # (the evm provider touches no database), so this elapsed time is provider latency,
+    # not DB processing. A chain-mismatch or provider-backoff result early-returns
+    # WITHOUT any RPC call — latency is left None for those (never invented).
+    _rpc_started = perf_counter()
     provider_result: ActivityProviderResult = fetch_target_activity_result(target, checkpoint)
+    _rpc_elapsed_ms = int(round((perf_counter() - _rpc_started) * 1000))
     provider_checked_at = utc_now()
+    _rpc_attempted = (
+        not target.get('_evm_chain_mismatch')
+        and provider_result.reason_code not in {'CHAIN_RPC_MISMATCH', 'PROVIDER_BACKOFF_ACTIVE'}
+    )
+    provider_latency_ms = _rpc_elapsed_ms if _rpc_attempted else None
     # Detect chain mismatch set by evm_activity_provider — mark target unhealthy and log it
     # so operators can identify misconfigured ethereum-mainnet targets sharing a Base RPC.
     # This does not affect correctly configured Base targets.
@@ -4094,25 +4125,54 @@ def process_monitoring_target(
     provider_evidence_source = _telemetry_event_evidence_source(provider_result=provider_result, source_type=str(provider_result.source_type or '').strip().lower())
     if provider_evidence_source not in {'live', 'simulator', 'replay'}:
         provider_evidence_source = 'none'
-    connection.execute(
-        '''
-        INSERT INTO provider_health_records (
-            id, workspace_id, provider_type, target_id, status, checked_at, latency_ms, error_message, evidence_source, metadata
-        )
-        VALUES (%s::uuid, %s::uuid, %s, %s::uuid, %s, %s, %s, %s, %s, %s::jsonb)
-        ''',
-        (
-            str(uuid.uuid4()),
-            str(target['workspace_id']),
-            str(provider_result.provider_name or provider_result.source_type or 'monitoring_provider'),
-            str(target['id']),
-            provider_health_status,
-            provider_checked_at,
-            None,
-            provider_error_message,
-            provider_evidence_source,
-            _json_dumps({'provider_status': provider_result.status, 'mode': provider_result.mode, 'source_type': provider_result.source_type}),
-        ),
+    # Resolve the redacted provider host + expected chain id for the target's chain so
+    # Screen 4 shows the real provider (base-mainnet.g.alchemy.com) and the primary-route
+    # health record is matched by host. Only the hostname is ever persisted — never the
+    # URL, path, query, or key.
+    _resolved_host: str | None = None
+    _resolved_chain_id: int | None = None
+    try:
+        from services.api.app.evm_activity_provider import resolve_chain_rpc as _resolve_chain_rpc
+        from urllib.parse import urlparse as _urlparse
+        _chain_rpc = _resolve_chain_rpc(chain)
+        _resolved_chain_id = _chain_rpc.get('expected_chain_id')
+        _resolved_host = _urlparse(str(_chain_rpc.get('rpc_url') or '')).hostname
+    except Exception:
+        _resolved_host = None
+    # Canonical provider-health persistence (shared with Run Diagnostic). Records the
+    # measured latency, host, chain, latest block, success/failure and consecutive
+    # streak — tagged actor_type=worker so it is distinguishable from a manual diagnostic.
+    provider_health_record_id = persist_provider_health_evidence(
+        connection,
+        workspace_id=str(target['workspace_id']),
+        target_id=str(target['id']),
+        provider_host=_resolved_host or str(provider_result.provider_name or provider_result.source_type or 'monitoring_provider'),
+        status=provider_health_status,
+        success=(provider_result.status == 'live'),
+        latency_ms=provider_latency_ms,
+        chain_id=_resolved_chain_id,
+        latest_block=provider_result.latest_block,
+        error_message=provider_error_message,
+        error_category=(provider_result.error_code or provider_result.reason_code),
+        evidence_source=provider_evidence_source,
+        role='primary',
+        actor_type='worker',
+        trigger='scheduled_poll',
+        checked_at=provider_checked_at,
+        extra_metadata={
+            'provider_status': provider_result.status,
+            'mode': provider_result.mode,
+            'source_type': provider_result.source_type,
+            'rpc_attempted': _rpc_attempted,
+        },
+    )
+    logger.info(
+        'provider_health_persisted workspace_id=%s target_id=%s provider_host=%s chain_id=%s '
+        'latest_block=%s latency_ms=%s status=%s success=%s actor_type=worker trigger=scheduled_poll '
+        'provider_health_record_id=%s',
+        target.get('workspace_id'), target.get('id'), _resolved_host or 'unknown',
+        _resolved_chain_id, provider_result.latest_block, provider_latency_ms,
+        provider_health_status, provider_result.status == 'live', provider_health_record_id,
     )
     events = provider_result.events
     source_type = str(provider_result.source_type or '').strip().lower()
@@ -5607,21 +5667,33 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                         'due_in_seconds': due_in_seconds,
                     }
                 )
-            if last_checked_at is None:
+            selected_for_live_poll = _target_selected_for_live_poll(last_checked_at, interval_seconds, now)
+            blocked_reason: str | None = None
+            if selected_for_live_poll:
                 due_target_ids.append(system['target_id'])
                 due_system_ids[str(system['target_id'])] = str(system['monitored_system_id'])
             else:
-                if last_checked_at <= now - timedelta(seconds=interval_seconds):
-                    due_target_ids.append(system['target_id'])
-                    due_system_ids[str(system['target_id'])] = str(system['monitored_system_id'])
-                else:
-                    skipped_not_due += 1
-                    skipped_not_due_target_ids.add(str(system.get('target_id') or '').strip())
-                    if (
-                        skipped_not_due_oldest_checked_at is None
-                        or last_checked_at < skipped_not_due_oldest_checked_at
-                    ):
-                        skipped_not_due_oldest_checked_at = last_checked_at
+                blocked_reason = 'not_due_before_interval'
+                skipped_not_due += 1
+                skipped_not_due_target_ids.add(str(system.get('target_id') or '').strip())
+                if (
+                    skipped_not_due_oldest_checked_at is None
+                    or last_checked_at < skipped_not_due_oldest_checked_at
+                ):
+                    skipped_not_due_oldest_checked_at = last_checked_at
+            # Safe due-selection log for the target actually chosen (bounded by max_targets).
+            # A never-polled target logs last_checked_at=never / selected_for_live_poll=True,
+            # proving a freshly onboarded USDC target is polled on the very first cycle.
+            if selected_for_live_poll:
+                logger.info(
+                    'due_selection_target workspace_id=%s target_id=%s monitored_system_id=%s '
+                    'chain_network=%s last_checked_at=%s next_due_at=%s selected_for_live_poll=%s '
+                    'blocked_reason=%s',
+                    workspace_id, system.get('target_id'), system.get('monitored_system_id'),
+                    system.get('chain_network'),
+                    last_checked_at.isoformat() if last_checked_at else 'never',
+                    next_due_at.isoformat(), selected_for_live_poll, blocked_reason or 'none',
+                )
             if len(due_target_ids) >= max_targets:
                 break
         base_due_count = len(due_target_ids)
