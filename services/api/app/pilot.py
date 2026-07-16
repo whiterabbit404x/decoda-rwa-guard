@@ -10998,12 +10998,423 @@ def list_assets(request: Request) -> dict[str, Any]:
         return {'assets': assets, 'workspace': workspace_context['workspace']}
 
 
+def _canonical_target_uuid(workspace_id: str, target_id: str) -> str:
+    """Deterministic monitored_targets(id) for a legacy targets(id).
+
+    Mirrors _sync_canonical_monitoring_target_state so provider-health / poll /
+    coverage rows keyed to monitored_targets(id) can be joined back to a targets row.
+    """
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f'canonical-target:{workspace_id}:{target_id}'))
+
+
+# Canonical monitoring-source status vocabulary. Every value shown to the customer
+# must map to exactly one of these — no invented health strings or percentages.
+_SOURCE_STATUS_HEALTHY = 'healthy'
+_SOURCE_STATUS_PROVISIONING = 'provisioning'
+_SOURCE_STATUS_WARNING = 'warning'
+_SOURCE_STATUS_DEGRADED = 'degraded'
+_SOURCE_STATUS_FAILED = 'failed'
+_SOURCE_STATUS_DISABLED = 'disabled'
+_SOURCE_STATUS_MISSING_CONFIG = 'missing_configuration'
+
+
+def _derive_source_status(target: dict[str, Any], system: dict[str, Any] | None) -> tuple[str, str | None]:
+    """Return (status, reason) derived only from canonical target + monitored-system facts."""
+    enabled = bool(target.get('enabled'))
+    monitoring_enabled = bool(target.get('monitoring_enabled'))
+    asset_missing = bool(target.get('asset_missing')) or not target.get('asset_id')
+
+    if asset_missing:
+        return _SOURCE_STATUS_MISSING_CONFIG, 'linked_asset_missing'
+    if not enabled and not monitoring_enabled and system is None:
+        return _SOURCE_STATUS_DISABLED, 'monitoring_disabled'
+    if system is None:
+        return _SOURCE_STATUS_MISSING_CONFIG, 'monitored_system_missing'
+
+    if not monitored_system_row_enabled(system):
+        return _SOURCE_STATUS_DISABLED, 'monitored_system_disabled'
+
+    runtime_status = str(system.get('runtime_status') or '').strip().lower()
+    has_heartbeat = bool(system.get('last_heartbeat'))
+    coverage_reason = str(system.get('coverage_reason') or '').strip().lower()
+    freshness = str(system.get('freshness_status') or '').strip().lower()
+
+    if runtime_status == 'failed':
+        return _SOURCE_STATUS_FAILED, system.get('last_error_text') or 'runtime_failed'
+    if runtime_status == 'degraded':
+        return _SOURCE_STATUS_DEGRADED, coverage_reason or 'runtime_degraded'
+    if runtime_status == 'disabled':
+        return _SOURCE_STATUS_DISABLED, 'monitored_system_disabled'
+    if runtime_status == 'provisioning' or (runtime_status in {'', 'idle'} and not has_heartbeat):
+        return _SOURCE_STATUS_PROVISIONING, coverage_reason or 'provisioning_pending_first_heartbeat'
+    if runtime_status == 'healthy':
+        if freshness == 'stale':
+            return _SOURCE_STATUS_WARNING, 'telemetry_stale'
+        return _SOURCE_STATUS_HEALTHY, None
+    if runtime_status == 'idle' and has_heartbeat:
+        # Worker is alive but the monitoring loop has gone quiet.
+        return _SOURCE_STATUS_WARNING, coverage_reason or 'awaiting_poll'
+    return _SOURCE_STATUS_PROVISIONING, coverage_reason or 'provisioning'
+
+
+def _target_provider_routing(target: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+    """Extract (primary_provider, fallback_provider, routing_explanation) from target metadata."""
+    metadata = target.get('target_metadata')
+    if not isinstance(metadata, dict):
+        return None, None, None
+    rpc_sources = metadata.get('rpc_sources')
+    if not isinstance(rpc_sources, dict):
+        return None, None, None
+    primary = str(rpc_sources.get('primary_host') or '').strip() or None
+    fallback = str(rpc_sources.get('fallback_host') or '').strip() or None
+    explanation = str(rpc_sources.get('explanation') or '').strip() or None
+    return primary, fallback, explanation
+
+
+def _load_latest_block_by_system(connection: Any, *, workspace_id: str) -> dict[str, int]:
+    """Latest processed block per monitored_system from monitor_checkpoint (canonical cursor)."""
+    try:
+        rows = connection.execute(
+            '''
+            SELECT monitored_system_id, MAX(last_processed_block) AS latest_block
+            FROM monitor_checkpoint
+            WHERE workspace_id = %s::uuid
+              AND monitored_system_id IS NOT NULL
+            GROUP BY monitored_system_id
+            ''',
+            (workspace_id,),
+        ).fetchall()
+    except Exception:
+        logger.warning('monitoring_sources_latest_block_unavailable workspace_id=%s', workspace_id, exc_info=True)
+        return {}
+    result: dict[str, int] = {}
+    for row in rows:
+        system_id = str(row.get('monitored_system_id') or '')
+        block = row.get('latest_block')
+        if system_id and block is not None:
+            try:
+                result[system_id] = int(block)
+            except (TypeError, ValueError):
+                continue
+    return result
+
+
+def _load_latest_provider_health_by_target(
+    connection: Any, *, workspace_id: str, canonical_ids: list[str]
+) -> dict[str, dict[str, Any]]:
+    """Latest provider_health_records row per canonical target id (measured, never invented)."""
+    if not canonical_ids:
+        return {}
+    try:
+        rows = connection.execute(
+            '''
+            SELECT DISTINCT ON (target_id)
+                   target_id, status, latency_ms, checked_at, evidence_source, provider_type, error_message
+            FROM provider_health_records
+            WHERE workspace_id = %s::uuid
+              AND target_id = ANY(%s::uuid[])
+            ORDER BY target_id, checked_at DESC
+            ''',
+            (workspace_id, canonical_ids),
+        ).fetchall()
+    except Exception:
+        logger.warning('monitoring_sources_provider_health_unavailable workspace_id=%s', workspace_id, exc_info=True)
+        return {}
+    return {str(row['target_id']): dict(row) for row in rows if row.get('target_id')}
+
+
+def _load_latest_coverage_by_target(
+    connection: Any, *, workspace_id: str, canonical_ids: list[str]
+) -> dict[str, dict[str, Any]]:
+    """Latest target_coverage_records row per canonical target id."""
+    if not canonical_ids:
+        return {}
+    try:
+        rows = connection.execute(
+            '''
+            SELECT DISTINCT ON (target_id)
+                   target_id, coverage_status, last_poll_at, last_heartbeat_at, last_telemetry_at,
+                   last_detection_at, evidence_source, computed_at
+            FROM target_coverage_records
+            WHERE workspace_id = %s::uuid
+              AND target_id = ANY(%s::uuid[])
+            ORDER BY target_id, computed_at DESC
+            ''',
+            (workspace_id, canonical_ids),
+        ).fetchall()
+    except Exception:
+        logger.warning('monitoring_sources_coverage_unavailable workspace_id=%s', workspace_id, exc_info=True)
+        return {}
+    return {str(row['target_id']): dict(row) for row in rows if row.get('target_id')}
+
+
+def _build_monitoring_sources_enrichment(
+    connection: Any,
+    *,
+    workspace_id: str,
+    assets: list[dict[str, Any]],
+    targets: list[dict[str, Any]],
+    systems: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Assemble Screen-4 monitoring-source rows + provider health + agent state.
+
+    Every value is derived from canonical backend records (targets, monitored_systems,
+    monitor_checkpoint, provider_health_records, target_coverage_records) or left as null
+    when no measured record exists. No percentages or health values are invented.
+    """
+    systems_by_target: dict[str, dict[str, Any]] = {}
+    for system in systems:
+        target_id = str(system.get('target_id') or '')
+        if target_id and target_id not in systems_by_target:
+            systems_by_target[target_id] = system
+
+    canonical_by_target: dict[str, str] = {
+        str(t.get('id')): _canonical_target_uuid(workspace_id, str(t.get('id')))
+        for t in targets
+        if t.get('id')
+    }
+    canonical_ids = list({v for v in canonical_by_target.values()})
+
+    latest_block_by_system = _load_latest_block_by_system(connection, workspace_id=workspace_id)
+    provider_health_by_canonical = _load_latest_provider_health_by_target(
+        connection, workspace_id=workspace_id, canonical_ids=canonical_ids
+    )
+    coverage_by_canonical = _load_latest_coverage_by_target(
+        connection, workspace_id=workspace_id, canonical_ids=canonical_ids
+    )
+
+    sources: list[dict[str, Any]] = []
+    provider_agg: dict[str, dict[str, Any]] = {}
+    missing_target_links = 0
+    degraded_or_failed = 0
+    healthy_sources = 0
+    provisioning_sources = 0
+    primary_host_counts: dict[str, int] = {}
+    fallback_host_counts: dict[str, int] = {}
+    latest_routing_decision: str | None = None
+    fresh_telemetry_present = False
+
+    for target in targets:
+        target_id = str(target.get('id') or '')
+        system = systems_by_target.get(target_id)
+        canonical_id = canonical_by_target.get(target_id)
+        provider_health = provider_health_by_canonical.get(canonical_id or '') or {}
+        coverage = coverage_by_canonical.get(canonical_id or '') or {}
+
+        status, status_reason = _derive_source_status(target, system)
+        primary_provider, fallback_provider, routing_explanation = _target_provider_routing(target)
+        provider_host = (
+            str(provider_health.get('provider_type') or '').strip()
+            or primary_provider
+            or None
+        )
+
+        address = (
+            str(target.get('contract_identifier') or '').strip()
+            or str(target.get('wallet_address') or '').strip()
+            or None
+        )
+        address_kind = 'contract' if target.get('contract_identifier') else ('wallet' if target.get('wallet_address') else None)
+
+        latest_block = latest_block_by_system.get(str(system.get('id'))) if system else None
+        latency_ms = provider_health.get('latency_ms')
+        last_poll_at = coverage.get('last_poll_at')
+        last_telemetry_at = (
+            (system or {}).get('last_event_at')
+            or coverage.get('last_telemetry_at')
+        )
+        evidence_source = str(
+            coverage.get('evidence_source')
+            or provider_health.get('evidence_source')
+            or 'none'
+        ).strip().lower()
+
+        if status in {_SOURCE_STATUS_DEGRADED, _SOURCE_STATUS_FAILED}:
+            degraded_or_failed += 1
+        elif status == _SOURCE_STATUS_HEALTHY:
+            healthy_sources += 1
+        elif status == _SOURCE_STATUS_PROVISIONING:
+            provisioning_sources += 1
+        if status_reason in {'linked_asset_missing', 'monitored_system_missing'}:
+            missing_target_links += 1
+
+        if primary_provider:
+            primary_host_counts[primary_provider] = primary_host_counts.get(primary_provider, 0) + 1
+        if fallback_provider:
+            fallback_host_counts[fallback_provider] = fallback_host_counts.get(fallback_provider, 0) + 1
+        if routing_explanation and latest_routing_decision is None:
+            latest_routing_decision = routing_explanation
+        if str((system or {}).get('freshness_status') or '').strip().lower() == 'fresh' and last_telemetry_at:
+            fresh_telemetry_present = True
+
+        # Aggregate provider health for the summary panel (measured records only).
+        if provider_host:
+            entry = provider_agg.setdefault(
+                provider_host,
+                {'host': provider_host, 'status': None, 'latency_ms': None, 'checked_at': None,
+                 'evidence_source': None, 'target_count': 0},
+            )
+            entry['target_count'] += 1
+            record_status = str(provider_health.get('status') or '').strip().lower() or None
+            if record_status:
+                # Keep the worst observed status for the provider.
+                severity = {'healthy': 0, 'degraded': 1, 'unavailable': 2, 'error': 3}
+                current = entry['status']
+                if current is None or severity.get(record_status, 0) > severity.get(current, 0):
+                    entry['status'] = record_status
+                    entry['latency_ms'] = provider_health.get('latency_ms')
+                    entry['checked_at'] = _isoformat_or_none(provider_health.get('checked_at'))
+                    entry['evidence_source'] = str(provider_health.get('evidence_source') or '').strip().lower() or None
+
+        sources.append(_json_safe_value({
+            'target_id': target_id,
+            'system_id': str(system.get('id')) if system else None,
+            'name': target.get('name') or 'Unnamed target',
+            'asset_id': target.get('asset_id'),
+            'asset_name': target.get('asset_name') or (system or {}).get('asset_name'),
+            'network': target.get('chain_network'),
+            'chain_id': target.get('chain_id'),
+            'address': address,
+            'address_kind': address_kind,
+            'provider': provider_host,
+            'primary_provider': primary_provider,
+            'fallback_provider': fallback_provider,
+            'source_type': target.get('monitoring_mode') or target.get('target_type'),
+            'status': status,
+            'status_reason': status_reason,
+            'runtime_status': (system or {}).get('runtime_status'),
+            'latest_block': latest_block,
+            'block_lag': None,  # chain-tip lag requires a live RPC head; not fabricated here.
+            'median_latency_ms': latency_ms,
+            'last_poll_at': last_poll_at,
+            'last_telemetry_at': last_telemetry_at,
+            'routing': 'primary' if primary_provider else ('fallback' if fallback_provider else None),
+            'routing_explanation': routing_explanation,
+            'coverage_state': coverage.get('coverage_status') or (system or {}).get('coverage_reason'),
+            'evidence_source': evidence_source,
+            'enabled': bool(target.get('enabled')),
+            'monitoring_enabled': bool(target.get('monitoring_enabled')),
+        }))
+
+    providers = list(provider_agg.values())
+    healthy_providers = sum(1 for p in providers if p['status'] == 'healthy')
+    degraded_providers = sum(1 for p in providers if p['status'] in {'degraded', 'unavailable', 'error'})
+
+    recommended_fallback = None
+    if fallback_host_counts:
+        recommended_fallback = max(fallback_host_counts.items(), key=lambda kv: kv[1])[0]
+    primary_provider_top = None
+    if primary_host_counts:
+        primary_provider_top = max(primary_host_counts.items(), key=lambda kv: kv[1])[0]
+
+    recommendations: list[dict[str, Any]] = []
+    if missing_target_links > 0:
+        recommendations.append({
+            'kind': 'repair_links',
+            'detail': f'{missing_target_links} monitoring source(s) are missing an asset or monitored-system link.',
+        })
+    if degraded_or_failed > 0:
+        recommendations.append({
+            'kind': 'reroute_provider',
+            'detail': f'{degraded_or_failed} source(s) are degraded or failed; re-test the provider or apply a fallback route.',
+        })
+    if primary_provider_top and not recommended_fallback:
+        recommendations.append({
+            'kind': 'add_fallback',
+            'detail': 'Only one healthy RPC provider is configured; add a fallback provider for failover resilience.',
+        })
+
+    # Confidence is grounded in measured evidence, never a fixed number.
+    if not targets:
+        confidence = 'unavailable'
+        confidence_basis = 'No monitoring targets configured yet.'
+    elif degraded_or_failed > 0 or missing_target_links > 0:
+        confidence = 'low'
+        confidence_basis = 'Degraded providers or missing links detected in canonical records.'
+    elif fresh_telemetry_present and healthy_sources > 0:
+        confidence = 'high'
+        confidence_basis = 'Healthy monitored systems with fresh telemetry evidence.'
+    elif healthy_sources > 0:
+        confidence = 'medium'
+        confidence_basis = 'Monitored systems healthy; awaiting fresh telemetry confirmation.'
+    elif provisioning_sources > 0:
+        confidence = 'medium'
+        confidence_basis = 'Sources provisioning; waiting for first heartbeat and poll.'
+    else:
+        confidence = 'low'
+        confidence_basis = 'No healthy monitored systems reporting yet.'
+
+    if not targets:
+        agent_state = 'idle'
+    elif missing_target_links > 0 or degraded_or_failed > 0:
+        agent_state = 'attention_required'
+    elif provisioning_sources > 0 and healthy_sources == 0:
+        agent_state = 'provisioning'
+    else:
+        agent_state = 'monitoring'
+
+    return {
+        'sources': sources,
+        'provider_health': {
+            'providers': _json_safe_value(providers),
+            'healthy_count': healthy_providers,
+            'degraded_count': degraded_providers,
+            'unknown_count': sum(1 for p in providers if p['status'] is None),
+            'total': len(providers),
+        },
+        'agent': _json_safe_value({
+            'state': agent_state,
+            'healthy_providers': healthy_providers,
+            'degraded_providers': degraded_providers,
+            'missing_target_links': missing_target_links,
+            'primary_provider': primary_provider_top,
+            'recommended_fallback': recommended_fallback,
+            'latest_routing_decision': latest_routing_decision,
+            'confidence': confidence,
+            'confidence_basis': confidence_basis,
+            'recommendations': recommendations,
+        }),
+    }
+
+
+def _isoformat_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    try:
+        return value.isoformat()
+    except AttributeError:
+        return str(value)
+
+
 def list_monitoring_sources(request: Request) -> dict[str, Any]:
     require_live_mode()
+    assets = list_assets(request).get('assets', [])
+    targets = list_targets(request).get('targets', [])
+    systems = list_monitored_systems(request).get('systems', [])
+    enrichment: dict[str, Any] = {'sources': [], 'provider_health': None, 'agent': None}
+    try:
+        with pg_connection() as connection:
+            ensure_pilot_schema(connection)
+            _, workspace_context, _ = resolve_workspace_context_for_request(connection, request)
+            workspace_id = workspace_context['workspace_id']
+            enrichment = _build_monitoring_sources_enrichment(
+                connection, workspace_id=workspace_id, assets=assets, targets=targets, systems=systems,
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        # Enrichment is additive; never fail the whole page if a canonical facts table is
+        # temporarily unavailable. The base assets/targets/systems payload still renders.
+        logger.exception('monitoring_sources_enrichment_failed')
     return {
-        'assets': list_assets(request).get('assets', []),
-        'targets': list_targets(request).get('targets', []),
-        'systems': list_monitored_systems(request).get('systems', []),
+        'assets': assets,
+        'targets': targets,
+        'systems': systems,
+        'sources': enrichment.get('sources', []),
+        'provider_health': enrichment.get('provider_health'),
+        'agent': enrichment.get('agent'),
     }
 
 
@@ -11903,15 +12314,23 @@ def _try_relink_orphan_target(
     identifier = contract_identifier or wallet_address
 
     if identifier:
+        # Match by contract/wallet address against every column an asset can carry the
+        # address in (identifier, normalized_identifier, token_contract_address). Chain is
+        # matched first so we never link, e.g., a Base USDC target to an Ethereum asset that
+        # happens to share the same address.
         matches = connection.execute(
             '''
             SELECT id, name FROM assets
             WHERE workspace_id = %s::uuid
               AND deleted_at IS NULL
               AND lower(chain_network) = lower(%s)
-              AND (lower(identifier) = lower(%s) OR lower(COALESCE(normalized_identifier, '')) = lower(%s))
+              AND (
+                    lower(identifier) = lower(%s)
+                 OR lower(COALESCE(normalized_identifier, '')) = lower(%s)
+                 OR lower(COALESCE(token_contract_address, '')) = lower(%s)
+              )
             ''',
-            (workspace_id, chain_network, identifier, identifier),
+            (workspace_id, chain_network, identifier, identifier, identifier),
         ).fetchall()
         if len(matches) == 1:
             new_asset_id = str(matches[0]['id'])
@@ -11929,15 +12348,21 @@ def _try_relink_orphan_target(
                 'status': 'multiple_candidates',
                 'candidates': [{'id': str(m['id']), 'name': str(m.get('name') or '')} for m in matches],
             }
-        # Chain-specific search found nothing — try without chain constraint before creating
+        # Chain-specific search found nothing — try without chain constraint before creating.
+        # This still matches strictly on the contract/wallet address (never an unrelated asset),
+        # only relaxing the chain-network *name* (e.g. 'ethereum' vs 'ethereum-mainnet').
         chain_agnostic = connection.execute(
             '''
             SELECT id, name FROM assets
             WHERE workspace_id = %s::uuid
               AND deleted_at IS NULL
-              AND (lower(identifier) = lower(%s) OR lower(COALESCE(normalized_identifier, '')) = lower(%s))
+              AND (
+                    lower(identifier) = lower(%s)
+                 OR lower(COALESCE(normalized_identifier, '')) = lower(%s)
+                 OR lower(COALESCE(token_contract_address, '')) = lower(%s)
+              )
             ''',
-            (workspace_id, identifier, identifier),
+            (workspace_id, identifier, identifier, identifier),
         ).fetchall()
         if len(chain_agnostic) == 1:
             new_asset_id = str(chain_agnostic[0]['id'])
@@ -11985,7 +12410,9 @@ def _try_relink_orphan_target(
             (
                 new_asset_id, workspace_id, asset_name, None, asset_type, chain_network, identifier,
                 None, 'medium', None, None, True,
-                None, None, None, None,
+                # asset_identifier + token_contract_address carry the on-chain address so a later
+                # repair links back to *this* asset by contract address instead of creating a duplicate.
+                None, None, identifier, (identifier if asset_type == 'contract' else None),
                 '[]', '[]', '[]', '[]',
                 '[]', '[]', '{}', '{}',
                 None, None, '[]', '[]',
@@ -12033,10 +12460,13 @@ def _try_relink_orphan_target(
                 'candidates': [{'id': str(m['id']), 'name': str(m.get('name') or '')} for m in name_matches],
             }
 
-    # Last-resort workspace fallback: if exactly one active asset exists, it is the only candidate.
+    # Last-resort workspace fallback: only for targets that carry NO contract/wallet identifier
+    # (identifier-bearing targets are handled above and never reach here). Even then we only link
+    # to the sole workspace asset when its chain matches the target — never blindly to a first-row
+    # asset on a different chain (that is the "wrong asset" trap this fallback must avoid).
     ws_assets = connection.execute(
         '''
-        SELECT id, name FROM assets
+        SELECT id, name, chain_network FROM assets
         WHERE workspace_id = %s::uuid
           AND deleted_at IS NULL
         ORDER BY created_at ASC
@@ -12044,7 +12474,15 @@ def _try_relink_orphan_target(
         (workspace_id,),
     ).fetchall()
     if len(ws_assets) == 1:
-        new_asset_id = str(ws_assets[0]['id'])
+        sole_asset = ws_assets[0]
+        sole_chain = str(sole_asset.get('chain_network') or '').strip().lower()
+        # Allow when the asset's chain is unknown/blank or matches the target's chain.
+        if sole_chain and chain_network != 'unknown' and sole_chain != chain_network.lower():
+            return {
+                'status': 'multiple_candidates',
+                'candidates': [{'id': str(sole_asset['id']), 'name': str(sole_asset.get('name') or '')}],
+            }
+        new_asset_id = str(sole_asset['id'])
         connection.execute(
             'UPDATE targets SET asset_id = %s::uuid, updated_at = NOW() WHERE id = %s::uuid',
             (new_asset_id, target_id),
