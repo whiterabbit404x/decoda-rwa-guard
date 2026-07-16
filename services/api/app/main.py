@@ -4169,14 +4169,25 @@ def monitoring_systems_list(request: Request) -> dict[str, Any]:
         systems_payload = with_auth_schema_json(lambda: list_monitored_systems(request))
     except Exception as exc:
         logger.exception('monitoring_systems_list_failed')
+        # Surface a stable error code + correlation id so the client can render a distinct
+        # API-failure state (never the genuine-empty state or an asset-creation CTA).
+        detail = getattr(exc, 'detail', None)
+        error_obj: dict[str, Any] = {
+            'code': 'monitoring_systems_route_failed',
+            'type': type(exc).__name__,
+            'message': 'Monitored systems temporarily unavailable.',
+        }
+        if isinstance(detail, dict):
+            if detail.get('code'):
+                error_obj['code'] = str(detail['code'])
+            if detail.get('correlation_id'):
+                error_obj['correlation_id'] = str(detail['correlation_id'])
+            if detail.get('stage'):
+                error_obj['stage'] = str(detail['stage'])
         systems_payload = {
             'systems': [],
             'workspace': None,
-            'error': {
-                'code': 'monitoring_systems_route_failed',
-                'type': type(exc).__name__,
-                'message': 'Monitored systems temporarily unavailable.',
-            },
+            'error': error_obj,
         }
     try:
         runtime_payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
