@@ -10271,6 +10271,56 @@ def resolve_workspace_context_for_request(connection: psycopg.Connection, reques
     return user, workspace_context, bool(normalized_workspace_id)
 
 
+# Optional monitored_systems runtime columns that a drifted production schema may be
+# missing (migrations 0037-0039). Pulled from to_jsonb() in the drift-proof fallback so
+# a configured system is still listed even before those migrations are applied. A missing
+# is_enabled defaults to enabled (matches monitored_system_row_enabled and the runtime raw
+# loader), so a configured monitored system is NEVER dropped from the list on schema drift.
+_MONITORED_SYSTEM_OPTIONAL_FIELDS: tuple[str, ...] = (
+    'status',
+    'is_enabled',
+    'runtime_status',
+    'last_event_at',
+    'last_coverage_telemetry_at',
+    'last_error_text',
+    'coverage_reason',
+    'freshness_status',
+    'confidence_status',
+)
+
+
+def _normalize_monitored_system_fallback_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Merge natively-selected identity columns with drift-prone fields from to_jsonb(ms).
+
+    Core identity/timestamp columns (present since the monitored_systems table was created)
+    are selected natively so their SQL types survive. Every runtime column that a drifted
+    schema might be missing is read from the row's JSON snapshot, so a missing column comes
+    back as None/default instead of raising and dropping the whole row.
+    """
+    ms_json = row.get('ms_json')
+    if not isinstance(ms_json, dict):
+        ms_json = {}
+    item: dict[str, Any] = {
+        'id': row.get('id') if row.get('id') is not None else ms_json.get('id'),
+        'workspace_id': row.get('workspace_id') if row.get('workspace_id') is not None else ms_json.get('workspace_id'),
+        'asset_id': row.get('asset_id') if row.get('asset_id') is not None else ms_json.get('asset_id'),
+        'target_id': row.get('target_id') if row.get('target_id') is not None else ms_json.get('target_id'),
+        'chain': row.get('chain') if row.get('chain') is not None else ms_json.get('chain'),
+        'last_heartbeat': row.get('last_heartbeat') if row.get('last_heartbeat') is not None else ms_json.get('last_heartbeat'),
+        'created_at': row.get('created_at') if row.get('created_at') is not None else ms_json.get('created_at'),
+        'monitoring_interval_seconds': row.get('monitoring_interval_seconds') or 30,
+        'asset_name': row.get('asset_name'),
+        'target_name': row.get('target_name'),
+    }
+    for field in _MONITORED_SYSTEM_OPTIONAL_FIELDS:
+        item[field] = ms_json.get(field)
+    if item.get('is_enabled') is None:
+        # Absent column (or NULL) means a configured system that predates the flag: keep it
+        # visible and enabled rather than filtering it out.
+        item['is_enabled'] = True
+    return item
+
+
 def list_workspace_monitored_system_rows(connection: psycopg.Connection, workspace_id: str) -> list[dict[str, Any]]:
     try:
         rows = connection.execute(
@@ -10286,74 +10336,103 @@ def list_workspace_monitored_system_rows(connection: psycopg.Connection, workspa
             ''',
             (workspace_id,),
         ).fetchall()
+        return [dict(row) for row in rows]
     except Exception as exc:
         error_text = str(exc).lower()
-        optional_columns = (
-            'last_coverage_telemetry_at',
-            'last_error_text',
-            'coverage_reason',
-            'freshness_status',
-            'confidence_status',
-        )
-        if not ('does not exist' in error_text and 'column' in error_text and any(column in error_text for column in optional_columns)):
+        # Only a missing column/relation (schema drift) is recoverable here. Any other error
+        # (connection loss, permission, etc.) must surface so the endpoint returns a truthful
+        # API-failure state instead of a misleading empty list.
+        if 'does not exist' not in error_text:
             raise
         logger.warning(
-            'list_workspace_monitored_system_rows_legacy_schema_fallback workspace_id=%s error_type=%s',
+            'list_workspace_monitored_system_rows_schema_drift_fallback workspace_id=%s error_type=%s',
             workspace_id,
             type(exc).__name__,
         )
-        rows = connection.execute(
-            '''
-            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, NULL::timestamptz AS last_coverage_telemetry_at, NULL::text AS last_error_text, NULL::text AS coverage_reason,
-                   NULL::text AS freshness_status, NULL::text AS confidence_status, ms.created_at,
-                   COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, a.name AS asset_name, t.name AS target_name
-            FROM monitored_systems ms
-            LEFT JOIN assets a ON a.id = ms.asset_id AND a.workspace_id = ms.workspace_id AND a.deleted_at IS NULL
-            LEFT JOIN targets t ON t.id = ms.target_id AND t.workspace_id = ms.workspace_id
-            WHERE ms.workspace_id = %s
-            ORDER BY ms.created_at DESC
-            ''',
-            (workspace_id,),
-        ).fetchall()
-    return [dict(row) for row in rows]
+    # Drift-proof fallback: to_jsonb(ms) never names a possibly-absent column, so a configured
+    # monitored system is returned regardless of which runtime columns a drifted production
+    # schema is missing. This keeps the list route in parity with the runtime raw loader —
+    # runtime_rows and list_route_rows always agree for the same workspace.
+    fallback_rows = connection.execute(
+        '''
+        SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.last_heartbeat, ms.created_at,
+               to_jsonb(ms) AS ms_json,
+               COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds,
+               a.name AS asset_name, t.name AS target_name
+        FROM monitored_systems ms
+        LEFT JOIN assets a ON a.id = ms.asset_id AND a.workspace_id = ms.workspace_id AND a.deleted_at IS NULL
+        LEFT JOIN targets t ON t.id = ms.target_id AND t.workspace_id = ms.workspace_id
+        WHERE ms.workspace_id = %s
+        ORDER BY ms.created_at DESC
+        ''',
+        (workspace_id,),
+    ).fetchall()
+    return [_normalize_monitored_system_fallback_row(dict(row)) for row in fallback_rows]
 
 
 def list_monitored_systems(request: Request) -> dict[str, Any]:
-    logger.info('monitoring_systems_list step=start')
+    correlation_id = uuid.uuid4().hex[:16]
+    logger.info('monitoring_systems_list step=start correlation_id=%s', correlation_id)
     stage = 'require_live_mode'
-    logger.info('monitoring_systems_list step=%s', stage)
+    logger.info('monitoring_systems_list step=%s correlation_id=%s', stage, correlation_id)
     try:
         require_live_mode()
     except HTTPException:
         raise
     except Exception as exc:
-        logger.exception('monitoring_systems_list_failed stage=%s', stage)
-        raise HTTPException(status_code=500, detail='Unable to load monitored systems.') from exc
+        logger.exception('monitoring_systems_list_failed stage=%s correlation_id=%s', stage, correlation_id)
+        raise HTTPException(
+            status_code=500,
+            detail={'code': 'monitored_systems_list_failed', 'stage': stage, 'correlation_id': correlation_id, 'message': 'Unable to load monitored systems.'},
+        ) from exc
 
     with pg_connection() as connection:
         stage = 'ensure_schema'
-        logger.info('monitoring_systems_list step=%s', stage)
+        logger.info('monitoring_systems_list step=%s correlation_id=%s', stage, correlation_id)
         ensure_pilot_schema(connection)
         stage = 'workspace_resolve'
-        logger.info('monitoring_systems_list step=%s', stage)
+        logger.info('monitoring_systems_list step=%s correlation_id=%s', stage, correlation_id)
         _, workspace_context, _ = resolve_workspace_context_for_request(connection, request)
         workspace_id = workspace_context['workspace_id']
-        logger.info('monitoring_systems_list step=workspace_resolved workspace_id=%s', workspace_id)
+        logger.info('monitoring_systems_list step=workspace_resolved correlation_id=%s workspace_id=%s', correlation_id, workspace_id)
         stage = 'list_rows'
-        logger.info('monitoring_systems_list step=%s workspace_id=%s', stage, workspace_id)
-        rows = list_workspace_monitored_system_rows(connection, workspace_id)
+        logger.info('monitoring_systems_list step=%s correlation_id=%s workspace_id=%s', stage, correlation_id, workspace_id)
+        try:
+            rows = list_workspace_monitored_system_rows(connection, workspace_id)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception('monitoring_systems_list_failed stage=%s correlation_id=%s workspace_id=%s', stage, correlation_id, workspace_id)
+            raise HTTPException(
+                status_code=500,
+                detail={'code': 'monitored_systems_query_failed', 'stage': stage, 'correlation_id': correlation_id, 'workspace_id': str(workspace_id), 'message': 'Unable to load monitored systems.'},
+            ) from exc
         enabled_rows = [row for row in rows if monitored_system_row_enabled(row)]
         protected_assets = len({str((row or {}).get('asset_id') or '') for row in enabled_rows if (row or {}).get('asset_id')})
+        # The list route applies no row-dropping filter: rows_before_filter == final_count is
+        # the invariant proving a configured system is never silently excluded from the response.
         logger.info(
-            'monitoring_systems_list step=rows_loaded workspace_id=%s count=%s row_ids=%s enabled_count=%s protected_assets=%s rows=%s',
+            'monitoring_systems_list step=rows_loaded correlation_id=%s workspace_id=%s rows_before_filter=%s final_count=%s enabled_count=%s protected_assets=%s system_ids=%s target_ids=%s asset_ids=%s enabled_status=%s',
+            correlation_id,
             workspace_id,
             len(rows),
-            [str((row or {}).get('id') or '') for row in rows if (row or {}).get('id')],
+            len(rows),
             len(enabled_rows),
             protected_assets,
-            rows,
+            [str((row or {}).get('id') or '') for row in rows if (row or {}).get('id')],
+            [str((row or {}).get('target_id') or '') for row in rows if (row or {}).get('target_id')],
+            [str((row or {}).get('asset_id') or '') for row in rows if (row or {}).get('asset_id')],
+            [
+                {
+                    'id': str((row or {}).get('id') or ''),
+                    'is_enabled': bool(monitored_system_row_enabled(row)),
+                    'runtime_status': str((row or {}).get('runtime_status') or ''),
+                    'status': str((row or {}).get('status') or ''),
+                }
+                for row in rows
+            ],
         )
-        return {'systems': [_json_safe_value(row) for row in rows], 'workspace': workspace_context['workspace']}
+        return {'systems': [_json_safe_value(row) for row in rows], 'workspace': workspace_context['workspace'], 'correlation_id': correlation_id}
 
 
 def list_monitoring_runs(request: Request, *, limit: int = 20) -> dict[str, Any]:

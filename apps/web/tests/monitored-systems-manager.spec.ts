@@ -44,9 +44,27 @@ test('toggle conflict/rollback behavior re-fetches and applies server truth only
   expect(source).toContain('[stage:${errorDetail.stage}]');
 });
 
-test('empty-state renders treasury settlement call-to-action and repair endpoint hook', () => {
+test('genuine empty-state is neutral, workspace-scoped, and names no hardcoded asset', () => {
   const source = readAppFile('monitored-systems-manager.tsx');
-  expect(source).toContain('No monitoring target is linked to this asset yet.');
-  expect(source).toContain('Create monitoring target for US Treasury Settlement Contract');
-  expect(source).toContain("fetchWithTimeout('/api/monitoring/systems/repair/treasury-settlement-target'");
+  // Neutral empty state — only shown after a successful load that returned zero rows.
+  expect(source).toContain('No monitored systems are configured for this workspace.');
+  expect(source).toContain('hasLoaded && systems.length === 0');
+  // The wrong-asset fallback and its hardcoded CTA must be gone entirely.
+  expect(source).not.toContain('US Treasury Settlement Contract');
+  expect(source).not.toContain('Create monitoring target for');
+  expect(source).not.toContain('treasury-settlement-target');
+  expect(source).not.toContain('No monitoring target is linked to this asset yet');
+});
+
+test('API failure renders a distinct error state with code + correlation id + retry, never the empty state', () => {
+  const source = readAppFile('monitored-systems-manager.tsx');
+  // A body-level error (HTTP 200 with an `error` object) is treated as an API failure.
+  expect(source).toContain('payload?.error && typeof payload.error === \'object\'');
+  expect(source).toContain('setLoadError(');
+  expect(source).toContain('Decoda could not load monitored systems.');
+  expect(source).toContain('Error code: {loadError.code}');
+  expect(source).toContain('Correlation ID:');
+  // The error branch is mutually exclusive with the empty state.
+  expect(source).toContain('{loadError ? (');
+  expect(source).toContain('onClick={() => void load()}');
 });

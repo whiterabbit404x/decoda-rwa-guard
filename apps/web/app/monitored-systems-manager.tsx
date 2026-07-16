@@ -32,6 +32,13 @@ type ErrorDetail = {
   reason?: string;
 };
 
+type LoadError = {
+  code: string;
+  correlationId?: string;
+  stage?: string;
+  message: string;
+};
+
 function extractErrorDetail(payload: unknown): ErrorDetail {
   const fallback: ErrorDetail = { message: '' };
   if (!payload || typeof payload !== 'object') {
@@ -126,7 +133,10 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
   const [summary, setSummary] = useState<MonitoringRuntimeStatus['workspace_monitoring_summary'] | null>(null);
   const [retryPausedReason, setRetryPausedReason] = useState<string | null>(null);
   const [reconcileTransportDebug, setReconcileTransportDebug] = useState<ReconcileTransportDebug | null>(null);
-  const [isCreatingTreasuryTarget, setIsCreatingTreasuryTarget] = useState(false);
+  // Distinct from the empty state: an API failure must never be rendered as "no systems"
+  // (and must never trigger an asset-creation call-to-action).
+  const [loadError, setLoadError] = useState<LoadError | null>(null);
+  const [hasLoaded, setHasLoaded] = useState(false);
 
   async function load(options?: { failureMessage?: string; rethrow?: boolean }) {
     if (isDev) {
@@ -135,22 +145,51 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
     try {
       const response = await fetchWithTimeout(`${effectiveApiUrl}/monitoring/systems`, { headers: authHeaders(), cache: 'no-store' });
       if (!response.ok) {
-        setMessage(options?.failureMessage ?? 'Unable to load monitored systems.');
+        const payload = await response.json().catch(() => ({}));
+        const errorDetail = extractErrorDetail(payload);
+        setLoadError({
+          code: errorDetail.code || `http_${response.status}`,
+          correlationId: typeof (payload as Record<string, unknown>)?.correlation_id === 'string'
+            ? (payload as Record<string, string>).correlation_id
+            : undefined,
+          stage: errorDetail.stage,
+          message: options?.failureMessage ?? 'Decoda could not load monitored systems.',
+        });
         if (isDev) {
           console.debug('[monitored-systems] reload failure', { status: response.status });
         }
         return null;
       }
       const payload = await response.json();
+      // The route returns HTTP 200 with an `error` object when the backend query fails, so a
+      // failure must be detected from the body — not just the HTTP status — and rendered as an
+      // API-failure state rather than a genuine-empty state.
+      const bodyError = payload?.error && typeof payload.error === 'object' ? payload.error : null;
+      if (bodyError) {
+        setLoadError({
+          code: typeof bodyError.code === 'string' ? bodyError.code : 'monitored_systems_unavailable',
+          correlationId: typeof bodyError.correlation_id === 'string' ? bodyError.correlation_id : undefined,
+          stage: typeof bodyError.stage === 'string' ? bodyError.stage : undefined,
+          message: 'Decoda could not load monitored systems.',
+        });
+        setHasLoaded(true);
+        return null;
+      }
       const loadedSystems = payload.systems ?? [];
       setSystems(loadedSystems);
       setSummary(payload.workspace_monitoring_summary ?? null);
+      setLoadError(null);
+      setHasLoaded(true);
       if (isDev) {
         console.debug('[monitored-systems] reload success', { count: loadedSystems.length });
       }
       return loadedSystems;
     } catch (error) {
-      setMessage(options?.failureMessage ?? 'Unable to load monitored systems.');
+      const isTimeout = error instanceof Error && error.name === 'AbortError';
+      setLoadError({
+        code: isTimeout ? 'monitored_systems_load_timeout' : 'monitored_systems_load_failed',
+        message: options?.failureMessage ?? 'Decoda could not load monitored systems.',
+      });
       if (isDev) {
         const normalizedError = error instanceof Error
           ? { name: error.name, message: error.message }
@@ -400,27 +439,6 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
     }
   }
 
-  async function createTreasurySettlementTarget() {
-    setMessage('');
-    setIsCreatingTreasuryTarget(true);
-    try {
-      const response = await fetchWithTimeout('/api/monitoring/systems/repair/treasury-settlement-target', {
-        method: 'POST',
-        headers: authHeaders(),
-      });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        const errorDetail = extractErrorDetail(payload);
-        setMessage(errorDetail.reason || errorDetail.message || 'Unable to create monitoring target.');
-        return;
-      }
-      await load();
-      setMessage('Monitoring target is ready for US Treasury Settlement Contract.');
-    } finally {
-      setIsCreatingTreasuryTarget(false);
-    }
-  }
-
   async function remove(systemId: string) {
     const response = await fetch(`${effectiveApiUrl}/monitoring/systems/${systemId}`, { method: 'DELETE', headers: authHeaders() });
     if (!response.ok) {
@@ -514,14 +532,23 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
           Reconcile backend response: status {reconcileTransportDebug.status ?? 'unknown'} · detail {reconcileTransportDebug.detail || 'none'}
         </p>
       ) : null}
-      {systems.length === 0 ? (
-        <div className="stack compactStack">
-          <p className="muted">No monitoring target is linked to this asset yet.</p>
+      {loadError ? (
+        <div className="stack compactStack" role="alert" aria-live="assertive" data-testid="monitored-systems-load-error">
+          <p className="statusLine">Decoda could not load monitored systems.</p>
+          <p className="tableMeta">
+            Error code: {loadError.code}
+            {loadError.stage ? ` · Stage: ${loadError.stage}` : ''}
+            {loadError.correlationId ? ` · Correlation ID: ${loadError.correlationId}` : ''}
+          </p>
           <div className="buttonRow">
-            <button type="button" onClick={() => void createTreasurySettlementTarget()} disabled={isCreatingTreasuryTarget || isRepairPending}>
-              {isCreatingTreasuryTarget ? 'Creating monitoring target…' : 'Create monitoring target for US Treasury Settlement Contract'}
+            <button type="button" onClick={() => void load()}>
+              Retry
             </button>
           </div>
+        </div>
+      ) : hasLoaded && systems.length === 0 ? (
+        <div className="stack compactStack" data-testid="monitored-systems-empty-state">
+          <p className="muted">No monitored systems are configured for this workspace.</p>
         </div>
       ) : null}
       {reconcileSummary ? (
