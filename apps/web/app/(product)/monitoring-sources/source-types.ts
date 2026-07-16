@@ -22,6 +22,11 @@ export type SourceRow = {
   latest_block?: number | null;
   block_lag?: number | null;
   median_latency_ms?: number | null;
+  // P95 is only populated once enough measured samples exist. p95_insufficient=true
+  // means the UI must show "Insufficient samples", never a fabricated number.
+  p95_latency_ms?: number | null;
+  p95_sample_count?: number | null;
+  p95_insufficient?: boolean;
   error_rate?: number | null;
   timeout_rate?: number | null;
   last_poll_at?: string | null;

@@ -79,6 +79,21 @@ function healthScoreCell(source: SourceRow) {
   );
 }
 
+// P95 latency cell: truthful about sample sufficiency. A single observed latency is
+// never presented as a P95 — below the sample floor we show the observed latency with
+// an explicit "insufficient samples" hint instead of an invented percentile.
+function p95LatencyCell(source: SourceRow) {
+  if (source.p95_insufficient) {
+    const observed = source.median_latency_ms;
+    return (
+      <span className="muted" title={`P95 needs more samples (${source.p95_sample_count ?? 0} so far)${observed != null ? `; latest observed ${fmtLatency(observed)}` : ''}`}>
+        {observed != null ? `${fmtLatency(observed)}*` : 'Insufficient samples'}
+      </span>
+    );
+  }
+  return <span>{fmtLatency(source.p95_latency_ms ?? source.median_latency_ms)}</span>;
+}
+
 // ── Monitored Systems tab helpers (runtime-focused, fail-closed) ─────────────
 function runtimeStatusPill(system: MonitoredSystemRow): { label: string; variant: PillVariant } {
   if (!system.is_enabled) return { label: 'Disabled', variant: 'neutral' };
@@ -182,6 +197,8 @@ export default function MonitoringSourcesPage() {
   const [autoRoutingBusy, setAutoRoutingBusy] = useState(false);
   const [healthCheckBusy, setHealthCheckBusy] = useState(false);
   const [healthCheckResult, setHealthCheckResult] = useState('');
+  const [diagnosticBusy, setDiagnosticBusy] = useState(false);
+  const [diagnosticResult, setDiagnosticResult] = useState('');
   const [selectedSource, setSelectedSource] = useState<SourceRow | null>(null);
   const [selectedDecision, setSelectedDecision] = useState<AgentDecision | null>(null);
   const [mobileAgentOpen, setMobileAgentOpen] = useState(false);
@@ -347,6 +364,37 @@ export default function MonitoringSourcesPage() {
     }
   }
 
+  // Run Diagnostic: a REAL bounded provider probe that polls the RPC endpoint and
+  // persists live evidence (provider health + heartbeat), then refreshes the page so
+  // a freshly onboarded source can move from "Provisioning" to real, measured status.
+  async function handleRunDiagnostic() {
+    setDiagnosticBusy(true);
+    setActionError('');
+    setDiagnosticResult('');
+    try {
+      const response = await mutate('/api/monitoring/sources/diagnostic', 'POST', {});
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = (payload as { detail?: unknown }).detail;
+        setActionError(`Diagnostic failed: ${typeof detail === 'string' ? detail : `HTTP ${response.status}`}`);
+        return;
+      }
+      const s = (payload as { summary?: { targets_evaluated?: number; healthy?: number; degraded?: number; errors?: number; reachable?: number } }).summary;
+      if (s) {
+        setDiagnosticResult(
+          `Diagnostic polled ${s.targets_evaluated ?? 0} source(s): ${s.healthy ?? 0} healthy, ${s.degraded ?? 0} degraded, ${s.errors ?? 0} unreachable.`,
+        );
+      } else {
+        setDiagnosticResult('Diagnostic completed.');
+      }
+      await refreshAll();
+    } catch (error) {
+      setActionError(`Network error running diagnostic: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      setDiagnosticBusy(false);
+    }
+  }
+
   async function handleToggleTarget(source: SourceRow) {
     const targetId = source.target_id;
     const enable = !(source.enabled || source.monitoring_enabled);
@@ -446,8 +494,10 @@ export default function MonitoringSourcesPage() {
       loading={loading}
       autoRoutingBusy={autoRoutingBusy}
       healthCheckBusy={healthCheckBusy}
+      diagnosticBusy={diagnosticBusy}
       onToggleAutoRouting={() => void handleToggleAutoRouting()}
       onRunHealthCheck={() => void handleRunHealthCheck()}
+      onRunDiagnostic={() => void handleRunDiagnostic()}
       onOpenDecision={(decision) => setSelectedDecision(decision)}
     />
   );
@@ -481,6 +531,7 @@ export default function MonitoringSourcesPage() {
       {loadError ? <p className="statusLine" style={{ color: 'var(--danger-fg)' }}>{loadError}</p> : null}
       {actionError ? <p className="statusLine" style={{ color: 'var(--danger-fg)', fontSize: '0.85rem' }}>{actionError}</p> : null}
       {healthCheckResult ? <p className="statusLine" style={{ color: 'var(--success-fg)', fontSize: '0.85rem' }}>{healthCheckResult}</p> : null}
+      {diagnosticResult ? <p className="statusLine" style={{ color: 'var(--success-fg)', fontSize: '0.85rem' }}>{diagnosticResult}</p> : null}
       {streamStatus === 'reconnecting' ? (
         <p className="statusLine" style={{ color: 'var(--warning-fg)', fontSize: '0.8rem' }}>
           Live updates are reconnecting. Data is temporarily refreshed by polling.
@@ -564,7 +615,7 @@ export default function MonitoringSourcesPage() {
                               ) : null}
                             </td>
                             <td>{healthScoreCell(source)}</td>
-                            <td style={{ whiteSpace: 'nowrap' }}>{fmtLatency(source.median_latency_ms)}</td>
+                            <td style={{ whiteSpace: 'nowrap' }}>{p95LatencyCell(source)}</td>
                             <td style={{ whiteSpace: 'nowrap' }} title={source.block_lag == null ? 'Requires a live chain-head read' : undefined}>
                               {source.block_lag == null ? '—' : source.block_lag.toLocaleString()}
                             </td>

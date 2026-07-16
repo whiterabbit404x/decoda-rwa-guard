@@ -58,8 +58,10 @@ export function SourceOptimizationAgentPanel({
   loading,
   autoRoutingBusy,
   healthCheckBusy,
+  diagnosticBusy,
   onToggleAutoRouting,
   onRunHealthCheck,
+  onRunDiagnostic,
   onOpenDecision,
   aiUnavailable,
 }: {
@@ -71,8 +73,10 @@ export function SourceOptimizationAgentPanel({
   loading: boolean;
   autoRoutingBusy: boolean;
   healthCheckBusy: boolean;
+  diagnosticBusy: boolean;
   onToggleAutoRouting: () => void;
   onRunHealthCheck: () => void;
+  onRunDiagnostic: () => void;
   onOpenDecision: (decision: AgentDecision) => void;
   aiUnavailable?: boolean;
 }) {
@@ -167,10 +171,21 @@ export function SourceOptimizationAgentPanel({
             type="button"
             className="btn btn-primary"
             style={{ fontSize: '0.74rem', padding: '0.26rem 0.65rem' }}
+            disabled={diagnosticBusy}
+            title="Poll the configured RPC provider now and record real runtime evidence"
+            onClick={onRunDiagnostic}
+          >
+            {diagnosticBusy ? 'Diagnosing…' : 'Run Diagnostic'}
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            style={{ fontSize: '0.74rem', padding: '0.26rem 0.65rem' }}
             disabled={healthCheckBusy}
+            title="Evaluate current source health from recorded evidence"
             onClick={onRunHealthCheck}
           >
-            {healthCheckBusy ? 'Running…' : 'Run Diagnostic'}
+            {healthCheckBusy ? 'Evaluating…' : 'Evaluate Health'}
           </button>
           <Link href="/integrations" prefetch={false} className="btn btn-secondary" style={{ fontSize: '0.74rem', padding: '0.26rem 0.65rem' }}>
             Add fallback provider

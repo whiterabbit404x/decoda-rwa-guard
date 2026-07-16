@@ -166,6 +166,7 @@ from services.api.app.pilot import (
     get_source_optimization_settings,
     update_source_optimization_settings,
     run_source_health_check,
+    run_source_diagnostic,
     list_source_agent_decisions,
     list_assets,
     create_asset,
@@ -4144,6 +4145,11 @@ def monitoring_source_settings_update(payload: dict[str, Any], request: Request)
 @app.post('/monitoring/sources/health-check', summary='Run a deterministic source health check and record agent decisions')
 def monitoring_source_health_check(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: run_source_health_check(request))
+
+
+@app.post('/monitoring/sources/diagnostic', summary='Run a real bounded provider diagnostic that persists live runtime evidence')
+def monitoring_source_diagnostic(request: Request, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: run_source_diagnostic(request, payload))
 
 
 @app.get('/monitoring/sources/decisions', summary='List Source Optimization Agent decisions')
