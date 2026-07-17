@@ -22,6 +22,7 @@ import hashlib
 import hmac
 import json
 import logging
+import time
 import uuid
 from collections.abc import Iterator
 from datetime import datetime, timezone
@@ -166,6 +167,122 @@ DEFAULT_QUICKNODE_STREAM_BACKFILL_MAX_BLOCKS = 200
 # transactions) cannot flood Railway logs. The aggregate quicknode_stream_no_match
 # line is always emitted regardless of this cap.
 _NO_MATCH_DETAIL_LOG_LIMIT = 25
+
+# ---------------------------------------------------------------------------
+# Log rate-limiting for the high-frequency, per-block QuickNode webhook logs.
+#
+# When the live stream is thousands of blocks behind the chain head it delivers
+# ~one webhook per block, and each one previously emitted a targets-loaded line,
+# a payload-shape line, and (while degraded) a degraded warning — flooding Railway
+# logs and burying the monitoring-worker's own boot/cycle logs. We rate-limit the
+# *identical, repeating* lines to one per sample window (a periodic summary) while
+# ALWAYS emitting state transitions, batches that actually matched/persisted,
+# signature failures, persistence errors, and lag-threshold crossings. This trims
+# log volume and cost without removing any security/debug evidence.
+# ---------------------------------------------------------------------------
+DEFAULT_QUICKNODE_LOG_SAMPLE_SECONDS = 60
+
+_LAST_SAMPLED_QUICKNODE_LOG_AT: dict[str, float] = {}
+# stream_key -> {'degraded': bool, 'warned_at': float}
+_LAST_QUICKNODE_DEGRADED_STATE: dict[str, dict[str, Any]] = {}
+# sampler key -> last logged signature string (log again immediately when it changes)
+_LAST_QUICKNODE_LOG_SIGNATURE: dict[str, str] = {}
+
+
+def reset_quicknode_log_sampler_state() -> None:
+    """Clear the process-local QuickNode log-sampler state.
+
+    The sampler dicts are module-level (shared across every webhook request in a
+    process, which is exactly what makes the once-per-window rate limiting work), so
+    tests that assert on a sampled line must reset them first — otherwise a prior
+    test's identical line, logged within the sample window, suppresses the assertion.
+    """
+    _LAST_SAMPLED_QUICKNODE_LOG_AT.clear()
+    _LAST_QUICKNODE_DEGRADED_STATE.clear()
+    _LAST_QUICKNODE_LOG_SIGNATURE.clear()
+
+
+def _quicknode_log_sample_seconds() -> float:
+    """Seconds between repeats of an otherwise-identical high-frequency log line.
+
+    Configurable via QUICKNODE_STREAMS_LOG_SAMPLE_SECONDS; floored at 1s. A value of
+    0 disables sampling (every line is emitted) for deep debugging.
+    """
+    raw = (getenv('QUICKNODE_STREAMS_LOG_SAMPLE_SECONDS') or '').strip()
+    if not raw:
+        return float(DEFAULT_QUICKNODE_LOG_SAMPLE_SECONDS)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return float(DEFAULT_QUICKNODE_LOG_SAMPLE_SECONDS)
+    if value <= 0:
+        return 0.0
+    return max(1.0, value)
+
+
+def _should_emit_sampled_quicknode_log(
+    key: str,
+    *,
+    signature: str | None = None,
+    now: float | None = None,
+) -> bool:
+    """True at most once per sample window for ``key`` — a periodic summary.
+
+    When ``signature`` is provided, a change in signature (a state transition, e.g. a
+    different target set or wallet count) always emits immediately and resets the
+    window, so state changes are never suppressed. ``now`` is injectable for tests.
+    """
+    window = _quicknode_log_sample_seconds()
+    if window <= 0:
+        return True
+    now = now if now is not None else time.monotonic()
+    if signature is not None and _LAST_QUICKNODE_LOG_SIGNATURE.get(key) != signature:
+        _LAST_QUICKNODE_LOG_SIGNATURE[key] = signature
+        _LAST_SAMPLED_QUICKNODE_LOG_AT[key] = now
+        return True
+    last = _LAST_SAMPLED_QUICKNODE_LOG_AT.get(key)
+    if last is None or (now - last) >= window:
+        _LAST_SAMPLED_QUICKNODE_LOG_AT[key] = now
+        return True
+    return False
+
+
+def _quicknode_degraded_log_decision(
+    stream_key: str,
+    *,
+    degraded: bool,
+    now: float | None = None,
+) -> str:
+    """Decide how to log the current degraded sample for ``stream_key``.
+
+    Returns one of:
+      - 'transition_degraded'  : healthy -> degraded (always log, WARNING)
+      - 'transition_recovered' : degraded -> healthy (always log, INFO)
+      - 'periodic'             : still degraded and >= one sample window since the
+                                 last warning (periodic summary, WARNING)
+      - 'suppress'             : still degraded within the window, or steady healthy
+
+    This guarantees "always log state transitions" and "do not emit the identical
+    degradation warning for every block" — the identical per-block repeats collapse
+    into one periodic line while every transition is preserved.
+    """
+    now = now if now is not None else time.monotonic()
+    prev = _LAST_QUICKNODE_DEGRADED_STATE.get(stream_key)
+    prev_degraded = bool(prev['degraded']) if prev else False
+    if degraded and not prev_degraded:
+        _LAST_QUICKNODE_DEGRADED_STATE[stream_key] = {'degraded': True, 'warned_at': now}
+        return 'transition_degraded'
+    if not degraded and prev_degraded:
+        _LAST_QUICKNODE_DEGRADED_STATE[stream_key] = {'degraded': False, 'warned_at': now}
+        return 'transition_recovered'
+    if degraded:
+        window = _quicknode_log_sample_seconds()
+        last_warned = float(prev.get('warned_at', 0.0)) if prev else 0.0
+        if window <= 0 or (now - last_warned) >= window:
+            _LAST_QUICKNODE_DEGRADED_STATE[stream_key] = {'degraded': True, 'warned_at': now}
+            return 'periodic'
+        return 'suppress'
+    return 'suppress'
 
 # QuickNode Streams signs nonce + timestamp + raw payload bytes with
 # HMAC-SHA256 (hex digest) keyed by the Stream's security token, delivered
@@ -465,6 +582,16 @@ def _describe_payload_shape(body: Any) -> dict[str, Any]:
 
 def _log_payload_shape(body: Any) -> None:
     shape = _describe_payload_shape(body)
+    # The payload shape is identical for every block of a given stream config, so it
+    # floods when the stream is far behind. Log it whenever the shape changes (state
+    # transition — a genuinely new payload structure worth seeing) or once per sample
+    # window, never once per block.
+    _shape_signature = (
+        f"{shape['top_level_type']}|{shape['top_level_keys']}|{shape['data_type']}|"
+        f"{shape['first_block_keys']}|{shape['first_tx_keys']}|{shape['first_receipt_keys']}"
+    )
+    if not _should_emit_sampled_quicknode_log('payload_shape', signature=_shape_signature):
+        return
     logger.info(
         'quicknode_stream_payload_shape top_level_type=%s top_level_keys=%s data_type=%s '
         'data_length=%s first_block_keys=%s first_tx_keys=%s first_receipt_keys=%s',
@@ -673,31 +800,47 @@ def _load_all_base_wallet_targets(connection: Any) -> list[dict[str, Any]]:
     rows = connection.execute(_BASE_WALLET_TARGETS_SQL).fetchall()
     targets = [dict(row) for row in rows]
     monitored_wallets_count = 0
+    # Resolve every target's wallet (write-back side effect ALWAYS runs — only the
+    # identical per-block logging below is rate-limited). Facts are collected so the
+    # per-target resolution lines are emitted together with the summary, or not at all.
+    resolution_facts: list[tuple[Any, Any, bool, str, Any, Any]] = []
     for target in targets:
         wallet, source, reason = _resolve_target_monitored_wallet(connection, target)
         if wallet is not None:
             monitored_wallets_count += 1
-        # Per-target resolution evidence: proves whether each loaded target
-        # produced a monitored wallet and from which source, so a repeat of the
-        # monitored_wallets_count=0 incident is diagnosable from Railway logs
-        # alone. Only the wallet's last 4 chars are logged, never the full address.
-        logger.info(
-            'quicknode_stream_target_wallet_resolution target_id=%s asset_id=%s '
-            'wallet_present=%s wallet_last4=%s wallet_source=%s reason=%s',
-            target.get('id'),
-            target.get('asset_id') or 'none',
-            str(wallet is not None).lower(),
-            wallet[-4:] if wallet else 'none',
-            source,
-            reason or 'none',
+        resolution_facts.append(
+            (
+                target.get('id'),
+                target.get('asset_id') or 'none',
+                wallet is not None,
+                wallet[-4:] if wallet else 'none',
+                source,
+                reason or 'none',
+            )
         )
     target_ids = [target.get('id') for target in targets]
-    logger.info(
-        'quicknode_stream_targets_loaded count=%s monitored_wallets_count=%s target_ids=%s',
-        len(targets), monitored_wallets_count, target_ids,
+    # The same shared webhook re-loads the SAME active-target set on every block, so
+    # these lines are identical thousands of times over while a stream is far behind.
+    # Log them on any change to the resolved set (state transition) or once per sample
+    # window; the monitored_wallets_count=0 incident is still diagnosable because it is
+    # part of the signature and is re-logged every window while it persists.
+    _targets_signature = f'{len(targets)}|{monitored_wallets_count}|' + ','.join(
+        f'{tid}:{int(present)}' for tid, _asset, present, *_rest in resolution_facts
     )
-    if not targets:
-        logger.info('quicknode_stream_no_targets_loaded')
+    if _should_emit_sampled_quicknode_log('load_stream_targets', signature=_targets_signature):
+        for _tid, _asset, _present, _last4, _source, _reason in resolution_facts:
+            # Only the wallet's last 4 chars are logged, never the full address.
+            logger.info(
+                'quicknode_stream_target_wallet_resolution target_id=%s asset_id=%s '
+                'wallet_present=%s wallet_last4=%s wallet_source=%s reason=%s',
+                _tid, _asset, str(_present).lower(), _last4, _source, _reason,
+            )
+        logger.info(
+            'quicknode_stream_targets_loaded count=%s monitored_wallets_count=%s target_ids=%s',
+            len(targets), monitored_wallets_count, target_ids,
+        )
+        if not targets:
+            logger.info('quicknode_stream_no_targets_loaded')
     return targets
 
 
@@ -2097,22 +2240,43 @@ def _process_realtime_lane_batch(
     degraded = (
         lane == LANE_LIVE and lag_blocks is not None and lag_blocks > live_lag_threshold_blocks()
     )
-    logger.info(
-        'event=quicknode_stream_batch deployment_commit_sha=%s stream_lane=%s stream_key=%s '
-        'checkpoint_identity=%s first_block=%s last_block=%s checkpoint_block=%s chain_head=%s '
-        'lag_blocks=%s tx_count=%s matched=%s persisted=%s duplicates=%s degraded=%s',
-        _deployment_commit_sha(), lane, route_stream_key, checkpoint_key, first_block, last_block,
-        last_block, chain_head, lag_blocks, len(normalized_txs), match_count, persisted_count,
-        duplicate_count, str(degraded).lower(),
-    )
-    if degraded:
+    _degraded_action = _quicknode_degraded_log_decision(route_stream_key, degraded=degraded)
+    # A batch that actually matched/persisted/deduped is real evidence and is ALWAYS
+    # logged. A no-activity batch is logged on any degraded state transition, else
+    # sampled to one line per window — so a stream thousands of blocks behind (≈one
+    # webhook per block, all matched=0 persisted=0) cannot flood Railway logs.
+    _batch_has_activity = bool(match_count or persisted_count or duplicate_count)
+    if (
+        _batch_has_activity
+        or _degraded_action in {'transition_degraded', 'transition_recovered', 'periodic'}
+        or _should_emit_sampled_quicknode_log(f'quicknode_stream_batch:{route_stream_key}')
+    ):
+        logger.info(
+            'event=quicknode_stream_batch deployment_commit_sha=%s stream_lane=%s stream_key=%s '
+            'checkpoint_identity=%s first_block=%s last_block=%s checkpoint_block=%s chain_head=%s '
+            'lag_blocks=%s tx_count=%s matched=%s persisted=%s duplicates=%s degraded=%s',
+            _deployment_commit_sha(), lane, route_stream_key, checkpoint_key, first_block, last_block,
+            last_block, chain_head, lag_blocks, len(normalized_txs), match_count, persisted_count,
+            duplicate_count, str(degraded).lower(),
+        )
+    if degraded and _degraded_action in {'transition_degraded', 'periodic'}:
         # The live stream is pushing blocks far behind the chain head — it is NOT at
         # the tip, so the UI must not paint it green. Stable RPC Polling stays the
-        # fallback; the Telemetry header derives "Degraded" from the same lag.
+        # fallback; the Telemetry header derives "Degraded" from the same lag. Emitted
+        # on the healthy->degraded transition and then once per window (periodic
+        # summary), never once per block.
         logger.warning(
             'event=quicknode_live_lane_degraded stream_key=%s checkpoint_identity=%s chain_head=%s '
-            'last_block=%s lag_blocks=%s threshold=%s reason=stream_far_behind_head '
+            'last_block=%s lag_blocks=%s threshold=%s reason=stream_far_behind_head note=%s '
             '(stable RPC polling remains the fallback)',
+            route_stream_key, checkpoint_key, chain_head, last_block, lag_blocks,
+            live_lag_threshold_blocks(), _degraded_action,
+        )
+    elif _degraded_action == 'transition_recovered':
+        # Always log the degraded->healthy transition so recovery is visible in logs.
+        logger.info(
+            'event=quicknode_live_lane_recovered stream_key=%s checkpoint_identity=%s chain_head=%s '
+            'last_block=%s lag_blocks=%s threshold=%s note=state_transition',
             route_stream_key, checkpoint_key, chain_head, last_block, lag_blocks,
             live_lag_threshold_blocks(),
         )

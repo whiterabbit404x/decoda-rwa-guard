@@ -86,6 +86,20 @@ event=telemetry_persisted ... committed=true
 event=telemetry_redis_publish ... success=true
 ```
 
+### Log volume while the stream is far behind head
+
+When the live stream is thousands of blocks behind, it delivers ~one webhook per block.
+The repetitive, identical per-block lines (`quicknode_stream_payload_shape`,
+`quicknode_stream_targets_loaded` + `quicknode_stream_target_wallet_resolution`, a
+no-activity `quicknode_stream_batch`, and the `quicknode_live_lane_degraded` warning)
+are **rate-limited to one line per `QUICKNODE_STREAMS_LOG_SAMPLE_SECONDS` window
+(default 60 s)** so they cannot bury the monitoring-worker's own boot/cycle logs. The
+following are **always** logged in full, never sampled: any batch that matched /
+persisted / deduped a transaction, the healthy→degraded and degraded→healthy state
+transitions (`event=quicknode_live_lane_degraded note=transition_degraded` /
+`event=quicknode_live_lane_recovered`), signature failures, and persistence errors. Set
+`QUICKNODE_STREAMS_LOG_SAMPLE_SECONDS=0` to disable sampling for deep debugging.
+
 ## QuickNode dashboard actions (provider side — required)
 
 Backend code cannot fix a stream still replaying from block 48391739. In the QuickNode

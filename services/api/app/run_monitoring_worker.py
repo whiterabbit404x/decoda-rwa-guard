@@ -7,6 +7,7 @@ import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import Any
 
 from services.api.app.activity_providers import validate_monitoring_config_or_raise
 from services.api.app.pilot import evaluate_monitoring_system_alerts
@@ -466,11 +467,151 @@ def _start_health_server(port: int, logger: logging.Logger) -> None:
     logger.info('worker_health_server_started host=0.0.0.0 port=%s path=/health', port)
 
 
+# Chains the monitoring worker is built to poll (Base mainnet is canonical; Base
+# Sepolia / Ethereum / Arbitrum are the other recognised ids). A worker explicitly
+# pinned to any OTHER chain id is a misconfiguration — it would write wrong-chain
+# telemetry — so it is a hard start-blocked reason in production rather than a silent
+# no-evidence loop.
+_SUPPORTED_WORKER_CHAIN_IDS = {1, 8453, 84532, 42161}
+
+
+def _resolve_boot_configuration() -> dict[str, Any]:
+    """Resolve the worker's effective boot configuration for the self-evident
+    ``event=monitoring_worker_configuration`` log and start-blocked evaluation.
+
+    Never returns secrets — only booleans, the RPC *host* (never the URL, key, or
+    query), and the numeric chain id. Call AFTER ``_resolve_worker_enabled_env()`` so
+    the worker-enable aliases have already been folded into ``LIVE_MODE_ENABLED``.
+    """
+    from services.api.app.evm_activity_provider import _resolve_evm_rpc_url, resolve_chain_rpc
+    from services.api.app.pilot import live_mode_enabled as _live_mode_enabled
+    from services.api.app.worker_enable import resolve_worker_enabled
+    from urllib.parse import urlparse as _urlparse
+
+    worker_state = resolve_worker_enabled()
+    global_rpc = (_resolve_evm_rpc_url() or '').strip()
+    try:
+        base_rpc = (resolve_chain_rpc('base').get('rpc_url') or '').strip()
+    except Exception:
+        base_rpc = ''
+    # RPC is "configured" if EITHER the global resolver OR the Base per-chain resolver
+    # returns a URL — a worker with only BASE_EVM_RPC_URL set is correctly configured.
+    rpc_url = global_rpc or base_rpc
+    try:
+        rpc_host = _urlparse(rpc_url).hostname or 'unconfigured'
+    except Exception:
+        rpc_host = 'unconfigured'
+    chain_id_raw = (os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or '').strip()
+    chain_id = int(chain_id_raw) if chain_id_raw.isdigit() else None
+    return {
+        'worker_enabled': bool(worker_state['enabled']),
+        'worker_enabled_source': worker_state['source'],
+        'live_mode_enabled': bool(_live_mode_enabled()),
+        'database_configured': bool((os.getenv('DATABASE_URL') or '').strip()),
+        'rpc_configured': bool(rpc_url),
+        'rpc_host': rpc_host,
+        'chain_id': chain_id,
+        'redis_configured': bool((os.getenv('REDIS_URL') or '').strip()),
+    }
+
+
+def _resolve_worker_start_blocked_reasons(config: dict[str, Any]) -> list[str]:
+    """Ordered list of reasons the worker cannot run a live loop, or ``[]``.
+
+    Each maps 1:1 to ``event=monitoring_worker_start_blocked reason=<reason>`` and, in a
+    production-like runtime, causes a non-zero exit so Railway shows the deployment as
+    failed instead of falsely healthy (a false-healthy worker that produces no evidence
+    is exactly the failure the status page must never mask).
+    """
+    reasons: list[str] = []
+    if not config['worker_enabled']:
+        reasons.append('worker_disabled')
+    if not config['live_mode_enabled']:
+        reasons.append('live_mode_disabled')
+    if not config['database_configured']:
+        reasons.append('database_missing')
+    if not config['rpc_configured']:
+        reasons.append('rpc_missing')
+    chain_id = config.get('chain_id')
+    if chain_id is not None and chain_id not in _SUPPORTED_WORKER_CHAIN_IDS:
+        reasons.append('unsupported_chain')
+    return reasons
+
+
 def main() -> int:
     logging.basicConfig(level=os.getenv('LOG_LEVEL', 'INFO').upper(), format='%(asctime)s %(levelname)s %(name)s %(message)s')
     logger = logging.getLogger(__name__)
+
+    # ---------------------------------------------------------------------------
+    # UNCONDITIONAL process-boot log. This is the FIRST executable action of the
+    # worker entry point — before env resolution, arg parsing, config validation,
+    # or any early exit — so a worker that later crashes, is disabled, or exits
+    # early still proves, from logs alone, that THIS module booted, on which
+    # commit, in which process. If this line is absent from a service's logs, that
+    # service is NOT running the monitoring worker (it is almost certainly running
+    # uvicorn/the API via the Dockerfile default CMD — see railway-worker.json /
+    # docs/RAILWAY_DEPLOYMENT_GUIDE.md).
+    # ---------------------------------------------------------------------------
+    _boot_commit = _resolve_git_commit_sha() or 'unavailable'
+    logger.info(
+        'event=monitoring_worker_process_boot deployment_commit_sha=%s '
+        'python_module=services.api.app.run_monitoring_worker process_id=%s worker_instance_id=%s',
+        _boot_commit,
+        os.getpid(),
+        _default_worker_name(),
+    )
+
     _resolve_worker_enabled_env()
     args = parse_args()
+
+    # ---------------------------------------------------------------------------
+    # Resolved configuration (event=monitoring_worker_configuration). Emitted even
+    # when configuration is invalid, so operators can see exactly what the worker
+    # resolved before any start-blocked exit. No secrets — host + booleans only.
+    # ---------------------------------------------------------------------------
+    _boot_config = _resolve_boot_configuration()
+    logger.info(
+        'event=monitoring_worker_configuration worker_enabled=%s live_mode_enabled=%s '
+        'database_configured=%s rpc_configured=%s rpc_host=%s chain_id=%s '
+        'polling_interval_seconds=%s redis_configured=%s worker_enabled_source=%s',
+        _boot_config['worker_enabled'],
+        _boot_config['live_mode_enabled'],
+        _boot_config['database_configured'],
+        _boot_config['rpc_configured'],
+        _boot_config['rpc_host'],
+        _boot_config['chain_id'] if _boot_config['chain_id'] is not None else 'not_set',
+        args.interval_seconds,
+        _boot_config['redis_configured'],
+        _boot_config['worker_enabled_source'],
+    )
+
+    # ---------------------------------------------------------------------------
+    # Fail loudly when a required production configuration is missing. In a
+    # production-like runtime a missing prerequisite is a hard, non-recoverable
+    # misconfiguration: exit non-zero so Railway marks the deployment failed
+    # instead of showing a false-healthy worker that silently produces no
+    # evidence. Non-production (and --once) runs only warn and continue so local
+    # iteration and single-cycle diagnostics still work.
+    # ---------------------------------------------------------------------------
+    _blocked_reasons = _resolve_worker_start_blocked_reasons(_boot_config)
+    if _blocked_reasons:
+        _production_like = _is_production_like_runtime()
+        _hard_exit = _production_like and not args.once
+        for _reason in _blocked_reasons:
+            _log = logger.error if _hard_exit else logger.warning
+            _log(
+                'event=monitoring_worker_start_blocked reason=%s runtime=%s action=%s',
+                _reason,
+                'production' if _production_like else 'non_production',
+                'exit_nonzero_so_railway_shows_failed_not_false_healthy' if _hard_exit else 'continue_degraded',
+            )
+        if _hard_exit:
+            logger.error(
+                'event=monitoring_worker_start_aborted reasons=%s exit_code=3 '
+                'fix=set_missing_worker_env_vars_in_railway_worker_service',
+                ','.join(_blocked_reasons),
+            )
+            return 3
 
     # Start the health server early so Railway's healthcheck passes while the
     # monitoring loop initialises (RPC probes, schema checks, etc.).

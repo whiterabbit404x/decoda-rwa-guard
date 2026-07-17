@@ -5304,6 +5304,16 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
     error_message: str | None = None
     cycle_started_at = utc_now()
     logger.info('monitoring cycle started worker=%s limit=%s', worker_name, limit)
+    # Explicit, greppable cycle marker (acceptance step 11). Only emitted for real
+    # live cycles — the `not live_mode_enabled()` guard above already returned. Its
+    # presence in worker logs proves the scheduled loop actually ran a cycle (distinct
+    # from the process merely booting).
+    logger.info(
+        'event=monitoring_worker_cycle_started worker=%s limit=%s trigger_type=%s',
+        worker_name,
+        limit,
+        trigger_type,
+    )
     with pg_connection() as connection:
         # DB-safety: run the whole cycle in autocommit so the worker connection is never
         # held idle-in-transaction across slow RPC scans, threat-engine calls, or long
@@ -5543,14 +5553,27 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             _enabled_monitoring_configs = connection.execute(
                 "SELECT COUNT(*) AS c FROM monitoring_configs WHERE enabled = TRUE",
             ).fetchone()
+            # Base (chain 8453) enabled targets. If this is > 0 but total_candidate_targets
+            # is 0, the worker is dropping the Base target during candidate selection
+            # (provider_type / monitoring_configs.enabled filter) — not a missing target.
+            _base_chain_targets = connection.execute(
+                '''
+                SELECT COUNT(*) AS c FROM targets t
+                WHERE t.deleted_at IS NULL
+                  AND COALESCE(t.enabled, FALSE) = TRUE
+                  AND COALESCE(t.monitoring_enabled, FALSE) = TRUE
+                  AND LOWER(COALESCE(t.chain_network, '')) IN ('base', 'base-mainnet')
+                ''',
+            ).fetchone()
             logger.info(
-                'monitoring_candidate_breakdown total_targets=%s enabled_targets=%s orphan_targets=%s valid_asset_linked_targets=%s enabled_monitored_systems=%s enabled_monitoring_configs=%s total_candidate_targets=%s',
+                'monitoring_candidate_breakdown total_targets=%s enabled_targets=%s orphan_targets=%s valid_asset_linked_targets=%s enabled_monitored_systems=%s enabled_monitoring_configs=%s base_chain_8453_enabled_targets=%s total_candidate_targets=%s',
                 int((_total_targets or {}).get('c') or 0),
                 int((_enabled_targets or {}).get('c') or 0),
                 int((_orphan_targets or {}).get('c') or 0),
                 int((_valid_asset_linked or {}).get('c') or 0),
                 int((_enabled_monitored_systems or {}).get('c') or 0),
                 int((_enabled_monitoring_configs or {}).get('c') or 0),
+                int((_base_chain_targets or {}).get('c') or 0),
                 len(candidate_systems),
             )
         except Exception:
