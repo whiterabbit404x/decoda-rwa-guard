@@ -28,4 +28,8 @@ COPY services/reconciliation-service/data ./services/reconciliation-service/data
 
 USER app
 
-CMD ["sh", "-c", "${APP_START_COMMAND:-uvicorn services.api.app.main:app --host 0.0.0.0 --port ${PORT:-8000}}"]
+# Dispatch the start command from SERVICE_ROLE (falling back to APP_START_COMMAND, then
+# uvicorn/the API). This stops a worker service that was never pointed at its config-as-code
+# file from silently booting the API — see services/api/docker-entrypoint.sh. Railway's own
+# Custom Start Command / config-as-code startCommand still override this CMD when set.
+CMD ["sh", "/app/services/api/docker-entrypoint.sh"]

@@ -16,26 +16,37 @@ If only the API service runs (WORKER_ENABLED=false), monitoring shows **LIMITED 
 ## Per-service start commands (config-as-code)
 
 Each Railway service builds the **same** `services/api/Dockerfile` but runs a **different
-start command**. The command is set by pointing the service's **Config-as-code file
-path** at the matching repo-root JSON (or by setting a Custom Start Command / the
-`APP_START_COMMAND` env var).
+start command**. A service's command is resolved, in priority order, by the container
+entrypoint (`services/api/docker-entrypoint.sh`):
 
-| Service | Config-as-code file | Start command |
-|---------|--------------------|---------------|
-| `api` (web) | `railway.json` | *(none → Dockerfile default)* `uvicorn services.api.app.main:app --host 0.0.0.0 --port ${PORT:-8000}` |
-| `monitoring-worker` | `railway-worker.json` | `python -m services.api.app.run_monitoring_worker` |
-| `ai-triage-worker` | `railway-ai-triage-worker.json` | `python -m services.api.app.run_ai_triage_worker` |
-| `onboarding-worker` | `railway-onboarding-worker.json` | `python -m services.api.app.run_onboarding_worker` |
-| `quicknode-live-worker` | `railway-quicknode-live-worker.json` | `python -m services.api.app.run_quicknode_live_worker` |
+1. Railway **Custom Start Command** / config-as-code `startCommand` (replaces the image
+   CMD entirely) — or the `APP_START_COMMAND` env var.
+2. **`SERVICE_ROLE`** — the entrypoint maps the role to the matching module command.
+3. Default — `uvicorn` (the API).
 
-> ⚠️ **The Dockerfile `CMD` defaults to `uvicorn` (the API).** If the
-> `monitoring-worker` service is **not** pointed at `railway-worker.json` (and has no
-> Custom Start Command / `APP_START_COMMAND`), Railway falls back to `railway.json`
-> (which has no `startCommand`) and the service silently boots **uvicorn / the API**
-> instead of the worker. The tell-tale symptom is a "worker" service whose logs are
-> API/QuickNode-webhook logs and that **never** emits
-> `event=monitoring_worker_process_boot`. The API and monitoring worker must remain
-> **separate services** — do not merge or replace the API command.
+| Service | Set EITHER config-as-code file … | … OR just `SERVICE_ROLE` | Start command |
+|---------|--------------------|-----------|---------------|
+| `api` (web) | `railway.json` | `SERVICE_ROLE=api` (or unset) | `uvicorn services.api.app.main:app --host 0.0.0.0 --port ${PORT:-8000}` |
+| `monitoring-worker` | `railway-worker.json` | `SERVICE_ROLE=worker` | `python -m services.api.app.run_monitoring_worker` |
+| `ai-triage-worker` | `railway-ai-triage-worker.json` | `SERVICE_ROLE=ai-triage-worker` | `python -m services.api.app.run_ai_triage_worker` |
+| `onboarding-worker` | `railway-onboarding-worker.json` | `SERVICE_ROLE=onboarding-worker` | `python -m services.api.app.run_onboarding_worker` |
+| `quicknode-live-worker` | `railway-quicknode-live-worker.json` | `SERVICE_ROLE=quicknode-live-worker` | `python -m services.api.app.run_quicknode_live_worker` |
+
+> ⚠️ **The default (no config-as-code, no Custom Start Command, no `SERVICE_ROLE`) is
+> `uvicorn` (the API).** Historically, a `monitoring-worker` service that was not pointed
+> at `railway-worker.json` and had no Custom Start Command silently booted **uvicorn / the
+> API** — its logs looked like API/QuickNode-webhook traffic and it **never** emitted
+> `event=monitoring_worker_process_boot`. The container entrypoint now closes that trap:
+> the worker service **already sets `SERVICE_ROLE=worker`** (see env vars below), and the
+> entrypoint uses it to launch the worker even when no start command is configured. The
+> API and monitoring worker must still remain **separate services** — do not merge or
+> replace the API command.
+>
+> The entrypoint prints, before Python starts, an unconditional
+> `event=container_start_command source=<APP_START_COMMAND|SERVICE_ROLE> service_role=<role> command=<cmd>`
+> line. **Grep a "worker" service's logs for `command=python -m services.api.app.run_monitoring_worker`.**
+> If it instead shows `command=uvicorn …`, the service is misconfigured as an API — set
+> `SERVICE_ROLE=worker` (or point it at `railway-worker.json`) and redeploy.
 
 ### Confirm the worker service is actually running the worker
 
@@ -159,17 +170,20 @@ evidence_source_selected source=replay downgrade_reasons=evidence_source_not_liv
 ### Fix: deploy worker service
 
 1. Create a new Railway service in the same project, pointing at this repository.
-2. In the worker service settings, set **Config-as-code file path** to `railway-worker.json`
-   (repo root). It builds `services/api/Dockerfile` and starts
-   `python -m services.api.app.run_monitoring_worker`.
-   Alternatively set the **Custom Start Command** to
-   `python -m services.api.app.run_monitoring_worker` directly
-   (or use the Procfile entry `monitoring-worker`).
+2. Make the service run the worker. Any ONE of these is sufficient (the container
+   entrypoint resolves them in this priority order):
+   - **Simplest:** set `SERVICE_ROLE=worker` (which the worker env vars below set
+     anyway). The entrypoint maps it to `python -m services.api.app.run_monitoring_worker`.
+   - Set **Config-as-code file path** to `railway-worker.json` (repo root), or
+   - Set a **Custom Start Command** / `APP_START_COMMAND` of
+     `python -m services.api.app.run_monitoring_worker` (or use the Procfile entry
+     `monitoring-worker`).
 3. Set all Worker env vars above, especially `WORKER_ENABLED=true`,
    `EVM_RPC_URL=<Base RPC URL>`, `EVM_CHAIN_ID=8453`, and `DATABASE_URL`
    (same Postgres as the API service). `WORKER_ENABLED=true` automatically
    implies `LIVE_MODE_ENABLED=true`, but setting both explicitly is safest.
 4. Deploy. Within 30 seconds you should see these startup logs (in order):
+   - `event=container_start_command source=SERVICE_ROLE service_role=worker command=python -m services.api.app.run_monitoring_worker` (the **first** line, from the container entrypoint before Python starts — proof the container chose the worker, not uvicorn)
    - `event=monitoring_worker_process_boot deployment_commit_sha=… python_module=services.api.app.run_monitoring_worker process_id=… worker_instance_id=…` (the **first** worker log — proof the worker process, not uvicorn, booted)
    - `event=monitoring_worker_configuration worker_enabled=true live_mode_enabled=true database_configured=true rpc_configured=true rpc_host=… chain_id=8453 polling_interval_seconds=… redis_configured=…`
    - `startup service_role=worker … worker_enabled=True … evm_rpc_configured=True database_url_configured=True`
@@ -223,6 +237,7 @@ Each entry maps to a separate Railway service. The `web` and `monitoring-worker`
 
 | Event | Where | Meaning |
 |-------|-------|---------|
+| `container_start_command` | `docker-entrypoint.sh` | Container-level line (before Python) — proves which command the container launched and why (`source=SERVICE_ROLE`/`APP_START_COMMAND`) |
 | `monitoring_worker_process_boot` | `run_monitoring_worker` | Unconditional first line — proves THIS module (not uvicorn) booted, on which commit/pid |
 | `monitoring_worker_configuration` | `run_monitoring_worker` | Resolved worker config (enabled/live/db/rpc host/chain/interval/redis) — no secrets |
 | `monitoring_worker_start_blocked` | `run_monitoring_worker` | A required prerequisite is missing (`worker_disabled`/`live_mode_disabled`/`database_missing`/`rpc_missing`/`unsupported_chain`); exits non-zero in production |
