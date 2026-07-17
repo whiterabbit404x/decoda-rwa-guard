@@ -25,6 +25,14 @@ def _reset_rpc_provider_state():
             reset_rpc_provider_state()
         except Exception:
             pass
+        try:
+            # QuickNode webhook log-sampler state is module-level so its once-per-window
+            # rate limiting works across requests; clear it between tests so a sampled
+            # line from a prior test never suppresses another test's assertion.
+            from services.api.app.quicknode_streams import reset_quicknode_log_sampler_state
+            reset_quicknode_log_sampler_state()
+        except Exception:
+            pass
     _reset()
     yield
     _reset()

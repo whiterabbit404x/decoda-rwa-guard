@@ -13,6 +13,49 @@ If only the API service runs (WORKER_ENABLED=false), monitoring shows **LIMITED 
 
 ---
 
+## Per-service start commands (config-as-code)
+
+Each Railway service builds the **same** `services/api/Dockerfile` but runs a **different
+start command**. The command is set by pointing the service's **Config-as-code file
+path** at the matching repo-root JSON (or by setting a Custom Start Command / the
+`APP_START_COMMAND` env var).
+
+| Service | Config-as-code file | Start command |
+|---------|--------------------|---------------|
+| `api` (web) | `railway.json` | *(none → Dockerfile default)* `uvicorn services.api.app.main:app --host 0.0.0.0 --port ${PORT:-8000}` |
+| `monitoring-worker` | `railway-worker.json` | `python -m services.api.app.run_monitoring_worker` |
+| `ai-triage-worker` | `railway-ai-triage-worker.json` | `python -m services.api.app.run_ai_triage_worker` |
+| `onboarding-worker` | `railway-onboarding-worker.json` | `python -m services.api.app.run_onboarding_worker` |
+| `quicknode-live-worker` | `railway-quicknode-live-worker.json` | `python -m services.api.app.run_quicknode_live_worker` |
+
+> ⚠️ **The Dockerfile `CMD` defaults to `uvicorn` (the API).** If the
+> `monitoring-worker` service is **not** pointed at `railway-worker.json` (and has no
+> Custom Start Command / `APP_START_COMMAND`), Railway falls back to `railway.json`
+> (which has no `startCommand`) and the service silently boots **uvicorn / the API**
+> instead of the worker. The tell-tale symptom is a "worker" service whose logs are
+> API/QuickNode-webhook logs and that **never** emits
+> `event=monitoring_worker_process_boot`. The API and monitoring worker must remain
+> **separate services** — do not merge or replace the API command.
+
+### Confirm the worker service is actually running the worker
+
+Grep the `monitoring-worker` service logs for the unconditional boot marker — it is the
+**first** line the worker prints, before any config resolution or early exit:
+
+```
+event=monitoring_worker_process_boot deployment_commit_sha=<sha> python_module=services.api.app.run_monitoring_worker process_id=<pid> worker_instance_id=<id>
+event=monitoring_worker_configuration worker_enabled=true live_mode_enabled=true database_configured=true rpc_configured=true rpc_host=<host> chain_id=8453 polling_interval_seconds=60 redis_configured=<bool>
+```
+
+If `event=monitoring_worker_process_boot` is **absent**, the service is not running the
+worker (see the warning above). If it is present but immediately followed by
+`event=monitoring_worker_start_blocked reason=<...>`, the worker is running but a
+required env var is missing — fix the reason and redeploy. In a production-like runtime
+(`APP_ENV`/`APP_MODE` in `production`/`prod`/`staging`) a start-blocked worker **exits
+non-zero** so Railway shows the deploy as **failed**, never as false-healthy.
+
+---
+
 ## API Service env vars
 
 ```
@@ -102,10 +145,14 @@ evidence_source_selected source=replay downgrade_reasons=evidence_source_not_liv
    `EVM_RPC_URL=<Base RPC URL>`, `EVM_CHAIN_ID=8453`, and `DATABASE_URL`
    (same Postgres as the API service). `WORKER_ENABLED=true` automatically
    implies `LIVE_MODE_ENABLED=true`, but setting both explicitly is safest.
-4. Deploy. Within 30 seconds you should see these startup logs:
+4. Deploy. Within 30 seconds you should see these startup logs (in order):
+   - `event=monitoring_worker_process_boot deployment_commit_sha=… python_module=services.api.app.run_monitoring_worker process_id=… worker_instance_id=…` (the **first** worker log — proof the worker process, not uvicorn, booted)
+   - `event=monitoring_worker_configuration worker_enabled=true live_mode_enabled=true database_configured=true rpc_configured=true rpc_host=… chain_id=8453 polling_interval_seconds=… redis_configured=…`
    - `startup service_role=worker … worker_enabled=True … evm_rpc_configured=True database_url_configured=True`
    - `startup_rpc_health_check status=ok … eth_blockNumber_hex=0x… block_number_decimal=472…`
    - `worker_startup … service_role=worker WORKER_ENABLED=true`
+   - `event=monitoring_worker_cycle_started worker=… trigger_type=scheduler`
+   - `monitoring_candidate_breakdown … base_chain_8453_enabled_targets=… total_candidate_targets=…`
    - `worker_heartbeat_written workspace_id=… worker_name=monitoring-worker-…`
    - `evidence_source_selected source=live` (once RPC poll succeeds)
 
@@ -152,6 +199,11 @@ Each entry maps to a separate Railway service. The `web` and `monitoring-worker`
 
 | Event | Where | Meaning |
 |-------|-------|---------|
+| `monitoring_worker_process_boot` | `run_monitoring_worker` | Unconditional first line — proves THIS module (not uvicorn) booted, on which commit/pid |
+| `monitoring_worker_configuration` | `run_monitoring_worker` | Resolved worker config (enabled/live/db/rpc host/chain/interval/redis) — no secrets |
+| `monitoring_worker_start_blocked` | `run_monitoring_worker` | A required prerequisite is missing (`worker_disabled`/`live_mode_disabled`/`database_missing`/`rpc_missing`/`unsupported_chain`); exits non-zero in production |
+| `monitoring_worker_cycle_started` | `monitoring_runner` | A live monitoring cycle actually ran (distinct from the process merely booting) |
+| `monitoring_candidate_breakdown` | `monitoring_runner` | Target counts incl. `base_chain_8453_enabled_targets` and `total_candidate_targets` |
 | `worker_startup` | `run_monitoring_worker` | Worker process started |
 | `worker_heartbeat_written` | `monitoring_runner` | Heartbeat row upserted for workspace |
 | `evidence_source_selected` | `monitoring_runner` | Evidence source resolved for runtime status |

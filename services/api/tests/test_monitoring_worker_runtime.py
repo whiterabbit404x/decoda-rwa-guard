@@ -2240,3 +2240,33 @@ def test_frontend_maps_targets_blocked_reason_code():
     line = next(l for l in fe.splitlines() if l.strip().startswith('targets_blocked:'))
     assert 'alive' in line.lower()
     assert 'block' in line.lower()
+
+
+def test_monitoring_cycle_emits_worker_cycle_started_event(monkeypatch, caplog):
+    """Each live cycle emits the explicit event=monitoring_worker_cycle_started marker
+    and a candidate breakdown carrying base_chain_8453_enabled_targets + total counts,
+    so a zero-candidate cycle is diagnosable from worker logs alone."""
+    connection = _FakeConnection(due_targets=[])
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+
+    with caplog.at_level('INFO'):
+        monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10, trigger_type='scheduler')
+
+    assert any(
+        'event=monitoring_worker_cycle_started worker=test-worker' in message
+        and 'trigger_type=scheduler' in message
+        for message in caplog.messages
+    )
+    assert any(
+        'base_chain_8453_enabled_targets=' in message and 'total_candidate_targets=' in message
+        for message in caplog.messages
+    )
+
+
+def test_worker_cycle_started_and_breakdown_present_in_source():
+    source = (REPO_ROOT / 'services/api/app/monitoring_runner.py').read_text(encoding='utf-8')
+    assert 'event=monitoring_worker_cycle_started' in source
+    assert 'base_chain_8453_enabled_targets=%s' in source
