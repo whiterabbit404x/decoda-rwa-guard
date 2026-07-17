@@ -808,6 +808,7 @@ def _perform_activation(connection: Any, *, session: dict[str, Any], workspace_i
     assets_reused = 0
     targets_created = 0
     monitoring_active = 0
+    worker_configs_active = 0
     rules_enabled = 0
     created_asset_ids: dict[str, str] = {}
 
@@ -889,7 +890,13 @@ def _perform_activation(connection: Any, *, session: dict[str, Any], workspace_i
             )
             targets_created += 1
 
-        # Wire the canonical monitoring registry + monitored system (production path).
+        # Wire the canonical monitoring registry + monitored system, THEN the direct
+        # worker configuration keyed by targets.id. Without the direct config the monitoring
+        # worker drops the target with exclusion_reason=monitoring_config_missing
+        # (persisted_config_count=0), so an activation that stops at the monitored_system is
+        # NOT worker-ready. Creating it here inside the activation transaction guarantees the
+        # asset -> target -> monitored system -> monitoring configuration -> provider assignment
+        # chain is committed atomically or not at all.
         try:
             pilot._sync_canonical_monitoring_target_state(
                 connection, workspace_id=workspace_id, target_id=target_id, asset_id=asset_id,
@@ -898,19 +905,46 @@ def _perform_activation(connection: Any, *, session: dict[str, Any], workspace_i
             bridge = pilot.ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_id)
             if bridge.get('status') == 'ok':
                 monitoring_active += 1
+                cfg = pilot.ensure_direct_monitoring_config_for_target(
+                    connection, workspace_id=workspace_id, target_id=target_id,
+                    chain_network=chain_network, creation_source='onboarding_reconcile',
+                    request=request, user_id=user['id'],
+                )
+                if cfg.get('config_id'):
+                    worker_configs_active += 1
+            else:
+                logger.warning(
+                    'onboarding_activation_monitored_system_not_ready target_id=%s reason=%s',
+                    target_id, bridge.get('reason'),
+                )
         except Exception:
             logger.warning('onboarding_activation_monitoring_bridge_failed target_id=%s', target_id)
 
     rules_enabled = sum(1 for r in proposal.get('baseline_rules', []) if r.get('enabled'))
+
+    # Truthful coverage state (fail-closed): a target only counts as worker-ready when its
+    # DIRECT monitoring configuration exists. 'provisioning' means the worker config is created
+    # and the target is awaiting its first poll — it is NOT yet reporting. Reporting is proven
+    # later by real poll + telemetry evidence, never by activation alone.
+    if worker_configs_active > 0:
+        coverage_status = 'provisioning'
+    elif monitoring_active > 0:
+        coverage_status = 'awaiting_worker_config'
+    else:
+        coverage_status = 'pending'
 
     return {
         'assets_protected': assets_created + assets_reused,
         'assets_created': assets_created,
         'assets_reused': assets_reused,
         'monitoring_sources_active': monitoring_active,
+        'worker_configs_active': worker_configs_active,
         'targets_created': targets_created,
         'rules_enabled': rules_enabled,
-        'coverage_status': 'provisioning' if monitoring_active else 'pending',
+        'coverage_status': coverage_status,
+        # Onboarding is only "fully activated" when every activated monitored system also has
+        # its worker configuration. A partial activation must not be reported as complete.
+        'activation_complete': bool(worker_configs_active > 0 and worker_configs_active >= monitoring_active),
         'proposal_version': version,
     }
 
