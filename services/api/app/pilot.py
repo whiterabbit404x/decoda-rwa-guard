@@ -9769,8 +9769,7 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
                 }
     rows = connection.execute(
         '''
-        SELECT id, target_type, enabled, monitoring_enabled, asset_id
-        FROM targets
+        SELECT id, target_type, enabled, monitoring_enabled, asset_id FROM targets
         WHERE deleted_at IS NULL
           AND (%s::uuid IS NULL OR workspace_id = %s::uuid)
         ORDER BY created_at ASC
@@ -9779,6 +9778,8 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
         (workspace_id, workspace_id),
     ).fetchall()
     created_or_updated = 0
+    repaired_monitoring_config_ids: list[str] = []
+    created_monitoring_config_count = 0
     eligible_targets = 0
     invalid_targets: list[str] = []
     invalid_reasons: dict[str, int] = {}
@@ -9996,6 +9997,29 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
             if verified_row:
                 created_or_updated += 1
                 repaired_monitored_system_ids.append(str(verified_row['id']))
+                # The monitored_system exists, but the worker also requires the DIRECT
+                # monitoring_config keyed by targets.id (mc.target_id = targets.id). A target
+                # onboarded after the one-time backfill migrations can have a valid system yet
+                # persisted_config_count=0 → exclusion_reason=monitoring_config_missing. Repair
+                # it here idempotently so runtime reconciliation converges the worker config too.
+                try:
+                    _cfg_result = ensure_direct_monitoring_config_for_target(
+                        connection,
+                        workspace_id=str(result.get('workspace_id') or workspace_id),
+                        target_id=str(result.get('target_id') or row.get('id')),
+                        chain_network='',  # resolved from targets inside the helper
+                        creation_source='runtime_reconcile',
+                    )
+                    repaired_monitoring_config_ids.append(str(_cfg_result.get('config_id') or ''))
+                    if _cfg_result.get('created'):
+                        created_monitoring_config_count += 1
+                except Exception:
+                    logger.warning(
+                        'reconcile_direct_monitoring_config_failed target_id=%s workspace_id=%s',
+                        result.get('target_id') or row.get('id'),
+                        result.get('workspace_id') or workspace_id,
+                        exc_info=True,
+                    )
             else:
                 skipped_reasons['post_upsert_not_visible'] = skipped_reasons.get('post_upsert_not_visible', 0) + 1
                 skipped_target_details.append({
@@ -10093,6 +10117,8 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
         'skipped_target_details': skipped_target_details,
         'repaired_monitored_system_ids': repaired_monitored_system_ids,
         'repaired_unsupported_monitored_systems': repaired_unsupported_count,
+        'repaired_monitoring_config_ids': [cid for cid in repaired_monitoring_config_ids if cid],
+        'created_monitoring_configs': created_monitoring_config_count,
         'workspace_id': workspace_id,
     })
 
@@ -10134,6 +10160,8 @@ def _normalize_reconcile_result(result: dict[str, Any]) -> dict[str, Any]:
         'skipped_target_details': skipped_target_details,
         'repaired_monitored_system_ids': [str(value) for value in (result.get('repaired_monitored_system_ids') or []) if str(value).strip()],
         'repaired_unsupported_monitored_systems': int(result.get('repaired_unsupported_monitored_systems', 0) or 0),
+        'repaired_monitoring_config_ids': [str(value) for value in (result.get('repaired_monitoring_config_ids') or []) if str(value).strip()],
+        'created_monitoring_configs': int(result.get('created_monitoring_configs', 0) or 0),
         'workspace_id': result.get('workspace_id'),
     }
 
@@ -13450,6 +13478,149 @@ def _provider_type_for_chain(chain_network: str) -> str:
     return 'evm_rpc' if str(chain_network or '').strip().lower() in _EVM_CHAIN_NETWORKS else 'live'
 
 
+def ensure_direct_monitoring_config_for_target(
+    connection: Any,
+    *,
+    workspace_id: str,
+    target_id: str,
+    chain_network: str = '',
+    creation_source: str = 'runtime_reconcile',
+    request: Any = None,
+    user_id: str | None = None,
+) -> dict[str, Any]:
+    """Create or repair the canonical worker-visible monitoring_config for a target.
+
+    The monitoring worker's due-selection query (see monitoring_runner.candidate_systems)
+    joins:
+
+        JOIN monitoring_configs mc ON mc.target_id = t.id AND mc.workspace_id = t.workspace_id
+
+    against the RAW ``targets`` table and requires ``mc.enabled = TRUE`` with a live
+    ``provider_type`` ('evm_rpc' for EVM chains). ``_sync_canonical_monitoring_target_state``
+    writes a config keyed by ``monitored_targets.id`` — a DIFFERENT UUID the worker cannot
+    find — so a target may have a valid asset + monitored_system and still be dropped with
+    ``exclusion_reason=monitoring_config_missing`` (persisted_config_count=0). This helper
+    writes the DIRECT config keyed by the raw ``targets.id`` the worker actually selects on,
+    so onboarding, create/update target, and runtime reconciliation all converge on the same
+    canonical worker configuration.
+
+    Safety properties:
+      * Idempotent + duplicate-safe — reuses an existing enabled direct config for
+        (workspace_id, target_id) rather than inserting a second row, which the partial unique
+        index ``idx_monitoring_configs_one_enabled_per_target_workspace`` forbids.
+      * Workspace-scoped — every read/write is filtered by workspace_id; it never reads or
+        mutates another workspace's rows, so a config or provider cannot be reused cross-tenant.
+      * Contract-safe — provider_type is derived from the chain, never from a wallet address,
+        so contract targets (e.g. USDC) are configured exactly like wallet targets.
+      * Credential-safe — provider_type is a routing classification, not an external secret;
+        this never creates managed keys or provider credentials.
+      * Audited — records the ``creation_source`` (onboarding_reconcile / runtime_reconcile /
+        migration_backfill) for provenance.
+
+    ``chain_network`` may be omitted (e.g. from runtime reconciliation, which does not carry it
+    on the target row); when empty it is resolved workspace-scoped from ``targets`` so the
+    persisted ``provider_type`` is still the correct 'evm_rpc' for an EVM chain rather than a
+    non-live fallback the worker would exclude.
+    """
+    resolved_chain = str(chain_network or '').strip()
+    if not resolved_chain:
+        try:
+            _chain_row = connection.execute(
+                '''
+                SELECT chain_network FROM targets
+                WHERE id = %s::uuid
+                  AND workspace_id = %s::uuid
+                  AND deleted_at IS NULL
+                ''',
+                (target_id, workspace_id),
+            ).fetchone()
+            if _chain_row is not None:
+                resolved_chain = str(dict(_chain_row).get('chain_network') or '').strip()
+        except Exception:
+            resolved_chain = ''
+    provider_type = _provider_type_for_chain(resolved_chain)
+    existing = connection.execute(
+        '''
+        SELECT id FROM monitoring_configs
+        WHERE workspace_id = %s::uuid
+          AND target_id = %s::uuid
+          AND enabled = TRUE
+        ORDER BY updated_at DESC NULLS LAST, created_at DESC, id DESC
+        ''',
+        (workspace_id, target_id),
+    ).fetchall()
+    if existing:
+        config_id = str(existing[0]['id'])
+        created = False
+        # Repair only a non-live / mislabeled provider_type; never clobber a valid live one.
+        connection.execute(
+            '''
+            UPDATE monitoring_configs
+            SET provider_type = CASE
+                    WHEN LOWER(COALESCE(provider_type, '')) IN ('', 'default', 'unknown', 'target_bridge')
+                        THEN %s
+                    ELSE provider_type
+                END,
+                updated_at = NOW()
+            WHERE id = %s::uuid
+              AND workspace_id = %s::uuid
+            ''',
+            (provider_type, config_id, workspace_id),
+        )
+        # Collapse any stray duplicate enabled rows down to the single canonical config so the
+        # partial unique index invariant (one enabled config per workspace+target) always holds.
+        connection.execute(
+            '''
+            UPDATE monitoring_configs
+            SET enabled = FALSE, updated_at = NOW()
+            WHERE workspace_id = %s::uuid
+              AND target_id = %s::uuid
+              AND enabled = TRUE
+              AND id <> %s::uuid
+            ''',
+            (workspace_id, target_id, config_id),
+        )
+    else:
+        # Deterministic id keeps repeated onboarding/reconcile passes writing the SAME row.
+        config_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'target-direct-config:{workspace_id}:{target_id}'))
+        connection.execute(
+            '''
+            INSERT INTO monitoring_configs (id, workspace_id, asset_id, target_id, enabled, cadence_seconds, provider_type, created_at, updated_at)
+            VALUES (%s::uuid, %s::uuid, NULL, %s::uuid, TRUE, 300, %s, NOW(), NOW())
+            ON CONFLICT (id)
+            DO UPDATE SET
+                enabled = TRUE,
+                provider_type = EXCLUDED.provider_type,
+                updated_at = NOW()
+            ''',
+            (config_id, workspace_id, target_id, provider_type),
+        )
+        created = True
+    try:
+        log_audit(
+            connection,
+            action='monitoring_config.ensure_direct',
+            entity_type='monitoring_config',
+            entity_id=config_id,
+            request=request,
+            user_id=user_id or 'system',
+            workspace_id=workspace_id,
+            metadata={
+                'target_id': target_id,
+                'provider_type': provider_type,
+                'creation_source': creation_source,
+                'created': created,
+            },
+        )
+    except Exception:
+        logger.debug('ensure_direct_monitoring_config_audit_failed target_id=%s', target_id, exc_info=True)
+    logger.info(
+        'ensure_direct_monitoring_config workspace_id=%s target_id=%s config_id=%s provider_type=%s created=%s creation_source=%s',
+        workspace_id, target_id, config_id, provider_type, created, creation_source,
+    )
+    return {'config_id': config_id, 'created': created, 'provider_type': provider_type}
+
+
 def _sync_canonical_monitoring_target_state(
     connection: Any,
     *,
@@ -13647,21 +13818,17 @@ def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             result = ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_id)
             if result.get('status') != 'ok':
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Enabled targets require a valid linked asset before monitoring can start.')
-            # Create direct monitoring_config keyed by targets.id for the worker candidate query.
-            # The canonical sync above uses monitored_targets.id which the worker cannot find.
-            _direct_cfg_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'target-direct-config:{workspace_id}:{target_id}'))
-            _direct_provider_type = _provider_type_for_chain(validated.get('chain_network', ''))
-            connection.execute(
-                '''
-                INSERT INTO monitoring_configs (id, workspace_id, asset_id, target_id, enabled, cadence_seconds, provider_type, created_at, updated_at)
-                VALUES (%s::uuid, %s::uuid, NULL, %s::uuid, TRUE, 300, %s, NOW(), NOW())
-                ON CONFLICT (id)
-                DO UPDATE SET
-                    enabled = TRUE,
-                    provider_type = EXCLUDED.provider_type,
-                    updated_at = NOW()
-                ''',
-                (_direct_cfg_id, workspace_id, target_id, _direct_provider_type),
+            # Create the direct monitoring_config keyed by targets.id that the worker
+            # candidate query requires. The canonical sync above uses monitored_targets.id
+            # which the worker cannot find. The shared helper is duplicate-safe + audited.
+            ensure_direct_monitoring_config_for_target(
+                connection,
+                workspace_id=workspace_id,
+                target_id=target_id,
+                chain_network=validated.get('chain_network', ''),
+                creation_source='target_create',
+                request=request,
+                user_id=user['id'],
             )
         log_audit(connection, action='target.create', entity_type='target', entity_id=target_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'target_type': validated['target_type']})
         connection.commit()
@@ -13766,19 +13933,14 @@ def update_target(target_id: str, payload: dict[str, Any], request: Request) -> 
             result = ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_id)
             if result.get('status') != 'ok':
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Enabled targets require a valid linked asset before monitoring can start.')
-            _direct_cfg_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'target-direct-config:{workspace_id}:{target_id}'))
-            _direct_provider_type = _provider_type_for_chain(validated.get('chain_network', ''))
-            connection.execute(
-                '''
-                INSERT INTO monitoring_configs (id, workspace_id, asset_id, target_id, enabled, cadence_seconds, provider_type, created_at, updated_at)
-                VALUES (%s::uuid, %s::uuid, NULL, %s::uuid, TRUE, 300, %s, NOW(), NOW())
-                ON CONFLICT (id)
-                DO UPDATE SET
-                    enabled = TRUE,
-                    provider_type = EXCLUDED.provider_type,
-                    updated_at = NOW()
-                ''',
-                (_direct_cfg_id, workspace_id, target_id, _direct_provider_type),
+            ensure_direct_monitoring_config_for_target(
+                connection,
+                workspace_id=workspace_id,
+                target_id=target_id,
+                chain_network=validated.get('chain_network', ''),
+                creation_source='target_update',
+                request=request,
+                user_id=user['id'],
             )
         else:
             connection.execute(
