@@ -34,6 +34,17 @@ def _default_worker_name() -> str:
     return f'monitoring-worker-{instance[:80]}'
 
 
+def _resolve_service_role() -> str:
+    """The declared service role for this process (SERVICE_ROLE env, default 'worker').
+
+    Operators set SERVICE_ROLE=worker on the dedicated monitoring-worker Railway
+    service and SERVICE_ROLE=api on the API service. It is logged verbatim in the
+    startup line so a mislabelled service (e.g. an API service accidentally running
+    the worker entrypoint, or vice-versa) is diagnosable from logs alone.
+    """
+    return (os.getenv('SERVICE_ROLE') or 'worker').strip() or 'worker'
+
+
 # Default 60s so the worker never hammers the RPC provider. EVM_POLLING_INTERVAL_SECONDS
 # is the documented override; MONITORING_WORKER_INTERVAL_SECONDS is kept as a legacy alias.
 DEFAULT_POLLING_INTERVAL_SECONDS = 60.0
@@ -583,6 +594,31 @@ def main() -> int:
         args.interval_seconds,
         _boot_config['redis_configured'],
         _boot_config['worker_enabled_source'],
+    )
+
+    # ---------------------------------------------------------------------------
+    # event=monitoring_worker_starting — the single, greppable "who am I / how am I
+    # configured" line the runbook (docs/RAILWAY_DEPLOYMENT_GUIDE.md, task step 1)
+    # asks operators to look for. It carries the worker identity AND the heartbeat
+    # identity (they are the same value — heartbeats are keyed by worker_name — so the
+    # runtime-status heartbeat reader and the worker writer can be proven to agree from
+    # logs alone). No secrets: only the RPC host, booleans, and the numeric chain id.
+    # ---------------------------------------------------------------------------
+    _service_role = _resolve_service_role()
+    logger.info(
+        'event=monitoring_worker_starting service_role=%s deployment_commit_sha=%s '
+        'worker_enabled=%s database_configured=%s chain_id=%s rpc_configured=%s '
+        'rpc_host=%s poll_interval_seconds=%s worker_id=%s heartbeat_id=%s',
+        _service_role,
+        _boot_commit,
+        _boot_config['worker_enabled'],
+        _boot_config['database_configured'],
+        _boot_config['chain_id'] if _boot_config['chain_id'] is not None else 'not_set',
+        _boot_config['rpc_configured'],
+        _boot_config['rpc_host'],
+        args.interval_seconds,
+        args.worker_name,
+        args.worker_name,
     )
 
     # ---------------------------------------------------------------------------

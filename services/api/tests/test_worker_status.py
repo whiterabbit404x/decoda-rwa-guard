@@ -129,6 +129,72 @@ def test_stable_polling_never_reported_is_offline_not_stale():
 
 
 # ---------------------------------------------------------------------------
+# Three-state worker liveness (A / B / C) — never collapsed into "stale"
+# ---------------------------------------------------------------------------
+
+def test_worker_liveness_state_a_worker_stopped():
+    """State A: no fresh heartbeat/poll => worker_stopped, regardless of target_reporting."""
+    now = _now()
+    status = build_worker_status(
+        now=now,
+        realtime_is_enabled=False,
+        stable_last_heartbeat_at=now - timedelta(seconds=TTL + 600),
+        stable_last_poll_at=now - timedelta(seconds=TTL + 600),
+        heartbeat_ttl_seconds=TTL,
+        realtime_watcher=None,
+        target_reporting=True,  # even if a target once reported, a stopped worker is state A
+    )
+    assert status['worker_liveness_state'] == 'worker_stopped'
+    assert status['stable_polling']['liveness_state'] == 'worker_stopped'
+
+
+def test_worker_liveness_state_b_worker_alive_target_quiet():
+    """State B: worker alive (fresh heartbeat) but no target reporting => worker_alive_target_quiet."""
+    now = _now()
+    status = build_worker_status(
+        now=now,
+        realtime_is_enabled=False,
+        stable_last_heartbeat_at=now - timedelta(seconds=5),
+        stable_last_poll_at=now - timedelta(seconds=5),
+        heartbeat_ttl_seconds=TTL,
+        realtime_watcher=None,
+        target_reporting=False,
+    )
+    assert status['stable_polling']['state'] == 'active'
+    assert status['worker_liveness_state'] == 'worker_alive_target_quiet'
+
+
+def test_worker_liveness_state_c_worker_alive_target_reporting():
+    """State C: worker alive AND a target reporting => worker_alive_target_reporting."""
+    now = _now()
+    status = build_worker_status(
+        now=now,
+        realtime_is_enabled=False,
+        stable_last_heartbeat_at=now - timedelta(seconds=5),
+        stable_last_poll_at=now - timedelta(seconds=5),
+        heartbeat_ttl_seconds=TTL,
+        realtime_watcher=None,
+        target_reporting=True,
+    )
+    assert status['stable_polling']['state'] == 'active'
+    assert status['worker_liveness_state'] == 'worker_alive_target_reporting'
+
+
+def test_worker_liveness_state_unknown_reporting_is_generic_alive():
+    """When target_reporting is not supplied, report honest generic worker_alive (not a guess)."""
+    now = _now()
+    status = build_worker_status(
+        now=now,
+        realtime_is_enabled=False,
+        stable_last_heartbeat_at=now - timedelta(seconds=5),
+        stable_last_poll_at=now - timedelta(seconds=5),
+        heartbeat_ttl_seconds=TTL,
+        realtime_watcher=None,
+    )
+    assert status['worker_liveness_state'] == 'worker_alive'
+
+
+# ---------------------------------------------------------------------------
 # Acceptance: QuickNode WSS rate-limited -> provider cooldown, source still live
 # ---------------------------------------------------------------------------
 

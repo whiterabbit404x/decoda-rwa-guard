@@ -626,6 +626,7 @@ def build_worker_status(
     realtime_watcher: dict[str, Any] | None = None,
     realtime_last_event_at: datetime | None = None,
     stable_last_coverage_poll_at: datetime | None = None,
+    target_reporting: bool | None = None,
 ) -> dict[str, Any]:
     """Derive a separated, truthful worker status from canonical facts.
 
@@ -678,6 +679,27 @@ def build_worker_status(
     else:
         stable_state = 'stale'
     stable_active = stable_state == 'active'
+
+    # --- Worker liveness state (A / B / C — never collapsed) -----------------------
+    # CLAUDE.md keeps three facts separate: heartbeat proves the worker is alive, poll
+    # proves the loop ran, and telemetry proves monitored data actually arrived. The
+    # runtime status must therefore distinguish three states and never collapse them
+    # into a single "stale heartbeat":
+    #   A. worker_stopped               — no fresh heartbeat AND no fresh poll/coverage.
+    #   B. worker_alive_target_quiet    — worker alive (heartbeat/poll fresh) but no
+    #                                     target has reported telemetry yet.
+    #   C. worker_alive_target_reporting— worker alive AND a target is reporting telemetry.
+    # ``target_reporting`` is the caller's canonical "a monitored target actually reported"
+    # signal (reporting_systems > 0). When it is None the reporting fact is unknown, so we
+    # report the honest generic ``worker_alive`` rather than guessing quiet vs reporting.
+    if not stable_active:
+        worker_liveness_state = 'worker_stopped'
+    elif target_reporting is True:
+        worker_liveness_state = 'worker_alive_target_reporting'
+    elif target_reporting is False:
+        worker_liveness_state = 'worker_alive_target_quiet'
+    else:
+        worker_liveness_state = 'worker_alive'
 
     # --- Realtime WebSocket worker -------------------------------------------------
     watcher = realtime_watcher if isinstance(realtime_watcher, dict) else {}
@@ -781,6 +803,10 @@ def build_worker_status(
             'stale_threshold_seconds': ttl,
             'age_seconds': stable_poll_age_seconds,
             'status': stable_state,
+            # Three-state worker liveness (A/B/C) so a caller can tell "worker stopped"
+            # (state A) apart from "worker alive but target quiet" (state B) and "worker
+            # alive and target reporting" (state C) without collapsing them into "stale".
+            'liveness_state': worker_liveness_state,
             # Stable polling is the canonical transfer-detection path; when it is
             # active, transfer detection remains supported regardless of realtime.
             'detection_supported': stable_active,
@@ -808,6 +834,9 @@ def build_worker_status(
             'host': provider_host,
         },
         'headline': headline,
+        # Top-level mirror of the three-state liveness verdict so runtime-status payloads
+        # can surface it without reaching into stable_polling.
+        'worker_liveness_state': worker_liveness_state,
         # Stable polling alive => the monitoring source is NOT dead even if realtime
         # is paused or the realtime provider is rate-limited (requirement 4).
         'monitoring_source_live': stable_active,

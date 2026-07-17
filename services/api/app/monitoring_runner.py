@@ -5398,7 +5398,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         workspace_coverage_heartbeat_updates: dict[str, int] = defaultdict(int)
         workspace_provider_reachable_cycles: dict[str, int] = defaultdict(int)
         workspace_errors: dict[str, str] = {}
-        connection.execute(
+        _worker_state_write = connection.execute(
             '''
             INSERT INTO monitoring_worker_state (
                 worker_name,
@@ -5418,6 +5418,27 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             DO UPDATE SET running = TRUE, status = 'running', last_started_at = COALESCE(monitoring_worker_state.last_started_at, NOW()), last_heartbeat_at = NOW(), last_cycle_at = NOW(), last_error = NULL, updated_at = NOW()
             ''',
             (worker_name,),
+        )
+        # event=monitoring_worker_heartbeat_written (global scope). This is the worker's
+        # liveness proof for the whole process — written UNCONDITIONALLY every cycle,
+        # even when the candidate set is empty (zero due/selected targets). It is read by
+        # runtime-status via MAX(last_heartbeat_at) FROM monitoring_worker_state, so its
+        # presence in logs proves the worker is alive independently of whether any target
+        # reported. expires_at = recorded_at + the stable-poll stale threshold: past it,
+        # runtime-status treats the worker as stopped (state A), not merely "target quiet".
+        _hb_now = utc_now()
+        _hb_expires_at = _hb_now + timedelta(
+            seconds=stable_poll_stale_threshold_seconds(MONITOR_POLL_INTERVAL_SECONDS)
+        )
+        logger.info(
+            'event=monitoring_worker_heartbeat_written worker_id=%s service_role=%s scope=global '
+            'workspace_id=global recorded_at=%s expires_at=%s rows_affected=%s trigger_type=%s',
+            worker_name,
+            'worker',
+            _hb_now.isoformat(),
+            _hb_expires_at.isoformat(),
+            getattr(_worker_state_write, 'rowcount', None),
+            trigger_type,
         )
         # Repair misclassified default providers for real Ethereum targets so
         # live polling targets are eligible for the worker loop.
@@ -5648,8 +5669,12 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 worker_name,
             )
             try:
+                _hb_workspace_now = utc_now()
+                _hb_workspace_expires_at = _hb_workspace_now + timedelta(
+                    seconds=stable_poll_stale_threshold_seconds(MONITOR_POLL_INTERVAL_SECONDS)
+                )
                 with connection.transaction():
-                    connection.execute(
+                    _hb_workspace_write = connection.execute(
                         """
                         INSERT INTO monitoring_heartbeats (id, workspace_id, worker_name, last_heartbeat_at, status, metadata)
                         VALUES (%s::uuid, %s::uuid, %s, NOW(), %s, %s::jsonb)
@@ -5658,10 +5683,21 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                         """,
                         (str(uuid.uuid4()), workspace_id, worker_name, 'healthy', _json_dumps({'trigger_type': trigger_type})),
                     )
+                # event=monitoring_worker_heartbeat_written (workspace scope). Same schema
+                # as the global-scope line above, keyed by workspace_id and written to the
+                # SAME monitoring_heartbeats table runtime-status reads per workspace — so
+                # the worker's write identity (worker_id/worker_name) provably matches the
+                # heartbeat reader. Kept as `worker_heartbeat_written`'s superset so existing
+                # log greps still match.
                 logger.info(
-                    'worker_heartbeat_written workspace_id=%s worker_name=%s trigger_type=%s',
-                    workspace_id,
+                    'event=monitoring_worker_heartbeat_written worker_id=%s service_role=%s scope=workspace '
+                    'workspace_id=%s recorded_at=%s expires_at=%s rows_affected=%s trigger_type=%s',
                     worker_name,
+                    'worker',
+                    workspace_id,
+                    _hb_workspace_now.isoformat(),
+                    _hb_workspace_expires_at.isoformat(),
+                    getattr(_hb_workspace_write, 'rowcount', None),
                     trigger_type,
                 )
             except Exception:
@@ -10117,6 +10153,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             stable_last_coverage_poll_at=canonical_last_telemetry_at,
             heartbeat_ttl_seconds=_stable_poll_stale_threshold,
             realtime_watcher=health.get('realtime_watcher'),
+            # Canonical "a monitored target actually reported" signal so the worker
+            # liveness verdict distinguishes worker-alive-but-quiet (state B) from
+            # worker-alive-and-reporting (state C), instead of collapsing both into
+            # "stable polling active" (item 9).
+            target_reporting=bool(reporting_systems > 0),
         )
         # Debug / reconciliation fields for the stable-polling verdict. Surfaced at the top
         # level of the runtime status so operators can see exactly which timestamps and

@@ -45,7 +45,15 @@ Grep the `monitoring-worker` service logs for the unconditional boot marker — 
 ```
 event=monitoring_worker_process_boot deployment_commit_sha=<sha> python_module=services.api.app.run_monitoring_worker process_id=<pid> worker_instance_id=<id>
 event=monitoring_worker_configuration worker_enabled=true live_mode_enabled=true database_configured=true rpc_configured=true rpc_host=<host> chain_id=8453 polling_interval_seconds=60 redis_configured=<bool>
+event=monitoring_worker_starting service_role=worker deployment_commit_sha=<sha> worker_enabled=true database_configured=true chain_id=8453 rpc_configured=true rpc_host=<host> poll_interval_seconds=60 worker_id=<worker_name> heartbeat_id=<worker_name>
 ```
+
+`event=monitoring_worker_starting` is the single consolidated "who am I / how am I
+configured" line. It carries the **worker identity** and the **heartbeat identity**
+(they are the same value — heartbeats are keyed by `worker_name` — so the worker's
+writes and the runtime-status heartbeat reader provably agree). Grep for it to confirm
+the dedicated stable-RPC service is the one running the worker, on the expected commit,
+against the expected chain and RPC host.
 
 If `event=monitoring_worker_process_boot` is **absent**, the service is not running the
 worker (see the warning above). If it is present but immediately followed by
@@ -53,6 +61,22 @@ worker (see the warning above). If it is present but immediately followed by
 required env var is missing — fix the reason and redeploy. In a production-like runtime
 (`APP_ENV`/`APP_MODE` in `production`/`prod`/`staging`) a start-blocked worker **exits
 non-zero** so Railway shows the deploy as **failed**, never as false-healthy.
+
+Once cycles run, each loop emits a heartbeat proof line, written **every cycle even with
+zero due targets** (so worker liveness never depends on a target being due):
+
+```
+event=monitoring_worker_heartbeat_written worker_id=<worker_name> service_role=worker scope=global workspace_id=global recorded_at=<iso> expires_at=<iso> rows_affected=<n> trigger_type=scheduler
+event=monitoring_worker_heartbeat_written worker_id=<worker_name> service_role=worker scope=workspace workspace_id=<uuid> recorded_at=<iso> expires_at=<iso> rows_affected=<n> trigger_type=scheduler
+```
+
+The global-scope line is read by runtime-status via `MAX(last_heartbeat_at) FROM
+monitoring_worker_state`; the workspace-scope line is written to the same
+`monitoring_heartbeats` table runtime-status reads per workspace. Runtime-status then
+reports a three-state worker liveness (never collapsed into one "stale heartbeat"):
+`worker_stopped` (A — no fresh heartbeat/poll), `worker_alive_target_quiet` (B — worker
+alive, no target reporting yet), or `worker_alive_target_reporting` (C — worker alive and
+a target is reporting telemetry).
 
 ---
 

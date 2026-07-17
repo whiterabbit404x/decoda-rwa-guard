@@ -160,6 +160,78 @@ def test_process_boot_logged_before_configuration(monkeypatch, caplog) -> None:
     assert 'event=monitoring_worker_start_blocked' not in text
 
 
+def test_monitoring_worker_starting_line_carries_identity_and_no_secrets(monkeypatch, caplog) -> None:
+    """event=monitoring_worker_starting is the single greppable startup line the runbook
+    (task step 1) asks operators to look for. It must carry service_role, deployment
+    commit sha, worker_enabled, database_configured, chain_id, rpc_configured, the RPC
+    *host*, the poll interval, and BOTH the worker identity and heartbeat identity — and
+    it must never leak the RPC key or the full DATABASE_URL."""
+    _clear_worker_env(monkeypatch)
+    monkeypatch.setenv('APP_MODE', 'development')
+    monkeypatch.setenv('SERVICE_ROLE', 'worker')
+    monkeypatch.setenv('WORKER_ENABLED', 'true')
+    monkeypatch.setenv('LIVE_MODE_ENABLED', 'true')
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://user:pass@db-host/decoda')
+    monkeypatch.setenv('EVM_RPC_URL', 'https://base-mainnet.g.alchemy.com/v2/SUPERSECRETKEY')
+    monkeypatch.setenv('EVM_CHAIN_ID', '8453')
+    monkeypatch.setattr(
+        'services.api.app.evm_activity_provider._resolve_evm_rpc_url',
+        lambda: 'https://base-mainnet.g.alchemy.com/v2/SUPERSECRETKEY',
+    )
+    monkeypatch.setattr(
+        'services.api.app.evm_activity_provider.probe_rpc_health',
+        lambda *a, **k: {
+            'ok': True, 'chain_id_hex': '0x2105', 'chain_id_int': 8453,
+            'block_number_hex': '0x1', 'block_number_int': 1, 'error': None,
+        },
+    )
+    monkeypatch.setattr(run_monitoring_worker, 'validate_monitoring_config_or_raise', lambda: None)
+    monkeypatch.setattr(run_monitoring_worker, '_start_health_server', lambda *a, **k: None)
+    monkeypatch.setattr(
+        run_monitoring_worker, 'parse_args',
+        lambda: SimpleNamespace(worker_name='monitoring-worker-abc123', interval_seconds=60, limit=5, once=True),
+    )
+    monkeypatch.setattr(
+        run_monitoring_worker, 'run_monitoring_cycle',
+        lambda worker_name, limit, trigger_type='scheduler': {
+            'due_targets': 0, 'checked': 0, 'alerts_generated': 0, 'live_mode': True,
+        },
+    )
+    monkeypatch.setattr(run_monitoring_worker, 'evaluate_monitoring_system_alerts', lambda stale_after_seconds: {})
+    monkeypatch.setattr(run_monitoring_worker, 'gauge', lambda *a, **k: None)
+
+    with caplog.at_level('INFO'):
+        assert run_monitoring_worker.main() == 0
+
+    starting_line = next(
+        (m for m in caplog.messages if 'event=monitoring_worker_starting' in m), None
+    )
+    assert starting_line is not None, 'worker must emit event=monitoring_worker_starting'
+    assert 'service_role=worker' in starting_line
+    assert 'worker_enabled=True' in starting_line
+    assert 'database_configured=True' in starting_line
+    assert 'chain_id=8453' in starting_line
+    assert 'rpc_configured=True' in starting_line
+    assert 'rpc_host=base-mainnet.g.alchemy.com' in starting_line
+    assert 'poll_interval_seconds=60' in starting_line
+    # Worker identity AND heartbeat identity are both present and equal (heartbeats are
+    # keyed by worker_name, so the writer and the runtime-status reader agree).
+    assert 'worker_id=monitoring-worker-abc123' in starting_line
+    assert 'heartbeat_id=monitoring-worker-abc123' in starting_line
+    # No secrets ever.
+    assert 'SUPERSECRETKEY' not in starting_line
+    assert 'postgresql://' not in starting_line
+
+
+def test_resolve_service_role_defaults_to_worker(monkeypatch) -> None:
+    monkeypatch.delenv('SERVICE_ROLE', raising=False)
+    assert run_monitoring_worker._resolve_service_role() == 'worker'
+    monkeypatch.setenv('SERVICE_ROLE', 'api')
+    assert run_monitoring_worker._resolve_service_role() == 'api'
+    monkeypatch.setenv('SERVICE_ROLE', '   ')
+    assert run_monitoring_worker._resolve_service_role() == 'worker'
+
+
 # ---------------------------------------------------------------------------
 # Fail-loud: production exits non-zero, non-production continues
 # ---------------------------------------------------------------------------

@@ -1408,6 +1408,81 @@ def test_monitoring_cycle_with_one_candidate_proceeds_past_heartbeat(monkeypatch
     assert processed_targets == ['candidate-target']
 
 
+def test_monitoring_cycle_emits_global_heartbeat_written_with_zero_candidates(monkeypatch, caplog) -> None:
+    """event=monitoring_worker_heartbeat_written scope=global must be emitted EVERY cycle,
+    even when there are zero candidate targets. This is the worker-liveness proof that
+    runtime-status reads via MAX(last_heartbeat_at) FROM monitoring_worker_state, so it
+    must never depend on a target being due (item 8/9: worker alive != target reporting)."""
+    connection = _FakeConnection(due_targets=[])
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+
+    with caplog.at_level('INFO'):
+        summary = monitoring_runner.run_monitoring_cycle(worker_name='global-hb-worker', limit=10)
+
+    assert summary['checked'] == 0
+    global_hb = next(
+        (m for m in caplog.messages
+         if 'event=monitoring_worker_heartbeat_written' in m and 'scope=global' in m),
+        None,
+    )
+    assert global_hb is not None, 'global heartbeat must be written even with zero candidates'
+    assert 'worker_id=global-hb-worker' in global_hb
+    assert 'service_role=worker' in global_hb
+    assert 'workspace_id=global' in global_hb
+    assert 'recorded_at=' in global_hb
+    assert 'expires_at=' in global_hb
+    assert 'rows_affected=' in global_hb
+
+
+def test_monitoring_cycle_emits_workspace_heartbeat_written_for_candidate(monkeypatch, caplog) -> None:
+    """event=monitoring_worker_heartbeat_written scope=workspace is emitted for each
+    workspace with a candidate, keyed by workspace_id, using the SAME worker identity as
+    the global line — proving the writer and the per-workspace runtime-status reader agree."""
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': 'candidate-target',
+            'name': 'Candidate Target',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-candidate',
+            'last_checked_at': None,
+            'monitoring_interval_seconds': 300,
+            'created_at': now,
+        }
+    ]
+    connection = _FakeConnection(due_targets)
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'process_monitoring_target',
+        lambda _connection, target, triggered_by_user_id=None, **_kw: {
+            'alerts_generated': 0, 'events_ingested': 0, 'target_id': target['id'], 'status': 'completed',
+        },
+    )
+
+    with caplog.at_level('INFO'):
+        monitoring_runner.run_monitoring_cycle(worker_name='ws-hb-worker', limit=10)
+
+    workspace_hb = next(
+        (m for m in caplog.messages
+         if 'event=monitoring_worker_heartbeat_written' in m and 'scope=workspace' in m),
+        None,
+    )
+    assert workspace_hb is not None, 'workspace-scoped heartbeat must be written for a candidate'
+    assert 'worker_id=ws-hb-worker' in workspace_hb
+    assert 'workspace_id=ws-candidate' in workspace_hb
+    assert 'recorded_at=' in workspace_hb
+    assert 'expires_at=' in workspace_hb
+
+
 # ---------------------------------------------------------------------------
 # Tests for _persist_live_coverage_telemetry ON CONFLICT fix (migration 0088)
 # ---------------------------------------------------------------------------
