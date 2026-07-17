@@ -1127,6 +1127,8 @@ def _asset_context_from_target(target: dict[str, Any]) -> dict[str, Any]:
 
 
 def _fetch_logs(client: RpcClient, address: str, from_block: int, to_block: int) -> list[dict[str, Any]]:
+    """Fetch ERC-20 Transfer/Approval logs where a monitored WALLET is the indexed
+    from/to party (topics filter), across two calls (inbound + outbound)."""
     params = [{
         'fromBlock': hex(from_block),
         'toBlock': hex(to_block),
@@ -1141,6 +1143,34 @@ def _fetch_logs(client: RpcClient, address: str, from_block: int, to_block: int)
     outbound = client.call('eth_getLogs', params_outbound) or []
     seen: dict[str, dict[str, Any]] = {}
     for log in [*inbound, *outbound]:
+        key = f"{log.get('transactionHash')}:{log.get('logIndex')}"
+        seen[key] = log
+    return list(seen.values())
+
+
+def _fetch_contract_logs(client: RpcClient, address: str, from_block: int, to_block: int) -> list[dict[str, Any]]:
+    """Fetch ERC-20 Transfer/Approval logs EMITTED BY a monitored contract address.
+
+    Unlike :func:`_fetch_logs` (which filters by a monitored WALLET appearing in a
+    Transfer's indexed from/to topics), this filters by the log's ``address`` field —
+    i.e. every Transfer/Approval event the monitored contract itself emits. This is the
+    canonical way to observe a monitored token contract's on-chain activity: ERC-20
+    transfers appear in receipt logs keyed by the emitting token contract, NOT only in
+    transactions whose ``to`` is the contract. Router/DEX-mediated transfers (tx.to is a
+    router, not the token) are therefore captured here even though the block-by-block
+    ``tx.to == contract`` scan misses them. A single eth_getLogs call covers both
+    Transfer and Approval via the OR topic filter, so the adaptive halving/413 handling
+    in :func:`_fetch_wallet_logs_adaptive` still applies unchanged.
+    """
+    params = [{
+        'fromBlock': hex(from_block),
+        'toBlock': hex(to_block),
+        'address': address,
+        'topics': [[TRANSFER_TOPIC, APPROVAL_TOPIC]],
+    }]
+    logs = client.call('eth_getLogs', params) or []
+    seen: dict[str, dict[str, Any]] = {}
+    for log in logs:
         key = f"{log.get('transactionHash')}:{log.get('logIndex')}"
         seen[key] = log
     return list(seen.values())
@@ -1219,6 +1249,7 @@ def _fetch_wallet_logs_adaptive(
     target_id: Any,
     max_range: int,
     min_range: int,
+    logs_fetcher: Any = None,
 ) -> dict[str, Any]:
     """Fetch ERC-20 transfer/approval logs, halving the block range on HTTP 413.
 
@@ -1230,11 +1261,17 @@ def _fetch_wallet_logs_adaptive(
     stops the log scan for this cycle (the block-by-block scan still runs), preserving
     prior behavior.
 
+    ``logs_fetcher`` selects the per-chunk eth_getLogs call: :func:`_fetch_logs` (the
+    default) filters by a monitored WALLET in the Transfer topics; pass
+    :func:`_fetch_contract_logs` to filter by the emitting CONTRACT ``address`` instead.
+    Both share the identical adaptive halving / 413 / cursor-capping behavior.
+
     Returns a dict: ``logs``, ``last_complete_block`` (highest block fully covered by a
     SUCCESSFUL eth_getLogs scan; ``from_block - 1`` if even the first chunk failed),
     ``status`` (``ok``/``degraded``/``failed``), ``error_count``, ``too_large_count``,
     and ``min_chunk_size`` (smallest chunk size attempted).
     """
+    _logs_fetcher = logs_fetcher or _fetch_logs
     logs: list[dict[str, Any]] = []
     last_complete = from_block - 1
     status = 'ok'
@@ -1249,7 +1286,7 @@ def _fetch_wallet_logs_adaptive(
         lo, hi = pending.pop()
         span = hi - lo + 1
         try:
-            logs.extend(_fetch_logs(client, address, lo, hi))
+            logs.extend(_logs_fetcher(client, address, lo, hi))
             last_complete = hi
             continue
         except Exception as exc:
@@ -1636,21 +1673,36 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     # scanned (fail-closed). For a first-chunk failure this equals from_block-1 (no advance).
     _logs_last_complete_block: int | None = None
     target_type = str(target.get('target_type') or '').lower()
-    if target_type == 'wallet':
-        # eth_getLogs is best-effort enrichment for ERC-20 transfer/approval logs and
-        # is fetched in ADAPTIVE chunks: a 413 (too large) halves the block range and
-        # retries instead of failing the whole poll, and never benches the provider.
-        # The block-by-block transaction scan below still detects native wallet
-        # transfers if logs cannot be fetched at all.
+    if target_type in {'wallet', 'contract'}:
+        # eth_getLogs captures ERC-20 transfer/approval activity and is fetched in
+        # ADAPTIVE chunks: a 413 (too large) halves the block range and retries instead
+        # of failing the whole poll, and never benches the provider. For a WALLET target
+        # this is best-effort enrichment (the block-by-block tx scan below still detects
+        # native transfers if logs cannot be fetched). For a CONTRACT target it is the
+        # PRIMARY signal: ERC-20 transfers live in receipt logs keyed by the emitting
+        # token contract, not only in transactions whose ``to`` is the contract — so the
+        # contract log scan (address-filtered) captures router/DEX-mediated transfers the
+        # ``tx.to == contract`` block scan misses. Contract address matching must never
+        # require the contract to appear as a transaction ``from``/``to``.
         _logs_max_range, _logs_min_range = _wallet_logs_block_range(network, block_scan_chunk)
+        _logs_fetcher = _fetch_logs if target_type == 'wallet' else _fetch_contract_logs
         _adaptive = _fetch_wallet_logs_adaptive(
             client, target_address, from_block, scan_ceiling,
             network=network, target_id=target.get('id'),
             max_range=_logs_max_range, min_range=_logs_min_range,
+            logs_fetcher=_logs_fetcher,
         )
         logs = _adaptive['logs']
         _logs_fetch_status = _adaptive['status']
         _logs_fetch_error_count = _adaptive['error_count']
+        if target_type == 'contract':
+            logger.info(
+                'evm_contract_log_scan target_id=%s chain=%s contract_address=%s '
+                'from_block=%s to_block=%s logs_found=%s logs_fetch_status=%s '
+                'action=erc20_receipt_logs_not_tx_to_matching',
+                target.get('id'), network, target_address,
+                from_block, scan_ceiling, len(logs), _adaptive['status'],
+            )
         if _adaptive['status'] in {'degraded', 'failed'}:
             # The log scan did not fully cover [from_block, scan_ceiling] — either a 413
             # chunk stayed too large at the minimum range ('degraded'/query_too_large) or a

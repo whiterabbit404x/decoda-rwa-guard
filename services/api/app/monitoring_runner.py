@@ -5578,6 +5578,64 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             )
         except Exception:
             pass
+        # Explicit exclusion diagnostics: for every ENABLED, monitoring_enabled target that
+        # did NOT make it into candidate_systems, report the exact reason it was dropped —
+        # so a contract target (e.g. USDC) silently excluded by a missing/misrouted
+        # monitoring_config is diagnosable from worker logs alone (acceptance step 3),
+        # rather than only showing up as an absence. target_type is logged specifically so a
+        # contract is never assumed to be excluded merely "because it is not a wallet" — the
+        # candidate query does not filter on target_type, and this proves the true cause.
+        try:
+            _candidate_target_ids = {str(dict(_r).get('target_id') or '') for _r in candidate_systems}
+            _excluded_rows = connection.execute(
+                '''
+                SELECT t.id AS target_id,
+                       t.workspace_id,
+                       t.target_type,
+                       t.chain_network,
+                       (a.id IS NULL) AS asset_missing,
+                       (ms.id IS NULL) AS monitored_system_missing,
+                       COALESCE(ms.is_enabled, TRUE) AS monitored_system_enabled,
+                       (mc.id IS NULL) AS monitoring_config_missing,
+                       COALESCE(mc.enabled, FALSE) AS monitoring_config_enabled,
+                       LOWER(COALESCE(mc.provider_type, '')) AS provider_type
+                FROM targets t
+                LEFT JOIN assets a ON a.id = t.asset_id AND a.workspace_id = t.workspace_id AND a.deleted_at IS NULL
+                LEFT JOIN monitored_systems ms ON ms.target_id = t.id AND ms.workspace_id = t.workspace_id
+                LEFT JOIN monitoring_configs mc ON mc.target_id = t.id AND mc.workspace_id = t.workspace_id
+                WHERE t.deleted_at IS NULL
+                  AND t.workspace_id IS NOT NULL
+                  AND COALESCE(t.enabled, FALSE) = TRUE
+                  AND COALESCE(t.monitoring_enabled, FALSE) = TRUE
+                ''',
+            ).fetchall()
+            for _erow in (_excluded_rows or []):
+                _e = dict(_erow)
+                _tid = str(_e.get('target_id') or '')
+                if _tid in _candidate_target_ids:
+                    continue
+                if _e.get('asset_missing'):
+                    _reason = 'asset_link_missing_or_deleted'
+                elif _e.get('monitored_system_missing'):
+                    _reason = 'monitored_system_missing'
+                elif not bool(_e.get('monitored_system_enabled')):
+                    _reason = 'monitored_system_disabled'
+                elif _e.get('monitoring_config_missing'):
+                    _reason = 'monitoring_config_missing'
+                elif not bool(_e.get('monitoring_config_enabled')):
+                    _reason = 'monitoring_config_disabled'
+                elif str(_e.get('provider_type') or '') != 'evm_rpc':
+                    _reason = f"provider_type_not_evm_rpc(actual={_e.get('provider_type') or 'empty'})"
+                else:
+                    _reason = 'excluded_unknown_reason'
+                logger.warning(
+                    'due_selection_excluded_target workspace_id=%s target_id=%s target_type=%s '
+                    'chain_network=%s exclusion_reason=%s note=contract_targets_are_not_excluded_for_being_non_wallet',
+                    _e.get('workspace_id'), _tid, str(_e.get('target_type') or 'unknown'),
+                    str(_e.get('chain_network') or 'unknown'), _reason,
+                )
+        except Exception:
+            logger.debug('due_selection_exclusion_diagnostics_failed', exc_info=True)
         cycle_workspace_ids: set[str] = set()
         for row in candidate_systems:
             workspace_id = str((dict(row)).get('workspace_id') or '').strip()

@@ -455,6 +455,11 @@ def test_run_source_diagnostic_happy_path_returns_structured_result(monkeypatch)
     assert out['summary']['targets_evaluated'] == 1
     assert out['summary']['healthy'] == 1
     assert len(out['results']) == 1
+    # The run is traceable end-to-end: a correlation id plus started/completed timestamps
+    # (acceptance step 1). Their presence proves the click executed a real diagnostic, not
+    # a page refresh / plain runtime-status read.
+    assert out['started_at'] and out['completed_at']
+    assert out['completed_at'] >= out['started_at']
     # The advisory lock is released...
     assert conn.find('PG_ADVISORY_UNLOCK')
     # ...but the diagnostic must NOT write the continuous-worker heartbeat, so a manual

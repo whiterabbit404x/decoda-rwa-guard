@@ -265,3 +265,89 @@ def test_enrichment_flags_missing_asset_link_without_inventing_health():
     assert enrichment['agent']['missing_target_links'] == 1
     # Confidence must degrade, never assert health on missing data.
     assert enrichment['agent']['confidence'] in {'low', 'unavailable'}
+
+
+# ---------------------------------------------------------------------------
+# 3. QuickNode degradation must NOT override healthy Alchemy provider health
+#    (acceptance #7 / #10: Alchemy primary stays 1/1 after a successful poll even
+#     when a lagging QuickNode stream wrote a more-recent degraded record).
+# ---------------------------------------------------------------------------
+def test_pick_provider_health_prefers_primary_over_more_recent_degraded_stream():
+    """A newer degraded QuickNode record must never become the headline over the
+    healthy primary Alchemy record."""
+    # Records are newest-first: the degraded QuickNode stream wrote most recently.
+    records = [
+        {'provider_type': 'base-mainnet.quiknode.pro', 'status': 'degraded', 'latency_ms': 900},
+        {'provider_type': 'base-mainnet.g.alchemy.com', 'status': 'healthy', 'latency_ms': 42},
+    ]
+    picked = pilot._pick_provider_health_record(records, 'base-mainnet.g.alchemy.com')
+    assert picked['provider_type'] == 'base-mainnet.g.alchemy.com'
+    assert picked['status'] == 'healthy'
+
+
+def test_enrichment_quicknode_degraded_does_not_override_alchemy_health():
+    """One healthy Alchemy poll => provider_health 1/1 even with a degraded QuickNode
+    stream record present for the same target (acceptance #9 + #10)."""
+    workspace_id = 'ws1'
+    target_id = 't1'
+    canonical_id = pilot._canonical_target_uuid(workspace_id, target_id)
+    now = datetime.now(timezone.utc)
+
+    class _Conn:
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split()).upper()
+            if 'FROM MONITOR_CHECKPOINT' in q:
+                return _Result([{'monitored_system_id': 'sys1', 'latest_block': 8453123}])
+            if 'FROM PROVIDER_HEALTH_RECORDS' in q:
+                # Both a degraded QuickNode stream row AND a healthy Alchemy row
+                # (DISTINCT ON (target_id, provider_type) returns one per provider).
+                return _Result([
+                    {'target_id': canonical_id, 'status': 'degraded', 'latency_ms': 950,
+                     'checked_at': now, 'evidence_source': 'live',
+                     'provider_type': 'base-mainnet.quiknode.pro', 'error_message': 'stream_lagging'},
+                    {'target_id': canonical_id, 'status': 'healthy', 'latency_ms': 42,
+                     'checked_at': now, 'evidence_source': 'live',
+                     'provider_type': 'base-mainnet.g.alchemy.com', 'error_message': None},
+                ])
+            if 'FROM TARGET_COVERAGE_RECORDS' in q:
+                return _Result([{
+                    'target_id': canonical_id, 'coverage_status': 'reporting',
+                    'last_poll_at': now, 'last_heartbeat_at': now, 'last_telemetry_at': now,
+                    'last_detection_at': None, 'evidence_source': 'live', 'computed_at': now,
+                }])
+            return _Result([])
+
+    targets = [{
+        'id': target_id, 'name': 'Base USDC monitor', 'target_type': 'contract',
+        'chain_network': 'base', 'chain_id': 8453,
+        'contract_identifier': '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', 'wallet_address': None,
+        'asset_id': 'a_usdc', 'asset_name': 'USDC', 'asset_missing': False,
+        'monitoring_mode': 'poll', 'monitoring_enabled': True, 'enabled': True,
+        'monitored_system_id': 'sys1',
+        # Alchemy is the persisted primary route; QuickNode is the (degraded) stream.
+        'target_metadata': {'rpc_sources': {'primary_host': 'base-mainnet.g.alchemy.com',
+                                            'fallback_host': None,
+                                            'explanation': 'Primary stable RPC.'}},
+    }]
+    systems = [{
+        'id': 'sys1', 'target_id': target_id, 'asset_id': 'a_usdc', 'chain': 'base',
+        'is_enabled': True, 'runtime_status': 'healthy', 'last_heartbeat': now.isoformat(),
+        'last_event_at': now.isoformat(), 'coverage_reason': None,
+        'asset_name': 'USDC', 'target_name': 'Base USDC monitor',
+    }]
+
+    enrichment = pilot._build_monitoring_sources_enrichment(
+        _Conn(), workspace_id=workspace_id, assets=[{'id': 'a_usdc', 'name': 'USDC'}],
+        targets=targets, systems=systems,
+    )
+
+    source = enrichment['sources'][0]
+    assert source['provider'] == 'base-mainnet.g.alchemy.com'
+    assert source['status'] == 'healthy', 'degraded QuickNode must not degrade the Alchemy headline'
+    assert source['median_latency_ms'] == 42
+
+    ph = enrichment['provider_health']
+    assert ph['total'] == 1, 'only the primary Alchemy provider is counted, not the QuickNode stream'
+    assert ph['healthy_count'] == 1
+    assert ph['degraded_count'] == 0
+    assert ph['providers'][0]['host'] == 'base-mainnet.g.alchemy.com'

@@ -142,6 +142,10 @@ def _patch_enable(monkeypatch, conn):
     monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: (
         {'id': 'u1'}, {'workspace_id': conn.workspace_id}
     ))
+    # set_target_enabled authenticates via _require_workspace_permission('monitoring.configure').
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_a, **_k: (
+        {'id': 'u1'}, {'workspace_id': conn.workspace_id}
+    ))
     monkeypatch.setattr(pilot, '_sync_canonical_monitoring_target_state', lambda *_a, **_k: None)
     monkeypatch.setattr(pilot, 'ensure_monitored_system_for_target', lambda *_a, **_k: {
         'status': 'ok', 'monitored_system_id': 'ms1',
@@ -309,6 +313,10 @@ def test_enable_orphan_returns_structured_400_not_500(monkeypatch):
     monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: (
         {'id': 'u1'}, {'workspace_id': conn.workspace_id}
     ))
+    # set_target_enabled authenticates via _require_workspace_permission('monitoring.configure').
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_a, **_k: (
+        {'id': 'u1'}, {'workspace_id': conn.workspace_id}
+    ))
     monkeypatch.setattr(pilot, '_sync_canonical_monitoring_target_state', lambda *_a, **_k: None)
     monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
 
@@ -358,6 +366,10 @@ def test_enable_returns_structured_detail_on_missing_asset(monkeypatch):
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', lambda: _pg(conn))
     monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: (
+        {'id': 'u1'}, {'workspace_id': conn.workspace_id}
+    ))
+    # set_target_enabled authenticates via _require_workspace_permission('monitoring.configure').
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_a, **_k: (
         {'id': 'u1'}, {'workspace_id': conn.workspace_id}
     ))
     monkeypatch.setattr(pilot, '_sync_canonical_monitoring_target_state', lambda *_a, **_k: None)

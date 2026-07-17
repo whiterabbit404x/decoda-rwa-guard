@@ -12569,11 +12569,13 @@ def _diagnose_target(
     is_contract = bool(target.get('contract_identifier'))
     address = str(target.get('contract_identifier') or target.get('wallet_address') or '').strip() or None
     steps: list[dict[str, Any]] = []
+    diag_started_at = utc_now()
 
     # Structured safe log line (workspace, target, monitored-system, chain) for tracing.
     logger.info(
-        'source_diagnostic_target workspace_id=%s target_id=%s monitored_system_id=%s chain_network=%s correlation_id=%s',
+        'source_diagnostic_target workspace_id=%s target_id=%s monitored_system_id=%s chain_network=%s correlation_id=%s started_at=%s',
         workspace_id, target_id, monitored_system_id or 'none', chain_network or 'none', correlation_id,
+        diag_started_at.isoformat(),
     )
 
     # Step 1 — verify target linkage (asset, monitored system, monitoring config).
@@ -12753,13 +12755,23 @@ def _diagnose_target(
         'detail': 'workspace + monitored-system heartbeat written' if heartbeat_written else 'no monitored system linked; workspace heartbeat only',
     })
 
+    diag_completed_at = utc_now()
+    # Safe, greppable diagnostic-result trace (acceptance step 1). Carries every field
+    # the operator needs to correlate a Run Diagnostic click end-to-end — correlation id,
+    # workspace, target, monitored-system, selected provider host (redacted; never a key),
+    # numeric chain id, diagnostic status, started/completed timestamps, and a safe error
+    # code — and never a secret (only the provider HOST and a short error category).
     logger.info(
         'source_diagnostic_result workspace_id=%s target_id=%s monitored_system_id=%s '
-        'provider_host=%s reachable=%s chain_id_ok=%s latest_block=%s latency_ms=%s '
-        'provider_health_status=%s heartbeat_written=%s correlation_id=%s',
+        'provider_host=%s chain_id=%s reachable=%s chain_id_ok=%s latest_block=%s latency_ms=%s '
+        'diagnostic_status=%s provider_health_status=%s heartbeat_written=%s error_code=%s '
+        'started_at=%s completed_at=%s correlation_id=%s',
         workspace_id, target_id, monitored_system_id or 'none', provider_host or 'none',
+        probe.get('chain_id') if probe.get('chain_id') is not None else (expected_chain_id or 'unknown'),
         reachable, chain_id_ok, probe.get('latest_block'), probe.get('latency_ms'),
-        provider_health_status, heartbeat_written, correlation_id,
+        runtime_status, provider_health_status, heartbeat_written,
+        (error_message or 'none'),
+        diag_started_at.isoformat(), diag_completed_at.isoformat(), correlation_id,
     )
 
     return {
@@ -12796,6 +12808,7 @@ def run_source_diagnostic(request: Request, payload: dict[str, Any] | None = Non
     body = payload if isinstance(payload, dict) else {}
     requested_target_id = str(body.get('target_id') or '').strip() or None
     correlation_id = str(uuid.uuid4())
+    run_started_at = utc_now()
 
     with pg_connection() as connection:
         # Autocommit: the diagnostic performs slow RPC I/O and standalone evidence
@@ -12850,6 +12863,21 @@ def run_source_diagnostic(request: Request, payload: dict[str, Any] | None = Non
                 workspace_id=workspace_id,
                 metadata={'correlation_id': correlation_id, **summary},
             )
+            # Run-level trace (acceptance step 1): proves a real workspace-scoped diagnostic
+            # executed — with the correlation id, the workspace/user, how many targets it
+            # probed, and the run's started/completed timestamps — so the click is never
+            # mistaken for a page refresh or a plain runtime-status read.
+            _run_completed_at = utc_now()
+            logger.info(
+                'source_diagnostic_run correlation_id=%s workspace_id=%s user_id=%s '
+                'requested_target_id=%s targets_evaluated=%s reachable=%s healthy=%s degraded=%s errors=%s '
+                'started_at=%s completed_at=%s duration_ms=%s',
+                correlation_id, workspace_id, user['id'], requested_target_id or 'all',
+                summary['targets_evaluated'], summary['reachable'], summary['healthy'],
+                summary['degraded'], summary['errors'],
+                run_started_at.isoformat(), _run_completed_at.isoformat(),
+                int((_run_completed_at - run_started_at).total_seconds() * 1000),
+            )
         finally:
             _release_diagnostic_lock(connection, workspace_id=workspace_id)
 
@@ -12861,6 +12889,8 @@ def run_source_diagnostic(request: Request, payload: dict[str, Any] | None = Non
 
     return {
         'ran_at': utc_now_iso(),
+        'started_at': run_started_at.isoformat(),
+        'completed_at': utc_now_iso(),
         'correlation_id': correlation_id,
         'summary': summary,
         'results': _json_safe_value(results),
@@ -14122,6 +14152,31 @@ def set_target_enabled(target_id: str, enabled: bool, request: Request) -> dict[
                     updated_at = NOW()
                 ''',
                 (monitoring_config_id, workspace_id_value, target_id, _enable_provider_type),
+            )
+            # Schedule an immediate bounded first poll (acceptance step 8). A newly enabled
+            # target must become due on the very next worker cycle, never inherit an obsolete
+            # next_due_at or wait for a worker cache refresh. Clearing last_checked_at makes
+            # the due-selection cursor treat it as never-polled (next_due_at = now); clearing
+            # the claim lease and any dead-letter/attempt state makes it immediately claimable.
+            connection.execute(
+                '''
+                UPDATE targets
+                SET last_checked_at = NULL,
+                    monitoring_claimed_by = NULL,
+                    monitoring_claimed_at = NULL,
+                    monitoring_lease_token = NULL,
+                    monitoring_lease_expires_at = NULL,
+                    monitoring_dead_lettered_at = NULL,
+                    monitoring_delivery_attempts = 0,
+                    updated_at = NOW()
+                WHERE id = %s::uuid AND workspace_id = %s::uuid
+                ''',
+                (target_id, workspace_id_value),
+            )
+            logger.info(
+                'target_enable_immediate_first_poll_scheduled target_id=%s workspace_id=%s '
+                'provider_type=%s action=cleared_last_checked_at_and_lease_target_is_now_due',
+                target_id, workspace_id_value, _enable_provider_type,
             )
         else:
             connection.execute(
