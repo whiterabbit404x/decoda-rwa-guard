@@ -159,6 +159,28 @@ def _base_target(*, last_checked_at=None, interval=60, chain_network='base-mainn
     }
 
 
+def _base_contract_target(*, last_checked_at=None, interval=60, chain_network='base-mainnet'):
+    """A Base USDC CONTRACT target (no wallet_address) — the production Screen 4 monitor."""
+    return {
+        'id': str(uuid.uuid4()),
+        'workspace_id': '4fffd3f9-d55f-456f-8a7e-8b9ed2083721',
+        'name': 'USDC Monitor',
+        'target_type': 'contract',
+        'chain_network': chain_network,
+        'chain_id': 8453,
+        'wallet_address': None,
+        'contract_identifier': '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+        'asset_id': str(uuid.uuid4()),
+        'enabled': True,
+        'monitoring_enabled': True,
+        'is_active': True,
+        'monitoring_interval_seconds': interval,
+        'last_checked_at': last_checked_at,
+        'monitoring_dead_lettered_at': None,
+        'created_at': _now() - timedelta(hours=1),
+    }
+
+
 def _ethereum_target(*, last_checked_at=None, interval=60):
     return {
         'id': str(uuid.uuid4()),
@@ -238,6 +260,53 @@ def test_base_target_selected_for_live_poll_when_never_checked(monkeypatch):
     assert target['id'] in processed_ids, (
         f'Base target with no prior check must be selected; processed={processed_ids}'
     )
+
+
+# ---------------------------------------------------------------------------
+# 1b. Base CONTRACT target (USDC) enters stable polling selection (acceptance #1, #2, #3)
+# ---------------------------------------------------------------------------
+
+def test_base_contract_target_selected_for_live_poll_when_never_checked(monkeypatch):
+    """A Base USDC contract target (target_type='contract', no wallet_address) with
+    last_checked_at=None must enter the stable RPC polling selection immediately —
+    contract targets are NOT excluded for being non-wallets, and a never-checked target
+    is due at once (acceptance tests #1 USDC contract enters selection, #2 no wallet-address
+    required, #3 new targets immediately due)."""
+    from services.api.app import monitoring_runner
+
+    monkeypatch.setenv('EVM_CHAIN_ID', '8453')
+    contract_target = _base_contract_target(last_checked_at=None)
+    assert contract_target['wallet_address'] is None
+    conn = _SelectionConnection([contract_target])
+    processed_ids: list[str] = []
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
+
+    def _process(_c, tgt, triggered_by_user_id=None, **kwargs):
+        processed_ids.append(tgt['id'])
+        return {'alerts_generated': 0, 'target_id': tgt['id'], 'runs': [], 'status': 'completed'}
+
+    monkeypatch.setattr(monitoring_runner, 'process_monitoring_target', _process)
+
+    summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10)
+
+    assert contract_target['id'] in processed_ids, (
+        f'Base USDC contract target must enter stable polling selection; processed={processed_ids}, summary={summary}'
+    )
+
+
+def test_due_selection_helper_treats_never_checked_contract_as_due(monkeypatch):
+    """The canonical due rule makes a never-polled target due regardless of type."""
+    from services.api.app.monitoring_runner import _target_selected_for_live_poll
+
+    # last_checked_at=None → immediately due (no wallet/contract distinction in the rule).
+    assert _target_selected_for_live_poll(None, 300, _now()) is True
+    # Already checked within the interval → not yet due.
+    assert _target_selected_for_live_poll(_now() - timedelta(seconds=10), 300, _now()) is False
+    # Checked longer ago than the interval → due again.
+    assert _target_selected_for_live_poll(_now() - timedelta(seconds=400), 300, _now()) is True
 
 
 # ---------------------------------------------------------------------------

@@ -5,11 +5,23 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from services.api.app import monitoring_runner
 from services.api.app import pilot
 from services.api.app import run_monitoring_worker
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+@pytest.fixture(autouse=True)
+def _stub_worker_health_server(monkeypatch):
+    """run_monitoring_worker.main() starts a real HTTP health server bound to $PORT
+    (default 8000) on a daemon thread that outlives the test. A second main() call in
+    the same process then fails with 'Address already in use'. The health server is not
+    under test here (the monitoring loop + gauges are), so stub it to a no-op so multiple
+    main() tests can run in one process."""
+    monkeypatch.setattr(run_monitoring_worker, '_start_health_server', lambda *a, **k: None)
 
 
 class _Result:
@@ -169,7 +181,7 @@ def test_monitoring_cycle_updates_health_and_handles_target_exception(monkeypatc
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
 
-    def _process(_connection, target, triggered_by_user_id=None):
+    def _process(_connection, target, triggered_by_user_id=None, **_kw):
         if target['id'] == 'bad-target':
             raise RuntimeError('boom')
         processed.append(target['id'])
@@ -250,7 +262,7 @@ def test_monitoring_cycle_updates_health_with_null_error_message(monkeypatch):
     monkeypatch.setattr(
         monitoring_runner,
         'process_monitoring_target',
-        lambda _connection, target, triggered_by_user_id=None: {
+        lambda _connection, target, triggered_by_user_id=None, **_kw: {
             'alerts_generated': 0,
             'target_id': target['id'],
             'runs': ['run-1'],
@@ -290,7 +302,7 @@ def test_monitoring_cycle_counts_coverage_telemetry_when_events_zero(monkeypatch
     monkeypatch.setattr(
         monitoring_runner,
         'process_monitoring_target',
-        lambda _connection, _target, triggered_by_user_id=None: {
+        lambda _connection, _target, triggered_by_user_id=None, **_kw: {
             'alerts_generated': 0,
             'incidents_created': 0,
             'detections_created': 0,
@@ -337,7 +349,7 @@ def test_monitoring_cycle_zero_events_does_not_mark_monitored_system_error(monke
     monkeypatch.setattr(
         monitoring_runner,
         'process_monitoring_target',
-        lambda _connection, target, triggered_by_user_id=None: {
+        lambda _connection, target, triggered_by_user_id=None, **_kw: {
             'alerts_generated': 0,
             'incidents_created': 0,
             'events_ingested': 0,
@@ -843,7 +855,7 @@ def test_monitoring_cycle_persists_workspace_run_counts(monkeypatch):
     monkeypatch.setattr(
         monitoring_runner,
         'process_monitoring_target',
-        lambda _connection, target, triggered_by_user_id=None: {
+        lambda _connection, target, triggered_by_user_id=None, **_kw: {
             'alerts_generated': 2,
             'incidents_created': 1,
             'detections_created': 1,
@@ -909,7 +921,7 @@ def test_monitoring_cycle_keeps_truth_payload_under_local_postgres_mode(monkeypa
     monkeypatch.setattr(
         monitoring_runner,
         'process_monitoring_target',
-        lambda _connection, target, triggered_by_user_id=None: {
+        lambda _connection, target, triggered_by_user_id=None, **_kw: {
             'alerts_generated': 0,
             'incidents_created': 0,
             'events_ingested': 1,
@@ -1161,7 +1173,7 @@ def test_monitoring_heartbeat_upsert_uses_savepoint(monkeypatch) -> None:
     monkeypatch.setattr(
         monitoring_runner,
         'process_monitoring_target',
-        lambda _connection, target, triggered_by_user_id=None: {
+        lambda _connection, target, triggered_by_user_id=None, **_kw: {
             'alerts_generated': 0,
             'events_ingested': 0,
             'target_id': target['id'],
@@ -1231,7 +1243,7 @@ def test_monitoring_heartbeat_upsert_savepoint_rollback_does_not_abort_cycle(mon
     monkeypatch.setattr(
         monitoring_runner,
         'process_monitoring_target',
-        lambda _connection, target, triggered_by_user_id=None: processed.append(target['id']) or {
+        lambda _connection, target, triggered_by_user_id=None, **_kw: processed.append(target['id']) or {
             'alerts_generated': 0,
             'events_ingested': 0,
             'target_id': target['id'],
@@ -1271,7 +1283,7 @@ def test_monitoring_cycle_with_one_candidate_no_fake_telemetry(monkeypatch) -> N
     monkeypatch.setattr(
         monitoring_runner,
         'process_monitoring_target',
-        lambda _connection, target, triggered_by_user_id=None: process_calls.append({'target_id': target['id']}) or {
+        lambda _connection, target, triggered_by_user_id=None, **_kw: process_calls.append({'target_id': target['id']}) or {
             'alerts_generated': 0,
             'events_ingested': 0,
             'detections_created': 0,
@@ -1328,7 +1340,7 @@ def test_monitoring_heartbeat_upsert_failure_does_not_crash_cycle(monkeypatch) -
     monkeypatch.setattr(
         monitoring_runner,
         'process_monitoring_target',
-        lambda _connection, target, triggered_by_user_id=None: {
+        lambda _connection, target, triggered_by_user_id=None, **_kw: {
             'alerts_generated': 0,
             'events_ingested': 0,
             'target_id': target['id'],
@@ -1378,7 +1390,7 @@ def test_monitoring_cycle_with_one_candidate_proceeds_past_heartbeat(monkeypatch
     monkeypatch.setattr(
         monitoring_runner,
         'process_monitoring_target',
-        lambda _connection, target, triggered_by_user_id=None: processed_targets.append(target['id']) or {
+        lambda _connection, target, triggered_by_user_id=None, **_kw: processed_targets.append(target['id']) or {
             'alerts_generated': 0,
             'events_ingested': 0,
             'target_id': target['id'],
@@ -1565,7 +1577,7 @@ def test_worker_checked_count_increases_per_target(monkeypatch) -> None:
     monkeypatch.setattr(
         monitoring_runner,
         'process_monitoring_target',
-        lambda _conn, target, triggered_by_user_id=None: processed.append(target['id']) or {
+        lambda _conn, target, triggered_by_user_id=None, **_kw: processed.append(target['id']) or {
             'alerts_generated': 0,
             'events_ingested': 0,
             'target_id': target['id'],

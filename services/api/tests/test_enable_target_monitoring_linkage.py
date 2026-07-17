@@ -92,6 +92,10 @@ def _patch_common(monkeypatch, conn):
     monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: (
         {'id': 'u1'}, {'workspace_id': conn.workspace_id}
     ))
+    # set_target_enabled authenticates via _require_workspace_permission('monitoring.configure').
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_a, **_k: (
+        {'id': 'u1'}, {'workspace_id': conn.workspace_id}
+    ))
     monkeypatch.setattr(pilot, '_sync_canonical_monitoring_target_state', lambda *_a, **_k: None)
     monkeypatch.setattr(pilot, 'ensure_monitored_system_for_target', lambda *_a, **_k: {
         'status': 'ok', 'monitored_system_id': 'ms1',
@@ -113,6 +117,28 @@ def test_enable_target_sets_is_active(monkeypatch):
     assert 'is_active' in query, 'UPDATE targets must include is_active'
     # params: (enabled, monitoring_enabled, is_active, user_id, target_id)
     assert params[2] is True, 'is_active must be True when enabling'
+
+
+def test_enable_target_schedules_immediate_first_poll(monkeypatch):
+    """Enabling a target must clear last_checked_at (and the claim lease) so the target
+    is immediately due on the next worker cycle — never inheriting an obsolete next_due_at
+    (acceptance step 8: initial poll after activation)."""
+    conn = _EnableConn()
+    _patch_common(monkeypatch, conn)
+
+    pilot.set_target_enabled('t1', True, _Req())
+
+    reset_updates = [
+        (q, p) for q, p in conn.updates
+        if 'UPDATE targets' in q and 'last_checked_at = NULL' in q
+    ]
+    assert reset_updates, (
+        'enabling a target must reset last_checked_at to NULL so it becomes immediately due'
+    )
+    query, _params = reset_updates[0]
+    # The claim lease and dead-letter state must also be cleared so the worker can claim it now.
+    assert 'monitoring_lease_expires_at = NULL' in query
+    assert 'monitoring_dead_lettered_at = NULL' in query
 
 
 def test_disable_target_sets_is_active_false(monkeypatch):
@@ -284,6 +310,10 @@ def _patch_orphan(monkeypatch, conn):
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', lambda: _pg(conn))
     monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: (
+        {'id': 'u1'}, {'workspace_id': conn.workspace_id}
+    ))
+    # set_target_enabled authenticates via _require_workspace_permission('monitoring.configure').
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_a, **_k: (
         {'id': 'u1'}, {'workspace_id': conn.workspace_id}
     ))
     monkeypatch.setattr(pilot, '_sync_canonical_monitoring_target_state', lambda *_a, **_k: None)
@@ -559,6 +589,10 @@ def _patch_no_identifier(monkeypatch, conn):
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', lambda: _pg(conn))
     monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: (
+        {'id': 'u1'}, {'workspace_id': conn.workspace_id}
+    ))
+    # set_target_enabled authenticates via _require_workspace_permission('monitoring.configure').
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_a, **_k: (
         {'id': 'u1'}, {'workspace_id': conn.workspace_id}
     ))
     monkeypatch.setattr(pilot, '_sync_canonical_monitoring_target_state', lambda *_a, **_k: None)
