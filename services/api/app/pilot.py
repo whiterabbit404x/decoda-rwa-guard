@@ -12941,11 +12941,12 @@ def _diagnostic_probe(rpc_url: str, *, address: str | None, is_contract: bool) -
     Never raises — a failure is returned as ``ok=False`` with a short error string so
     the caller can record truthful degraded/error evidence.
     """
-    from services.api.app.evm_activity_provider import probe_rpc_health, JsonRpcClient
+    from services.api.app.evm_activity_provider import probe_rpc_health, rpc_caller_scope, JsonRpcClient
 
     started = monotonic()
     try:
-        health = probe_rpc_health(rpc_url)
+        with rpc_caller_scope('source_diagnostic'):
+            health = probe_rpc_health(rpc_url)
     except Exception as exc:  # pragma: no cover - defensive
         return {
             'ok': False, 'latency_ms': None, 'chain_id': None, 'latest_block': None,

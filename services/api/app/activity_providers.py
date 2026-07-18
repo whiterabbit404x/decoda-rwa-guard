@@ -13,6 +13,7 @@ from services.api.app.evm_activity_provider import (
     evaluate_chain_mismatch,
     fetch_evm_activity,
     probe_rpc_health,
+    rpc_caller_scope,
     rpc_provider_backoff_active,
     rpc_provider_backoff_status,
     _resolve_evm_rpc_url,
@@ -437,7 +438,10 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
                     detection_outcome='MONITORING_DEGRADED',
                 )
             if latest_block is None:
-                rpc_probe = probe_rpc_health()
+                # Section 4: attribute this scheduled-poll fallback probe to its caller
+                # category so the rpc_request_volume_summary never labels it 'unspecified'.
+                with rpc_caller_scope('scheduled_poll'):
+                    rpc_probe = probe_rpc_health()
                 if rpc_probe['ok']:
                     # Fail closed when the RPC serves a different chain than this
                     # target is labeled with: a block height from the wrong chain

@@ -519,6 +519,16 @@ REALTIME_PAUSED_STABLE_ACTIVE_REASON = 'realtime_paused_stable_polling_active'
 STABLE_ACTIVE_AWAITING_COVERAGE_REASON = 'stable_polling_active_awaiting_coverage'
 NO_LIVE_COVERAGE_RPC_REASON = 'no_fresh_live_coverage_telemetry'
 
+# Header copy for the worker-alive-but-RPC-polling-failed state (CLAUDE.md: heartbeat proves
+# the worker is alive; poll proves the loop ran; only a SUCCESSFUL provider poll proves the
+# monitored chain was actually reached). "Stable polling active" is reserved for a successful
+# scheduled provider poll inside the freshness window — it must never be shown merely because
+# the worker heartbeat is fresh while every RPC provider is unavailable.
+WORKER_ALIVE_RPC_UNAVAILABLE_HEADLINE = 'Worker active; RPC polling unavailable.'
+WORKER_ALIVE_RPC_UNAVAILABLE_STREAM_SUFFIX = (
+    ' QuickNode stream is receiving blocks, but provider verification is unavailable.'
+)
+
 
 def live_coverage_gap_reason(
     *,
@@ -627,6 +637,8 @@ def build_worker_status(
     realtime_last_event_at: datetime | None = None,
     stable_last_coverage_poll_at: datetime | None = None,
     target_reporting: bool | None = None,
+    stable_poll_succeeded: bool | None = None,
+    quicknode_stream_receiving: bool | None = None,
 ) -> dict[str, Any]:
     """Derive a separated, truthful worker status from canonical facts.
 
@@ -763,8 +775,20 @@ def build_worker_status(
         provider_state = 'unknown'
 
     # --- Truthful headline ---------------------------------------------------------
+    # "Stable polling active" is only truthful after a SUCCESSFUL scheduled provider poll
+    # inside the freshness window. ``stable_poll_succeeded`` is the caller's canonical
+    # "the last scheduled poll actually reached the chain" signal (fresh live coverage /
+    # latest block populated). When it is explicitly False the worker heartbeat may be
+    # fresh (loop alive) but every RPC provider is unavailable — so we must NOT claim
+    # stable polling is active. ``None`` means the fact was not supplied; behaviour is
+    # unchanged for callers that do not pass it (heartbeat/poll freshness wins).
+    worker_alive_rpc_unavailable = bool(stable_active and stable_poll_succeeded is False)
     # Only mention "heartbeat is stale" when STABLE polling is actually stale.
-    if stable_active and not effective_realtime_enabled:
+    if worker_alive_rpc_unavailable:
+        headline = WORKER_ALIVE_RPC_UNAVAILABLE_HEADLINE
+        if quicknode_stream_receiving:
+            headline += WORKER_ALIVE_RPC_UNAVAILABLE_STREAM_SUFFIX
+    elif stable_active and not effective_realtime_enabled:
         headline = 'Stable polling active. Realtime WebSocket paused.'
     elif stable_active and realtime_state == 'rate_limited':
         headline = 'Stable polling active. Realtime WebSocket rate limited (provider cooldown).'
@@ -810,6 +834,13 @@ def build_worker_status(
             # Stable polling is the canonical transfer-detection path; when it is
             # active, transfer detection remains supported regardless of realtime.
             'detection_supported': stable_active,
+            # Truthful RPC-polling verdict: the worker loop can be alive (fresh heartbeat)
+            # while every RPC provider is unavailable so no scheduled poll actually reached
+            # the chain. ``poll_succeeded`` mirrors the caller signal; ``rpc_polling_available``
+            # is False in that worker-alive-but-RPC-unavailable state so the UI never reads a
+            # fresh heartbeat as proof the provider poll succeeded.
+            'poll_succeeded': stable_poll_succeeded,
+            'rpc_polling_available': bool(stable_active and not worker_alive_rpc_unavailable),
         },
         'realtime': {
             'label': 'Realtime WebSocket',
@@ -840,4 +871,8 @@ def build_worker_status(
         # Stable polling alive => the monitoring source is NOT dead even if realtime
         # is paused or the realtime provider is rate-limited (requirement 4).
         'monitoring_source_live': stable_active,
+        # True when the worker heartbeat is fresh but no scheduled provider poll has
+        # succeeded inside the freshness window (every RPC provider unavailable). Drives
+        # the truthful "Worker active; RPC polling unavailable." headline.
+        'rpc_polling_unavailable': worker_alive_rpc_unavailable,
     }

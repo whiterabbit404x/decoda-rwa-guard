@@ -211,7 +211,7 @@ def _validate_per_chain_rpcs(logger: logging.Logger, probe_cache: dict[str, dict
     for the same URL, so the worker never fires two identical eth_blockNumber
     calls at boot (a "duplicate provider health check").
     """
-    from services.api.app.evm_activity_provider import probe_rpc_health
+    from services.api.app.evm_activity_provider import probe_rpc_health, rpc_caller_scope
     from urllib.parse import urlparse as _urlparse
 
     probe_cache = probe_cache or {}
@@ -240,7 +240,8 @@ def _validate_per_chain_rpcs(logger: logging.Logger, probe_cache: dict[str, dict
                     chain_name, rpc_url_env, rpc_host,
                 )
             else:
-                health = probe_rpc_health(rpc_url)
+                with rpc_caller_scope('startup_validation'):
+                    health = probe_rpc_health(rpc_url)
         except Exception as exc:
             logger.error(
                 'startup_per_chain_rpc_probe_failed chain=%s expected_chain_id=%s '
@@ -282,7 +283,7 @@ def _log_startup_provider_status(logger: logging.Logger) -> dict:
       rpc_health_ok: True when RPC check passed, False when it failed, None when skipped.
       database_url_configured: True when DATABASE_URL is set.
     """
-    from services.api.app.evm_activity_provider import _resolve_evm_rpc_url, probe_rpc_health
+    from services.api.app.evm_activity_provider import _resolve_evm_rpc_url, probe_rpc_health, rpc_caller_scope
     from services.api.app.pilot import live_mode_enabled as _live_mode_enabled
     from services.api.app.worker_enable import resolve_worker_enabled
     from urllib.parse import urlparse as _urlparse
@@ -405,7 +406,8 @@ def _log_startup_provider_status(logger: logging.Logger) -> dict:
     _startup_probe_cache: dict[str, dict] = {}
     if evm_rpc_configured:
         try:
-            health = probe_rpc_health()
+            with rpc_caller_scope('startup_validation'):
+                health = probe_rpc_health()
         except Exception as exc:
             health = {'ok': False, 'error': str(exc)[:200], 'block_number_hex': None, 'block_number_int': None, 'chain_id_int': None}
         if rpc_url:
@@ -731,9 +733,10 @@ def main() -> int:
                 _seconds_since_recheck = time.monotonic() - _last_rpc_recheck_monotonic
                 if _rpc_recheck_due(_seconds_since_recheck, _rpc_recheck_backoff):
                     _last_rpc_recheck_monotonic = time.monotonic()
-                    from services.api.app.evm_activity_provider import probe_rpc_health
+                    from services.api.app.evm_activity_provider import probe_rpc_health, rpc_caller_scope
                     try:
-                        recheck = probe_rpc_health()
+                        with rpc_caller_scope('worker_health_check'):
+                            recheck = probe_rpc_health()
                     except Exception as recheck_exc:
                         recheck = {'ok': False, 'error': str(recheck_exc)[:200], 'block_number_hex': None, 'block_number_int': None}
                     rpc_healthy = bool(recheck.get('ok'))

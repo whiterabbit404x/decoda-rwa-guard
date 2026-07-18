@@ -147,6 +147,14 @@ _RPC_ROUTE_DISABLED: dict[str, str] = {}
 _RPC_SKIP_LOG_AT: dict[str, float] = {}
 _RPC_SKIP_LOG_WINDOW_SECONDS = 60.0
 
+# Per-provider validated chain-id cache: host -> chain_id (int). Once a provider has
+# answered eth_chainId successfully we never need to re-ask it — the chain a URL points
+# at does not change. Caching it here means a health probe against an already-validated
+# provider skips the redundant eth_chainId network call (Section 4: "Cache chain ID per
+# validated provider. No repeated eth_chainId inside the same poll."). Cleared by
+# reset_rpc_provider_state so tests start from a clean cache.
+_RPC_CHAIN_ID_CACHE: dict[str, int] = {}
+
 # Bounded per-host RPC request-volume counters for the periodic
 # rpc_request_volume_summary. Never logged per request — a summary is emitted at
 # most once per window per host so the source of a rate-limit storm (which method,
@@ -945,6 +953,7 @@ def reset_rpc_provider_state() -> None:
         _RPC_QUERY_TOO_LARGE.update(active=False, host=None, reduced_chunk_size=None, at_wall=None)
         _RPC_ROUTE_DISABLED.clear()
         _RPC_SKIP_LOG_AT.clear()
+        _RPC_CHAIN_ID_CACHE.clear()
         _RPC_VOLUME['window_start_monotonic'] = None
         _RPC_VOLUME['hosts'] = {}
 
@@ -953,6 +962,29 @@ def worker_rpc_chain_id() -> int | None:
     """Chain id this worker's RPC is configured for (EVM_CHAIN_ID / STAGING_EVM_CHAIN_ID)."""
     raw = (os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or '').strip()
     return int(raw) if raw.isdigit() else None
+
+
+def cached_provider_chain_id(host: str | None) -> int | None:
+    """Return the previously validated chain id for ``host``, or None if not yet known.
+
+    The chain a provider URL points at is immutable, so once eth_chainId succeeds we can
+    reuse it for every subsequent probe of that host instead of re-dialing eth_chainId.
+    """
+    key = str(host or '').strip().lower()
+    if not key:
+        return None
+    with _RPC_PROVIDER_LOCK:
+        value = _RPC_CHAIN_ID_CACHE.get(key)
+    return int(value) if isinstance(value, int) else None
+
+
+def remember_provider_chain_id(host: str | None, chain_id: int | None) -> None:
+    """Cache a validated chain id for ``host`` (Section 4: cache chain id per provider)."""
+    key = str(host or '').strip().lower()
+    if not key or not isinstance(chain_id, int):
+        return
+    with _RPC_PROVIDER_LOCK:
+        _RPC_CHAIN_ID_CACHE[key] = int(chain_id)
 
 
 def target_chain_id_for(network: str | None) -> int | None:
@@ -1144,9 +1176,17 @@ def _resolve_evm_rpc_urls() -> list[str]:
     return list(dict.fromkeys(value for value in values if value))
 
 
-def probe_rpc_health(rpc_url: str | None = None) -> dict[str, Any]:
+def probe_rpc_health(rpc_url: str | None = None, *, caller: str | None = None) -> dict[str, Any]:
     """
     Call eth_chainId and eth_blockNumber against the configured RPC endpoint.
+
+    ``caller`` tags every RPC request made by this probe (Section 4: every request must
+    carry a caller category so the rpc_request_volume_summary can attribute the load —
+    scheduled_poll / worker_health_check / startup_validation / source_diagnostic / etc.).
+    Precedence: an explicit ``caller`` argument wins; otherwise the ambient
+    ``rpc_caller_scope`` set by the call site is used; failing both it falls back to the
+    concrete ``worker_health_check`` category so a request is never attributed to
+    'unspecified'.
 
     Returns a dict with keys:
       ok: bool
@@ -1184,13 +1224,31 @@ def probe_rpc_health(rpc_url: str | None = None) -> dict[str, Any]:
             'error': 'provider_backoff_active', 'provider_backoff_active': True, 'cache_hit': True,
         }
     client = FailoverJsonRpcClient(_resolve_evm_rpc_urls()) if rpc_url is None else JsonRpcClient(url)
-    try:
-        chain_hex = str(client.call('eth_chainId', []) or '')
-        block_hex = str(client.call('eth_blockNumber', []) or '')
-    except Exception as exc:
-        result = {'ok': False, 'chain_id_hex': None, 'chain_id_int': None, 'block_number_hex': None, 'block_number_int': None, 'error': str(exc)[:200], 'cache_hit': False}
-        _store_rpc_health(result)
-        return result
+    # Section 4: reuse a previously validated chain id for a known provider host instead of
+    # re-dialing eth_chainId every probe. Only meaningful for the single-URL path where the
+    # host is known before the call; the failover path caches after the served host resolves.
+    probe_host = _host_of(url) if rpc_url is not None else None
+    cached_chain_int = cached_provider_chain_id(probe_host) if probe_host else None
+    chain_id_from_cache = False
+    # Tag every RPC request from this probe with the caller category so the periodic
+    # rpc_request_volume_summary can attribute the load (never per-request logging).
+    # Explicit arg > ambient scope set by the call site > concrete default.
+    _ambient_caller = current_rpc_caller()
+    effective_caller = caller or (
+        _ambient_caller if _ambient_caller and _ambient_caller != 'unspecified' else 'worker_health_check'
+    )
+    with rpc_caller_scope(effective_caller):
+        try:
+            if cached_chain_int is not None:
+                chain_hex = hex(cached_chain_int)
+                chain_id_from_cache = True
+            else:
+                chain_hex = str(client.call('eth_chainId', []) or '')
+            block_hex = str(client.call('eth_blockNumber', []) or '')
+        except Exception as exc:
+            result = {'ok': False, 'chain_id_hex': None, 'chain_id_int': None, 'block_number_hex': None, 'block_number_int': None, 'error': str(exc)[:200], 'cache_hit': False}
+            _store_rpc_health(result)
+            return result
     try:
         chain_int = int(chain_hex, 16)
         block_int = int(block_hex, 16)
@@ -1215,6 +1273,10 @@ def probe_rpc_health(rpc_url: str | None = None) -> dict[str, Any]:
     # in tests never breaks the probe.
     served_host = _host_of(url) if rpc_url is not None else getattr(client, 'active_host', None)
     clear_rpc_provider_backoff(served_host)
+    # Section 4: remember this provider's validated chain id so the next probe of the same
+    # host skips the eth_chainId dial (the chain a URL points at is immutable).
+    if not chain_id_from_cache:
+        remember_provider_chain_id(served_host, chain_int)
     # Host-only provider/failover observability (no URL or key). Emitted for the
     # canonical multi-provider probe so logs show which provider served and whether
     # failover was used. Low-frequency: startup + unhealthy rechecks only.
