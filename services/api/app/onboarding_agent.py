@@ -292,6 +292,85 @@ def publish_event(workspace_id: str, session_id: str, event_type: str, extra: di
 
 
 # ===========================================================================
+# Existing-setup detection + provider-availability retry gating
+# ===========================================================================
+# Discovery/verification error codes that mean "the RPC providers are temporarily
+# unavailable" (a retryable availability failure), NOT a bad contract/config. These
+# get the safe operator message and the backoff-aware retry affordance.
+_PROVIDER_AVAILABILITY_ERROR_CODES = frozenset({
+    'rpc_unreachable', 'no_rpc_endpoint', 'all_rpc_providers_unavailable',
+    'provider_backoff_active', 'provider_error',
+})
+
+_PROVIDER_UNAVAILABLE_MESSAGE = 'RPC providers are temporarily unavailable.'
+
+
+def _provider_backoff_retry_state() -> dict[str, Any]:
+    """Safe provider-backoff snapshot for the onboarding retry affordance.
+
+    Reads the canonical process-local RPC backoff status (host-only, no URLs/keys)
+    so the UI can DISABLE repeated retry clicks while a provider backoff is active
+    and show when it expires. Never raises — a missing provider module degrades to
+    "retry enabled".
+    """
+    try:
+        from services.api.app.evm_activity_provider import rpc_provider_backoff_status
+        bo = rpc_provider_backoff_status()
+    except Exception:  # pragma: no cover - defensive; provider module optional in some contexts
+        return {'retry_disabled': False, 'backoff_active': False,
+                'retry_after_seconds': None, 'backoff_until': None, 'reason': None}
+    active = bool(bo.get('active'))
+    return {
+        # Disable repeated retry clicks during active backoff (task requirement 10).
+        'retry_disabled': active,
+        'backoff_active': active,
+        'retry_after_seconds': bo.get('retry_after_seconds') if active else None,
+        'remaining_seconds': bo.get('remaining_seconds') if active else None,
+        'backoff_until': bo.get('backoff_until') if active else None,
+        'reason': _PROVIDER_UNAVAILABLE_MESSAGE if active else None,
+    }
+
+
+def _detect_existing_monitoring_setup(connection: Any, *, workspace_id: str) -> dict[str, Any]:
+    """Detect whether the workspace already has an ACTIVE monitoring target.
+
+    Workspace-scoped and read-only. When an active target already exists the
+    workspace is already configured, so opening onboarding must surface the existing
+    setup (view / retry provider verification / repair) rather than starting a brand
+    new activation flow that could duplicate targets. Also returns the current
+    provider backoff so the retry affordance is backoff-aware.
+    """
+    rows = connection.execute(
+        '''
+        SELECT id, name, target_type, chain_network, contract_identifier, wallet_address
+        FROM targets
+        WHERE workspace_id = %s
+          AND deleted_at IS NULL
+          AND enabled = TRUE
+          AND is_active = TRUE
+          AND monitoring_enabled = TRUE
+        ORDER BY created_at ASC
+        ''',
+        (workspace_id,),
+    ).fetchall()
+    targets = [dict(r) for r in rows]
+    return {
+        'existing_setup': bool(targets),
+        'active_target_count': len(targets),
+        'active_targets': [
+            {
+                'target_id': str(t.get('id')),
+                'name': t.get('name'),
+                'target_type': t.get('target_type'),
+                'chain_network': t.get('chain_network'),
+            }
+            for t in targets
+        ],
+        'provider_verification': _provider_backoff_retry_state(),
+    }
+
+
+# ===========================================================================
 # Serialization
 # ===========================================================================
 def _serialize_step(row: dict[str, Any]) -> dict[str, Any]:
@@ -493,6 +572,24 @@ def create_or_resume_session(payload: dict[str, Any], request: Any) -> dict[str,
         user, workspace_context = pilot._require_workspace_permission(connection, request, 'monitoring.configure')
         workspace_id = workspace_context['workspace_id']
 
+        # Existing-setup detection: a workspace that already has an active monitoring
+        # target is already configured. Opening onboarding must surface the existing
+        # setup (view / retry provider verification / repair) rather than silently
+        # starting a NEW activation flow (which could duplicate targets). ``force_new``
+        # or an explicit ``primary_contract`` is an intentional add-new action and
+        # bypasses this so a second asset can still be onboarded.
+        if not payload.get('force_new') and not payload.get('primary_contract'):
+            existing_setup = _detect_existing_monitoring_setup(connection, workspace_id=workspace_id)
+            if existing_setup['existing_setup']:
+                connection.commit()
+                return {
+                    'status': 'existing_setup_detected',
+                    'existing_setup_detected': True,
+                    'message': 'Existing monitoring setup detected',
+                    'available_actions': ['view_existing', 'retry_provider_verification', 'repair_configuration'],
+                    **existing_setup,
+                }
+
         resume = bool(payload.get('resume', True)) and not payload.get('force_new')
         if resume:
             existing = connection.execute(
@@ -629,6 +726,21 @@ def retry_session(session_id: str, request: Any) -> dict[str, Any]:
         session = _load_session_row(connection, session_id=session_id, workspace_id=workspace_id)
         if session is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Onboarding session not found.')
+        # Provider backoff active: DO NOT enqueue a new discovery run (it would only
+        # fail again and could race duplicate work). Preserve the session, keep the
+        # provider-verification step retryable, and tell the UI to disable retry until
+        # the backoff expires — with the safe reason and the backoff expiry.
+        backoff = _provider_backoff_retry_state()
+        if backoff['retry_disabled']:
+            _audit(connection, request=request, user_id=user['id'], workspace_id=workspace_id, session_id=session_id,
+                   action='onboarding.retry_deferred_provider_backoff',
+                   metadata={'backoff_until': backoff.get('backoff_until')})
+            connection.commit()
+            snapshot = build_session_snapshot(connection, session_id=session_id, workspace_id=workspace_id)
+            snapshot['retry_disabled'] = True
+            snapshot['message'] = _PROVIDER_UNAVAILABLE_MESSAGE
+            snapshot['provider_verification'] = backoff
+            return snapshot
         # Reset only failed / incomplete steps to pending so the pipeline resumes them.
         connection.execute(
             '''UPDATE onboarding_steps SET status = 'pending', error_code = NULL, error_message = NULL, updated_at = NOW()
@@ -1209,9 +1321,28 @@ def run_discovery_pipeline(session_id: str) -> dict[str, Any]:
 
 def _finalize_failure(connection: Any, session_id: str, workspace_id: str, code: str, message: str) -> None:
     # A gating failure is recoverable: the frontend can retry only the failed step.
-    _update_session(connection, session_id=session_id, status='partial', error_code=code, error_message=redact_text(message))
+    # A provider-availability failure is surfaced with the SAFE operator message (no
+    # provider host/URL/key) plus the backoff expiry so the UI can show "RPC providers
+    # are temporarily unavailable." and disable retry until the backoff clears —
+    # instead of leaking a raw provider error or claiming a bad contract. The already
+    # completed database steps are preserved (status=partial, not reset).
+    provider_availability = code in _PROVIDER_AVAILABILITY_ERROR_CODES
+    user_message = _PROVIDER_UNAVAILABLE_MESSAGE if provider_availability else message
+    _update_session(connection, session_id=session_id, status='partial', error_code=code,
+                    error_message=redact_text(user_message))
     connection.commit()
-    publish_event(workspace_id, session_id, 'discovery_failed', {'error_code': code})
+    extra: dict[str, Any] = {'error_code': code}
+    if provider_availability:
+        backoff = _provider_backoff_retry_state()
+        extra.update({
+            'provider_unavailable': True,
+            'retryable': True,
+            'reason': _PROVIDER_UNAVAILABLE_MESSAGE,
+            'retry_disabled': backoff['retry_disabled'],
+            'retry_after_seconds': backoff['retry_after_seconds'],
+            'backoff_until': backoff['backoff_until'],
+        })
+    publish_event(workspace_id, session_id, 'discovery_failed', extra)
 
 
 # ===========================================================================
