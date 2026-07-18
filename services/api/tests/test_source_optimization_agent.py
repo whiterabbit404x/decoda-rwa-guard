@@ -272,6 +272,10 @@ def test_route_changes_counter_defaults_zero():
 # ---------------------------------------------------------------------------
 def _wire_health_check(monkeypatch, conn, *, targets, systems, settings_row=None):
     """Stub the auth/DB seams so run_source_health_check drives the real logic."""
+    # Freeze wall-clock to the fixture epoch so telemetry-freshness classification is
+    # deterministic regardless of the real calendar date (the fixtures date telemetry
+    # relative to NOW; run_source_health_check would otherwise use real utc_now()).
+    monkeypatch.setattr(pilot, 'utc_now', lambda: NOW)
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'list_assets', lambda request: {'assets': [{'id': 'asset-1'}]})
     monkeypatch.setattr(pilot, 'list_targets', lambda request: {'targets': targets})

@@ -11655,9 +11655,13 @@ def _load_provider_latency_samples_by_target(
 ) -> dict[str, list[float]]:
     """Recent measured provider latencies (ms) per target id, newest first.
 
-    Reads only rows that carry a real ``latency_ms`` (the diagnostic / probe path
-    records it; the legacy worker poll wrote NULL). Used to compute a truthful P95
-    with an explicit sample count — never to invent a value from too few samples.
+    Reads only rows that carry a real ``latency_ms`` AND represent a SUCCESSFUL
+    provider request (``status = 'healthy'``). A failed poll records its failure
+    *elapsed* time (e.g. ~21 ms before the provider errored) in ``latency_ms`` too —
+    that is not a successful RPC response latency and must NEVER contribute to the
+    P95, or a hard failure would masquerade as a fast, healthy provider. Used to
+    compute a truthful successful-only P95 with an explicit sample count — never to
+    invent a value from too few samples.
     """
     if not target_ids:
         return {}
@@ -11669,6 +11673,7 @@ def _load_provider_latency_samples_by_target(
             WHERE workspace_id = %s::uuid
               AND target_id = ANY(%s::uuid[])
               AND latency_ms IS NOT NULL
+              AND status = 'healthy'
             ORDER BY target_id, checked_at DESC
             LIMIT %s
             ''',
@@ -11704,6 +11709,61 @@ def _p95_from_samples(samples: list[float]) -> float | None:
     # Nearest-rank method: index of the ceil(0.95 * n)-th value (1-indexed).
     rank = max(1, math.ceil(0.95 * len(ordered)))
     return round(float(ordered[min(rank, len(ordered)) - 1]), 1)
+
+
+def _build_source_score_breakdown(
+    *,
+    assessment: Any,
+    provider_success: bool | None,
+    endpoint_unavailable: bool,
+    latest_block: int | None,
+    coverage: dict[str, Any] | None,
+) -> dict[str, float | None]:
+    """Per-dimension 0..100 score breakdown for a Screen-4 source row.
+
+    Maps the deterministic engine's measured component sub-scores onto the labels the
+    UI shows (Connectivity, Chain validation, Latest block freshness, Error rate,
+    Latency, Heartbeat freshness, Coverage). A dimension with no measurement is
+    ``None`` (never fabricated). Connectivity and chain-validation are 0 on a hard
+    provider failure so the breakdown makes provider unavailability the visibly
+    controlling factor rather than a fast failure latency.
+    """
+    component_scores = getattr(assessment, 'component_scores', None) or {}
+
+    def _component(key: str) -> float | None:
+        return round(float(component_scores[key]), 1) if key in component_scores else None
+
+    hard_fail = endpoint_unavailable or provider_success is False
+    if hard_fail:
+        connectivity: float | None = 0.0
+        chain_validation: float | None = 0.0
+    elif provider_success:
+        connectivity = 100.0
+        chain_validation = 100.0
+    else:
+        connectivity = None
+        chain_validation = None
+    if latest_block is not None:
+        latest_block_freshness: float | None = 100.0
+    elif hard_fail:
+        latest_block_freshness = 0.0
+    else:
+        latest_block_freshness = None
+    coverage_status = str((coverage or {}).get('coverage_status') or '').strip().lower()
+    coverage_score = {
+        'verified': 100.0, 'covered': 100.0, 'fresh': 100.0,
+        'degraded': 50.0, 'stale': 30.0,
+        'uncovered': 0.0, 'missing': 0.0, 'failed': 0.0,
+    }.get(coverage_status) if coverage_status else None
+    return {
+        'connectivity': connectivity,
+        'chain_validation': chain_validation,
+        'latest_block_freshness': latest_block_freshness,
+        'error_rate': _component('error_rate'),
+        'latency': _component('p95_latency'),
+        'heartbeat_freshness': _component('heartbeat'),
+        'coverage': coverage_score,
+    }
 
 
 def _build_monitoring_sources_enrichment(
@@ -11842,19 +11902,48 @@ def _build_monitoring_sources_enrichment(
         # dimensions stay `unknown` (never inflated to healthy); a source with no
         # live evidence can never score as healthy.
         provider_status_raw = str(provider_health.get('status') or '').strip().lower()
-        endpoint_unavailable = provider_status_raw == 'unavailable' or (
-            str((system or {}).get('runtime_status') or '').strip().lower() == 'failed'
-        )
+        runtime_failed = str((system or {}).get('runtime_status') or '').strip().lower() == 'failed'
+        # A hard provider failure: the latest scheduled observation did not succeed
+        # (all providers unavailable / chain-id / latest-block missing all persist a
+        # non-healthy status), or the monitored system's runtime is failed. Fed to the
+        # engine as success=False so it overrides latency-based scoring.
+        has_provider_record = bool(provider_health)
+        provider_success: bool | None = (provider_status_raw == 'healthy') if has_provider_record else None
+        endpoint_unavailable = provider_status_raw in {'unavailable', 'error'} or runtime_failed
+        # Separate a SUCCESSFUL call's latency from a failed call's elapsed time. Only
+        # a successful call has a real response latency; a failed call's ~21 ms elapsed
+        # is never shown as healthy latency and never fed to the health engine.
+        successful_latency_ms = latency_ms if provider_success else None
+        failure_elapsed_ms = latency_ms if (provider_success is False and latency_ms is not None) else None
+        # P95 comes ONLY from successful samples, gated by the sample floor.
+        p95_successful = _p95_from_samples(latency_samples)
+        successful_sample_count = len(latency_samples)
+        if successful_sample_count == 0:
+            p95_status = 'no_successful_samples'
+        elif successful_sample_count < _P95_MIN_SAMPLES:
+            p95_status = 'insufficient_samples'
+        else:
+            p95_status = 'available'
         last_telemetry_dt = _coerce_datetime(last_telemetry_at)
         engine_metrics = _he.SourceMetrics(
-            p95_latency_ms=float(latency_ms) if isinstance(latency_ms, (int, float)) else None,
+            # Feed the SUCCESSFUL P95 (None until enough successful samples) — never a
+            # single failed-call elapsed time — so a fast failure cannot score healthy.
+            p95_latency_ms=float(p95_successful) if isinstance(p95_successful, (int, float)) else None,
             heartbeat_present=bool((system or {}).get('last_heartbeat')),
             last_telemetry_at=last_telemetry_dt,
             endpoint_unavailable=endpoint_unavailable,
+            success=provider_success,
         )
         assessment = _he.assess_source_health(engine_metrics, thresholds=thresholds, now=now)
         if assessment.score is not None:
             health_scores.append(assessment.score)
+        score_breakdown = _build_source_score_breakdown(
+            assessment=assessment,
+            provider_success=provider_success,
+            endpoint_unavailable=endpoint_unavailable,
+            latest_block=latest_block,
+            coverage=coverage,
+        )
 
         freshness = str((system or {}).get('freshness_status') or '').strip().lower()
         is_oracle = 'oracle' in ' '.join(
@@ -11937,14 +12026,22 @@ def _build_monitoring_sources_enrichment(
             'runtime_status': (system or {}).get('runtime_status'),
             'latest_block': latest_block,
             'block_lag': None,  # chain-tip lag requires a live RPC head; not fabricated here.
-            'median_latency_ms': latency_ms,
-            # P95 latency is only truthful once enough samples exist. Below the
-            # minimum, p95_latency_ms is None and p95_insufficient=True so the UI
-            # shows "Insufficient samples" instead of presenting a single observed
-            # latency as a fabricated P95.
-            'p95_latency_ms': _p95_from_samples(latency_samples),
-            'p95_sample_count': len(latency_samples),
-            'p95_insufficient': len(latency_samples) < _P95_MIN_SAMPLES,
+            # median_latency_ms is the last SUCCESSFUL latency only — a failed call's
+            # elapsed time is surfaced separately as failure_elapsed_ms, never as a
+            # healthy latency.
+            'median_latency_ms': successful_latency_ms,
+            'successful_latency_ms': successful_latency_ms,
+            'failure_elapsed_ms': failure_elapsed_ms,
+            # P95 latency is only truthful once enough SUCCESSFUL samples exist. With
+            # zero successful samples p95_status='no_successful_samples'; with 1..19,
+            # 'insufficient_samples'; with 20+, the nearest-rank P95 is returned. The
+            # UI renders those states instead of presenting a failed-call elapsed time
+            # (e.g. 21 ms) as a healthy P95.
+            'p95_latency_ms': p95_successful,
+            'p95_sample_count': successful_sample_count,
+            'p95_insufficient': successful_sample_count < _P95_MIN_SAMPLES,
+            'p95_status': p95_status,
+            'score_breakdown': score_breakdown,
             'error_rate': None,     # not measured by the current probe path; never fabricated.
             'timeout_rate': None,
             'last_poll_at': last_poll_at,

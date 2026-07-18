@@ -282,6 +282,13 @@ def _stepped_score(status: str) -> float:
     return {HEALTH_HEALTHY: 100.0, HEALTH_WARNING: 60.0, HEALTH_CRITICAL: 0.0}.get(status, 0.0)
 
 
+# A hard provider failure (endpoint unavailable, or the latest observation did not
+# succeed) must DOMINATE latency-based scoring: the score is capped into the critical
+# band so a fast *failure* response (e.g. a 21 ms error before the provider replied)
+# can never be presented as a high, healthy-looking score.
+_HARD_FAILURE_SCORE_CAP = 20.0
+
+
 @dataclass(frozen=True)
 class HealthAssessment:
     """The engine's verdict for one source/provider."""
@@ -320,6 +327,11 @@ class SourceMetrics:
     heartbeat_present: bool | None = None
     last_telemetry_at: datetime | None = None
     endpoint_unavailable: bool = False
+    # Whether the LATEST scheduled provider observation actually succeeded. ``False``
+    # is a hard failure (all providers unavailable / chain-id / latest-block missing):
+    # it forces Critical and caps the score, so a fast failure elapsed time can never
+    # read as healthy. ``None`` means "not observed" and is neutral.
+    success: bool | None = None
 
 
 def assess_source_health(
@@ -394,11 +406,25 @@ def assess_source_health(
         if cls in (HEALTH_WARNING, HEALTH_CRITICAL):
             triggered.append(f'{name}.{cls}')
 
-    # Fail-closed guard 1: an unavailable endpoint is unconditionally critical.
-    if metrics.endpoint_unavailable:
+    # Fail-closed guard 1: a hard provider failure (unavailable endpoint, or the
+    # latest observation did not succeed) is unconditionally critical AND caps the
+    # score into the critical band. This gives a hard failure precedence over low
+    # latency: a fast failure response can never produce a high score.
+    hard_failure = metrics.endpoint_unavailable or metrics.success is False
+    if hard_failure:
         status = HEALTH_CRITICAL
-        if 'endpoint.unavailable' not in triggered:
+        if metrics.endpoint_unavailable and 'endpoint.unavailable' not in triggered:
             triggered.append('endpoint.unavailable')
+        if metrics.success is False and 'provider_call_failed' not in triggered:
+            triggered.append('provider_call_failed')
+        # Connectivity is the controlling factor — surface it in the breakdown at 0.
+        components['connectivity'] = 0.0
+        score = 0.0 if score is None else _clamp_score(min(score, _HARD_FAILURE_SCORE_CAP))
+    elif metrics.success is True:
+        # A confirmed successful observation contributes a full connectivity signal to
+        # the breakdown (informational; not folded into the weighted mean so existing
+        # score arithmetic is unchanged).
+        components.setdefault('connectivity', 100.0)
 
     # Fail-closed guard 2: never report healthy without live evidence.
     has_live_evidence = bool(metrics.heartbeat_present) or dims['telemetry_recency'] == HEALTH_HEALTHY
