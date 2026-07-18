@@ -44,6 +44,10 @@ const SOURCE_STATUS_LABELS: Record<string, { label: string; variant: PillVariant
   degraded: { label: 'Degraded', variant: 'warning' },
   failed: { label: 'Critical', variant: 'danger' },
   critical: { label: 'Critical', variant: 'danger' },
+  // Latest scheduled provider observation failed (all RPC providers unavailable).
+  provider_unavailable: { label: 'Provider Unavailable', variant: 'danger' },
+  // Prior failure now followed by successful poll(s), before the required streak.
+  recovering: { label: 'Recovering', variant: 'warning' },
   failover_active: { label: 'Failover Active', variant: 'warning' },
   paused: { label: 'Paused', variant: 'neutral' },
   disabled: { label: 'Disabled', variant: 'neutral' },
@@ -57,6 +61,13 @@ function sourceStatusBadge(status?: string | null): { label: string; variant: Pi
 }
 
 function routingBadge(source: SourceRow): { label: string; variant: PillVariant } {
+  const status = (source.status ?? '').trim().toLowerCase();
+  // No operational route exists when the provider is unavailable / critical — the
+  // routing state is "Unavailable", never "Standby" (Standby implies a valid, ready
+  // configured route). A configured provider being down is not a standby route.
+  if (status === 'provider_unavailable' || status === 'failed' || status === 'critical') {
+    return { label: 'Unavailable', variant: 'danger' };
+  }
   if (source.routing === 'primary') return { label: 'Primary', variant: 'info' };
   if (source.routing === 'fallback') return { label: 'Fallback', variant: 'warning' };
   if (!source.enabled && !source.monitoring_enabled) return { label: 'Disabled', variant: 'neutral' };
@@ -79,19 +90,34 @@ function healthScoreCell(source: SourceRow) {
   );
 }
 
-// P95 latency cell: truthful about sample sufficiency. A single observed latency is
-// never presented as a P95 — below the sample floor we show the observed latency with
-// an explicit "insufficient samples" hint instead of an invented percentile.
+// P95 latency cell: truthful about sample sufficiency and recency. Only SUCCESSFUL
+// samples count. 0 successful => "No successful samples"; 1–19 => "Insufficient
+// samples"; 20+ => the calculated P95, labelled "historical" when its freshest sample
+// is old or the provider is failing now — never a failed call's elapsed time.
 function p95LatencyCell(source: SourceRow) {
-  if (source.p95_insufficient) {
-    const observed = source.median_latency_ms;
+  const status = (source.p95_status ?? '').trim().toLowerCase();
+  const count = source.p95_sample_count ?? 0;
+  if (status === 'no_successful_samples' || (status === '' && source.p95_latency_ms == null && count === 0 && !source.p95_insufficient && source.median_latency_ms == null)) {
+    return <span className="muted" title="No successful provider samples in the window">No successful samples</span>;
+  }
+  if (status === 'insufficient_samples' || source.p95_insufficient) {
     return (
-      <span className="muted" title={`P95 needs more samples (${source.p95_sample_count ?? 0} so far)${observed != null ? `; latest observed ${fmtLatency(observed)}` : ''}`}>
-        {observed != null ? `${fmtLatency(observed)}*` : 'Insufficient samples'}
+      <span className="muted" title={`P95 needs 20+ successful samples (${count} so far)`}>
+        Insufficient samples
       </span>
     );
   }
-  return <span>{fmtLatency(source.p95_latency_ms ?? source.median_latency_ms)}</span>;
+  if (source.p95_latency_ms == null) {
+    return <span className="muted">—</span>;
+  }
+  if (source.p95_is_historical) {
+    return (
+      <span title={`Historical P95 from ${count} successful samples${source.p95_last_sample_at ? ` (last ${fmtRelative(source.p95_last_sample_at)})` : ''}; provider not verified live now`}>
+        {fmtLatency(source.p95_latency_ms)} <span className="muted" style={{ fontSize: '0.68rem' }}>historical</span>
+      </span>
+    );
+  }
+  return <span>{fmtLatency(source.p95_latency_ms)}</span>;
 }
 
 // ── Monitored Systems tab helpers (runtime-focused, fail-closed) ─────────────
