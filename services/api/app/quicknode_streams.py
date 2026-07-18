@@ -47,6 +47,7 @@ from services.api.app.monitoring_runner import (
 )
 from services.api.app.pilot import ensure_pilot_schema, pg_connection
 from services.api.app import telemetry_realtime
+from services.api.app.monitoring_runtime_mode import polling_only_mode
 from services.api.app.worker_status import TRANSFER_FAMILY_EVENT_TYPES
 
 logger = logging.getLogger(__name__)
@@ -296,6 +297,76 @@ def reset_quicknode_log_sampler_state() -> None:
     _LAST_SAMPLED_QUICKNODE_LOG_AT.clear()
     _LAST_QUICKNODE_DEGRADED_STATE.clear()
     _LAST_QUICKNODE_LOG_SIGNATURE.clear()
+
+
+# ---------------------------------------------------------------------------
+# Polling-only MVP mode: rate-limited "stream ignored" accounting.
+#
+# When REALTIME_STREAMS_ENABLED is false (the default MVP posture) the webhook
+# authenticates each request and then safely ignores it — no downstream
+# processing. Rather than log a line per ignored request (which would re-create
+# the per-block flood for a stream that was left running), we accumulate a count
+# and emit ONE quicknode_stream_ignored summary per sample window. The first
+# request of a window emits immediately (so a single ignored request is instantly
+# provable from logs), then repeats are suppressed for the window while the count
+# accumulates. Process-local, mirroring the other QuickNode samplers above.
+# ---------------------------------------------------------------------------
+_STREAM_IGNORED_LOCK = threading.Lock()
+_STREAM_IGNORED_STATE: dict[str, Any] = {'count': 0, 'last_emit_at': None}
+
+
+def reset_stream_ignored_state() -> None:
+    """Clear the process-local polling-only 'stream ignored' counter (tests/ops)."""
+    with _STREAM_IGNORED_LOCK:
+        _STREAM_IGNORED_STATE.update(count=0, last_emit_at=None)
+
+
+def _record_stream_ignored_polling_only(now: float | None = None) -> None:
+    """Count one ignored request and emit a rate-limited summary at most once/window."""
+    now = now if now is not None else time.monotonic()
+    window = _quicknode_log_sample_seconds()
+    emit = False
+    count = 0
+    with _STREAM_IGNORED_LOCK:
+        _STREAM_IGNORED_STATE['count'] = int(_STREAM_IGNORED_STATE['count']) + 1
+        last = _STREAM_IGNORED_STATE['last_emit_at']
+        if window <= 0 or last is None or (now - float(last)) >= window:
+            count = int(_STREAM_IGNORED_STATE['count'])
+            _STREAM_IGNORED_STATE['count'] = 0
+            _STREAM_IGNORED_STATE['last_emit_at'] = now
+            emit = True
+    if emit:
+        logger.info(
+            'event=quicknode_stream_ignored reason=polling_only_mode '
+            'window_seconds=%s requests_received=%s',
+            int(window) if window > 0 else 0,
+            count,
+        )
+
+
+def _polling_only_ignored_response(*, lane: str) -> dict[str, Any]:
+    """Safe 200 body for a QuickNode webhook request ignored in polling-only mode.
+
+    Truthful: ``received`` (the request was authenticated and accepted) but nothing
+    was processed — no transactions normalized, no chain head queried, no stream lag
+    evaluated, no telemetry persisted. ``ok`` is True because the request was handled
+    correctly for the CURRENT mode, never a claim that any transfer was detected.
+    """
+    return {
+        'received': True,
+        'ok': True,
+        'ignored': True,
+        'reason': 'polling_only_mode',
+        'mode': 'polling',
+        'stream_lane': lane,
+        'tx_count': 0,
+        'targets_loaded': 0,
+        'matched': 0,
+        'persisted': 0,
+        'duplicates': 0,
+        'skipped': 0,
+        'results': [],
+    }
 
 
 def _quicknode_log_sample_seconds() -> float:
@@ -2747,6 +2818,18 @@ def process_quicknode_base_stream_webhook(
         nonce_header=nonce_header,
         timestamp_header=timestamp_header,
     )
+    # Polling-only MVP mode (REALTIME_STREAMS_ENABLED=false, the default): real-time
+    # QuickNode Streams are intentionally paused and stable scheduled RPC polling is
+    # the canonical detection path. The request is authenticated (signature verified
+    # above, per the current security policy) and then SAFELY IGNORED — no gunzip,
+    # JSON parse, tx normalization, chain-head query, stream-lag evaluation, target
+    # load, or telemetry persistence — so a still-configured stream can neither drive
+    # expensive per-block processing nor affect polling provider health. A rate-limited
+    # summary replaces the per-block logs, and QuickNode receives a 200 so it does not
+    # retry. Reversible: set REALTIME_STREAMS_ENABLED=true to restore full processing.
+    if polling_only_mode():
+        _record_stream_ignored_polling_only()
+        return _polling_only_ignored_response(lane=lane)
     body_bytes = _maybe_gunzip_quicknode_body(raw_body, content_encoding)
     try:
         body = json.loads(body_bytes.decode('utf-8') or '{}')

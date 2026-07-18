@@ -378,6 +378,9 @@ def test_live_batch_unknown_head_logs_health_unknown_not_degraded_false(monkeypa
     """A live-lane batch whose chain head is UNKNOWN must log health_status=unknown and
     degraded=null — never degraded=false (which the UI would paint green)."""
     monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', _QN_SECRET)
+    # Real-time Streams processing must be enabled for the webhook to classify live-lane
+    # health (polling-only mode short-circuits before any stream-health evaluation).
+    monkeypatch.setenv('REALTIME_STREAMS_ENABLED', 'true')
     qn.reset_chain_head_cache()
     conn = _LaneConn()
     body = _live_body(49_999_950)

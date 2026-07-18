@@ -335,6 +335,9 @@ def test_live_webhook_batches_reuse_cached_head(monkeypatch):
     """Two consecutive live webhook batches trigger only ONE eth_blockNumber call:
     the second batch reuses the cached head (no per-webhook chain-head RPC)."""
     monkeypatch.setenv('QUICKNODE_STREAMS_SECRET', SECRET)
+    # Real-time Streams processing must be enabled for the webhook to reach the
+    # chain-head cache path (polling-only mode short-circuits before it).
+    monkeypatch.setenv('REALTIME_STREAMS_ENABLED', 'true')
     monkeypatch.delenv('QUICKNODE_CHAIN_HEAD_CACHE_SECONDS', raising=False)
     eap.reset_rpc_provider_state()
     qn.reset_chain_head_cache()

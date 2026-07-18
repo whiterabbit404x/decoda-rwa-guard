@@ -334,6 +334,12 @@ def _log_startup_provider_status(logger: logging.Logger) -> dict:
         provider_mode,
     )
 
+    # Polling-only MVP posture: emit the canonical monitoring_mode_resolved line so an
+    # operator can confirm from worker logs that scheduled RPC polling is on while
+    # real-time Streams / WebSocket / mempool are paused (or, when reversed, on).
+    from services.api.app.monitoring_runtime_mode import log_monitoring_mode_resolved
+    log_monitoring_mode_resolved(logger)
+
     # Base (chain 8453) is the canonical monitored chain. Log the resolution the
     # worker actually uses for Base targets (resolve_chain_rpc — the same resolver
     # the polling loop and /ops/system-health use) so operators can confirm, from

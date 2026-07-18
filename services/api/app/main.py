@@ -1575,6 +1575,13 @@ def emit_startup_fixture_diagnostics() -> None:
     # Live chain-tip lane readiness marker (task step 4). After the version marker so a
     # live-lane readiness failure can never suppress the deployed-build proof.
     emit_quicknode_live_lane_started_at_startup()
+    # Polling-only MVP posture: emit the canonical monitoring_mode_resolved line so the
+    # API process's active mode (polling vs. real-time Streams) is provable from logs.
+    try:
+        from services.api.app.monitoring_runtime_mode import log_monitoring_mode_resolved
+        log_monitoring_mode_resolved(logger)
+    except Exception as exc:  # pragma: no cover - defensive startup guard
+        logger.warning('startup monitoring_mode_resolved emission skipped: %s', exc)
     try:
         diagnostics = fixture_diagnostics()
         identity = runtime_environment_identity()
