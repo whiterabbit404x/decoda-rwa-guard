@@ -46,8 +46,12 @@ def _messages(caplog) -> str:
 
 def test_existing_backoff_not_extended_by_skipped_call(monkeypatch, caplog):
     """Re-recording a 429 for a host already in an active window keeps the exact same
-    backoff_until (backoff_extended=false) and logs rpc_call_skipped_existing_backoff,
-    NOT a second rpc_provider_backoff_set."""
+    backoff_until (backoff_extended=false) and emits exactly one rpc_provider_backoff_set.
+
+    A re-observed REAL 429 is a genuine network attempt (network_attempted=true) that
+    simply did not extend the window, so it is logged as rpc_provider_backoff_not_extended
+    — NOT rpc_call_skipped_existing_backoff, which is reserved for a request the circuit
+    breaker skipped WITHOUT dialing (network_attempted=false)."""
     monkeypatch.setenv('APP_ENV', 'production')          # deterministic 600s floor
     monkeypatch.setenv('RPC_PROVIDER_BACKOFF_JITTER_SECONDS', '0')  # deterministic window
     eap.reset_rpc_provider_state()
@@ -63,10 +67,12 @@ def test_existing_backoff_not_extended_by_skipped_call(monkeypatch, caplog):
 
     assert second == first, 'a skipped/re-observed call must NOT move backoff_until forward'
     text = _messages(caplog)
-    # Exactly one arm event; the later observations are logged as skips.
+    # Exactly one arm event; the later real-429 re-observations are logged as
+    # not-extended (network_attempted=true), never as a second arm.
     assert text.count('event=rpc_provider_backoff_set') == 1, text
-    assert 'event=rpc_call_skipped_existing_backoff' in text
+    assert 'event=rpc_provider_backoff_not_extended' in text
     assert 'backoff_extended=false' in text
+    assert 'network_attempted=true' in text
     assert f'rpc_host={ALCHEMY_HOST}' in text
 
 
