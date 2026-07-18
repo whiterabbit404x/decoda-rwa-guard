@@ -135,6 +135,25 @@ _RPC_QUERY_TOO_LARGE: dict[str, Any] = {
     'at_wall': None,
 }
 
+# Administratively disabled provider routes: host -> reason. A route benched here is
+# a KNOWN-INVALID endpoint (e.g. a QuickNode host failing TLS every dial) that must
+# NOT be re-dialed every polling cycle. It stays "configured" (still reported by the
+# validators and route inventory) but is NOT "operational" — the failover dial path
+# skips it until an operator re-enables it. Distinct from the transient 429 backoff.
+_RPC_ROUTE_DISABLED: dict[str, str] = {}
+
+# Rate-limits the repetitive "request skipped (no network attempt)" logs so a
+# per-webhook storm cannot flood Railway. key -> last-emit monotonic time.
+_RPC_SKIP_LOG_AT: dict[str, float] = {}
+_RPC_SKIP_LOG_WINDOW_SECONDS = 60.0
+
+# Bounded per-host RPC request-volume counters for the periodic
+# rpc_request_volume_summary. Never logged per request — a summary is emitted at
+# most once per window per host so the source of a rate-limit storm (which method,
+# which caller) is visible without one-line-per-call spam. Host-only, no secrets.
+_RPC_VOLUME_WINDOW_SECONDS = 60.0
+_RPC_VOLUME: dict[str, Any] = {'window_start_monotonic': None, 'hosts': {}}
+
 
 def _host_of(url: str | None) -> str:
     """Return the lowercase hostname of an RPC URL, or 'unknown'. Never the path/key."""
@@ -292,8 +311,21 @@ def record_rpc_rate_limited(retry_after_seconds: float | None = None, *, host: s
         hosts = [host]
     else:
         hosts = _configured_provider_hosts() or [_GLOBAL_BACKOFF_HOST]
+    # This function is only ever reached AFTER a real HTTP 429 response (JsonRpcClient
+    # or the /system-health probe) — a genuine network attempt that failed. Log that
+    # fact explicitly (network_attempted=true) so a real failure is never conflated
+    # with a request the circuit breaker skipped WITHOUT dialing (logged separately in
+    # the failover path with network_attempted=false).
+    logger.warning(
+        'event=rpc_provider_request_failed network_attempted=true http_status=429 '
+        'rpc_host=%s retry_after_seconds=%s',
+        ','.join(hosts),
+        'none' if retry_after_seconds is None else int(retry_after_seconds),
+    )
+    for entry in hosts:
+        _record_rpc_volume(entry, method='http_429', caller='provider_429', rate_limited=True)
     armed_hosts: list[str] = []
-    skipped: list[tuple[str, str]] = []   # (host, existing_until_wall)
+    not_extended: list[tuple[str, str]] = []   # (host, existing_until_wall)
     armed_until_wall = ''
     for entry in hosts:
         until_wall, armed = _arm_host_backoff(
@@ -303,26 +335,28 @@ def record_rpc_rate_limited(retry_after_seconds: float | None = None, *, host: s
             armed_hosts.append(entry)
             armed_until_wall = until_wall
         else:
-            skipped.append((entry, until_wall))
-    # A host already inside an active backoff window: the network call should have
-    # been skipped by the circuit breaker, so re-observing it must NOT push
-    # backoff_until forward. Log the skip explicitly with backoff_extended=false and
-    # keep the existing expiration — this is what stops the per-webhook chain-head
-    # storm from moving the Alchemy window forward indefinitely.
-    for entry, existing_until in skipped:
+            not_extended.append((entry, until_wall))
+    # A real 429 re-observed for a host already inside an active window: keep the
+    # existing expiration (circuit-breaker invariant — never push backoff_until
+    # forward). This is a REAL network failure (network_attempted=true) that simply did
+    # not extend the window — it is NOT a skipped call, so it is NOT logged as
+    # rpc_call_skipped_existing_backoff (which means "no network attempt was made").
+    for entry, existing_until in not_extended:
         logger.info(
-            'event=rpc_call_skipped_existing_backoff rpc_host=%s backoff_until=%s backoff_extended=false',
+            'event=rpc_provider_backoff_not_extended rpc_host=%s http_status=429 '
+            'network_attempted=true backoff_until=%s backoff_extended=false',
             entry,
             existing_until or 'unknown',
         )
     # Only a newly observed provider failure (the host was not already benched) arms a
-    # window and emits rpc_provider_backoff_set. rpc_call_skipped=true is retained for
-    # backward compatibility: subsequent calls to this host are now skipped.
+    # fresh window and emits rpc_provider_backoff_set. A real 429 was received, so the
+    # event carries network_attempted=true — never rpc_call_skipped=true (a skip means
+    # no network attempt, the opposite of what happened here).
     if armed_hosts:
         logger.warning(
             'event=rpc_provider_backoff_set error_class=rate_limited rpc_status=rate_limited '
             'rpc_host=%s backoff_seconds=%s retry_after_seconds=%s backoff_until=%s '
-            'backoff_extended=true rpc_call_skipped=true',
+            'network_attempted=true backoff_extended=true',
             ','.join(armed_hosts),
             int(backoff),
             'none' if retry_after_seconds is None else int(retry_after_seconds),
@@ -444,7 +478,332 @@ def rpc_provider_log_fields() -> dict[str, Any]:
         'active_rpc_host': snap.get('active_rpc_host'),
         'failed_rpc_hosts': list(snap.get('failed_rpc_hosts') or []),
         'backoff_hosts': backoff_hosts(),
+        'disabled_rpc_routes': disabled_rpc_routes(),
         'rpc_failover_used': bool(snap.get('rpc_failover_used', False)),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Administratively disabled provider routes (known-invalid endpoints).
+# ---------------------------------------------------------------------------
+
+def disable_rpc_route(host: str, reason: str = 'known_invalid') -> None:
+    """Bench a KNOWN-INVALID provider host so the dial path stops re-trying it.
+
+    Use for an endpoint that fails deterministically every cycle (e.g. a QuickNode
+    host returning ``TLSV1_ALERT_INTERNAL_ERROR`` on every TLS handshake). The route
+    stays *configured* — validators and the route inventory still report it — but it is
+    no longer *operational*: :class:`FailoverJsonRpcClient` skips it entirely (no
+    network attempt) until :func:`enable_rpc_route` clears it. This is deliberately
+    distinct from the transient 429 backoff, which auto-expires; a disabled route stays
+    disabled until an operator (or a passing re-validation) re-enables it, so a broken
+    TLS route is never dialed every polling cycle.
+    """
+    host = (host or '').strip().lower()
+    if not host:
+        return
+    with _RPC_PROVIDER_LOCK:
+        newly = host not in _RPC_ROUTE_DISABLED
+        _RPC_ROUTE_DISABLED[host] = str(reason or 'known_invalid')
+    if newly:
+        logger.warning(
+            'event=rpc_route_disabled rpc_host=%s reason=%s network_attempted=false',
+            host, reason,
+        )
+
+
+def enable_rpc_route(host: str | None = None) -> None:
+    """Re-enable a previously disabled route, or all routes when ``host`` is None."""
+    host = (host or '').strip().lower() if host is not None else None
+    with _RPC_PROVIDER_LOCK:
+        if host is None:
+            had = bool(_RPC_ROUTE_DISABLED)
+            _RPC_ROUTE_DISABLED.clear()
+        else:
+            had = _RPC_ROUTE_DISABLED.pop(host, None) is not None
+    if had:
+        logger.info('event=rpc_route_enabled rpc_host=%s', host or 'all')
+
+
+def is_rpc_route_disabled(host: str | None) -> bool:
+    """True while ``host`` is administratively disabled (known-invalid route)."""
+    with _RPC_PROVIDER_LOCK:
+        return (host or '').strip().lower() in _RPC_ROUTE_DISABLED
+
+
+def disabled_rpc_routes() -> list[str]:
+    """Sorted list of currently disabled provider hosts (host-only, no secrets)."""
+    with _RPC_PROVIDER_LOCK:
+        return sorted(_RPC_ROUTE_DISABLED.keys())
+
+
+def _should_emit_skip_log(key: str, *, now: float | None = None) -> bool:
+    """True at most once per window for ``key`` — collapses per-block skip storms."""
+    now = now if now is not None else time.monotonic()
+    with _RPC_PROVIDER_LOCK:
+        last = _RPC_SKIP_LOG_AT.get(key)
+        if last is None or (now - last) >= _RPC_SKIP_LOG_WINDOW_SECONDS:
+            _RPC_SKIP_LOG_AT[key] = now
+            return True
+    return False
+
+
+def _log_rpc_call_skipped(reason: str, host: str, method: str) -> None:
+    """Log a request skipped WITHOUT a network attempt (rate-limited per host/reason).
+
+    ``network_attempted=false`` is the defining property: unlike a real 429, no packet
+    left the process — the circuit breaker (existing backoff) or a disabled route
+    short-circuited the dial. Kept distinct from rpc_provider_backoff_set so logs never
+    imply a network failure that did not happen.
+    """
+    if not _should_emit_skip_log(f'{reason}:{host}'):
+        return
+    if reason == 'disabled_route':
+        logger.info(
+            'event=rpc_call_skipped_disabled_route rpc_host=%s method=%s '
+            'network_attempted=false backoff_extended=false',
+            host, method,
+        )
+    else:
+        logger.info(
+            'event=rpc_call_skipped_existing_backoff rpc_host=%s method=%s '
+            'network_attempted=false backoff_extended=false',
+            host, method,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Bounded RPC request-volume instrumentation (rpc_request_volume_summary).
+# ---------------------------------------------------------------------------
+
+def _record_rpc_volume(
+    host: str, *, method: str, caller: str = 'unspecified', rate_limited: bool = False,
+    retry: bool = False,
+) -> None:
+    """Count one RPC request for the periodic per-host volume summary.
+
+    Cheap and bounded: increments in-memory counters keyed by host/method/caller and,
+    when the window has elapsed, emits ONE rpc_request_volume_summary per host and
+    resets. Never logs per request. Host/method/caller only — no URL, path, or token.
+    """
+    host = (host or 'unknown').strip().lower()
+    caller = (caller or 'unspecified').strip() or 'unspecified'
+    now = time.monotonic()
+    due: list[tuple[str, dict[str, Any]]] = []
+    with _RPC_PROVIDER_LOCK:
+        if _RPC_VOLUME['window_start_monotonic'] is None:
+            _RPC_VOLUME['window_start_monotonic'] = now
+        bucket = _RPC_VOLUME['hosts'].setdefault(
+            host, {'calls_total': 0, 'by_method': {}, 'by_caller': {}, 'rate_limited': 0, 'retries': 0},
+        )
+        bucket['calls_total'] += 1
+        bucket['by_method'][method] = bucket['by_method'].get(method, 0) + 1
+        bucket['by_caller'][caller] = bucket['by_caller'].get(caller, 0) + 1
+        if rate_limited:
+            bucket['rate_limited'] += 1
+        if retry:
+            bucket['retries'] += 1
+        started = float(_RPC_VOLUME['window_start_monotonic'])
+        if (now - started) >= _RPC_VOLUME_WINDOW_SECONDS:
+            due = list(_RPC_VOLUME['hosts'].items())
+            _RPC_VOLUME['hosts'] = {}
+            _RPC_VOLUME['window_start_monotonic'] = now
+            window = now - started
+        else:
+            window = None
+    if due and window is not None:
+        for h, b in due:
+            logger.info(
+                'event=rpc_request_volume_summary window_seconds=%s rpc_host=%s calls_total=%s '
+                'calls_by_method=%s calls_by_caller=%s rate_limited=%s retries=%s',
+                int(round(window)), h, b['calls_total'],
+                json.dumps(b['by_method'], sort_keys=True), json.dumps(b['by_caller'], sort_keys=True),
+                b['rate_limited'], b['retries'],
+            )
+
+
+def rpc_request_volume_snapshot() -> dict[str, Any]:
+    """Current (un-emitted) request-volume counters, host-only (tests/ops)."""
+    with _RPC_PROVIDER_LOCK:
+        return {
+            'window_start_monotonic': _RPC_VOLUME['window_start_monotonic'],
+            'hosts': {h: {'calls_total': b['calls_total'],
+                          'by_method': dict(b['by_method']),
+                          'by_caller': dict(b['by_caller']),
+                          'rate_limited': b['rate_limited'],
+                          'retries': b['retries']}
+                      for h, b in _RPC_VOLUME['hosts'].items()},
+        }
+
+
+# Optional per-thread caller tag so the volume summary can attribute calls to the
+# scheduled poll vs chain-head refresh vs onboarding discovery. Defaults to
+# 'unspecified' when a caller does not set it.
+_RPC_CALLER = threading.local()
+
+
+def current_rpc_caller() -> str:
+    return getattr(_RPC_CALLER, 'name', None) or 'unspecified'
+
+
+class rpc_caller_scope:
+    """Tag every RPC call made in this ``with`` block with a caller name."""
+
+    def __init__(self, name: str) -> None:
+        self.name = str(name or 'unspecified')
+        self._prev = 'unspecified'
+
+    def __enter__(self) -> 'rpc_caller_scope':
+        self._prev = current_rpc_caller()
+        _RPC_CALLER.name = self.name
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        _RPC_CALLER.name = self._prev
+
+
+# ---------------------------------------------------------------------------
+# Live RPC endpoint probe (bounded DNS / TLS / HTTP / JSON-RPC validation).
+# ---------------------------------------------------------------------------
+
+def _classify_probe_error(exc: BaseException) -> str:
+    """Map a probe exception to a stable, secret-free safe_error_category."""
+    text = str(exc).lower()
+    if isinstance(exc, _urllib_error.HTTPError):
+        if exc.code == 429:
+            return 'rate_limited'
+        if exc.code == 413:
+            return 'request_too_large'
+        return f'http_{exc.code}'
+    if 'tlsv1_alert_internal_error' in text or 'internal_error' in text and 'tls' in text:
+        return 'tls_internal_error'
+    if 'certificate verify failed' in text or 'certificate_verify_failed' in text:
+        return 'tls_certificate_invalid'
+    if 'ssl' in text or 'tls' in text:
+        return 'tls_error'
+    if 'name or service not known' in text or 'nodename nor servname' in text or 'getaddrinfo' in text:
+        return 'dns_failure'
+    if 'timed out' in text or 'timeout' in text:
+        return 'timeout'
+    if 'connection refused' in text or 'refused' in text:
+        return 'connection_refused'
+    return 'connection_error'
+
+
+def probe_rpc_endpoint(
+    url: str | None,
+    *,
+    expected_chain_id: int | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    """Actively validate ONE Base RPC endpoint from the worker runtime, safely.
+
+    Runs a bounded ladder — DNS resolution, TLS handshake (SNI = host), an HTTP POST
+    of ``eth_chainId``, then ``eth_blockNumber`` — and returns a host-only diagnostic
+    dict. Emits exactly one ``event=rpc_endpoint_validation`` line with
+    ``dns_ok`` / ``tls_ok`` / ``http_ok`` / ``json_rpc_ok`` / ``chain_id`` /
+    ``safe_error_category``. The URL, path, and API token are NEVER logged or returned —
+    only the redacted hostname. This is the operator tool for diagnosing a TLS-broken or
+    mis-copied Railway RPC variable without ever printing a secret.
+    """
+    import socket
+    import ssl
+
+    timeout = _rpc_timeout_seconds() if timeout is None else max(1.0, float(timeout))
+    shape = validate_rpc_endpoint(url, expected_chain=(f'{expected_chain_id}' if expected_chain_id else 'base-mainnet'))
+    host = shape.get('host')
+    result: dict[str, Any] = {
+        'host': host,
+        'scheme_ok': shape.get('scheme_ok', False),
+        'malformed': shape.get('malformed', False),
+        'dns_ok': False,
+        'tls_ok': False,
+        'http_ok': False,
+        'json_rpc_ok': False,
+        'chain_id': None,
+        'latest_block': None,
+        'chain_id_matches': None,
+        'safe_error_category': 'ok',
+    }
+
+    def _emit() -> dict[str, Any]:
+        logger.info(
+            'event=rpc_endpoint_validation rpc_host=%s dns_ok=%s tls_ok=%s http_ok=%s '
+            'json_rpc_ok=%s chain_id=%s safe_error_category=%s',
+            host or 'unknown', str(result['dns_ok']).lower(), str(result['tls_ok']).lower(),
+            str(result['http_ok']).lower(), str(result['json_rpc_ok']).lower(),
+            result['chain_id'] if result['chain_id'] is not None else 'none',
+            result['safe_error_category'],
+        )
+        return result
+
+    if shape.get('malformed') or not shape.get('scheme_ok') or not host:
+        result['safe_error_category'] = shape.get('reason') or 'malformed_url'
+        return _emit()
+
+    parsed = parse.urlparse(str(url or '').strip())
+    port = parsed.port or 443
+    # 1) DNS
+    try:
+        socket.getaddrinfo(host, port)
+        result['dns_ok'] = True
+    except Exception as exc:  # pragma: no cover - network dependent
+        result['safe_error_category'] = _classify_probe_error(exc)
+        return _emit()
+    # 2) TLS handshake (SNI = host)
+    try:
+        ctx = ssl.create_default_context()
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host):
+                result['tls_ok'] = True
+    except Exception as exc:  # pragma: no cover - network dependent
+        result['safe_error_category'] = _classify_probe_error(exc)
+        return _emit()
+    # 3 & 4) HTTP POST eth_chainId / eth_blockNumber via the same client the poller uses
+    try:
+        client = JsonRpcClient(str(url).strip())
+        chain_hex = client.call('eth_chainId', [])
+        result['http_ok'] = True
+        chain_id = _hex_to_int(chain_hex) if isinstance(chain_hex, str) else (int(chain_hex) if isinstance(chain_hex, int) else None)
+        result['chain_id'] = chain_id
+        result['json_rpc_ok'] = chain_id is not None
+        if expected_chain_id is not None and chain_id is not None:
+            result['chain_id_matches'] = (chain_id == int(expected_chain_id))
+        block_hex = client.call('eth_blockNumber', [])
+        result['latest_block'] = _hex_to_int(block_hex) if isinstance(block_hex, str) else None
+    except Exception as exc:  # pragma: no cover - network dependent
+        result['safe_error_category'] = _classify_probe_error(exc)
+        return _emit()
+    return _emit()
+
+
+def probe_worker_rpc_endpoints(*, expected_chain_id: int | None = 8453) -> dict[str, Any]:
+    """Actively probe every configured Base RPC endpoint and disable hard-broken ones.
+
+    An endpoint whose TLS handshake fails deterministically (e.g. QuickNode
+    ``TLSV1_ALERT_INTERNAL_ERROR``) is a KNOWN-INVALID route: it is disabled via
+    :func:`disable_rpc_route` so the poll loop stops re-dialing it every cycle. A
+    rate-limited (429) endpoint is left alone — that is a transient throttle handled by
+    the 429 backoff, not a broken route. Returns a host-only aggregate report.
+    """
+    reports: list[dict[str, Any]] = []
+    for url in _resolve_evm_rpc_urls():
+        report = probe_rpc_endpoint(url, expected_chain_id=expected_chain_id)
+        host = report.get('host')
+        category = report.get('safe_error_category')
+        # Only bench a route for a DETERMINISTIC endpoint fault, never for a transient
+        # rate limit (that is the 429 backoff's job) or a chain-id mismatch we surface.
+        if host and category in {'tls_internal_error', 'tls_certificate_invalid', 'tls_error',
+                                 'scheme_not_https', 'missing_path_or_key', 'malformed_url',
+                                 'contains_whitespace', 'invalid_url_encoding'}:
+            disable_rpc_route(host, reason=category)
+        reports.append(report)
+    return {
+        'endpoint_count': len(reports),
+        'all_operational': bool(reports) and all(r['json_rpc_ok'] for r in reports),
+        'endpoints': reports,
+        'disabled_rpc_routes': disabled_rpc_routes(),
+        'backoff_hosts': backoff_hosts(),
     }
 
 
@@ -584,6 +943,10 @@ def reset_rpc_provider_state() -> None:
             rpc_failover_used=False,
         )
         _RPC_QUERY_TOO_LARGE.update(active=False, host=None, reduced_chunk_size=None, at_wall=None)
+        _RPC_ROUTE_DISABLED.clear()
+        _RPC_SKIP_LOG_AT.clear()
+        _RPC_VOLUME['window_start_monotonic'] = None
+        _RPC_VOLUME['hosts'] = {}
 
 
 def worker_rpc_chain_id() -> int | None:
@@ -983,7 +1346,13 @@ class JsonRpcClient:
         timeout = _rpc_timeout_seconds()
         max_attempts = _rpc_max_attempts()
         backoff = _rpc_backoff_base_seconds()
+        # Count this request for the periodic rpc_request_volume_summary (host/method/
+        # caller only). One count per call() — inner retries are counted as retries.
+        _record_rpc_volume(_host_of(self.rpc_url), method=method, caller=current_rpc_caller())
         for attempt in range(max_attempts):
+            if attempt > 0:
+                _record_rpc_volume(_host_of(self.rpc_url), method=method,
+                                   caller=current_rpc_caller(), retry=True)
             try:
                 with request.urlopen(req, timeout=timeout) as resp:  # nosec B310
                     body = json.loads(resp.read().decode('utf-8'))
@@ -1052,12 +1421,23 @@ class FailoverJsonRpcClient:
             index = (self.active_index + offset) % count
             url = self.rpc_urls[index]
             host = _host_of(url)
+            # Skip an administratively disabled route (known-invalid endpoint, e.g. a
+            # TLS-broken QuickNode host). NO network attempt is made — a broken route is
+            # never re-dialed every cycle. Always skipped, even when it is the only
+            # route (an operator disabled it deliberately; recovery is re-enabling it).
+            if is_rpc_route_disabled(host):
+                if host not in skipped_hosts:
+                    skipped_hosts.append(host)
+                _log_rpc_call_skipped('disabled_route', host, method)
+                continue
             # Skip a provider whose 429 backoff window is still open. Only when more than
             # one provider exists — a lone provider is always tried so its own recovery
-            # is detected rather than being benched forever.
+            # is detected rather than being benched forever. NO network attempt is made,
+            # so this is logged as a skip (network_attempted=false), never a failure.
             if count > 1 and host_backoff_active(host):
                 if host not in skipped_hosts:
                     skipped_hosts.append(host)
+                _log_rpc_call_skipped('existing_backoff', host, method)
                 continue
             try:
                 result = JsonRpcClient(url).call(method, params)

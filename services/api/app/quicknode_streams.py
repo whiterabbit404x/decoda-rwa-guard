@@ -380,6 +380,51 @@ def _quicknode_degraded_log_decision(
         return 'suppress'
     return 'suppress'
 
+
+# Canonical live-lane health as a 4-state enum (never a lone boolean that collapses
+# "unknown" into "not degraded"). See the module docstring on truthfulness: an unknown
+# chain head must NOT serialize as degraded=false, which reads as healthy.
+STREAM_HEALTH_HEALTHY = 'healthy'
+STREAM_HEALTH_DEGRADED = 'degraded'
+STREAM_HEALTH_UNKNOWN = 'unknown'
+STREAM_HEALTH_UNAVAILABLE = 'unavailable'
+
+
+def stream_health_status(lag_status: str | None) -> str | None:
+    """Map the internal lag_status to the canonical stream-health enum.
+
+    - 'live'           -> 'healthy'  (current lag within threshold)
+    - 'degraded'       -> 'degraded' (last known lag above threshold)
+    - 'unknown'        -> 'unknown'  (chain head unavailable — lag cannot be computed)
+    - 'not_applicable' -> None       (backfill lane: progress, not a live-health signal)
+
+    A webhook authentication / processing failure is reported as
+    ``STREAM_HEALTH_UNAVAILABLE`` at that error boundary; it never reaches this batch
+    classifier. ``'unknown'`` is NEVER converted into ``'healthy'``.
+    """
+    mapping = {
+        'live': STREAM_HEALTH_HEALTHY,
+        'degraded': STREAM_HEALTH_DEGRADED,
+        'unknown': STREAM_HEALTH_UNKNOWN,
+    }
+    return mapping.get(str(lag_status or ''), None)
+
+
+def stream_degraded_flag(lag_status: str | None) -> bool | None:
+    """The degraded boolean, but NULL (not false) when health is unknown.
+
+    Returns True only when the lane is measured degraded, False only when it is
+    measured live/healthy, and None when the chain head is unknown (or the lane is not
+    a live-health signal). Rendering None as ``null`` is what prevents an unknown lane
+    from being serialized as ``degraded=false`` and painted green.
+    """
+    if lag_status == 'degraded':
+        return True
+    if lag_status == 'live':
+        return False
+    return None
+
+
 # QuickNode Streams signs nonce + timestamp + raw payload bytes with
 # HMAC-SHA256 (hex digest) keyed by the Stream's security token, delivered
 # via these three headers. See:
@@ -2380,12 +2425,17 @@ def _process_realtime_lane_batch(
     else:
         lag_status = 'live'
     degraded = lag_status == 'degraded'
+    # Canonical health enum + the null-aware degraded flag. When the chain head is
+    # unknown, degraded_flag is None (rendered 'null'), never False — an unknown lane
+    # must not serialize as degraded=false and be painted green.
+    health_status = stream_health_status(lag_status)
+    degraded_flag = stream_degraded_flag(lag_status)
     if lane == LANE_LIVE and lag_status == 'unknown':
         # Evidence-backed unknown: chain head unavailable, so lag cannot be computed
         # and the lane's health is NOT reported healthy this tick.
         logger.warning(
             'event=quicknode_live_lane_lag_unknown stream_key=%s checkpoint_identity=%s '
-            'last_block=%s status=unknown reason=chain_head_unavailable',
+            'last_block=%s status=unknown health_status=unknown reason=chain_head_unavailable',
             route_stream_key, checkpoint_key, last_block,
         )
     _degraded_action = _quicknode_degraded_log_decision(route_stream_key, degraded=degraded)
@@ -2402,11 +2452,13 @@ def _process_realtime_lane_batch(
         logger.info(
             'event=quicknode_stream_batch deployment_commit_sha=%s stream_lane=%s stream_key=%s '
             'checkpoint_identity=%s first_block=%s last_block=%s checkpoint_block=%s chain_head=%s '
-            'lag_blocks=%s lag_status=%s tx_count=%s matched=%s persisted=%s duplicates=%s degraded=%s',
+            'lag_blocks=%s lag_status=%s health_status=%s tx_count=%s matched=%s persisted=%s '
+            'duplicates=%s degraded=%s',
             _deployment_commit_sha(), lane, route_stream_key, checkpoint_key, first_block, last_block,
             last_block, chain_head if chain_head is not None else 'unknown', lag_blocks, lag_status,
+            health_status if health_status is not None else 'not_applicable',
             len(normalized_txs), match_count, persisted_count,
-            duplicate_count, str(degraded).lower(),
+            duplicate_count, 'null' if degraded_flag is None else str(degraded_flag).lower(),
         )
     if degraded and _degraded_action in {'transition_degraded', 'periodic'}:
         # The live stream is pushing blocks far behind the chain head — it is NOT at

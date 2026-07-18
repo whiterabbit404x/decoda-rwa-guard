@@ -308,7 +308,13 @@ def test_no_secret_in_backoff_logs_or_status(monkeypatch, caplog):
     text = '\n'.join(r.getMessage() for r in caplog.records)
     assert 'rpc_provider_backoff_set' in text, 'the backoff must be logged'
     assert 'rpc_status=rate_limited' in text
-    assert 'rpc_call_skipped=true' in text
+    # A real 429 is a genuine network attempt: the backoff_set event now carries
+    # network_attempted=true, NOT the ambiguous rpc_call_skipped=true (a skip means no
+    # network attempt, the opposite of a real 429). The real failure is also announced.
+    assert 'network_attempted=true' in text
+    assert 'rpc_call_skipped=true' not in text
+    assert 'event=rpc_provider_request_failed' in text
+    assert 'http_status=429' in text
     assert secret not in text
     assert '/v2/' not in text
     assert secret not in str(eap.rpc_provider_backoff_status())
