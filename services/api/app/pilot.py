@@ -10075,11 +10075,18 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
                             repaired_monitoring_config_ids.append(str(_cfg_result.get('config_id') or ''))
                             if _cfg_result.get('created'):
                                 created_monitoring_config_count += 1
-                        except Exception:
+                        except Exception as _cfg_exc:
+                            # Capture the ORIGINAL failing statement's category/SQLSTATE
+                            # here — before the surrounding savepoint unwinds — so the
+                            # root cause is diagnosable and never masked by a later
+                            # in_failed_sql_transaction. The inner savepoint already
+                            # rolled back on this propagated exception, so the target
+                            # savepoint stays usable and the target still counts.
                             logger.warning(
-                                'reconcile_direct_monitoring_config_failed target_id=%s workspace_id=%s',
+                                'reconcile_direct_monitoring_config_failed target_id=%s workspace_id=%s error_category=%s',
                                 result.get('target_id') or row.get('id'),
                                 result.get('workspace_id') or workspace_id,
+                                _reconcile_target_error_category(_cfg_exc),
                                 exc_info=True,
                             )
                     else:
@@ -13708,20 +13715,26 @@ def ensure_direct_monitoring_config_for_target(
     """
     resolved_chain = str(chain_network or '').strip()
     if not resolved_chain:
+        # Read the chain inside a savepoint: a failed read must roll back to the
+        # savepoint, never leave the caller's transaction aborted (which would later
+        # fail a SAVEPOINT RELEASE with in_failed_sql_transaction). Never catch a DB
+        # error here and run more SQL without first rolling back.
+        _chain_row = None
         try:
-            _chain_row = connection.execute(
-                '''
-                SELECT chain_network FROM targets
-                WHERE id = %s::uuid
-                  AND workspace_id = %s::uuid
-                  AND deleted_at IS NULL
-                ''',
-                (target_id, workspace_id),
-            ).fetchone()
-            if _chain_row is not None:
-                resolved_chain = str(dict(_chain_row).get('chain_network') or '').strip()
+            with _reconcile_target_savepoint(connection):
+                _chain_row = connection.execute(
+                    '''
+                    SELECT chain_network FROM targets
+                    WHERE id = %s::uuid
+                      AND workspace_id = %s::uuid
+                      AND deleted_at IS NULL
+                    ''',
+                    (target_id, workspace_id),
+                ).fetchone()
         except Exception:
-            resolved_chain = ''
+            _chain_row = None
+        if _chain_row is not None:
+            resolved_chain = str(dict(_chain_row).get('chain_network') or '').strip()
     provider_type = _provider_type_for_chain(resolved_chain)
     existing = connection.execute(
         '''
@@ -13780,22 +13793,29 @@ def ensure_direct_monitoring_config_for_target(
             (config_id, workspace_id, target_id, provider_type),
         )
         created = True
+    # Audit is a non-critical side effect. Run it in its OWN savepoint so an audit
+    # write failure rolls back ONLY the audit and can never leave the transaction in
+    # an aborted state — which would later fail the caller's SAVEPOINT RELEASE and
+    # cascade to reconcile_direct_monitoring_config_failed ->
+    # in_failed_sql_transaction. This is the "do not catch an exception and run more
+    # SQL before rolling back to the savepoint" rule applied to the audit write.
     try:
-        log_audit(
-            connection,
-            action='monitoring_config.ensure_direct',
-            entity_type='monitoring_config',
-            entity_id=config_id,
-            request=request,
-            user_id=user_id or 'system',
-            workspace_id=workspace_id,
-            metadata={
-                'target_id': target_id,
-                'provider_type': provider_type,
-                'creation_source': creation_source,
-                'created': created,
-            },
-        )
+        with _reconcile_target_savepoint(connection):
+            log_audit(
+                connection,
+                action='monitoring_config.ensure_direct',
+                entity_type='monitoring_config',
+                entity_id=config_id,
+                request=request,
+                user_id=user_id or 'system',
+                workspace_id=workspace_id,
+                metadata={
+                    'target_id': target_id,
+                    'provider_type': provider_type,
+                    'creation_source': creation_source,
+                    'created': created,
+                },
+            )
     except Exception:
         logger.debug('ensure_direct_monitoring_config_audit_failed target_id=%s', target_id, exc_info=True)
     logger.info(

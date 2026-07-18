@@ -218,7 +218,9 @@ def publish_onboarding(workspace_id: str, onboarding_data: dict[str, Any]) -> st
     event_id = str(
         _get_sync_client().xadd(
             stream,
-            {'payload': json.dumps(onboarding_data, separators=(',', ':'))},
+            # default=str so a stray UUID/datetime in the payload can never raise a
+            # serialization TypeError that silently drops an onboarding event.
+            {'payload': json.dumps(onboarding_data, separators=(',', ':'), default=str)},
             maxlen=stream_max_length(),
             approximate=False,
         )

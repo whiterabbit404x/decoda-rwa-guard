@@ -259,16 +259,36 @@ def _update_session(connection: Any, *, session_id: str, **fields: Any) -> None:
 # SSE fan-out
 # ===========================================================================
 def publish_event(workspace_id: str, session_id: str, event_type: str, extra: dict[str, Any] | None = None) -> None:
-    """Publish a live onboarding event to the workspace Redis stream (best effort)."""
+    """Publish a live onboarding event to the workspace Redis stream (best effort).
+
+    The single canonical publisher for EVERY onboarding SSE event (session_created,
+    discovery_queued, step_update, discovery_failed, discovery_completed, ...). The
+    initial session_created / discovery_queued events were being dropped with
+    ``onboarding_sse_publish_skipped reason=TypeError`` because a ``uuid.UUID`` id
+    (workspace_id / session_id / a run id in ``extra``) reached the Redis JSON
+    serializer, which cannot encode UUID/datetime. The whole payload is now coerced
+    to JSON-safe primitives (UUID -> str, datetime -> isoformat) via the module's
+    ``default=str`` serializer BEFORE publishing, so no event can be silently lost to
+    a serialization TypeError. Redis remains optional — a genuine transport failure
+    is still swallowed (Postgres is the source of truth; the page recovers on its
+    next fetch) but the exception type AND safe message are logged for diagnosis.
+    """
     try:
         from services.api.app.domains import alert_stream
-        payload = {'type': 'onboarding', 'event_type': event_type, 'session_id': session_id,
-                   'workspace_id': workspace_id, 'at': _now_iso()}
+        payload = {'type': 'onboarding', 'event_type': event_type,
+                   'session_id': str(session_id), 'workspace_id': str(workspace_id),
+                   'at': _now_iso()}
         if extra:
             payload.update(extra)
-        alert_stream.publish_onboarding(workspace_id, payload)
+        # Round-trip through default=str so UUID/datetime values become JSON-safe
+        # strings; this is what prevents the serialization TypeError.
+        safe_payload = json.loads(_json_dumps(payload))
+        alert_stream.publish_onboarding(str(workspace_id), safe_payload)
     except Exception as exc:  # pragma: no cover - Redis optional; DB remains source of truth
-        logger.info('onboarding_sse_publish_skipped session_id=%s event=%s reason=%s', session_id, event_type, type(exc).__name__)
+        logger.info(
+            'onboarding_sse_publish_skipped session_id=%s event=%s reason=%s detail=%s',
+            session_id, event_type, type(exc).__name__, str(exc)[:120],
+        )
 
 
 # ===========================================================================
