@@ -11489,7 +11489,7 @@ def _load_latest_provider_health_by_target(
         rows = connection.execute(
             '''
             SELECT DISTINCT ON (target_id, provider_type)
-                   target_id, status, latency_ms, checked_at, evidence_source, provider_type, error_message
+                   target_id, status, latency_ms, checked_at, evidence_source, provider_type, error_message, metadata
             FROM provider_health_records
             WHERE workspace_id = %s::uuid
               AND target_id = ANY(%s::uuid[])
@@ -11535,6 +11535,20 @@ def _pick_provider_health_record(
 _PROVIDER_HEALTH_STATUSES = {'healthy', 'degraded', 'unavailable', 'error'}
 
 
+def _recovery_required_consecutive_success() -> int:
+    """Consecutive successful scheduled polls required before a failing source reads
+    Healthy again (Critical -> Recovering -> Healthy). Configurable via
+    RECOVERY_REQUIRED_CONSECUTIVE_SUCCESS; defaults to 2 and is floored at 1."""
+    from services.api.app import monitoring_health_engine as _he
+    raw = (os.getenv('RECOVERY_REQUIRED_CONSECUTIVE_SUCCESS') or '').strip()
+    if not raw:
+        return _he.DEFAULT_RECOVERY_CONSECUTIVE_SUCCESS
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return _he.DEFAULT_RECOVERY_CONSECUTIVE_SUCCESS
+
+
 def persist_provider_health_evidence(
     connection: Any,
     *,
@@ -11575,6 +11589,10 @@ def persist_provider_health_evidence(
     host = str(provider_host).strip() if provider_host else None
     # Consecutive streaks come from the previous same-(target, provider) record.
     prev_success = prev_failure = 0
+    prev_meta: dict[str, Any] = {}
+    prev_recovery_state = None
+    prev_last_failure_at = None
+    prev_recovery_started_at = None
     try:
         prev = connection.execute(
             '''
@@ -11592,10 +11610,40 @@ def persist_provider_health_evidence(
                 prev_meta = {}
         prev_success = int(prev_meta.get('consecutive_success') or 0)
         prev_failure = int(prev_meta.get('consecutive_failure') or 0)
+        prev_recovery_state = prev_meta.get('recovery_state')
+        prev_last_failure_at = prev_meta.get('last_failure_at')
+        prev_recovery_started_at = prev_meta.get('recovery_started_at')
     except Exception:
         prev_success = prev_failure = 0
+        prev_recovery_state = None
+        prev_last_failure_at = None
+        prev_recovery_started_at = None
     consecutive_success = (prev_success + 1) if success else 0
     consecutive_failure = 0 if success else (prev_failure + 1)
+    # Deterministic Critical -> Recovering -> Healthy transition (part 10). Requires
+    # the configured number of CONSECUTIVE successful scheduled polls before a source
+    # that was failing reads Healthy again — a single success after an outage reads
+    # Recovering, not green.
+    from services.api.app import monitoring_health_engine as _he
+    _required_recovery = _recovery_required_consecutive_success()
+    recovery_state = _he.classify_recovery_state(
+        latest_success=bool(success),
+        consecutive_success=consecutive_success,
+        required_consecutive_success=_required_recovery,
+        prev_recovery_state=prev_recovery_state,
+        prev_consecutive_failure=prev_failure,
+    )
+    _now_iso = utc_now().isoformat()
+    # Track the recovery timeline for the Screen-4 display.
+    last_failure_at = _now_iso if not success else prev_last_failure_at
+    if not success:
+        recovery_started_at = None
+    elif recovery_state == _he.RECOVERY_RECOVERING and prev_recovery_state != _he.RECOVERY_RECOVERING:
+        recovery_started_at = _now_iso                      # first success after failure
+    elif recovery_state == _he.RECOVERY_RECOVERING:
+        recovery_started_at = prev_recovery_started_at      # still recovering
+    else:
+        recovery_started_at = None                          # fully healthy again
     metadata: dict[str, Any] = {
         'provider_host': host,
         'chain_id': chain_id,
@@ -11607,6 +11655,14 @@ def persist_provider_health_evidence(
         'trigger': trigger,
         'consecutive_success': consecutive_success,
         'consecutive_failure': consecutive_failure,
+        'recovery_state': recovery_state,
+        'required_consecutive_success': _required_recovery,
+        'last_failure_at': last_failure_at,
+        'recovery_started_at': recovery_started_at,
+        # Carry the last SUCCESSFUL block/latency forward across a failure so the
+        # recovery display can show them even while the newest record is a failure.
+        'last_successful_block': latest_block if success else prev_meta.get('last_successful_block'),
+        'last_successful_latency_ms': latency_ms if success else prev_meta.get('last_successful_latency_ms'),
     }
     if extra_metadata:
         metadata.update(extra_metadata)
@@ -11770,6 +11826,41 @@ def _build_source_score_breakdown(
         'latency': _component('p95_latency'),
         'heartbeat_freshness': _component('heartbeat'),
         'coverage': coverage_score,
+    }
+
+
+def _provider_health_metadata(provider_health: dict[str, Any] | None) -> dict[str, Any]:
+    """Parse the provider_health_records.metadata JSON (dict), tolerating a str/None."""
+    meta = (provider_health or {}).get('metadata')
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except Exception:
+            meta = {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _build_recovery_display(meta: dict[str, Any]) -> dict[str, Any]:
+    """Screen-4 recovery panel derived from the latest provider-health metadata.
+
+    Surfaces the Critical -> Recovering -> Healthy transition and the facts the
+    operator needs: last failure, when recovery started, consecutive successful
+    polls (and how many are required), the current provider, and the last
+    successful block / latency. All fields are read from persisted evidence — never
+    fabricated.
+    """
+    from services.api.app import monitoring_health_engine as _he
+    return {
+        'recovery_state': meta.get('recovery_state') or _he.RECOVERY_UNKNOWN,
+        'consecutive_successful_polls': int(meta.get('consecutive_success') or 0),
+        'required_consecutive_success': int(
+            meta.get('required_consecutive_success') or _he.DEFAULT_RECOVERY_CONSECUTIVE_SUCCESS
+        ),
+        'last_failure_at': meta.get('last_failure_at'),
+        'recovery_started_at': meta.get('recovery_started_at'),
+        'current_provider': meta.get('provider_host'),
+        'last_successful_block': meta.get('last_successful_block'),
+        'last_successful_latency_ms': meta.get('last_successful_latency_ms'),
     }
 
 
@@ -11951,6 +12042,9 @@ def _build_monitoring_sources_enrichment(
             latest_block=latest_block,
             coverage=coverage,
         )
+        # Recovery timeline (Critical -> Recovering -> Healthy) from the latest
+        # provider-health metadata's persisted success streak.
+        recovery = _build_recovery_display(_provider_health_metadata(provider_health))
 
         freshness = str((system or {}).get('freshness_status') or '').strip().lower()
         is_oracle = 'oracle' in ' '.join(
@@ -12049,6 +12143,11 @@ def _build_monitoring_sources_enrichment(
             'p95_insufficient': successful_sample_count < _P95_MIN_SAMPLES,
             'p95_status': p95_status,
             'score_breakdown': score_breakdown,
+            # Recovery timeline: recovery_state (critical/recovering/healthy),
+            # consecutive successful polls vs required, last failure / recovery start,
+            # current provider, last successful block + latency.
+            'recovery_state': recovery['recovery_state'],
+            'recovery': recovery,
             'error_rate': None,     # not measured by the current probe path; never fabricated.
             'timeout_rate': None,
             'last_poll_at': last_poll_at,

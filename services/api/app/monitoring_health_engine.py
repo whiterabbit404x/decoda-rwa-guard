@@ -446,6 +446,58 @@ def assess_source_health(
 
 
 # ---------------------------------------------------------------------------
+# Recovery state machine: Critical -> Recovering -> Healthy.
+#
+# After a provider outage a single lucky successful poll must NOT flip a source
+# straight back to Healthy — policy requires a configured number of CONSECUTIVE
+# successful scheduled polls first. The first success(es) after a failure read as
+# Recovering; only once the consecutive-success count reaches the threshold does the
+# source read Healthy again. This is deterministic and derived from the persisted
+# success streak, never guessed.
+# ---------------------------------------------------------------------------
+RECOVERY_HEALTHY = 'healthy'
+RECOVERY_RECOVERING = 'recovering'
+RECOVERY_CRITICAL = 'critical'
+RECOVERY_UNKNOWN = 'unknown'
+
+DEFAULT_RECOVERY_CONSECUTIVE_SUCCESS = 2
+
+
+def classify_recovery_state(
+    *,
+    latest_success: bool | None,
+    consecutive_success: int | None,
+    required_consecutive_success: int = DEFAULT_RECOVERY_CONSECUTIVE_SUCCESS,
+    prev_recovery_state: str | None = None,
+    prev_consecutive_failure: int | None = 0,
+) -> str:
+    """Deterministic Critical -> Recovering -> Healthy transition.
+
+    * ``latest_success is None``  -> ``unknown`` (no observation).
+    * ``latest_success is False`` -> ``critical`` (still down).
+    * a successful poll with ``consecutive_success >= required`` -> ``healthy``.
+    * a successful poll below the threshold, when climbing out of a prior failure or
+      an in-progress recovery -> ``recovering`` (carried forward until the required
+      number of CONSECUTIVE successes is reached).
+    * a successful poll below the threshold with no prior failure (a brand-new or
+      steadily-healthy source) -> ``healthy``.
+
+    ``required_consecutive_success`` is clamped to >= 1, so at least one success is
+    always needed and a policy of 1 collapses Recovering into an immediate Healthy.
+    """
+    if latest_success is None:
+        return RECOVERY_UNKNOWN
+    if not latest_success:
+        return RECOVERY_CRITICAL
+    req = max(1, int(required_consecutive_success or 1))
+    if int(consecutive_success or 0) >= req:
+        return RECOVERY_HEALTHY
+    if int(prev_consecutive_failure or 0) > 0 or prev_recovery_state in (RECOVERY_CRITICAL, RECOVERY_RECOVERING):
+        return RECOVERY_RECOVERING
+    return RECOVERY_HEALTHY
+
+
+# ---------------------------------------------------------------------------
 # Oracle heartbeat classification.
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
