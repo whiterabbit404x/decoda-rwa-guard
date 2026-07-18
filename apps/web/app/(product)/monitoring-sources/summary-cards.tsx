@@ -92,14 +92,20 @@ export function SummaryCards({ summary, loading }: { summary: SourceSummary | nu
         <span>{ar.changed_24h == null ? 'Route changes 24h: —' : `${ar.changed_24h} route change(s) in 24h`}</span>
       </Card>
 
-      {/* 3 — Telemetry Coverage */}
+      {/* 3 — Telemetry Coverage. Primary metric is LIVE coverage; configured and
+             historical/replay evidence are shown separately and never as live. */}
       <Card
-        title="Telemetry Coverage"
+        title="Live Telemetry Coverage"
         variant={tc.coverage_pct == null ? 'neutral' : tc.coverage_pct >= 90 ? 'success' : tc.coverage_pct >= 60 ? 'warning' : 'danger'}
         primary={tc.coverage_pct == null ? <span className="muted">—</span> : fmtPercent(tc.coverage_pct)}
       >
-        <span>{tc.fresh}/{tc.eligible} target(s) receiving fresh telemetry</span>
-        <span>{tc.stale > 0 ? <span style={{ color: 'var(--warning-fg)' }}>{tc.stale} with stale telemetry</span> : 'No stale telemetry'}</span>
+        <span>{tc.fresh}/{tc.configured ?? tc.eligible} target(s) with fresh live evidence</span>
+        <span>{tc.configured ?? tc.eligible} configured{tc.stale > 0 ? <span style={{ color: 'var(--warning-fg)' }}> · {tc.stale} stale</span> : null}</span>
+        <span>
+          {tc.historical_available
+            ? <span style={{ color: 'var(--text-muted)' }}>Historical/replay evidence available{(tc.replay_only ?? 0) > 0 ? ` (${tc.replay_only} replay-only)` : ''}</span>
+            : 'No historical evidence'}
+        </span>
       </Card>
 
       {/* 4 — Oracle Heartbeats */}

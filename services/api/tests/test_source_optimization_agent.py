@@ -96,7 +96,20 @@ def _system(**over):
 # Enrichment: summary cards + engine health scoring.
 # ---------------------------------------------------------------------------
 def test_enrichment_builds_five_summary_cards_from_measured_facts():
-    conn = _FakeConn()
+    # Genuine live evidence: a SUCCESSFUL latest poll + a fresh live coverage record.
+    # Only then does a fresh, enabled system count as fresh LIVE coverage.
+    conn = _FakeConn(
+        provider_health=[{
+            'target_id': 'target-1', 'status': 'healthy', 'latency_ms': 90,
+            'checked_at': NOW, 'evidence_source': 'live',
+            'provider_type': 'base-mainnet.infura.io', 'error_message': None,
+        }],
+        coverage=[{
+            'target_id': 'target-1', 'coverage_status': 'reporting',
+            'last_poll_at': NOW, 'last_heartbeat_at': NOW, 'last_telemetry_at': NOW,
+            'last_detection_at': None, 'evidence_source': 'live', 'computed_at': NOW,
+        }],
+    )
     out = pilot._build_monitoring_sources_enrichment(
         conn, workspace_id='ws-1', assets=[{'id': 'asset-1'}], targets=[_target()], systems=[_system()], now=NOW,
     )
@@ -107,9 +120,13 @@ def test_enrichment_builds_five_summary_cards_from_measured_facts():
     # Card 2 — routing counts come from target metadata (primary + fallback host present).
     assert summary['active_routes']['primary'] == 1
     assert summary['active_routes']['fallback'] == 1
-    # Card 3 — a fresh, enabled system counts as covered telemetry.
-    assert summary['telemetry_coverage']['fresh'] == 1
-    assert summary['telemetry_coverage']['coverage_pct'] == 100.0
+    # Card 3 — a fresh, enabled system with genuine live evidence is live coverage.
+    tc = summary['telemetry_coverage']
+    assert tc['fresh'] == 1
+    assert tc['coverage_pct'] == 100.0
+    assert tc['configured'] == 1
+    assert tc['live_fresh'] == 1
+    assert tc['live_coverage_pct'] == 100.0
 
 
 def test_enrichment_health_score_present_only_with_live_evidence():

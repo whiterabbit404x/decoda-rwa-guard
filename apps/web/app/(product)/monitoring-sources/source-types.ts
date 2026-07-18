@@ -27,6 +27,12 @@ export type SourceRow = {
   p95_latency_ms?: number | null;
   p95_sample_count?: number | null;
   p95_insufficient?: boolean;
+  // 'no_successful_samples' | 'insufficient_samples' | 'available'. A calculated P95
+  // whose freshest successful sample is old (or whose provider is failing now) is
+  // flagged historical so the UI never shows it as current provider health.
+  p95_status?: string | null;
+  p95_is_historical?: boolean;
+  p95_last_sample_at?: string | null;
   error_rate?: number | null;
   timeout_rate?: number | null;
   last_poll_at?: string | null;
@@ -127,7 +133,20 @@ export type AgentDecision = {
 export type SourceSummary = {
   source_health: { healthy: number; total: number; health_pct: number | null; trend_24h: number | null };
   active_routes: { primary: number; fallback: number; changed_24h: number | null };
-  telemetry_coverage: { coverage_pct: number | null; fresh: number; stale: number; eligible: number };
+  // coverage_pct/fresh now carry LIVE semantics. configured = enabled monitored
+  // systems; live_fresh = targets with fresh canonical live evidence; replay_only /
+  // historical_available describe non-live evidence shown separately, never as live.
+  telemetry_coverage: {
+    coverage_pct: number | null;
+    fresh: number;
+    stale: number;
+    eligible: number;
+    configured?: number;
+    live_fresh?: number;
+    live_coverage_pct?: number | null;
+    replay_only?: number;
+    historical_available?: boolean;
+  };
   oracle_heartbeats: { healthy: number; delayed: number; missed: number; total: number };
   agent_activity: AgentActivity;
 };

@@ -11218,10 +11218,51 @@ _SOURCE_STATUS_DEGRADED = 'degraded'
 _SOURCE_STATUS_FAILED = 'failed'
 _SOURCE_STATUS_DISABLED = 'disabled'
 _SOURCE_STATUS_MISSING_CONFIG = 'missing_configuration'
+# The latest scheduled provider observation failed (all RPC providers unavailable /
+# chain-id / latest-block missing). A completed failed poll is NOT "awaiting poll".
+_SOURCE_STATUS_PROVIDER_UNAVAILABLE = 'provider_unavailable'
+# A prior failure now followed by successful poll(s), before the required
+# consecutive-success streak is met (Critical -> Recovering -> Healthy).
+_SOURCE_STATUS_RECOVERING = 'recovering'
+
+# Evidence sources that are historical/simulated and must NEVER count as fresh live
+# telemetry coverage (CLAUDE.md: simulator/fallback data is never customer evidence).
+_REPLAY_EVIDENCE_SOURCES = {'replay', 'replay_or_none', 'simulator', 'historical', 'demo'}
 
 
-def _derive_source_status(target: dict[str, Any], system: dict[str, Any] | None) -> tuple[str, str | None]:
-    """Return (status, reason) derived only from canonical target + monitored-system facts."""
+def _provider_failure_reason(provider_health: dict[str, Any] | None) -> str:
+    """Normalized status reason for a FAILED latest provider observation.
+
+    Derived from the persisted ``error_message`` so the row surfaces the real cause
+    ("RPC providers unavailable") instead of the stale "awaiting poll" loop text.
+    """
+    err = str((provider_health or {}).get('error_message') or '').strip().lower()
+    if not err:
+        return 'rpc_providers_unavailable'
+    if 'rpc_providers_unavailable' in err or 'all_rpc_providers' in err or 'all_providers' in err:
+        return 'rpc_providers_unavailable'
+    return err
+
+
+def _derive_source_status(
+    target: dict[str, Any],
+    system: dict[str, Any] | None,
+    *,
+    provider_health: dict[str, Any] | None = None,
+    recovery_state: str | None = None,
+) -> tuple[str, str | None]:
+    """Return (status, reason) from canonical target + monitored-system facts, with
+    the LATEST scheduled provider observation taking precedence over a quiet loop.
+
+    Status precedence (truthful, fail-closed):
+      1. Configuration problems (missing asset / disabled / missing system).
+      2. Runtime hard failure (monitored_system.runtime_status = failed).
+      3. Latest scheduled provider observation FAILED -> provider_unavailable. A
+         completed failed poll must NEVER read "awaiting poll".
+      4. A failure now followed by successful poll(s) -> recovering.
+      5. No provider observation has ever occurred -> provisioning / awaiting first poll.
+      6. Runtime healthy (+ fresh telemetry) -> healthy; runtime degraded -> degraded.
+    """
     enabled = bool(target.get('enabled'))
     monitoring_enabled = bool(target.get('monitoring_enabled'))
     asset_missing = bool(target.get('asset_missing')) or not target.get('asset_id')
@@ -11241,21 +11282,50 @@ def _derive_source_status(target: dict[str, Any], system: dict[str, Any] | None)
     coverage_reason = str(system.get('coverage_reason') or '').strip().lower()
     freshness = str(system.get('freshness_status') or '').strip().lower()
 
+    # Authoritative liveness signal: the latest scheduled provider observation.
+    provider_status = str((provider_health or {}).get('status') or '').strip().lower()
+    has_provider_observation = bool(provider_health)
+    provider_failed = provider_status in {'unavailable', 'error'}
+    recovery_state = str(recovery_state or '').strip().lower()
+
+    # 2. Runtime hard failure.
     if runtime_status == 'failed':
         return _SOURCE_STATUS_FAILED, system.get('last_error_text') or 'runtime_failed'
+    # 3. Latest scheduled provider observation failed -> provider unavailable. This
+    #    overrides an "idle" runtime loop so a completed failed poll never reads
+    #    "awaiting poll" (the poll already ran and failed).
+    if provider_failed:
+        return _SOURCE_STATUS_PROVIDER_UNAVAILABLE, _provider_failure_reason(provider_health)
+    # 4. Recovering: prior failure now followed by successful poll(s), before the
+    #    required consecutive-success streak is met.
+    if recovery_state == 'recovering':
+        return _SOURCE_STATUS_RECOVERING, coverage_reason or 'recovering_after_failure'
+
     if runtime_status == 'degraded':
         return _SOURCE_STATUS_DEGRADED, coverage_reason or 'runtime_degraded'
     if runtime_status == 'disabled':
         return _SOURCE_STATUS_DISABLED, 'monitored_system_disabled'
+    # 5. Provisioning: no first poll yet. Only "awaiting first poll" when NO scheduled
+    #    provider observation has ever been persisted.
     if runtime_status == 'provisioning' or (runtime_status in {'', 'idle'} and not has_heartbeat):
-        return _SOURCE_STATUS_PROVISIONING, coverage_reason or 'provisioning_pending_first_heartbeat'
+        reason = (
+            (coverage_reason or 'provisioning_pending_first_heartbeat')
+            if has_provider_observation
+            else 'awaiting_first_poll'
+        )
+        return _SOURCE_STATUS_PROVISIONING, reason
+    # 6. Runtime healthy.
     if runtime_status == 'healthy':
         if freshness == 'stale':
             return _SOURCE_STATUS_WARNING, 'telemetry_stale'
         return _SOURCE_STATUS_HEALTHY, None
     if runtime_status == 'idle' and has_heartbeat:
-        # Worker is alive but the monitoring loop has gone quiet.
-        return _SOURCE_STATUS_WARNING, coverage_reason or 'awaiting_poll'
+        # Worker alive but the monitoring loop is between polls. Only "awaiting poll"
+        # when NO scheduled provider observation has ever completed; once a poll has
+        # run we surface "awaiting next poll" rather than implying none has occurred.
+        if not has_provider_observation:
+            return _SOURCE_STATUS_WARNING, coverage_reason or 'awaiting_poll'
+        return _SOURCE_STATUS_WARNING, coverage_reason or 'awaiting_next_poll'
     return _SOURCE_STATUS_PROVISIONING, coverage_reason or 'provisioning'
 
 
@@ -11715,23 +11785,24 @@ _P95_SAMPLE_WINDOW = 200
 
 def _load_provider_latency_samples_by_target(
     connection: Any, *, workspace_id: str, target_ids: list[str]
-) -> dict[str, list[float]]:
-    """Recent measured provider latencies (ms) per target id, newest first.
+) -> dict[str, list[dict[str, Any]]]:
+    """Recent SUCCESSFUL provider latency samples per target id, newest first.
 
-    Reads only rows that carry a real ``latency_ms`` AND represent a SUCCESSFUL
-    provider request (``status = 'healthy'``). A failed poll records its failure
-    *elapsed* time (e.g. ~21 ms before the provider errored) in ``latency_ms`` too —
-    that is not a successful RPC response latency and must NEVER contribute to the
-    P95, or a hard failure would masquerade as a fast, healthy provider. Used to
-    compute a truthful successful-only P95 with an explicit sample count — never to
-    invent a value from too few samples.
+    Each sample is ``{'latency_ms': float, 'checked_at': <ts>}``. Reads only rows that
+    carry a real ``latency_ms`` AND represent a SUCCESSFUL provider request
+    (``status = 'healthy'``). A failed poll records its failure *elapsed* time (e.g.
+    ~21 ms before the provider errored) in ``latency_ms`` too — that is not a
+    successful RPC response latency and must NEVER contribute to the P95, or a hard
+    failure would masquerade as a fast, healthy provider. ``checked_at`` lets the
+    enrichment tell a CURRENT P95 from a HISTORICAL one (samples older than the
+    freshness window, or a provider that is failing now).
     """
     if not target_ids:
         return {}
     try:
         rows = connection.execute(
             '''
-            SELECT target_id, latency_ms
+            SELECT target_id, latency_ms, checked_at
             FROM provider_health_records
             WHERE workspace_id = %s::uuid
               AND target_id = ANY(%s::uuid[])
@@ -11745,7 +11816,7 @@ def _load_provider_latency_samples_by_target(
     except Exception:
         logger.warning('monitoring_sources_latency_samples_unavailable workspace_id=%s', workspace_id, exc_info=True)
         return {}
-    samples: dict[str, list[float]] = {}
+    samples: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         tid = str(row.get('target_id') or '')
         if not tid:
@@ -11756,7 +11827,7 @@ def _load_provider_latency_samples_by_target(
             continue
         bucket = samples.setdefault(tid, [])
         if len(bucket) < _P95_SAMPLE_WINDOW:
-            bucket.append(value)
+            bucket.append({'latency_ms': value, 'checked_at': row.get('checked_at')})
     return samples
 
 
@@ -11933,9 +12004,15 @@ def _build_monitoring_sources_enrichment(
     # Summary-card counters (measured only; None-safe).
     primary_route_count = 0
     fallback_route_count = 0
+    # telemetry_fresh_count is FRESH LIVE coverage only (evidence_source=live +
+    # coverage in-window + latest poll not failed). telemetry_eligible_count is
+    # CONFIGURED coverage (enabled monitored systems). replay_only / historical are
+    # tracked separately so replay evidence never inflates live coverage.
     telemetry_fresh_count = 0
     telemetry_stale_count = 0
     telemetry_eligible_count = 0
+    replay_only_count = 0
+    historical_evidence_present = False
     oracle_healthy = 0
     oracle_delayed = 0
     oracle_missed = 0
@@ -11964,7 +12041,6 @@ def _build_monitoring_sources_enrichment(
             or []
         )
 
-        status, status_reason = _derive_source_status(target, system)
         primary_provider, fallback_provider, routing_explanation = _target_provider_routing(target)
         # The source headline reflects the PRIMARY route's health. Selecting the
         # primary-provider record (not merely the newest) means a lagging QuickNode
@@ -12014,14 +12090,29 @@ def _build_monitoring_sources_enrichment(
         successful_latency_ms = latency_ms if provider_success else None
         failure_elapsed_ms = latency_ms if (provider_success is False and latency_ms is not None) else None
         # P95 comes ONLY from successful samples, gated by the sample floor.
-        p95_successful = _p95_from_samples(latency_samples)
-        successful_sample_count = len(latency_samples)
+        latency_values = [float(s['latency_ms']) for s in latency_samples if s.get('latency_ms') is not None]
+        # Samples are newest-first; the freshest successful sample dates the P95.
+        last_successful_sample_at = latency_samples[0].get('checked_at') if latency_samples else None
+        p95_successful = _p95_from_samples(latency_values)
+        successful_sample_count = len(latency_values)
         if successful_sample_count == 0:
             p95_status = 'no_successful_samples'
         elif successful_sample_count < _P95_MIN_SAMPLES:
             p95_status = 'insufficient_samples'
         else:
             p95_status = 'available'
+        # A calculated P95 is HISTORICAL (not current provider health) when the
+        # provider is not succeeding right now, or its freshest successful sample is
+        # outside the freshness window — e.g. 23,912 ms from yesterday's good polls
+        # while today's polls all fail.
+        p95_is_historical = False
+        if p95_status == 'available':
+            _last_sample_dt = _coerce_datetime(last_successful_sample_at)
+            _samples_stale = (
+                _last_sample_dt is None
+                or (now - _he._as_aware(_last_sample_dt)).total_seconds() > thresholds.telemetry_freshness_seconds
+            )
+            p95_is_historical = (provider_success is not True) or _samples_stale
         last_telemetry_dt = _coerce_datetime(last_telemetry_at)
         engine_metrics = _he.SourceMetrics(
             # Feed the SUCCESSFUL P95 (None until enough successful samples) — never a
@@ -12051,7 +12142,16 @@ def _build_monitoring_sources_enrichment(
             str(target.get(k) or '') for k in ('target_type', 'monitoring_mode', 'source_type')
         ).lower()
 
-        if status in {_SOURCE_STATUS_DEGRADED, _SOURCE_STATUS_FAILED}:
+        # Derive the row status AFTER the latest provider observation + recovery
+        # timeline are known, so a completed failed poll reads "Provider Unavailable"
+        # (not "awaiting poll") and a post-failure success reads "Recovering".
+        status, status_reason = _derive_source_status(
+            target, system,
+            provider_health=provider_health if has_provider_record else None,
+            recovery_state=recovery.get('recovery_state'),
+        )
+
+        if status in {_SOURCE_STATUS_DEGRADED, _SOURCE_STATUS_FAILED, _SOURCE_STATUS_PROVIDER_UNAVAILABLE}:
             degraded_or_failed += 1
         elif status == _SOURCE_STATUS_HEALTHY:
             healthy_sources += 1
@@ -12069,24 +12169,43 @@ def _build_monitoring_sources_enrichment(
         if routing_explanation and latest_routing_decision is None:
             latest_routing_decision = routing_explanation
 
-        # Telemetry-coverage card: only count sources that are expected to report.
+        # Telemetry-coverage card. CONFIGURED coverage counts every enabled monitored
+        # system. FRESH LIVE coverage is far stricter: canonical live evidence, a
+        # coverage timestamp inside the freshness window, and a latest scheduled poll
+        # that did NOT fail. Replay/historical/simulator evidence, a stale coverage
+        # timestamp, or a failed poll can never count as fresh live coverage — so a
+        # provider outage reads 0/1 live even while a "fresh" freshness_status or an
+        # old replay timestamp lingers on the system row.
         if system is not None and monitored_system_row_enabled(system):
-            telemetry_eligible_count += 1
-            if freshness == 'fresh' and last_telemetry_at:
+            telemetry_eligible_count += 1  # configured coverage numerator
+            coverage_fresh = (
+                last_telemetry_dt is not None
+                and (now - _he._as_aware(last_telemetry_dt)).total_seconds() <= thresholds.telemetry_freshness_seconds
+            )
+            is_live_evidence = evidence_source == 'live'
+            # provider_success is None when no provider record exists (non-RPC
+            # telemetry); is False on a failed poll (disqualifies live coverage).
+            live_fresh = is_live_evidence and coverage_fresh and provider_success is not False
+            if live_fresh:
                 telemetry_fresh_count += 1
                 fresh_telemetry_present = True
-            elif freshness == 'stale' or (last_telemetry_dt is not None
-                                          and (now - _he._as_aware(last_telemetry_dt)).total_seconds()
-                                          > thresholds.telemetry_freshness_seconds):
-                telemetry_stale_count += 1
+            else:
+                if last_telemetry_dt is not None and not coverage_fresh:
+                    telemetry_stale_count += 1
+                if evidence_source in _REPLAY_EVIDENCE_SOURCES:
+                    replay_only_count += 1
+                    historical_evidence_present = True
+                elif last_telemetry_dt is not None:
+                    # Some telemetry exists historically, just not fresh live coverage.
+                    historical_evidence_present = True
 
         # Oracle-heartbeat card: classify oracle sources by their measured status.
         if is_oracle:
             if status == _SOURCE_STATUS_HEALTHY:
                 oracle_healthy += 1
-            elif status in {_SOURCE_STATUS_WARNING, _SOURCE_STATUS_DEGRADED}:
+            elif status in {_SOURCE_STATUS_WARNING, _SOURCE_STATUS_DEGRADED, _SOURCE_STATUS_RECOVERING}:
                 oracle_delayed += 1
-            elif status in {_SOURCE_STATUS_FAILED, _SOURCE_STATUS_MISSING_CONFIG}:
+            elif status in {_SOURCE_STATUS_FAILED, _SOURCE_STATUS_PROVIDER_UNAVAILABLE, _SOURCE_STATUS_MISSING_CONFIG}:
                 oracle_missed += 1
 
         # Aggregate provider health for the summary panel (measured records only).
@@ -12142,6 +12261,11 @@ def _build_monitoring_sources_enrichment(
             'p95_sample_count': successful_sample_count,
             'p95_insufficient': successful_sample_count < _P95_MIN_SAMPLES,
             'p95_status': p95_status,
+            # A 20+-sample P95 whose freshest successful sample is old, or whose
+            # provider is failing now, is HISTORICAL — the UI labels it "… historical"
+            # instead of presenting it as current provider health.
+            'p95_is_historical': p95_is_historical,
+            'p95_last_sample_at': _isoformat_or_none(last_successful_sample_at),
             'score_breakdown': score_breakdown,
             # Recovery timeline: recovery_state (critical/recovering/healthy),
             # consecutive successful polls vs required, last failure / recovery start,
@@ -12234,7 +12358,11 @@ def _build_monitoring_sources_enrichment(
     route_changes_24h = _count_route_changes_24h(connection, workspace_id=workspace_id)
     decisions = _load_recent_agent_decisions(connection, workspace_id=workspace_id, limit=15)
 
-    telemetry_coverage_pct = (
+    # LIVE coverage percentage — fresh live targets over configured targets. During a
+    # provider outage this is 0.0% even though every target is still configured (1/1)
+    # and historical/replay evidence exists. Live coverage is never derived from
+    # configured or replay-only evidence.
+    live_coverage_pct = (
         round(telemetry_fresh_count / telemetry_eligible_count * 100, 1)
         if telemetry_eligible_count > 0 else None
     )
@@ -12253,12 +12381,22 @@ def _build_monitoring_sources_enrichment(
             'fallback': fallback_route_count,
             'changed_24h': route_changes_24h,
         },
-        # Card 3 — Telemetry Coverage
+        # Card 3 — Telemetry Coverage. coverage_pct/fresh/eligible are kept for
+        # backward-compat but now carry LIVE semantics (fresh = fresh live targets,
+        # coverage_pct = live coverage). Configured vs live vs replay are also exposed
+        # explicitly so the UI can show "1/1 configured", "0/1 live", "historical
+        # available" without ever presenting replay evidence as live coverage.
         'telemetry_coverage': {
-            'coverage_pct': telemetry_coverage_pct,
+            'coverage_pct': live_coverage_pct,
             'fresh': telemetry_fresh_count,
             'stale': telemetry_stale_count,
             'eligible': telemetry_eligible_count,
+            # Explicit, unambiguous coverage fields:
+            'configured': telemetry_eligible_count,
+            'live_fresh': telemetry_fresh_count,
+            'live_coverage_pct': live_coverage_pct,
+            'replay_only': replay_only_count,
+            'historical_available': historical_evidence_present,
         },
         # Card 4 — Oracle Heartbeats
         'oracle_heartbeats': {
