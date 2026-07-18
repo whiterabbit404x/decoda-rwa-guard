@@ -22,6 +22,7 @@ import hashlib
 import hmac
 import json
 import logging
+import threading
 import time
 import uuid
 from collections.abc import Iterator
@@ -187,6 +188,101 @@ _LAST_SAMPLED_QUICKNODE_LOG_AT: dict[str, float] = {}
 _LAST_QUICKNODE_DEGRADED_STATE: dict[str, dict[str, Any]] = {}
 # sampler key -> last logged signature string (log again immediately when it changes)
 _LAST_QUICKNODE_LOG_SIGNATURE: dict[str, str] = {}
+
+# ---------------------------------------------------------------------------
+# Bounded process-local chain-head cache.
+#
+# The live webhook lane needs the current chain head ONLY to compute lag
+# (head - last_block) for its live/degraded classification. Calling
+# eth_blockNumber for EVERY incoming webhook batch is what produced the RPC
+# pressure storm (≈one webhook per block while the stream was far behind), so we
+# instead reuse a head observed by a *successful* provider poll and refresh it at
+# most once per bounded interval. When the cache is stale AND no provider can
+# refresh it, the head is reported unknown (lag_status=unknown) rather than
+# fabricated — the live lane is NEVER painted healthy on a None head.
+# ---------------------------------------------------------------------------
+DEFAULT_QUICKNODE_CHAIN_HEAD_CACHE_SECONDS = 45
+
+_CHAIN_HEAD_CACHE_LOCK = threading.Lock()
+# {'block': int | None, 'at_monotonic': float, 'source': str | None}
+_CHAIN_HEAD_CACHE: dict[str, Any] = {'block': None, 'at_monotonic': 0.0, 'source': None}
+
+
+def _chain_head_cache_ttl_seconds() -> float:
+    """Seconds a cached chain head is reused before a bounded refresh (default 45s).
+
+    Configurable via QUICKNODE_CHAIN_HEAD_CACHE_SECONDS; 0 disables reuse (refresh
+    every call — only for deep debugging, reintroduces per-batch RPC pressure).
+    """
+    raw = (getenv('QUICKNODE_CHAIN_HEAD_CACHE_SECONDS') or '').strip()
+    if not raw:
+        return float(DEFAULT_QUICKNODE_CHAIN_HEAD_CACHE_SECONDS)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return float(DEFAULT_QUICKNODE_CHAIN_HEAD_CACHE_SECONDS)
+    return max(0.0, value)
+
+
+def cache_base_chain_head(block: int | None, *, source: str = 'poll') -> None:
+    """Record a chain head observed by a SUCCESSFUL provider call, for stream reuse."""
+    if block is None:
+        return
+    with _CHAIN_HEAD_CACHE_LOCK:
+        _CHAIN_HEAD_CACHE['block'] = int(block)
+        _CHAIN_HEAD_CACHE['at_monotonic'] = time.monotonic()
+        _CHAIN_HEAD_CACHE['source'] = source
+
+
+def reset_chain_head_cache() -> None:
+    """Clear the process-local chain-head cache (tests/ops)."""
+    with _CHAIN_HEAD_CACHE_LOCK:
+        _CHAIN_HEAD_CACHE.update(block=None, at_monotonic=0.0, source=None)
+
+
+def _fresh_cached_chain_head(now_mono: float | None = None) -> int | None:
+    """Cached head if still inside the TTL, else None (stale/empty)."""
+    now_mono = now_mono if now_mono is not None else time.monotonic()
+    ttl = _chain_head_cache_ttl_seconds()
+    with _CHAIN_HEAD_CACHE_LOCK:
+        block = _CHAIN_HEAD_CACHE['block']
+        at = float(_CHAIN_HEAD_CACHE['at_monotonic'] or 0.0)
+    if block is None:
+        return None
+    if ttl > 0 and (now_mono - at) > ttl:
+        return None
+    return int(block)
+
+
+def get_cached_base_chain_head(rpc_client: Any, *, allow_refresh: bool = True) -> int | None:
+    """Chain head for lag calc, reusing the bounded cache instead of per-batch RPC.
+
+    Returns an int head, or None when it is genuinely unknown (no fresh cache and no
+    provider could refresh it) — the caller then reports ``lag_status=unknown`` and
+    NEVER paints the lane healthy. Guarantees at most one chain-head RPC call per
+    cache TTL, and makes NO network call at all while every RPC provider is inside an
+    active backoff window (the circuit breaker), so a benched Alchemy is never
+    re-dialed by the webhook path.
+    """
+    fresh = _fresh_cached_chain_head()
+    if fresh is not None:
+        return fresh
+    if not allow_refresh or rpc_client is None:
+        return None
+    try:
+        from services.api.app.evm_activity_provider import rpc_provider_backoff_active
+        if rpc_provider_backoff_active():
+            # Every provider benched: do not dial, report unknown, keep the window.
+            logger.info(
+                'event=quicknode_chain_head_refresh_skipped reason=provider_backoff_active'
+            )
+            return None
+    except Exception:  # pragma: no cover - defensive: never fail the batch on import
+        pass
+    head = get_base_chain_head(rpc_client)
+    if head is not None:
+        cache_base_chain_head(head, source='stream_refresh')
+    return head
 
 
 def reset_quicknode_log_sampler_state() -> None:
@@ -1704,7 +1800,7 @@ def get_base_chain_head(rpc_client: Any) -> int | None:
 
 def _advance_lane_checkpoint(
     connection: Any, *, stream_key: str, block: int, received_at: datetime,
-    latest_block: int | None = None,
+    latest_block: int | None = None, latest_block_unknown: bool = False,
 ) -> None:
     """Monotonically advance ONE lane's checkpoint (never regresses).
 
@@ -1719,9 +1815,35 @@ def _advance_lane_checkpoint(
     live/degraded/stale state WITHOUT an extra RPC call. ``webhook_received_at`` is
     refreshed to ``received_at`` on every advance (including a caught-up tick that
     does not move the cursor), so freshness reflects the last successful tick.
+
+    ``latest_block_unknown`` is set by the live lane when the chain head could not be
+    determined this tick (every RPC provider unavailable). The cursor still advances,
+    but ``latest_stream_block`` is LEFT UNTOUCHED (kept at the last-known head, NULL
+    if never observed) instead of being fabricated from ``block`` — otherwise the
+    read path would compute lag = head - cursor = 0 and paint a false green "live".
     """
-    latest = block if latest_block is None else latest_block
     connection.execute(_QUICKNODE_STREAM_CHECKPOINTS_DDL)
+    if latest_block_unknown:
+        connection.execute(
+            '''
+            INSERT INTO quicknode_stream_checkpoints (
+                stream_key, latest_stream_block, last_processed_block, missed_block_gap,
+                stream_started_at_block, webhook_received_at, updated_at
+            ) VALUES (%s, NULL, %s, 0, %s, %s, NOW())
+            ON CONFLICT (stream_key) DO UPDATE SET
+                last_processed_block = GREATEST(
+                    COALESCE(quicknode_stream_checkpoints.last_processed_block, -1), EXCLUDED.last_processed_block
+                ),
+                stream_started_at_block = COALESCE(
+                    quicknode_stream_checkpoints.stream_started_at_block, EXCLUDED.stream_started_at_block
+                ),
+                webhook_received_at = EXCLUDED.webhook_received_at,
+                updated_at = NOW()
+            ''',
+            (stream_key, block, block, received_at),
+        )
+        return
+    latest = block if latest_block is None else latest_block
     connection.execute(
         '''
         INSERT INTO quicknode_stream_checkpoints (
@@ -1796,6 +1918,9 @@ def run_live_tip_ingest(
         stats['failed'] = True
         logger.warning('quicknode_live_lane stream_lane=live status=chain_head_unavailable')
         return stats
+    # A successful head read feeds the bounded cache the webhook lane reuses, so the
+    # per-batch eth_blockNumber call is not needed between worker ticks.
+    cache_base_chain_head(head, source='live_tip_poll')
     safe_head = compute_live_start_block(head, confirmations)
     stats['chain_head'] = head
     stats['safe_head'] = safe_head
@@ -2161,13 +2286,15 @@ def _process_realtime_lane_batch(
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         # Chain head only for the LIVE lane's lag / degraded classification: the head
-        # proves whether the pushed blocks are actually at the tip. Best-effort — no
-        # RPC configured means lag is unknown, not that the batch is dropped.
+        # proves whether the pushed blocks are actually at the tip. Reused from a
+        # bounded cache (refreshed at most once per TTL) instead of an eth_blockNumber
+        # call per webhook batch — that per-block call was the RPC pressure storm.
+        # Best-effort: no fresh head means lag is UNKNOWN (not healthy, not lag=0).
         chain_head: int | None = None
         if lane == LANE_LIVE:
             rpc_client = _make_base_rpc_client()
             if rpc_client is not None:
-                chain_head = get_base_chain_head(rpc_client)
+                chain_head = get_cached_base_chain_head(rpc_client)
         lag_blocks: int | None = None
         if chain_head is not None and last_block is not None:
             lag_blocks = max(0, int(chain_head) - int(last_block))
@@ -2233,13 +2360,34 @@ def _process_realtime_lane_batch(
             _advance_lane_checkpoint(
                 connection, stream_key=checkpoint_key, block=last_block,
                 latest_block=chain_head if lane == LANE_LIVE else None,
+                # Live lane with an UNKNOWN head: advance the cursor but never store
+                # last_block as the head (that would make the read path compute lag=0
+                # and paint a false green). Keep the last-known head untouched.
+                latest_block_unknown=(lane == LANE_LIVE and chain_head is None),
                 received_at=received_at,
             )
             connection.commit()
 
-    degraded = (
-        lane == LANE_LIVE and lag_blocks is not None and lag_blocks > live_lag_threshold_blocks()
-    )
+    # lag_status is the truthful lane signal. A None head is UNKNOWN (never healthy,
+    # never degraded=false-by-default): the UI must not paint the lane green when the
+    # head could not be determined.
+    if lane != LANE_LIVE:
+        lag_status = 'not_applicable'
+    elif chain_head is None:
+        lag_status = 'unknown'
+    elif lag_blocks is not None and lag_blocks > live_lag_threshold_blocks():
+        lag_status = 'degraded'
+    else:
+        lag_status = 'live'
+    degraded = lag_status == 'degraded'
+    if lane == LANE_LIVE and lag_status == 'unknown':
+        # Evidence-backed unknown: chain head unavailable, so lag cannot be computed
+        # and the lane's health is NOT reported healthy this tick.
+        logger.warning(
+            'event=quicknode_live_lane_lag_unknown stream_key=%s checkpoint_identity=%s '
+            'last_block=%s status=unknown reason=chain_head_unavailable',
+            route_stream_key, checkpoint_key, last_block,
+        )
     _degraded_action = _quicknode_degraded_log_decision(route_stream_key, degraded=degraded)
     # A batch that actually matched/persisted/deduped is real evidence and is ALWAYS
     # logged. A no-activity batch is logged on any degraded state transition, else
@@ -2254,9 +2402,10 @@ def _process_realtime_lane_batch(
         logger.info(
             'event=quicknode_stream_batch deployment_commit_sha=%s stream_lane=%s stream_key=%s '
             'checkpoint_identity=%s first_block=%s last_block=%s checkpoint_block=%s chain_head=%s '
-            'lag_blocks=%s tx_count=%s matched=%s persisted=%s duplicates=%s degraded=%s',
+            'lag_blocks=%s lag_status=%s tx_count=%s matched=%s persisted=%s duplicates=%s degraded=%s',
             _deployment_commit_sha(), lane, route_stream_key, checkpoint_key, first_block, last_block,
-            last_block, chain_head, lag_blocks, len(normalized_txs), match_count, persisted_count,
+            last_block, chain_head if chain_head is not None else 'unknown', lag_blocks, lag_status,
+            len(normalized_txs), match_count, persisted_count,
             duplicate_count, str(degraded).lower(),
         )
     if degraded and _degraded_action in {'transition_degraded', 'periodic'}:
