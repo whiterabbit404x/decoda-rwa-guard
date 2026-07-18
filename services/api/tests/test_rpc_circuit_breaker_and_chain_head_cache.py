@@ -350,3 +350,41 @@ def test_live_webhook_batches_reuse_cached_head(monkeypatch):
             )
 
     assert rpc.calls == 1, f'two webhook batches must share one chain-head call, got {rpc.calls}'
+
+
+# ===========================================================================
+# Part 3 — safe RPC endpoint validation (no secret / URL leakage)
+# ===========================================================================
+
+def test_validate_rpc_endpoint_accepts_valid_base_mainnet_https():
+    r = eap.validate_rpc_endpoint('https://base-mainnet.g.alchemy.com/v2/SECRET-KEY-123')
+    assert r['valid'] is True
+    assert r['scheme_ok'] and r['host_present'] and r['path_present'] and r['token_placed']
+    assert r['looks_like_expected_chain'] is True
+    assert r['host'] == 'base-mainnet.g.alchemy.com'
+    # The token / full URL are never surfaced.
+    assert 'SECRET-KEY-123' not in str(r)
+    assert '/v2/' not in str(r)
+
+
+def test_validate_rpc_endpoint_flags_non_https_and_missing_path():
+    assert eap.validate_rpc_endpoint('http://base-mainnet.g.alchemy.com/v2/k')['reason'] == 'scheme_not_https'
+    assert eap.validate_rpc_endpoint('https://base-mainnet.g.alchemy.com')['reason'] == 'missing_path_or_key'
+
+
+def test_validate_rpc_endpoint_detects_malformed_copy():
+    # A stray space (broken copy/paste) is caught before any dial, with no leak.
+    r = eap.validate_rpc_endpoint('https://holy-proportionate-dust.base-mainnet.quiknode.pro/ab cd/')
+    assert r['malformed'] is True
+    assert r['valid'] is False
+    assert 'ab cd' not in str(r)
+
+
+def test_validate_worker_rpc_endpoints_reports_all(monkeypatch):
+    monkeypatch.setenv('EVM_RPC_URLS',
+                       'https://base-mainnet.quiknode.pro/tok1,https://base-mainnet.g.alchemy.com/v2/tok2')
+    eap.reset_rpc_provider_state()
+    report = eap.validate_worker_rpc_endpoints()
+    assert report['endpoint_count'] == 2
+    assert report['all_valid'] is True
+    assert 'tok1' not in str(report) and 'tok2' not in str(report)

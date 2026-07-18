@@ -448,6 +448,87 @@ def rpc_provider_log_fields() -> dict[str, Any]:
     }
 
 
+def validate_rpc_endpoint(url: str | None, *, expected_chain: str = 'base-mainnet') -> dict[str, Any]:
+    """Safely validate a single worker RPC endpoint WITHOUT printing the URL or token.
+
+    Returns a host-only diagnostic dict (``scheme_ok``, ``host_present``,
+    ``path_present``, ``token_placed`` — whether a key/path segment is present —,
+    ``looks_like_expected_chain``, ``malformed`` and a stable ``reason`` code) so an
+    operator can confirm a Railway RPC variable holds a valid HTTPS Base Mainnet RPC
+    URL, and catch a malformed / mis-copied endpoint, from logs alone. Only the
+    redacted hostname is ever surfaced — never the full URL, path, or API token.
+    """
+    raw = str(url or '').strip()
+    result: dict[str, Any] = {
+        'host': None,
+        'scheme_ok': False,
+        'host_present': False,
+        'path_present': False,
+        'token_placed': False,
+        'looks_like_expected_chain': False,
+        'malformed': False,
+        'valid': False,
+        'reason': 'empty',
+    }
+    if not raw:
+        return result
+    # Detect obviously malformed URLs (whitespace, or broken percent-encoding from a
+    # bad copy/paste) before parsing so a mis-encoded token is caught, not dialed.
+    if any(ch.isspace() for ch in raw):
+        result.update(malformed=True, reason='contains_whitespace')
+        return result
+    try:
+        parse.unquote(raw, errors='strict')
+    except Exception:
+        result.update(malformed=True, reason='invalid_url_encoding')
+        return result
+    try:
+        parsed = parse.urlparse(raw)
+    except Exception:
+        result.update(malformed=True, reason='unparseable_url')
+        return result
+    host = (parsed.hostname or '').lower()
+    result['host'] = host or None
+    result['scheme_ok'] = parsed.scheme == 'https'
+    result['host_present'] = bool(host)
+    path = (parsed.path or '').strip('/')
+    result['path_present'] = bool(path)
+    # A credentialed RPC endpoint carries the key in the path (or query); presence
+    # only — the value is never inspected or logged.
+    result['token_placed'] = bool(path) or bool(parsed.query)
+    expected = str(expected_chain or '').strip().lower()
+    chain_token = expected.split('-')[0] if expected else ''
+    result['looks_like_expected_chain'] = bool(chain_token and chain_token in host)
+    if not result['scheme_ok']:
+        result['reason'] = 'scheme_not_https'
+    elif not result['host_present']:
+        result['reason'] = 'missing_host'
+    elif not result['path_present']:
+        result['reason'] = 'missing_path_or_key'
+    else:
+        result['reason'] = 'ok'
+        result['valid'] = True
+    return result
+
+
+def validate_worker_rpc_endpoints(*, expected_chain: str = 'base-mainnet') -> dict[str, Any]:
+    """Validate every configured Base/global RPC endpoint, host-only (no secrets).
+
+    A safe operational check the worker/ops can run to confirm both providers
+    (e.g. QuickNode + Alchemy) are configured with valid HTTPS Base Mainnet RPC
+    URLs. Surfaces one per-endpoint report plus the aggregate, and the current
+    backoff hosts, so a TLS-broken or mis-copied endpoint is diagnosable without
+    ever logging a URL or token.
+    """
+    reports = [validate_rpc_endpoint(url, expected_chain=expected_chain) for url in _resolve_evm_rpc_urls()]
+    return {
+        'endpoint_count': len(reports),
+        'all_valid': bool(reports) and all(r['valid'] for r in reports),
+        'endpoints': reports,
+        'backoff_hosts': backoff_hosts(),
+    }
+
+
 def record_rpc_query_too_large(host: str | None, *, reduced_chunk_size: int) -> None:
     """Record that an eth_getLogs request was rejected as too large (HTTP 413).
 
