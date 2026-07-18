@@ -33,6 +33,14 @@ def _reset_rpc_provider_state():
             reset_quicknode_log_sampler_state()
         except Exception:
             pass
+        try:
+            # The bounded chain-head cache is module-level (reused across webhook
+            # batches on purpose), so a head cached by one test must not bleed into a
+            # test that asserts on a different rpc_head. Reset between tests.
+            from services.api.app.quicknode_streams import reset_chain_head_cache
+            reset_chain_head_cache()
+        except Exception:
+            pass
     _reset()
     yield
     _reset()
