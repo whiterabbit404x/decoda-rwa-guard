@@ -282,6 +282,13 @@ def _stepped_score(status: str) -> float:
     return {HEALTH_HEALTHY: 100.0, HEALTH_WARNING: 60.0, HEALTH_CRITICAL: 0.0}.get(status, 0.0)
 
 
+# A hard provider failure (endpoint unavailable, or the latest observation did not
+# succeed) must DOMINATE latency-based scoring: the score is capped into the critical
+# band so a fast *failure* response (e.g. a 21 ms error before the provider replied)
+# can never be presented as a high, healthy-looking score.
+_HARD_FAILURE_SCORE_CAP = 20.0
+
+
 @dataclass(frozen=True)
 class HealthAssessment:
     """The engine's verdict for one source/provider."""
@@ -320,6 +327,11 @@ class SourceMetrics:
     heartbeat_present: bool | None = None
     last_telemetry_at: datetime | None = None
     endpoint_unavailable: bool = False
+    # Whether the LATEST scheduled provider observation actually succeeded. ``False``
+    # is a hard failure (all providers unavailable / chain-id / latest-block missing):
+    # it forces Critical and caps the score, so a fast failure elapsed time can never
+    # read as healthy. ``None`` means "not observed" and is neutral.
+    success: bool | None = None
 
 
 def assess_source_health(
@@ -394,11 +406,25 @@ def assess_source_health(
         if cls in (HEALTH_WARNING, HEALTH_CRITICAL):
             triggered.append(f'{name}.{cls}')
 
-    # Fail-closed guard 1: an unavailable endpoint is unconditionally critical.
-    if metrics.endpoint_unavailable:
+    # Fail-closed guard 1: a hard provider failure (unavailable endpoint, or the
+    # latest observation did not succeed) is unconditionally critical AND caps the
+    # score into the critical band. This gives a hard failure precedence over low
+    # latency: a fast failure response can never produce a high score.
+    hard_failure = metrics.endpoint_unavailable or metrics.success is False
+    if hard_failure:
         status = HEALTH_CRITICAL
-        if 'endpoint.unavailable' not in triggered:
+        if metrics.endpoint_unavailable and 'endpoint.unavailable' not in triggered:
             triggered.append('endpoint.unavailable')
+        if metrics.success is False and 'provider_call_failed' not in triggered:
+            triggered.append('provider_call_failed')
+        # Connectivity is the controlling factor — surface it in the breakdown at 0.
+        components['connectivity'] = 0.0
+        score = 0.0 if score is None else _clamp_score(min(score, _HARD_FAILURE_SCORE_CAP))
+    elif metrics.success is True:
+        # A confirmed successful observation contributes a full connectivity signal to
+        # the breakdown (informational; not folded into the weighted mean so existing
+        # score arithmetic is unchanged).
+        components.setdefault('connectivity', 100.0)
 
     # Fail-closed guard 2: never report healthy without live evidence.
     has_live_evidence = bool(metrics.heartbeat_present) or dims['telemetry_recency'] == HEALTH_HEALTHY
@@ -417,6 +443,58 @@ def assess_source_health(
         measured_dimensions=len(measured),
         has_live_evidence=has_live_evidence,
     )
+
+
+# ---------------------------------------------------------------------------
+# Recovery state machine: Critical -> Recovering -> Healthy.
+#
+# After a provider outage a single lucky successful poll must NOT flip a source
+# straight back to Healthy — policy requires a configured number of CONSECUTIVE
+# successful scheduled polls first. The first success(es) after a failure read as
+# Recovering; only once the consecutive-success count reaches the threshold does the
+# source read Healthy again. This is deterministic and derived from the persisted
+# success streak, never guessed.
+# ---------------------------------------------------------------------------
+RECOVERY_HEALTHY = 'healthy'
+RECOVERY_RECOVERING = 'recovering'
+RECOVERY_CRITICAL = 'critical'
+RECOVERY_UNKNOWN = 'unknown'
+
+DEFAULT_RECOVERY_CONSECUTIVE_SUCCESS = 2
+
+
+def classify_recovery_state(
+    *,
+    latest_success: bool | None,
+    consecutive_success: int | None,
+    required_consecutive_success: int = DEFAULT_RECOVERY_CONSECUTIVE_SUCCESS,
+    prev_recovery_state: str | None = None,
+    prev_consecutive_failure: int | None = 0,
+) -> str:
+    """Deterministic Critical -> Recovering -> Healthy transition.
+
+    * ``latest_success is None``  -> ``unknown`` (no observation).
+    * ``latest_success is False`` -> ``critical`` (still down).
+    * a successful poll with ``consecutive_success >= required`` -> ``healthy``.
+    * a successful poll below the threshold, when climbing out of a prior failure or
+      an in-progress recovery -> ``recovering`` (carried forward until the required
+      number of CONSECUTIVE successes is reached).
+    * a successful poll below the threshold with no prior failure (a brand-new or
+      steadily-healthy source) -> ``healthy``.
+
+    ``required_consecutive_success`` is clamped to >= 1, so at least one success is
+    always needed and a policy of 1 collapses Recovering into an immediate Healthy.
+    """
+    if latest_success is None:
+        return RECOVERY_UNKNOWN
+    if not latest_success:
+        return RECOVERY_CRITICAL
+    req = max(1, int(required_consecutive_success or 1))
+    if int(consecutive_success or 0) >= req:
+        return RECOVERY_HEALTHY
+    if int(prev_consecutive_failure or 0) > 0 or prev_recovery_state in (RECOVERY_CRITICAL, RECOVERY_RECOVERING):
+        return RECOVERY_RECOVERING
+    return RECOVERY_HEALTHY
 
 
 # ---------------------------------------------------------------------------

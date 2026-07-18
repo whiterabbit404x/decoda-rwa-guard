@@ -205,17 +205,46 @@ def _retry_after_for_backoff(exc: _urllib_error.HTTPError) -> float | None:
         return None
 
 
-def _arm_host_backoff(host: str, backoff_seconds: float, error_class: str = 'rate_limited') -> str:
-    """Arm a backoff window for a single provider host. Returns the until-wall ISO string."""
+def _arm_host_backoff(
+    host: str,
+    backoff_seconds: float,
+    error_class: str = 'rate_limited',
+    *,
+    retry_after_seconds: float | None = None,
+) -> tuple[str, bool]:
+    """Arm a backoff window for a single provider host (circuit breaker).
+
+    Returns ``(until_wall, armed)``:
+
+    * ``armed=True``  — this call CREATED a fresh window because the host was not
+      already benched (a newly observed provider failure). ``until_wall`` is the new
+      expiration. The original failure timestamp and any provider-supplied
+      ``retry_after`` are recorded for observability.
+    * ``armed=False`` — the host was ALREADY inside an active backoff window, so the
+      existing expiration is returned UNCHANGED. This is the circuit-breaker
+      invariant: a call skipped (or re-observed) because of an existing backoff must
+      never push ``backoff_until`` forward. Using monotonic time means a wall-clock
+      change can never spuriously "reopen" the window.
+    """
     now_mono = time.monotonic()
-    until_wall = (datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds)).isoformat()
+    now_wall = datetime.now(timezone.utc)
     with _RPC_PROVIDER_LOCK:
+        existing = _RPC_HOST_BACKOFF.get(host)
+        if existing is not None and now_mono < float(existing.get('until_monotonic') or 0.0):
+            # Already benched: keep the existing window, do NOT extend it.
+            return str(existing.get('until_wall') or ''), False
+        until_wall = (now_wall + timedelta(seconds=backoff_seconds)).isoformat()
         _RPC_HOST_BACKOFF[host] = {
             'until_monotonic': now_mono + backoff_seconds,
             'until_wall': until_wall,
             'error_class': error_class,
+            # Original observed-failure timestamp + the retry_after the provider gave
+            # us (when any), retained across the window so a later skipped observation
+            # never rewrites them.
+            'first_failure_at': now_wall.isoformat(),
+            'retry_after_seconds': retry_after_seconds,
         }
-    return until_wall
+    return until_wall, True
 
 
 def _active_backoff_hosts() -> set[str]:
@@ -263,17 +292,42 @@ def record_rpc_rate_limited(retry_after_seconds: float | None = None, *, host: s
         hosts = [host]
     else:
         hosts = _configured_provider_hosts() or [_GLOBAL_BACKOFF_HOST]
-    until_wall = ''
+    armed_hosts: list[str] = []
+    skipped: list[tuple[str, str]] = []   # (host, existing_until_wall)
+    armed_until_wall = ''
     for entry in hosts:
-        until_wall = _arm_host_backoff(entry, backoff, 'rate_limited')
-    logger.warning(
-        'rpc_provider_backoff_set error_class=rate_limited rpc_status=rate_limited '
-        'rpc_host=%s backoff_seconds=%s retry_after_seconds=%s backoff_until=%s rpc_call_skipped=true',
-        ','.join(hosts),
-        int(backoff),
-        'none' if retry_after_seconds is None else int(retry_after_seconds),
-        until_wall,
-    )
+        until_wall, armed = _arm_host_backoff(
+            entry, backoff, 'rate_limited', retry_after_seconds=retry_after_seconds,
+        )
+        if armed:
+            armed_hosts.append(entry)
+            armed_until_wall = until_wall
+        else:
+            skipped.append((entry, until_wall))
+    # A host already inside an active backoff window: the network call should have
+    # been skipped by the circuit breaker, so re-observing it must NOT push
+    # backoff_until forward. Log the skip explicitly with backoff_extended=false and
+    # keep the existing expiration — this is what stops the per-webhook chain-head
+    # storm from moving the Alchemy window forward indefinitely.
+    for entry, existing_until in skipped:
+        logger.info(
+            'event=rpc_call_skipped_existing_backoff rpc_host=%s backoff_until=%s backoff_extended=false',
+            entry,
+            existing_until or 'unknown',
+        )
+    # Only a newly observed provider failure (the host was not already benched) arms a
+    # window and emits rpc_provider_backoff_set. rpc_call_skipped=true is retained for
+    # backward compatibility: subsequent calls to this host are now skipped.
+    if armed_hosts:
+        logger.warning(
+            'event=rpc_provider_backoff_set error_class=rate_limited rpc_status=rate_limited '
+            'rpc_host=%s backoff_seconds=%s retry_after_seconds=%s backoff_until=%s '
+            'backoff_extended=true rpc_call_skipped=true',
+            ','.join(armed_hosts),
+            int(backoff),
+            'none' if retry_after_seconds is None else int(retry_after_seconds),
+            armed_until_wall,
+        )
     return backoff
 
 
@@ -318,17 +372,25 @@ def rpc_provider_backoff_status() -> dict[str, Any]:
     remaining = 0.0
     until_wall = None
     error_class = None
+    first_failure_at = None
+    retry_after_seconds = None
     for st in live.values():
         rem = float(st.get('until_monotonic') or 0.0) - now_mono
         if rem > remaining:
             remaining = rem
             until_wall = st.get('until_wall')
             error_class = st.get('error_class')
+            first_failure_at = st.get('first_failure_at')
+            retry_after_seconds = st.get('retry_after_seconds')
     return {
         'active': rpc_provider_backoff_active(),
         'remaining_seconds': max(0.0, remaining),
         'backoff_until': until_wall,
         'error_class': error_class,
+        # Original failure timestamp + provider Retry-After, for the onboarding
+        # "retry disabled during backoff" affordance (retry_after/backoff expiry).
+        'first_failure_at': first_failure_at,
+        'retry_after_seconds': retry_after_seconds,
         'backoff_hosts': sorted(live.keys()),
     }
 
@@ -383,6 +445,87 @@ def rpc_provider_log_fields() -> dict[str, Any]:
         'failed_rpc_hosts': list(snap.get('failed_rpc_hosts') or []),
         'backoff_hosts': backoff_hosts(),
         'rpc_failover_used': bool(snap.get('rpc_failover_used', False)),
+    }
+
+
+def validate_rpc_endpoint(url: str | None, *, expected_chain: str = 'base-mainnet') -> dict[str, Any]:
+    """Safely validate a single worker RPC endpoint WITHOUT printing the URL or token.
+
+    Returns a host-only diagnostic dict (``scheme_ok``, ``host_present``,
+    ``path_present``, ``token_placed`` — whether a key/path segment is present —,
+    ``looks_like_expected_chain``, ``malformed`` and a stable ``reason`` code) so an
+    operator can confirm a Railway RPC variable holds a valid HTTPS Base Mainnet RPC
+    URL, and catch a malformed / mis-copied endpoint, from logs alone. Only the
+    redacted hostname is ever surfaced — never the full URL, path, or API token.
+    """
+    raw = str(url or '').strip()
+    result: dict[str, Any] = {
+        'host': None,
+        'scheme_ok': False,
+        'host_present': False,
+        'path_present': False,
+        'token_placed': False,
+        'looks_like_expected_chain': False,
+        'malformed': False,
+        'valid': False,
+        'reason': 'empty',
+    }
+    if not raw:
+        return result
+    # Detect obviously malformed URLs (whitespace, or broken percent-encoding from a
+    # bad copy/paste) before parsing so a mis-encoded token is caught, not dialed.
+    if any(ch.isspace() for ch in raw):
+        result.update(malformed=True, reason='contains_whitespace')
+        return result
+    try:
+        parse.unquote(raw, errors='strict')
+    except Exception:
+        result.update(malformed=True, reason='invalid_url_encoding')
+        return result
+    try:
+        parsed = parse.urlparse(raw)
+    except Exception:
+        result.update(malformed=True, reason='unparseable_url')
+        return result
+    host = (parsed.hostname or '').lower()
+    result['host'] = host or None
+    result['scheme_ok'] = parsed.scheme == 'https'
+    result['host_present'] = bool(host)
+    path = (parsed.path or '').strip('/')
+    result['path_present'] = bool(path)
+    # A credentialed RPC endpoint carries the key in the path (or query); presence
+    # only — the value is never inspected or logged.
+    result['token_placed'] = bool(path) or bool(parsed.query)
+    expected = str(expected_chain or '').strip().lower()
+    chain_token = expected.split('-')[0] if expected else ''
+    result['looks_like_expected_chain'] = bool(chain_token and chain_token in host)
+    if not result['scheme_ok']:
+        result['reason'] = 'scheme_not_https'
+    elif not result['host_present']:
+        result['reason'] = 'missing_host'
+    elif not result['path_present']:
+        result['reason'] = 'missing_path_or_key'
+    else:
+        result['reason'] = 'ok'
+        result['valid'] = True
+    return result
+
+
+def validate_worker_rpc_endpoints(*, expected_chain: str = 'base-mainnet') -> dict[str, Any]:
+    """Validate every configured Base/global RPC endpoint, host-only (no secrets).
+
+    A safe operational check the worker/ops can run to confirm both providers
+    (e.g. QuickNode + Alchemy) are configured with valid HTTPS Base Mainnet RPC
+    URLs. Surfaces one per-endpoint report plus the aggregate, and the current
+    backoff hosts, so a TLS-broken or mis-copied endpoint is diagnosable without
+    ever logging a URL or token.
+    """
+    reports = [validate_rpc_endpoint(url, expected_chain=expected_chain) for url in _resolve_evm_rpc_urls()]
+    return {
+        'endpoint_count': len(reports),
+        'all_valid': bool(reports) and all(r['valid'] for r in reports),
+        'endpoints': reports,
+        'backoff_hosts': backoff_hosts(),
     }
 
 
