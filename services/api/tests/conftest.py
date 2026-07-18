@@ -129,6 +129,13 @@ if 'psycopg' not in sys.modules:
         SyntaxError=type('SyntaxError', (_PgError,), {}),
         CheckViolation=type('CheckViolation', (_PgError,), {}),
         InvalidColumnReference=type('InvalidColumnReference', (_PgError,), {}),
+        # Transaction/permission/timeout classes used by runtime-status optional-query
+        # classification. InFailedSqlTransaction must be distinguishable so an aborted
+        # transaction is never mislabeled as an unavailable optional table.
+        InFailedSqlTransaction=type('InFailedSqlTransaction', (_PgError,), {}),
+        InsufficientPrivilege=type('InsufficientPrivilege', (_PgError,), {}),
+        QueryCanceled=type('QueryCanceled', (_PgError,), {}),
+        NotNullViolation=type('NotNullViolation', (_PgError,), {}),
     )
     _pg = _make_stub(
         'psycopg',

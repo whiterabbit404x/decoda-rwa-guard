@@ -2609,6 +2609,61 @@ def test_runtime_status_partial_query_failure_keeps_workspace_identity_and_struc
     assert payload['coverage_receipts_last_at'] is None
 
 
+def test_runtime_status_in_failed_sql_transaction_not_mislabeled_and_recovers(monkeypatch):
+    """§5: an optional query failing with InFailedSqlTransaction must be classified as
+    transaction_aborted (never optional_table_unavailable), and the endpoint must roll the
+    connection back to recover instead of cascading downstream failures."""
+    from psycopg.errors import InFailedSqlTransaction
+    now = datetime.now(timezone.utc)
+
+    class _AbortedTxnConn(_Conn):
+        def __init__(self, evidence_at):
+            super().__init__(evidence_at)
+            self.rolled_back = 0
+
+        def rollback(self):
+            self.rolled_back += 1
+
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitoring_event_receipts e' in q and "e.telemetry_kind = 'coverage'" in q:
+                raise InFailedSqlTransaction('current transaction is aborted, commands ignored until end of transaction block')
+            return super().execute(query, params)
+
+    conn = _AbortedTxnConn(None)
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-prod'}, state=SimpleNamespace())
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(
+        monitoring_runner,
+        'resolve_workspace_context_for_request',
+        lambda _connection, _request: (
+            {'id': 'user-1'},
+            {'workspace_id': 'ws-prod', 'workspace': {'id': 'ws-prod', 'slug': 'prod-ops'}},
+            True,
+        ),
+    )
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
+
+    payload = monitoring_runner.monitoring_runtime_status(request)
+
+    # Workspace identity preserved and the endpoint still returns a structured degraded body.
+    assert payload['workspace_id'] == 'ws-prod'
+    assert 'error' not in payload
+    # The aborted transaction is classified honestly — NOT as an unavailable optional table.
+    for field in ('reporting_systems', 'last_coverage_telemetry_at', 'last_telemetry_at'):
+        assert payload['field_reason_codes'][field] == ['transaction_aborted'], (
+            f'{field} must be transaction_aborted, got {payload["field_reason_codes"].get(field)}'
+        )
+        assert 'optional_table_unavailable' not in payload['field_reason_codes'][field]
+    # Recovery was attempted (connection rolled back so remaining queries can run).
+    assert conn.rolled_back >= 1
+
+
 def test_runtime_status_query_failure_uses_pre_resolved_workspace_identity_from_request_state(monkeypatch):
     now = datetime.now(timezone.utc)
     request = SimpleNamespace(headers={}, state=SimpleNamespace(workspace_id='ws-prod', workspace_slug='prod-ops'))

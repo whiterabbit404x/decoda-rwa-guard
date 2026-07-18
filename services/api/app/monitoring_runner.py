@@ -5302,6 +5302,12 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
     # never-selected_for_backfill target still get their alerts.
     strategic_guard_backfill_targets: set[tuple[str, str]] = set()
     error_message: str | None = None
+    # A target selected for a live poll (selected_for_live_poll=true, blocked_reason=none)
+    # must never disappear between due-selection and the polling executor. Any selected id
+    # not claimed by the FOR UPDATE SKIP LOCKED query is recorded here with a SPECIFIC
+    # blocked reason so the selected -> executed invariant is auditable. Initialized at the
+    # top so it is always defined for the cycle summary and invariant check.
+    selected_not_claimed_reasons: dict[str, str] = {}
     cycle_started_at = utc_now()
     logger.info('monitoring cycle started worker=%s limit=%s', worker_name, limit)
     # Explicit, greppable cycle marker (acceptance step 11). Only emitted for real
@@ -6113,6 +6119,54 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         else:
             due_targets = []
         due_count = len(due_targets)
+        # Invariant guard (selected -> executed): every id in due_target_ids was chosen for a
+        # live poll. The FOR UPDATE SKIP LOCKED claim above can legitimately return fewer rows
+        # (lease held by another worker, dead-lettered between select and claim, max delivery
+        # attempts, or concurrent lock contention). Diagnose each unclaimed selected target and
+        # record a SPECIFIC blocked reason so a selected target is never silently dropped.
+        _claimed_id_set = {str(row['id']) for row in due_targets}
+        _unclaimed_selected_ids = [str(t) for t in due_target_ids if str(t) not in _claimed_id_set]
+        if _unclaimed_selected_ids:
+            _diag_by_id: dict[str, dict[str, Any]] = {}
+            try:
+                _diag_rows = connection.execute(
+                    '''
+                    SELECT id, workspace_id, monitoring_dead_lettered_at,
+                           monitoring_delivery_attempts, monitoring_lease_expires_at
+                    FROM targets
+                    WHERE id = ANY(%s)
+                    ''',
+                    (_unclaimed_selected_ids,),
+                ).fetchall()
+                _diag_by_id = {str(dict(r).get('id')): dict(r) for r in _diag_rows}
+            except Exception:
+                logger.warning(
+                    'monitoring_selected_target_not_claimed_diag_failed worker=%s count=%s',
+                    worker_name, len(_unclaimed_selected_ids), exc_info=True,
+                )
+            _max_attempts = max(1, int(os.getenv('MONITORING_TARGET_MAX_ATTEMPTS', '5')))
+            for _uid in _unclaimed_selected_ids:
+                _info = _diag_by_id.get(_uid) or {}
+                _lease_exp = _parse_ts(_info.get('monitoring_lease_expires_at'))
+                _attempts = int(_info.get('monitoring_delivery_attempts') or 0)
+                if not _info:
+                    _reason = 'target_row_missing_after_selection'
+                elif _info.get('monitoring_dead_lettered_at') is not None:
+                    _reason = 'dead_lettered_after_selection'
+                elif _attempts >= _max_attempts:
+                    _reason = 'max_delivery_attempts_exceeded'
+                elif _lease_exp is not None and _lease_exp > now:
+                    _reason = 'lease_held_by_other_worker'
+                else:
+                    _reason = 'claim_skip_locked_contended'
+                selected_not_claimed_reasons[_uid] = _reason
+                logger.warning(
+                    'event=monitoring_selected_target_not_claimed worker=%s target_id=%s '
+                    'workspace_id=%s blocked_reason=%s lease_expires_at=%s delivery_attempts=%s '
+                    'selected_for_live_poll=true',
+                    worker_name, _uid, str(_info.get('workspace_id') or ''), _reason,
+                    _lease_exp.isoformat() if _lease_exp else None, _attempts,
+                )
         for row in due_targets:
             target = dict(row)
             target['monitored_system_id'] = due_system_ids.get(str(target['id']))
@@ -6548,6 +6602,30 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         backfill_cycle_state = 'backfill_evaluated_blocked'
     elif due_count == 0:
         backfill_cycle_state = 'normal_no_due_cycle'
+    # Honest cycle state: a target was selected for live poll but not claimed/executed. Do
+    # NOT report this as a bland no-due cycle — surface the discrepancy explicitly so the
+    # log shows why effective_due_count > checked.
+    if selected_not_claimed_reasons and checked == 0:
+        backfill_cycle_state = 'selected_not_claimed_cycle'
+    # Defensive invariant (§ selected -> executed): effective_due_count > 0 with checked == 0
+    # is only acceptable when SOME explicit reason was recorded — provider backoff, a
+    # per-target not-claimed reason, or a target-processing error. If none was recorded a
+    # selected due target vanished silently; emit a structured invariant-failure error so it
+    # can never be invisible in the logs.
+    _invariant_effective_due = effective_due_count if 'effective_due_count' in locals() else due_count
+    if (
+        _invariant_effective_due > 0
+        and checked == 0
+        and skipped_provider_backoff == 0
+        and not selected_not_claimed_reasons
+        and error_message is None
+    ):
+        logger.error(
+            'event=monitoring_due_execution_invariant_failed worker=%s effective_due_count=%s '
+            'checked=%s due_count=%s skipped_provider_backoff=%s '
+            'reason=selected_due_targets_reached_zero_execution_without_recorded_reason',
+            worker_name, _invariant_effective_due, checked, due_count, skipped_provider_backoff,
+        )
     logger.info(
         'monitoring cycle summary worker=%s cycle_state=%s total_candidate_targets=%s base_due_count=%s '
         'effective_due_count=%s due=%s checked=%s skipped_provider_backoff=%s '
@@ -6607,6 +6685,9 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         'runs': runs,
         'live_mode': True,
         'effective_due_count': effective_due_count if 'effective_due_count' in locals() else due_count,
+        'selected_not_claimed': len(selected_not_claimed_reasons),
+        'selected_not_claimed_reasons': dict(selected_not_claimed_reasons),
+        'cycle_state': backfill_cycle_state if 'backfill_cycle_state' in locals() else None,
         'soonest_due_in_seconds': soonest_due_in_seconds,
         'ingestion_mode': ingestion_runtime.get('source'),
         'degraded': bool(ingestion_runtime.get('degraded')),
@@ -7250,6 +7331,29 @@ def production_claim_validator() -> dict[str, Any]:
     }
 
 
+def _classify_optional_query_reason(exc: Exception) -> tuple[str, str]:
+    """Classify a failed runtime-status optional query into (reason_code, error_code).
+
+    An aborted transaction, a permission error, or a statement timeout must NEVER be
+    reported as an unavailable optional table — that hides the true cause. Classified by
+    exception type name + SQLSTATE so it is robust to psycopg version differences and to the
+    offline test stubs (which do not define every concrete error class).
+    """
+    name = type(exc).__name__
+    sqlstate = getattr(exc, 'sqlstate', None)
+    if name == 'InFailedSqlTransaction' or sqlstate == '25P02':
+        return ('transaction_aborted', 'runtime_transaction_aborted')
+    if name == 'UndefinedTable' or sqlstate == '42P01':
+        return ('optional_table_unavailable', 'runtime_optional_query_failed')
+    if name == 'UndefinedColumn' or sqlstate == '42703':
+        return ('optional_column_unavailable', 'runtime_optional_query_failed')
+    if name in ('InsufficientPrivilege', 'InsufficientPrivilegeError') or sqlstate == '42501':
+        return ('permission_denied', 'runtime_optional_query_permission_denied')
+    if name in ('QueryCanceled', 'QueryCanceledError') or sqlstate == '57014':
+        return ('query_timeout', 'runtime_optional_query_timeout')
+    return ('unexpected_database_error', 'runtime_optional_query_unexpected_error')
+
+
 def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     canonical_runtime_truth_enabled = is_canonical_runtime_truth_enabled()
     last_query_checkpoint = 'not_started'
@@ -7691,6 +7795,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         db_persistence_reason: str | None = None
         runtime_error_code: str | None = None
         runtime_degraded_reason: str | None = None
+        # Checkpoint of the FIRST optional query that failed this request. When a later query
+        # fails with InFailedSqlTransaction, this points back to the original cause rather
+        # than only naming the downstream victim.
+        runtime_transaction_aborted_origin: str | None = None
         field_reason_codes: dict[str, list[str]] = {}
 
         def _append_field_reason(field_key: str, reason_code: str) -> None:
@@ -7720,11 +7828,28 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             nonlocal schema_drift_detected
             nonlocal runtime_error_code
             nonlocal runtime_degraded_reason
+            nonlocal runtime_transaction_aborted_origin
             query_failure_detected = True
-            if _is_optional_schema_error(exc):
+            # Classify the TRUE failure class. Callers pass a default reason of
+            # 'optional_table_unavailable' plus a call-site-specific error_code (e.g.
+            # 'runtime_coverage_query_failed'). We PRESERVE the caller's error_code (it names
+            # the query that failed) and only OVERRIDE the reason_code for the classes that
+            # must never be mislabeled as an unavailable optional table: an aborted
+            # transaction, a permission error, or a statement timeout. A genuine missing
+            # table/column or an unexpected error keeps the caller's default reason.
+            classified_reason, classified_error = _classify_optional_query_reason(exc)
+            _override_reasons = {'transaction_aborted', 'permission_denied', 'query_timeout'}
+            if classified_reason in _override_reasons:
+                reason_code = classified_reason
+                error_code = classified_error
+            if classified_reason in ('optional_table_unavailable', 'optional_column_unavailable') or _is_optional_schema_error(exc):
                 schema_drift_detected = True
             runtime_error_code = error_code
             runtime_degraded_reason = 'partial_query_failure'
+            # Remember the ORIGINAL failing checkpoint so a later InFailedSqlTransaction is
+            # attributed to its true cause, not only the downstream victim query.
+            if runtime_transaction_aborted_origin is None and classified_reason != 'transaction_aborted':
+                runtime_transaction_aborted_origin = checkpoint_label
             for field in impacted_fields:
                 _append_field_reason(field, reason_code)
             logger.warning(
@@ -7735,6 +7860,27 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 type(exc).__name__,
                 str(exc)[:500],
             )
+            # A failed statement inside a (non-autocommit) transaction poisons every following
+            # statement with InFailedSqlTransaction. Roll the connection back — best effort —
+            # so the remaining optional queries can execute and the endpoint still returns an
+            # honest, evidence-backed degraded response instead of a cascade of mislabeled
+            # failures. On an autocommit connection this is a harmless no-op.
+            _rollback = getattr(connection, 'rollback', None)
+            if callable(_rollback):
+                try:
+                    _rollback()
+                    if classified_reason == 'transaction_aborted':
+                        logger.warning(
+                            'monitoring_runtime_status_transaction_aborted_recovered workspace_id=%s '
+                            'downstream_checkpoint=%s original_checkpoint=%s action=rolled_back_to_restore_connection',
+                            workspace_id, checkpoint_label, runtime_transaction_aborted_origin or 'unknown',
+                        )
+                except Exception:
+                    logger.error(
+                        'monitoring_runtime_status_transaction_recovery_failed workspace_id=%s '
+                        'checkpoint=%s reason_code=%s action=degraded_response',
+                        workspace_id, checkpoint_label, classified_reason,
+                    )
     
         def _load_runtime_monitored_rows(connection: Any, workspace_scope_id: str | None) -> list[dict[str, Any]]:
             if workspace_scope_id:

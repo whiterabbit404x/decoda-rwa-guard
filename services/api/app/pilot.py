@@ -9734,6 +9734,54 @@ def ensure_monitored_system_for_target(
     return result
 
 
+def _reconcile_target_error_category(exc: Exception) -> str:
+    """Safe, secret-free category for a per-target reconcile failure.
+
+    Never returns raw error text (which can carry identifiers, values, or connection
+    detail) — only a stable class label derived from the exception type name and SQLSTATE.
+    Classified by name/sqlstate rather than isinstance so it does not depend on psycopg
+    being imported at module scope and works under the offline test stubs.
+    """
+    name = type(exc).__name__
+    sqlstate = getattr(exc, 'sqlstate', None)
+    mapping = {
+        'UndefinedTable': 'undefined_table',
+        'UndefinedColumn': 'undefined_column',
+        'ForeignKeyViolation': 'foreign_key_violation',
+        'UniqueViolation': 'unique_violation',
+        'CheckViolation': 'check_violation',
+        'NotNullViolation': 'not_null_violation',
+        'InsufficientPrivilege': 'permission_denied',
+        'QueryCanceled': 'query_timeout',
+        'InFailedSqlTransaction': 'in_failed_sql_transaction',
+        'DataError': 'data_error',
+        'IntegrityError': 'integrity_error',
+    }
+    if name in mapping:
+        return mapping[name]
+    if sqlstate:
+        return f'db_error_sqlstate_{sqlstate}'
+    return 'unexpected_error'
+
+
+@contextmanager
+def _reconcile_target_savepoint(connection: Any):
+    """Per-target SAVEPOINT scope.
+
+    On a real psycopg connection this opens a nested transaction (SAVEPOINT) so a single
+    target's failure can be rolled back to the savepoint, leaving the connection usable for
+    the remaining targets and for downstream runtime-status queries. Test fakes that do not
+    implement ``transaction()`` fall through to a passthrough — they carry no real
+    transaction semantics, and the caller's try/except still isolates the failure.
+    """
+    tx = getattr(connection, 'transaction', None)
+    if callable(tx):
+        with tx():
+            yield
+    else:
+        yield
+
+
 def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id: str | None = None) -> dict[str, Any]:
     if workspace_id:
         _pre_eligible = _load_workspace_reconcile_eligible_targets(connection, workspace_id=workspace_id)
@@ -9909,156 +9957,179 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
     )
     enabled_valid_targets_found = 0
     disabled_or_invalid_targets_found = 0
+    reconcile_failed_target_details: list[dict[str, str]] = []
+    reconcile_failed_reasons: dict[str, int] = {}
     for row in rows:
-        target_id = str(row['id'])
-        target_enabled = bool(row.get('enabled'))
-        target_monitoring_enabled = bool(row.get('monitoring_enabled'))
-        target_type = normalize_target_type(row.get('target_type'))
-        target_has_asset_id = bool(row.get('asset_id'))
-        if not target_enabled:
-            disabled_or_invalid_targets_found += 1
-            skipped_reasons['target_not_enabled'] = skipped_reasons.get('target_not_enabled', 0) + 1
-            skipped_target_details.append({
-                'target_id': target_id,
-                'code': 'target_not_enabled',
-                'reason': 'Target is disabled and cannot be reconciled.',
-            })
-            logger.info(
-                'target_monitoring_reconcile target_id=%s workspace_id=%s enabled=%s monitoring_enabled=%s asset_id=%s resolved_asset_id=%s status=%s reason=%s monitored_system_id=%s',
-                target_id,
-                workspace_id,
-                target_enabled,
-                target_monitoring_enabled,
-                row.get('asset_id'),
-                None,
-                'target_not_enabled',
-                'target_not_enabled',
-                None,
-            )
-            continue
-        if not is_monitorable_target_type(target_type):
-            disabled_or_invalid_targets_found += 1
-            logger.info(
-                'target_monitoring_reconcile target_id=%s workspace_id=%s enabled=%s monitoring_enabled=%s target_type=%s asset_id=%s resolved_asset_id=%s status=%s reason=%s monitored_system_id=%s',
-                target_id,
-                workspace_id,
-                target_enabled,
-                target_monitoring_enabled,
-                target_type,
-                row.get('asset_id'),
-                None,
-                'unsupported_target_type',
-                'unsupported_target_type_for_live_coverage',
-                None,
-            )
-            result = ensure_monitored_system_for_target(
-                connection,
-                target_id=str(row['id']),
-                workspace_id=workspace_id,
-                require_enabled=False,
-            )
-            skipped_reason = str(result.get('reason') or 'unsupported_target_type_for_live_coverage')
-            skipped_reasons[skipped_reason] = skipped_reasons.get(skipped_reason, 0) + 1
-            skipped_target_details.append({
-                'target_id': target_id,
-                'code': skipped_reason,
-                'reason': 'Target type is not supported for live monitoring coverage.',
-            })
-            continue
-        if target_enabled and target_has_asset_id and not target_monitoring_enabled:
-            connection.execute(
-                '''
-                UPDATE targets
-                SET monitoring_enabled = TRUE,
-                    updated_at = NOW()
-                WHERE id = %s::uuid
-                ''',
-                (target_id,),
-            )
-            target_monitoring_enabled = True
-        result = ensure_monitored_system_for_target(
-            connection,
-            target_id=str(row['id']),
-            workspace_id=workspace_id,
-            require_enabled=False,
-        )
-        if result.get('status') == 'ok':
-            eligible_targets += 1
-            enabled_valid_targets_found += 1
-            verified_row = connection.execute(
-                '''
-                SELECT id
-                FROM monitored_systems
-                WHERE workspace_id = %s::uuid
-                  AND target_id = %s::uuid
-                ''',
-                (str(result.get('workspace_id') or workspace_id), str(result.get('target_id') or row.get('id'))),
-            ).fetchone()
-            if verified_row:
-                created_or_updated += 1
-                repaired_monitored_system_ids.append(str(verified_row['id']))
-                # The monitored_system exists, but the worker also requires the DIRECT
-                # monitoring_config keyed by targets.id (mc.target_id = targets.id). A target
-                # onboarded after the one-time backfill migrations can have a valid system yet
-                # persisted_config_count=0 → exclusion_reason=monitoring_config_missing. Repair
-                # it here idempotently so runtime reconciliation converges the worker config too.
-                try:
-                    _cfg_result = ensure_direct_monitoring_config_for_target(
+        _reconcile_row_target_id = str(row.get('id') or '')
+        # Per-target savepoint: one invalid legacy target must not abort reconciliation
+        # for every other target/workspace. On failure we roll back to the savepoint
+        # (automatic on exception exit of connection.transaction()), record a safe
+        # error category, and continue — leaving the connection usable for the rest.
+        try:
+            with _reconcile_target_savepoint(connection):
+                target_id = str(row['id'])
+                target_enabled = bool(row.get('enabled'))
+                target_monitoring_enabled = bool(row.get('monitoring_enabled'))
+                target_type = normalize_target_type(row.get('target_type'))
+                target_has_asset_id = bool(row.get('asset_id'))
+                if not target_enabled:
+                    disabled_or_invalid_targets_found += 1
+                    skipped_reasons['target_not_enabled'] = skipped_reasons.get('target_not_enabled', 0) + 1
+                    skipped_target_details.append({
+                        'target_id': target_id,
+                        'code': 'target_not_enabled',
+                        'reason': 'Target is disabled and cannot be reconciled.',
+                    })
+                    logger.info(
+                        'target_monitoring_reconcile target_id=%s workspace_id=%s enabled=%s monitoring_enabled=%s asset_id=%s resolved_asset_id=%s status=%s reason=%s monitored_system_id=%s',
+                        target_id,
+                        workspace_id,
+                        target_enabled,
+                        target_monitoring_enabled,
+                        row.get('asset_id'),
+                        None,
+                        'target_not_enabled',
+                        'target_not_enabled',
+                        None,
+                    )
+                    continue
+                if not is_monitorable_target_type(target_type):
+                    disabled_or_invalid_targets_found += 1
+                    logger.info(
+                        'target_monitoring_reconcile target_id=%s workspace_id=%s enabled=%s monitoring_enabled=%s target_type=%s asset_id=%s resolved_asset_id=%s status=%s reason=%s monitored_system_id=%s',
+                        target_id,
+                        workspace_id,
+                        target_enabled,
+                        target_monitoring_enabled,
+                        target_type,
+                        row.get('asset_id'),
+                        None,
+                        'unsupported_target_type',
+                        'unsupported_target_type_for_live_coverage',
+                        None,
+                    )
+                    result = ensure_monitored_system_for_target(
                         connection,
-                        workspace_id=str(result.get('workspace_id') or workspace_id),
-                        target_id=str(result.get('target_id') or row.get('id')),
-                        chain_network='',  # resolved from targets inside the helper
-                        creation_source='runtime_reconcile',
+                        target_id=str(row['id']),
+                        workspace_id=workspace_id,
+                        require_enabled=False,
                     )
-                    repaired_monitoring_config_ids.append(str(_cfg_result.get('config_id') or ''))
-                    if _cfg_result.get('created'):
-                        created_monitoring_config_count += 1
-                except Exception:
-                    logger.warning(
-                        'reconcile_direct_monitoring_config_failed target_id=%s workspace_id=%s',
-                        result.get('target_id') or row.get('id'),
-                        result.get('workspace_id') or workspace_id,
-                        exc_info=True,
+                    skipped_reason = str(result.get('reason') or 'unsupported_target_type_for_live_coverage')
+                    skipped_reasons[skipped_reason] = skipped_reasons.get(skipped_reason, 0) + 1
+                    skipped_target_details.append({
+                        'target_id': target_id,
+                        'code': skipped_reason,
+                        'reason': 'Target type is not supported for live monitoring coverage.',
+                    })
+                    continue
+                if target_enabled and target_has_asset_id and not target_monitoring_enabled:
+                    connection.execute(
+                        '''
+                        UPDATE targets
+                        SET monitoring_enabled = TRUE,
+                            updated_at = NOW()
+                        WHERE id = %s::uuid
+                        ''',
+                        (target_id,),
                     )
-            else:
-                skipped_reasons['post_upsert_not_visible'] = skipped_reasons.get('post_upsert_not_visible', 0) + 1
-                skipped_target_details.append({
-                    'target_id': target_id,
-                    'code': 'post_upsert_not_visible',
-                    'reason': 'Target reconcile completed, but the monitored system row was not visible after upsert.',
-                })
-        elif result.get('status') == 'invalid_target':
-            disabled_or_invalid_targets_found += 1
-            invalid_targets.append(str(result.get('target_id')))
-            invalid_reason = str(result.get('reason') or 'invalid_target')
-            invalid_reasons[invalid_reason] = invalid_reasons.get(invalid_reason, 0) + 1
-            invalid_target_details.append({
-                'target_id': str(result.get('target_id') or target_id),
-                'code': invalid_reason,
-                'reason': invalid_reason.replace('_', ' '),
-            })
-        else:
-            if not target_enabled or not target_monitoring_enabled or not target_has_asset_id:
-                disabled_or_invalid_targets_found += 1
-            skipped_reason = str(result.get('reason') or 'skipped')
-            skipped_reasons[skipped_reason] = skipped_reasons.get(skipped_reason, 0) + 1
-            skipped_target_details.append({
-                'target_id': str(result.get('target_id') or target_id),
-                'code': skipped_reason,
-                'reason': skipped_reason.replace('_', ' '),
-            })
-        logger.info(
-            'target_monitoring_reconcile target_id=%s workspace_id=%s enabled=%s monitoring_enabled=%s asset_id=%s resolved_asset_id=%s status=%s reason=%s monitored_system_id=%s',
-            result.get('target_id') or row.get('id'),
-            result.get('workspace_id') or workspace_id,
-            result.get('enabled'),
-            result.get('monitoring_enabled'),
-            result.get('asset_id'),
-            result.get('resolved_asset_id'),
-            result.get('status'),
-            result.get('reason'),
-            result.get('monitored_system_id'),
-        )
+                    target_monitoring_enabled = True
+                result = ensure_monitored_system_for_target(
+                    connection,
+                    target_id=str(row['id']),
+                    workspace_id=workspace_id,
+                    require_enabled=False,
+                )
+                if result.get('status') == 'ok':
+                    eligible_targets += 1
+                    enabled_valid_targets_found += 1
+                    verified_row = connection.execute(
+                        '''
+                        SELECT id
+                        FROM monitored_systems
+                        WHERE workspace_id = %s::uuid
+                          AND target_id = %s::uuid
+                        ''',
+                        (str(result.get('workspace_id') or workspace_id), str(result.get('target_id') or row.get('id'))),
+                    ).fetchone()
+                    if verified_row:
+                        created_or_updated += 1
+                        repaired_monitored_system_ids.append(str(verified_row['id']))
+                        # The monitored_system exists, but the worker also requires the DIRECT
+                        # monitoring_config keyed by targets.id (mc.target_id = targets.id). A target
+                        # onboarded after the one-time backfill migrations can have a valid system yet
+                        # persisted_config_count=0 → exclusion_reason=monitoring_config_missing. Repair
+                        # it here idempotently so runtime reconciliation converges the worker config too.
+                        try:
+                            # Best-effort config repair in its OWN nested savepoint so a
+                            # config-creation failure rolls back only this sub-step and never
+                            # poisons the target savepoint (the monitored_system was already
+                            # created and must still count as reconciled).
+                            with _reconcile_target_savepoint(connection):
+                                _cfg_result = ensure_direct_monitoring_config_for_target(
+                                    connection,
+                                    workspace_id=str(result.get('workspace_id') or workspace_id),
+                                    target_id=str(result.get('target_id') or row.get('id')),
+                                    chain_network='',  # resolved from targets inside the helper
+                                    creation_source='runtime_reconcile',
+                                )
+                            repaired_monitoring_config_ids.append(str(_cfg_result.get('config_id') or ''))
+                            if _cfg_result.get('created'):
+                                created_monitoring_config_count += 1
+                        except Exception:
+                            logger.warning(
+                                'reconcile_direct_monitoring_config_failed target_id=%s workspace_id=%s',
+                                result.get('target_id') or row.get('id'),
+                                result.get('workspace_id') or workspace_id,
+                                exc_info=True,
+                            )
+                    else:
+                        skipped_reasons['post_upsert_not_visible'] = skipped_reasons.get('post_upsert_not_visible', 0) + 1
+                        skipped_target_details.append({
+                            'target_id': target_id,
+                            'code': 'post_upsert_not_visible',
+                            'reason': 'Target reconcile completed, but the monitored system row was not visible after upsert.',
+                        })
+                elif result.get('status') == 'invalid_target':
+                    disabled_or_invalid_targets_found += 1
+                    invalid_targets.append(str(result.get('target_id')))
+                    invalid_reason = str(result.get('reason') or 'invalid_target')
+                    invalid_reasons[invalid_reason] = invalid_reasons.get(invalid_reason, 0) + 1
+                    invalid_target_details.append({
+                        'target_id': str(result.get('target_id') or target_id),
+                        'code': invalid_reason,
+                        'reason': invalid_reason.replace('_', ' '),
+                    })
+                else:
+                    if not target_enabled or not target_monitoring_enabled or not target_has_asset_id:
+                        disabled_or_invalid_targets_found += 1
+                    skipped_reason = str(result.get('reason') or 'skipped')
+                    skipped_reasons[skipped_reason] = skipped_reasons.get(skipped_reason, 0) + 1
+                    skipped_target_details.append({
+                        'target_id': str(result.get('target_id') or target_id),
+                        'code': skipped_reason,
+                        'reason': skipped_reason.replace('_', ' '),
+                    })
+                logger.info(
+                    'target_monitoring_reconcile target_id=%s workspace_id=%s enabled=%s monitoring_enabled=%s asset_id=%s resolved_asset_id=%s status=%s reason=%s monitored_system_id=%s',
+                    result.get('target_id') or row.get('id'),
+                    result.get('workspace_id') or workspace_id,
+                    result.get('enabled'),
+                    result.get('monitoring_enabled'),
+                    result.get('asset_id'),
+                    result.get('resolved_asset_id'),
+                    result.get('status'),
+                    result.get('reason'),
+                    result.get('monitored_system_id'),
+                )
+        except Exception as _reconcile_target_exc:
+            _reconcile_failed_category = _reconcile_target_error_category(_reconcile_target_exc)
+            reconcile_failed_reasons[_reconcile_failed_category] = reconcile_failed_reasons.get(_reconcile_failed_category, 0) + 1
+            reconcile_failed_target_details.append({'target_id': _reconcile_row_target_id, 'code': _reconcile_failed_category})
+            logger.warning(
+                'target_monitoring_reconcile_target_failed target_id=%s workspace_id=%s error_category=%s action=rolled_back_to_savepoint_continue',
+                _reconcile_row_target_id, workspace_id, _reconcile_failed_category,
+            )
+            continue
     refreshed_rows = connection.execute(
         '''
         SELECT id, target_id
@@ -10087,7 +10158,7 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
     removed_monitored_systems = max(0, len(set(existing_target_to_system_id.values()) - set(refreshed_target_to_system_id.values())))
     final_workspace_monitored_system_count = len(refreshed_target_to_system_id)
     logger.info(
-        'target_monitoring_reconcile_summary workspace_id=%s targets_scanned=%s enabled_valid_targets_found=%s disabled_or_invalid_targets_found=%s monitored_systems_created=%s monitored_systems_preserved=%s monitored_systems_removed=%s final_workspace_monitored_system_count=%s invalid_reasons=%s skipped_reasons=%s',
+        'target_monitoring_reconcile_summary workspace_id=%s targets_scanned=%s enabled_valid_targets_found=%s disabled_or_invalid_targets_found=%s monitored_systems_created=%s monitored_systems_preserved=%s monitored_systems_removed=%s final_workspace_monitored_system_count=%s invalid_reasons=%s skipped_reasons=%s failed_targets=%s failed_reasons=%s',
         workspace_id,
         len(rows),
         enabled_valid_targets_found,
@@ -10098,6 +10169,8 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
         final_workspace_monitored_system_count,
         invalid_reasons,
         skipped_reasons,
+        len(reconcile_failed_target_details),
+        reconcile_failed_reasons,
     )
     return _normalize_reconcile_result({
         'enabled_targets_scanned': eligible_targets + len(invalid_targets),
@@ -10119,6 +10192,9 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
         'repaired_unsupported_monitored_systems': repaired_unsupported_count,
         'repaired_monitoring_config_ids': [cid for cid in repaired_monitoring_config_ids if cid],
         'created_monitoring_configs': created_monitoring_config_count,
+        'failed_targets': len(reconcile_failed_target_details),
+        'failed_reasons': reconcile_failed_reasons,
+        'failed_target_details': reconcile_failed_target_details,
         'workspace_id': workspace_id,
     })
 
@@ -10142,6 +10218,14 @@ def _normalize_reconcile_result(result: dict[str, Any]) -> dict[str, Any]:
         for item in (result.get('skipped_target_details') or [])
         if str(item.get('target_id') or '').strip()
     ]
+    failed_target_details = [
+        {
+            'target_id': str(item.get('target_id') or ''),
+            'code': str(item.get('code') or 'unexpected_error'),
+        }
+        for item in (result.get('failed_target_details') or [])
+        if str(item.get('target_id') or '').strip()
+    ]
     return {
         'enabled_targets_scanned': int(result.get('enabled_targets_scanned', 0) or 0),
         'targets_scanned': int(result.get('targets_scanned', 0) or 0),
@@ -10162,6 +10246,9 @@ def _normalize_reconcile_result(result: dict[str, Any]) -> dict[str, Any]:
         'repaired_unsupported_monitored_systems': int(result.get('repaired_unsupported_monitored_systems', 0) or 0),
         'repaired_monitoring_config_ids': [str(value) for value in (result.get('repaired_monitoring_config_ids') or []) if str(value).strip()],
         'created_monitoring_configs': int(result.get('created_monitoring_configs', 0) or 0),
+        'failed_targets': int(result.get('failed_targets', 0) or 0),
+        'failed_reasons': {str(key): int(value) for key, value in dict(result.get('failed_reasons') or {}).items()},
+        'failed_target_details': failed_target_details,
         'workspace_id': result.get('workspace_id'),
     }
 
