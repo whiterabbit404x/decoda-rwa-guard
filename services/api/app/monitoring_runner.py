@@ -27,7 +27,11 @@ from services.api.app.evm_activity_provider import (
     rpc_provider_backoff_active,
     rpc_provider_backoff_status,
 )
-from services.api.app.monitoring_truth import ui_evidence_state, ui_truthfulness_state
+from services.api.app.monitoring_truth import (
+    derive_reporting_sub_counts,
+    ui_evidence_state,
+    ui_truthfulness_state,
+)
 from services.api.app.monitoring_reliability import MonitoringSLOs, evaluate_monitoring_slos, monitoring_slo_snapshot
 from services.api.app.monitorable_target_types import (
     is_monitorable_target_type,
@@ -9288,6 +9292,29 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     effective_reporting_systems = canonical_reporting_systems or legacy_row_reporting_systems or receipts_reporting_systems
                     reporting_systems = effective_reporting_systems
                     coverage_heartbeat_count = int(reporting_systems)
+                    # Truthfulness split (CLAUDE.md): "reporting_systems" is an aggregate that
+                    # falls back to legacy/receipt coverage rows, so it can be > 0 during a
+                    # provider outage while ZERO systems are freshly reporting live. Derive the
+                    # three explicit sub-counts the runtime endpoint exposes so the customer UI
+                    # never reads replay/historical coverage as live reporting:
+                    #   * fresh_live_reporting_systems  — telemetry-event-backed coverage inside
+                    #     the freshness window (canonical live reporting).
+                    #   * historically_reporting_systems — enabled systems that have EVER produced
+                    #     coverage evidence (any historical/replay coverage row or receipt).
+                    #   * replay_only_systems           — historically reporting but not fresh-live
+                    #     right now (evidence is replay/historical only).
+                    fresh_live_reporting_systems = int(canonical_reporting_systems)
+                    historically_reporting_systems = 0
+                    for _hist_row in enabled_rows:
+                        _hist_system_id = str(_hist_row.get('id') or '').strip()
+                        _hist_ts = _parse_ts(_hist_row.get('last_coverage_telemetry_at'))
+                        _hist_receipt_ts = live_coverage_receipts_by_system.get(_hist_system_id)
+                        if _hist_ts is not None or _hist_receipt_ts is not None:
+                            historically_reporting_systems += 1
+                    # A system can be fresh-live without a legacy/receipt row (canonical JOIN path),
+                    # so historically_reporting_systems is at least the fresh-live count.
+                    historically_reporting_systems = max(historically_reporting_systems, fresh_live_reporting_systems)
+                    replay_only_systems = max(historically_reporting_systems - fresh_live_reporting_systems, 0)
                     real_event_count = int(recent_real_event_count)
                     raw_recent_evidence_state = (
                         str((latest_detection_metadata or {}).get('evidence_state') or latest_detection_payload.get('evidence_state') or 'missing')
@@ -9300,11 +9327,26 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                         else raw_recent_evidence_state
                     )
                     recent_evidence_reason_code = 'coverage_only_no_events' if coverage_heartbeat_count > 0 and real_event_count <= 0 else None
+                    # Only claim a fresh coverage window when a system is actually reporting live
+                    # inside it. When fresh_live_reporting_systems == 0 the reporting_systems count
+                    # is replay/historical only, so the truthful reason is provider_unavailable —
+                    # never fresh_coverage_window_Ns (CLAUDE.md: do not claim telemetry is current
+                    # when telemetry is missing or stale).
+                    reporting_systems_status_reason = (
+                        f'fresh_coverage_window_{telemetry_window_seconds}s'
+                        if fresh_live_reporting_systems > 0
+                        else 'provider_unavailable'
+                    )
                     logger.info(
-                        'monitoring_reporting_systems workspace_id=%s reporting_systems=%s status_reason=%s',
+                        'monitoring_reporting_systems workspace_id=%s reporting_systems=%s '
+                        'fresh_live_reporting_systems=%s historically_reporting_systems=%s '
+                        'replay_only_systems=%s status_reason=%s',
                         workspace_id,
                         reporting_systems,
-                        f'fresh_coverage_window_{telemetry_window_seconds}s',
+                        fresh_live_reporting_systems,
+                        historically_reporting_systems,
+                        replay_only_systems,
+                        reporting_systems_status_reason,
                     )
                     # Include legacy-path alerts (detection_id + detection_evidence) in the chain count
                     chain_open_alerts_count = max(
@@ -9788,6 +9830,25 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         summary['field_reason_codes'] = dict(field_reason_codes)
         summary['configured_systems'] = int(enabled_system_count)
         summary['reporting_systems'] = int(reporting_systems)
+        # Explicit reporting sub-counts (CLAUDE.md truthfulness) derived through the single,
+        # unit-tested canonical helper. fresh_live uses the FINAL canonical_reporting_systems
+        # (after the proof-chain live override above) so a genuine transient-metadata-race
+        # recovery reads as live, while a provider outage keeps fresh_live at 0 and surfaces
+        # the historical/replay coverage separately. The helper is fail-closed: it only claims
+        # a fresh coverage window when evidence_source == 'live'. reporting_systems remains for
+        # backward compatibility but must never be read as "live reporting".
+        _reporting_sub_counts = derive_reporting_sub_counts(
+            configured_systems=int(enabled_system_count),
+            fresh_live_reporting_systems=int(max(fresh_live_reporting_systems, canonical_reporting_systems)),
+            historically_reporting_systems=int(historically_reporting_systems),
+            telemetry_window_seconds=int(telemetry_window_seconds),
+            evidence_source=evidence_source,
+        )
+        _fresh_live_final = _reporting_sub_counts.fresh_live_reporting_systems
+        summary['fresh_live_reporting_systems'] = _reporting_sub_counts.fresh_live_reporting_systems
+        summary['historically_reporting_systems'] = _reporting_sub_counts.historically_reporting_systems
+        summary['replay_only_systems'] = _reporting_sub_counts.replay_only_systems
+        summary['reporting_systems_status_reason'] = _reporting_sub_counts.status_reason
         summary['monitoring_targets'] = int(raw_enabled_targets)
         summary['monitorable_enabled_targets'] = int(healthy_enabled_targets_count)
         summary['raw_enabled_targets'] = int(raw_enabled_targets)
@@ -10288,6 +10349,30 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         # realtime watcher row is exposed separately so a paused or rate-limited realtime
         # worker is not rendered as a dead monitoring source.
         _worker_status_realtime_enabled = realtime_enabled()
+        # Canonical "the last scheduled provider poll actually reached the chain" signal.
+        # A poll SUCCEEDS when the provider is reachable — proven by fresh live coverage, a
+        # fresh block-bearing rpc_polling telemetry row, OR simply the provider not being
+        # degraded/unreachable (a healthy worker with no new transfers is still polling
+        # successfully). It FAILS only under a genuine provider outage
+        # (all_rpc_providers_unavailable → provider_degraded_or_unreachable), where the
+        # heartbeat is fresh but no provider supplied a latest block. Only then does the
+        # header read the truthful "Worker active; RPC polling unavailable." rather than
+        # "Stable polling active" — telemetry absence alone never flips it.
+        _stable_poll_succeeded = bool(
+            _fresh_live_final > 0
+            or coverage_fresh
+            or (
+                canonical_last_telemetry_at is not None
+                and int((now - canonical_last_telemetry_at).total_seconds()) <= telemetry_window_seconds
+            )
+            or not provider_degraded_or_unreachable
+        )
+        # Whether the QuickNode stream is currently receiving blocks (heads delivered by the
+        # realtime worker). Used only for the second, truthful sentence of the RPC-unavailable
+        # header — it never upgrades the poll verdict.
+        _rt_watcher_for_stream = health.get('realtime_watcher') if isinstance(health.get('realtime_watcher'), dict) else {}
+        _rt_watcher_metrics = _rt_watcher_for_stream.get('metrics') if isinstance(_rt_watcher_for_stream.get('metrics'), dict) else {}
+        _quicknode_stream_receiving = bool(int(_rt_watcher_metrics.get('heads_received') or 0) > 0)
         worker_status = build_worker_status(
             now=now,
             realtime_is_enabled=_worker_status_realtime_enabled,
@@ -10304,6 +10389,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             # worker-alive-and-reporting (state C), instead of collapsing both into
             # "stable polling active" (item 9).
             target_reporting=bool(reporting_systems > 0),
+            # Truthful header (Section 2): only claim "Stable polling active" after a
+            # successful scheduled provider poll inside the freshness window.
+            stable_poll_succeeded=_stable_poll_succeeded,
+            quicknode_stream_receiving=_quicknode_stream_receiving,
         )
         # Debug / reconciliation fields for the stable-polling verdict. Surfaced at the top
         # level of the runtime status so operators can see exactly which timestamps and
@@ -10339,6 +10428,12 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'protected_assets_count': protected_assets_count,
             'monitored_systems_count': system_count,
             'systems_with_recent_heartbeat': recent_heartbeat_systems,
+            # Explicit reporting sub-counts so the runtime endpoint never conflates replay/
+            # historical coverage with live reporting (CLAUDE.md truthfulness rules).
+            'configured_systems': int(enabled_system_count),
+            'fresh_live_reporting_systems': int(summary.get('fresh_live_reporting_systems') or 0),
+            'historically_reporting_systems': int(summary.get('historically_reporting_systems') or 0),
+            'replay_only_systems': int(summary.get('replay_only_systems') or 0),
             'invalid_enabled_targets': int((broken_targets or {}).get('c') or 0),
             'healthy_enabled_targets': healthy_enabled_targets_count,
             'raw_enabled_targets': raw_enabled_targets,

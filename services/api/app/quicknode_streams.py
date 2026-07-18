@@ -1278,6 +1278,136 @@ def _target_load_failed_response(*, tx_count: int) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Per-minute stream activity aggregation (Section 5: rate-limit routine logs).
+#
+# In normal operation the stream emits several routine lines per block/POST
+# (route_hit, handler_started, signature_valid, payload_parsed,
+# transactions_normalized, batch_range, chain_head_refresh_skipped, lag_unknown,
+# stream_summary). At production block cadence that floods Railway. Instead we
+# aggregate the routine counts in-memory and emit ONE
+# ``quicknode_stream_periodic_summary`` per window. This mirrors the proven
+# bounded rpc_request_volume_summary pattern in evm_activity_provider. Security
+# and state-transition events (below) are NEVER aggregated — they still log
+# immediately.
+# ---------------------------------------------------------------------------
+_STREAM_ACTIVITY_WINDOW_SECONDS = 60.0
+_STREAM_ACTIVITY_LOCK = threading.Lock()
+_STREAM_ACTIVITY: dict[str, Any] = {
+    'window_start_monotonic': None,
+    'blocks_received': 0,
+    'transactions_received': 0,
+    'matched': 0,
+    'persisted': 0,
+    'health_status': 'unknown',
+    'chain_head_status': 'unknown',
+    'latest_stream_block': None,
+}
+
+# Events that must ALWAYS log immediately (never folded into the periodic summary):
+# security failures and state transitions an operator has to see the moment they
+# happen (Section 5: "Continue logging immediately for ...").
+STREAM_IMMEDIATE_EVENTS: frozenset[str] = frozenset({
+    'invalid_signature',
+    'parse_failure',
+    'persistence_failure',
+    'health_state_transition',
+    'lag_threshold_crossing',
+    'provider_recovery',
+    'circuit_breaker_open',
+    'circuit_breaker_closed',
+})
+
+
+def is_immediate_stream_event(event: str | None) -> bool:
+    """True when ``event`` must log immediately rather than be aggregated."""
+    return str(event or '').strip().lower() in STREAM_IMMEDIATE_EVENTS
+
+
+def reset_stream_activity() -> None:
+    """Reset the per-minute stream aggregator (tests/ops)."""
+    with _STREAM_ACTIVITY_LOCK:
+        _STREAM_ACTIVITY.update(
+            window_start_monotonic=None,
+            blocks_received=0,
+            transactions_received=0,
+            matched=0,
+            persisted=0,
+            health_status='unknown',
+            chain_head_status='unknown',
+            latest_stream_block=None,
+        )
+
+
+def stream_activity_snapshot() -> dict[str, Any]:
+    """Current (unemitted) aggregation window counters — for tests/observability."""
+    with _STREAM_ACTIVITY_LOCK:
+        return {k: v for k, v in _STREAM_ACTIVITY.items() if k != 'window_start_monotonic'}
+
+
+def record_stream_activity(
+    *,
+    blocks: int = 0,
+    transactions: int = 0,
+    matched: int = 0,
+    persisted: int = 0,
+    health_status: str | None = None,
+    chain_head_status: str | None = None,
+    latest_stream_block: int | None = None,
+    now_monotonic: float | None = None,
+) -> bool:
+    """Accumulate routine stream counts; emit one periodic summary per window.
+
+    Returns True when a ``quicknode_stream_periodic_summary`` was emitted on this call
+    (the window elapsed) so the counters were reset. Bounded and cheap: integer
+    counters only, one log line at most once per window.
+    """
+    tick = time.monotonic() if now_monotonic is None else now_monotonic
+    emitted = False
+    with _STREAM_ACTIVITY_LOCK:
+        if _STREAM_ACTIVITY['window_start_monotonic'] is None:
+            _STREAM_ACTIVITY['window_start_monotonic'] = tick
+        _STREAM_ACTIVITY['blocks_received'] += max(int(blocks or 0), 0)
+        _STREAM_ACTIVITY['transactions_received'] += max(int(transactions or 0), 0)
+        _STREAM_ACTIVITY['matched'] += max(int(matched or 0), 0)
+        _STREAM_ACTIVITY['persisted'] += max(int(persisted or 0), 0)
+        if health_status:
+            _STREAM_ACTIVITY['health_status'] = str(health_status)
+        if chain_head_status:
+            _STREAM_ACTIVITY['chain_head_status'] = str(chain_head_status)
+        if isinstance(latest_stream_block, int):
+            prev = _STREAM_ACTIVITY['latest_stream_block']
+            _STREAM_ACTIVITY['latest_stream_block'] = (
+                latest_stream_block if not isinstance(prev, int) else max(prev, latest_stream_block)
+            )
+        window_start = _STREAM_ACTIVITY['window_start_monotonic']
+        if window_start is not None and (tick - window_start) >= _STREAM_ACTIVITY_WINDOW_SECONDS:
+            snapshot = dict(_STREAM_ACTIVITY)
+            _STREAM_ACTIVITY.update(
+                window_start_monotonic=tick,
+                blocks_received=0,
+                transactions_received=0,
+                matched=0,
+                persisted=0,
+            )
+            emitted = True
+    if emitted:
+        logger.info(
+            'event=quicknode_stream_periodic_summary window_seconds=%s blocks_received=%s '
+            'transactions_received=%s matched=%s persisted=%s health_status=%s '
+            'chain_head_status=%s latest_stream_block=%s',
+            int(_STREAM_ACTIVITY_WINDOW_SECONDS),
+            snapshot['blocks_received'],
+            snapshot['transactions_received'],
+            snapshot['matched'],
+            snapshot['persisted'],
+            snapshot['health_status'],
+            snapshot['chain_head_status'],
+            snapshot['latest_stream_block'] if snapshot['latest_stream_block'] is not None else 'unknown',
+        )
+    return emitted
+
+
 def _summary_response(
     *,
     tx_count: int,
@@ -1305,6 +1435,15 @@ def _summary_response(
         'persisted=%s duplicates=%s skipped=%s gap_backfilled=%s',
         tx_count, targets_loaded, matched, persisted, duplicates, skipped,
         (backfill or {}).get('persisted', 0) if backfill else 'none',
+    )
+    # Section 5: feed the routine per-POST counts into the per-minute aggregator so a
+    # single quicknode_stream_periodic_summary carries the volume instead of every POST
+    # spamming Railway. Never suppresses the security/state-transition logs.
+    record_stream_activity(
+        blocks=1,
+        transactions=int(tx_count or 0),
+        matched=int(matched or 0),
+        persisted=int(persisted or 0) + (int((backfill or {}).get('persisted', 0)) if backfill else 0),
     )
     summary: dict[str, Any] = {
         'received': True,
