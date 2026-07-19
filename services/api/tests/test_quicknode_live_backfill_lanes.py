@@ -43,6 +43,14 @@ import pytest
 from fastapi import HTTPException
 
 from services.api.app import quicknode_streams as qn
+
+
+@pytest.fixture(autouse=True)
+def _enable_realtime_streams_mode(monkeypatch):
+    # Exercises the real-time QuickNode Streams live/backfill lane processing path,
+    # which the polling-only MVP (REALTIME_STREAMS_ENABLED unset) safely ignores. Opt
+    # into real-time mode so the webhook processes payloads instead of short-circuiting.
+    monkeypatch.setenv('REALTIME_STREAMS_ENABLED', 'true')
 from services.api.app.domains import alert_stream
 
 WALLET = '0x5f6f35fd8b10c5576089f99c7c8c351deb851d1f'
