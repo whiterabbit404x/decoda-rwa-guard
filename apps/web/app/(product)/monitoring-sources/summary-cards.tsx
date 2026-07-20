@@ -76,13 +76,19 @@ export function SummaryCards({ summary, loading }: { summary: SourceSummary | nu
 
   return (
     <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
-      {/* 1 — Source Health */}
+      {/* 1 — Source Health. Provider/runtime health (healthy/total) is separate from
+             the evidence/event-detection signal: `quiet` counts healthy sources that
+             are polling with fresh coverage but have observed no recent event — shown as
+             "N live · no recent events", never as a degraded/unhealthy source. */}
       <Card
         title="Source Health"
         variant={healthVariant(sh.health_pct)}
         primary={sh.total === 0 ? <span className="muted">No sources</span> : `${sh.healthy}/${sh.total}`}
       >
         <span>{sh.health_pct == null ? 'No live health evidence' : `${fmtPercent(sh.health_pct)} overall health`}</span>
+        {sh.quiet != null && sh.quiet > 0 ? (
+          <span style={{ color: 'var(--text-muted)' }}>{sh.quiet} live · no recent events</span>
+        ) : null}
         <span>{sh.trend_24h == null ? 'Trend vs 24h: not yet recorded' : `Trend 24h: ${sh.trend_24h > 0 ? '+' : ''}${sh.trend_24h}`}</span>
       </Card>
 

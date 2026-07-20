@@ -2111,7 +2111,15 @@ def _derive_system_runtime_state(result: dict[str, Any], *, is_enabled: bool) ->
     if events_ingested > 0 or recent_real_event_count > 0:
         return 'healthy', 'fresh', 'high', None
     if result.get('live_coverage_telemetry_at'):
-        return 'degraded', 'fresh', 'low', 'no_evidence'
+        # The provider poll succeeded and fresh coverage telemetry was persisted, but no
+        # wallet transfer / event was observed this cycle. A quiet wallet is NOT a
+        # failure: coverage telemetry proves the monitoring loop ran and read a fresh
+        # provider checkpoint (heartbeat + poll + coverage all succeeded). Report Healthy
+        # with an honest "live, no recent events" reason so the source reads
+        # "Healthy / No recent events", never "Degraded / no evidence". Degraded is
+        # reserved for provider failure, stale/missing coverage telemetry, RPC errors,
+        # or invalid target configuration — all handled by the branches above.
+        return 'healthy', 'fresh', 'high', 'live_no_recent_events'
     return 'idle', 'stale', 'medium', 'no_events_detected_yet'
 
 

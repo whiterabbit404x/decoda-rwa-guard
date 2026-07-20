@@ -2244,6 +2244,112 @@ def test_derive_system_runtime_state_marks_unsupported_target_type_explicitly():
     assert coverage_reason == 'unsupported_target_type_for_live_coverage'
 
 
+def test_derive_system_runtime_state_quiet_wallet_with_coverage_is_healthy():
+    """A successful poll of a quiet wallet (RPC healthy + fresh coverage telemetry
+    persisted, zero wallet transfers detected) must be Healthy / no recent events, NOT
+    Degraded / no evidence. This is the exact production scenario:
+        startup_rpc_health_check status=ok
+        provider_health_persisted status=healthy
+        coverage_telemetry_write coverage_persisted=True
+        poll_completed checked=1
+        wallet_transfers_detected=0
+    """
+    runtime_status, freshness_status, confidence_status, coverage_reason = monitoring_runner._derive_system_runtime_state(
+        {
+            'target_type': 'wallet',
+            # process_monitoring_target returns provider_status='live', source_status='active',
+            # degraded_reason=None and a fresh live_coverage_telemetry_at for a quiet wallet.
+            'provider_status': 'live',
+            'source_status': 'active',
+            'events_ingested': 0,
+            'recent_real_event_count': 0,
+            'degraded_reason': None,
+            'live_coverage_telemetry_at': '2026-07-20T10:00:00+00:00',
+        },
+        is_enabled=True,
+    )
+    assert runtime_status == 'healthy'
+    assert freshness_status == 'fresh'
+    assert confidence_status == 'high'
+    assert coverage_reason == 'live_no_recent_events'
+
+
+def test_derive_system_runtime_state_events_detected_is_healthy_no_reason():
+    """A poll that ingested a real wallet transfer stays Healthy with no quiet reason."""
+    runtime_status, freshness_status, confidence_status, coverage_reason = monitoring_runner._derive_system_runtime_state(
+        {
+            'target_type': 'wallet',
+            'provider_status': 'live',
+            'source_status': 'active',
+            'events_ingested': 1,
+            'recent_real_event_count': 1,
+            'degraded_reason': None,
+            'live_coverage_telemetry_at': '2026-07-20T10:00:00+00:00',
+        },
+        is_enabled=True,
+    )
+    assert runtime_status == 'healthy'
+    assert freshness_status == 'fresh'
+    assert confidence_status == 'high'
+    assert coverage_reason is None
+
+
+def test_derive_system_runtime_state_no_coverage_no_events_is_idle():
+    """No coverage telemetry AND no events => still idle/awaiting, never Healthy (a poll
+    without persisted coverage is not proof of live monitoring)."""
+    runtime_status, freshness_status, confidence_status, coverage_reason = monitoring_runner._derive_system_runtime_state(
+        {
+            'target_type': 'wallet',
+            'provider_status': 'live',
+            'source_status': 'active',
+            'events_ingested': 0,
+            'recent_real_event_count': 0,
+            'degraded_reason': None,
+            'live_coverage_telemetry_at': None,
+        },
+        is_enabled=True,
+    )
+    assert runtime_status == 'idle'
+    assert coverage_reason == 'no_events_detected_yet'
+
+
+def test_derive_system_runtime_state_provider_no_evidence_still_degraded():
+    """A provider that returned no evidence (couldn't establish live coverage) stays
+    Degraded — that is a real coverage failure, not a quiet wallet."""
+    runtime_status, _freshness, _confidence, coverage_reason = monitoring_runner._derive_system_runtime_state(
+        {
+            'target_type': 'wallet',
+            'provider_status': 'no_evidence',
+            'source_status': 'no_evidence',
+            'events_ingested': 0,
+            'recent_real_event_count': 0,
+            'degraded_reason': 'no_live_events_observed',
+            'live_coverage_telemetry_at': None,
+        },
+        is_enabled=True,
+    )
+    assert runtime_status == 'degraded'
+    assert coverage_reason == 'no_live_events_observed'
+
+
+def test_derive_system_runtime_state_provider_failed_stays_failed():
+    """A hard provider failure is never softened to Healthy by the quiet-wallet path."""
+    runtime_status, _freshness, _confidence, coverage_reason = monitoring_runner._derive_system_runtime_state(
+        {
+            'target_type': 'wallet',
+            'provider_status': 'failed',
+            'source_status': 'failed',
+            'events_ingested': 0,
+            'recent_real_event_count': 0,
+            'degraded_reason': 'rpc_providers_unavailable',
+            'live_coverage_telemetry_at': None,
+        },
+        is_enabled=True,
+    )
+    assert runtime_status == 'failed'
+    assert coverage_reason == 'rpc_providers_unavailable'
+
+
 def test_runtime_status_summary_prefers_unsupported_target_type_reason(monkeypatch):
     now = datetime.now(timezone.utc)
 

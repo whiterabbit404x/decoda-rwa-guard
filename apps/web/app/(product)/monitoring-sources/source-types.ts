@@ -43,6 +43,14 @@ export type SourceRow = {
   routing_explanation?: string | null;
   coverage_state?: string | null;
   evidence_source?: string | null;
+  // Three SEPARATE Screen-4 signals, never conflated:
+  //   provider health -> `status` / `health_status`
+  //   coverage freshness -> `coverage_fresh` (coverage telemetry inside the window)
+  //   evidence/event detection -> `event_detection`
+  // A quiet wallet has coverage_fresh=true + event_detection='no_recent_events'; it is
+  // Healthy / no recent events, never Degraded / no evidence.
+  coverage_fresh?: boolean | null;
+  event_detection?: 'events_detected' | 'no_recent_events' | 'none' | null;
   enabled?: boolean;
   monitoring_enabled?: boolean;
   // Deterministic engine output (aux signal; canonical status stays authoritative).
@@ -131,7 +139,9 @@ export type AgentDecision = {
 };
 
 export type SourceSummary = {
-  source_health: { healthy: number; total: number; health_pct: number | null; trend_24h: number | null };
+  // `quiet` = healthy sources that are live-but-quiet (polling + coverage fresh, no
+  // recent event) — an evidence/event-detection signal separate from provider health.
+  source_health: { healthy: number; total: number; quiet?: number; health_pct: number | null; trend_24h: number | null };
   active_routes: { primary: number; fallback: number; changed_24h: number | null };
   // coverage_pct/fresh now carry LIVE semantics. configured = enabled monitored
   // systems; live_fresh = targets with fresh canonical live evidence; replay_only /
