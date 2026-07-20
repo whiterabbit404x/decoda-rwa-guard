@@ -4143,6 +4143,28 @@ def process_monitoring_target(
         _resolved_host = _urlparse(str(_chain_rpc.get('rpc_url') or '')).hostname
     except Exception:
         _resolved_host = None
+    # Provider health must report the REAL latest chain head, not a stale catch-up
+    # checkpoint. The EVM provider exposes the raw eth_blockNumber head separately from the
+    # scan cursor (provider_result.latest_block, which is the confirmed block we processed
+    # up to). When a live wallet target is deeply behind, the provider fast-forwards the
+    # cursor to the live tail (see evm_cursor_fast_forward); either way, persisting the
+    # observed chain head keeps provider_health_records.latest_block and any head-lag
+    # derived from it anchored to the current tip rather than the old checkpoint block.
+    _observed_chain_head = target.get('_evm_observed_chain_head')
+    _cursor_fast_forwarded = bool(target.get('_evm_cursor_fast_forwarded'))
+    _provider_health_latest_block = (
+        int(_observed_chain_head)
+        if isinstance(_observed_chain_head, int) and _observed_chain_head > 0
+        else provider_result.latest_block
+    )
+    if _cursor_fast_forwarded:
+        logger.info(
+            'monitoring_cursor_fast_forwarded workspace_id=%s target_id=%s chain=%s '
+            'cursor_fast_forwarded=true observed_chain_head=%s scan_cursor_block=%s '
+            'action=live_tail_prioritized_over_stale_backfill',
+            target.get('workspace_id'), target.get('id'), chain,
+            _observed_chain_head, provider_result.latest_block,
+        )
     # Canonical provider-health persistence (shared with Run Diagnostic). Records the
     # measured latency, host, chain, latest block, success/failure and consecutive
     # streak — tagged actor_type=worker so it is distinguishable from a manual diagnostic.
@@ -4155,7 +4177,7 @@ def process_monitoring_target(
         success=(provider_result.status == 'live'),
         latency_ms=provider_latency_ms,
         chain_id=_resolved_chain_id,
-        latest_block=provider_result.latest_block,
+        latest_block=_provider_health_latest_block,
         error_message=provider_error_message,
         error_category=(provider_result.error_code or provider_result.reason_code),
         evidence_source=provider_evidence_source,
@@ -4168,14 +4190,15 @@ def process_monitoring_target(
             'mode': provider_result.mode,
             'source_type': provider_result.source_type,
             'rpc_attempted': _rpc_attempted,
+            'cursor_fast_forwarded': _cursor_fast_forwarded,
         },
     )
     logger.info(
         'provider_health_persisted workspace_id=%s target_id=%s provider_host=%s chain_id=%s '
-        'latest_block=%s latency_ms=%s status=%s success=%s actor_type=worker trigger=scheduled_poll '
+        'latest_block=%s scan_cursor_block=%s latency_ms=%s status=%s success=%s actor_type=worker trigger=scheduled_poll '
         'provider_health_record_id=%s',
         target.get('workspace_id'), target.get('id'), _resolved_host or 'unknown',
-        _resolved_chain_id, provider_result.latest_block, provider_latency_ms,
+        _resolved_chain_id, _provider_health_latest_block, provider_result.latest_block, provider_latency_ms,
         provider_health_status, provider_result.status == 'live', provider_health_record_id,
     )
     events = provider_result.events
