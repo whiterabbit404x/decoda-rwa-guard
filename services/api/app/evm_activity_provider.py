@@ -2224,6 +2224,77 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     catchup_mode: bool = last_block is not None and scan_ceiling < safe_to
     blocks_deferred: int = max(0, safe_to - scan_ceiling)
 
+    # Live-tail window size (recent blocks always scanned during catch-up so new
+    # transactions are detected without waiting for the gradual backfill). Resolved here,
+    # ahead of the scan, so the deep-backlog fast-forward decision below can reuse it.
+    # Configurable via BASE_LIVE_TAIL_BLOCKS (Base) or the generic EVM_LIVE_TAIL_BLOCKS;
+    # defaults to 100 recent blocks on Base so the live-tail eth_getLogs window stays
+    # within the per-request size that providers accept.
+    _live_tail_default = '100' if network in {'base', 'base-mainnet'} else '0'
+    if network in {'base', 'base-mainnet'}:
+        _live_tail_default = os.getenv('BASE_LIVE_TAIL_BLOCKS', _live_tail_default)
+    try:
+        live_tail_blocks = max(0, int(os.getenv('EVM_LIVE_TAIL_BLOCKS', _live_tail_default)))
+    except (TypeError, ValueError):
+        live_tail_blocks = 100 if network in {'base', 'base-mainnet'} else 0
+
+    # --- Deep-backlog fast-forward (live wallet monitoring) ---
+    # When a live wallet target's previous_cursor is so far behind the chain head that the
+    # deferred backlog exceeds a safe threshold, gradual catch-up (max_blocks_per_cycle at
+    # a time) can NEVER converge on a fast chain like Base — the chain produces new blocks
+    # faster than a capped catch-up cycle scans them. Worse, persisting the stale catch-up
+    # ceiling as the latest processed block keeps Monitoring Sources degraded/no-evidence
+    # and the reported block lag pinned to the old checkpoint, even though the RPC is
+    # healthy. Past the threshold we abandon the (bounded, optional) historical backfill for
+    # this cycle and fast-forward the cursor to the live tail: scan only latest-live_tail..
+    # latest so provider health + coverage telemetry reflect the REAL chain head and stay
+    # fresh. The skipped range is deferred backfill and must never block live telemetry
+    # freshness. Configurable via BASE_CATCHUP_FAST_FORWARD_THRESHOLD /
+    # EVM_CATCHUP_FAST_FORWARD_THRESHOLD; 0 disables fast-forward. The default is high enough
+    # that moderate catch-up (which the live-tail window already covers) still proceeds
+    # gradually and only an extreme, unrecoverable backlog triggers the fast-forward.
+    _ff_default = 150_000 if network in {'base', 'base-mainnet'} else 0
+    if network in {'base', 'base-mainnet'}:
+        try:
+            _ff_default = max(0, int(os.getenv('BASE_CATCHUP_FAST_FORWARD_THRESHOLD', str(_ff_default))))
+        except (TypeError, ValueError):
+            pass
+    try:
+        fast_forward_threshold = max(0, int(os.getenv('EVM_CATCHUP_FAST_FORWARD_THRESHOLD', str(_ff_default))))
+    except (TypeError, ValueError):
+        fast_forward_threshold = _ff_default
+    cursor_fast_forwarded = False
+    if (
+        target_type == 'wallet'
+        and catchup_mode
+        and live_tail_blocks > 0
+        and fast_forward_threshold > 0
+        and blocks_deferred > fast_forward_threshold
+    ):
+        _ff_new_from = max(0, safe_to - live_tail_blocks)
+        # Only ever fast-forward FORWARD — never move the scan window backward (guards the
+        # degenerate case where the live tail already overlaps the planned scan ceiling).
+        if _ff_new_from > scan_ceiling:
+            _ff_old_cursor = last_block if last_block is not None else from_block
+            logger.warning(
+                'evm_cursor_fast_forward target_id=%s chain=%s monitored_wallet=%s '
+                'cursor_fast_forwarded=true old_cursor=%s new_cursor=%s latest_block=%s '
+                'safe_to=%s live_tail_from=%s live_tail_to=%s live_tail_window=%s '
+                'blocks_deferred=%s fast_forward_threshold=%s '
+                'action=scan_live_tail_only reason=backlog_exceeds_threshold_backfill_deferred',
+                target.get('id'), network, target_address,
+                _ff_old_cursor, _ff_new_from, latest,
+                safe_to, _ff_new_from, safe_to, live_tail_blocks,
+                blocks_deferred, fast_forward_threshold,
+            )
+            from_block = _ff_new_from
+            scan_ceiling = safe_to
+            # The cursor now sits at the live tail, so this cycle is no longer catching up
+            # and defers no blocks; the skipped history is intentionally abandoned backfill.
+            catchup_mode = False
+            blocks_deferred = 0
+            cursor_fast_forwarded = True
+
     logger.info(
         'evm_block_scan_start target_id=%s chain=%s monitored_wallet=%s '
         'latest_block_hex=%s latest_block_decimal=%s previous_cursor=%s '
@@ -2297,18 +2368,12 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
             # which holds the cursor at the previous checkpoint (no forward advance).
             _logs_last_complete_block = _adaptive['last_complete_block']
 
-    # Live-tail window: when catchup_mode, also scan the most recent blocks so new
-    # transactions are detected immediately without waiting for the gradual backfill to
-    # complete. Configurable via BASE_LIVE_TAIL_BLOCKS (Base) or the generic
-    # EVM_LIVE_TAIL_BLOCKS; defaults to 100 recent blocks on Base so the live-tail
-    # eth_getLogs window stays within the per-request size that providers accept.
-    _live_tail_default = '100' if network in {'base', 'base-mainnet'} else '0'
-    if network in {'base', 'base-mainnet'}:
-        _live_tail_default = os.getenv('BASE_LIVE_TAIL_BLOCKS', _live_tail_default)
-    try:
-        live_tail_blocks = max(0, int(os.getenv('EVM_LIVE_TAIL_BLOCKS', _live_tail_default)))
-    except (TypeError, ValueError):
-        live_tail_blocks = 100 if network in {'base', 'base-mainnet'} else 0
+    # Live-tail window: when still in catchup_mode (a moderate backlog that did NOT
+    # trigger the deep-backlog fast-forward above), also scan the most recent blocks so
+    # new transactions are detected immediately without waiting for the gradual backfill
+    # to complete. live_tail_blocks was resolved earlier, before the fast-forward decision.
+    # After a fast-forward catchup_mode is False and the primary scan range IS the live
+    # tail, so no separate live-tail range is appended here.
     live_tail_from: int | None = None
     if catchup_mode and live_tail_blocks > 0:
         _lt_candidate = max(scan_ceiling + 1, safe_to - live_tail_blocks)
@@ -2537,6 +2602,15 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     # starts from here and advances another max_blocks_per_cycle until caught up. When a
     # 413 capped the scan, this is the last fully-scanned block (≤ scan_ceiling).
     target['_evm_scan_to_block'] = _scan_to_block
+    # Expose the RAW observed chain head (eth_blockNumber) separately from the scan cursor.
+    # The scan cursor (_evm_scan_to_block) is the confirmed block we processed up to; this
+    # is the actual chain tip the provider reported this cycle. The runner persists it as
+    # provider_health_records.latest_block so provider health reflects the REAL latest chain
+    # head instead of a stale catch-up checkpoint. Left None when the head is unavailable.
+    target['_evm_observed_chain_head'] = latest if latest else None
+    # True when this cycle abandoned a deep historical backlog and fast-forwarded the cursor
+    # to the live tail (see evm_cursor_fast_forward). The runner logs it for diagnostics.
+    target['_evm_cursor_fast_forwarded'] = cursor_fast_forwarded
     # Expose the log-scan coverage status so the provider-result layer can report a
     # degraded (not live-success) observation and so a failed/partial log scan never
     # advances the cursor past unscanned blocks. 'ok' | 'degraded' | 'failed' and a
