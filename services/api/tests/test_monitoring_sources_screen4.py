@@ -351,3 +351,138 @@ def test_enrichment_quicknode_degraded_does_not_override_alchemy_health():
     assert ph['healthy_count'] == 1
     assert ph['degraded_count'] == 0
     assert ph['providers'][0]['host'] == 'base-mainnet.g.alchemy.com'
+
+
+# ---------------------------------------------------------------------------
+# 4. Quiet-wallet health classification.
+#    A wallet that is polling successfully (RPC healthy + fresh coverage telemetry)
+#    but has observed no wallet-transfer event this window is Healthy / no recent
+#    events — never "Degraded / no evidence". "Degraded" is reserved for provider
+#    failure, stale heartbeat/telemetry, missing coverage telemetry, RPC errors, or
+#    invalid configuration.
+# ---------------------------------------------------------------------------
+def _quiet_target():
+    return {'enabled': True, 'monitoring_enabled': True, 'asset_id': 'a1', 'asset_missing': False}
+
+
+def test_derive_source_status_quiet_healthy_carries_no_recent_events_reason():
+    system = {
+        'is_enabled': True, 'runtime_status': 'healthy',
+        'last_heartbeat': '2026-07-20T10:00:00+00:00',
+        'coverage_reason': 'live_no_recent_events', 'freshness_status': 'fresh',
+    }
+    status, reason = pilot._derive_source_status(
+        _quiet_target(), system, provider_health={'status': 'healthy'},
+    )
+    assert status == 'healthy'
+    assert reason == 'live_no_recent_events'
+
+
+def test_derive_source_status_reclassifies_legacy_quiet_degraded_as_healthy():
+    """A row persisted by the pre-fix writer (runtime_status='degraded',
+    coverage_reason='no_evidence') is reclassified Healthy / no recent events when the
+    latest provider observation is healthy, a heartbeat exists, and telemetry is fresh."""
+    system = {
+        'is_enabled': True, 'runtime_status': 'degraded',
+        'last_heartbeat': '2026-07-20T10:00:00+00:00',
+        'coverage_reason': 'no_evidence', 'freshness_status': 'fresh',
+    }
+    status, reason = pilot._derive_source_status(
+        _quiet_target(), system, provider_health={'status': 'healthy'},
+    )
+    assert status == 'healthy'
+    assert reason == 'live_no_recent_events'
+
+
+def test_derive_source_status_degraded_provider_stays_degraded():
+    """A genuinely degraded provider observation is NOT softened by the quiet guard."""
+    system = {
+        'is_enabled': True, 'runtime_status': 'degraded',
+        'last_heartbeat': '2026-07-20T10:00:00+00:00',
+        'coverage_reason': 'no_evidence', 'freshness_status': 'fresh',
+    }
+    status, _reason = pilot._derive_source_status(
+        _quiet_target(), system, provider_health={'status': 'degraded'},
+    )
+    assert status == 'degraded'
+
+
+def test_derive_source_status_stale_telemetry_stays_degraded():
+    """Requirement #3: stale heartbeat/telemetry keeps a degraded runtime Degraded even
+    when the provider observation is healthy."""
+    system = {
+        'is_enabled': True, 'runtime_status': 'degraded',
+        'last_heartbeat': '2026-07-20T10:00:00+00:00',
+        'coverage_reason': 'no_evidence', 'freshness_status': 'stale',
+    }
+    status, _reason = pilot._derive_source_status(
+        _quiet_target(), system, provider_health={'status': 'healthy'},
+    )
+    assert status == 'degraded'
+
+
+def test_derive_source_status_non_quiet_degraded_reason_preserved():
+    """A real degradation reason (not a quiet reason) is never reclassified."""
+    system = {
+        'is_enabled': True, 'runtime_status': 'degraded',
+        'last_heartbeat': '2026-07-20T10:00:00+00:00',
+        'coverage_reason': 'monitoring_degraded', 'freshness_status': 'fresh',
+    }
+    status, reason = pilot._derive_source_status(
+        _quiet_target(), system, provider_health={'status': 'healthy'},
+    )
+    assert status == 'degraded'
+    assert reason == 'monitoring_degraded'
+
+
+def test_enrichment_quiet_wallet_is_healthy_no_recent_events():
+    """End-to-end: a quiet wallet (healthy RPC provider, fresh coverage telemetry, zero
+    wallet transfers) enriches to Healthy / no recent events with Source Health 1/1 and
+    a separate evidence/event-detection signal — never Degraded."""
+    workspace_id = 'ws1'
+    target_id = 't_quiet'
+    canonical_id = pilot._canonical_target_uuid(workspace_id, target_id)
+    now = datetime.now(timezone.utc)
+
+    targets = [{
+        'id': target_id, 'name': 'Treasury wallet monitor', 'target_type': 'wallet',
+        'chain_network': 'base', 'chain_id': 8453,
+        'contract_identifier': None, 'wallet_address': '0xabc0000000000000000000000000000000000001',
+        'asset_id': 'a_treasury', 'asset_name': 'Treasury', 'asset_missing': False,
+        'monitoring_mode': 'poll', 'monitoring_enabled': True, 'enabled': True,
+        'monitored_system_id': 'sys_quiet',
+        'target_metadata': {'rpc_sources': {'primary_host': 'base-mainnet.g.alchemy.com',
+                                            'fallback_host': None, 'explanation': 'Primary RPC.'}},
+    }]
+    # Quiet wallet: runtime healthy, heartbeat + coverage fresh, but NO wallet-transfer
+    # event this window (last_event_at is None).
+    systems = [{
+        'id': 'sys_quiet', 'target_id': target_id, 'asset_id': 'a_treasury', 'chain': 'base',
+        'is_enabled': True, 'runtime_status': 'healthy', 'last_heartbeat': now.isoformat(),
+        'last_event_at': None, 'coverage_reason': 'live_no_recent_events', 'freshness_status': 'fresh',
+        'asset_name': 'Treasury', 'target_name': 'Treasury wallet monitor',
+    }]
+
+    enrichment = pilot._build_monitoring_sources_enrichment(
+        _enrichment_conn(workspace_id, canonical_id, now),
+        workspace_id=workspace_id, assets=[{'id': 'a_treasury', 'name': 'Treasury'}],
+        targets=targets, systems=systems,
+    )
+
+    source = enrichment['sources'][0]
+    assert source['status'] == 'healthy', 'quiet wallet must be Healthy, not Degraded'
+    assert source['status_reason'] == 'live_no_recent_events'
+    # Three separated signals: provider health (healthy), coverage freshness (fresh),
+    # evidence/event detection (no recent events).
+    assert source['event_detection'] == 'no_recent_events'
+    assert source['coverage_fresh'] is True
+    assert source['health_status'] in {'healthy', 'warning', 'unknown'}
+
+    sh = enrichment['summary']['source_health']
+    assert sh['healthy'] == 1
+    assert sh['total'] == 1
+    assert sh['quiet'] == 1
+
+    # A quiet wallet must not degrade provider health — it stays 1/1 healthy.
+    assert enrichment['provider_health']['healthy_count'] == 1
+    assert enrichment['provider_health']['total'] == 1

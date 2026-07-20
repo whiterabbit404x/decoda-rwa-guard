@@ -11225,6 +11225,19 @@ _SOURCE_STATUS_PROVIDER_UNAVAILABLE = 'provider_unavailable'
 # consecutive-success streak is met (Critical -> Recovering -> Healthy).
 _SOURCE_STATUS_RECOVERING = 'recovering'
 
+# Coverage reasons that mean "provider poll + coverage telemetry succeeded, but no
+# wallet/transfer EVENT was observed this window" — a live-but-quiet source, NOT a
+# provider/telemetry failure. These must read Healthy / no recent events, never
+# Degraded. 'live_no_recent_events' is the canonical reason written by the corrected
+# runtime writer; 'no_events_detected_yet' / 'no_evidence' are legacy reasons a
+# pre-fix runtime writer persisted for the same quiet state (kept here so a stale row
+# is reclassified truthfully until the next poll overwrites it).
+_LIVE_QUIET_COVERAGE_REASONS = frozenset({
+    'live_no_recent_events',
+    'no_events_detected_yet',
+    'no_evidence',
+})
+
 # Evidence sources that are historical/simulated and must NEVER count as fresh live
 # telemetry coverage (CLAUDE.md: simulator/fallback data is never customer evidence).
 _REPLAY_EVIDENCE_SOURCES = {'replay', 'replay_or_none', 'simulator', 'historical', 'demo'}
@@ -11262,6 +11275,12 @@ def _derive_source_status(
       4. A failure now followed by successful poll(s) -> recovering.
       5. No provider observation has ever occurred -> provisioning / awaiting first poll.
       6. Runtime healthy (+ fresh telemetry) -> healthy; runtime degraded -> degraded.
+
+    "Degraded" is reserved for real failures — provider failure, stale heartbeat,
+    missing coverage telemetry, RPC errors, or invalid configuration. A source that
+    is polling successfully with fresh coverage telemetry but has simply observed no
+    wallet/transfer event this window is live-but-quiet: it reads Healthy with a
+    ``live_no_recent_events`` reason, never Degraded / no evidence.
     """
     enabled = bool(target.get('enabled'))
     monitoring_enabled = bool(target.get('monitoring_enabled'))
@@ -11302,6 +11321,18 @@ def _derive_source_status(
         return _SOURCE_STATUS_RECOVERING, coverage_reason or 'recovering_after_failure'
 
     if runtime_status == 'degraded':
+        # Fail-safe reclassification: a runtime marked degraded ONLY because no
+        # wallet/transfer event was observed, while the latest provider observation is
+        # healthy and coverage telemetry is fresh, is a live-but-quiet source — not a
+        # failure. Reclassify it Healthy / no recent events so a stale row written
+        # before the runtime writer was corrected never reads "Degraded / no evidence".
+        if (
+            coverage_reason in _LIVE_QUIET_COVERAGE_REASONS
+            and provider_status == 'healthy'
+            and has_heartbeat
+            and freshness != 'stale'
+        ):
+            return _SOURCE_STATUS_HEALTHY, 'live_no_recent_events'
         return _SOURCE_STATUS_DEGRADED, coverage_reason or 'runtime_degraded'
     if runtime_status == 'disabled':
         return _SOURCE_STATUS_DISABLED, 'monitored_system_disabled'
@@ -11318,6 +11349,11 @@ def _derive_source_status(
     if runtime_status == 'healthy':
         if freshness == 'stale':
             return _SOURCE_STATUS_WARNING, 'telemetry_stale'
+        # A live source polling successfully with fresh coverage telemetry but no
+        # wallet/transfer event this window is Healthy / no recent events — surface the
+        # honest reason so the UI can separate provider health from event detection.
+        if coverage_reason in _LIVE_QUIET_COVERAGE_REASONS:
+            return _SOURCE_STATUS_HEALTHY, 'live_no_recent_events'
         return _SOURCE_STATUS_HEALTHY, None
     if runtime_status == 'idle' and has_heartbeat:
         # Worker alive but the monitoring loop is between polls. Only "awaiting poll"
@@ -11995,6 +12031,10 @@ def _build_monitoring_sources_enrichment(
     missing_target_links = 0
     degraded_or_failed = 0
     healthy_sources = 0
+    # Healthy sources that are live-but-quiet (polling + coverage fresh, no recent
+    # event). Tracked separately so the UI can surface "evidence/event detection" as a
+    # distinct signal from provider health and coverage freshness.
+    quiet_sources = 0
     provisioning_sources = 0
     primary_host_counts: dict[str, int] = {}
     fallback_host_counts: dict[str, int] = {}
@@ -12114,6 +12154,20 @@ def _build_monitoring_sources_enrichment(
             )
             p95_is_historical = (provider_success is not True) or _samples_stale
         last_telemetry_dt = _coerce_datetime(last_telemetry_at)
+        # Three SEPARATE Screen-4 signals, never conflated (CLAUDE.md truthfulness):
+        #   * coverage_fresh  — coverage telemetry (provider checkpoint) is in-window.
+        #   * events_recent   — a real wallet/transfer EVENT was observed in-window.
+        # A quiet wallet has coverage_fresh=True but events_recent=False; that is
+        # live-but-quiet, not missing evidence.
+        last_event_dt = _coerce_datetime((system or {}).get('last_event_at'))
+        coverage_fresh = (
+            last_telemetry_dt is not None
+            and (now - _he._as_aware(last_telemetry_dt)).total_seconds() <= thresholds.telemetry_freshness_seconds
+        )
+        events_recent = (
+            last_event_dt is not None
+            and (now - _he._as_aware(last_event_dt)).total_seconds() <= thresholds.telemetry_freshness_seconds
+        )
         engine_metrics = _he.SourceMetrics(
             # Feed the SUCCESSFUL P95 (None until enough successful samples) — never a
             # single failed-call elapsed time — so a fast failure cannot score healthy.
@@ -12151,10 +12205,27 @@ def _build_monitoring_sources_enrichment(
             recovery_state=recovery.get('recovery_state'),
         )
 
+        # Evidence/event-detection signal — kept SEPARATE from provider health and
+        # coverage freshness. Whether a real wallet/transfer EVENT was observed recently,
+        # independent of whether the provider poll + coverage telemetry succeeded. A
+        # healthy/quiet source (polling fine, coverage fresh, no event) is
+        # 'no_recent_events', which the UI must never render as a failure or "no evidence".
+        if events_recent:
+            event_detection = 'events_detected'
+        elif (
+            status in {_SOURCE_STATUS_HEALTHY, _SOURCE_STATUS_WARNING, _SOURCE_STATUS_RECOVERING}
+            or last_event_dt is not None
+        ):
+            event_detection = 'no_recent_events'
+        else:
+            event_detection = 'none'
+
         if status in {_SOURCE_STATUS_DEGRADED, _SOURCE_STATUS_FAILED, _SOURCE_STATUS_PROVIDER_UNAVAILABLE}:
             degraded_or_failed += 1
         elif status == _SOURCE_STATUS_HEALTHY:
             healthy_sources += 1
+            if event_detection == 'no_recent_events':
+                quiet_sources += 1
         elif status == _SOURCE_STATUS_PROVISIONING:
             provisioning_sources += 1
         if status_reason in {'linked_asset_missing', 'monitored_system_missing'}:
@@ -12178,10 +12249,6 @@ def _build_monitoring_sources_enrichment(
         # old replay timestamp lingers on the system row.
         if system is not None and monitored_system_row_enabled(system):
             telemetry_eligible_count += 1  # configured coverage numerator
-            coverage_fresh = (
-                last_telemetry_dt is not None
-                and (now - _he._as_aware(last_telemetry_dt)).total_seconds() <= thresholds.telemetry_freshness_seconds
-            )
             is_live_evidence = evidence_source == 'live'
             # provider_success is None when no provider record exists (non-RPC
             # telemetry); is False on a failed poll (disqualifies live coverage).
@@ -12283,6 +12350,13 @@ def _build_monitoring_sources_enrichment(
             'routing_explanation': routing_explanation,
             'coverage_state': coverage.get('coverage_status') or (system or {}).get('coverage_reason'),
             'evidence_source': evidence_source,
+            # Three separated Screen-4 signals so the UI never conflates them:
+            #   provider health -> `status` / `health_status`
+            #   coverage freshness -> `coverage_fresh` (coverage telemetry in-window)
+            #   evidence/event detection -> `event_detection`
+            #     ('events_detected' | 'no_recent_events' | 'none')
+            'coverage_fresh': coverage_fresh,
+            'event_detection': event_detection,
             'enabled': bool(target.get('enabled')),
             'monitoring_enabled': bool(target.get('monitoring_enabled')),
             # Deterministic engine output (aux signal; primary status stays authoritative).
@@ -12372,6 +12446,9 @@ def _build_monitoring_sources_enrichment(
         'source_health': {
             'healthy': healthy_sources,
             'total': total_sources,
+            # Healthy sources that are live-but-quiet (polling + coverage fresh, no recent
+            # event) — an evidence/event-detection signal separate from provider health.
+            'quiet': quiet_sources,
             'health_pct': overall_health_pct,
             'trend_24h': None,   # no historical snapshot table yet — honest null, never fabricated
         },

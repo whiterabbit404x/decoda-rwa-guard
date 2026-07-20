@@ -60,6 +60,25 @@ function sourceStatusBadge(status?: string | null): { label: string; variant: Pi
   return SOURCE_STATUS_LABELS[key] ?? { label: 'Unknown', variant: 'neutral' };
 }
 
+// Reasons that mean "live but quiet" (provider poll + coverage telemetry succeeded, no
+// wallet/transfer event this window). These are NOT failure reasons and must never be
+// rendered under a Degraded pill — the row reads "Healthy / No recent events".
+const QUIET_STATUS_REASONS = new Set(['live_no_recent_events', 'no_events_detected_yet', 'no_evidence']);
+
+function isQuietReason(reason?: string | null): boolean {
+  return QUIET_STATUS_REASONS.has((reason ?? '').trim().toLowerCase());
+}
+
+// Evidence/event-detection sub-line, kept SEPARATE from the provider-health pill so a
+// quiet wallet reads "Healthy / No recent events" (neutral), never a failure. Returns
+// null when there is no truthful event signal to show.
+function eventDetectionLine(source: SourceRow): { label: string; muted: boolean } | null {
+  const ev = (source.event_detection ?? '').trim().toLowerCase();
+  if (ev === 'events_detected') return { label: 'Events detected', muted: false };
+  if (ev === 'no_recent_events') return { label: 'No recent events', muted: true };
+  return null;
+}
+
 function routingBadge(source: SourceRow): { label: string; variant: PillVariant } {
   const status = (source.status ?? '').trim().toLowerCase();
   // No operational route exists when the provider is unavailable / critical — the
@@ -635,10 +654,25 @@ export default function MonitoringSourcesPage() {
                             <td>{source.provider || source.primary_provider || <span className="muted">—</span>}</td>
                             <td>{source.source_type || '—'}</td>
                             <td>
+                              {/* Provider/runtime health. */}
                               <StatusPill label={status.label} variant={status.variant} />
-                              {source.status_reason && status.variant !== 'success' ? (
+                              {/* Failure reason — only for genuine non-healthy states, never a
+                                  live-but-quiet reason (that surfaces below as event detection). */}
+                              {source.status_reason && status.variant !== 'success' && !isQuietReason(source.status_reason) ? (
                                 <div className="muted" style={{ fontSize: '0.66rem', marginTop: '0.15rem' }}>{source.status_reason.replace(/_/g, ' ')}</div>
                               ) : null}
+                              {/* Evidence/event detection — separate signal from provider health. */}
+                              {(() => {
+                                const ev = eventDetectionLine(source);
+                                return ev ? (
+                                  <div
+                                    style={{ fontSize: '0.66rem', marginTop: '0.15rem', color: ev.muted ? 'var(--text-muted)' : 'var(--success-fg)' }}
+                                    title={ev.muted ? 'Provider healthy and coverage telemetry fresh; no wallet/transfer event in the current window' : 'A wallet/transfer event was observed in the current window'}
+                                  >
+                                    {ev.label}
+                                  </div>
+                                ) : null;
+                              })()}
                             </td>
                             <td>{healthScoreCell(source)}</td>
                             <td style={{ whiteSpace: 'nowrap' }}>{p95LatencyCell(source)}</td>
