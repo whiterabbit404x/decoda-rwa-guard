@@ -11595,7 +11595,7 @@ def _load_latest_provider_health_by_target(
         rows = connection.execute(
             '''
             SELECT DISTINCT ON (target_id, provider_type)
-                   target_id, status, latency_ms, checked_at, evidence_source, provider_type, error_message, metadata
+                   id, target_id, status, latency_ms, checked_at, evidence_source, provider_type, error_message, metadata
             FROM provider_health_records
             WHERE workspace_id = %s::uuid
               AND target_id = ANY(%s::uuid[])
@@ -11971,6 +11971,74 @@ def _build_recovery_display(meta: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _reconcile_source_health(
+    *,
+    assessment: Any,
+    recovery_state: str | None,
+    provider_success: bool | None,
+    endpoint_unavailable: bool,
+    coverage_fresh: bool,
+    latest_block: int | None,
+    p95_current_ms: float | None,
+    consecutive_success: int | None,
+    required_success: int | None,
+    thresholds: Any,
+) -> tuple[str, float | None]:
+    """Reconcile the aux health status/score with the CURRENT successful snapshot.
+
+    The row status (derived from canonical facts + the latest scheduled observation) is
+    authoritative; this keeps the aux health score CONSISTENT with it and derived from
+    the SAME snapshot, so Screen 4 can never show "Healthy + score 0" or drag a live,
+    succeeding source into the critical band on a stale/polluted latency P95.
+
+    Recovery precedence (Screen-4):
+      * latest scheduled observation failed -> Critical, score in [0, 20];
+      * first scheduled success(es) after a failure -> Recovering, a CALCULATED recovery
+        score (snapshot health scaled by recovery progress) — never full, never 0;
+      * the required consecutive successes -> Healthy, the full snapshot health score.
+    A source with no provider observation keeps the engine's honest verdict (never a
+    fabricated score).
+    """
+    from services.api.app import monitoring_health_engine as _he
+    base_score = assessment.score
+    # 1. Hard failure: the latest scheduled observation did not succeed. Critical band —
+    #    a fast failure/pollution can never read as a high, healthy-looking score.
+    if provider_success is False or endpoint_unavailable:
+        score = 0.0 if base_score is None else min(float(base_score), _he._HARD_FAILURE_SCORE_CAP)
+        return _he.HEALTH_CRITICAL, round(score, 1)
+    # 2. No provider observation at all -> the engine's honest verdict (unknown/None when
+    #    nothing was measured). Never fabricate a score for an unobserved source.
+    if provider_success is None:
+        return assessment.status, (None if base_score is None else round(float(base_score), 1))
+    # 3. The latest scheduled observation SUCCEEDED. Build snapshot health from CURRENT
+    #    evidence: connectivity (reached the provider) + coverage freshness + chain-head
+    #    presence + a CURRENT RPC latency. Grounded in measured facts; a successful, live
+    #    source can never be 0.
+    parts: list[float] = [100.0]  # connectivity: the latest scheduled poll reached the provider
+    if coverage_fresh:
+        parts.append(100.0)
+    if latest_block is not None:
+        parts.append(100.0)
+    if p95_current_ms is not None:
+        parts.append(_he._score_lower_better(
+            float(p95_current_ms),
+            thresholds.p95_latency_healthy_max_ms,
+            thresholds.p95_latency_warning_max_ms,
+            5000.0,
+        ))
+    snapshot = sum(parts) / len(parts)
+    req = max(1, int(required_success or _he.DEFAULT_RECOVERY_CONSECUTIVE_SUCCESS))
+    consec = int(consecutive_success or 0)
+    # Recovering: a successful poll that has not yet met the required consecutive-success
+    # streak — a calculated recovery score (snapshot scaled by recovery progress).
+    if str(recovery_state or '').strip().lower() == _he.RECOVERY_RECOVERING:
+        progress = min(1.0, consec / req) if req else 1.0
+        return _he.HEALTH_WARNING, round(snapshot * progress, 1)
+    # Healthy / warning from the snapshot (never 0 for a successful, live source).
+    status = _he.HEALTH_HEALTHY if snapshot >= 80.0 else _he.HEALTH_WARNING
+    return status, round(snapshot, 1)
+
+
 def _build_monitoring_sources_enrichment(
     connection: Any,
     *,
@@ -12028,6 +12096,10 @@ def _build_monitoring_sources_enrichment(
 
     sources: list[dict[str, Any]] = []
     provider_agg: dict[str, dict[str, Any]] = {}
+    # Canonical evidence record IDs the snapshot was built from (the same records the
+    # table + cards use), so the Agent panel can cite evidence-backed record IDs instead
+    # of recomputing state from stale records.
+    evidence_record_ids: list[str] = []
     missing_target_links = 0
     degraded_or_failed = 0
     healthy_sources = 0
@@ -12035,6 +12107,10 @@ def _build_monitoring_sources_enrichment(
     # event). Tracked separately so the UI can surface "evidence/event detection" as a
     # distinct signal from provider health and coverage freshness.
     quiet_sources = 0
+    # Sources on the first successful scheduled poll(s) after a failure (Critical ->
+    # Recovering -> Healthy), tracked so the Agent panel reflects an in-progress recovery
+    # instead of reporting "no healthy monitored systems" while the table reads Recovering.
+    recovering_sources = 0
     provisioning_sources = 0
     primary_host_counts: dict[str, int] = {}
     fallback_host_counts: dict[str, int] = {}
@@ -12099,13 +12175,38 @@ def _build_monitoring_sources_enrichment(
         )
         address_kind = 'contract' if target.get('contract_identifier') else ('wallet' if target.get('wallet_address') else None)
 
-        latest_block = latest_block_by_system.get(str(system.get('id'))) if system else None
+        provider_meta = _provider_health_metadata(provider_health)
+        # Two DISTINCT block heights, never conflated (Screen-4 truthfulness):
+        #   * scan_cursor_block  — the last block the target pipeline processed up to,
+        #     read from the canonical monitor_checkpoint cursor.
+        #   * provider_latest_block — the observed chain head from the latest provider
+        #     observation (persisted in provider_health metadata). This is the real tip;
+        #     the scan cursor trails it while catching up.
+        # The Screen-4 "Latest Block" column shows provider_latest_block; the scan cursor
+        # is surfaced separately so a trailing cursor is never shown as the chain head.
+        scan_cursor_block = latest_block_by_system.get(str(system.get('id'))) if system else None
+        provider_latest_block = provider_meta.get('provider_latest_block')
+        if provider_latest_block is None:
+            provider_latest_block = provider_meta.get('latest_block')
+        try:
+            provider_latest_block = int(provider_latest_block) if provider_latest_block is not None else None
+        except (TypeError, ValueError):
+            provider_latest_block = None
+        # Headline latest block prefers the observed chain head; falls back to the scan
+        # cursor only when no provider chain head was persisted (older evidence).
+        latest_block = provider_latest_block if provider_latest_block is not None else scan_cursor_block
         latency_ms = provider_health.get('latency_ms')
         last_poll_at = coverage.get('last_poll_at')
-        last_telemetry_at = (
-            (system or {}).get('last_event_at')
-            or coverage.get('last_telemetry_at')
-        )
+        # COVERAGE telemetry proves monitored data arrived (separate from the poll, which
+        # only proves the loop ran). Freshness uses the FRESHEST proof that data arrived —
+        # coverage telemetry OR a recent on-chain event — so a stale on-chain event never
+        # drags down fresh coverage (a quiet-but-live wallet reads fresh), while a fresh
+        # event still counts as liveness when it is the only signal.
+        coverage_telemetry_at = coverage.get('last_telemetry_at')
+        # Display "last telemetry" prefers the coverage telemetry arrival, falling back to
+        # the last on-chain event only when no coverage telemetry exists (legacy rows), so
+        # the field is never empty when a real signal is available.
+        last_telemetry_at = coverage_telemetry_at or (system or {}).get('last_event_at')
         evidence_source = str(
             coverage.get('evidence_source')
             or provider_health.get('evidence_source')
@@ -12153,33 +12254,69 @@ def _build_monitoring_sources_enrichment(
                 or (now - _he._as_aware(_last_sample_dt)).total_seconds() > thresholds.telemetry_freshness_seconds
             )
             p95_is_historical = (provider_success is not True) or _samples_stale
-        last_telemetry_dt = _coerce_datetime(last_telemetry_at)
         # Three SEPARATE Screen-4 signals, never conflated (CLAUDE.md truthfulness):
-        #   * coverage_fresh  — coverage telemetry (provider checkpoint) is in-window.
+        #   * coverage_fresh  — COVERAGE telemetry (the monitoring loop received provider
+        #     data this cycle) is in-window. Derived ONLY from the coverage/poll telemetry
+        #     timestamp — a wallet event alone never marks coverage fresh.
         #   * events_recent   — a real wallet/transfer EVENT was observed in-window.
         # A quiet wallet has coverage_fresh=True but events_recent=False; that is
         # live-but-quiet, not missing evidence.
+        coverage_telemetry_dt = _coerce_datetime(coverage_telemetry_at)
         last_event_dt = _coerce_datetime((system or {}).get('last_event_at'))
+        # Freshest proof that monitored data arrived: coverage telemetry OR a recent
+        # event. Taking the MAX means an old event can never drag down fresh coverage,
+        # and a fresh event still proves liveness when coverage telemetry is absent.
+        _telemetry_signal_dts = [d for d in (coverage_telemetry_dt, last_event_dt) if d is not None]
+        freshest_telemetry_dt = (
+            max(_telemetry_signal_dts, key=lambda d: _he._as_aware(d)) if _telemetry_signal_dts else None
+        )
+        last_telemetry_dt = freshest_telemetry_dt
         coverage_fresh = (
-            last_telemetry_dt is not None
-            and (now - _he._as_aware(last_telemetry_dt)).total_seconds() <= thresholds.telemetry_freshness_seconds
+            freshest_telemetry_dt is not None
+            and (now - _he._as_aware(freshest_telemetry_dt)).total_seconds() <= thresholds.telemetry_freshness_seconds
         )
         events_recent = (
             last_event_dt is not None
             and (now - _he._as_aware(last_event_dt)).total_seconds() <= thresholds.telemetry_freshness_seconds
         )
+        # A CURRENT P95 is one that is available AND not historical (freshest successful
+        # sample in-window and the provider succeeding now). Only a current P95 describes
+        # present provider latency; a historical/insufficient one is displayed separately
+        # but never scored as current latency (so old cycle-duration samples can't tank a
+        # recovered source's score).
+        p95_is_current = (p95_status == 'available') and not p95_is_historical
         engine_metrics = _he.SourceMetrics(
-            # Feed the SUCCESSFUL P95 (None until enough successful samples) — never a
-            # single failed-call elapsed time — so a fast failure cannot score healthy.
-            p95_latency_ms=float(p95_successful) if isinstance(p95_successful, (int, float)) else None,
+            # Feed the SUCCESSFUL P95 only when it is CURRENT (never a failed-call elapsed
+            # time, never a stale/historical P95) so a fast failure or an old high-latency
+            # sample cannot force a live, succeeding source's score.
+            p95_latency_ms=float(p95_successful) if (p95_is_current and isinstance(p95_successful, (int, float))) else None,
             heartbeat_present=bool((system or {}).get('last_heartbeat')),
-            last_telemetry_at=last_telemetry_dt,
+            last_telemetry_at=freshest_telemetry_dt,
             endpoint_unavailable=endpoint_unavailable,
             success=provider_success,
         )
         assessment = _he.assess_source_health(engine_metrics, thresholds=thresholds, now=now)
-        if assessment.score is not None:
-            health_scores.append(assessment.score)
+        # Recovery timeline (Critical -> Recovering -> Healthy) from the latest
+        # provider-health metadata's persisted success streak.
+        recovery = _build_recovery_display(provider_meta)
+        # Reconcile the aux health score/status with the CURRENT successful snapshot so
+        # the score is derived from the same evidence as the row status: a hard failure
+        # stays 0..20; a successful, live source is never scored 0; a recovering source
+        # carries a calculated recovery score; a healthy source the full snapshot score.
+        health_status, health_score_value = _reconcile_source_health(
+            assessment=assessment,
+            recovery_state=recovery.get('recovery_state'),
+            provider_success=provider_success,
+            endpoint_unavailable=endpoint_unavailable,
+            coverage_fresh=coverage_fresh,
+            latest_block=latest_block,
+            p95_current_ms=(float(p95_successful) if (p95_is_current and isinstance(p95_successful, (int, float))) else None),
+            consecutive_success=recovery.get('consecutive_successful_polls'),
+            required_success=recovery.get('required_consecutive_success'),
+            thresholds=thresholds,
+        )
+        if health_score_value is not None:
+            health_scores.append(health_score_value)
         score_breakdown = _build_source_score_breakdown(
             assessment=assessment,
             provider_success=provider_success,
@@ -12187,9 +12324,6 @@ def _build_monitoring_sources_enrichment(
             latest_block=latest_block,
             coverage=coverage,
         )
-        # Recovery timeline (Critical -> Recovering -> Healthy) from the latest
-        # provider-health metadata's persisted success streak.
-        recovery = _build_recovery_display(_provider_health_metadata(provider_health))
 
         freshness = str((system or {}).get('freshness_status') or '').strip().lower()
         is_oracle = 'oracle' in ' '.join(
@@ -12226,13 +12360,24 @@ def _build_monitoring_sources_enrichment(
             healthy_sources += 1
             if event_detection == 'no_recent_events':
                 quiet_sources += 1
+        elif status == _SOURCE_STATUS_RECOVERING:
+            recovering_sources += 1
         elif status == _SOURCE_STATUS_PROVISIONING:
             provisioning_sources += 1
         if status_reason in {'linked_asset_missing', 'monitored_system_missing'}:
             missing_target_links += 1
 
-        if primary_provider:
-            primary_host_counts[primary_provider] = primary_host_counts.get(primary_provider, 0) + 1
+        # OPERATIONAL routes are not derived from static routing config alone: a source
+        # that successfully polled its provider this cycle HAS an operational primary
+        # route even when the target's rpc_sources metadata is absent. Use the declared
+        # primary when present; otherwise fall back to the observed provider host from a
+        # SUCCESSFUL latest observation so a fresh successful poll never reads 0 routes.
+        route_is_operational = provider_success is True
+        effective_primary_provider = primary_provider or (
+            provider_host if (route_is_operational and provider_host) else None
+        )
+        if effective_primary_provider:
+            primary_host_counts[effective_primary_provider] = primary_host_counts.get(effective_primary_provider, 0) + 1
             primary_route_count += 1
         if fallback_provider:
             fallback_host_counts[fallback_provider] = fallback_host_counts.get(fallback_provider, 0) + 1
@@ -12275,6 +12420,9 @@ def _build_monitoring_sources_enrichment(
             elif status in {_SOURCE_STATUS_FAILED, _SOURCE_STATUS_PROVIDER_UNAVAILABLE, _SOURCE_STATUS_MISSING_CONFIG}:
                 oracle_missed += 1
 
+        _phr_id = provider_health.get('id')
+        if _phr_id:
+            evidence_record_ids.append(str(_phr_id))
         # Aggregate provider health for the summary panel (measured records only).
         if provider_host:
             entry = provider_agg.setdefault(
@@ -12306,12 +12454,21 @@ def _build_monitoring_sources_enrichment(
             'address_kind': address_kind,
             'provider': provider_host,
             'primary_provider': primary_provider,
+            # The operational primary provider reflects real evidence: the declared
+            # primary, or the observed provider host from a successful latest poll.
+            'operational_primary_provider': effective_primary_provider,
             'fallback_provider': fallback_provider,
             'source_type': target.get('monitoring_mode') or target.get('target_type'),
             'status': status,
             'status_reason': status_reason,
             'runtime_status': (system or {}).get('runtime_status'),
+            # Screen-4 "Latest Block" uses the observed provider chain head; the scan
+            # cursor / last-processed block are surfaced SEPARATELY so a trailing cursor
+            # is never presented as the chain head.
             'latest_block': latest_block,
+            'provider_latest_block': provider_latest_block,
+            'scan_cursor_block': scan_cursor_block,
+            'last_processed_block': scan_cursor_block,
             'block_lag': None,  # chain-tip lag requires a live RPC head; not fabricated here.
             # median_latency_ms is the last SUCCESSFUL latency only — a failed call's
             # elapsed time is surfaced separately as failure_elapsed_ms, never as a
@@ -12333,6 +12490,13 @@ def _build_monitoring_sources_enrichment(
             # instead of presenting it as current provider health.
             'p95_is_historical': p95_is_historical,
             'p95_last_sample_at': _isoformat_or_none(last_successful_sample_at),
+            # RPC request latency (canonical current provider latency) is SEPARATE from
+            # the poll/scan duration, which must never be presented as provider latency
+            # or P95. All three are surfaced so the UI can show them distinctly.
+            'rpc_request_latency_ms': provider_meta.get('rpc_request_latency_ms'),
+            'poll_duration_ms': provider_meta.get('poll_duration_ms'),
+            'scan_duration_ms': provider_meta.get('scan_duration_ms'),
+            'rpc_successful_sample_count': provider_meta.get('rpc_successful_sample_count'),
             'score_breakdown': score_breakdown,
             # Recovery timeline: recovery_state (critical/recovering/healthy),
             # consecutive successful polls vs required, last failure / recovery start,
@@ -12345,8 +12509,8 @@ def _build_monitoring_sources_enrichment(
             'last_heartbeat': (system or {}).get('last_heartbeat'),
             'last_telemetry_at': last_telemetry_at,
             'provider_checked_at': _isoformat_or_none(provider_health.get('checked_at')),
-            'provider_health_record_id': None,
-            'routing': 'primary' if primary_provider else ('fallback' if fallback_provider else None),
+            'provider_health_record_id': provider_health.get('id') or None,
+            'routing': 'primary' if effective_primary_provider else ('fallback' if fallback_provider else None),
             'routing_explanation': routing_explanation,
             'coverage_state': coverage.get('coverage_status') or (system or {}).get('coverage_reason'),
             'evidence_source': evidence_source,
@@ -12359,9 +12523,14 @@ def _build_monitoring_sources_enrichment(
             'event_detection': event_detection,
             'enabled': bool(target.get('enabled')),
             'monitoring_enabled': bool(target.get('monitoring_enabled')),
-            # Deterministic engine output (aux signal; primary status stays authoritative).
-            'health_score': None if assessment.score is None else round(assessment.score, 1),
-            'health_status': assessment.status,
+            # Deterministic health score/status reconciled with the CURRENT snapshot and
+            # the row status (recovery precedence applied). Never "Healthy + 0", never a
+            # successful/live source dragged to 0 by a stale/polluted latency P95.
+            'health_score': None if health_score_value is None else round(health_score_value, 1),
+            'health_status': health_status,
+            # The raw deterministic-engine verdict, kept for transparency/debugging.
+            'engine_health_score': None if assessment.score is None else round(assessment.score, 1),
+            'engine_health_status': assessment.status,
             'has_live_evidence': assessment.has_live_evidence,
             'triggered_rules': assessment.triggered_rules,
             'is_oracle': is_oracle,
@@ -12395,7 +12564,10 @@ def _build_monitoring_sources_enrichment(
             'detail': 'Only one healthy RPC provider is configured; add a fallback provider for failover resilience.',
         })
 
-    # Confidence is grounded in measured evidence, never a fixed number.
+    # Confidence is grounded in measured evidence, never a fixed number. A recovering
+    # source (first successful scheduled poll after a failure) is acknowledged as an
+    # in-progress recovery — the Agent panel must NOT report "no healthy monitored
+    # systems" while the table reads Recovering with fresh provider + coverage evidence.
     if not targets:
         confidence = 'unavailable'
         confidence_basis = 'No monitoring targets configured yet.'
@@ -12408,6 +12580,13 @@ def _build_monitoring_sources_enrichment(
     elif healthy_sources > 0:
         confidence = 'medium'
         confidence_basis = 'Monitored systems healthy; awaiting fresh telemetry confirmation.'
+    elif recovering_sources > 0:
+        confidence = 'medium'
+        confidence_basis = (
+            'Scheduled RPC polling recovered successfully through the primary provider. '
+            'Fresh provider and coverage evidence received; awaiting the next consecutive '
+            'successful poll before returning to Healthy.'
+        )
     elif provisioning_sources > 0:
         confidence = 'medium'
         confidence_basis = 'Sources provisioning; waiting for first heartbeat and poll.'
@@ -12419,6 +12598,8 @@ def _build_monitoring_sources_enrichment(
         agent_state = 'idle'
     elif missing_target_links > 0 or degraded_or_failed > 0:
         agent_state = 'attention_required'
+    elif recovering_sources > 0 and healthy_sources == 0:
+        agent_state = 'recovering'
     elif provisioning_sources > 0 and healthy_sources == 0:
         agent_state = 'monitoring' if provisioning_sources == 0 else 'provisioning'
     else:
@@ -12503,6 +12684,12 @@ def _build_monitoring_sources_enrichment(
             'state': agent_state,
             'healthy_providers': healthy_providers,
             'degraded_providers': degraded_providers,
+            # Same snapshot as the table/cards: recovering sources, operational routes and
+            # fresh live coverage so the Agent panel never contradicts the row status.
+            'recovering_sources': recovering_sources,
+            'healthy_sources': healthy_sources,
+            'operational_routes': primary_route_count,
+            'live_coverage_pct': live_coverage_pct,
             'missing_target_links': missing_target_links,
             'primary_provider': primary_provider_top,
             'recommended_fallback': recommended_fallback,
@@ -12512,6 +12699,9 @@ def _build_monitoring_sources_enrichment(
             'recommendations': recommendations,
             'activity': activity,
             'auto_routing_enabled': bool(settings.get('auto_routing_enabled')),
+            # Evidence-backed: the canonical provider-health record IDs this snapshot was
+            # built from (bounded), so the panel cites real records, not a recomputation.
+            'evidence_record_ids': evidence_record_ids[:20],
         }),
         'summary': _json_safe_value(summary),
         'decisions': decisions,

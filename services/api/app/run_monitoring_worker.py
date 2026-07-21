@@ -11,7 +11,13 @@ from typing import Any
 
 from services.api.app.activity_providers import validate_monitoring_config_or_raise
 from services.api.app.pilot import evaluate_monitoring_system_alerts
-from services.api.app.monitoring_runner import _min_monitoring_interval_seconds, run_monitoring_cycle
+from services.api.app.monitoring_runner import (
+    CANONICAL_POLLING_INTERVAL_ENV_VARS,
+    DEFAULT_CANONICAL_POLLING_INTERVAL_SECONDS,
+    _min_monitoring_interval_seconds,
+    canonical_polling_interval_seconds,
+    run_monitoring_cycle,
+)
 from services.api.app.observability import increment, gauge, observe, span, send_external_oncall_alert
 from services.api.app.pilot import runtime_environment_identity, startup_schema_init_plan
 
@@ -45,19 +51,23 @@ def _resolve_service_role() -> str:
     return (os.getenv('SERVICE_ROLE') or 'worker').strip() or 'worker'
 
 
-# Default 60s so the worker never hammers the RPC provider. EVM_POLLING_INTERVAL_SECONDS
-# is the documented override; MONITORING_WORKER_INTERVAL_SECONDS is kept as a legacy alias.
-DEFAULT_POLLING_INTERVAL_SECONDS = 60.0
-_POLLING_INTERVAL_ENV_VARS = ('EVM_POLLING_INTERVAL_SECONDS', 'MONITORING_WORKER_INTERVAL_SECONDS')
+# The worker loop cadence resolves through the SAME canonical polling interval the
+# per-target default and startup report use (monitoring_runner.canonical_polling_interval_seconds),
+# so the worker can never report one interval while polling at another. The MVP default
+# is 300s; EVM_POLLING_INTERVAL_SECONDS is the documented override,
+# MONITORING_WORKER_INTERVAL_SECONDS a legacy alias.
+DEFAULT_POLLING_INTERVAL_SECONDS = float(DEFAULT_CANONICAL_POLLING_INTERVAL_SECONDS)
+_POLLING_INTERVAL_ENV_VARS = CANONICAL_POLLING_INTERVAL_ENV_VARS
 
 
 def _resolve_polling_interval() -> tuple[float, str]:
     """Resolve the effective worker poll cadence and the source that set it.
 
     Precedence: EVM_POLLING_INTERVAL_SECONDS → MONITORING_WORKER_INTERVAL_SECONDS →
-    DEFAULT_POLLING_INTERVAL_SECONDS (60s). A larger interval reduces RPC pressure;
-    the value is floored at 1s so a misconfiguration can never busy-loop the
-    provider. A set-but-non-numeric override is skipped (it never sets the source).
+    the canonical MVP default (300s). A larger interval reduces RPC pressure; the value
+    is floored at 1s so a misconfiguration can never busy-loop the provider. A
+    set-but-non-numeric override is skipped (it never sets the source). This shares the
+    canonical resolution with the per-target default so the two never diverge.
     """
     for env_var in _POLLING_INTERVAL_ENV_VARS:
         raw = (os.getenv(env_var) or '').strip()

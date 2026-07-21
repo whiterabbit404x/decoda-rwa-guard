@@ -19,9 +19,24 @@ export type SourceRow = {
   status?: string | null;
   status_reason?: string | null;
   runtime_status?: string | null;
+  // "Latest Block" is the observed provider chain head. The scan cursor / last-processed
+  // block trail it while catching up and are surfaced separately — never conflated.
   latest_block?: number | null;
+  provider_latest_block?: number | null;
+  scan_cursor_block?: number | null;
+  last_processed_block?: number | null;
   block_lag?: number | null;
   median_latency_ms?: number | null;
+  // Canonical RPC request latency (a single eth_blockNumber request), kept distinct from
+  // the poll/scan duration — which must never be presented as provider latency or P95.
+  rpc_request_latency_ms?: number | null;
+  poll_duration_ms?: number | null;
+  scan_duration_ms?: number | null;
+  rpc_successful_sample_count?: number | null;
+  // The operational primary provider reflects real evidence (declared route, or the
+  // observed provider host from a successful latest poll).
+  operational_primary_provider?: string | null;
+  provider_health_record_id?: string | null;
   // P95 is only populated once enough measured samples exist. p95_insufficient=true
   // means the UI must show "Insufficient samples", never a fabricated number.
   p95_latency_ms?: number | null;
@@ -53,9 +68,12 @@ export type SourceRow = {
   event_detection?: 'events_detected' | 'no_recent_events' | 'none' | null;
   enabled?: boolean;
   monitoring_enabled?: boolean;
-  // Deterministic engine output (aux signal; canonical status stays authoritative).
+  // Health score/status reconciled with the CURRENT snapshot + row status (recovery
+  // precedence applied) — never "Healthy + 0". The raw engine verdict is kept alongside.
   health_score?: number | null;
   health_status?: 'healthy' | 'warning' | 'critical' | 'unknown' | null;
+  engine_health_score?: number | null;
+  engine_health_status?: 'healthy' | 'warning' | 'critical' | 'unknown' | null;
   has_live_evidence?: boolean;
   triggered_rules?: string[];
   is_oracle?: boolean;
@@ -106,6 +124,11 @@ export type AgentState = {
   state: string;
   healthy_providers: number;
   degraded_providers: number;
+  // Same snapshot as the table/cards so the panel never contradicts the row status.
+  recovering_sources?: number;
+  healthy_sources?: number;
+  operational_routes?: number;
+  live_coverage_pct?: number | null;
   missing_target_links: number;
   primary_provider?: string | null;
   recommended_fallback?: string | null;
@@ -115,6 +138,8 @@ export type AgentState = {
   recommendations: AgentRecommendation[];
   activity?: AgentActivity | null;
   auto_routing_enabled?: boolean;
+  // Canonical provider-health record IDs this snapshot was built from (evidence-backed).
+  evidence_record_ids?: string[];
 };
 
 export type AgentDecision = {

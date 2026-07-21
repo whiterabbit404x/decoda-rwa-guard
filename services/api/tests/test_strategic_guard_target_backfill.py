@@ -269,7 +269,11 @@ def test_target_backfill_emits_required_log_taxonomy(monkeypatch, caplog):
     monkeypatch.setattr(m, '_wallet_transfer_smoke_alert', lambda **_: str(uuid.uuid4()))
     monkeypatch.setattr(m, '_strategic_infrastructure_guard_alert', lambda **_: None)
 
-    with caplog.at_level(logging.INFO, logger='services.api.app.monitoring_runner'):
+    # Per-row diagnostic events (row_seen / row_skipped / alert_deduped) are emitted at
+    # DEBUG so a routine backfill of unchanged rows does not spam INFO every cycle
+    # (Screen-4 §14); the summary + created/linked events stay at INFO. Capture at DEBUG
+    # so the full diagnostic taxonomy is still asserted to exist and be diagnosable.
+    with caplog.at_level(logging.DEBUG, logger='services.api.app.monitoring_runner'):
         m.backfill_strategic_guard_alerts_for_target(WORKSPACE_ID, TARGET_ID)
 
     text = '\n'.join(r.getMessage() for r in caplog.records)
@@ -278,6 +282,10 @@ def test_target_backfill_emits_required_log_taxonomy(monkeypatch, caplog):
     assert 'strategic_guard_alert_created' in text
     assert 'strategic_guard_telemetry_alert_linked' in text
     assert 'strategic_guard_target_backfill_completed' in text
+    # The created + summary events remain at INFO (not suppressed by the DEBUG reduction).
+    _info_text = '\n'.join(r.getMessage() for r in caplog.records if r.levelno >= logging.INFO)
+    assert 'strategic_guard_alert_created' in _info_text
+    assert 'strategic_guard_target_backfill_completed' in _info_text
     # the older simulator a517 row's age is visible and the skip reason is explicit
     assert 'observed_at=2026-06-13T00:00:00+00:00' in text
     assert 'skipped_reason=evidence_source_not_live' in text
