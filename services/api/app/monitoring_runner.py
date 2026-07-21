@@ -24,11 +24,13 @@ from services.api.app.evm_activity_provider import (
     JsonRpcClient,
     evaluate_chain_mismatch,
     resolve_monitored_wallet,
+    rpc_metrics_capture,
     rpc_provider_backoff_active,
     rpc_provider_backoff_status,
 )
 from services.api.app.monitoring_truth import (
     derive_reporting_sub_counts,
+    should_run_historical_backfill,
     ui_evidence_state,
     ui_truthfulness_state,
 )
@@ -118,6 +120,41 @@ def _min_monitoring_interval_seconds() -> int:
         return max(1, int(os.getenv('MIN_EVM_POLLING_INTERVAL_SECONDS', '60')))
     except (TypeError, ValueError):
         return 60
+
+
+# Canonical MVP polling interval (seconds). ONE source of truth for the worker loop
+# cadence, the default per-target polling interval, and the value reported at startup —
+# so the worker can never report one interval (e.g. 900) while actually polling at
+# another (e.g. 300). Resolution precedence (highest first):
+#   EVM_POLLING_INTERVAL_SECONDS -> MONITORING_WORKER_INTERVAL_SECONDS -> default 300s.
+# The 300s default is the chosen MVP cadence (fresh enough to catch a stalled provider
+# within a few minutes while staying well within Alchemy free-tier request budgets). Set
+# EVM_POLLING_INTERVAL_SECONDS=900 to reduce provider usage; every component below reads
+# THIS value, so scheduling, freshness, and reporting all move together.
+CANONICAL_POLLING_INTERVAL_ENV_VARS = ('EVM_POLLING_INTERVAL_SECONDS', 'MONITORING_WORKER_INTERVAL_SECONDS')
+DEFAULT_CANONICAL_POLLING_INTERVAL_SECONDS = 300
+
+
+def canonical_polling_interval_seconds() -> int:
+    """The single canonical polling interval (seconds), floored at the min interval.
+
+    Every scheduling knob (worker loop cadence, per-target default interval, startup
+    reporting) resolves through this, so they cannot drift apart. A value below the
+    per-target minimum floor is raised to the floor (never polls faster than allowed).
+    """
+    resolved: int | None = None
+    for env_var in CANONICAL_POLLING_INTERVAL_ENV_VARS:
+        raw = (os.getenv(env_var) or '').strip()
+        if not raw:
+            continue
+        try:
+            resolved = int(float(raw))
+            break
+        except (TypeError, ValueError):
+            continue
+    if resolved is None:
+        resolved = DEFAULT_CANONICAL_POLLING_INTERVAL_SECONDS
+    return max(_min_monitoring_interval_seconds(), int(resolved))
 
 
 def _target_selected_for_live_poll(
@@ -1081,6 +1118,24 @@ _SIG_RULE_KEY = 'strategic_infrastructure_guard_wallet_outbound_transfer'
 _SIG_ALERT_TITLE = 'Strategic Infrastructure Guard: Treasury RWA Control Wallet Movement Detected'
 _SIG_ALERT_REASON = 'Outbound ETH movement from a wallet classified as Treasury RWA operational infrastructure.'
 _SMOKE_RULE_KEY = 'smoke_wallet_transfer'
+
+# Rule-set version for the Strategic Infrastructure Guard historical backfill. Bump this
+# when the backfill's alert rules change so a completed backfill re-runs once against the
+# new rules; otherwise a completed backfill is not rescanned every cycle.
+_STRATEGIC_BACKFILL_RULE_VERSION = '1'
+# In-process completion markers: (workspace_id, target_id) -> rule_version that last
+# completed a full historical backfill. Once a target has completed under the current
+# rule version, its historical rows are NOT rescanned every scheduled poll — the backfill
+# re-runs only when new telemetry was ingested this cycle, the rule version changed, or a
+# replay/cursor-recovery is requested (see should_run_historical_backfill). Process-local
+# (reset on restart, which safely re-runs once, then settles); never suppresses a run when
+# new telemetry exists, and fails OPEN so a bug can only cause an extra run, never a miss.
+_STRATEGIC_BACKFILL_COMPLETED: dict[tuple[str, str], str] = {}
+
+
+def reset_strategic_backfill_completion_state() -> None:
+    """Clear the in-process backfill completion markers (used by tests + on demand)."""
+    _STRATEGIC_BACKFILL_COMPLETED.clear()
 
 
 def _sig_dedupe_signature(*, workspace_id: str, target_id: str, chain_id: Any, tx_hash: str) -> str:
@@ -4104,20 +4159,48 @@ def process_monitoring_target(
                 target.get('id'), _resolved_wallet,
             )
             target['wallet_address'] = _resolved_wallet
-    # Measure REAL provider-request latency with a monotonic clock around the RPC
-    # fetch only. fetch_target_activity_result -> fetch_evm_activity does pure RPC
-    # (the evm provider touches no database), so this elapsed time is provider latency,
-    # not DB processing. A chain-mismatch or provider-backoff result early-returns
-    # WITHOUT any RPC call — latency is left None for those (never invented).
+    # Screen-4 truthfulness (RPC request latency vs poll/scan duration): the full
+    # fetch_target_activity_result runs MANY RPC requests plus block scanning (a deeply
+    # behind target scans dozens of backfill blocks + a live tail), so its wall-clock
+    # elapsed is the POLL/SCAN duration — NOT a single RPC request latency, and it must
+    # never be presented as provider P95. We time the whole poll for poll_duration_ms,
+    # but the canonical current provider latency is the latency of a single successful
+    # eth_blockNumber request, captured per-request inside the JsonRpcClient.
     _rpc_started = perf_counter()
-    provider_result: ActivityProviderResult = fetch_target_activity_result(target, checkpoint)
-    _rpc_elapsed_ms = int(round((perf_counter() - _rpc_started) * 1000))
+    with rpc_metrics_capture() as _rpc_capture:
+        provider_result: ActivityProviderResult = fetch_target_activity_result(target, checkpoint)
+    _poll_duration_ms = int(round((perf_counter() - _rpc_started) * 1000))
     provider_checked_at = utc_now()
     _rpc_attempted = (
         not target.get('_evm_chain_mismatch')
         and provider_result.reason_code not in {'CHAIN_RPC_MISMATCH', 'PROVIDER_BACKOFF_ACTIVE'}
     )
-    provider_latency_ms = _rpc_elapsed_ms if _rpc_attempted else None
+    # Canonical current provider latency = a single successful eth_blockNumber request
+    # (always part of provider validation), NOT the full scan. None when no successful
+    # network request was captured — never invented, never the scan/poll duration.
+    _rpc_request_latency_ms = _rpc_capture.successful_request_latency_ms() if _rpc_attempted else None
+    # Scan duration = the poll time beyond the single canonical RPC request (dominated
+    # by block-range scanning); an honest remainder, kept separate from RPC latency.
+    _scan_duration_ms = (
+        max(0, _poll_duration_ms - _rpc_request_latency_ms)
+        if (_rpc_attempted and _rpc_request_latency_ms is not None)
+        else None
+    )
+    # provider_health_records.latency_ms carries the canonical RPC REQUEST latency (not
+    # the poll/scan duration), so Screen 4's "current latency" and P95 are fed only real
+    # successful RPC network samples.
+    provider_latency_ms = _rpc_request_latency_ms
+    # Bounded per-request samples (successful + failed) for later P50/P95 and audit.
+    _rpc_samples = [
+        {k: s.get(k) for k in ('method', 'provider_host', 'success', 'latency_ms',
+                               'network_attempted', 'cache_hit', 'http_status', 'error_category')}
+        for s in (_rpc_capture.samples or [])
+    ][:40]
+    _rpc_successful_sample_count = sum(
+        1 for s in _rpc_capture.samples
+        if s.get('success') and s.get('network_attempted') and not s.get('cache_hit')
+        and s.get('latency_ms') is not None
+    )
     # Detect chain mismatch set by evm_activity_provider — mark target unhealthy and log it
     # so operators can identify misconfigured ethereum-mainnet targets sharing a Base RPC.
     # This does not affect correctly configured Base targets.
@@ -4199,14 +4282,28 @@ def process_monitoring_target(
             'source_type': provider_result.source_type,
             'rpc_attempted': _rpc_attempted,
             'cursor_fast_forwarded': _cursor_fast_forwarded,
+            # Three SEPARATED latency concepts (Screen-4 truthfulness). latency_ms above
+            # is the canonical RPC REQUEST latency; the poll/scan durations live here and
+            # must never be presented as provider P95.
+            'rpc_request_latency_ms': _rpc_request_latency_ms,
+            'poll_duration_ms': _poll_duration_ms,
+            'scan_duration_ms': _scan_duration_ms,
+            'rpc_successful_sample_count': _rpc_successful_sample_count,
+            'rpc_samples': _rpc_samples,
+            # Explicit block separation: the observed chain head (provider latest block)
+            # vs the scan cursor we processed up to. Screen 4 must not conflate them.
+            'provider_latest_block': _provider_health_latest_block,
+            'scan_cursor_block': provider_result.latest_block,
         },
     )
     logger.info(
         'provider_health_persisted workspace_id=%s target_id=%s provider_host=%s chain_id=%s '
-        'latest_block=%s scan_cursor_block=%s latency_ms=%s status=%s success=%s actor_type=worker trigger=scheduled_poll '
+        'provider_latest_block=%s scan_cursor_block=%s rpc_request_latency_ms=%s poll_duration_ms=%s '
+        'scan_duration_ms=%s rpc_successful_samples=%s status=%s success=%s actor_type=worker trigger=scheduled_poll '
         'provider_health_record_id=%s',
         target.get('workspace_id'), target.get('id'), _resolved_host or 'unknown',
-        _resolved_chain_id, _provider_health_latest_block, provider_result.latest_block, provider_latency_ms,
+        _resolved_chain_id, _provider_health_latest_block, provider_result.latest_block,
+        _rpc_request_latency_ms, _poll_duration_ms, _scan_duration_ms, _rpc_successful_sample_count,
         provider_health_status, provider_result.status == 'live', provider_health_record_id,
     )
     events = provider_result.events
@@ -5336,6 +5433,9 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
     # Infrastructure Guard backfill so older wallet-transfer rows on a live-polled but
     # never-selected_for_backfill target still get their alerts.
     strategic_guard_backfill_targets: set[tuple[str, str]] = set()
+    # Targets that ingested NEW telemetry this cycle — the signal that a completed
+    # historical backfill has fresh rows to catch up (see should_run_historical_backfill).
+    strategic_guard_new_telemetry: set[tuple[str, str]] = set()
     error_message: str | None = None
     # A target selected for a live poll (selected_for_live_poll=true, blocked_reason=none)
     # must never disappear between due-selection and the polling executor. Any selected id
@@ -6366,7 +6466,13 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 # (wallet_transfer telemetry is wallet-specific). Idempotent + create-only,
                 # so this catches up historical rows the scheduled backfill never selected.
                 if workspace_id and target.get('id') and str(target.get('target_type') or '').lower() == 'wallet':
-                    strategic_guard_backfill_targets.add((workspace_id, str(target['id'])))
+                    _bf_key = (workspace_id, str(target['id']))
+                    strategic_guard_backfill_targets.add(_bf_key)
+                    # A target that ingested NEW telemetry this cycle has fresh rows for a
+                    # completed backfill to catch up; record it so the completion guard
+                    # re-runs only when there is new work (never every quiet cycle).
+                    if int(result.get('events_ingested', 0) or 0) > 0:
+                        strategic_guard_new_telemetry.add(_bf_key)
                 alerts_generated += int(result['alerts_generated'])
                 if workspace_id:
                     workspace_systems_checked[workspace_id] += 1
@@ -6607,10 +6713,36 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         )
         strategic_guard_backfill_targets = set()
     for _bf_workspace_id, _bf_target_id in sorted(strategic_guard_backfill_targets):
+        _bf_key = (_bf_workspace_id, _bf_target_id)
+        # Completion guard: a target that already completed its historical backfill under
+        # the current rule version is rescanned ONLY when it ingested new telemetry this
+        # cycle, the rule version changed, or a replay/cursor-recovery is requested — so a
+        # quiet wallet does not re-dedupe the same old rows every scheduled poll. Fails
+        # OPEN: an unmarked target always runs (a marker only ever suppresses redundant work).
+        _bf_completed_version = _STRATEGIC_BACKFILL_COMPLETED.get(_bf_key)
+        if not should_run_historical_backfill(
+            backfill_completed=(_bf_completed_version == _STRATEGIC_BACKFILL_RULE_VERSION),
+            new_historical_rows=(_bf_key in strategic_guard_new_telemetry),
+            rule_version_changed=(
+                _bf_completed_version is not None
+                and _bf_completed_version != _STRATEGIC_BACKFILL_RULE_VERSION
+            ),
+        ):
+            logger.debug(
+                'strategic_guard_backfill_skipped_completed workspace_id=%s target_id=%s rule_version=%s',
+                _bf_workspace_id, _bf_target_id, _STRATEGIC_BACKFILL_RULE_VERSION,
+            )
+            continue
         try:
             _bf_result = backfill_strategic_guard_alerts_for_target(_bf_workspace_id, _bf_target_id)
             if int(_bf_result.get('created_count') or 0) > 0:
                 alerts_generated += int(_bf_result.get('created_count') or 0)
+            # Mark completion so the next quiet cycle skips the rescan. Only a real run
+            # (status ok, not a provider/chain skip) records completion.
+            if str(_bf_result.get('status') or '').startswith('skipped_'):
+                pass
+            else:
+                _STRATEGIC_BACKFILL_COMPLETED[_bf_key] = _STRATEGIC_BACKFILL_RULE_VERSION
         except Exception:
             logger.warning(
                 'strategic_guard_target_backfill_failed workspace_id=%s target_id=%s',
@@ -6795,7 +6927,9 @@ def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Re
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='monitoring_demo_scenario is deprecated and cannot be patched.')
         monitoring_enabled = bool(payload.get('monitoring_enabled')) if 'monitoring_enabled' in payload else bool(current.get('monitoring_enabled'))
         interval_seconds_raw = payload.get('monitoring_interval_seconds') if 'monitoring_interval_seconds' in payload else current.get('monitoring_interval_seconds')
-        interval_seconds = max(30, int(interval_seconds_raw or 300))
+        # Default to the ONE canonical polling interval (not a hardcoded 300) so a target
+        # with no explicit interval polls at the same cadence the worker reports.
+        interval_seconds = max(30, int(interval_seconds_raw or canonical_polling_interval_seconds()))
         auto_create_alerts = bool(payload.get('auto_create_alerts')) if 'auto_create_alerts' in payload else bool(current.get('auto_create_alerts', True))
         auto_create_incidents = bool(payload.get('auto_create_incidents')) if 'auto_create_incidents' in payload else bool(current.get('auto_create_incidents', False))
         is_active = bool(payload.get('is_active')) if 'is_active' in payload else bool(current.get('is_active', True))
@@ -13591,7 +13725,10 @@ def backfill_strategic_guard_alerts_for_target(
             chain_id=payload.get('chain_id'), tx_hash=row_tx_hash,
         ) if row_tx_hash else ''
 
-        logger.info(
+        # Per-row visibility is DEBUG so a routine backfill of unchanged rows does not
+        # emit one INFO line per historical row every cycle (a summary is logged at the
+        # end, and a NEW alert / error is still logged at INFO below).
+        logger.debug(
             'strategic_guard_backfill_row_seen workspace_id=%s target_id=%s telemetry_id=%s '
             'tx_hash=%s chain_id=%s event_type=%s evidence_source=%s observed_at=%s dedupe_key=%s',
             workspace_id, row_target_id, telemetry_id, row_tx_hash or 'none',
@@ -13609,7 +13746,7 @@ def backfill_strategic_guard_alerts_for_target(
             skipped_reason = 'chain_id_not_8453'
         if skipped_reason:
             skipped_count += 1
-            logger.info(
+            logger.debug(
                 'strategic_guard_backfill_row_skipped workspace_id=%s target_id=%s telemetry_id=%s '
                 'tx_hash=%s observed_at=%s dedupe_key=%s skipped_reason=%s',
                 workspace_id, row_target_id, telemetry_id, row_tx_hash or 'none',
@@ -13626,7 +13763,7 @@ def backfill_strategic_guard_alerts_for_target(
         if smoke_pre:
             smoke_alert_id = existing_signatures.get(smoke_key) or None
             deduped_count += 1
-            logger.info(
+            logger.debug(
                 'strategic_guard_alert_deduped workspace_id=%s target_id=%s telemetry_id=%s '
                 'tx_hash=%s dedupe_key=%s rule=smoke_wallet_transfer alert_id=%s',
                 workspace_id, row_target_id, telemetry_id, row_tx_hash, smoke_key,
@@ -13660,7 +13797,7 @@ def backfill_strategic_guard_alerts_for_target(
         if sig_pre:
             sig_alert_id = existing_signatures.get(dedupe_key) or None
             deduped_count += 1
-            logger.info(
+            logger.debug(
                 'strategic_guard_alert_deduped workspace_id=%s target_id=%s telemetry_id=%s '
                 'tx_hash=%s dedupe_key=%s rule=%s alert_id=%s',
                 workspace_id, row_target_id, telemetry_id, row_tx_hash, dedupe_key,

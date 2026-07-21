@@ -671,6 +671,91 @@ class rpc_caller_scope:
 
 
 # ---------------------------------------------------------------------------
+# Per-request RPC latency samples (Screen-4 truthfulness: RPC request latency is
+# separated from the full poll/scan duration). A single JSON-RPC request's network
+# latency is measured with a monotonic clock inside the canonical JsonRpcClient.call
+# and recorded to a thread-local sink WHEN a capture block is active. This lets the
+# scheduled worker persist a single successful ``eth_blockNumber`` request latency as
+# the canonical current provider latency — never the 11k-ms full scan duration — and
+# keep the P95 fed only by real successful RPC network samples.
+#
+# Never recorded (they are not real network-request latencies):
+#   * a route skipped for an active 429 backoff or a disabled endpoint (no network
+#     attempt was made — handled in FailoverJsonRpcClient, which never reaches call());
+#   * a cache hit (no network round-trip);
+#   * retry sleep / provider backoff time (only the per-attempt request is timed).
+# ---------------------------------------------------------------------------
+_RPC_METRICS = threading.local()
+
+
+def _record_rpc_request_sample(
+    *,
+    method: str,
+    host: str | None,
+    success: bool,
+    latency_ms: int | None,
+    network_attempted: bool = True,
+    cache_hit: bool = False,
+    http_status: int | None = None,
+    error_category: str | None = None,
+) -> None:
+    """Record ONE real RPC network request into the active capture sink (if any)."""
+    sink = getattr(_RPC_METRICS, 'sink', None)
+    if sink is None:
+        return
+    sink.append({
+        'method': str(method),
+        'provider_host': host,
+        'success': bool(success),
+        'latency_ms': int(latency_ms) if latency_ms is not None else None,
+        'network_attempted': bool(network_attempted),
+        'cache_hit': bool(cache_hit),
+        'http_status': http_status,
+        'error_category': error_category,
+        'caller': current_rpc_caller(),
+    })
+
+
+class rpc_metrics_capture:
+    """Collect per-request RPC latency samples made within this ``with`` block.
+
+    After the block exits, ``capture.samples`` holds every real network request the
+    canonical JsonRpcClient made (successful and failed). Nested captures are supported
+    — the previous sink is restored on exit so an inner probe never steals an outer
+    poll's samples.
+    """
+
+    def __init__(self) -> None:
+        self.samples: list[dict[str, Any]] = []
+        self._prev: list[dict[str, Any]] | None = None
+
+    def __enter__(self) -> 'rpc_metrics_capture':
+        self._prev = getattr(_RPC_METRICS, 'sink', None)
+        _RPC_METRICS.sink = self.samples
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        _RPC_METRICS.sink = self._prev
+
+    def successful_request_latency_ms(self, *, prefer_method: str = 'eth_blockNumber') -> int | None:
+        """Canonical current provider latency: the latency of a successful ``prefer_method``
+        request (``eth_blockNumber`` is always part of provider validation), else the
+        first successful real network request. None when no successful network sample
+        exists — never invented, never the scan duration."""
+        successful = [
+            s for s in self.samples
+            if s.get('success') and s.get('network_attempted') and not s.get('cache_hit')
+            and s.get('latency_ms') is not None
+        ]
+        if not successful:
+            return None
+        for s in successful:
+            if s.get('method') == prefer_method:
+                return int(s['latency_ms'])
+        return int(successful[0]['latency_ms'])
+
+
+# ---------------------------------------------------------------------------
 # Live RPC endpoint probe (bounded DNS / TLS / HTTP / JSON-RPC validation).
 # ---------------------------------------------------------------------------
 
@@ -1410,18 +1495,34 @@ class JsonRpcClient:
         backoff = _rpc_backoff_base_seconds()
         # Count this request for the periodic rpc_request_volume_summary (host/method/
         # caller only). One count per call() — inner retries are counted as retries.
-        _record_rpc_volume(_host_of(self.rpc_url), method=method, caller=current_rpc_caller())
+        _host = _host_of(self.rpc_url)
+        _record_rpc_volume(_host, method=method, caller=current_rpc_caller())
         for attempt in range(max_attempts):
             if attempt > 0:
-                _record_rpc_volume(_host_of(self.rpc_url), method=method,
+                _record_rpc_volume(_host, method=method,
                                    caller=current_rpc_caller(), retry=True)
+            # Time THIS network attempt only with a monotonic clock — never the retry
+            # sleeps between attempts — so the recorded sample is a single real RPC
+            # request latency, not the accumulated retry/backoff time.
+            _req_started = time.monotonic()
             try:
                 with request.urlopen(req, timeout=timeout) as resp:  # nosec B310
                     body = json.loads(resp.read().decode('utf-8'))
                 if body.get('error'):
                     raise RuntimeError(f"json-rpc error: {body['error']}")
+                _record_rpc_request_sample(
+                    method=method, host=_host, success=True,
+                    latency_ms=int(round((time.monotonic() - _req_started) * 1000)),
+                    http_status=200,
+                )
                 return body.get('result')
             except _urllib_error.HTTPError as exc:
+                _record_rpc_request_sample(
+                    method=method, host=_host, success=False,
+                    latency_ms=int(round((time.monotonic() - _req_started) * 1000)),
+                    http_status=getattr(exc, 'code', None),
+                    error_category=(f'http_{getattr(exc, "code", "err")}'),
+                )
                 # HTTP 413 (request/response too large): a QUERY-SIZE problem, not a
                 # provider outage or rate limit. Classify distinctly so the caller
                 # reduces the block range — never retried (an identical large query

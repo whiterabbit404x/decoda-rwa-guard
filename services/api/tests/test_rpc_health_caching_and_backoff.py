@@ -214,14 +214,19 @@ def test_cache_invalidated_when_rpc_url_changes(sh, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 6. Worker polling interval is configurable (default 60)
+# 6. Worker polling interval is configurable (default = canonical MVP 300s)
 # ---------------------------------------------------------------------------
 
-def test_worker_interval_default_is_60(monkeypatch):
+def test_worker_interval_default_is_canonical(monkeypatch):
+    # The worker loop default now resolves through the single canonical polling interval
+    # (300s MVP), shared with the per-target default + startup report so they never drift.
+    from services.api.app import monitoring_runner as _mr
     monkeypatch.delenv('MONITORING_WORKER_INTERVAL_SECONDS', raising=False)
+    monkeypatch.delenv('EVM_POLLING_INTERVAL_SECONDS', raising=False)
+    monkeypatch.delenv('MIN_EVM_POLLING_INTERVAL_SECONDS', raising=False)
     monkeypatch.setattr(sys, 'argv', ['run_monitoring_worker'])
     args = run_monitoring_worker.parse_args()
-    assert args.interval_seconds == 60.0
+    assert args.interval_seconds == float(_mr.DEFAULT_CANONICAL_POLLING_INTERVAL_SECONDS) == 300.0
 
 
 def test_worker_interval_is_configurable(monkeypatch):
