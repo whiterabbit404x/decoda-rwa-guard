@@ -79,6 +79,9 @@ def _setup_base_env(monkeypatch):
     monkeypatch.setenv('BASE_MAX_LOGS_BLOCK_RANGE', '100')
     monkeypatch.setenv('BASE_MIN_LOGS_BLOCK_RANGE', '10')
     monkeypatch.setenv('EVM_LIVE_TAIL_BLOCKS', '0')
+    # These tests drive cursor-based catch-up 413 handling across a wide window; that is
+    # operator-enabled historical backfill (gated OFF by default in the polling-only MVP).
+    monkeypatch.setenv('HISTORICAL_BACKFILL_ENABLED', 'true')
 
 
 def _make_target(cursor: str | None = None) -> dict:
@@ -176,8 +179,9 @@ def test_http_413_reduces_eth_getlogs_chunk_size(monkeypatch):
     _setup_base_env(monkeypatch)
     from services.api.app.evm_activity_provider import fetch_evm_activity
 
-    # 100-block requests are rejected; <=50 succeed → the worker must reduce.
-    rpc = _Rpc413WhenLargerThan(latest=10_000, threshold=50, as_runtime_error=True)
+    # With the 5-block chunk cap, requests larger than 2 blocks are rejected so the adaptive
+    # halving is exercised: a 5-block chunk 413s and splits recursively down toward 1 block.
+    rpc = _Rpc413WhenLargerThan(latest=10_000, threshold=2, as_runtime_error=True)
     target = _make_target(cursor=f'{10_000 - 110}:checkpoint:-1')
     monkeypatch.setenv('MAX_BLOCKS_PER_CYCLE', '200')
 
@@ -185,12 +189,13 @@ def test_http_413_reduces_eth_getlogs_chunk_size(monkeypatch):
 
     spans = sorted({to - frm + 1 for frm, to in rpc.getlogs_ranges})
     assert spans, 'eth_getLogs must be attempted'
-    assert max(spans) == 100, f'first attempt must use the 100-block max range; spans={spans}'
-    assert min(spans) <= 50, f'413 must halve the chunk size to <=50; spans={spans}'
+    # MAX_LOG_QUERY_CHUNK_BLOCKS=5 caps the first attempt; 413 halves it toward 1 block.
+    assert max(spans) == 5, f'first attempt must use the 5-block chunk cap; spans={spans}'
+    assert min(spans) <= 2, f'413 must halve the chunk size to <=2; spans={spans}'
     # The whole poll did not fail — events is a (possibly empty) list, not an exception.
     assert isinstance(events, list)
-    # No huge 1000-block eth_getLogs request was ever issued on Base.
-    assert max(spans) <= 100, f'Base eth_getLogs must never exceed 100 blocks; spans={spans}'
+    # A single eth_getLogs request never exceeds the 5-block ceiling on Base.
+    assert max(spans) <= 5, f'Base eth_getLogs must never exceed 5 blocks; spans={spans}'
 
 
 # ---------------------------------------------------------------------------
@@ -277,9 +282,11 @@ def test_cursor_advances_to_last_successful_chunk(monkeypatch):
     from services.api.app.evm_activity_provider import fetch_evm_activity
 
     latest = 10_000           # safe_to = 9997
-    cursor_block = 9_000      # from_block = 8975
-    poison = 9_100            # a chunk containing this block stays too large
-    scan_ceiling = (cursor_block - 25) + 500 - 1  # 9474
+    cursor_block = 9_000
+    # Hard 25-block ceiling: from_block = cursor - 8 (overlap shrunk for progress) = 8992,
+    # scan_ceiling = from_block + 25 - 1 = 9016. Poison sits inside that bounded window.
+    poison = 9_010            # a chunk containing this block stays too large
+    scan_ceiling = (cursor_block - 8) + 25 - 1  # 9016
     target = _make_target(cursor=f'{cursor_block}:checkpoint:-1')
     rpc = _Rpc413Poison(latest=latest, poison_block=poison)
 
@@ -314,9 +321,9 @@ def test_large_base_catchup_capped_per_cycle(monkeypatch):
     fetch_evm_activity(target, None, rpc_client=rpc)
 
     scan_to = target['_evm_scan_to_block']
-    # Default Base catch-up cap is 100 blocks/cycle (+replay overlap) — not 160k.
-    assert scan_to - cursor_block <= 100 + 25, (
-        f'catch-up must advance ~100 blocks/cycle; advanced {scan_to - cursor_block}'
+    # Hard MAX_BLOCKS_PER_TARGET_PER_CYCLE=25 caps the per-cycle advance — not 160k.
+    assert scan_to - cursor_block <= 25, (
+        f'catch-up must advance <=25 blocks/cycle; advanced {scan_to - cursor_block}'
     )
     # The huge backlog must NOT be cleared in one cycle.
     assert safe_to - scan_to > 100_000, (

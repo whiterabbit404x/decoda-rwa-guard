@@ -261,6 +261,9 @@ def test_old_backfill_event_does_not_block_cursor_advancement(monkeypatch):
     monkeypatch.setenv('MONITOR_REPLAY_BLOCKS', '5')
     monkeypatch.setenv('MAX_BLOCKS_PER_CYCLE', '100')
     monkeypatch.delenv('EVM_LIVE_TAIL_BLOCKS', raising=False)
+    # Cursor-based catch-up over a deep backlog is historical-backfill behavior, gated OFF
+    # by default in the polling-only MVP (where a scheduled poll scans only the live tail).
+    monkeypatch.setenv('HISTORICAL_BACKFILL_ENABLED', 'true')
 
     target = {
         'id': str(uuid.uuid4()),
@@ -339,7 +342,10 @@ def test_live_tail_detects_new_tx_during_catchup(monkeypatch):
     monkeypatch.setenv('EVM_CONFIRMATIONS_REQUIRED', '3')
     monkeypatch.setenv('MONITOR_REPLAY_BLOCKS', '5')
     monkeypatch.setenv('MAX_BLOCKS_PER_CYCLE', '100')
-    monkeypatch.setenv('EVM_LIVE_TAIL_BLOCKS', '100')  # live-tail window
+    monkeypatch.setenv('EVM_LIVE_TAIL_BLOCKS', '100')  # live-tail window (capped at 25)
+    # The catch-up backfill + live-tail combination is historical-backfill behavior, gated
+    # OFF by default in the polling-only MVP; enable it to exercise that path here.
+    monkeypatch.setenv('HISTORICAL_BACKFILL_ENABLED', 'true')
 
     target = {
         'id': str(uuid.uuid4()),

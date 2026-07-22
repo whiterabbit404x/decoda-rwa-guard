@@ -195,13 +195,19 @@ def test_max_blocks_per_cycle_env_var_respected(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_cursor_advances_to_chunk_ceiling_not_chain_head(monkeypatch):
-    """After a catch-up cycle, _evm_scan_to_block must be the chunk ceiling
-    (cursor + MAX_BLOCKS_PER_CYCLE), not the chain head."""
+    """After a catch-up cycle, _evm_scan_to_block must be the chunk ceiling, not the
+    chain head. The per-target hard ceiling MAX_BLOCKS_PER_TARGET_PER_CYCLE (default 25)
+    caps the cycle even when the legacy MAX_BLOCKS_PER_CYCLE asks for 1000 — the exact
+    bypass the Datto USDC runaway hit. The reorg overlap is shrunk when it would consume
+    the whole budget so catch-up still advances."""
     monkeypatch.setenv('EVM_RPC_URL', 'http://rpc')
     monkeypatch.setenv('LIVE_MONITORING_CHAINS', 'base')
     monkeypatch.setenv('EVM_CONFIRMATIONS_REQUIRED', str(BASE_CONFIRMATIONS))
     monkeypatch.setenv('MONITOR_REPLAY_BLOCKS', '25')
+    # Legacy knob asks for 1000, but the hard 25-block ceiling wins.
     monkeypatch.setenv('MAX_BLOCKS_PER_CYCLE', '1000')
+    # Cursor-based catch-up is historical-backfill behavior (gated); enable it here.
+    monkeypatch.setenv('HISTORICAL_BACKFILL_ENABLED', 'true')
 
     from services.api.app.evm_activity_provider import fetch_evm_activity
 
@@ -215,23 +221,30 @@ def test_cursor_advances_to_chunk_ceiling_not_chain_head(monkeypatch):
         f'In catch-up mode, _evm_scan_to_block ({scan_to}) must be less than '
         f'chain head safe_to ({CHAIN_SAFE_TO}); should equal chunk ceiling'
     )
-    # from_block = CURSOR_BLOCK - 25 (replay) = 47286471
-    # scan_ceiling = from_block + 1000 - 1 = 47287470
-    expected_from = CURSOR_BLOCK - 25
-    expected_ceiling = expected_from + 1000 - 1
+    # MAX_BLOCKS_PER_TARGET_PER_CYCLE=25 hard-caps the window; the reorg overlap (25)
+    # equals the budget so it shrinks to 25//3=8 to keep forward progress.
+    # from_block = CURSOR_BLOCK - 8; scan_ceiling = from_block + 25 - 1 = CURSOR_BLOCK + 16.
+    expected_from = CURSOR_BLOCK - 8
+    expected_ceiling = expected_from + 25 - 1
     assert scan_to == expected_ceiling, (
-        f'scan_ceiling must be from_block ({expected_from}) + 1000 - 1 = {expected_ceiling}; '
+        f'scan_ceiling must be from_block ({expected_from}) + 25 - 1 = {expected_ceiling}; '
         f'got {scan_to}'
     )
+    # Never more than the hard 25-block ceiling of eth_getBlockByNumber backfill blocks.
+    backfill_calls = sorted({int(str(p[0]), 16) for m, p in rpc.calls if m == 'eth_getBlockByNumber'})
+    backfill_window = [b for b in backfill_calls if expected_from <= b <= expected_ceiling]
+    assert len(backfill_window) <= 25, f'catch-up backfill scanned {len(backfill_window)} blocks (>25)'
 
 
 def test_catchup_proceeds_incrementally_over_multiple_cycles(monkeypatch):
-    """Each cycle must advance the cursor by MAX_BLOCKS_PER_CYCLE until caught up."""
+    """Each cycle must advance the cursor by the hard 25-block ceiling until caught up."""
     monkeypatch.setenv('EVM_RPC_URL', 'http://rpc')
     monkeypatch.setenv('LIVE_MONITORING_CHAINS', 'base')
     monkeypatch.setenv('EVM_CONFIRMATIONS_REQUIRED', str(BASE_CONFIRMATIONS))
     monkeypatch.setenv('MONITOR_REPLAY_BLOCKS', '25')
     monkeypatch.setenv('MAX_BLOCKS_PER_CYCLE', '1000')
+    # Cursor-based catch-up is historical-backfill behavior (gated); enable it here.
+    monkeypatch.setenv('HISTORICAL_BACKFILL_ENABLED', 'true')
 
     from services.api.app.evm_activity_provider import fetch_evm_activity
 
@@ -252,9 +265,10 @@ def test_catchup_proceeds_incrementally_over_multiple_cycles(monkeypatch):
     scan_to_2 = target['_evm_scan_to_block']
 
     assert scan_to_2 > scan_to_1, 'Cycle 2: cursor must advance beyond cycle 1 ceiling'
-    # from_block_2 = scan_to_1 - 25 (replay), ceiling_2 = from_block_2 + 1000 - 1
-    expected_from_2 = scan_to_1 - 25
-    expected_ceiling_2 = min(expected_from_2 + 1000 - 1, CHAIN_SAFE_TO)
+    # Hard 25-block ceiling, reorg overlap shrunk to 25//3=8 for progress.
+    # from_block_2 = scan_to_1 - 8, ceiling_2 = from_block_2 + 25 - 1 = scan_to_1 + 16.
+    expected_from_2 = scan_to_1 - 8
+    expected_ceiling_2 = min(expected_from_2 + 25 - 1, CHAIN_SAFE_TO)
     assert scan_to_2 == expected_ceiling_2, (
         f'Cycle 2 ceiling should be {expected_ceiling_2}; got {scan_to_2}'
     )
@@ -271,12 +285,15 @@ def test_native_eth_transfer_detected_without_eth_get_logs(monkeypatch):
     monkeypatch.setenv('LIVE_MONITORING_CHAINS', 'base')
     monkeypatch.setenv('EVM_CONFIRMATIONS_REQUIRED', str(BASE_CONFIRMATIONS))
     monkeypatch.setenv('MAX_BLOCKS_PER_CYCLE', '1000')
+    # Cursor-based catch-up is historical-backfill behavior (gated); enable it here.
+    monkeypatch.setenv('HISTORICAL_BACKFILL_ENABLED', 'true')
 
     from services.api.app.evm_activity_provider import fetch_evm_activity
 
-    # Put the tx_block inside the first chunk: cursor - 25 + 500
-    from_block = CURSOR_BLOCK - 25
-    tx_block = from_block + 500
+    # The catch-up window is now hard-capped at 25 blocks: from_block = cursor - 8
+    # (overlap shrunk for progress), scan_ceiling = cursor + 16. Put the native tx inside
+    # that bounded window (further-ahead blocks are reached over subsequent cycles).
+    tx_block = CURSOR_BLOCK + 5
     tx_hash = '0xnativetransfer01'
 
     target = _make_target(cursor_block=CURSOR_BLOCK)
@@ -307,9 +324,10 @@ def test_native_eth_transfer_detected_with_no_logs_endpoint(monkeypatch):
 
     from services.api.app.evm_activity_provider import fetch_evm_activity
 
-    # No cursor: initial backfill window of 300 blocks
+    # No cursor now starts at the LIVE TAIL (INITIAL_LIVE_TAIL_BLOCKS=10), NOT a 300-block
+    # historical backfill (that is disabled by default). Window: [safe_to-9, safe_to].
     safe_to = CHAIN_LATEST - BASE_CONFIRMATIONS
-    tx_block = safe_to - 50
+    tx_block = safe_to - 5
     tx_hash = '0xnative02'
 
     target = _make_target(cursor_block=None)
@@ -370,8 +388,9 @@ def test_eth_get_logs_400_does_not_stop_block_scan(monkeypatch):
 
     from services.api.app.evm_activity_provider import fetch_evm_activity
 
+    # No cursor starts at the live tail [safe_to-9, safe_to]; place the native tx there.
     safe_to = CHAIN_LATEST - BASE_CONFIRMATIONS
-    tx_block = safe_to - 100
+    tx_block = safe_to - 5
     tx_hash = '0xnative03'
 
     target = _make_target(cursor_block=None)
