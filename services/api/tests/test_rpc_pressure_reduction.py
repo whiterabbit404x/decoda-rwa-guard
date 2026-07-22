@@ -199,9 +199,9 @@ def test_no_secret_in_cached_result_or_replayed_log(sh, monkeypatch, caplog):
 
 # ---------------------------------------------------------------------------
 # Worker poll cadence: EVM_POLLING_INTERVAL_SECONDS resolves through the SINGLE
-# canonical polling interval (default 300s MVP) shared with the per-target default and
+# canonical polling interval (default 900s) shared with the per-target default and
 # the startup report, so the worker can never report one interval while polling at
-# another. 300s >= the previous 60s default, so RPC pressure is not increased.
+# another. 900s >= the previous 60s default, so RPC pressure is reduced, not increased.
 # ---------------------------------------------------------------------------
 
 def test_polling_interval_defaults_to_canonical(monkeypatch):
@@ -210,7 +210,7 @@ def test_polling_interval_defaults_to_canonical(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.delenv('MIN_EVM_POLLING_INTERVAL_SECONDS', raising=False)
     expected = float(_mr.DEFAULT_CANONICAL_POLLING_INTERVAL_SECONDS)
-    assert expected == 300.0
+    assert expected == 900.0
     # The worker loop default and the canonical target default resolve to the SAME value.
     assert run_monitoring_worker._resolve_polling_interval_seconds() == expected
     assert float(_mr.canonical_polling_interval_seconds()) == expected

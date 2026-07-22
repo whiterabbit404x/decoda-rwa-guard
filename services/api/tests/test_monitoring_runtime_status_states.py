@@ -671,8 +671,9 @@ def test_runtime_status_coverage_uses_recent_heartbeats(monkeypatch):
 
 def test_runtime_status_degraded_on_stale_heartbeat(monkeypatch):
     now = datetime.now(timezone.utc)
-    # The stable-poll stale threshold is a forgiving multi-minute window (default 900s),
-    # so "stale" here must exceed it — 30 minutes is unambiguously past the 15-minute
+    # The stable-poll stale threshold is a forgiving window derived from the canonical
+    # cadence: at the 900s interval it floors at two poll cycles (1800s = 30 min), so
+    # "stale" here must exceed it — 40 minutes is unambiguously past the two-cycle
     # boundary for both the heartbeat and the poll cycle.
     monkeypatch.delenv('MONITORING_STABLE_POLL_STALE_SECONDS', raising=False)
 
@@ -681,14 +682,14 @@ def test_runtime_status_degraded_on_stale_heartbeat(monkeypatch):
             q = ' '.join(str(query).split())
             if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
                 rows = super().execute(query, params)._rows
-                stale = now - timedelta(minutes=30)
+                stale = now - timedelta(minutes=40)
                 return _Result(rows=[{**row, 'last_heartbeat': stale.isoformat()} for row in rows])
             return super().execute(query, params)
 
     monkeypatch.setattr(
         monitoring_runner,
         'get_monitoring_health',
-        lambda: {'last_heartbeat_at': (now - timedelta(minutes=30)).isoformat(), 'last_cycle_at': (now - timedelta(minutes=30)).isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling'},
+        lambda: {'last_heartbeat_at': (now - timedelta(minutes=40)).isoformat(), 'last_cycle_at': (now - timedelta(minutes=40)).isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling'},
     )
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_StaleConn(now - timedelta(seconds=30))))
@@ -3171,11 +3172,13 @@ def test_runtime_status_worker_status_stable_polling_stale(monkeypatch):
     now = datetime.now(timezone.utc)
     monkeypatch.delenv('BASE_REALTIME_ENABLED', raising=False)
 
+    # 40 minutes is unambiguously past the two-poll-cycle freshness window (1800s = 30 min
+    # at the 900s canonical cadence) for both the heartbeat and the poll cycle.
     class _StaleHbConn(_Conn):
         def execute(self, query, params=None):
             q = ' '.join(str(query).split())
             if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
-                stale = (now - timedelta(minutes=30)).isoformat()
+                stale = (now - timedelta(minutes=40)).isoformat()
                 return _Result(rows=[
                     {'id': 'sys-1', 'workspace_id': 'ws-1', 'asset_id': 'asset-1', 'target_id': 'target-1', 'is_enabled': True, 'runtime_status': 'idle', 'last_heartbeat': stale, 'monitoring_interval_seconds': 30, 'created_at': now.isoformat()},
                 ])
@@ -3185,14 +3188,14 @@ def test_runtime_status_worker_status_stable_polling_stale(monkeypatch):
         monitoring_runner,
         'get_monitoring_health',
         lambda: {
-            'last_heartbeat_at': (now - timedelta(minutes=30)).isoformat(),
-            'last_cycle_at': (now - timedelta(minutes=30)).isoformat(),
+            'last_heartbeat_at': (now - timedelta(minutes=40)).isoformat(),
+            'last_cycle_at': (now - timedelta(minutes=40)).isoformat(),
             'degraded': False, 'last_error': None, 'source_type': 'polling',
             'realtime_watcher': None,
         },
     )
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
-    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_StaleHbConn(now - timedelta(minutes=30))))
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_StaleHbConn(now - timedelta(minutes=40))))
 
     payload = monitoring_runner.monitoring_runtime_status()
     ws = payload['worker_status']
@@ -3208,7 +3211,9 @@ def test_runtime_status_stable_polling_active_via_fresh_poll_when_heartbeat_stal
     degradation/reason while polling is fresh."""
     now = datetime.now(timezone.utc)
     monkeypatch.delenv('BASE_REALTIME_ENABLED', raising=False)
-    stale_iso = (now - timedelta(minutes=30)).isoformat()
+    # 40 minutes is past the two-poll-cycle freshness window (1800s at the 900s cadence),
+    # so the heartbeat is genuinely stale while the poll cycle below stays fresh.
+    stale_iso = (now - timedelta(minutes=40)).isoformat()
 
     class _StaleHbFreshPollConn(_Conn):
         def execute(self, query, params=None):
@@ -3306,8 +3311,12 @@ def test_runtime_status_stable_polling_active_at_five_minute_cadence(monkeypatch
     assert 'heartbeat_stale' not in (payload.get('continuity_reason_codes') or [])
     assert payload.get('degraded_reason') != 'stale_heartbeat'
     assert payload.get('status_reason') != 'stale_heartbeat'
-    # Requirement 6: debug fields on the runtime status.
-    assert payload['stable_poll_stale_threshold_seconds'] == 900
+    # Requirement 6: debug fields on the runtime status. The freshness / heartbeat-grace
+    # window now derives from the ONE canonical polling interval (900s) and floors at two
+    # poll cycles, so at the 900s cadence the threshold is 1800s — comfortably beyond a
+    # single cadence so a healthy poll never flaps to stale in the moment before the next
+    # cycle writes its heartbeat.
+    assert payload['stable_poll_stale_threshold_seconds'] == 1800
     assert payload['stable_polling_status'] == 'active'
     assert payload['last_stable_poll_at'] is not None
     assert payload['last_rpc_polling_heartbeat_at'] is not None
@@ -3317,10 +3326,13 @@ def test_runtime_status_stable_polling_active_at_five_minute_cadence(monkeypatch
 
 def test_runtime_status_stable_polling_debug_threshold_env_override(monkeypatch):
     """The stable-poll stale threshold is configurable via MONITORING_STABLE_POLL_STALE_SECONDS
-    and the chosen value is surfaced on the runtime status for operators."""
+    and the chosen value is surfaced on the runtime status for operators. The value must be at
+    or above the two-poll-cycle floor (1800s at the 900s canonical cadence); operators raise it
+    for extra tolerance, and values below the floor are clamped up so the window never drops
+    beneath the cadence it protects."""
     now = datetime.now(timezone.utc)
     monkeypatch.delenv('BASE_REALTIME_ENABLED', raising=False)
-    monkeypatch.setenv('MONITORING_STABLE_POLL_STALE_SECONDS', '1200')
+    monkeypatch.setenv('MONITORING_STABLE_POLL_STALE_SECONDS', '2400')
     monkeypatch.setattr(
         monitoring_runner,
         'get_monitoring_health',
@@ -3334,5 +3346,5 @@ def test_runtime_status_stable_polling_debug_threshold_env_override(monkeypatch)
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_Conn(now)))
 
     payload = monitoring_runner.monitoring_runtime_status()
-    assert payload['stable_poll_stale_threshold_seconds'] == 1200
-    assert payload['worker_status']['stable_polling']['stale_threshold_seconds'] == 1200
+    assert payload['stable_poll_stale_threshold_seconds'] == 2400
+    assert payload['worker_status']['stable_polling']['stale_threshold_seconds'] == 2400
