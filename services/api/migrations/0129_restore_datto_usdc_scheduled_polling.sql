@@ -166,14 +166,19 @@ WHERE id = '9c6ecabb-cd52-404f-9859-40567b09dbb4'
 --    scheduled poll drives the canonical Critical -> Recovering -> Healthy transition
 --    instead of staying pinned to a stale disabled state; any other runtime_status is
 --    left for the worker to re-derive from live poll facts.
+--    NOTE: monitored_systems has NO updated_at column. It was created in migration 0034
+--    without one and none was ever added (migration 0103 documents the same fact and
+--    deliberately omits it). Only columns that actually exist on the table are assigned
+--    here — is_enabled and runtime_status. Referencing updated_at raised
+--    UndefinedColumn ("column \"updated_at\" of relation \"monitored_systems\" does not
+--    exist") and aborted the deploy; it is intentionally removed.
 UPDATE monitored_systems
 SET is_enabled      = TRUE,
     runtime_status  = CASE
                           WHEN LOWER(COALESCE(runtime_status, '')) IN ('disabled', '')
                           THEN 'provisioning'
                           ELSE runtime_status
-                      END,
-    updated_at      = NOW()
+                      END
 WHERE id = '1c02c1c0-30e3-4fcc-b648-0e8e65439be6'
   AND target_id = '9c6ecabb-cd52-404f-9859-40567b09dbb4'
   AND workspace_id = '4fffd3f9-d55f-456f-8a7e-8b9ed2083721';
