@@ -110,9 +110,23 @@ export function SourceDetailDrawer({
         <Field label="Endpoint (redacted)" value={redactEndpoint(source.provider || source.primary_provider)} mono />
         <Field label="Chain" value={`${source.network || '—'}${source.chain_id != null ? ` (${source.chain_id})` : ''}`} />
         <Field label="Target address" value={shortAddress(source.address)} mono />
-        <Field label="Provider" value={source.provider || source.primary_provider || '—'} />
+        {/* Configured vs operational provider are DISTINCT truths: a configured provider
+            in backoff shows Configured: <host> / Operational: None. */}
+        <Field label="Configured provider" value={source.configured_primary_provider || source.primary_provider || '—'} />
+        <Field label="Operational provider" value={source.operational_primary_provider || 'None'} />
         <Field label="Source type" value={source.source_type || '—'} />
-        <Field label="Routing role" value={<StatusPill label={source.routing ? source.routing : 'Unrouted'} variant={source.routing === 'primary' ? 'info' : source.routing === 'fallback' ? 'warning' : 'neutral'} />} />
+        <Field
+          label="Routing role"
+          value={
+            <StatusPill
+              label={source.routing === 'unavailable' ? 'Unavailable' : source.routing ? source.routing : 'Unrouted'}
+              variant={source.routing === 'primary' ? 'info' : source.routing === 'fallback' ? 'warning' : source.routing === 'unavailable' ? 'danger' : 'neutral'}
+            />
+          }
+        />
+        {source.provider_backoff_active ? (
+          <Field label="Reason" value={<StatusPill label="Provider backoff active" variant="danger" />} />
+        ) : null}
         <Field
           label="Current health"
           value={

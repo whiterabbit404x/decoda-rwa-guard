@@ -1982,6 +1982,9 @@ def _fetch_wallet_logs_adaptive(
             if max_blocks_ceiling is not None:
                 _assert_getlogs_range_within_budget(lo, hi, max_blocks_ceiling, target_id=target_id)
             _chunk_logs = _logs_fetcher(client, address, lo, hi)
+            # Count every eth_getLogs query issued this cycle (Section 5 safety summary).
+            if budget is not None:
+                budget.log_query_count += 1
             # Section 6: if a chunk alone would blow the per-cycle LOG budget, split it
             # into smaller sub-ranges (down to a single block) instead of loading an
             # unbounded response into memory. A single block that still exceeds the budget
@@ -2300,6 +2303,7 @@ class PollBudget:
     max_log_query_chunk_blocks: int = 5
     rpc_calls_used: int = 0
     blocks_scanned: int = 0
+    log_query_count: int = 0
     logs_received: int = 0
     logs_processed: int = 0
     transaction_enrichments: int = 0
@@ -2315,6 +2319,7 @@ class PollBudget:
         return {
             'rpc_calls_used': self.rpc_calls_used,
             'blocks_scanned': self.blocks_scanned,
+            'log_query_count': self.log_query_count,
             'logs_received': self.logs_received,
             'logs_processed': self.logs_processed,
             'transaction_enrichments': self.transaction_enrichments,
@@ -2389,6 +2394,127 @@ def load_poll_budget() -> PollBudget:
         max_duration_seconds=float(_budget_int_env('MAX_POLL_DURATION_SECONDS', 45, minimum=1)),
         max_log_query_chunk_blocks=_budget_int_env('MAX_LOG_QUERY_CHUNK_BLOCKS', 5, minimum=1),
     )
+
+
+def _normalize_terminal_status(raw: Any) -> str:
+    """Normalize a poll's terminal status to a stable safety-summary vocabulary.
+
+    completed (a full scan) | partial (a hard budget stopped it early) |
+    failed (a degraded/failed scan) | skipped (no poll ran, e.g. provider backoff).
+    """
+    s = str(raw or '').strip().lower()
+    if s in {'complete', 'completed', 'ok'}:
+        return 'completed'
+    if s == 'partial':
+        return 'partial'
+    if s in {'skipped', 'skip'}:
+        return 'skipped'
+    if s in {'degraded', 'failed', 'error'}:
+        return 'failed'
+    return s or 'unknown'
+
+
+def emit_poll_safety_summary(
+    target_logger: 'logging.Logger | None' = None,
+    *,
+    workspace_id: Any,
+    target_id: Any,
+    terminal_status: Any,
+    budget: 'PollBudget | dict[str, Any] | None' = None,
+    blocks_queried: int | None = None,
+    log_query_count: int | None = None,
+    logs_received: int | None = None,
+    logs_processed: int | None = None,
+    transaction_enrichments: int | None = None,
+    rpc_calls_total: int | None = None,
+    poll_duration_seconds: float | None = None,
+    cursor_before: Any = None,
+    cursor_after: Any = None,
+    reason: str | None = None,
+) -> None:
+    """Emit the ONE canonical terminal safety summary for a scheduled poll (Section 5).
+
+    Every poll — completed, partial, failed, or provider-backoff skipped — ends with
+    exactly one ``event=monitoring_poll_safety_summary`` line so a canary run is provable
+    from logs alone: blocks queried, log queries, logs received/processed, transaction
+    enrichments, total RPC calls, poll duration, cursor movement, and terminal status.
+    No secrets — only counters, ids, and cursor block numbers. Counters fall back to the
+    supplied budget when not passed explicitly.
+    """
+    b = budget.as_dict() if hasattr(budget, 'as_dict') else (budget if isinstance(budget, dict) else {})
+
+    def _pick(explicit: Any, key: str, default: Any = 0) -> Any:
+        return explicit if explicit is not None else b.get(key, default)
+
+    (target_logger or logger).info(
+        'event=monitoring_poll_safety_summary workspace_id=%s target_id=%s '
+        'blocks_queried=%s log_query_count=%s logs_received=%s logs_processed=%s '
+        'transaction_enrichments=%s rpc_calls_total=%s poll_duration_seconds=%s '
+        'cursor_before=%s cursor_after=%s terminal_status=%s reason=%s',
+        workspace_id if workspace_id is not None else 'unknown',
+        target_id if target_id is not None else 'unknown',
+        _pick(blocks_queried, 'blocks_scanned'),
+        _pick(log_query_count, 'log_query_count'),
+        _pick(logs_received, 'logs_received'),
+        _pick(logs_processed, 'logs_processed'),
+        _pick(transaction_enrichments, 'transaction_enrichments'),
+        _pick(rpc_calls_total, 'rpc_calls_used'),
+        _pick(poll_duration_seconds, 'elapsed_seconds'),
+        cursor_before if cursor_before is not None else 'unknown',
+        cursor_after if cursor_after is not None else 'unknown',
+        _normalize_terminal_status(terminal_status),
+        reason or 'none',
+    )
+
+
+def resolved_scanner_limits() -> dict[str, Any]:
+    """The effective per-target scanner safety limits, resolved from env (no secrets).
+
+    Every value is a bound the scanner enforces every cycle — the per-target-per-cycle
+    ceilings (blocks / logs / tx enrichments / RPC calls / seconds), the bounded live-tail
+    start, the log-query chunk size, whether historical backfill is enabled (OFF in the
+    polling-only MVP), and the process-wide RPC per-minute ceiling.
+    """
+    budget = load_poll_budget()
+    return {
+        'max_blocks_per_target_per_cycle': budget.max_blocks,
+        'max_logs_per_target_per_cycle': budget.max_logs,
+        'max_tx_enrichments_per_target_per_cycle': budget.max_tx_enrichments,
+        'max_rpc_calls_per_target_per_cycle': budget.max_rpc_calls,
+        'max_poll_duration_seconds': budget.max_duration_seconds,
+        'max_log_query_chunk_blocks': budget.max_log_query_chunk_blocks,
+        'initial_live_tail_blocks': initial_live_tail_blocks(),
+        'historical_backfill_enabled': historical_backfill_enabled(),
+        'monitoring_rpc_max_calls_per_minute': monitoring_rpc_max_calls_per_minute(),
+    }
+
+
+def log_scanner_limits_resolved(target_logger: 'logging.Logger | None' = None) -> dict[str, Any]:
+    """Emit the resolved scanner safety limits at worker startup (no secrets).
+
+    A single greppable ``event=monitoring_scanner_limits_resolved`` line proving, from
+    logs alone, exactly which hard ceilings this deployment will enforce — so an operator
+    can confirm the production defaults (or a tightened canary) are actually in effect.
+    """
+    limits = resolved_scanner_limits()
+    (target_logger or logger).info(
+        'event=monitoring_scanner_limits_resolved '
+        'max_blocks_per_target_per_cycle=%s max_logs_per_target_per_cycle=%s '
+        'max_tx_enrichments_per_target_per_cycle=%s max_rpc_calls_per_target_per_cycle=%s '
+        'max_poll_duration_seconds=%s max_log_query_chunk_blocks=%s '
+        'initial_live_tail_blocks=%s historical_backfill_enabled=%s '
+        'monitoring_rpc_max_calls_per_minute=%s',
+        limits['max_blocks_per_target_per_cycle'],
+        limits['max_logs_per_target_per_cycle'],
+        limits['max_tx_enrichments_per_target_per_cycle'],
+        limits['max_rpc_calls_per_target_per_cycle'],
+        limits['max_poll_duration_seconds'],
+        limits['max_log_query_chunk_blocks'],
+        limits['initial_live_tail_blocks'],
+        str(limits['historical_backfill_enabled']).lower(),
+        limits['monitoring_rpc_max_calls_per_minute'],
+    )
+    return limits
 
 
 def initial_live_tail_blocks() -> int:
@@ -2819,7 +2945,11 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         #     skipped gap (cursor+1 .. window_start-1) is deferred backfill, never scanned
         #     during a health poll. This is why contracts (no wallet fast-forward) stay current.
         if last_block is None:
-            from_block = max(0, safe_to - _initial_tail + 1)
+            # The initial live tail must never exceed the per-cycle block ceiling: under a
+            # tightened canary budget (e.g. MAX_BLOCKS_PER_TARGET_PER_CYCLE=5) a no-cursor
+            # target scans at most max_blocks_per_cycle blocks, not the default 10.
+            _effective_tail = min(_initial_tail, max_blocks_per_cycle)
+            from_block = max(0, safe_to - _effective_tail + 1)
         else:
             _overlap = min(replay_blocks, max(0, max_blocks_per_cycle - 1))
             from_block = max(max(0, last_block - _overlap), max(0, safe_to - max_blocks_per_cycle + 1))
@@ -3400,6 +3530,25 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         budget.logs_received, budget.max_logs, budget.transaction_enrichments,
         budget.max_tx_enrichments, budget.elapsed_seconds, budget.max_duration_seconds,
         _budget_stop_reason or 'none',
+    )
+    # Section 5: the ONE terminal safety summary for this poll — the canary acceptance
+    # line. cursor_before is the block this scan started from; cursor_after is the block
+    # it scanned up to (the persisted cursor).
+    _cursor_before = last_block if last_block is not None else (
+        from_block - 1 if isinstance(from_block, int) else None
+    )
+    emit_poll_safety_summary(
+        logger,
+        workspace_id=target.get('workspace_id'),
+        target_id=target.get('id'),
+        terminal_status=_poll_terminal_status,
+        budget=budget,
+        # blocks_queried is the log-scan window actually inspected this cycle (bounded by
+        # max_blocks_per_cycle), not the block-enrichment count.
+        blocks_queried=max(0, _blocks_scanned),
+        cursor_before=_cursor_before,
+        cursor_after=_scan_to_block,
+        reason=_budget_stop_reason or _logs_status_reason or None,
     )
     return deduped
 
