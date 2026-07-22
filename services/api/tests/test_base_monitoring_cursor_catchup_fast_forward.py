@@ -101,6 +101,11 @@ def _base_env(monkeypatch) -> None:
     monkeypatch.setenv('MONITOR_REPLAY_BLOCKS', '25')
     monkeypatch.setenv('MAX_BLOCKS_PER_CYCLE', '100')
     monkeypatch.setenv('EVM_LIVE_TAIL_BLOCKS', '100')
+    # Cursor-based catch-up and the deep-backlog fast-forward are historical-backfill
+    # behavior, gated behind HISTORICAL_BACKFILL_ENABLED (OFF by default in the polling-only
+    # MVP, where scheduled polling scans only the live tail). These tests exercise that
+    # operator-enabled backfill path, so enable it explicitly.
+    monkeypatch.setenv('HISTORICAL_BACKFILL_ENABLED', 'true')
     # Deterministic default threshold regardless of any ambient override.
     monkeypatch.delenv('BASE_CATCHUP_FAST_FORWARD_THRESHOLD', raising=False)
     monkeypatch.delenv('EVM_CATCHUP_FAST_FORWARD_THRESHOLD', raising=False)
@@ -190,13 +195,17 @@ def test_fast_forward_emits_diagnostic_log(monkeypatch, caplog):
     ff_lines = [m for m in messages if 'cursor_fast_forwarded=true' in m]
     assert len(ff_lines) == 1, f'expected exactly one fast-forward log, got {ff_lines}'
     line = ff_lines[0]
+    # The live-tail window is now hard-capped at MAX_BLOCKS_PER_TARGET_PER_CYCLE=25 (the
+    # env asks for 100 but the safety ceiling wins), so the fast-forward jumps to
+    # safe_to-25, not safe_to-100 — keeping the live-tail block scan within the RPC budget.
     for token in (
         'cursor_fast_forwarded=true',
         f'old_cursor={DEEP_CURSOR_BLOCK}',
-        f'new_cursor={DEEP_CHAIN_SAFE_TO - 100}',
+        f'new_cursor={DEEP_CHAIN_SAFE_TO - 25}',
         f'latest_block={DEEP_CHAIN_LATEST}',
-        f'live_tail_from={DEEP_CHAIN_SAFE_TO - 100}',
+        f'live_tail_from={DEEP_CHAIN_SAFE_TO - 25}',
         f'live_tail_to={DEEP_CHAIN_SAFE_TO}',
+        'live_tail_window=25',
     ):
         assert token in line, f'fast-forward log missing {token!r}; line={line}'
 
@@ -223,8 +232,9 @@ def test_moderate_backlog_does_not_fast_forward(monkeypatch):
         f'A moderate backlog must NOT fast-forward; _evm_scan_to_block={scan_to} '
         f'should stay below chain head {MOD_CHAIN_SAFE_TO}'
     )
-    # Chunk ceiling = (cursor - replay) + max_blocks_per_cycle - 1.
-    assert scan_to == (MOD_CURSOR_BLOCK - 25) + 1000 - 1
+    # Hard 25-block ceiling wins over MAX_BLOCKS_PER_CYCLE=1000; the reorg overlap (25)
+    # shrinks to 25//3=8 for progress. Chunk ceiling = (cursor - 8) + 25 - 1 = cursor + 16.
+    assert scan_to == (MOD_CURSOR_BLOCK - 8) + 25 - 1
 
 
 # ---------------------------------------------------------------------------

@@ -1936,6 +1936,8 @@ def _fetch_wallet_logs_adaptive(
     max_range: int,
     min_range: int,
     logs_fetcher: Any = None,
+    budget: 'PollBudget | None' = None,
+    max_blocks_ceiling: int | None = None,
 ) -> dict[str, Any]:
     """Fetch ERC-20 transfer/approval logs, halving the block range on HTTP 413.
 
@@ -1965,6 +1967,7 @@ def _fetch_wallet_logs_adaptive(
     too_large_count = 0
     min_chunk_size = max_range
     logged_failure = False
+    budget_stopped = False
     # Stack of (lo, hi) ranges to scan; ascending lo pops first so last_complete
     # advances monotonically and a failed chunk never skips earlier unscanned blocks.
     pending: list[tuple[int, int]] = list(reversed(_iter_block_ranges(from_block, to_block, max_range)))
@@ -1972,9 +1975,69 @@ def _fetch_wallet_logs_adaptive(
         lo, hi = pending.pop()
         span = hi - lo + 1
         try:
-            logs.extend(_logs_fetcher(client, address, lo, hi))
+            # Section 1: defensive invariant checked immediately BEFORE the eth_getLogs
+            # leaves the process — the actual queried range must never exceed the
+            # per-cycle block ceiling. Raises ScanRangeInvariantError (RPC not issued) on
+            # violation so an oversized query can never reach the provider.
+            if max_blocks_ceiling is not None:
+                _assert_getlogs_range_within_budget(lo, hi, max_blocks_ceiling, target_id=target_id)
+            _chunk_logs = _logs_fetcher(client, address, lo, hi)
+            # Section 6: if a chunk alone would blow the per-cycle LOG budget, split it
+            # into smaller sub-ranges (down to a single block) instead of loading an
+            # unbounded response into memory. A single block that still exceeds the budget
+            # marks the poll degraded and stops (cursor held at the last complete block).
+            if budget is not None:
+                _remaining_logs = budget.max_logs - budget.logs_received
+                if len(_chunk_logs) > _remaining_logs:
+                    if span > 1:
+                        _sub = max(1, span // 2)
+                        logger.warning(
+                            'rpc_log_chunk_split target_id=%s chain=%s chunk_from_block=%s '
+                            'chunk_to_block=%s chunk_logs=%s remaining_log_budget=%s '
+                            'reduced_chunk_size=%s action=split_before_load',
+                            target_id, network, lo, hi, len(_chunk_logs), _remaining_logs, _sub,
+                        )
+                        for srange in reversed(_iter_block_ranges(lo, hi, _sub)):
+                            pending.append(srange)
+                        continue
+                    # A single block still exceeds the remaining log budget: do NOT load it,
+                    # mark the poll partial, and stop with the cursor at the last complete
+                    # block (this block is re-scanned next cycle). Section 5/6.
+                    logger.warning(
+                        'monitoring_poll_log_budget_exhausted target_id=%s chain=%s '
+                        'chunk_from_block=%s chunk_to_block=%s chunk_logs=%s '
+                        'logs_received=%s max_logs_per_target_per_cycle=%s '
+                        'action=stop_persist_partial',
+                        target_id, network, lo, hi, len(_chunk_logs),
+                        budget.logs_received, budget.max_logs,
+                    )
+                    budget.exhausted_reason = 'log_budget'
+                    budget.exhausted_event = 'monitoring_poll_log_budget_exhausted'
+                    status = 'degraded' if status == 'ok' else status
+                    budget_stopped = True
+                    break
+                budget.logs_received += len(_chunk_logs)
+            logs.extend(_chunk_logs)
             last_complete = hi
+            # Stop cleanly once the cumulative log budget is fully consumed. Section 5.
+            if budget is not None and budget.logs_received >= budget.max_logs:
+                logger.warning(
+                    'monitoring_poll_log_budget_exhausted target_id=%s chain=%s '
+                    'logs_received=%s max_logs_per_target_per_cycle=%s last_complete_block=%s '
+                    'action=stop_persist_partial',
+                    target_id, network, budget.logs_received, budget.max_logs, last_complete,
+                )
+                budget.exhausted_reason = 'log_budget'
+                budget.exhausted_event = 'monitoring_poll_log_budget_exhausted'
+                status = 'degraded' if status == 'ok' else status
+                budget_stopped = True
+                break
             continue
+        except (PollBudgetExhausted, RpcCircuitBreakerTripped, ScanRangeInvariantError):
+            # Control-flow signals (budget exhausted / breaker open / range invariant):
+            # never swallowed as a logs-fetch failure — propagate so the poll stops
+            # cleanly with the last fully-scanned block held as the cursor.
+            raise
         except Exception as exc:
             code = _http_status_from_exc(exc)
             host = _provider_host_for_log(client)
@@ -2048,6 +2111,7 @@ def _fetch_wallet_logs_adaptive(
         'error_count': error_count,
         'too_large_count': too_large_count,
         'min_chunk_size': min_chunk_size,
+        'budget_stopped': budget_stopped,
     }
 
 
@@ -2070,6 +2134,414 @@ async def _ws_subscribe_new_head(ws_url: str, timeout_seconds: float = 1.0) -> i
     except Exception:
         return None
     return None
+
+
+# ===========================================================================
+# Production RPC-safety guards (Datto USDC scanner runaway fix)
+# ---------------------------------------------------------------------------
+# A restored Base USDC *contract* target with no cursor scanned a 2,001-block
+# range in its first health poll (safe_backfill_window=2000 bypassed the
+# 25-block cap, which was only applied to the cursor-based catch-up path), then
+# issued ~1 eth_getTransactionByHash per Transfer log (119,163 logs → an
+# eth_getTransactionByHash storm) and spiked Alchemy CU. These guards make the
+# runaway structurally impossible: a hard per-poll budget, a bounded live-tail
+# start for new targets, a defensive range invariant checked immediately before
+# every eth_getLogs, local ERC-20 decoding (no per-log tx lookup), and a
+# process-wide RPC circuit breaker that works even if a future logic bug
+# bypasses the per-target budgets.
+# ===========================================================================
+
+
+class ScanRangeInvariantError(RuntimeError):
+    """A planned eth_getLogs range exceeded ``max_blocks_per_cycle``.
+
+    Raised by :func:`_assert_getlogs_range_within_budget` immediately BEFORE the
+    RPC leaves the process, so the oversized query is never issued. The poll is
+    marked a bounded failure, the durable cursor is left unchanged, and the range
+    is retried (bounded) next cycle. This is the last-line defense for the exact
+    contradiction the incident logged: max_blocks_per_cycle=25 yet a 2,001-block
+    contract log query.
+    """
+
+    def __init__(self, requested_blocks: int, max_blocks: int) -> None:
+        self.requested_blocks = int(requested_blocks)
+        self.max_blocks = int(max_blocks)
+        super().__init__(
+            f'scan_range_invariant_failed requested_blocks={requested_blocks} '
+            f'max_blocks_per_cycle={max_blocks}'
+        )
+
+
+class PollBudgetExhausted(RuntimeError):
+    """A hard per-poll safety budget (Section 5) was exhausted.
+
+    Carries the canonical ``event`` name (e.g. monitoring_poll_rpc_budget_exhausted)
+    and a short ``reason`` so the poll stops cleanly, persists a partial/degraded
+    terminal status, keeps the last fully-completed cursor, and schedules a
+    continuation instead of loading an unbounded response into memory.
+    """
+
+    def __init__(self, reason: str, event: str) -> None:
+        self.reason = str(reason)
+        self.event = str(event)
+        super().__init__(f'{event} reason={reason}')
+
+
+class RpcCircuitBreakerTripped(RuntimeError):
+    """The process-wide RPC rate ceiling (Section 12) was reached this window.
+
+    A production-safe kill switch independent of the per-target budgets: once the
+    process issues MONITORING_RPC_MAX_CALLS_PER_MINUTE calls in a rolling minute,
+    new RPC work stops (persistence and heartbeat writes still proceed) until the
+    next window. Works even if a future logic bug bypasses the per-target budget.
+    """
+
+
+# --- Process-wide RPC circuit breaker (Section 12) -------------------------
+# A single rolling-minute counter shared by every scheduled monitoring poll in
+# this process. Disabled (limit 0) unless MONITORING_RPC_MAX_CALLS_PER_MINUTE is
+# configured — the canary/production plan sets it explicitly (200 prod, 60
+# canary) so it never surprises an existing deployment, and the per-target
+# budgets (always on) remain the primary bound.
+_RPC_CIRCUIT_LOCK = threading.Lock()
+_RPC_CIRCUIT_STATE: dict[str, Any] = {'window_start': 0.0, 'count': 0, 'tripped': False}
+
+
+def monitoring_rpc_max_calls_per_minute() -> int:
+    """Process-wide RPC ceiling per rolling minute. 0 (default) disables the breaker."""
+    try:
+        return max(0, int(os.getenv('MONITORING_RPC_MAX_CALLS_PER_MINUTE', '0')))
+    except (TypeError, ValueError):
+        return 0
+
+
+def reset_rpc_circuit_breaker() -> None:
+    """Reset the process-wide breaker window (used by tests and worker startup)."""
+    with _RPC_CIRCUIT_LOCK:
+        _RPC_CIRCUIT_STATE['window_start'] = 0.0
+        _RPC_CIRCUIT_STATE['count'] = 0
+        _RPC_CIRCUIT_STATE['tripped'] = False
+
+
+def rpc_circuit_breaker_snapshot() -> dict[str, Any]:
+    """Read-only breaker state for status/logging (limit, count, tripped)."""
+    limit = monitoring_rpc_max_calls_per_minute()
+    with _RPC_CIRCUIT_LOCK:
+        return {
+            'limit': limit,
+            'count': int(_RPC_CIRCUIT_STATE['count']),
+            'tripped': bool(_RPC_CIRCUIT_STATE['tripped']),
+            'enabled': limit > 0,
+        }
+
+
+def _rpc_circuit_breaker_admit(*, now: float | None = None) -> bool:
+    """Admit ONE RPC call against the process-wide per-minute ceiling.
+
+    Increments the rolling-minute counter and returns ``True`` when the call may
+    proceed. Returns ``False`` once the ceiling is reached (caller must stop new
+    RPC work). A single state-transition event is logged when the breaker trips
+    and when it recovers into a fresh window. Limit 0 always admits.
+    """
+    limit = monitoring_rpc_max_calls_per_minute()
+    if limit <= 0:
+        return True
+    _now = time.monotonic() if now is None else now
+    with _RPC_CIRCUIT_LOCK:
+        if _now - float(_RPC_CIRCUIT_STATE['window_start']) >= 60.0:
+            # New rolling window: reset the counter and log recovery once.
+            if _RPC_CIRCUIT_STATE['tripped']:
+                logger.warning(
+                    'monitoring_rpc_circuit_breaker_reset limit=%s previous_window_count=%s '
+                    'state_transition=tripped_to_closed action=resume_rpc_work',
+                    limit, _RPC_CIRCUIT_STATE['count'],
+                )
+            _RPC_CIRCUIT_STATE['window_start'] = _now
+            _RPC_CIRCUIT_STATE['count'] = 0
+            _RPC_CIRCUIT_STATE['tripped'] = False
+        if int(_RPC_CIRCUIT_STATE['count']) >= limit:
+            if not _RPC_CIRCUIT_STATE['tripped']:
+                _RPC_CIRCUIT_STATE['tripped'] = True
+                logger.error(
+                    'monitoring_rpc_circuit_breaker_open limit=%s window_count=%s '
+                    'state_transition=closed_to_tripped action=stop_new_rpc_work',
+                    limit, _RPC_CIRCUIT_STATE['count'],
+                )
+            return False
+        _RPC_CIRCUIT_STATE['count'] = int(_RPC_CIRCUIT_STATE['count']) + 1
+        return True
+
+
+def _budget_int_env(name: str, default: int, *, minimum: int = 0) -> int:
+    try:
+        return max(minimum, int(os.getenv(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+@dataclass
+class PollBudget:
+    """Hard per-target-per-cycle ceilings (Section 5) — ceilings, not hints.
+
+    Read once at poll start with conservative production defaults. Before every
+    RPC the poll verifies the remaining budget; when any dimension is exhausted the
+    poll stops cleanly (:class:`PollBudgetExhausted`), persists a partial/degraded
+    status, keeps the last fully-completed cursor (never advancing over unprocessed
+    logs), writes heartbeat/poll result, schedules a continuation, and logs the
+    exact budget reason. The circuit breaker is checked here too so a single
+    chokepoint enforces both the per-target budget and the process-wide ceiling.
+    """
+
+    max_blocks: int = 25
+    max_logs: int = 2000
+    max_tx_enrichments: int = 25
+    max_rpc_calls: int = 100
+    max_duration_seconds: float = 45.0
+    max_log_query_chunk_blocks: int = 5
+    rpc_calls_used: int = 0
+    blocks_scanned: int = 0
+    logs_received: int = 0
+    logs_processed: int = 0
+    transaction_enrichments: int = 0
+    started_at: float = field(default_factory=time.monotonic)
+    exhausted_event: str | None = None
+    exhausted_reason: str | None = None
+
+    @property
+    def elapsed_seconds(self) -> float:
+        return round(time.monotonic() - self.started_at, 3)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            'rpc_calls_used': self.rpc_calls_used,
+            'blocks_scanned': self.blocks_scanned,
+            'logs_received': self.logs_received,
+            'logs_processed': self.logs_processed,
+            'transaction_enrichments': self.transaction_enrichments,
+            'elapsed_seconds': self.elapsed_seconds,
+            'max_blocks': self.max_blocks,
+            'max_logs': self.max_logs,
+            'max_tx_enrichments': self.max_tx_enrichments,
+            'max_rpc_calls': self.max_rpc_calls,
+            'max_duration_seconds': self.max_duration_seconds,
+            'exhausted_reason': self.exhausted_reason,
+        }
+
+    def _stop(self, reason: str, event: str) -> None:
+        self.exhausted_reason = reason
+        self.exhausted_event = event
+        raise PollBudgetExhausted(reason, event)
+
+    def check_time(self, *, target_id: Any) -> None:
+        if self.elapsed_seconds >= self.max_duration_seconds:
+            logger.warning(
+                'monitoring_poll_time_budget_exhausted target_id=%s elapsed_seconds=%s '
+                'max_poll_duration_seconds=%s action=stop_persist_partial',
+                target_id, self.elapsed_seconds, self.max_duration_seconds,
+            )
+            self._stop('time_budget', 'monitoring_poll_time_budget_exhausted')
+
+    def before_rpc(self, *, target_id: Any) -> None:
+        """Verify budget + circuit breaker immediately before an RPC leaves the process."""
+        self.check_time(target_id=target_id)
+        if self.rpc_calls_used >= self.max_rpc_calls:
+            logger.warning(
+                'monitoring_poll_rpc_budget_exhausted target_id=%s rpc_calls_used=%s '
+                'max_rpc_calls_per_target_per_cycle=%s action=stop_persist_partial',
+                target_id, self.rpc_calls_used, self.max_rpc_calls,
+            )
+            self._stop('rpc_budget', 'monitoring_poll_rpc_budget_exhausted')
+        if not _rpc_circuit_breaker_admit():
+            snap = rpc_circuit_breaker_snapshot()
+            logger.error(
+                'monitoring_poll_rpc_circuit_breaker target_id=%s process_rpc_calls_this_minute=%s '
+                'limit=%s action=stop_persist_partial',
+                target_id, snap['count'], snap['limit'],
+            )
+            self.exhausted_reason = 'circuit_breaker'
+            self.exhausted_event = 'monitoring_poll_rpc_circuit_breaker'
+            raise RpcCircuitBreakerTripped(
+                f'circuit_breaker_open limit={snap["limit"]} count={snap["count"]}'
+            )
+        self.rpc_calls_used += 1
+
+    def note_logs(self, count: int, *, target_id: Any) -> None:
+        self.logs_received += max(0, int(count))
+        if self.logs_received > self.max_logs:
+            logger.warning(
+                'monitoring_poll_log_budget_exhausted target_id=%s logs_received=%s '
+                'max_logs_per_target_per_cycle=%s action=stop_persist_partial',
+                target_id, self.logs_received, self.max_logs,
+            )
+            self._stop('log_budget', 'monitoring_poll_log_budget_exhausted')
+
+    def can_enrich(self) -> bool:
+        return self.transaction_enrichments < self.max_tx_enrichments
+
+
+def load_poll_budget() -> PollBudget:
+    """Build a :class:`PollBudget` from env with conservative production defaults."""
+    return PollBudget(
+        max_blocks=_budget_int_env('MAX_BLOCKS_PER_TARGET_PER_CYCLE', 25, minimum=1),
+        max_logs=_budget_int_env('MAX_LOGS_PER_TARGET_PER_CYCLE', 2000, minimum=1),
+        max_tx_enrichments=_budget_int_env('MAX_TX_ENRICHMENTS_PER_TARGET_PER_CYCLE', 25, minimum=0),
+        max_rpc_calls=_budget_int_env('MAX_RPC_CALLS_PER_TARGET_PER_CYCLE', 100, minimum=1),
+        max_duration_seconds=float(_budget_int_env('MAX_POLL_DURATION_SECONDS', 45, minimum=1)),
+        max_log_query_chunk_blocks=_budget_int_env('MAX_LOG_QUERY_CHUNK_BLOCKS', 5, minimum=1),
+    )
+
+
+def initial_live_tail_blocks() -> int:
+    """Section 2: blocks scanned for a target with NO cursor.
+
+    A new contract target must not backfill thousands of blocks in its first
+    normal health poll. Default 10 recent blocks, hard-capped at 25 (never wider
+    than one bounded chunk beyond the live head).
+    """
+    return min(25, _budget_int_env('INITIAL_LIVE_TAIL_BLOCKS', 10, minimum=1))
+
+
+def historical_backfill_enabled() -> bool:
+    """Section 13: historical backfill is OFF in the polling-only MVP.
+
+    Scheduled polling scans only the recent live tail; deep historical backfill
+    must be an explicit operator action with its own RPC budget and cursor.
+    """
+    return str(os.getenv('HISTORICAL_BACKFILL_ENABLED', 'false')).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _assert_getlogs_range_within_budget(
+    from_block: int, to_block: int, max_blocks: int, *, target_id: Any,
+) -> None:
+    """Section 1 invariant, checked immediately before EVERY eth_getLogs call.
+
+    Enforces ``queried_to_block - queried_from_block + 1 <= max_blocks_per_cycle``.
+    On violation the RPC is NOT issued — the poll is a bounded failure and the
+    durable cursor is left unchanged so the range is retried (bounded) next cycle.
+    """
+    requested = to_block - from_block + 1
+    if requested > max_blocks:
+        logger.error(
+            'monitoring_scan_range_invariant_failed target_id=%s requested_blocks=%s '
+            'max_blocks_per_cycle=%s from_block=%s to_block=%s action=do_not_issue_rpc',
+            target_id, requested, max_blocks, from_block, to_block,
+        )
+        raise ScanRangeInvariantError(requested, max_blocks)
+
+
+def _decode_transfer_log(log: dict[str, Any]) -> dict[str, Any] | None:
+    """Section 3: decode an ERC-20 Transfer/Approval log LOCALLY (no RPC).
+
+    eth_getLogs already returns everything a normalized telemetry row needs —
+    address, topics, data, transactionHash, blockNumber, logIndex,
+    transactionIndex — so a Transfer/Approval is decoded without an
+    eth_getTransactionByHash round-trip:
+
+        topic0  keccak256("Transfer(address,address,uint256)") / Approval(...)
+        topic1  from / owner   (indexed address)
+        topic2  to   / spender  (indexed address)
+        data    uint256 amount / allowance
+
+    Returns ``None`` for a log whose topic0 is neither Transfer nor Approval.
+    """
+    topics = log.get('topics') or []
+    topic0 = str((topics[0] if len(topics) > 0 else '') or '').lower()
+    if topic0 not in {TRANSFER_TOPIC, APPROVAL_TOPIC}:
+        return None
+    is_approval = topic0 == APPROVAL_TOPIC
+    return {
+        'event_type': 'approval' if is_approval else 'transfer',
+        'kind_hint': 'erc20_approval' if is_approval else 'erc20_transfer',
+        'contract_address': str(log.get('address') or '').lower() or None,
+        'from_address': _topic_to_address(topics[1] if len(topics) > 1 else None),
+        'to_address': _topic_to_address(topics[2] if len(topics) > 2 else None),
+        'amount': str(_hex_to_int(log.get('data')) or 0),
+        'transaction_hash': str(log.get('transactionHash') or ''),
+        'block_number': _hex_to_int(log.get('blockNumber')),
+        'block_hash': str(log.get('blockHash') or '') or None,
+        'log_index': _hex_to_int(log.get('logIndex')),
+        'transaction_index': _hex_to_int(log.get('transactionIndex')),
+        'topic0': topic0,
+    }
+
+
+def _dedupe_decoded_logs(decoded: list[dict[str, Any]], chain_id: int) -> list[dict[str, Any]]:
+    """Section 4: dedupe by (chain_id, transaction_hash, log_index) BEFORE enrichment."""
+    seen: set[tuple[int, str, Any]] = set()
+    unique: list[dict[str, Any]] = []
+    for item in decoded:
+        key = (int(chain_id), item.get('transaction_hash') or '', item.get('log_index'))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique
+
+
+def _plan_tx_enrichments(decoded: list[dict[str, Any]], *, max_enrichments: int) -> list[str]:
+    """Section 4: which transaction hashes to enrich, deduped and capped.
+
+    Only logs explicitly flagged ``requires_enrichment`` (a rule needs a field the
+    log does not carry) are considered. Each transaction is enriched at most once
+    even when several matching logs share it, and enrichment stops at
+    ``max_enrichments``. Ordinary USDC Transfer events (no matching rule) are never
+    enriched, so the N+1 eth_getTransactionByHash storm cannot recur.
+    """
+    seen: set[str] = set()
+    plan: list[str] = []
+    if max_enrichments <= 0:
+        return plan
+    for item in decoded:
+        if not item.get('requires_enrichment'):
+            continue
+        tx_hash = str(item.get('transaction_hash') or '')
+        if not tx_hash or tx_hash in seen:
+            continue
+        seen.add(tx_hash)
+        plan.append(tx_hash)
+        if len(plan) >= max_enrichments:
+            break
+    return plan
+
+
+class _BudgetedRpcClient:
+    """Wraps an :class:`RpcClient` so every scan-phase RPC is verified against the
+    per-target budget + process-wide circuit breaker BEFORE it leaves the process,
+    and caller-tagged by method (Section 5/10/12).
+
+    A single chokepoint means the runaway is structurally impossible regardless of
+    which scan phase issues the call: once the per-target RPC ceiling or the
+    process-wide per-minute ceiling is reached, :meth:`call` raises
+    (:class:`PollBudgetExhausted` / :class:`RpcCircuitBreakerTripped`) so the poll
+    stops cleanly. Method → caller mapping attributes the load precisely in the
+    periodic rpc_request_volume_summary (no more caller=unspecified).
+    """
+
+    _CALLER_BY_METHOD = {
+        'eth_getlogs': 'scheduled_poll_contract_logs',
+        'eth_getblockbynumber': 'scheduled_poll_block_lookup',
+        'eth_getblockbyhash': 'scheduled_poll_block_lookup',
+        'eth_blocknumber': 'scheduled_poll_block_lookup',
+        'eth_gettransactionbyhash': 'scheduled_poll_transaction_enrichment',
+        'eth_gettransactionreceipt': 'scheduled_poll_transaction_enrichment',
+        'eth_chainid': 'scheduled_poll_provider_check',
+        'eth_getcode': 'scheduled_poll_provider_check',
+    }
+
+    def __init__(self, inner: RpcClient, budget: PollBudget, target_id: Any) -> None:
+        self._inner = inner
+        self._budget = budget
+        self._target_id = target_id
+
+    @property
+    def active_host(self) -> str | None:
+        return getattr(self._inner, 'active_host', None)
+
+    def call(self, method: str, params: list[Any]) -> Any:
+        self._budget.before_rpc(target_id=self._target_id)
+        caller = self._CALLER_BY_METHOD.get(str(method).lower(), 'scheduled_poll_contract_logs')
+        with rpc_caller_scope(caller):
+            return self._inner.call(method, params)
 
 
 def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc_client: RpcClient | None = None) -> list[ActivityEvent]:
@@ -2214,7 +2686,11 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
             preferred_source = 'websocket'
             fallback_source = 'rpc_backfill'
     if latest is None:
-        _raw_block_result = client.call('eth_blockNumber', [])
+        # Section 7/10: the chain-head lookup is the bounded provider-health check
+        # (proves connectivity + current block) and is tagged as its own caller so
+        # the periodic RPC volume summary attributes it precisely.
+        with rpc_caller_scope('scheduled_poll_provider_check'):
+            _raw_block_result = client.call('eth_blockNumber', [])
         _raw_block_hex = str(_raw_block_result or '')
         try:
             latest = int(_raw_block_hex, 16)
@@ -2280,28 +2756,21 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
             _corrupt_cursor_reason, cursor or 'none',
         )
         last_block = None
-    if last_block is None:
-        # No prior cursor: backfill safe_backfill_window blocks to cover at least one polling interval.
-        from_block = max(0, safe_to - safe_backfill_window)
-    else:
-        # Continue from the persisted cursor; replay_blocks of overlap guards against reorgs.
-        from_block = max(0, last_block - replay_blocks)
 
-    # Cap blocks scanned per cycle to avoid overwhelming RPCs during catch-up
-    # (e.g. after downtime a worker can be 160k+ blocks behind on Base). A very old
-    # cursor must catch up GRADUALLY over many cycles, not in one heavy poll.
-    # Initial backfill (no cursor) is bounded by safe_backfill_window (≤2000 for Base).
-    # Cursor-based catch-up is capped here; the cursor advances incrementally each
-    # cycle (plus the live-tail window) until fully caught up. The Base default is
-    # BASE_CATCHUP_MAX_BLOCKS_PER_CYCLE (100); the generic MAX_BLOCKS_PER_CYCLE still
-    # overrides it when explicitly set.
+    # Hard per-target-per-cycle safety budget (Section 5). Read once at poll start with
+    # conservative production defaults; verified before every RPC below.
+    budget = load_poll_budget()
+    _initial_tail = initial_live_tail_blocks()
+
+    # --- Per-cycle block ceiling (Section 1 + 5) ---
+    # MAX_BLOCKS_PER_TARGET_PER_CYCLE (default 25) is the authoritative HARD ceiling and
+    # caps EVERY scan path. A chain/env cap can only ever LOWER the scanned range, never
+    # raise it above the safety ceiling. This closes the exact bypass the incident hit: the
+    # 25-block cap was previously applied ONLY when a cursor existed, so a no-cursor contract
+    # poll set scan_ceiling=safe_to and queried the full 2,001-block window.
     _CHAIN_MAX_BLOCKS_PER_CYCLE: dict[str, int] = {'base': 100, 'base-mainnet': 100}
     _chain_default_max = _CHAIN_MAX_BLOCKS_PER_CYCLE.get(network, 5000)
     if network in {'base', 'base-mainnet'}:
-        # Base per-cycle block cap. BASE_MAX_BLOCKS_PER_CYCLE (default 100) is the general
-        # Base ceiling; BASE_CATCHUP_MAX_BLOCKS_PER_CYCLE overrides it for cursor-based
-        # catch-up and falls back to it. Both default to 100 so a deep Base backlog catches
-        # up gradually and never reinflates into a heavy 1000-block poll.
         def _base_int_env(name: str, fallback: int) -> int:
             try:
                 return max(1, int(os.getenv(name, str(fallback))))
@@ -2313,16 +2782,56 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         max_blocks_per_cycle = max(1, int(os.getenv('MAX_BLOCKS_PER_CYCLE', str(_chain_default_max))))
     except (TypeError, ValueError):
         max_blocks_per_cycle = _chain_default_max
-    # On Base the catch-up cap is authoritative: a large block-scan batch size
-    # (MONITOR_BATCH_BLOCKS) must NOT reinflate it into a heavy 1000-block catch-up
-    # poll. Other chains keep the historical "at least one batch" floor.
     if network not in {'base', 'base-mainnet'}:
         max_blocks_per_cycle = max(block_scan_chunk, max_blocks_per_cycle)
-    if last_block is not None:
+    max_blocks_per_cycle = min(max_blocks_per_cycle, budget.max_blocks)
+
+    # --- Scan window ---
+    _backfill_on = historical_backfill_enabled()
+    if _backfill_on:
+        # Operator-enabled deep historical backfill (OFF by default; Section 13). Preserved
+        # cursor-based catch-up: a no-cursor target seeds from safe_backfill_window and an
+        # existing cursor advances incrementally, each still hard-capped at max_blocks_per_cycle
+        # so a deep backlog catches up GRADUALLY over many cycles (never one heavy poll).
+        if last_block is None:
+            from_block = max(0, safe_to - safe_backfill_window + 1)
+        else:
+            # The reorg overlap must not consume the whole per-cycle budget, or catch-up
+            # makes zero forward progress; shrink it when it is as large as the budget.
+            _effective_replay = replay_blocks
+            if _effective_replay >= max_blocks_per_cycle:
+                _effective_replay = max(1, max_blocks_per_cycle // 3)
+            from_block = max(0, last_block - _effective_replay)
         scan_ceiling = min(from_block + max_blocks_per_cycle - 1, safe_to)
+        logger.info(
+            'evm_scan_window_backfill target_id=%s chain=%s mode=historical_backfill '
+            'from_block=%s to_block=%s max_blocks_per_cycle=%s',
+            target.get('id'), network, from_block, scan_ceiling, max_blocks_per_cycle,
+        )
     else:
+        # Polling-only MVP live-tail sampling (Section 2 + 13): a scheduled health poll
+        # scans ONLY the recent live tail near the head, never a deep historical backfill.
+        #   * No cursor  -> INITIAL_LIVE_TAIL_BLOCKS (10) ending at safe_head.
+        #   * With cursor -> from just after the cursor (small reorg overlap) up to the head,
+        #     but never more than max_blocks_per_cycle behind it — so on a fast chain (Base
+        #     ~450 blocks / 15 min) coverage tracks the head instead of the cursor lagging
+        #     25 blocks/cycle forever. The cursor still DEDUPES already-emitted events; the
+        #     skipped gap (cursor+1 .. window_start-1) is deferred backfill, never scanned
+        #     during a health poll. This is why contracts (no wallet fast-forward) stay current.
+        if last_block is None:
+            from_block = max(0, safe_to - _initial_tail + 1)
+        else:
+            _overlap = min(replay_blocks, max(0, max_blocks_per_cycle - 1))
+            from_block = max(max(0, last_block - _overlap), max(0, safe_to - max_blocks_per_cycle + 1))
         scan_ceiling = safe_to
-    catchup_mode: bool = last_block is not None and scan_ceiling < safe_to
+        logger.info(
+            'evm_scan_window_live_tail target_id=%s chain=%s mode=live_tail_only '
+            'has_cursor=%s from_block=%s to_block=%s window_blocks=%s '
+            'initial_live_tail_blocks=%s max_blocks_per_cycle=%s historical_backfill_enabled=false',
+            target.get('id'), network, last_block is not None, from_block, scan_ceiling,
+            max(0, scan_ceiling - from_block + 1), _initial_tail, max_blocks_per_cycle,
+        )
+    catchup_mode: bool = scan_ceiling < safe_to
     blocks_deferred: int = max(0, safe_to - scan_ceiling)
 
     # Live-tail window size (recent blocks always scanned during catch-up so new
@@ -2338,6 +2847,11 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         live_tail_blocks = max(0, int(os.getenv('EVM_LIVE_TAIL_BLOCKS', _live_tail_default)))
     except (TypeError, ValueError):
         live_tail_blocks = 100 if network in {'base', 'base-mainnet'} else 0
+    # Section 1/5: the live-tail window (used by catch-up AND the deep-backlog fast-forward)
+    # can never exceed the per-target block ceiling — otherwise a 100-block live tail would
+    # block-scan 100 blocks and blow the 100-RPC budget. Bound it to max_blocks_per_cycle so
+    # every scan range (backfill, catch-up, fast-forward, live tail) stays within budget.
+    live_tail_blocks = min(live_tail_blocks, max_blocks_per_cycle)
 
     # --- Deep-backlog fast-forward (live wallet monitoring) ---
     # When a live wallet target's previous_cursor is so far behind the chain head that the
@@ -2420,6 +2934,14 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     chain_id = CHAIN_MAP.get(network, {}).get('chain_id') or _env_chain_id
     block_ts_cache: dict[str, datetime] = {}
 
+    # Every scan-phase RPC goes through the budgeted, caller-tagging client so the
+    # per-target budget + process-wide circuit breaker are enforced at a single
+    # chokepoint (Section 5/10/12). A budget/breaker stop raises; it is caught below
+    # and turned into a terminal partial/degraded status with the cursor held.
+    scan_client = _BudgetedRpcClient(client, budget, target.get('id'))
+    _budget_stop_event: str | None = None
+    _budget_stop_reason: str | None = None
+
     logs: list[dict[str, Any]] = []
     _logs_fetch_status = 'ok'
     _logs_fetch_error_count = 0
@@ -2442,32 +2964,65 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         # ``tx.to == contract`` block scan misses. Contract address matching must never
         # require the contract to appear as a transaction ``from``/``to``.
         _logs_max_range, _logs_min_range = _wallet_logs_block_range(network, block_scan_chunk)
+        # Section 6: never request more than MAX_LOG_QUERY_CHUNK_BLOCKS (default 5) blocks
+        # per eth_getLogs — for a 25-block cycle that is ≤5 blocks per RPC call. On a 413
+        # (or a chunk that would blow the log budget) the range is split recursively down to
+        # a SINGLE block, so the halving floor is 1 (never wider than the 5-block ceiling).
+        _logs_max_range = min(_logs_max_range, budget.max_log_query_chunk_blocks)
+        _logs_min_range = 1
         _logs_fetcher = _fetch_logs if target_type == 'wallet' else _fetch_contract_logs
-        _adaptive = _fetch_wallet_logs_adaptive(
-            client, target_address, from_block, scan_ceiling,
-            network=network, target_id=target.get('id'),
-            max_range=_logs_max_range, min_range=_logs_min_range,
-            logs_fetcher=_logs_fetcher,
-        )
-        logs = _adaptive['logs']
-        _logs_fetch_status = _adaptive['status']
-        _logs_fetch_error_count = _adaptive['error_count']
-        if target_type == 'contract':
-            logger.info(
-                'evm_contract_log_scan target_id=%s chain=%s contract_address=%s '
-                'from_block=%s to_block=%s logs_found=%s logs_fetch_status=%s '
-                'action=erc20_receipt_logs_not_tx_to_matching',
-                target.get('id'), network, target_address,
-                from_block, scan_ceiling, len(logs), _adaptive['status'],
+        try:
+            _adaptive = _fetch_wallet_logs_adaptive(
+                scan_client, target_address, from_block, scan_ceiling,
+                network=network, target_id=target.get('id'),
+                max_range=_logs_max_range, min_range=_logs_min_range,
+                logs_fetcher=_logs_fetcher,
+                budget=budget, max_blocks_ceiling=max_blocks_per_cycle,
             )
-        if _adaptive['status'] in {'degraded', 'failed'}:
-            # The log scan did not fully cover [from_block, scan_ceiling] — either a 413
-            # chunk stayed too large at the minimum range ('degraded'/query_too_large) or a
-            # non-413 error stopped the scan ('failed'/logs_fetch_failed). Cap the cursor at
-            # the last fully-scanned block so the unscanned blocks are re-scanned next cycle
-            # rather than skipped. On a first-chunk failure last_complete_block == from_block-1,
-            # which holds the cursor at the previous checkpoint (no forward advance).
-            _logs_last_complete_block = _adaptive['last_complete_block']
+        except (PollBudgetExhausted, RpcCircuitBreakerTripped, ScanRangeInvariantError) as _bstop:
+            # Budget/breaker/invariant stop during the log scan: fail closed. Emit no
+            # events, hold the cursor at the previous checkpoint (from_block-1, never
+            # advancing past unscanned blocks), and record the terminal reason so the
+            # cycle reports partial/degraded (never a live success). Section 1/5/12.
+            _budget_stop_event = getattr(_bstop, 'event', None) or 'monitoring_scan_range_invariant_failed'
+            _budget_stop_reason = getattr(_bstop, 'reason', None) or (
+                'scan_range_invariant' if isinstance(_bstop, ScanRangeInvariantError) else 'circuit_breaker'
+            )
+            _logs_fetch_status = 'degraded'
+            _logs_last_complete_block = from_block - 1
+            logs = []
+            logger.warning(
+                'monitoring_poll_stopped target_id=%s chain=%s phase=contract_log_scan '
+                'event=%s reason=%s from_block=%s to_block=%s rpc_calls_used=%s '
+                'elapsed_seconds=%s action=hold_cursor_persist_partial',
+                target.get('id'), network, _budget_stop_event, _budget_stop_reason,
+                from_block, scan_ceiling, budget.rpc_calls_used, budget.elapsed_seconds,
+            )
+        else:
+            logs = _adaptive['logs']
+            _logs_fetch_status = _adaptive['status']
+            _logs_fetch_error_count = _adaptive['error_count']
+            budget.logs_processed += len(logs)
+            if _adaptive.get('budget_stopped'):
+                _budget_stop_event = budget.exhausted_event or 'monitoring_poll_log_budget_exhausted'
+                _budget_stop_reason = budget.exhausted_reason or 'log_budget'
+            if target_type == 'contract':
+                logger.info(
+                    'evm_contract_log_scan target_id=%s chain=%s contract_address=%s '
+                    'from_block=%s to_block=%s logs_found=%s logs_fetch_status=%s '
+                    'action=erc20_receipt_logs_not_tx_to_matching',
+                    target.get('id'), network, target_address,
+                    from_block, scan_ceiling, len(logs), _adaptive['status'],
+                )
+            if _adaptive['status'] in {'degraded', 'failed'}:
+                # The log scan did not fully cover [from_block, scan_ceiling] — either a 413
+                # chunk stayed too large at the minimum range ('degraded'/query_too_large) or a
+                # non-413 error stopped the scan ('failed'/logs_fetch_failed) or the per-cycle
+                # log budget was reached. Cap the cursor at the last fully-scanned block so the
+                # unscanned blocks are re-scanned next cycle rather than skipped. On a
+                # first-chunk failure last_complete_block == from_block-1, which holds the
+                # cursor at the previous checkpoint (no forward advance).
+                _logs_last_complete_block = _adaptive['last_complete_block']
 
     # Live-tail window: when still in catchup_mode (a moderate backlog that did NOT
     # trigger the deep-backlog fast-forward above), also scan the most recent blocks so
@@ -2497,110 +3052,199 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     _wallet_transfers_detected = 0
     _detected_tx_hashes: list[str] = []
     _failed_blocks: list[int] = []
-    for _range_from, _range_to in _scan_ranges:
-        for chunk_from, chunk_to in _iter_block_ranges(_range_from, _range_to, block_scan_chunk):
-            for block_number in range(chunk_from, chunk_to + 1):
-                try:
-                    block = client.call('eth_getBlockByNumber', [hex(block_number), True]) or {}
-                except Exception as block_exc:
-                    _failed_blocks.append(block_number)
-                    logger.warning(
-                        'evm_block_fetch_failed target_id=%s chain=%s block_number=%s block_number_hex=%s '
-                        'from_block=%s to_block=%s error_type=%s http_status=%s error=%s action=continue_remaining_blocks',
-                        target.get('id'), network, block_number, hex(block_number),
-                        _range_from, _range_to,
-                        type(block_exc).__name__, getattr(block_exc, 'code', None) if isinstance(block_exc, _urllib_error.HTTPError) else None,
-                        str(block_exc)[:200],
-                    )
-                    continue
-                block_hash = str(block.get('hash') or '')
-                if block_hash and block_hash not in block_ts_cache:
-                    block_ts_cache[block_hash] = _iso_from_block_ts(block.get('timestamp'))
-                txs = block.get('transactions') or []
-                for tx in txs:
-                    _transactions_inspected += 1
-                    tx_to = str(tx.get('to') or '').lower()
-                    tx_from = str(tx.get('from') or '').lower()
-                    if target_type == 'wallet' and target_address not in {tx_to, tx_from}:
-                        continue
-                    if target_type == 'contract' and tx_to != target_address:
-                        continue
-                    tx_hash = str(tx.get('hash') or '')
-                    observed_at = block_ts_cache.get(block_hash) or _iso_from_block_ts(block.get('timestamp'))
-                    cursor_value = _event_cursor(block_number, tx_hash, None)
-                    payload = _build_base_payload(
-                        target=target,
-                        network=network,
-                        chain_id=chain_id,
-                        block_number=block_number,
-                        block_hash=block_hash or tx.get('blockHash'),
-                        tx=tx,
-                        tx_hash=tx_hash,
-                        raw_reference=f'{network}:{tx_hash}',
-                    )
-                    payload['observed_at'] = observed_at.isoformat()
-                    payload['event_type'] = 'transaction' if target_type == 'wallet' else 'contract_interaction'
-                    payload['source_type'] = 'rpc_polling'
-                    payload['detected_by'] = 'stable_rpc_polling'
-                    payload['provider_mode'] = 'stable_rpc_polling'
-                    _latency = round((datetime.now(timezone.utc) - observed_at).total_seconds(), 2) if isinstance(observed_at, datetime) else None
-                    payload['observed_latency_seconds'] = _latency
-                    if target_type == 'wallet':
-                        # Shared native-ETH matcher (also used by the realtime worker)
-                        # so both detection paths normalise addresses identically.
-                        _native_direction = native_transfer_direction(target_address, tx)
-                        if _native_direction is not None:
-                            payload['wallet_transfer_direction'] = _native_direction
-                            _wallet_transfers_detected += 1
-                            if tx_hash:
-                                _detected_tx_hashes.append(tx_hash)
-                    kind = 'transaction' if target_type == 'wallet' else 'contract'
-                    events.append(ActivityEvent(event_id=_make_event_id(str(target['id']), cursor_value, kind), kind=kind, observed_at=observed_at, ingestion_source=preferred_source, cursor=cursor_value, payload=payload))
+    # Supplementary block-by-block scan (tx.to == contract / native wallet transfers).
+    # Skipped entirely when the log scan already hit a budget/breaker/invariant stop —
+    # no new RPC work after a clean stop (Section 5/12). Every eth_getBlockByNumber goes
+    # through the budgeted client so this loop is bounded to ≤ max_blocks calls and can
+    # never re-inflate into the 2,001-block scan the incident logged.
+    if _budget_stop_event is None:
+        try:
+            for _range_from, _range_to in _scan_ranges:
+                for chunk_from, chunk_to in _iter_block_ranges(_range_from, _range_to, block_scan_chunk):
+                    for block_number in range(chunk_from, chunk_to + 1):
+                        try:
+                            block = scan_client.call('eth_getBlockByNumber', [hex(block_number), True]) or {}
+                            budget.blocks_scanned += 1
+                        except (PollBudgetExhausted, RpcCircuitBreakerTripped, ScanRangeInvariantError):
+                            # Budget/breaker/invariant: propagate to stop the whole scan cleanly.
+                            raise
+                        except Exception as block_exc:
+                            _failed_blocks.append(block_number)
+                            logger.warning(
+                                'evm_block_fetch_failed target_id=%s chain=%s block_number=%s block_number_hex=%s '
+                                'from_block=%s to_block=%s error_type=%s http_status=%s error=%s action=continue_remaining_blocks',
+                                target.get('id'), network, block_number, hex(block_number),
+                                _range_from, _range_to,
+                                type(block_exc).__name__, getattr(block_exc, 'code', None) if isinstance(block_exc, _urllib_error.HTTPError) else None,
+                                str(block_exc)[:200],
+                            )
+                            continue
+                        block_hash = str(block.get('hash') or '')
+                        if block_hash and block_hash not in block_ts_cache:
+                            block_ts_cache[block_hash] = _iso_from_block_ts(block.get('timestamp'))
+                        txs = block.get('transactions') or []
+                        for tx in txs:
+                            _transactions_inspected += 1
+                            tx_to = str(tx.get('to') or '').lower()
+                            tx_from = str(tx.get('from') or '').lower()
+                            if target_type == 'wallet' and target_address not in {tx_to, tx_from}:
+                                continue
+                            if target_type == 'contract' and tx_to != target_address:
+                                continue
+                            tx_hash = str(tx.get('hash') or '')
+                            observed_at = block_ts_cache.get(block_hash) or _iso_from_block_ts(block.get('timestamp'))
+                            cursor_value = _event_cursor(block_number, tx_hash, None)
+                            payload = _build_base_payload(
+                                target=target,
+                                network=network,
+                                chain_id=chain_id,
+                                block_number=block_number,
+                                block_hash=block_hash or tx.get('blockHash'),
+                                tx=tx,
+                                tx_hash=tx_hash,
+                                raw_reference=f'{network}:{tx_hash}',
+                            )
+                            payload['observed_at'] = observed_at.isoformat()
+                            payload['event_type'] = 'transaction' if target_type == 'wallet' else 'contract_interaction'
+                            payload['source_type'] = 'rpc_polling'
+                            payload['detected_by'] = 'stable_rpc_polling'
+                            payload['provider_mode'] = 'stable_rpc_polling'
+                            _latency = round((datetime.now(timezone.utc) - observed_at).total_seconds(), 2) if isinstance(observed_at, datetime) else None
+                            payload['observed_latency_seconds'] = _latency
+                            if target_type == 'wallet':
+                                # Shared native-ETH matcher (also used by the realtime worker)
+                                # so both detection paths normalise addresses identically.
+                                _native_direction = native_transfer_direction(target_address, tx)
+                                if _native_direction is not None:
+                                    payload['wallet_transfer_direction'] = _native_direction
+                                    _wallet_transfers_detected += 1
+                                    if tx_hash:
+                                        _detected_tx_hashes.append(tx_hash)
+                            kind = 'transaction' if target_type == 'wallet' else 'contract'
+                            events.append(ActivityEvent(event_id=_make_event_id(str(target['id']), cursor_value, kind), kind=kind, observed_at=observed_at, ingestion_source=preferred_source, cursor=cursor_value, payload=payload))
+        except (PollBudgetExhausted, RpcCircuitBreakerTripped, ScanRangeInvariantError) as _bstop:
+            # Budget/breaker/invariant stop during the block scan: stop cleanly, hold the
+            # cursor at the previous checkpoint, and report degraded (never live success).
+            _budget_stop_event = getattr(_bstop, 'event', None) or 'monitoring_scan_range_invariant_failed'
+            _budget_stop_reason = getattr(_bstop, 'reason', None) or (
+                'scan_range_invariant' if isinstance(_bstop, ScanRangeInvariantError) else 'circuit_breaker'
+            )
+            if _logs_fetch_status == 'ok':
+                _logs_fetch_status = 'degraded'
+            _logs_last_complete_block = from_block - 1
+            logger.warning(
+                'monitoring_poll_stopped target_id=%s chain=%s phase=block_scan event=%s reason=%s '
+                'from_block=%s to_block=%s rpc_calls_used=%s blocks_scanned=%s elapsed_seconds=%s '
+                'action=hold_cursor_persist_partial',
+                target.get('id'), network, _budget_stop_event, _budget_stop_reason,
+                from_block, scan_ceiling, budget.rpc_calls_used, budget.blocks_scanned,
+                budget.elapsed_seconds,
+            )
 
+    # Section 3 + 4: build normalized telemetry from the ERC-20 logs LOCALLY. eth_getLogs
+    # already carries address, topics, data, transactionHash, blockNumber and logIndex, so
+    # a Transfer/Approval is decoded WITHOUT an eth_getTransactionByHash per log — removing
+    # the N+1 storm (119,163 logs previously became 119,163 tx lookups). Logs are decoded,
+    # deduped by (chain_id, transaction_hash, log_index), and only then optionally enriched.
+    _decoded_logs: list[dict[str, Any]] = []
+    _enrichment_required = (
+        str(target.get('requires_tx_enrichment') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+        or str(os.getenv('EVM_TX_ENRICHMENT_ENABLED', 'false')).strip().lower() in {'1', 'true', 'yes', 'on'}
+    )
     for log in logs:
-        tx_hash = str(log.get('transactionHash') or '')
-        tx = client.call('eth_getTransactionByHash', [tx_hash]) or {}
-        block_number = _hex_to_int(log.get('blockNumber')) or safe_to
-        log_index = _hex_to_int(log.get('logIndex'))
-        block_hash = str(log.get('blockHash') or '')
+        decoded = _decode_transfer_log(log)
+        if decoded is None:
+            # Not a Transfer/Approval event: never decoded as one, never enriched.
+            continue
+        decoded['requires_enrichment'] = _enrichment_required
+        decoded['_blockHash_raw'] = log.get('blockHash')
+        _decoded_logs.append(decoded)
+    _decoded_logs = _dedupe_decoded_logs(_decoded_logs, chain_id)
+
+    # Optional, bounded, rule-gated transaction enrichment (Section 4). Default OFF: an
+    # ordinary USDC Transfer that matches no rule is never enriched. When enabled the plan
+    # is deduped by transaction hash (each tx enriched at most once) and hard-capped at
+    # MAX_TX_ENRICHMENTS_PER_TARGET_PER_CYCLE.
+    _enriched_tx: dict[str, dict[str, Any]] = {}
+    if _budget_stop_event is None and _enrichment_required and budget.max_tx_enrichments > 0:
+        for _enrich_hash in _plan_tx_enrichments(_decoded_logs, max_enrichments=budget.max_tx_enrichments):
+            if not budget.can_enrich():
+                break
+            try:
+                _enriched_tx[_enrich_hash] = scan_client.call('eth_getTransactionByHash', [_enrich_hash]) or {}
+            except (PollBudgetExhausted, RpcCircuitBreakerTripped, ScanRangeInvariantError) as _bstop:
+                _budget_stop_event = getattr(_bstop, 'event', None) or 'monitoring_poll_enrichment_budget_exhausted'
+                _budget_stop_reason = getattr(_bstop, 'reason', None) or 'enrichment_budget'
+                if _logs_fetch_status == 'ok':
+                    _logs_fetch_status = 'degraded'
+                break
+            budget.transaction_enrichments += 1
+
+    for decoded in _decoded_logs:
+        tx_hash = decoded['transaction_hash']
+        block_number = decoded['block_number'] if decoded['block_number'] is not None else safe_to
+        log_index = decoded['log_index']
+        block_hash = decoded['block_hash'] or ''
         observed_at = block_ts_cache.get(block_hash)
         if observed_at is None:
-            block = client.call('eth_getBlockByHash', [log.get('blockHash'), False]) if log.get('blockHash') else {}
-            observed_at = _iso_from_block_ts((block or {}).get('timestamp'))
+            # Block timestamp not already cached from the block scan: at most ONE bounded,
+            # budget-gated eth_getBlockByHash per UNIQUE block (deduped by the cache) —
+            # never one per log. Skipped after a budget/breaker stop.
+            _blk: dict[str, Any] = {}
+            if decoded.get('_blockHash_raw') and _budget_stop_event is None:
+                try:
+                    _blk = scan_client.call('eth_getBlockByHash', [decoded['_blockHash_raw'], False]) or {}
+                except (PollBudgetExhausted, RpcCircuitBreakerTripped, ScanRangeInvariantError) as _bstop:
+                    _budget_stop_event = getattr(_bstop, 'event', None) or 'monitoring_poll_rpc_budget_exhausted'
+                    _budget_stop_reason = getattr(_bstop, 'reason', None) or 'rpc_budget'
+                    if _logs_fetch_status == 'ok':
+                        _logs_fetch_status = 'degraded'
+            observed_at = _iso_from_block_ts((_blk or {}).get('timestamp'))
             if block_hash:
                 block_ts_cache[block_hash] = observed_at
-        topic0 = str((log.get('topics') or [''])[0]).lower()
-        owner = _topic_to_address((log.get('topics') or [None, None])[1])
-        spender_or_to = _topic_to_address((log.get('topics') or [None, None, None])[2])
+        is_approval = decoded['topic0'] == APPROVAL_TOPIC
+        # Synthetic tx built from the log (from/to only) so _build_base_payload is populated
+        # from log data; enrichment, when present, overlays the real tx fields.
+        _enriched = _enriched_tx.get(tx_hash) or {}
+        _synthetic_tx = {
+            'hash': tx_hash,
+            'from': _enriched.get('from') or decoded['from_address'],
+            'to': _enriched.get('to') or decoded['to_address'],
+            'value': _enriched.get('value'),
+            'input': _enriched.get('input'),
+        }
         payload = _build_base_payload(
             target=target,
             network=network,
             chain_id=chain_id,
             block_number=block_number,
-            block_hash=log.get('blockHash'),
-            tx=tx,
+            block_hash=decoded.get('_blockHash_raw'),
+            tx=_synthetic_tx,
             tx_hash=tx_hash,
             raw_reference=f'{network}:{tx_hash}:{log_index}',
         )
         payload.update(
             {
                 'log_index': log_index,
-                'contract_address': str(log.get('address') or '').lower() or payload.get('contract_address'),
-                'asset_address': str(log.get('address') or '').lower() or None,
-                'owner': owner,
-                'spender': spender_or_to if topic0 == APPROVAL_TOPIC else None,
-                'to': spender_or_to if topic0 == TRANSFER_TOPIC else payload.get('to'),
-                'kind_hint': 'erc20_approval' if topic0 == APPROVAL_TOPIC else 'erc20_transfer',
-                'event_type': 'approval' if topic0 == APPROVAL_TOPIC else 'transfer',
-                'amount': str(_hex_to_int(log.get('data')) or 0),
+                'transaction_index': decoded['transaction_index'],
+                'contract_address': decoded['contract_address'] or payload.get('contract_address'),
+                'asset_address': decoded['contract_address'],
+                'owner': decoded['from_address'],
+                'from': decoded['from_address'],
+                'from_address': decoded['from_address'],
+                'spender': decoded['to_address'] if is_approval else None,
+                'to': decoded['to_address'],
+                'to_address': decoded['to_address'],
+                'kind_hint': decoded['kind_hint'],
+                'event_type': decoded['event_type'],
+                'amount': decoded['amount'],
                 'observed_at': observed_at.isoformat(),
-                # ERC-20 transfer/approval logs found by this poller persist as
-                # wallet_transfer_detected when the monitored wallet is involved —
-                # tag the detection path so their Detected By is never blank
-                # (the native-tx scan above already tags stable_rpc_polling).
+                # Locally decoded from the receipt log (no tx lookup) unless a rule required
+                # enrichment; tag the detection path so Detected By is never blank.
                 'source_type': 'rpc_polling',
                 'detected_by': 'stable_rpc_polling',
                 'provider_mode': 'stable_rpc_polling',
+                'enrichment_status': 'enriched' if tx_hash in _enriched_tx else 'log_only',
             }
         )
         kind = 'transaction'
@@ -2639,11 +3283,13 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         catchup_mode, blocks_deferred,
     )
     # Canonical reason for an incomplete log scan, surfaced to the provider-result layer
-    # so the cycle is reported as degraded (never live-success): query_too_large for a 413
-    # that stayed too large at the min chunk, logs_fetch_failed for a non-413 error.
+    # so the cycle is reported as degraded (never live-success). A per-poll budget/breaker/
+    # invariant stop takes precedence (its exact reason), then query_too_large for a 413
+    # that stayed too large at the min chunk, then logs_fetch_failed for a non-413 error.
     _logs_status_reason: str | None = (
-        'query_too_large' if _logs_fetch_status == 'degraded'
-        else ('logs_fetch_failed' if _logs_fetch_status == 'failed' else None)
+        _budget_stop_reason if _budget_stop_reason
+        else ('query_too_large' if _logs_fetch_status == 'degraded'
+              else ('logs_fetch_failed' if _logs_fetch_status == 'failed' else None))
     )
     # Cursor advancement target. Normally the full block-scan ceiling, BUT when the
     # eth_getLogs scan did not fully cover the range (413 too large at min, or a non-413
@@ -2718,6 +3364,43 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     # canonical reason (None | 'query_too_large' | 'logs_fetch_failed').
     target['_evm_logs_fetch_status'] = _logs_fetch_status
     target['_evm_logs_status_reason'] = _logs_status_reason
+    # Section 5: always finish a poll with a terminal, persisted budget summary — proof of
+    # exactly what the cycle consumed (RPC calls, blocks, logs, enrichments, seconds) and
+    # whether a hard ceiling stopped it early. The runner persists this alongside the poll
+    # result and heartbeat.
+    _poll_terminal_status = 'partial' if _budget_stop_event else (
+        'degraded' if _logs_fetch_status in {'degraded', 'failed'} else 'complete'
+    )
+    budget.logs_processed = max(budget.logs_processed, len(_decoded_logs))
+    target['_evm_poll_budget'] = budget.as_dict()
+    target['_evm_poll_terminal_status'] = _poll_terminal_status
+    target['_evm_poll_stopped_event'] = _budget_stop_event
+    target['_evm_poll_stopped_reason'] = _budget_stop_reason
+    if _budget_stop_event:
+        # Canonical budget-exhaustion event (monitoring_poll_rpc_budget_exhausted /
+        # monitoring_poll_log_budget_exhausted / monitoring_poll_enrichment_budget_exhausted /
+        # monitoring_poll_time_budget_exhausted / monitoring_poll_rpc_circuit_breaker /
+        # monitoring_scan_range_invariant_failed).
+        logger.warning(
+            '%s target_id=%s chain=%s reason=%s rpc_calls_used=%s blocks_scanned=%s '
+            'logs_received=%s transaction_enrichments=%s elapsed_seconds=%s '
+            'terminal_status=%s persisted_cursor=%s',
+            _budget_stop_event, target.get('id'), network, _budget_stop_reason,
+            budget.rpc_calls_used, budget.blocks_scanned, budget.logs_received,
+            budget.transaction_enrichments, budget.elapsed_seconds,
+            _poll_terminal_status, _persisted_cursor,
+        )
+    logger.info(
+        'monitoring_poll_budget_summary target_id=%s chain=%s terminal_status=%s '
+        'rpc_calls_used=%s max_rpc_calls=%s blocks_scanned=%s max_blocks=%s '
+        'logs_received=%s max_logs=%s transaction_enrichments=%s max_tx_enrichments=%s '
+        'elapsed_seconds=%s max_poll_duration_seconds=%s stopped_reason=%s',
+        target.get('id'), network, _poll_terminal_status,
+        budget.rpc_calls_used, budget.max_rpc_calls, budget.blocks_scanned, budget.max_blocks,
+        budget.logs_received, budget.max_logs, budget.transaction_enrichments,
+        budget.max_tx_enrichments, budget.elapsed_seconds, budget.max_duration_seconds,
+        _budget_stop_reason or 'none',
+    )
     return deduped
 
 

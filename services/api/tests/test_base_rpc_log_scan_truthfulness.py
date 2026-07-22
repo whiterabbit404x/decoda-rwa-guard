@@ -168,7 +168,9 @@ def test_quicknode_block_number_ok_but_getlogs_413_is_degraded_not_live(monkeypa
 
     _live_base_env(monkeypatch)
     latest = 10_000
-    cursor_block = 9_900  # safe_to = 9997
+    # Cursor within one live-tail window of the head so the bounded live-tail scan covers
+    # the cursor; a 413 across the whole window then holds it (no advance past unscanned).
+    cursor_block = 9_990  # safe_to = 9997
     target = _make_target(cursor=f'{cursor_block}:checkpoint:-1')
     _patch_real_provider(monkeypatch, _Rpc413Always(latest=latest))
 
@@ -283,35 +285,38 @@ def test_base_defaults_cap_blocks_per_cycle_and_log_chunk(monkeypatch, caplog):
         fetch_evm_activity(target, None, rpc_client=rpc)
 
     scan_to = target['_evm_scan_to_block']
-    # Default BASE_MAX_BLOCKS_PER_CYCLE=100: a deep cursor advances ~100 blocks/cycle
-    # (minus the replay overlap), never the 1000-block window that triggered 413s.
-    assert 0 < scan_to - cursor_block <= 100, (
-        f'Base must advance <=100 blocks/cycle; advanced {scan_to - cursor_block}'
-    )
-    # Default BASE_MAX_LOGS_BLOCK_RANGE=25: no eth_getLogs request exceeds 25 blocks.
+    safe_to = latest - 3
+    # Polling-only MVP live-tail sampling: a deep cursor jumps to the recent live tail near
+    # the head (the skipped history is deferred backfill), so the cursor reaches safe_to and
+    # the WINDOW actually queried this cycle is what the hard 25-block ceiling bounds.
+    assert scan_to == safe_to, f'live-tail poll must reach the head safe_to={safe_to}; got {scan_to}'
+    frms = [frm for frm, to in rpc.getlogs_ranges]
+    tos = [to for frm, to in rpc.getlogs_ranges]
+    assert frms, 'eth_getLogs must be attempted'
+    window = max(tos) - min(frms) + 1
+    assert window <= 25, f'per-cycle scan window must be <=25 blocks; got {window}'
+    # MAX_LOG_QUERY_CHUNK_BLOCKS=5: no single eth_getLogs request exceeds 5 blocks.
     spans = [to - frm + 1 for frm, to in rpc.getlogs_ranges]
-    assert spans, 'eth_getLogs must be attempted'
-    assert max(spans) <= 25, f'Base eth_getLogs chunk must default to <=25 blocks; spans={set(spans)}'
-    # Acceptance: the scan-start log must show max_blocks_per_cycle=100 (never 1000).
+    assert max(spans) <= 5, f'Base eth_getLogs chunk must default to <=5 blocks; spans={set(spans)}'
+    # Acceptance: the scan-start log must show the hard max_blocks_per_cycle=25 (never 100/1000).
     text = '\n'.join(r.getMessage() for r in caplog.records)
-    assert 'max_blocks_per_cycle=100' in text
+    assert 'max_blocks_per_cycle=25' in text
     assert 'max_blocks_per_cycle=1000' not in text
 
 
 # ---------------------------------------------------------------------------
-# E. Base default minimum eth_getLogs chunk is 5 blocks (adaptive halving floor)
+# E. eth_getLogs chunk starts at 5 blocks and splits recursively down to 1 on 413
 # ---------------------------------------------------------------------------
 
-def test_base_default_min_log_chunk_is_five(monkeypatch):
+def test_base_log_chunk_caps_at_five_and_splits_to_one(monkeypatch):
     from services.api.app.evm_activity_provider import fetch_evm_activity
 
     monkeypatch.setenv('EVM_RPC_URL', 'http://rpc')
     monkeypatch.setenv('LIVE_MONITORING_CHAINS', 'base')
     monkeypatch.setenv('EVM_CHAIN_ID', '8453')
-    # No BASE_* overrides — defaults: max=25, min=5.
 
     latest = 10_000
-    cursor_block = 9_900
+    cursor_block = 9_990  # within one live-tail window of the head so a 413 holds the cursor
     target = _make_target(cursor=f'{cursor_block}:checkpoint:-1')
     rpc = _Rpc413Always(latest=latest)
 
@@ -319,9 +324,11 @@ def test_base_default_min_log_chunk_is_five(monkeypatch):
 
     spans = sorted({to - frm + 1 for frm, to in rpc.getlogs_ranges})
     assert spans, 'eth_getLogs must be attempted'
-    assert max(spans) == 25, f'first attempt must use the 25-block default max; spans={spans}'
-    assert min(spans) == 5, f'413 halving must floor at the 5-block default min; spans={spans}'
-    # 413-always at the min chunk → cursor must NOT advance past the prior checkpoint.
+    # MAX_LOG_QUERY_CHUNK_BLOCKS=5 caps the first attempt; on a persistent 413 the range is
+    # split recursively down to a SINGLE block (Section 6) before the chunk is given up.
+    assert max(spans) == 5, f'first attempt must use the 5-block chunk cap; spans={spans}'
+    assert min(spans) == 1, f'413 must split recursively down to 1 block; spans={spans}'
+    # 413-always even at a single block → cursor must NOT advance past the prior checkpoint.
     assert target['_evm_scan_to_block'] == cursor_block
 
 

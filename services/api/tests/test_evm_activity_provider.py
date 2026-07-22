@@ -191,8 +191,9 @@ def test_block_fetch_failure_logs_exception_and_continues(monkeypatch, caplog):
     monkeypatch.setenv('EVM_RPC_URL', 'http://rpc')
     monkeypatch.setenv('LIVE_MONITORING_CHAINS', 'ethereum')
 
-    fail_block = 90
-    succeed_block = 95
+    # No-cursor live-tail window is [safe_to-9, safe_to] = [98, 107]; keep both blocks in it.
+    fail_block = 100
+    succeed_block = 105
     blocks_fetched: list[int] = []
 
     class _FailOneRpc:
@@ -455,7 +456,8 @@ def test_evm_block_scan_summary_reports_failed_blocks(monkeypatch, caplog):
     monkeypatch.setenv('EVM_RPC_URL', 'http://rpc')
     monkeypatch.setenv('LIVE_MONITORING_CHAINS', 'ethereum')
 
-    fail_block = 480
+    # No-cursor live-tail window is [safe_to-9, safe_to] = [488, 497]; keep the block in it.
+    fail_block = 495
 
     class _OneBlockFailsRpc:
         def call(self, method: str, params: list) -> object:

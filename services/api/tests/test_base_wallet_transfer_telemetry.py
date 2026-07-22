@@ -770,17 +770,21 @@ def test_chain_mismatch_filter_excludes_ethereum_from_base_due_slots():
 
 
 # ---------------------------------------------------------------------------
-# 12. Base backfill window is at least 2000 blocks with no prior cursor
+# 12. Base no-cursor start is the bounded live tail, NOT a wide historical backfill
 # ---------------------------------------------------------------------------
 
-def test_base_backfill_window_is_at_least_2000_blocks(monkeypatch):
+def test_base_no_cursor_start_is_bounded_live_tail(monkeypatch):
     """
-    With no prior cursor for a Base target, fetch_evm_activity must scan
-    at least 2000 blocks before the chain tip (not the old 300-block default).
+    Datto USDC runaway fix (Section 2 + 13): with no prior cursor for a Base target,
+    fetch_evm_activity must start at the recent LIVE TAIL (INITIAL_LIVE_TAIL_BLOCKS,
+    default 10, ending at safe_head) — NOT a 2000-block historical backfill, which is a
+    separate operator-enabled job disabled by default. This is the exact bypass that
+    scanned 2,001 blocks and spiked Alchemy CU on the first restored Datto poll.
     """
     LATEST = 2500
     target = _make_base_wallet_target()
     target['monitoring_checkpoint_cursor'] = None
+    monkeypatch.delenv('HISTORICAL_BACKFILL_ENABLED', raising=False)
 
     blocks_requested: list[int] = []
 
@@ -818,10 +822,17 @@ def test_base_backfill_window_is_at_least_2000_blocks(monkeypatch):
 
     assert blocks_requested, 'Expected eth_getBlockByNumber calls for block scan'
     min_block = min(blocks_requested)
-    # With LATEST=2500 and 3 confirmations: safe_to=2497, from_block=max(0,2497-2000)=497
-    assert min_block <= LATEST - 2000, (
-        f'Base backfill must start at most {LATEST - 2000} (LATEST={LATEST} minus 2000). '
-        f'Got min_block={min_block}. Old 300-block window would give {LATEST - 300}.'
+    max_block = max(blocks_requested)
+    safe_to = LATEST - 3  # 2497
+    # Live-tail bounded: at most 25 blocks, ending at safe_to, starting at
+    # safe_to - INITIAL_LIVE_TAIL_BLOCKS + 1. Never a 300/2000-block backfill.
+    assert max_block == safe_to, f'live tail must end at safe_to={safe_to}; got {max_block}'
+    assert (max_block - min_block + 1) <= 25, (
+        f'no-cursor scheduled poll must be live-tail bounded (<=25 blocks); '
+        f'scanned {max_block - min_block + 1} (min={min_block}, max={max_block})'
+    )
+    assert min_block == safe_to - 10 + 1, (
+        f'live tail must start at safe_to - INITIAL_LIVE_TAIL_BLOCKS + 1; got {min_block}'
     )
 
 
