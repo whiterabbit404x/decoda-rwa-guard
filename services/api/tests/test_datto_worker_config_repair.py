@@ -482,3 +482,74 @@ def test_backfill_migration_is_idempotent_scoped_and_transaction_safe():
     ).upper()
     assert 'CONCURRENTLY' not in executable
     assert 'VACUUM' not in executable
+
+
+# ---------------------------------------------------------------------------
+# Migration 0129: restore the Datto USDC target to scheduled polling — idempotent,
+# workspace-scoped, duplicate-free (no INSERT), diagnostic, and crash-safe against the
+# partial unique index from migration 0101.
+# ---------------------------------------------------------------------------
+_M0129 = 'services/api/migrations/0129_restore_datto_usdc_scheduled_polling.sql'
+DATTO_SYSTEM = '1c02c1c0-30e3-4fcc-b648-0e8e65439be6'
+DATTO_CONFIG = '6fac55eb-efeb-4081-ad44-025efacab7dd'
+
+
+def _m0129_sql():
+    return pathlib.Path(_M0129).read_text()
+
+
+def _m0129_executable():
+    """The migration SQL with comment-only lines stripped (whitespace-normalized)."""
+    sql = _m0129_sql()
+    body = '\n'.join(line for line in sql.splitlines() if not line.lstrip().startswith('--'))
+    return ' '.join(body.split())
+
+
+def test_restore_datto_migration_targets_exact_scoped_records():
+    """The repair pins the exact production ids and never leaves the Datto workspace."""
+    executable = _m0129_executable()
+    # Every one of the four Datto identifiers is present in executable SQL (not just comments).
+    for _id in (DATTO_WS, DATTO_TARGET, DATTO_SYSTEM, DATTO_CONFIG):
+        assert _id in executable, f'{_id} must be referenced in executable SQL'
+    # Every UPDATE is workspace-scoped: as many workspace_id pins as UPDATE statements.
+    update_count = executable.upper().count('UPDATE ')
+    assert update_count >= 3, 'expected the target, monitored_system, and monitoring_config repairs'
+    assert executable.count(DATTO_WS) >= update_count, 'each UPDATE must pin the Datto workspace_id'
+
+
+def test_restore_datto_migration_is_duplicate_free_no_insert():
+    """Idempotent by construction: it reconciles existing rows and INSERTs nothing, so
+    reruns cannot create duplicate targets/systems/configs."""
+    executable_upper = _m0129_executable().upper()
+    assert 'INSERT INTO' not in executable_upper
+    assert 'INSERT ' not in executable_upper
+    # Restores the gating flags to their scheduled-polling state and the canonical provider.
+    assert 'ENABLED = TRUE' in executable_upper
+    assert 'MONITORING_ENABLED = TRUE' in executable_upper
+    assert 'IS_ACTIVE = TRUE' in executable_upper
+    assert "PROVIDER_TYPE = 'EVM_RPC'" in executable_upper
+    # Canonical 900s interval floor (item: 900s everywhere), never lowering a higher value.
+    assert 'GREATEST(COALESCE(MONITORING_INTERVAL_SECONDS, 900), 900)' in executable_upper
+
+
+def test_restore_datto_migration_undelete_is_crash_safe_under_unique_index():
+    """The soft-delete clear is GUARDED so re-inserting the row can never violate the
+    partial unique index idx_targets_workspace_asset_name_type_unique (migration 0101)
+    and abort the deploy. The guard mirrors that index's exact key columns."""
+    executable_upper = _m0129_executable().upper()
+    # deleted_at is only cleared conditionally (CASE ... NOT EXISTS ...), never unconditionally.
+    assert 'DELETED_AT = CASE' in executable_upper
+    assert 'NOT EXISTS' in executable_upper
+    # The guard keys on the SAME columns as the 0101 partial unique index.
+    for col in ('WORKSPACE_ID', 'ASSET_ID', 'NAME', 'TARGET_TYPE'):
+        assert col in executable_upper
+    assert 'IS NOT DISTINCT FROM' in executable_upper  # NULL-safe key comparison
+
+
+def test_restore_datto_migration_is_diagnostic_and_transaction_safe():
+    """It records WHY Datto was excluded (RAISE NOTICE) and uses only transaction-safe SQL."""
+    executable_upper = _m0129_executable().upper()
+    assert 'RAISE NOTICE' in executable_upper           # self-documenting exclusion reason
+    assert 'base_chain_8453_enabled_targets' in _m0129_sql()  # names the counter it repairs
+    assert 'CONCURRENTLY' not in executable_upper
+    assert 'VACUUM' not in executable_upper

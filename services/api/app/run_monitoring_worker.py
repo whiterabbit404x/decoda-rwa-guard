@@ -53,8 +53,8 @@ def _resolve_service_role() -> str:
 
 # The worker loop cadence resolves through the SAME canonical polling interval the
 # per-target default and startup report use (monitoring_runner.canonical_polling_interval_seconds),
-# so the worker can never report one interval while polling at another. The MVP default
-# is 300s; EVM_POLLING_INTERVAL_SECONDS is the documented override,
+# so the worker can never report one interval while polling at another. The canonical
+# default is 900s; EVM_POLLING_INTERVAL_SECONDS is the documented override,
 # MONITORING_WORKER_INTERVAL_SECONDS a legacy alias.
 DEFAULT_POLLING_INTERVAL_SECONDS = float(DEFAULT_CANONICAL_POLLING_INTERVAL_SECONDS)
 _POLLING_INTERVAL_ENV_VARS = CANONICAL_POLLING_INTERVAL_ENV_VARS
@@ -64,7 +64,7 @@ def _resolve_polling_interval() -> tuple[float, str]:
     """Resolve the effective worker poll cadence and the source that set it.
 
     Precedence: EVM_POLLING_INTERVAL_SECONDS → MONITORING_WORKER_INTERVAL_SECONDS →
-    the canonical MVP default (300s). A larger interval reduces RPC pressure; the value
+    the canonical default (900s). A larger interval reduces RPC pressure; the value
     is floored at 1s so a misconfiguration can never busy-loop the provider. A
     set-but-non-numeric override is skipped (it never sets the source). This shares the
     canonical resolution with the per-target default so the two never diverge.
@@ -87,7 +87,7 @@ def _resolve_polling_interval_seconds() -> float:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Run Decoda monitoring worker loop.')
     parser.add_argument('--worker-name', default=os.getenv('MONITORING_WORKER_NAME') or _default_worker_name())
-    # Default 60s (was 15s) so the worker does not hammer the RPC provider. Override
+    # Default is the canonical 900s so the worker does not hammer the RPC provider. Override
     # with EVM_POLLING_INTERVAL_SECONDS (or the legacy MONITORING_WORKER_INTERVAL_SECONDS)
     # or --interval-seconds when explicitly tuned.
     parser.add_argument('--interval-seconds', type=float, default=_resolve_polling_interval_seconds())

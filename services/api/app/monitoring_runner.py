@@ -122,17 +122,18 @@ def _min_monitoring_interval_seconds() -> int:
         return 60
 
 
-# Canonical MVP polling interval (seconds). ONE source of truth for the worker loop
+# Canonical polling interval (seconds). ONE source of truth for the worker loop
 # cadence, the default per-target polling interval, and the value reported at startup —
 # so the worker can never report one interval (e.g. 900) while actually polling at
 # another (e.g. 300). Resolution precedence (highest first):
-#   EVM_POLLING_INTERVAL_SECONDS -> MONITORING_WORKER_INTERVAL_SECONDS -> default 300s.
-# The 300s default is the chosen MVP cadence (fresh enough to catch a stalled provider
-# within a few minutes while staying well within Alchemy free-tier request budgets). Set
-# EVM_POLLING_INTERVAL_SECONDS=900 to reduce provider usage; every component below reads
-# THIS value, so scheduling, freshness, and reporting all move together.
+#   EVM_POLLING_INTERVAL_SECONDS -> MONITORING_WORKER_INTERVAL_SECONDS -> default 900s.
+# 900s (15 min) is the canonical cadence: it stays well within Alchemy/QuickNode free-tier
+# request budgets while every derived window (freshness, heartbeat grace) scales from it.
+# There is deliberately NO 300s fallback here — the configured value (or this 900s default)
+# is the single interval every component below reads, so scheduling, freshness, and
+# reporting all move together and never silently diverge onto a stale hardcoded cadence.
 CANONICAL_POLLING_INTERVAL_ENV_VARS = ('EVM_POLLING_INTERVAL_SECONDS', 'MONITORING_WORKER_INTERVAL_SECONDS')
-DEFAULT_CANONICAL_POLLING_INTERVAL_SECONDS = 300
+DEFAULT_CANONICAL_POLLING_INTERVAL_SECONDS = 900
 
 
 def canonical_polling_interval_seconds() -> int:
@@ -155,6 +156,22 @@ def canonical_polling_interval_seconds() -> int:
     if resolved is None:
         resolved = DEFAULT_CANONICAL_POLLING_INTERVAL_SECONDS
     return max(_min_monitoring_interval_seconds(), int(resolved))
+
+
+def canonical_stable_poll_stale_threshold_seconds() -> int:
+    """Freshness / heartbeat-grace window (seconds) derived from the CANONICAL cadence.
+
+    The stable-poll stale threshold must exceed the real worker cadence, otherwise a
+    heartbeat or poll that is a normal ~one-interval old right before the next cycle is
+    momentarily (and falsely) reported stale. ``stable_poll_stale_threshold_seconds``
+    floors at ``2 * poll_interval``; feeding it the ONE canonical interval (900s) makes
+    the freshness window two full poll cycles (1800s), so a healthy 900s cadence never
+    flaps to stale between cycles. This is the single window the heartbeat-grace writes,
+    the stale-heartbeat flag, and the runtime-status labels all read, so they agree.
+    Passing MONITOR_POLL_INTERVAL_SECONDS (a legacy ~30s knob) here would compute the
+    window from the wrong cadence — the exact drift this canonical helper removes.
+    """
+    return stable_poll_stale_threshold_seconds(canonical_polling_interval_seconds())
 
 
 def _target_selected_for_live_poll(
@@ -5569,7 +5586,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         # runtime-status treats the worker as stopped (state A), not merely "target quiet".
         _hb_now = utc_now()
         _hb_expires_at = _hb_now + timedelta(
-            seconds=stable_poll_stale_threshold_seconds(MONITOR_POLL_INTERVAL_SECONDS)
+            seconds=canonical_stable_poll_stale_threshold_seconds()
         )
         logger.info(
             'event=monitoring_worker_heartbeat_written worker_id=%s service_role=%s scope=global '
@@ -5812,7 +5829,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             try:
                 _hb_workspace_now = utc_now()
                 _hb_workspace_expires_at = _hb_workspace_now + timedelta(
-                    seconds=stable_poll_stale_threshold_seconds(MONITOR_POLL_INTERVAL_SECONDS)
+                    seconds=canonical_stable_poll_stale_threshold_seconds()
                 )
                 with connection.transaction():
                     _hb_workspace_write = connection.execute(
@@ -9031,7 +9048,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         # realtime heartbeat TTL (180s) must never gate it. Computed once and reused by the
         # stale_heartbeat flag, the continuity evaluator, and build_worker_status so the top
         # banner, worker-status card, limitation text, and runtime summary agree.
-        _stable_poll_stale_threshold = stable_poll_stale_threshold_seconds(MONITOR_POLL_INTERVAL_SECONDS)
+        _stable_poll_stale_threshold = canonical_stable_poll_stale_threshold_seconds()
         # Bug 5: If still stale/missing after monitoring_heartbeats check, fallback to
         # MAX(last_heartbeat_at) FROM monitoring_worker_state (any worker name) to handle
         # Railway auto-named workers that wrote heartbeats under a different worker_name.
@@ -11614,7 +11631,7 @@ def list_target_telemetry(
                 if _sp_ts.tzinfo is None:
                     _sp_ts = _sp_ts.replace(tzinfo=timezone.utc)
                 stable_polling_active = (
-                    (utc_now() - _sp_ts).total_seconds() <= stable_poll_stale_threshold_seconds()
+                    (utc_now() - _sp_ts).total_seconds() <= canonical_stable_poll_stale_threshold_seconds()
                 )
             except (TypeError, ValueError):
                 stable_polling_active = False
