@@ -15,16 +15,24 @@ import {
 } from './components/ui-primitives';
 import {
   EXECUTIVE_SUMMARY_ENDPOINT,
+  formatAgeSeconds,
   formatAssetValue,
   formatDelta,
   formatRelativeTime,
   healthStatusVariant,
   mapExecutiveSummary,
+  monitoringStateVariant,
   riskBandVariant,
+  connectionStatusFromStream,
+  CONNECTION_STATUS_LABELS,
+  DATA_CONFIDENCE_LABELS,
   HEALTH_STATUS_LABELS,
+  MONITORING_STATUS_LABELS,
   RISK_BAND_LABELS,
+  TELEMETRY_FRESHNESS_LABELS,
   type ExecutiveSummary,
   type ExecutiveBrief,
+  type EvidenceFreshness,
   type RecentAlert,
   type RiskDriver,
   type HealthInsight,
@@ -43,6 +51,15 @@ const DESTINATION_ROUTES: Record<string, string> = {
 
 function destinationRoute(destination: string): string {
   return DESTINATION_ROUTES[destination] ?? '/system-health';
+}
+
+// Zero-alert wording is coverage-aware and never over-claims safety: a zero
+// count only means "no active alerts", and under degraded/stale coverage it is
+// downgraded to "No active alerts detected" (the caveat banner adds the rest).
+function activeAlertsMeta(data: ExecutiveSummary): string {
+  if (data.metrics.active_alert_count > 0) return 'Requires attention';
+  const coverageDegraded = data.monitoring_state.state !== 'live' || data.data_freshness.status !== 'fresh';
+  return coverageDegraded ? 'No active alerts detected' : 'No active alerts';
 }
 
 type Props = {
@@ -131,10 +148,7 @@ export default function DashboardExecutiveSummary({ liveFeed }: Props) {
           </p>
         </div>
         <div className="dashboardExecHeaderActions">
-          <span className="execLiveIndicator" data-stream={streamStatus}>
-            <span className="execLiveDot" aria-hidden="true" />
-            {streamStatus === 'live' ? 'Live' : 'Reconnecting'}
-          </span>
+          <MonitoringStatusIndicators data={data} streamStatus={streamStatus} />
           <button type="button" className="btn btn-ghost execRefreshBtn" onClick={() => reload()} disabled={refreshing}>
             {refreshing ? 'Refreshing…' : 'Refresh'}
           </button>
@@ -155,28 +169,31 @@ export default function DashboardExecutiveSummary({ liveFeed }: Props) {
             </div>
           ) : null}
           <FreshnessBanner data={data} />
+          <CoverageCaveatBanner data={data} />
 
           <div className="execMetricRow execMetricRowScreen2">
             <ExecutiveBriefCard brief={data.executive_brief} onOpen={() => setBriefOpen(true)} />
-            <TotalAssetValueCard data={data} />
-            <MetricCard
-              label="Open Incidents"
-              value={String(data.metrics.open_incident_count)}
-              meta={data.metrics.critical_or_high_incident_count > 0 ? `${data.metrics.critical_or_high_incident_count} critical/high` : 'None critical'}
-              delta={formatDelta(data.metrics.deltas.open_incident_count)}
-              valueVariant={data.metrics.open_incident_count > 0 ? 'warning' : undefined}
-              href="/incidents"
-            />
-            <MetricCard
-              label="Active Alerts"
-              value={String(data.metrics.active_alert_count)}
-              meta={data.metrics.active_alert_count > 0 ? 'Requires attention' : 'All clear'}
-              delta={formatDelta(data.metrics.deltas.active_alert_count)}
-              valueVariant={data.metrics.active_alert_count > 0 ? 'danger' : undefined}
-              href="/alerts"
-            />
-            <RiskScoreCard data={data} />
-            <SystemHealthCard data={data} />
+            <div className="execMetricCluster">
+              <TotalAssetValueCard data={data} />
+              <MetricCard
+                label="Open Incidents"
+                value={String(data.metrics.open_incident_count)}
+                meta={data.metrics.critical_or_high_incident_count > 0 ? `${data.metrics.critical_or_high_incident_count} critical/high` : 'None critical'}
+                delta={formatDelta(data.metrics.deltas.open_incident_count)}
+                valueVariant={data.metrics.open_incident_count > 0 ? 'warning' : undefined}
+                href="/incidents"
+              />
+              <MetricCard
+                label="Active Alerts"
+                value={String(data.metrics.active_alert_count)}
+                meta={activeAlertsMeta(data)}
+                delta={formatDelta(data.metrics.deltas.active_alert_count)}
+                valueVariant={data.metrics.active_alert_count > 0 ? 'danger' : undefined}
+                href="/alerts"
+              />
+              <RiskScoreCard data={data} />
+              <SystemHealthCard data={data} />
+            </div>
           </div>
 
           <div className="execMainGrid execMainGridScreen2">
@@ -195,6 +212,61 @@ export default function DashboardExecutiveSummary({ liveFeed }: Props) {
         <BriefDrawer brief={data.executive_brief} onClose={() => setBriefOpen(false)} />
       ) : null}
     </main>
+  );
+}
+
+/* ── Status indicators: monitoring vs telemetry vs transport ──── */
+
+// Three independent axes, deliberately kept separate so an open event channel
+// is never mistaken for live monitoring:
+//   1. Monitoring status  — operational truth from backend evidence.
+//   2. Telemetry freshness — is the underlying data current?
+//   3. Connection          — is the browser/SSE transport attached?
+// "Live monitoring" is driven ONLY by data.monitoring_state.state === 'live';
+// streamStatus can be 'live' (SSE connected) while monitoring is degraded.
+function MonitoringStatusIndicators({
+  data,
+  streamStatus,
+}: {
+  data: ExecutiveSummary | null;
+  streamStatus: string;
+}) {
+  const connection = connectionStatusFromStream(streamStatus);
+  return (
+    <div className="execStatusCluster" role="status" aria-label="Monitoring status">
+      {data ? (
+        <span
+          className="execStatusPill execStatusPill--monitoring"
+          data-state={data.monitoring_state.state}
+          title={data.monitoring_state.reason}
+        >
+          <span className="execStatusDot" aria-hidden="true" />
+          {MONITORING_STATUS_LABELS[data.monitoring_state.state]}
+        </span>
+      ) : null}
+      {data ? (
+        <span className="execStatusPill execStatusPill--telemetry" data-freshness={data.data_freshness.status}>
+          {TELEMETRY_FRESHNESS_LABELS[data.data_freshness.status]}
+        </span>
+      ) : null}
+      <span className="execStatusPill execStatusPill--connection" data-connection={connection}>
+        {CONNECTION_STATUS_LABELS[connection]}
+      </span>
+    </div>
+  );
+}
+
+// Fail-closed zero-alert caveat: a zero alert count under degraded/offline
+// monitoring or stale telemetry does not prove the absence of threats.
+function CoverageCaveatBanner({ data }: { data: ExecutiveSummary }) {
+  const noAlerts = data.metrics.active_alert_count === 0;
+  const coverageDegraded = data.monitoring_state.state !== 'live' || data.data_freshness.status !== 'fresh';
+  if (!noAlerts || !coverageDegraded) return null;
+  return (
+    <div className="execCoverageCaveat" role="status">
+      <strong>No active alerts detected.</strong>{' '}
+      Monitoring coverage is degraded; zero alerts does not confirm absence of threats.
+    </div>
   );
 }
 
@@ -312,9 +384,24 @@ function SystemHealthCard({ data }: { data: ExecutiveSummary }) {
 
 /* ── Executive Brief card ─────────────────────────────────────── */
 
+// Evidence-freshness line: keeps *generation time* (when the brief text was
+// written) visually distinct from *evidence freshness* (how current the
+// underlying telemetry is). A brief can be freshly generated over stale data.
+function EvidenceFreshnessLine({ evidence }: { evidence: EvidenceFreshness }) {
+  const current = evidence.data_current_through
+    ? `${formatRelativeTime(evidence.data_current_through)} (${formatAgeSeconds(evidence.telemetry_age_seconds)} old)`
+    : 'no verified telemetry';
+  return (
+    <p className="execBriefEvidence" data-telemetry={evidence.telemetry_status}>
+      <span className="execBriefEvidenceItem">Data current through: {current}</span>
+    </p>
+  );
+}
+
 function ExecutiveBriefCard({ brief, onOpen }: { brief: ExecutiveBrief; onOpen: () => void }) {
   const isAi = brief.generation_mode === 'ai';
   const focus = brief.recommended_focus[0];
+  const evidence = brief.evidence;
   return (
     <article className="execBriefCard dataCard" aria-label="Executive Brief">
       <div className="execBriefHeader">
@@ -325,7 +412,7 @@ function ExecutiveBriefCard({ brief, onOpen }: { brief: ExecutiveBrief; onOpen: 
         <StatusPill label={isAi ? 'AI generated' : 'Deterministic'} variant={isAi ? 'info' : 'neutral'} />
       </div>
       <p className="execBriefMeta">
-        {brief.period_start ? 'Last 24 hours' : 'Current period'} · Generated {formatRelativeTime(brief.generated_at)}
+        {brief.period_start ? 'Last 24 hours' : 'Current period'} · Generated {formatRelativeTime(evidence.generated_at)}
       </p>
       <p className="execBriefSummary">{brief.summary || 'No summary available for this period.'}</p>
       {focus ? (
@@ -333,9 +420,12 @@ function ExecutiveBriefCard({ brief, onOpen }: { brief: ExecutiveBrief; onOpen: 
           <span className="execBriefFocusLabel">Focus:</span> {focus.title}
         </p>
       ) : null}
+      <EvidenceFreshnessLine evidence={evidence} />
       <div className="execBriefFooter">
-        <span className="execBriefConfidence" data-confidence={brief.confidence >= 0.7 ? 'high' : brief.confidence >= 0.4 ? 'medium' : 'low'}>
-          Confidence: {brief.confidence >= 0.7 ? 'High' : brief.confidence >= 0.4 ? 'Medium' : 'Low'}
+        {/* Confidence is the deterministic, monitoring-derived value — never the
+            LLM's self-reported number. */}
+        <span className="execBriefConfidence" data-confidence={evidence.data_confidence} title={evidence.data_confidence_reason}>
+          Confidence: {DATA_CONFIDENCE_LABELS[evidence.data_confidence]}
         </span>
         <button type="button" className="btn btn-secondary execBriefBtn" onClick={onOpen}>
           View Full AI Summary
@@ -639,6 +729,7 @@ function BriefDrawer({ brief, onClose }: { brief: ExecutiveBrief; onClose: () =>
   }, [onClose]);
 
   const isAi = brief.generation_mode === 'ai';
+  const evidence = brief.evidence;
   return (
     <div className="execDrawerBackdrop" role="presentation" onClick={onClose}>
       <div className="execDrawer" role="dialog" aria-modal="true" aria-label="Executive Brief detail" onClick={(e) => e.stopPropagation()}>
@@ -654,12 +745,18 @@ function BriefDrawer({ brief, onClose }: { brief: ExecutiveBrief; onClose: () =>
 
         <div className="execDrawerMetaRow">
           <StatusPill label={isAi ? 'AI generated' : 'Deterministic fallback'} variant={isAi ? 'info' : 'neutral'} />
-          <span className="muted">Generated {formatRelativeTime(brief.generated_at)}</span>
-          <span className="muted">Period: {brief.period_start ? 'Last 24 hours' : 'Current'}</span>
+          <span className="muted">Generated {formatRelativeTime(evidence.generated_at)}</span>
           <span className="muted">
-            Confidence: {brief.confidence >= 0.7 ? 'High' : brief.confidence >= 0.4 ? 'Medium' : 'Low'}
+            Data current through {evidence.data_current_through ? formatRelativeTime(evidence.data_current_through) : 'no verified telemetry'}
+          </span>
+          <span className="muted">Telemetry age: {formatAgeSeconds(evidence.telemetry_age_seconds)}</span>
+          <span className="muted" data-confidence={evidence.data_confidence}>
+            Confidence: {DATA_CONFIDENCE_LABELS[evidence.data_confidence]}
           </span>
         </div>
+        {evidence.data_confidence_reason ? (
+          <p className="execDrawerConfidenceReason muted">{evidence.data_confidence_reason}</p>
+        ) : null}
 
         <section className="execDrawerSection">
           <h3 className="execDrawerSubhead">Summary</h3>
@@ -743,9 +840,12 @@ function LoadingSkeleton() {
   return (
     <div className="execSkeleton" aria-hidden="true">
       <div className="execMetricRow execMetricRowScreen2">
-        {Array.from({ length: 6 }).map((_, index) => (
-          <div key={index} className="execMetricCard dataCard execSkeletonCard" />
-        ))}
+        <div className="execBriefCard dataCard execSkeletonCard execSkeletonBrief" />
+        <div className="execMetricCluster">
+          {Array.from({ length: 5 }).map((_, index) => (
+            <div key={index} className="execMetricCard dataCard execSkeletonCard" />
+          ))}
+        </div>
       </div>
       <div className="execMainGrid execMainGridScreen2">
         <div className="execSectionCard dataCard execSkeletonChart" />

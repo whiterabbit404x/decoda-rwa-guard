@@ -41,6 +41,10 @@ from services.api.app.dashboard_executive_brief import (
     build_deterministic_brief,
     generate_executive_brief,
 )
+from services.api.app.dashboard_active_incidents import (
+    ActiveIncidentSummary,
+    fetch_active_incidents,
+)
 
 # Telemetry older than this many seconds is "stale". Matches the monitoring
 # default polling/telemetry window used across the app.
@@ -49,7 +53,6 @@ SNAPSHOT_MIN_INTERVAL_SECONDS = 300  # never persist more than one snapshot / 5 
 TREND_DAYS = 7
 
 _ACTIVE_ALERT_STATUSES = ('open', 'acknowledged', 'investigating')
-_ACTIVE_INCIDENT_STATUSES = ('open', 'acknowledged')
 
 
 # --------------------------------------------------------------------------
@@ -126,8 +129,14 @@ def gather_dashboard_aggregates(
 
     # --- Counts trusted from the canonical summary -------------------------
     active_alert_count = _int(summary.get('active_alerts_count'))
-    open_incident_count = _int(summary.get('active_incidents_count'))
     monitored_asset_count = _int(summary.get('protected_assets_count'))
+    # The canonical monitoring summary's incident count is PROOF-CHAIN-GATED
+    # (only incidents backed by a complete alert->detection->telemetry chain).
+    # That is an evidence-quality signal, NOT the operator-visible "open
+    # incidents" number — using it as the count is what made the Open Incidents
+    # card read 0 while the severity subtitle and Risk Score reflected real
+    # active incidents. Keep it only to measure evidence completeness below.
+    proof_chain_incident_count = _int(summary.get('active_incidents_count'))
     configured_systems = _int(summary.get('configured_systems') or summary.get('monitored_systems_count'))
     reporting_systems = _int(summary.get('reporting_systems_count'))
     telemetry_freshness = str(summary.get('telemetry_freshness') or 'unavailable')
@@ -171,14 +180,20 @@ def gather_dashboard_aggregates(
         for r in recent_alert_rows
     ]
 
-    # --- Active incidents by severity + 24h opened/resolved ----------------
-    incident_rows = _safe_fetchall(
-        connection,
-        f"SELECT severity FROM incidents WHERE workspace_id = %s AND status IN {_ACTIVE_INCIDENT_STATUSES}",
-        wp,
-    )
-    incident_severities = [str(r.get('severity') or 'medium').lower() for r in incident_rows]
-    incidents_critical_high = sum(1 for s in incident_severities if s in {'critical', 'high'})
+    # --- Active incidents: ONE canonical, operator-visible query -----------
+    # Every incident-derived number below (count, critical/high subtitle,
+    # risk incident pressure, brief aggregates, snapshot) reads from this single
+    # source so they can never disagree. Lifecycle-status based, workspace
+    # scoped, fail-closed on status. See dashboard_active_incidents.
+    active_incidents: ActiveIncidentSummary = fetch_active_incidents(connection, workspace_id)
+    open_incident_count = active_incidents.total
+    incident_severities = active_incidents.severities
+    incidents_critical_high = active_incidents.critical_high_count
+    # Evidence quality (separate from the count): how many active incidents lack
+    # a complete proof chain. Never subtracts from the visible count; only lowers
+    # confidence. Bounded to [0, total] since the two counts come from different
+    # queries (the gated count can momentarily exceed the operator count).
+    evidence_incomplete_incident_count = max(open_incident_count - max(proof_chain_incident_count, 0), 0)
     since_24h = now - timedelta(hours=24)
     opened_row = _safe_fetchone(
         connection,
@@ -250,7 +265,7 @@ def gather_dashboard_aggregates(
     # --- Citations (workspace-scoped source refs the brief may cite) -------
     citations = _build_candidate_citations(
         recent_alerts=recent_alerts,
-        incident_rows=incident_rows,
+        active_incidents=active_incidents,
         stale_target_count=stale_target_count,
     )
 
@@ -276,6 +291,8 @@ def gather_dashboard_aggregates(
         'incidents_opened_24h': incidents_opened_24h,
         'incidents_resolved_24h': incidents_resolved_24h,
         'incidents_critical_high': incidents_critical_high,
+        'proof_chain_incident_count': proof_chain_incident_count,
+        'evidence_incomplete_incident_count': evidence_incomplete_incident_count,
         'affected_asset_criticalities': affected_asset_criticalities,
         'anomaly_count_24h': anomaly_count_24h,
         'anomaly_rate_current': anomaly_count_24h,
@@ -400,7 +417,7 @@ def _uptime_30d(background_loop_health: dict[str, Any] | None) -> float | None:
 def _build_candidate_citations(
     *,
     recent_alerts: list[dict[str, Any]],
-    incident_rows: list[dict[str, Any]],
+    active_incidents: ActiveIncidentSummary,
     stale_target_count: int,
 ) -> list[dict[str, Any]]:
     citations: list[dict[str, Any]] = []
@@ -412,14 +429,14 @@ def _build_candidate_citations(
             'occurred_at': alert.get('occurred_at'),
             'url': alert['url'],
         })
-    for row in incident_rows:
-        if row.get('id'):
+    for incident in active_incidents.incidents:
+        if incident.id:
             citations.append({
                 'source_type': 'incident',
-                'source_id': str(row.get('id')),
-                'label': f"{row.get('severity', 'incident')} incident",
-                'occurred_at': _iso(_parse_dt(row.get('created_at'))),
-                'url': f"/incidents/{row.get('id')}",
+                'source_id': incident.id,
+                'label': f'{incident.severity} incident',
+                'occurred_at': incident.created_at,
+                'url': f'/incidents/{incident.id}',
             })
     return citations
 
@@ -690,6 +707,164 @@ def derive_data_freshness(last_telemetry_at: str | None, now: datetime, window_s
     return {'status': status, 'latest_event_at': _iso(parsed), 'age_seconds': max(age, 0)}
 
 
+def _providers_primary_healthy(providers: list[dict[str, Any]]) -> bool:
+    """At least one provider whose primary path is healthy and not rate-limited."""
+    if not providers:
+        return True
+    return any(
+        bool(p.get('primary_healthy', True)) and not bool(p.get('rate_limited', False))
+        for p in providers
+    )
+
+
+def _providers_all_down(providers: list[dict[str, Any]]) -> bool:
+    if not providers:
+        return False
+    return all(
+        not bool(p.get('primary_healthy', True)) and not bool(p.get('fallback_healthy', False))
+        for p in providers
+    )
+
+
+def derive_monitoring_state(aggregates: dict[str, Any], data_freshness: dict[str, Any]) -> dict[str, Any]:
+    """Operational monitoring status derived from canonical backend evidence.
+
+    This is deliberately independent of the browser/SSE transport: an SSE
+    connection proves only that the event channel is open, never that monitoring
+    is live. "Live monitoring" requires, together:
+
+      * required worker heartbeats are fresh,
+      * telemetry is within the configured freshness threshold,
+      * at least one required ingestion path is healthy.
+
+    Otherwise the state is ``degraded`` (partial operational evidence: stale
+    telemetry, a stale required worker, or primary routing down with a working
+    fallback) or ``offline`` (required ingestion unavailable, or no fresh
+    operational evidence at all).
+    """
+    telemetry = str(data_freshness.get('status') or 'unavailable')
+    required = _int(aggregates.get('required_worker_count'))
+    healthy = _int(aggregates.get('healthy_worker_count'))
+    configured = _int(aggregates.get('configured_target_count'))
+    reporting = _int(aggregates.get('reporting_target_count'))
+    providers = list(aggregates.get('providers') or [])
+
+    workers_all_fresh = required > 0 and healthy >= required
+    workers_missing = required > 0 and healthy == 0
+    ingestion_healthy = reporting > 0
+    primary_ok = _providers_primary_healthy(providers)
+
+    def _state(state: str, reason: str) -> dict[str, Any]:
+        labels = {'live': 'Live monitoring', 'degraded': 'Monitoring degraded', 'offline': 'Monitoring offline'}
+        return {
+            'state': state,
+            'label': labels[state],
+            'reason': reason,
+            'telemetry_fresh': telemetry == 'fresh',
+            'workers_fresh': workers_all_fresh,
+            'ingestion_healthy': ingestion_healthy,
+        }
+
+    # OFFLINE: no operational basis to claim monitoring at all.
+    if configured == 0:
+        return _state('offline', 'No monitoring targets are configured.')
+    if not ingestion_healthy:
+        return _state('offline', 'No monitoring target is reporting telemetry.')
+    if telemetry == 'unavailable' and workers_missing:
+        return _state('offline', 'No fresh telemetry and required worker heartbeats are missing.')
+    if _providers_all_down(providers):
+        return _state('offline', 'All providers are unavailable (primary and fallback).')
+    if workers_missing:
+        return _state('offline', 'Required monitoring worker heartbeat is missing.')
+
+    # LIVE: every required condition holds.
+    if telemetry == 'fresh' and workers_all_fresh and ingestion_healthy and primary_ok:
+        return _state('live', 'Workers are beating, telemetry is fresh, and ingestion is healthy.')
+
+    # DEGRADED: some operational evidence, but not enough to claim live.
+    reasons: list[str] = []
+    if telemetry != 'fresh':
+        reasons.append(f'telemetry {telemetry}')
+    if not workers_all_fresh:
+        reasons.append('a required worker heartbeat is stale')
+    if not primary_ok:
+        reasons.append('primary provider routing is degraded')
+    return _state('degraded', ('; '.join(reasons) or 'partial operational degradation') + '.')
+
+
+def derive_data_confidence(aggregates: dict[str, Any], data_freshness: dict[str, Any]) -> dict[str, Any]:
+    """Deterministic evidence confidence for the Executive Brief.
+
+    Confidence is a function of monitoring evidence, NOT an LLM choice and NOT
+    the brief's own self-reported number. It degrades explicitly:
+
+      * ``unavailable`` — telemetry unavailable, or required workers are missing,
+        or nothing is reporting: monitoring confidence cannot be established.
+      * ``low`` — telemetry stale, a required worker stale, providers degraded,
+        or active incidents whose proof chain is incomplete.
+      * ``medium`` — fresh telemetry + healthy workers + healthy providers, but
+        evidence is only partial (e.g. no anomaly baseline).
+      * ``high`` — fresh telemetry, healthy workers, healthy providers, complete
+        evidence.
+
+    Medium is therefore never reported when monitoring confidence is unavailable
+    or telemetry is stale — only when the formula's healthy-but-partial branch
+    is actually reached.
+    """
+    telemetry = str(data_freshness.get('status') or 'unavailable')
+    required = _int(aggregates.get('required_worker_count'))
+    healthy = _int(aggregates.get('healthy_worker_count'))
+    configured = _int(aggregates.get('configured_target_count'))
+    reporting = _int(aggregates.get('reporting_target_count'))
+    degraded_providers = _int(aggregates.get('degraded_provider_count'))
+    evidence_incomplete_incidents = _int(aggregates.get('evidence_incomplete_incident_count'))
+    evidence_quality = str((aggregates.get('risk') or {}).get('evidence_quality') or 'partial')
+
+    workers_all_fresh = required > 0 and healthy >= required
+    workers_missing = required > 0 and healthy == 0
+
+    def _conf(level: str, reason: str) -> dict[str, Any]:
+        return {'level': level, 'reason': reason}
+
+    if telemetry == 'unavailable' or workers_missing or (configured > 0 and reporting == 0):
+        return _conf('unavailable', 'Monitoring confidence cannot be established: telemetry or required workers are unavailable.')
+    if telemetry == 'stale':
+        age = data_freshness.get('age_seconds')
+        detail = f' (last telemetry {int(age)}s ago)' if isinstance(age, (int, float)) else ''
+        return _conf('low', f'Telemetry is stale{detail}; recent evidence is not current.')
+    if not workers_all_fresh or degraded_providers > 0:
+        return _conf('low', 'A required worker or provider is degraded.')
+    if evidence_incomplete_incidents > 0:
+        return _conf('low', f'{evidence_incomplete_incidents} active incident(s) have an incomplete proof chain.')
+    if evidence_quality != 'complete':
+        return _conf('medium', 'Fresh evidence, but some baselines are not yet established.')
+    return _conf('high', 'Fresh telemetry, healthy workers and providers, complete evidence.')
+
+
+def build_evidence_freshness(
+    aggregates: dict[str, Any],
+    data_freshness: dict[str, Any],
+    brief: dict[str, Any],
+    now: datetime,
+) -> dict[str, Any]:
+    """Evidence-freshness block for the Executive Brief.
+
+    Distinguishes *when the brief was generated* from *how current the evidence
+    is*: a brief may be freshly generated over old data, so both timestamps are
+    surfaced separately along with the deterministic confidence.
+    """
+    confidence = derive_data_confidence(aggregates, data_freshness)
+    return {
+        'generated_at': brief.get('generated_at') or _iso(now),
+        'data_current_through': data_freshness.get('latest_event_at'),
+        'telemetry_age_seconds': data_freshness.get('age_seconds'),
+        'telemetry_status': data_freshness.get('status', 'unavailable'),
+        'data_confidence': confidence['level'],
+        'data_confidence_reason': confidence['reason'],
+        'generation_mode': brief.get('generation_mode', 'deterministic_fallback'),
+    }
+
+
 def build_executive_summary_response(
     *,
     aggregates: dict[str, Any],
@@ -717,9 +892,12 @@ def build_executive_summary_response(
         'critical_or_high_incident_count': _int(aggregates.get('incidents_critical_high')),
         'deltas': deltas,
     }
+    data_freshness = derive_data_freshness(aggregates.get('last_telemetry_at'), now)
+    evidence = build_evidence_freshness(aggregates, data_freshness, brief, now)
     return {
         'generated_at': _iso(now),
-        'data_freshness': derive_data_freshness(aggregates.get('last_telemetry_at'), now),
+        'data_freshness': data_freshness,
+        'monitoring_state': derive_monitoring_state(aggregates, data_freshness),
         'executive_brief': {
             'period_start': aggregates.get('period_start'),
             'period_end': aggregates.get('period_end'),
@@ -727,6 +905,9 @@ def build_executive_summary_response(
             'summary': brief.get('summary', ''),
             'key_findings': brief.get('key_findings', []),
             'recommended_focus': brief.get('recommended_focus', []),
+            # Deterministic, monitoring-derived confidence — the displayed
+            # confidence. `confidence` remains the brief's own self-reported
+            # number for provenance; the UI shows `evidence.data_confidence`.
             'confidence': brief.get('confidence', 0),
             'generation_mode': brief.get('generation_mode', 'deterministic_fallback'),
             'generated_at': brief.get('generated_at'),
@@ -734,6 +915,7 @@ def build_executive_summary_response(
             'model': brief.get('model'),
             'prompt_version': brief.get('prompt_version'),
             'citations': brief.get('citations', []),
+            'evidence': evidence,
         },
         'metrics': metrics,
         'risk_trend': trend,
