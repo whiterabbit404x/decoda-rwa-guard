@@ -8,6 +8,7 @@ Screen 2 contract with a deterministic brief when AI is disabled.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from services.api.app import main
@@ -59,12 +60,18 @@ def _bootstrap(monkeypatch, *, workspace_id='ws-1'):
     def _pg():
         yield _Conn()
 
+    # Relative to real now() so the freshness assertion is deterministic — the
+    # endpoint derives freshness against wall-clock time, so fixed timestamps make
+    # the test flake once wall-clock drifts past the freshness window.
+    now = datetime.now(timezone.utc)
     monkeypatch.setattr(main, 'monitoring_runtime_status', lambda request: {
         'workspace_monitoring_summary': {
             'active_alerts_count': 1, 'active_incidents_count': 0, 'protected_assets_count': 2,
             'configured_systems': 2, 'monitored_systems_count': 2, 'reporting_systems_count': 2,
-            'telemetry_freshness': 'fresh', 'last_telemetry_at': '2026-07-23T11:55:00+00:00',
-            'last_heartbeat_at': '2026-07-23T11:59:00+00:00', 'evidence_source_summary': 'live_provider',
+            'telemetry_freshness': 'fresh',
+            'last_telemetry_at': (now - timedelta(minutes=2)).isoformat(),
+            'last_heartbeat_at': (now - timedelta(minutes=1)).isoformat(),
+            'evidence_source_summary': 'live_provider',
             'runtime_status': 'live', 'contradiction_flags': [], 'db_failure_classification': None,
         },
         'background_loop_health': {'healthy': True, 'uptime_30d_percent': 99.9},

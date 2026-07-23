@@ -261,6 +261,50 @@ test.describe('Dashboard Executive Summary (Screen 2) — source-level contracts
     expect(css).toContain('flex-basis: 100%');
   });
 
+  // Risk Trend: availability + partial state derive from REAL snapshot counts;
+  // no synthetic dates or forward-filled scores are produced client-side.
+  test('risk trend availability and partial state use real snapshot counts', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
+    // At least two real, timestamped points are required before a line is drawn.
+    expect(source).toContain('const points = trend.filter((p) => p.captured_at);');
+    expect(source).toContain('const hasEnough = available && points.length >= 2;');
+    // "Partial data" is gated on the backend-derived partial flag (not a client
+    // guess), and only when there is enough real history to draw.
+    expect(source).toContain('{hasEnough && partial ? <StatusPill label="Partial data"');
+    expect(source).toContain('partial={data.trend_partial}');
+    // The empty state stays explicit and non-fabricated.
+    expect(source).toContain('Historical trend not available yet');
+    expect(source).toContain('no synthetic history is shown');
+    // Data layer carries the real per-day timestamp + coverage flags.
+    const data = readSource(DATA_PATH);
+    expect(data).toContain('trend_partial: boolean');
+    expect(data).toContain('trend_days_covered: number');
+    expect(data).toContain('captured_date: string | null');
+  });
+
+  // Readability: Screen 2 enforces per-category minimum font sizes without
+  // globally reducing the root font or scaling the whole dashboard.
+  test('Screen 2 enforces minimum readable font sizes', () => {
+    const css = readSource(STYLES_PATH);
+    // Metric values >= 20px.
+    expect(css).toContain('font-size: max(2rem, 20px)');
+    expect(css).toContain('font-size: max(1.35rem, 20px)');
+    // Card titles / labels >= 12px.
+    expect(css).toContain('font-size: max(0.78rem, 12px)');
+    expect(css).toContain('font-size: max(1rem, 12px)');
+    // Operational labels & timestamps >= 11px.
+    expect(css).toContain('font-size: max(0.72rem, 11px)');
+    // The two previously sub-spec sizes are fixed (status pill was ~10.9px, the
+    // chart axis label was 9px). Scope the pill check to its own rule.
+    const statusPillRule = css.slice(css.indexOf('.execStatusPill {'), css.indexOf('.execStatusPill {') + 400);
+    expect(statusPillRule).toContain('font-size: max(0.72rem, 11px);');
+    expect(statusPillRule).not.toContain('0.68rem');
+    expect(css).toContain('.execTrendAxisLabel { fill: var(--text-muted); font-size: 11px; }');
+    // Root font size is NOT globally reduced to force density.
+    expect(css).not.toContain('html { font-size:');
+    expect(css).not.toMatch(/body\s*\{[^}]*font-size/);
+  });
+
   // Issue 2/3 truthfulness: status axis styling exists for all three axes.
   test('CSS defines the three separate status axes', () => {
     const css = readSource(STYLES_PATH);

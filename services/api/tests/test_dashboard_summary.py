@@ -139,6 +139,23 @@ def test_response_metrics_match_and_scores_present():
 # --------------------------------------------------------------------------
 
 
+def test_activity_block_separates_current_state_from_period():
+    conn = SeededConn()
+    resp = ds.build_dashboard_summary(conn, workspace_id='ws-1', canonical_summary=_summary(), provider=None, now=NOW)
+    act = resp['activity']
+    # Current state (what the cards show).
+    assert act['active_incidents_now'] == 1
+    assert act['critical_high_active_incidents_now'] == 1
+    assert act['active_alerts_now'] == 3
+    # Reporting-period movement (distinct axis).
+    assert act['incidents_opened_during_period'] == 1
+    assert act['incidents_resolved_during_period'] == 1
+    assert act['alerts_created_during_period'] == 0
+    assert act['period_label'] == 'last_24_hours'
+    # Trend coverage flags are present.
+    assert 'trend_partial' in resp and 'trend_days_covered' in resp
+
+
 def test_total_asset_value_unavailable_is_null_not_zero():
     conn = SeededConn()
     resp = ds.build_dashboard_summary(conn, workspace_id='ws-1', canonical_summary=_summary(), provider=None, now=NOW)
