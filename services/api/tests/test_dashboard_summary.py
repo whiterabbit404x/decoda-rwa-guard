@@ -59,8 +59,9 @@ class SeededConn:
                 {'id': 'a1', 'title': 'Oracle deviation', 'severity': 'high', 'status': 'open', 'alert_type': 'oracle', 'created_at': '2026-07-23T10:00:00+00:00'},
                 {'id': 'a2', 'title': 'Unusual transfer', 'severity': 'medium', 'status': 'acknowledged', 'alert_type': 'transfer', 'created_at': '2026-07-23T09:00:00+00:00'},
             ])
-        if 'SELECT severity FROM incidents' in n:
-            return _R(rows=[{'severity': 'high'}])
+        if 'FROM incidents' in n and 'NOT IN' in n:
+            # Canonical active-incident query (lifecycle-status based).
+            return _R(rows=[{'id': 'i1', 'severity': 'high', 'status': 'open', 'created_at': '2026-07-23T08:00:00+00:00'}])
         if 'FROM monitored_systems' in n:
             return _R(row={'c': 4})
         if 'DISTINCT chain_network' in n:

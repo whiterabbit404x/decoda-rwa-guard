@@ -89,7 +89,8 @@ test.describe('Dashboard Executive Summary (Screen 2) — source-level contracts
   test('brief generation mode and generated timestamp render', () => {
     const source = readSource(EXEC_SUMMARY_PATH);
     expect(source).toContain("isAi ? 'AI generated' : 'Deterministic'");
-    expect(source).toContain('formatRelativeTime(brief.generated_at)');
+    // Generation time renders from the evidence block (distinct from evidence age).
+    expect(source).toContain('formatRelativeTime(evidence.generated_at)');
     expect(source).toContain("isAi ? 'AI generated' : 'Deterministic fallback'");
   });
 
@@ -195,5 +196,77 @@ test.describe('Dashboard Executive Summary (Screen 2) — source-level contracts
     expect(data).toContain('function numOrNull(');
     expect(data).toContain('function arr(');
     expect(data).toContain('export function mapExecutiveSummary');
+  });
+
+  // Issue 2: "Live monitoring" is derived from backend monitoring evidence, not
+  // the SSE transport. The header exposes three separate axes.
+  test('monitoring status is separate from SSE transport; Live gated on backend state', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
+    // The operational badge reads the backend monitoring_state, never streamStatus.
+    expect(source).toContain('MONITORING_STATUS_LABELS[data.monitoring_state.state]');
+    expect(source).toContain('function MonitoringStatusIndicators');
+    // Three distinct axes are rendered.
+    expect(source).toContain('execStatusPill--monitoring');
+    expect(source).toContain('execStatusPill--telemetry');
+    expect(source).toContain('execStatusPill--connection');
+    expect(source).toContain('connectionStatusFromStream(streamStatus)');
+    // The old collapsed transport-as-LIVE indicator is gone: SSE 'live' must not
+    // drive a "Live" monitoring label.
+    expect(source).not.toContain("streamStatus === 'live' ? 'Live' : 'Reconnecting'");
+    // "Live monitoring" text only ever comes from the label map, never a stream check.
+    expect(source).not.toContain("streamStatus === 'live' ? 'Live monitoring'");
+  });
+
+  // Issue 3: zero alerts never reads "All clear"; degraded coverage adds a caveat.
+  test('zero-alert wording is coverage-aware and drops "All clear"', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
+    expect(source).not.toContain('All clear');
+    expect(source).toContain('function activeAlertsMeta');
+    expect(source).toContain('No active alerts detected');
+    expect(source).toContain("'No active alerts'");
+    expect(source).toContain('function CoverageCaveatBanner');
+    expect(source).toContain('zero alerts does not confirm absence of threats');
+  });
+
+  // Issue 4: Executive Brief distinguishes generation time from evidence freshness
+  // and uses the deterministic (non-LLM) confidence.
+  test('executive brief renders evidence freshness + deterministic confidence', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
+    expect(source).toContain('function EvidenceFreshnessLine');
+    expect(source).toContain('Generated {formatRelativeTime(evidence.generated_at)}');
+    expect(source).toContain('Data current through');
+    expect(source).toContain('formatAgeSeconds(evidence.telemetry_age_seconds)');
+    // Confidence badge is driven by evidence.data_confidence, not brief.confidence.
+    expect(source).toContain('DATA_CONFIDENCE_LABELS[evidence.data_confidence]');
+    expect(source).not.toContain("brief.confidence >= 0.7 ? 'High'");
+    const data = readSource(DATA_PATH);
+    expect(data).toContain('export type EvidenceFreshness');
+    expect(data).toContain('data_current_through');
+    expect(data).toContain('telemetry_age_seconds');
+  });
+
+  // Issue 5: corrected top-card layout — brief wider, five cards equal height in
+  // a wrap-filling cluster, no stretched blank area, responsive preserved.
+  test('top-card layout uses the corrected shared cluster classes', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
+    expect(source).toContain('execMetricCluster');
+    const css = readSource(STYLES_PATH);
+    expect(css).toContain('.execMetricCluster');
+    // Equal-height cards within a row; cluster fills the final row (no empty cell).
+    expect(css).toContain('.execMetricCluster .execMetricCard { height: 100%; }');
+    expect(css).toContain('flex-wrap: wrap');
+    // Brief stays wider than the metric cluster.
+    expect(css).toContain('grid-template-columns: minmax(280px, 1.15fr) minmax(0, 2fr)');
+    // Mobile stacks the cluster cards without horizontal overflow.
+    expect(css).toContain('flex-basis: 100%');
+  });
+
+  // Issue 2/3 truthfulness: status axis styling exists for all three axes.
+  test('CSS defines the three separate status axes', () => {
+    const css = readSource(STYLES_PATH);
+    expect(css).toContain('.execStatusCluster');
+    expect(css).toContain(".execStatusPill--monitoring[data-state='live']");
+    expect(css).toContain('.execCoverageCaveat');
+    expect(css).toContain('.execBriefEvidence');
   });
 });

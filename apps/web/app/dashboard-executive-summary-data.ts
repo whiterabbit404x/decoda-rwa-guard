@@ -10,6 +10,30 @@ export type RiskBand = 'low' | 'moderate' | 'high' | 'critical';
 export type HealthStatus = 'healthy' | 'degraded' | 'at_risk' | 'critical' | 'not_configured';
 export type GenerationMode = 'ai' | 'deterministic_fallback';
 export type FreshnessStatus = 'fresh' | 'stale' | 'unavailable';
+// Operational monitoring state, derived on the backend from canonical evidence
+// (telemetry freshness + worker heartbeats + ingestion health). This is NOT the
+// browser/SSE transport state — "Live monitoring" is only ever `live` here.
+export type MonitoringOperationalState = 'live' | 'degraded' | 'offline';
+export type DataConfidence = 'high' | 'medium' | 'low' | 'unavailable';
+
+export type MonitoringStatus = {
+  state: MonitoringOperationalState;
+  label: string;
+  reason: string;
+  telemetry_fresh: boolean;
+  workers_fresh: boolean;
+  ingestion_healthy: boolean;
+};
+
+export type EvidenceFreshness = {
+  generated_at: string | null;
+  data_current_through: string | null;
+  telemetry_age_seconds: number | null;
+  telemetry_status: FreshnessStatus;
+  data_confidence: DataConfidence;
+  data_confidence_reason: string;
+  generation_mode: GenerationMode;
+};
 
 export type Citation = {
   source_type: string;
@@ -46,6 +70,7 @@ export type ExecutiveBrief = {
   model: string | null;
   prompt_version: string | null;
   citations: Citation[];
+  evidence: EvidenceFreshness;
 };
 
 export type MetricDeltas = {
@@ -122,6 +147,7 @@ export type DataFreshness = {
 export type ExecutiveSummary = {
   generated_at: string | null;
   data_freshness: DataFreshness;
+  monitoring_state: MonitoringStatus;
   executive_brief: ExecutiveBrief;
   metrics: ExecMetrics;
   risk_trend: RiskTrendPoint[];
@@ -165,6 +191,48 @@ function freshnessStatus(value: unknown): FreshnessStatus {
   const v = str(value).toLowerCase();
   return v === 'fresh' || v === 'stale' ? v : 'unavailable';
 }
+function monitoringState(value: unknown): MonitoringOperationalState {
+  const v = str(value).toLowerCase();
+  // Fail closed: anything other than an explicit 'live' or 'degraded' from the
+  // backend is treated as offline — never optimistically "live".
+  return v === 'live' || v === 'degraded' ? v : 'offline';
+}
+function dataConfidence(value: unknown): DataConfidence {
+  const v = str(value).toLowerCase();
+  return v === 'high' || v === 'medium' || v === 'low' ? v : 'unavailable';
+}
+
+const MONITORING_STATE_LABELS: Record<MonitoringOperationalState, string> = {
+  live: 'Live monitoring',
+  degraded: 'Monitoring degraded',
+  offline: 'Monitoring offline',
+};
+
+function mapMonitoringStatus(value: unknown): MonitoringStatus {
+  const m = rec(value);
+  const state = monitoringState(m.state);
+  return {
+    state,
+    label: str(m.label) || MONITORING_STATE_LABELS[state],
+    reason: str(m.reason),
+    telemetry_fresh: Boolean(m.telemetry_fresh),
+    workers_fresh: Boolean(m.workers_fresh),
+    ingestion_healthy: Boolean(m.ingestion_healthy),
+  };
+}
+
+function mapEvidence(value: unknown, briefGeneratedAt: string | null, briefMode: GenerationMode): EvidenceFreshness {
+  const e = rec(value);
+  return {
+    generated_at: e.generated_at == null ? briefGeneratedAt : str(e.generated_at),
+    data_current_through: e.data_current_through == null ? null : str(e.data_current_through),
+    telemetry_age_seconds: numOrNull(e.telemetry_age_seconds),
+    telemetry_status: freshnessStatus(e.telemetry_status),
+    data_confidence: dataConfidence(e.data_confidence),
+    data_confidence_reason: str(e.data_confidence_reason),
+    generation_mode: e.generation_mode == null ? briefMode : generationMode(e.generation_mode),
+  };
+}
 
 function mapCitation(value: unknown): Citation {
   const c = rec(value);
@@ -197,6 +265,7 @@ export function mapExecutiveSummary(raw: unknown): ExecutiveSummary {
       latest_event_at: freshness.latest_event_at == null ? null : str(freshness.latest_event_at),
       age_seconds: numOrNull(freshness.age_seconds),
     },
+    monitoring_state: mapMonitoringStatus(root.monitoring_state),
     executive_brief: {
       period_start: brief.period_start == null ? null : str(brief.period_start),
       period_end: brief.period_end == null ? null : str(brief.period_end),
@@ -219,6 +288,7 @@ export function mapExecutiveSummary(raw: unknown): ExecutiveSummary {
       model: brief.model == null ? null : str(brief.model),
       prompt_version: brief.prompt_version == null ? null : str(brief.prompt_version),
       citations: arr(brief.citations).map(mapCitation),
+      evidence: mapEvidence(brief.evidence, brief.generated_at == null ? null : str(brief.generated_at), generationMode(brief.generation_mode)),
     },
     metrics: {
       total_asset_value_usd: numOrNull(metrics.total_asset_value_usd),
@@ -324,6 +394,48 @@ export const HEALTH_STATUS_LABELS: Record<HealthStatus, string> = {
   not_configured: 'Not configured',
 };
 
+// Operational monitoring status (from backend evidence, never SSE transport).
+export const MONITORING_STATUS_LABELS: Record<MonitoringOperationalState, string> = {
+  live: 'Live monitoring',
+  degraded: 'Monitoring degraded',
+  offline: 'Monitoring offline',
+};
+
+export function monitoringStateVariant(state: MonitoringOperationalState): 'success' | 'warning' | 'danger' {
+  if (state === 'live') return 'success';
+  if (state === 'degraded') return 'warning';
+  return 'danger';
+}
+
+// Telemetry freshness (separate axis from both transport and monitoring status).
+export const TELEMETRY_FRESHNESS_LABELS: Record<FreshnessStatus, string> = {
+  fresh: 'Telemetry fresh',
+  stale: 'Telemetry stale',
+  unavailable: 'Telemetry unavailable',
+};
+
+export const DATA_CONFIDENCE_LABELS: Record<DataConfidence, string> = {
+  high: 'High',
+  medium: 'Medium',
+  low: 'Low',
+  unavailable: 'Unavailable',
+};
+
+// Browser/SSE transport connection status — distinct from monitoring status.
+// An open event channel proves the transport is connected, NOT that monitoring
+// is live; the two are surfaced as separate indicators.
+export type ConnectionStatus = 'connected' | 'reconnecting' | 'disconnected';
+export function connectionStatusFromStream(streamStatus: string): ConnectionStatus {
+  if (streamStatus === 'live') return 'connected';
+  if (streamStatus === 'reconnecting' || streamStatus === 'polling-fallback') return 'reconnecting';
+  return 'disconnected';
+}
+export const CONNECTION_STATUS_LABELS: Record<ConnectionStatus, string> = {
+  connected: 'Connected',
+  reconnecting: 'Reconnecting',
+  disconnected: 'Disconnected',
+};
+
 export function riskBandVariant(band: RiskBand): 'success' | 'warning' | 'danger' {
   if (band === 'critical' || band === 'high') return 'danger';
   if (band === 'moderate') return 'warning';
@@ -343,6 +455,19 @@ export function formatDelta(delta: number | null, opts: { invertGood?: boolean }
   if (delta === 0) return { text: '±0 (7d)', tone: 'flat' };
   const sign = delta > 0 ? '+' : '−';
   return { text: `${sign}${Math.abs(delta)} (7d)`, tone: delta > 0 ? 'up' : 'down' };
+}
+
+/** Compact age label from a second count (e.g. 68400 -> "19h"). null -> "unknown". */
+export function formatAgeSeconds(seconds: number | null): string {
+  if (seconds == null || !Number.isFinite(seconds)) return 'unknown';
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h`;
+  const d = Math.round(h / 24);
+  return `${d}d`;
 }
 
 export function formatRelativeTime(iso: string | null, now: number = Date.now()): string {

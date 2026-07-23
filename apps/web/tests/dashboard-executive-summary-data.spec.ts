@@ -1,13 +1,19 @@
 import { expect, test } from '@playwright/test';
 
 import {
+  connectionStatusFromStream,
+  formatAgeSeconds,
   formatAssetValue,
   formatDelta,
   formatRelativeTime,
   healthStatusVariant,
   mapExecutiveSummary,
+  monitoringStateVariant,
   riskBandVariant,
+  CONNECTION_STATUS_LABELS,
+  DATA_CONFIDENCE_LABELS,
   HEALTH_STATUS_LABELS,
+  MONITORING_STATUS_LABELS,
   RISK_BAND_LABELS,
 } from '../app/dashboard-executive-summary-data';
 
@@ -152,5 +158,81 @@ test.describe('executive summary data layer', () => {
   test('recent alerts always carry a navigable url', () => {
     const data = mapExecutiveSummary(sampleRaw({ recent_alerts: [{ id: 'zzz', title: 'x', severity: 'low', status: 'open' }] }));
     expect(data.recent_alerts[0].url).toBe('/alerts/zzz');
+  });
+
+  // Monitoring status is a separate axis from the SSE transport.
+  test('healthy monitoring state maps to Live monitoring', () => {
+    const data = mapExecutiveSummary(sampleRaw({
+      monitoring_state: { state: 'live', label: 'Live monitoring', reason: 'ok', telemetry_fresh: true, workers_fresh: true, ingestion_healthy: true },
+    }));
+    expect(data.monitoring_state.state).toBe('live');
+    expect(MONITORING_STATUS_LABELS[data.monitoring_state.state]).toBe('Live monitoring');
+    expect(monitoringStateVariant('live')).toBe('success');
+  });
+
+  test('degraded monitoring state never maps to Live monitoring', () => {
+    const data = mapExecutiveSummary(sampleRaw({
+      monitoring_state: { state: 'degraded', label: 'Monitoring degraded', reason: 'stale', telemetry_fresh: false, workers_fresh: true, ingestion_healthy: true },
+    }));
+    expect(data.monitoring_state.state).toBe('degraded');
+    expect(MONITORING_STATUS_LABELS[data.monitoring_state.state]).not.toBe('Live monitoring');
+    expect(MONITORING_STATUS_LABELS[data.monitoring_state.state]).toBe('Monitoring degraded');
+  });
+
+  // Fail closed: an absent monitoring_state must never read as "Live monitoring".
+  test('absent monitoring state fails closed to offline (never live)', () => {
+    const data = mapExecutiveSummary(sampleRaw());
+    expect(data.monitoring_state.state).toBe('offline');
+    expect(MONITORING_STATUS_LABELS[data.monitoring_state.state]).not.toBe('Live monitoring');
+  });
+
+  // SSE transport is mapped independently — 'live' stream = "Connected", not "Live monitoring".
+  test('SSE stream status maps to a distinct connection label', () => {
+    expect(connectionStatusFromStream('live')).toBe('connected');
+    expect(CONNECTION_STATUS_LABELS.connected).toBe('Connected');
+    expect(connectionStatusFromStream('reconnecting')).toBe('reconnecting');
+    expect(connectionStatusFromStream('polling-fallback')).toBe('reconnecting');
+    expect(connectionStatusFromStream('disconnected')).toBe('disconnected');
+    // Crucially: "Connected" transport is never the string "Live monitoring".
+    expect(CONNECTION_STATUS_LABELS.connected).not.toBe('Live monitoring');
+  });
+
+  // Evidence freshness: generation time and data-current-through are distinct.
+  test('evidence block maps generation time separately from data freshness', () => {
+    const data = mapExecutiveSummary(sampleRaw({
+      executive_brief: {
+        ...sampleRaw().executive_brief,
+        evidence: {
+          generated_at: '2026-07-23T12:00:00Z',
+          data_current_through: '2026-07-22T17:00:00Z',
+          telemetry_age_seconds: 68400,
+          telemetry_status: 'stale',
+          data_confidence: 'low',
+          data_confidence_reason: 'Telemetry is stale.',
+          generation_mode: 'deterministic_fallback',
+        },
+      },
+    }));
+    const ev = data.executive_brief.evidence;
+    expect(ev.generated_at).toBe('2026-07-23T12:00:00Z');
+    expect(ev.data_current_through).toBe('2026-07-22T17:00:00Z');
+    expect(ev.telemetry_age_seconds).toBe(68400);
+    // Low confidence renders when evidence is stale; never silently "Medium".
+    expect(ev.data_confidence).toBe('low');
+    expect(DATA_CONFIDENCE_LABELS[ev.data_confidence]).toBe('Low');
+    expect(DATA_CONFIDENCE_LABELS[ev.data_confidence]).not.toBe('Medium');
+  });
+
+  test('evidence generated_at falls back to brief generated_at when absent', () => {
+    const data = mapExecutiveSummary(sampleRaw());
+    // sampleRaw has no evidence block; generation time still resolves.
+    expect(data.executive_brief.evidence.generated_at).toBe('2026-07-23T12:00:00Z');
+    expect(data.executive_brief.evidence.data_confidence).toBe('unavailable');
+  });
+
+  test('telemetry age formats compactly (19h stale)', () => {
+    expect(formatAgeSeconds(68400)).toBe('19h');
+    expect(formatAgeSeconds(45)).toBe('45s');
+    expect(formatAgeSeconds(null)).toBe('unknown');
   });
 });

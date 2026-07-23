@@ -2460,29 +2460,55 @@ td .tableMeta {
   flex-shrink: 0;
 }
 
-.execLiveIndicator {
+/* Three separate status axes: monitoring (operational truth), telemetry
+   freshness, and browser/SSE connection. Never collapsed into one "LIVE". */
+.execStatusCluster {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.4rem;
-  font-size: 0.72rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-secondary);
 }
 
-.execLiveDot {
+.execStatusPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.execStatusDot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: var(--text-muted);
+  flex-shrink: 0;
 }
 
-.execLiveIndicator[data-stream='live'] { color: var(--success-fg); }
-.execLiveIndicator[data-stream='live'] .execLiveDot {
-  background: var(--success-fg);
-  box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.18);
-}
+/* Monitoring status — the only place "Live monitoring" can appear. */
+.execStatusPill--monitoring[data-state='live'] { color: var(--success-fg); border-color: rgba(74, 222, 128, 0.4); }
+.execStatusPill--monitoring[data-state='live'] .execStatusDot { background: var(--success-fg); box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.18); }
+.execStatusPill--monitoring[data-state='degraded'] { color: var(--warning-fg); border-color: rgba(251, 191, 36, 0.4); }
+.execStatusPill--monitoring[data-state='degraded'] .execStatusDot { background: var(--warning-fg); }
+.execStatusPill--monitoring[data-state='offline'] { color: var(--danger-fg); border-color: rgba(248, 113, 113, 0.4); }
+.execStatusPill--monitoring[data-state='offline'] .execStatusDot { background: var(--danger-fg); }
+
+/* Telemetry freshness. */
+.execStatusPill--telemetry[data-freshness='fresh'] { color: var(--success-fg); }
+.execStatusPill--telemetry[data-freshness='stale'] { color: var(--warning-fg); }
+.execStatusPill--telemetry[data-freshness='unavailable'] { color: var(--danger-fg); }
+
+/* Transport connection (SSE) — distinct from monitoring status. */
+.execStatusPill--connection[data-connection='connected'] { color: var(--text-secondary); }
+.execStatusPill--connection[data-connection='reconnecting'] { color: var(--warning-fg); }
+.execStatusPill--connection[data-connection='disconnected'] { color: var(--text-muted); }
 
 .execRefreshBtn { font-size: 0.78rem; }
 
@@ -2499,11 +2525,34 @@ td .tableMeta {
 .execFreshnessBanner--stale { background: rgba(251, 191, 36, 0.1); border-color: rgba(251, 191, 36, 0.3); color: var(--warning-fg); }
 .execFreshnessBanner--unavailable { background: rgba(248, 113, 113, 0.1); border-color: rgba(248, 113, 113, 0.3); color: var(--danger-fg); }
 
-/* Top metric row: Executive Brief (wide) + five metric cards */
+/* Top area: Executive Brief (wide) beside a cluster of the five metric cards.
+   `align-items: start` keeps the brief and the metric cluster at their own
+   natural heights so neither stretches the other — this removes the tall blank
+   vertical area the previous single stretched row produced. */
 .execMetricRowScreen2 {
-  grid-template-columns: minmax(240px, 1.7fr) repeat(5, minmax(0, 1fr));
-  align-items: stretch;
+  grid-template-columns: minmax(280px, 1.15fr) minmax(0, 2fr);
+  align-items: start;
 }
+
+/* Five metric cards in an even, wrap-filling flex grid. flex-grow makes the
+   final row expand to fill the width (no dangling empty cell), and cards in a
+   row share a single height — so Risk Score and System Health can no longer
+   stretch lower than their neighbours. min-width:0 prevents overflow. */
+.execMetricCluster {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 0.85rem;
+  min-width: 0;
+}
+.execMetricCluster > .execMetricLink,
+.execMetricCluster > .execMetricCard {
+  flex: 1 1 calc(33.333% - 0.6rem);
+  min-width: 132px;
+}
+.execMetricCluster > .execMetricLink { display: flex; }
+.execMetricCluster > .execMetricLink > .execMetricCard { width: 100%; }
+.execMetricCluster .execMetricCard { height: 100%; }
 
 .execMetricLink { text-decoration: none; color: inherit; display: block; }
 .execMetricLink:hover .execMetricCard { border-color: rgba(106, 169, 255, 0.4); }
@@ -2546,7 +2595,26 @@ td .tableMeta {
 .execBriefConfidence { font-size: 0.72rem; color: var(--text-secondary); }
 .execBriefConfidence[data-confidence='high']   { color: var(--success-fg); }
 .execBriefConfidence[data-confidence='medium'] { color: var(--warning-fg); }
+.execBriefConfidence[data-confidence='low']    { color: var(--danger-fg); }
+.execBriefConfidence[data-confidence='unavailable'] { color: var(--text-muted); }
 .execBriefBtn { font-size: 0.76rem; }
+
+/* Evidence freshness — kept visually distinct from the generation timestamp. */
+.execBriefEvidence { margin: 0; font-size: 0.72rem; color: var(--text-muted); }
+.execBriefEvidence[data-telemetry='stale'] { color: var(--warning-fg); }
+.execBriefEvidence[data-telemetry='unavailable'] { color: var(--danger-fg); }
+.execDrawerConfidenceReason { margin: -0.3rem 0 0; font-size: 0.76rem; }
+
+/* Zero-alert coverage caveat: appears only under degraded/stale coverage. */
+.execCoverageCaveat {
+  border-radius: var(--radius-sm);
+  padding: 0.65rem 0.9rem;
+  font-size: 0.82rem;
+  margin-bottom: 1rem;
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  background: rgba(251, 191, 36, 0.1);
+  color: var(--warning-fg);
+}
 
 /* Main grid: chart + recent alerts column, plus Co-Pilot panel */
 .execMainGridScreen2 { grid-template-columns: minmax(0, 1.7fr) minmax(300px, 1fr); align-items: start; }
@@ -2676,22 +2744,28 @@ td .tableMeta {
 .execSkeletonChart { min-height: 240px; }
 .execSkeletonPanel { min-height: 240px; }
 
-/* Responsive: tablet — Co-Pilot moves below the main column */
+/* Responsive: tablet — brief stacks above the metric cluster; Co-Pilot moves
+   below the main column. The cluster keeps wrapping its cards evenly. */
 @media (max-width: 1200px) {
-  .execMetricRowScreen2 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .execMetricRowScreen2 { grid-template-columns: minmax(0, 1fr); }
   .execMainGridScreen2 { grid-template-columns: minmax(0, 1fr); }
   .execBottomMetricsRow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
-/* Responsive: mobile — single column, chart scrolls, no overflow */
+/* Responsive: mobile — single column, cluster cards stack, chart scrolls. */
 @media (max-width: 720px) {
   .dashboardExecHeader { flex-direction: column; }
   .execMetricRowScreen2 { grid-template-columns: minmax(0, 1fr); }
+  .execMetricCluster > .execMetricLink,
+  .execMetricCluster > .execMetricCard { flex-basis: 100%; }
   .execBottomMetricsRow { grid-template-columns: minmax(0, 1fr); }
+  .execStatusCluster { width: 100%; }
   .execTrendChart { overflow-x: auto; }
   .execTrendSvg { min-width: 480px; }
   .execDrawer { width: 100%; }
 }
+
+.execSkeletonBrief { min-height: 150px; }
 
 /* --- Responsive sidebar ------------------------------------------- */
 @media (max-width: 1100px) {
