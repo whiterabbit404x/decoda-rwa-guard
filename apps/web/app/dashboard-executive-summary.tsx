@@ -1,8 +1,11 @@
 'use client';
 
 import Link from 'next/link';
-import { useRuntimeSummary } from './runtime-summary-context';
-import type { DashboardPageData, ThreatDetection, ResilienceIncident } from './dashboard-data';
+import { useCallback, useEffect, useRef, useState } from 'react';
+
+import { usePilotAuth } from './pilot-auth-context';
+import type { DashboardPageData } from './dashboard-data';
+import type { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 import {
   StatusPill,
   EmptyStateBlocker,
@@ -10,444 +13,429 @@ import {
   statusVariantFromStatus,
   type PillVariant,
 } from './components/ui-primitives';
-import type { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 import {
-  resolveWorkspaceMonitoringTruthFromSummary,
-  monitoringHealthyCopyAllowed,
-  type WorkspaceMonitoringTruth,
-} from './workspace-monitoring-truth';
+  EXECUTIVE_SUMMARY_ENDPOINT,
+  formatAssetValue,
+  formatDelta,
+  formatRelativeTime,
+  healthStatusVariant,
+  mapExecutiveSummary,
+  riskBandVariant,
+  HEALTH_STATUS_LABELS,
+  RISK_BAND_LABELS,
+  type ExecutiveSummary,
+  type ExecutiveBrief,
+  type RecentAlert,
+  type RiskDriver,
+  type HealthInsight,
+  type RiskTrendPoint,
+} from './dashboard-executive-summary-data';
 
-const NEXT_ACTION_ROUTES: Record<string, string> = {
-  add_asset: '/assets',
-  verify_asset: '/assets',
-  create_monitoring_target: '/monitoring-sources',
-  enable_monitored_system: '/monitoring-sources',
-  start_simulator_signal: '/monitoring-sources',
-  view_detection: '/threat',
-  open_incident: '/incidents',
-  export_evidence_package: '/evidence',
-  resolve_runtime_contradictions: '/system-health',
-  review_reason_codes: '/system-health',
+// Deep-link destinations for recommended-focus items and metric navigation. No
+// broken placeholder links — every destination resolves to a real route.
+const DESTINATION_ROUTES: Record<string, string> = {
+  alerts: '/alerts',
+  incidents: '/incidents',
+  monitoring: '/monitoring-sources',
+  assets: '/assets',
+  'system-health': '/system-health',
 };
 
-const NEXT_ACTION_LABELS: Record<string, string> = {
-  add_asset: 'Add a protected asset',
-  verify_asset: 'Verify asset',
-  create_monitoring_target: 'Connect a monitoring target',
-  enable_monitored_system: 'Enable monitoring',
-  start_simulator_signal: 'Waiting for first telemetry',
-  view_detection: 'View detection',
-  open_incident: 'Open incident',
-  export_evidence_package: 'Export evidence package',
-  resolve_runtime_contradictions: 'Resolve contradictions',
-  review_reason_codes: 'Review reason codes',
-};
-
-const NEXT_ACTION_DESCRIPTIONS: Record<string, string> = {
-  add_asset: 'Register your first protected real-world asset to begin monitoring.',
-  verify_asset: 'Verify asset metadata so the runtime can anchor monitoring to it.',
-  create_monitoring_target: 'Connect your asset to a monitoring data source to enable live tracking.',
-  enable_monitored_system: 'Enable monitoring on the connected target so telemetry can begin flowing.',
-  start_simulator_signal: 'Monitoring is configured. Waiting for the first telemetry event to arrive.',
-  view_detection: 'A detection was generated. Review it to advance the workflow.',
-  open_incident: 'An alert is active. Open an incident to begin investigation.',
-  export_evidence_package: 'Export an evidence package to produce an auditable proof record.',
-  resolve_runtime_contradictions: 'Runtime contradictions are blocking healthy status. Review and resolve.',
-  review_reason_codes: 'Review the current reason codes reported by the monitoring runtime.',
-};
+function destinationRoute(destination: string): string {
+  return DESTINATION_ROUTES[destination] ?? '/system-health';
+}
 
 type Props = {
-  data: DashboardPageData;
+  data?: DashboardPageData;
   liveFeed?: ReturnType<typeof useLiveWorkspaceFeed>;
 };
 
-function safeString(value: unknown, fallback = ''): string {
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  return fallback;
+type LoadState = {
+  status: 'loading' | 'ready' | 'error';
+  data: ExecutiveSummary | null;
+  error: string | null;
+  refreshing: boolean;
+};
+
+function useExecutiveSummary(refreshSignal: string | null | undefined) {
+  const { authHeaders, isAuthenticated, user } = usePilotAuth();
+  const workspaceId = user?.current_workspace?.id ?? user?.current_workspace_id ?? null;
+  const [state, setState] = useState<LoadState>({ status: 'loading', data: null, error: null, refreshing: false });
+  const inFlight = useRef(false);
+
+  const load = useCallback(
+    async (isRefresh: boolean) => {
+      if (!isAuthenticated) {
+        setState({ status: 'error', data: null, error: 'Sign in to view the dashboard.', refreshing: false });
+        return;
+      }
+      if (inFlight.current) return;
+      inFlight.current = true;
+      setState((prev) => ({ ...prev, refreshing: isRefresh, status: prev.data ? prev.status : 'loading' }));
+      try {
+        const response = await fetch(EXECUTIVE_SUMMARY_ENDPOINT, {
+          method: 'GET',
+          headers: { Accept: 'application/json', ...authHeaders(workspaceId) },
+          cache: 'no-store',
+        });
+        if (!response.ok) {
+          throw new Error(`Dashboard request failed (${response.status})`);
+        }
+        const json = (await response.json()) as unknown;
+        setState({ status: 'ready', data: mapExecutiveSummary(json), error: null, refreshing: false });
+      } catch (error) {
+        // Keep any previously loaded data visible (stale) instead of blanking.
+        setState((prev) => ({
+          status: prev.data ? 'ready' : 'error',
+          data: prev.data,
+          error: error instanceof Error ? error.message : 'Failed to load dashboard.',
+          refreshing: false,
+        }));
+      } finally {
+        inFlight.current = false;
+      }
+    },
+    [authHeaders, isAuthenticated, workspaceId],
+  );
+
+  // Initial load.
+  useEffect(() => {
+    void load(false);
+  }, [load]);
+
+  // Refresh when the live workspace feed signals an update (SSE event or poll),
+  // debounced so a burst of events triggers a single refetch. Chart/scroll
+  // state is preserved because we mutate state in place rather than remount.
+  useEffect(() => {
+    if (refreshSignal == null) return;
+    const timer = setTimeout(() => void load(true), 400);
+    return () => clearTimeout(timer);
+  }, [refreshSignal, load]);
+
+  return { ...state, reload: () => load(true) };
 }
 
-function safeNumber(value: unknown, fallback = 0): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
-}
-
-function safeArray<T>(value: unknown): T[] {
-  return Array.isArray(value) ? (value as T[]) : [];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function humanizeReason(value: unknown): string {
-  if (typeof value === 'string') {
-    const normalized = value.replace(/_/g, ' ').trim();
-    return normalized || 'unknown reason';
-  }
-
-  if (isRecord(value)) {
-    const objectValue = value;
-    const preferred = safeString(
-      objectValue.code ??
-        objectValue.reason ??
-        objectValue.message ??
-        objectValue.status_reason,
-    );
-    if (preferred) return humanizeReason(preferred);
-    try {
-      const serialized = JSON.stringify(objectValue);
-      return serialized || 'unknown reason';
-    } catch {
-      return 'unknown reason';
-    }
-  }
-
-  return 'unknown reason';
-}
-
-function safeAction(value: unknown): string {
-  const fallback = 'review_reason_codes';
-  const candidate = isRecord(value)
-    ? safeString(value.code ?? value.reason ?? value.message ?? value.status_reason, '')
-    : safeString(value, '');
-
-  return candidate && NEXT_ACTION_ROUTES[candidate] ? candidate : fallback;
-}
-
-export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
-  const { summary, loading } = useRuntimeSummary();
-  const safeSummary: Record<string, unknown> = isRecord(summary) ? summary : {};
-
-  const monitoringTruth: WorkspaceMonitoringTruth =
-    liveFeed?.monitoring.truth ??
-    resolveWorkspaceMonitoringTruthFromSummary(data.workspaceMonitoringSummary);
-
-  const healthProvable =
-    monitoringHealthyCopyAllowed(monitoringTruth) &&
-    monitoringTruth.monitoring_status === 'live' &&
-    monitoringTruth.evidence_source_summary !== 'simulator';
-
-  const isRuntimeLiveVerified =
-    monitoringTruth.runtime_status === 'live' ||
-    monitoringTruth.status_reason === 'live_runtime_verified';
-  const hasContradictions = monitoringTruth.contradiction_flags.length > 0;
-  const isLiveVerifiedClean = isRuntimeLiveVerified && !hasContradictions;
-
-  const systemHealthLabel = healthProvable
-    ? 'Healthy'
-    : isLiveVerifiedClean
-    ? 'Live'
-    : monitoringTruth.runtime_status === 'offline'
-    ? 'Offline'
-    : 'Degraded';
-
-  const systemHealthVariant: PillVariant =
-    healthProvable || isLiveVerifiedClean
-      ? 'success'
-      : monitoringTruth.runtime_status === 'offline'
-      ? 'danger'
-      : 'warning';
-
-  const isSimulator = monitoringTruth.evidence_source_summary === 'simulator';
-  const isLiveEvidence =
-    monitoringTruth.evidence_source_summary === 'live' && !isSimulator;
-  const safeEvidenceLabel = isSimulator
-    ? 'Simulator'
-    : isLiveEvidence
-    ? 'Live provider'
-    : 'No evidence';
-
-  const recentAlerts = safeArray<ThreatDetection>(data?.threatDashboard?.active_alerts).slice(0, 5);
-  const recentIncidents = safeArray<ResilienceIncident>(data?.resilienceDashboard?.latest_incidents).slice(0, 5);
-
-  const telemetryAvailable =
-    Boolean(monitoringTruth.last_telemetry_at) &&
-    monitoringTruth.telemetry_freshness !== 'unavailable';
-  const detectionAvailable = Boolean(monitoringTruth.last_detection_at);
-
-  const protectedAssetsCount = safeNumber(safeSummary.protected_assets_count);
-  const monitoredSystemsCount = safeNumber(monitoringTruth.monitored_systems_count);
-  const reportingSystemsCount = safeNumber(monitoringTruth.reporting_systems_count);
-  const activeAlertsCount = safeNumber(monitoringTruth.active_alerts_count);
-  const activeIncidentsCount = safeNumber(monitoringTruth.active_incidents_count);
-  const summaryNextAction = safeString(safeSummary.next_required_action);
-  const nextAction = safeAction(summaryNextAction);
-  const nextActionLabel = NEXT_ACTION_LABELS[nextAction] ?? 'Review reason codes';
-  const nextActionRoute = NEXT_ACTION_ROUTES[nextAction] ?? '/system-health';
-  const nextActionDescription =
-    NEXT_ACTION_DESCRIPTIONS[nextAction] ??
-    'Review the current monitoring runtime state.';
+export default function DashboardExecutiveSummary({ liveFeed }: Props) {
+  const refreshSignal = liveFeed?.lastFetchCompletedAt ?? null;
+  const { status, data, error, refreshing, reload } = useExecutiveSummary(refreshSignal);
+  const [briefOpen, setBriefOpen] = useState(false);
+  const streamStatus = liveFeed?.streamStatus ?? 'disconnected';
 
   return (
     <main className="container productPage dashboardExecPage">
-      {/* Page header */}
-      <div className="dashboardPageHeader">
-        <h1 className="dashboardPageTitle">Dashboard</h1>
-        <p className="dashboardPageSubtitle">
-          Executive summary of protected assets, monitoring coverage, alerts, incidents, and system health.
-        </p>
+      <div className="dashboardPageHeader dashboardExecHeader">
+        <div>
+          <h1 className="dashboardPageTitle">Dashboard</h1>
+          <p className="dashboardPageSubtitle">
+            Executive summary of protected assets, monitoring coverage, alerts, incidents, and system health.
+          </p>
+        </div>
+        <div className="dashboardExecHeaderActions">
+          <span className="execLiveIndicator" data-stream={streamStatus}>
+            <span className="execLiveDot" aria-hidden="true" />
+            {streamStatus === 'live' ? 'Live' : 'Reconnecting'}
+          </span>
+          <button type="button" className="btn btn-ghost execRefreshBtn" onClick={() => reload()} disabled={refreshing}>
+            {refreshing ? 'Refreshing…' : 'Refresh'}
+          </button>
+        </div>
       </div>
 
-      {/* Top metric row */}
-      <div className="execMetricRow">
-        <ExecMetricCard
-          label="Protected Assets"
-          value={loading ? '-' : String(protectedAssetsCount)}
-          meta={
-            protectedAssetsCount > 0
-              ? `${protectedAssetsCount} registered`
-              : 'No assets yet'
-          }
-        />
-        <ExecMetricCard
-          label="Monitored Systems"
-          value={loading ? '-' : String(monitoredSystemsCount)}
-          meta={
-            monitoredSystemsCount > 0
-              ? `${reportingSystemsCount} reporting`
-              : 'None reporting'
-          }
-        />
-        <ExecMetricCard
-          label="Active Alerts"
-          value={loading ? '-' : String(activeAlertsCount)}
-          meta={
-            activeAlertsCount > 0 ? 'Requires attention' : 'All clear'
-          }
-          valueVariant={activeAlertsCount > 0 ? 'danger' : undefined}
-        />
-        <ExecMetricCard
-          label="Open Incidents"
-          value={loading ? '-' : String(activeIncidentsCount)}
-          meta={
-            activeIncidentsCount > 0
-              ? 'Under investigation'
-              : 'None active'
-          }
-          valueVariant={activeIncidentsCount > 0 ? 'warning' : undefined}
-        />
-        <SystemHealthMetricCard
-          healthLabel={systemHealthLabel}
-          healthVariant={systemHealthVariant}
-          healthProvable={healthProvable}
-          monitoringStatus={
-            isLiveVerifiedClean
-              ? 'live'
-              : safeString(monitoringTruth.monitoring_status, 'unknown')
-          }
-        />
-      </div>
+      {status === 'loading' && !data ? <LoadingSkeleton /> : null}
 
-      {/* Main grid: Risk Overview + Recent Alerts */}
-      <div className="execMainGrid">
-        <RiskOverviewCard
-          telemetryAvailable={telemetryAvailable}
-          detectionAvailable={detectionAvailable}
-          monitoringTruth={monitoringTruth}
-          isSimulator={isSimulator}
-          evidenceLabel={safeEvidenceLabel}
-        />
-        <RecentAlertsCard
-          alerts={recentAlerts}
-          telemetryAvailable={telemetryAvailable}
-          detectionAvailable={detectionAvailable}
-        />
-      </div>
+      {status === 'error' && !data ? (
+        <ErrorState message={error ?? 'The dashboard is temporarily unavailable.'} onRetry={reload} />
+      ) : null}
 
-      {/* Bottom grid: Recent Incidents + System Health */}
-      <div className="execBottomGrid">
-        <RecentIncidentsCard
-          incidents={recentIncidents}
-          detectionAvailable={detectionAvailable}
-        />
-        <SystemHealthCompactCard
-          monitoringTruth={monitoringTruth}
-          healthProvable={healthProvable}
-          systemHealthLabel={systemHealthLabel}
-          systemHealthVariant={systemHealthVariant}
-          isSimulator={isSimulator}
-          evidenceLabel={safeEvidenceLabel}
-        />
-      </div>
+      {data ? (
+        <>
+          {error ? (
+            <div className="execStaleBanner" role="status">
+              <strong>Showing last known data.</strong> Live refresh failed: {error}.
+            </div>
+          ) : null}
+          <FreshnessBanner data={data} />
 
-      {/* Next Required Action */}
-      <NextRequiredActionCard
-        nextActionLabel={nextActionLabel}
-        nextActionRoute={nextActionRoute}
-        nextAction={nextAction}
-        nextActionDescription={nextActionDescription}
-        healthProvable={healthProvable}
-      />
+          <div className="execMetricRow execMetricRowScreen2">
+            <ExecutiveBriefCard brief={data.executive_brief} onOpen={() => setBriefOpen(true)} />
+            <TotalAssetValueCard data={data} />
+            <MetricCard
+              label="Open Incidents"
+              value={String(data.metrics.open_incident_count)}
+              meta={data.metrics.critical_or_high_incident_count > 0 ? `${data.metrics.critical_or_high_incident_count} critical/high` : 'None critical'}
+              delta={formatDelta(data.metrics.deltas.open_incident_count)}
+              valueVariant={data.metrics.open_incident_count > 0 ? 'warning' : undefined}
+              href="/incidents"
+            />
+            <MetricCard
+              label="Active Alerts"
+              value={String(data.metrics.active_alert_count)}
+              meta={data.metrics.active_alert_count > 0 ? 'Requires attention' : 'All clear'}
+              delta={formatDelta(data.metrics.deltas.active_alert_count)}
+              valueVariant={data.metrics.active_alert_count > 0 ? 'danger' : undefined}
+              href="/alerts"
+            />
+            <RiskScoreCard data={data} />
+            <SystemHealthCard data={data} />
+          </div>
+
+          <div className="execMainGrid execMainGridScreen2">
+            <div className="execMainColumn">
+              <RiskTrendChart trend={data.risk_trend} available={data.trend_available} />
+              <RecentAlertsCard alerts={data.recent_alerts} />
+            </div>
+            <CoPilotPanel data={data} onOpenBrief={() => setBriefOpen(true)} />
+          </div>
+
+          <BottomMetricsRow data={data} />
+        </>
+      ) : null}
+
+      {briefOpen && data ? (
+        <BriefDrawer brief={data.executive_brief} onClose={() => setBriefOpen(false)} />
+      ) : null}
     </main>
   );
 }
 
-/* Sub-components */
+/* ── Freshness / stale banner ─────────────────────────────────── */
 
-function ExecMetricCard({
+function FreshnessBanner({ data }: { data: ExecutiveSummary }) {
+  const { status, latest_event_at } = data.data_freshness;
+  if (status === 'fresh') return null;
+  const isUnavailable = status === 'unavailable';
+  return (
+    <div className={`execFreshnessBanner${isUnavailable ? ' execFreshnessBanner--unavailable' : ' execFreshnessBanner--stale'}`} role="status">
+      <strong>{isUnavailable ? 'Telemetry unavailable.' : 'Telemetry is stale.'}</strong>{' '}
+      {isUnavailable
+        ? 'No verified telemetry has been received from any monitored system.'
+        : `Last verified event ${formatRelativeTime(latest_event_at)}. Metrics reflect the last received data.`}
+    </div>
+  );
+}
+
+/* ── Metric cards ─────────────────────────────────────────────── */
+
+function MetricCard({
   label,
   value,
   meta,
+  delta,
   valueVariant,
+  href,
 }: {
   label: string;
   value: string;
   meta?: string;
+  delta?: { text: string; tone: 'up' | 'down' | 'flat' };
   valueVariant?: 'danger' | 'warning' | 'success';
+  href?: string;
 }) {
-  return (
-    <article
-      className="execMetricCard dataCard"
-      data-metric-label={label}
-    >
+  const body = (
+    <article className="execMetricCard dataCard" data-metric-label={label}>
       <p className="execMetricLabel">{label}</p>
-      <p
-        className={`execMetricValue${valueVariant ? ` execMetricValue--${valueVariant}` : ''}`}
-      >
-        {value}
-      </p>
-      {meta ? <p className="execMetricMeta">{meta}</p> : null}
-    </article>
-  );
-}
-
-function SystemHealthMetricCard({
-  healthLabel,
-  healthVariant,
-  healthProvable,
-  monitoringStatus,
-}: {
-  healthLabel: string;
-  healthVariant: PillVariant;
-  healthProvable: boolean;
-  monitoringStatus: string;
-}) {
-  return (
-    <article className="execMetricCard execMetricCardHealth dataCard" data-metric-label="System Health">
-      <p className="execMetricLabel">System Health</p>
-      <div className="execMetricHealthValue">
-        <StatusPill label={healthLabel} variant={healthVariant} />
+      <p className={`execMetricValue${valueVariant ? ` execMetricValue--${valueVariant}` : ''}`}>{value}</p>
+      <div className="execMetricFootRow">
+        {meta ? <span className="execMetricMeta">{meta}</span> : <span />}
+        {delta && delta.text ? <span className={`execMetricDelta execMetricDelta--${delta.tone}`}>{delta.text}</span> : null}
       </div>
-      <p className="execMetricMeta">
-        {healthProvable ? 'All systems operational' : `Monitoring: ${monitoringStatus}`}
+    </article>
+  );
+  return href ? (
+    <Link href={href} prefetch={false} className="execMetricLink">
+      {body}
+    </Link>
+  ) : (
+    body
+  );
+}
+
+function TotalAssetValueCard({ data }: { data: ExecutiveSummary }) {
+  const value = data.metrics.total_asset_value_usd;
+  const unavailable = value == null;
+  return (
+    <Link href="/assets" prefetch={false} className="execMetricLink">
+      <article className="execMetricCard dataCard" data-metric-label="Total Asset Value">
+        <p className="execMetricLabel">Total Asset Value</p>
+        <p className={`execMetricValue${unavailable ? ' execMetricValue--muted' : ''}`}>{formatAssetValue(value)}</p>
+        <div className="execMetricFootRow">
+          <span className="execMetricMeta">
+            {data.metrics.monitored_asset_count} monitored asset{data.metrics.monitored_asset_count === 1 ? '' : 's'}
+          </span>
+        </div>
+      </article>
+    </Link>
+  );
+}
+
+function RiskScoreCard({ data }: { data: ExecutiveSummary }) {
+  const { risk_score, risk_band, deltas } = data.metrics;
+  const delta = formatDelta(deltas.risk_score);
+  return (
+    <article className="execMetricCard execMetricCardScore dataCard" data-metric-label="Risk Score">
+      <p className="execMetricLabel">Risk Score</p>
+      <p className="execMetricValue">
+        {risk_score}
+        <span className="execMetricValueUnit">/100</span>
       </p>
+      <div className="execMetricFootRow">
+        <StatusPill label={RISK_BAND_LABELS[risk_band]} variant={riskBandVariant(risk_band)} />
+        {delta.text ? <span className={`execMetricDelta execMetricDelta--${delta.tone}`}>{delta.text}</span> : null}
+      </div>
     </article>
   );
 }
-function RiskOverviewCard({
-  telemetryAvailable,
-  detectionAvailable,
-  monitoringTruth,
-  isSimulator,
-  evidenceLabel,
-}: {
-  telemetryAvailable: boolean;
-  detectionAvailable: boolean;
-  monitoringTruth: WorkspaceMonitoringTruth;
-  isSimulator: boolean;
-  evidenceLabel: string;
-}) {
-  const riskStatus = detectionAvailable
-    ? monitoringTruth.active_alerts_count > 0
-      ? 'Threats detected'
-      : 'No active threats'
-    : null;
+
+function SystemHealthCard({ data }: { data: ExecutiveSummary }) {
+  const status = data.metrics.system_health_status;
+  const score = data.metrics.system_health_score;
+  const delta = formatDelta(data.metrics.deltas.system_health_score);
+  // Truthfulness: the label is derived solely from the backend's deterministic
+  // status. "Healthy" only ever appears when status === 'healthy'; an
+  // unconfigured workspace reads "Not configured", never a green 100.
+  return (
+    <Link href="/system-health" prefetch={false} className="execMetricLink">
+      <article className="execMetricCard execMetricCardHealth dataCard" data-metric-label="System Health">
+        <p className="execMetricLabel">System Health</p>
+        <p className="execMetricValue">
+          {status === 'not_configured' ? '—' : score}
+          {status === 'not_configured' ? null : <span className="execMetricValueUnit">/100</span>}
+        </p>
+        <div className="execMetricFootRow">
+          <StatusPill label={HEALTH_STATUS_LABELS[status]} variant={healthStatusVariant(status)} />
+          {delta.text ? <span className={`execMetricDelta execMetricDelta--${delta.tone}`}>{delta.text}</span> : null}
+        </div>
+      </article>
+    </Link>
+  );
+}
+
+/* ── Executive Brief card ─────────────────────────────────────── */
+
+function ExecutiveBriefCard({ brief, onOpen }: { brief: ExecutiveBrief; onOpen: () => void }) {
+  const isAi = brief.generation_mode === 'ai';
+  const focus = brief.recommended_focus[0];
+  return (
+    <article className="execBriefCard dataCard" aria-label="Executive Brief">
+      <div className="execBriefHeader">
+        <div>
+          <p className="sectionEyebrow">Executive Brief</p>
+          <h2 className="execBriefHeadline">{brief.headline || 'Operational summary'}</h2>
+        </div>
+        <StatusPill label={isAi ? 'AI generated' : 'Deterministic'} variant={isAi ? 'info' : 'neutral'} />
+      </div>
+      <p className="execBriefMeta">
+        {brief.period_start ? 'Last 24 hours' : 'Current period'} · Generated {formatRelativeTime(brief.generated_at)}
+      </p>
+      <p className="execBriefSummary">{brief.summary || 'No summary available for this period.'}</p>
+      {focus ? (
+        <p className="execBriefFocus">
+          <span className="execBriefFocusLabel">Focus:</span> {focus.title}
+        </p>
+      ) : null}
+      <div className="execBriefFooter">
+        <span className="execBriefConfidence" data-confidence={brief.confidence >= 0.7 ? 'high' : brief.confidence >= 0.4 ? 'medium' : 'low'}>
+          Confidence: {brief.confidence >= 0.7 ? 'High' : brief.confidence >= 0.4 ? 'Medium' : 'Low'}
+        </span>
+        <button type="button" className="btn btn-secondary execBriefBtn" onClick={onOpen}>
+          View Full AI Summary
+        </button>
+      </div>
+    </article>
+  );
+}
+
+/* ── Risk Trend chart ─────────────────────────────────────────── */
+
+function RiskTrendChart({ trend, available }: { trend: RiskTrendPoint[]; available: boolean }) {
+  const points = trend.filter((p) => p.captured_at);
+  const hasEnough = available && points.length >= 2;
 
   return (
-    <section className="execSectionCard dataCard" aria-label="Risk Overview">
+    <section className="execSectionCard dataCard" aria-label="Risk Trend">
       <div className="execSectionHeader">
         <div>
-          <p className="sectionEyebrow">Risk</p>
-          <h2 className="execSectionTitle">Risk Overview</h2>
+          <p className="sectionEyebrow">Trend</p>
+          <h2 className="execSectionTitle">Risk Trend — Last 7 Days</h2>
         </div>
-        {isSimulator ? (
-          <StatusPill label="Simulator" variant="info" />
-        ) : telemetryAvailable ? (
-          <StatusPill label="Live" variant="success" />
-        ) : null}
+        {points.length > 0 && points.length < 2 ? <StatusPill label="Partial data" variant="warning" /> : null}
       </div>
-
-      {!telemetryAvailable ? (
+      {!hasEnough ? (
         <div className="execEmptyState">
           <EmptyStateBlocker
-            title="No telemetry received yet"
-            body="Risk overview will populate once telemetry is flowing. No telemetry has been received from any monitored system."
-            ctaHref="/monitoring-sources"
-            ctaLabel="Go to Monitoring Sources"
+            title="Historical trend not available yet"
+            body="Risk history builds from real dashboard snapshots. At least two snapshots are needed before a trend can be drawn — no synthetic history is shown."
+            ctaHref="/system-health"
+            ctaLabel="View system health"
           />
         </div>
       ) : (
-        <div className="execRiskBody">
-          <div className="execRiskStats">
-            <div className="execRiskStat">
-              <span className="execRiskStatLabel">Active Alerts</span>
-              <span
-                className={`execRiskStatValue${monitoringTruth.active_alerts_count > 0 ? ' execRiskStatValue--danger' : ''}`}
-              >
-                {monitoringTruth.active_alerts_count}
-              </span>
-            </div>
-            <div className="execRiskStat">
-              <span className="execRiskStatLabel">Open Incidents</span>
-              <span
-                className={`execRiskStatValue${monitoringTruth.active_incidents_count > 0 ? ' execRiskStatValue--warning' : ''}`}
-              >
-                {monitoringTruth.active_incidents_count}
-              </span>
-            </div>
-            <div className="execRiskStat">
-              <span className="execRiskStatLabel">Evidence Source</span>
-              <span className="execRiskStatValue">{evidenceLabel}</span>
-            </div>
-            <div className="execRiskStat">
-              <span className="execRiskStatLabel">Telemetry</span>
-              <span
-                className={`execRiskStatValue${
-                  monitoringTruth.telemetry_freshness === 'fresh'
-                    ? ' execRiskStatValue--success'
-                    : monitoringTruth.telemetry_freshness === 'stale'
-                    ? ' execRiskStatValue--warning'
-                    : ' execRiskStatValue--muted'
-                }`}
-                data-telemetry-freshness={monitoringTruth.telemetry_freshness}
-              >
-                {monitoringTruth.telemetry_freshness === 'fresh'
-                  ? 'Fresh'
-                  : monitoringTruth.telemetry_freshness === 'stale'
-                  ? 'Stale'
-                  : 'Unavailable'}
-              </span>
-            </div>
-          </div>
-          {riskStatus ? (
-            <p className="execRiskSummary muted">{riskStatus}</p>
-          ) : null}
-          <div className="execChartPlaceholder">
-            <p className="muted" style={{ textAlign: 'center', fontSize: '0.82rem' }}>
-              No telemetry history available yet.
-            </p>
-          </div>
-        </div>
+        <TrendSvg points={points} />
       )}
     </section>
   );
 }
 
-function RecentAlertsCard({
-  alerts,
-  telemetryAvailable,
-  detectionAvailable,
-}: {
-  alerts: ThreatDetection[];
-  telemetryAvailable: boolean;
-  detectionAvailable: boolean;
-}) {
-  const blockerReason = !telemetryAvailable
-    ? 'No alerts yet because no telemetry has been received.'
-    : !detectionAvailable
-    ? 'No alerts yet because no detection has been generated.'
-    : null;
+function TrendSvg({ points }: { points: RiskTrendPoint[] }) {
+  const width = 640;
+  const height = 200;
+  const padX = 36;
+  const padY = 20;
+  const [hover, setHover] = useState<number | null>(null);
 
+  const n = points.length;
+  const xFor = (i: number) => padX + (i * (width - 2 * padX)) / Math.max(n - 1, 1);
+  const yFor = (score: number) => height - padY - (score / 100) * (height - 2 * padY);
+
+  const riskPath = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xFor(i).toFixed(1)} ${yFor(p.risk_score).toFixed(1)}`).join(' ');
+  const healthPath = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xFor(i).toFixed(1)} ${yFor(p.health_score).toFixed(1)}`).join(' ');
+  const active = hover != null ? points[hover] : null;
+
+  return (
+    <div className="execTrendChart">
+      <div className="execTrendLegend">
+        <span className="execTrendLegendItem execTrendLegendItem--risk">Risk score</span>
+        <span className="execTrendLegendItem execTrendLegendItem--health">Health score</span>
+      </div>
+      <svg viewBox={`0 0 ${width} ${height}`} className="execTrendSvg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Risk and health score over the last seven days">
+        {[0, 25, 50, 75, 100].map((tick) => (
+          <g key={tick}>
+            <line x1={padX} x2={width - padX} y1={yFor(tick)} y2={yFor(tick)} className="execTrendGrid" />
+            <text x={4} y={yFor(tick) + 3} className="execTrendAxisLabel">{tick}</text>
+          </g>
+        ))}
+        <path d={healthPath} className="execTrendLine execTrendLine--health" fill="none" />
+        <path d={riskPath} className="execTrendLine execTrendLine--risk" fill="none" />
+        {points.map((p, i) => (
+          <g key={i}>
+            <circle cx={xFor(i)} cy={yFor(p.risk_score)} r={hover === i ? 5 : 3} className="execTrendDot execTrendDot--risk" />
+            <rect
+              x={xFor(i) - 14}
+              y={padY}
+              width={28}
+              height={height - 2 * padY}
+              fill="transparent"
+              onMouseEnter={() => setHover(i)}
+              onMouseLeave={() => setHover((h) => (h === i ? null : h))}
+            >
+              <title>{`${new Date(p.captured_at ?? '').toLocaleDateString()} — risk ${p.risk_score}, health ${p.health_score}`}</title>
+            </rect>
+          </g>
+        ))}
+      </svg>
+      {active ? (
+        <div className="execTrendReadout">
+          {new Date(active.captured_at ?? '').toLocaleDateString()} · Risk <strong>{active.risk_score}</strong> · Health{' '}
+          <strong>{active.health_score}</strong> · Alerts <strong>{active.active_alert_count}</strong>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/* ── Recent Alerts ────────────────────────────────────────────── */
+
+function RecentAlertsCard({ alerts }: { alerts: RecentAlert[] }) {
   return (
     <section className="execSectionCard dataCard" aria-label="Recent Alerts">
       <div className="execSectionHeader">
@@ -455,18 +443,15 @@ function RecentAlertsCard({
           <p className="sectionEyebrow">Alerts</p>
           <h2 className="execSectionTitle">Recent Alerts</h2>
         </div>
-        {alerts.length > 0 ? (
-          <Link href="/alerts" prefetch={false} className="execSeeAllLink">
-            View all
-          </Link>
-        ) : null}
+        <Link href="/alerts" prefetch={false} className="execSeeAllLink">
+          View all alerts
+        </Link>
       </div>
-
-      {blockerReason || alerts.length === 0 ? (
+      {alerts.length === 0 ? (
         <div className="execEmptyState">
           <EmptyStateBlocker
             title="No active alerts"
-            body={blockerReason ?? 'No alerts have been generated yet.'}
+            body="No alerts are in an active state. When telemetry produces a detection, alerts will appear here."
             ctaHref="/alerts"
             ctaLabel="Go to Alerts"
           />
@@ -474,24 +459,17 @@ function RecentAlertsCard({
       ) : (
         <div className="execAlertList">
           {alerts.map((alert) => (
-            <div key={alert.id} className="execAlertRow">
+            <Link key={alert.id} href={alert.url} prefetch={false} className="execAlertRow execAlertRowLink">
               <div className="execAlertMeta">
-                <StatusPill
-                  label={alert.severity}
-                  variant={statusVariantFromSeverity(alert.severity)}
-                />
+                <StatusPill label={alert.severity} variant={statusVariantFromSeverity(alert.severity)} />
                 <span className="execAlertTitle">{alert.title}</span>
               </div>
               <div className="execAlertRight">
-                <StatusPill
-                  label={alert.action}
-                  variant={statusVariantFromStatus(alert.action)}
-                />
-                {alert.source === 'fallback' ? (
-                  <StatusPill label="Unavailable" variant="warning" />
-                ) : null}
+                {alert.asset ? <span className="execAlertAsset">{alert.asset}</span> : null}
+                <span className="execAlertTime">{formatRelativeTime(alert.occurred_at)}</span>
+                <StatusPill label={alert.status} variant={statusVariantFromStatus(alert.status)} />
               </div>
-            </div>
+            </Link>
           ))}
         </div>
       )}
@@ -499,205 +477,293 @@ function RecentAlertsCard({
   );
 }
 
-function RecentIncidentsCard({
-  incidents,
-  detectionAvailable,
-}: {
-  incidents: ResilienceIncident[];
-  detectionAvailable: boolean;
-}) {
-  const blockerReason = !detectionAvailable
-    ? 'No incidents yet because no detection has been generated.'
-    : null;
+/* ── Bottom metrics ───────────────────────────────────────────── */
 
+function BottomMetricsRow({ data }: { data: ExecutiveSummary }) {
+  const uptime = data.metrics.uptime_30d_percent;
   return (
-    <section className="execSectionCard dataCard" aria-label="Recent Incidents">
+    <div className="execBottomMetricsRow">
+      <BottomMetric label="Monitored Assets" value={String(data.metrics.monitored_asset_count)} href="/assets" />
+      <BottomMetric label="Active Monitors" value={String(data.metrics.active_monitor_count)} href="/monitoring-sources" />
+      <BottomMetric label="Data Sources" value={String(data.metrics.data_source_count)} href="/monitoring-sources" />
+      <BottomMetric
+        label="30-day Uptime"
+        value={uptime == null ? 'Not available' : `${uptime.toFixed(2)}%`}
+        href="/system-health"
+        muted={uptime == null}
+      />
+    </div>
+  );
+}
+
+function BottomMetric({ label, value, href, muted }: { label: string; value: string; href: string; muted?: boolean }) {
+  return (
+    <Link href={href} prefetch={false} className="execBottomMetric dataCard">
+      <span className="execBottomMetricLabel">{label}</span>
+      <span className={`execBottomMetricValue${muted ? ' execBottomMetricValue--muted' : ''}`}>{value}</span>
+    </Link>
+  );
+}
+
+/* ── AI Dashboard Co-Pilot panel ──────────────────────────────── */
+
+function CoPilotPanel({ data, onOpenBrief }: { data: ExecutiveSummary; onOpenBrief: () => void }) {
+  const { top_risk_drivers, system_health_insights, recommended_focus, generation_mode } = data.ai_copilot;
+  return (
+    <aside className="execCopilotPanel dataCard" aria-label="AI Dashboard Co-Pilot">
       <div className="execSectionHeader">
         <div>
-          <p className="sectionEyebrow">Incidents</p>
-          <h2 className="execSectionTitle">Recent Incidents</h2>
+          <p className="sectionEyebrow">Co-Pilot</p>
+          <h2 className="execSectionTitle">AI Dashboard Co-Pilot</h2>
         </div>
-        {incidents.length > 0 ? (
-          <Link href="/incidents" prefetch={false} className="execSeeAllLink">
-            View all
+        <StatusPill label={generation_mode === 'ai' ? 'AI' : 'Deterministic'} variant={generation_mode === 'ai' ? 'info' : 'neutral'} />
+      </div>
+      <p className="execCopilotGenerated">Generated {formatRelativeTime(data.ai_copilot.generated_at)}</p>
+
+      <div className="execCopilotSection">
+        <h3 className="execCopilotSubhead">Top Risk Drivers</h3>
+        {top_risk_drivers.length === 0 ? (
+          <p className="execCopilotEmpty muted">No material risk drivers in the current data.</p>
+        ) : (
+          <ul className="execDriverList">
+            {top_risk_drivers.map((driver) => (
+              <DriverRow key={driver.key} driver={driver} />
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="execCopilotSection">
+        <h3 className="execCopilotSubhead">System Health Insights</h3>
+        {system_health_insights.length === 0 ? (
+          <p className="execCopilotEmpty muted">All required health checks are passing.</p>
+        ) : (
+          <ul className="execInsightList">
+            {system_health_insights.map((insight, index) => (
+              <InsightRow key={`${insight.source_type}-${insight.source_id}-${index}`} insight={insight} />
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="execCopilotSection">
+        <h3 className="execCopilotSubhead">Recommended Focus</h3>
+        {recommended_focus.length === 0 ? (
+          <p className="execCopilotEmpty muted">No action required right now.</p>
+        ) : (
+          <ul className="execFocusList">
+            {recommended_focus.map((focus, index) => (
+              <li key={`${focus.destination}-${index}`} className="execFocusItem">
+                <Link href={destinationRoute(focus.destination)} prefetch={false} className="execFocusLink">
+                  {focus.title}
+                </Link>
+                <span className="execFocusReason muted">{focus.reason}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <button type="button" className="btn btn-ghost execCopilotFullBtn" onClick={onOpenBrief}>
+        View Full AI Insights
+      </button>
+    </aside>
+  );
+}
+
+function DriverRow({ driver }: { driver: RiskDriver }) {
+  return (
+    <li className="execDriverRow">
+      <div className="execDriverTop">
+        <span className="execDriverLabel">{driver.label}</span>
+        <span className="execDriverPercent">{driver.percent}%</span>
+      </div>
+      <div className="execDriverBarTrack">
+        <div className="execDriverBarFill" style={{ width: `${Math.max(0, Math.min(100, driver.percent))}%` }} />
+      </div>
+    </li>
+  );
+}
+
+function insightVariant(severity: string): PillVariant {
+  const s = severity.toLowerCase();
+  if (s === 'critical') return 'danger';
+  if (s === 'warning' || s === 'warn') return 'warning';
+  return 'info';
+}
+
+function InsightRow({ insight }: { insight: HealthInsight }) {
+  const link = insightSourceLink(insight);
+  return (
+    <li className="execInsightRow">
+      <StatusPill label={insight.severity} variant={insightVariant(insight.severity)} />
+      <div className="execInsightBody">
+        <span className="execInsightMessage">{insight.message}</span>
+        {link ? (
+          <Link href={link} prefetch={false} className="execInsightSource">
+            View source
           </Link>
-        ) : null}
+        ) : (
+          <span className="execInsightSourceMeta muted">{insight.occurred_at ? formatRelativeTime(insight.occurred_at) : insight.source_type || 'system'}</span>
+        )}
       </div>
-
-      {blockerReason || incidents.length === 0 ? (
-        <div className="execEmptyState">
-          <EmptyStateBlocker
-            title="No active incidents"
-            body={blockerReason ?? 'No incidents have been opened yet.'}
-            ctaHref="/incidents"
-            ctaLabel="Go to Incidents"
-          />
-        </div>
-      ) : (
-        <div className="execIncidentList">
-          {incidents.map((incident) => (
-            <div key={incident.event_id} className="execIncidentRow">
-              <div className="execIncidentMeta">
-                <StatusPill
-                  label={incident.severity}
-                  variant={statusVariantFromSeverity(incident.severity)}
-                />
-                <span className="execIncidentTitle">{incident.event_type}</span>
-              </div>
-              <div className="execIncidentRight">
-                <StatusPill
-                  label={incident.status}
-                  variant={statusVariantFromStatus(incident.status)}
-                />
-                {incident.source === 'fallback' ? (
-                  <StatusPill label="Unavailable" variant="warning" />
-                ) : null}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </section>
+    </li>
   );
 }
 
-function SystemHealthCompactCard({
-  monitoringTruth,
-  healthProvable,
-  systemHealthLabel,
-  systemHealthVariant,
-  isSimulator,
-  evidenceLabel,
-}: {
-  monitoringTruth: WorkspaceMonitoringTruth;
-  healthProvable: boolean;
-  systemHealthLabel: string;
-  systemHealthVariant: PillVariant;
-  isSimulator: boolean;
-  evidenceLabel: string;
-}) {
-  const compactIsLiveVerifiedClean =
-    (monitoringTruth.runtime_status === 'live' ||
-      monitoringTruth.status_reason === 'live_runtime_verified') &&
-    monitoringTruth.contradiction_flags.length === 0;
+function insightSourceLink(insight: HealthInsight): string | null {
+  if (!insight.source_id) return null;
+  switch (insight.source_type) {
+    case 'monitoring_target':
+    case 'provider':
+    case 'worker_heartbeat':
+      return '/monitoring-sources';
+    case 'alert':
+      return `/alerts/${insight.source_id}`;
+    case 'incident':
+      return `/incidents/${insight.source_id}`;
+    default:
+      return '/system-health';
+  }
+}
 
-  const runtimeStatusLabel = safeString(monitoringTruth.runtime_status, 'unknown');
-  const monitoringStatusLabel = compactIsLiveVerifiedClean
-    ? 'live'
-    : safeString(monitoringTruth.monitoring_status, 'unknown');
-  const telemetryFreshnessLabel = compactIsLiveVerifiedClean
-    ? 'fresh'
-    : safeString(monitoringTruth.telemetry_freshness, 'unknown');
+/* ── Full Brief drawer ────────────────────────────────────────── */
 
-  const degradedReasons = [
-    ...safeArray<unknown>(monitoringTruth.contradiction_flags),
-    ...safeArray<unknown>(monitoringTruth.guard_flags),
-    ...safeArray<unknown>(monitoringTruth.continuity_reason_codes),
-  ]
-    .map((code) => humanizeReason(code))
-    .filter(Boolean)
-    .slice(0, 3);
+function BriefDrawer({ brief, onClose }: { brief: ExecutiveBrief; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
+  const isAi = brief.generation_mode === 'ai';
   return (
-    <section className="execSectionCard dataCard" aria-label="System Health">
-      <div className="execSectionHeader">
-        <div>
-          <p className="sectionEyebrow">Health</p>
-          <h2 className="execSectionTitle">System Health</h2>
+    <div className="execDrawerBackdrop" role="presentation" onClick={onClose}>
+      <div className="execDrawer" role="dialog" aria-modal="true" aria-label="Executive Brief detail" onClick={(e) => e.stopPropagation()}>
+        <div className="execDrawerHeader">
+          <div>
+            <p className="sectionEyebrow">Executive Brief</p>
+            <h2 className="execDrawerTitle">{brief.headline}</h2>
+          </div>
+          <button type="button" className="btn btn-ghost execDrawerClose" onClick={onClose} aria-label="Close">
+            ✕
+          </button>
         </div>
-        <StatusPill label={systemHealthLabel} variant={systemHealthVariant} />
-      </div>
 
-      <div className="execHealthBody">
-        <div className="execHealthRow">
-          <span className="execHealthLabel">Runtime</span>
-          <StatusPill
-            label={runtimeStatusLabel}
-            variant={statusVariantFromStatus(runtimeStatusLabel)}
-          />
-        </div>
-        <div className="execHealthRow">
-          <span className="execHealthLabel">Monitoring</span>
-          <StatusPill
-            label={monitoringStatusLabel}
-            variant={statusVariantFromStatus(monitoringStatusLabel)}
-          />
-        </div>
-        <div className="execHealthRow">
-          <span className="execHealthLabel">Telemetry</span>
-          <StatusPill
-            label={telemetryFreshnessLabel}
-            variant={statusVariantFromStatus(telemetryFreshnessLabel)}
-          />
-        </div>
-        <div className="execHealthRow">
-          <span className="execHealthLabel">Evidence</span>
-          <span className="execHealthValue">{evidenceLabel}</span>
-        </div>
-        <div className="execHealthRow">
-          <span className="execHealthLabel">Reporting</span>
-          <span className="execHealthValue">
-            {monitoringTruth.reporting_systems_count} /{' '}
-            {monitoringTruth.monitored_systems_count} systems
+        <div className="execDrawerMetaRow">
+          <StatusPill label={isAi ? 'AI generated' : 'Deterministic fallback'} variant={isAi ? 'info' : 'neutral'} />
+          <span className="muted">Generated {formatRelativeTime(brief.generated_at)}</span>
+          <span className="muted">Period: {brief.period_start ? 'Last 24 hours' : 'Current'}</span>
+          <span className="muted">
+            Confidence: {brief.confidence >= 0.7 ? 'High' : brief.confidence >= 0.4 ? 'Medium' : 'Low'}
           </span>
         </div>
 
-        {!healthProvable && degradedReasons.length > 0 ? (
-          <div className="execHealthIssues">
-            <p className="execHealthIssuesLabel">Blocking reasons</p>
-            {degradedReasons.map((code, index) => (
-              <p key={code} className="execHealthIssueItem muted">
-                {code || `unknown reason ${index + 1}`}
-              </p>
-            ))}
-          </div>
+        <section className="execDrawerSection">
+          <h3 className="execDrawerSubhead">Summary</h3>
+          <p className="execDrawerText">{brief.summary}</p>
+        </section>
+
+        <section className="execDrawerSection">
+          <h3 className="execDrawerSubhead">Key Findings</h3>
+          {brief.key_findings.length === 0 ? (
+            <p className="muted">No material findings for this period.</p>
+          ) : (
+            <ul className="execDrawerFindings">
+              {brief.key_findings.map((finding, index) => (
+                <li key={index} className="execDrawerFinding">
+                  <div className="execDrawerFindingHead">
+                    <StatusPill label={finding.severity} variant={statusVariantFromSeverity(finding.severity)} />
+                    <span className="execDrawerFindingTitle">{finding.title}</span>
+                  </div>
+                  <p className="execDrawerText">{finding.description}</p>
+                  {finding.source_refs.length > 0 ? (
+                    <div className="execDrawerRefs">
+                      {finding.source_refs.map((ref) => (
+                        <Link key={`${ref.source_type}-${ref.source_id}`} href={ref.url || '#'} prefetch={false} className="execDrawerRef">
+                          {ref.label || `${ref.source_type} ${ref.source_id}`}
+                        </Link>
+                      ))}
+                    </div>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section className="execDrawerSection">
+          <h3 className="execDrawerSubhead">Recommended Focus</h3>
+          {brief.recommended_focus.length === 0 ? (
+            <p className="muted">No action required.</p>
+          ) : (
+            <ul className="execDrawerFocusList">
+              {brief.recommended_focus.map((focus, index) => (
+                <li key={index}>
+                  <Link href={destinationRoute(focus.destination)} prefetch={false} className="execFocusLink">
+                    {focus.title}
+                  </Link>{' '}
+                  <span className="muted">— {focus.reason}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        {brief.citations.length > 0 ? (
+          <section className="execDrawerSection">
+            <h3 className="execDrawerSubhead">Evidence References</h3>
+            <ul className="execDrawerCitations">
+              {brief.citations.map((citation) => (
+                <li key={`${citation.source_type}-${citation.source_id}`}>
+                  <Link href={citation.url || '#'} prefetch={false} className="execDrawerRef">
+                    {citation.label || `${citation.source_type} ${citation.source_id}`}
+                  </Link>
+                  {citation.occurred_at ? <span className="muted"> · {formatRelativeTime(citation.occurred_at)}</span> : null}
+                </li>
+              ))}
+            </ul>
+          </section>
         ) : null}
 
-        {!healthProvable &&
-        degradedReasons.length === 0 &&
-        safeString(monitoringTruth.status_reason) ? (
-          <div className="execHealthIssues">
-            <p className="execHealthIssuesLabel">Status reason</p>
-            <p className="execHealthIssueItem muted">
-              {humanizeReason(monitoringTruth.status_reason)}
-            </p>
-          </div>
-        ) : null}
-
-        <div className="execHealthActions">
-          <Link href="/system-health" prefetch={false} className="btn btn-ghost" style={{ fontSize: '0.78rem' }}>
-            View full diagnostics
-          </Link>
+        <div className="execDrawerFootnote muted">
+          {isAi ? `Model: ${brief.provider ?? 'provider'} / ${brief.model ?? 'model'}` : 'Deterministic brief — generated without a model call.'}
+          {brief.prompt_version ? ` · ${brief.prompt_version}` : ''}
         </div>
       </div>
-    </section>
+    </div>
   );
 }
 
-function NextRequiredActionCard({
-  nextActionLabel,
-  nextActionRoute,
-  nextAction,
-  nextActionDescription,
-  healthProvable,
-}: {
-  nextActionLabel: string;
-  nextActionRoute: string;
-  nextAction: string;
-  nextActionDescription: string;
-  healthProvable: boolean;
-}) {
-  if (healthProvable) return null;
+/* ── Loading / error states ───────────────────────────────────── */
 
+function LoadingSkeleton() {
   return (
-    <div className="execNextActionBanner" data-next-required-action={nextAction}>
-      <div className="execNextActionBody">
-        <p className="execNextActionLabel">Next Required Action</p>
-        <p className="execNextActionDesc">{nextActionDescription}</p>
+    <div className="execSkeleton" aria-hidden="true">
+      <div className="execMetricRow execMetricRowScreen2">
+        {Array.from({ length: 6 }).map((_, index) => (
+          <div key={index} className="execMetricCard dataCard execSkeletonCard" />
+        ))}
       </div>
-      <Link href={nextActionRoute} prefetch={false} className="btn btn-primary execNextActionCta">
-        {nextActionLabel}
-      </Link>
+      <div className="execMainGrid execMainGridScreen2">
+        <div className="execSectionCard dataCard execSkeletonChart" />
+        <div className="execSectionCard dataCard execSkeletonPanel" />
+      </div>
     </div>
+  );
+}
+
+function ErrorState({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <section className="execSectionCard dataCard" aria-label="Dashboard error">
+      <EmptyStateBlocker
+        title="Dashboard temporarily unavailable"
+        body={`${message} The application shell is preserved — retry to reload the executive summary.`}
+        ctaLabel="Retry"
+        ctaOnClick={onRetry}
+      />
+    </section>
   );
 }

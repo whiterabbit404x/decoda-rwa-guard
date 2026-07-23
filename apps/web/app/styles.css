@@ -2442,6 +2442,257 @@ td .tableMeta {
 
 .execNextActionCta { flex-shrink: 0; }
 
+/* ============================================================= */
+/* Screen 2 — Dashboard / Executive Summary (Co-Pilot)           */
+/* ============================================================= */
+
+.dashboardExecHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.dashboardExecHeaderActions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-shrink: 0;
+}
+
+.execLiveIndicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+
+.execLiveDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.execLiveIndicator[data-stream='live'] { color: var(--success-fg); }
+.execLiveIndicator[data-stream='live'] .execLiveDot {
+  background: var(--success-fg);
+  box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.18);
+}
+
+.execRefreshBtn { font-size: 0.78rem; }
+
+.execStaleBanner,
+.execFreshnessBanner {
+  border-radius: var(--radius-sm);
+  padding: 0.65rem 0.9rem;
+  font-size: 0.82rem;
+  margin-bottom: 1rem;
+  border: 1px solid var(--border);
+}
+
+.execStaleBanner { background: rgba(251, 191, 36, 0.1); border-color: rgba(251, 191, 36, 0.3); color: var(--warning-fg); }
+.execFreshnessBanner--stale { background: rgba(251, 191, 36, 0.1); border-color: rgba(251, 191, 36, 0.3); color: var(--warning-fg); }
+.execFreshnessBanner--unavailable { background: rgba(248, 113, 113, 0.1); border-color: rgba(248, 113, 113, 0.3); color: var(--danger-fg); }
+
+/* Top metric row: Executive Brief (wide) + five metric cards */
+.execMetricRowScreen2 {
+  grid-template-columns: minmax(240px, 1.7fr) repeat(5, minmax(0, 1fr));
+  align-items: stretch;
+}
+
+.execMetricLink { text-decoration: none; color: inherit; display: block; }
+.execMetricLink:hover .execMetricCard { border-color: rgba(106, 169, 255, 0.4); }
+
+.execMetricFootRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  margin-top: 0.35rem;
+  min-height: 1.1rem;
+}
+
+.execMetricValue--muted { color: var(--text-muted); font-size: 1.4rem; }
+.execMetricValueUnit { font-size: 0.9rem; color: var(--text-muted); font-weight: 500; margin-left: 0.15rem; }
+
+.execMetricDelta { font-size: 0.72rem; font-weight: 600; white-space: nowrap; }
+.execMetricDelta--up   { color: var(--danger-fg); }
+.execMetricDelta--down { color: var(--success-fg); }
+.execMetricDelta--flat { color: var(--text-muted); }
+
+/* Executive Brief card */
+.execBriefCard {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1.1rem 1.2rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.execBriefHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.6rem; }
+.execBriefHeadline { margin: 0.15rem 0 0; font-size: 1.02rem; font-weight: 700; color: var(--text-primary); line-height: 1.3; }
+.execBriefMeta { margin: 0; font-size: 0.72rem; color: var(--text-muted); }
+.execBriefSummary { margin: 0.2rem 0; font-size: 0.85rem; line-height: 1.5; color: var(--text-secondary); }
+.execBriefFocus { margin: 0; font-size: 0.82rem; color: var(--text-primary); }
+.execBriefFocusLabel { color: var(--text-accent); font-weight: 600; }
+.execBriefFooter { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-top: auto; padding-top: 0.5rem; }
+.execBriefConfidence { font-size: 0.72rem; color: var(--text-secondary); }
+.execBriefConfidence[data-confidence='high']   { color: var(--success-fg); }
+.execBriefConfidence[data-confidence='medium'] { color: var(--warning-fg); }
+.execBriefBtn { font-size: 0.76rem; }
+
+/* Main grid: chart + recent alerts column, plus Co-Pilot panel */
+.execMainGridScreen2 { grid-template-columns: minmax(0, 1.7fr) minmax(300px, 1fr); align-items: start; }
+.execMainColumn { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+
+/* Risk trend chart */
+.execTrendChart { display: flex; flex-direction: column; gap: 0.5rem; }
+.execTrendLegend { display: flex; gap: 1rem; font-size: 0.72rem; }
+.execTrendLegendItem { display: inline-flex; align-items: center; gap: 0.35rem; color: var(--text-secondary); }
+.execTrendLegendItem::before { content: ''; width: 12px; height: 3px; border-radius: 2px; display: inline-block; }
+.execTrendLegendItem--risk::before { background: var(--danger-fg); }
+.execTrendLegendItem--health::before { background: var(--success-fg); }
+.execTrendSvg { width: 100%; height: auto; overflow: visible; }
+.execTrendGrid { stroke: var(--border); stroke-width: 1; }
+.execTrendAxisLabel { fill: var(--text-muted); font-size: 9px; }
+.execTrendLine { stroke-width: 2; }
+.execTrendLine--risk { stroke: var(--danger-fg); }
+.execTrendLine--health { stroke: var(--success-fg); }
+.execTrendDot--risk { fill: var(--danger-fg); }
+.execTrendReadout { font-size: 0.78rem; color: var(--text-secondary); text-align: center; }
+
+/* Recent alerts (linked rows) */
+.execAlertRowLink { text-decoration: none; color: inherit; cursor: pointer; }
+.execAlertRowLink:hover { background: rgba(106, 169, 255, 0.06); }
+.execAlertAsset { font-size: 0.72rem; color: var(--text-muted); }
+.execAlertTime { font-size: 0.72rem; color: var(--text-muted); white-space: nowrap; }
+
+/* Bottom metrics row */
+.execBottomMetricsRow {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.85rem;
+  margin-top: 1rem;
+}
+.execBottomMetric {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.85rem 1rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  text-decoration: none;
+}
+.execBottomMetric:hover { border-color: rgba(106, 169, 255, 0.4); }
+.execBottomMetricLabel { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); }
+.execBottomMetricValue { font-size: 1.35rem; font-weight: 700; color: var(--text-primary); }
+.execBottomMetricValue--muted { font-size: 0.95rem; color: var(--text-muted); }
+
+/* AI Co-Pilot panel */
+.execCopilotPanel {
+  padding: 1.25rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.execCopilotGenerated { margin: -0.5rem 0 0; font-size: 0.72rem; color: var(--text-muted); }
+.execCopilotSection { display: flex; flex-direction: column; gap: 0.5rem; }
+.execCopilotSubhead { margin: 0; font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); }
+.execCopilotEmpty { margin: 0; font-size: 0.8rem; }
+
+.execDriverList, .execInsightList, .execFocusList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
+.execDriverRow { display: flex; flex-direction: column; gap: 0.3rem; }
+.execDriverTop { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.execDriverLabel { font-size: 0.8rem; color: var(--text-primary); }
+.execDriverPercent { font-size: 0.8rem; font-weight: 700; color: var(--text-accent); }
+.execDriverBarTrack { height: 6px; background: rgba(255, 255, 255, 0.06); border-radius: 3px; overflow: hidden; }
+.execDriverBarFill { height: 100%; background: linear-gradient(90deg, var(--text-accent), var(--danger-fg)); border-radius: 3px; }
+
+.execInsightRow { display: flex; gap: 0.5rem; align-items: flex-start; }
+.execInsightBody { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+.execInsightMessage { font-size: 0.8rem; color: var(--text-secondary); line-height: 1.4; }
+.execInsightSource { font-size: 0.72rem; color: var(--text-accent); text-decoration: none; }
+.execInsightSource:hover { text-decoration: underline; }
+.execInsightSourceMeta { font-size: 0.7rem; }
+
+.execFocusItem { display: flex; flex-direction: column; gap: 0.15rem; }
+.execFocusLink { font-size: 0.82rem; color: var(--text-accent); text-decoration: none; font-weight: 600; }
+.execFocusLink:hover { text-decoration: underline; }
+.execFocusReason { font-size: 0.74rem; line-height: 1.4; }
+.execCopilotFullBtn { font-size: 0.78rem; margin-top: auto; }
+
+/* Brief drawer / modal */
+.execDrawerBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(3, 7, 16, 0.72);
+  display: flex;
+  justify-content: flex-end;
+  z-index: 1000;
+  padding: 0;
+}
+.execDrawer {
+  width: min(560px, 100%);
+  height: 100%;
+  overflow-y: auto;
+  background: var(--bg-card);
+  border-left: 1px solid var(--border);
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.execDrawerHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; }
+.execDrawerTitle { margin: 0.15rem 0 0; font-size: 1.15rem; font-weight: 700; color: var(--text-primary); }
+.execDrawerClose { font-size: 1rem; padding: 0.2rem 0.55rem; }
+.execDrawerMetaRow { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; font-size: 0.76rem; }
+.execDrawerSection { display: flex; flex-direction: column; gap: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.9rem; }
+.execDrawerSubhead { margin: 0; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); }
+.execDrawerText { margin: 0; font-size: 0.86rem; line-height: 1.55; color: var(--text-secondary); }
+.execDrawerFindings, .execDrawerFocusList, .execDrawerCitations { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.85rem; }
+.execDrawerFinding { display: flex; flex-direction: column; gap: 0.35rem; }
+.execDrawerFindingHead { display: flex; align-items: center; gap: 0.5rem; }
+.execDrawerFindingTitle { font-size: 0.88rem; font-weight: 600; color: var(--text-primary); }
+.execDrawerRefs { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.execDrawerRef { font-size: 0.74rem; color: var(--text-accent); text-decoration: none; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.15rem 0.5rem; }
+.execDrawerRef:hover { border-color: rgba(106, 169, 255, 0.5); }
+.execDrawerCitations { gap: 0.4rem; font-size: 0.8rem; }
+.execDrawerFootnote { font-size: 0.72rem; border-top: 1px solid var(--border); padding-top: 0.75rem; }
+
+/* Loading skeleton */
+.execSkeleton { display: flex; flex-direction: column; gap: 1rem; }
+.execSkeletonCard { min-height: 96px; animation: dashboardLoadingPulse 1.4s ease-in-out infinite; background: linear-gradient(90deg, rgba(128,145,172,0.14), rgba(157,181,218,0.24), rgba(128,145,172,0.14)); background-size: 200% 100%; }
+.execSkeletonChart { min-height: 240px; }
+.execSkeletonPanel { min-height: 240px; }
+
+/* Responsive: tablet — Co-Pilot moves below the main column */
+@media (max-width: 1200px) {
+  .execMetricRowScreen2 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .execMainGridScreen2 { grid-template-columns: minmax(0, 1fr); }
+  .execBottomMetricsRow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* Responsive: mobile — single column, chart scrolls, no overflow */
+@media (max-width: 720px) {
+  .dashboardExecHeader { flex-direction: column; }
+  .execMetricRowScreen2 { grid-template-columns: minmax(0, 1fr); }
+  .execBottomMetricsRow { grid-template-columns: minmax(0, 1fr); }
+  .execTrendChart { overflow-x: auto; }
+  .execTrendSvg { min-width: 480px; }
+  .execDrawer { width: 100%; }
+}
+
 /* --- Responsive sidebar ------------------------------------------- */
 @media (max-width: 1100px) {
   .appShellFrame {

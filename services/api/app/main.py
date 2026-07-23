@@ -284,6 +284,7 @@ from services.api.app.monitoring_runner import (
 )
 from services.api.app import ai_triage
 from services.api.app import onboarding_agent
+from services.api.app import dashboard_summary
 from services.api.app.workspace_monitoring_summary import build_workspace_monitoring_summary_fallback
 from services.api.app.threat_payloads import normalize_threat_payload
 from services.api.app.db_failure import (
@@ -2592,6 +2593,64 @@ def ops_dashboard_page_data(request: Request) -> dict[str, Any]:
         'workspace_monitoring_summary': runtime_payload.get('workspace_monitoring_summary'),
         'background_loop_health': runtime_payload.get('background_loop_health'),
     }
+
+
+@app.get(
+    '/ops/dashboard/executive-summary',
+    summary='Dashboard Co-Pilot executive summary (Screen 2)',
+    description=(
+        'Aggregated, workspace-scoped Screen 2 payload: deterministic risk and '
+        'system-health scores with component contributions, seven-day risk trend '
+        'from real snapshots, recent alerts, bottom metrics, and the '
+        'once-per-day AI-or-deterministic Executive Brief. Read-only: it never '
+        'pauses contracts, edits providers, or executes response actions.'
+    ),
+)
+def ops_dashboard_executive_summary(request: Request) -> dict[str, Any]:
+    # Canonical runtime facts (this call authenticates + scopes internally and
+    # is the shared source of truth for counts, freshness and evidence).
+    runtime_payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
+    canonical_summary = (
+        runtime_payload.get('workspace_monitoring_summary') if isinstance(runtime_payload, dict) else None
+    )
+    background_loop_health = (
+        runtime_payload.get('background_loop_health') if isinstance(runtime_payload, dict) else None
+    )
+
+    now = datetime.now(timezone.utc)
+    # Reuse the existing AI provider abstraction and config. A live provider is
+    # only used when AI triage is enabled; otherwise the offline provider makes
+    # the brief degrade to the deterministic fallback. No second integration.
+    config = ai_triage.triage_config()
+    provider_name = config['provider'] if config.get('enabled') else ''
+    try:
+        provider = ai_triage.get_triage_provider(provider_name)
+    except Exception:
+        provider = None
+
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        workspace_id = str(workspace_context['workspace_id'])
+
+        cached = dashboard_summary.dashboard_cache_get(workspace_id)
+        if cached is not None:
+            return cached
+
+        response = dashboard_summary.build_dashboard_summary(
+            connection,
+            workspace_id=workspace_id,
+            canonical_summary=canonical_summary,
+            background_loop_health=background_loop_health,
+            provider=provider,
+            now=now,
+            model=config.get('model', ''),
+            logger=logger,
+        )
+        connection.commit()
+        dashboard_summary.dashboard_cache_set(workspace_id, response)
+        return response
 
 
 @app.post('/resilience/reconcile/state', summary='Feature 4 cross-chain reconciliation', description='Proxies a reconciliation request to the reconciliation-service and falls back to a deterministic local reconciliation summary if the service is unavailable.')
