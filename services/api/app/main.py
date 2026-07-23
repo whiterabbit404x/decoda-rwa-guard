@@ -24,7 +24,7 @@ from contextlib import asynccontextmanager
 
 import hmac as _hmac_mod
 import uuid as _uuid_mod
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -2606,7 +2606,7 @@ def ops_dashboard_page_data(request: Request) -> dict[str, Any]:
         'pauses contracts, edits providers, or executes response actions.'
     ),
 )
-def ops_dashboard_executive_summary(request: Request) -> dict[str, Any]:
+def ops_dashboard_executive_summary(request: Request, background_tasks: BackgroundTasks = None) -> dict[str, Any]:
     # Canonical runtime facts (this call authenticates + scopes internally and
     # is the shared source of truth for counts, freshness and evidence).
     runtime_payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
@@ -2622,11 +2622,24 @@ def ops_dashboard_executive_summary(request: Request) -> dict[str, Any]:
     # only used when AI triage is enabled; otherwise the offline provider makes
     # the brief degrade to the deterministic fallback. No second integration.
     config = ai_triage.triage_config()
-    provider_name = config['provider'] if config.get('enabled') else ''
+    ai_enabled = bool(config.get('enabled'))
+    provider_name = config['provider'] if ai_enabled else ''
+    model = config.get('model', '')
     try:
         provider = ai_triage.get_triage_provider(provider_name)
     except Exception:
         provider = None
+
+    # When AI is enabled we push brief (re)generation off the request path: the GET
+    # returns the current structured metrics + a deterministic brief immediately and
+    # the AI brief is regenerated in the background, persisted under its state
+    # fingerprinted key for the next request. Only queued on a fingerprint miss
+    # (state changed / no brief yet) — never one model call per page request.
+    schedule_refresh: Any = None
+    if ai_enabled and provider is not None and background_tasks is not None:
+        def schedule_refresh(job: 'dashboard_summary.BriefRefreshJob') -> None:  # type: ignore[no-redef]
+            # job.model already carries the model resolved at request time.
+            background_tasks.add_task(_run_dashboard_brief_refresh, job, provider)
 
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
@@ -2645,12 +2658,28 @@ def ops_dashboard_executive_summary(request: Request) -> dict[str, Any]:
             background_loop_health=background_loop_health,
             provider=provider,
             now=now,
-            model=config.get('model', ''),
+            model=model,
             logger=logger,
+            schedule_refresh=schedule_refresh,
         )
         connection.commit()
         dashboard_summary.dashboard_cache_set(workspace_id, response)
         return response
+
+
+def _run_dashboard_brief_refresh(job: 'dashboard_summary.BriefRefreshJob', provider: Any) -> None:
+    """Background task: regenerate + persist the AI Executive Brief for one key.
+
+    Runs after the response is sent, on its own short-lived connection. Fully
+    guarded: a failure here only means the deterministic brief keeps showing.
+    """
+    try:
+        with pg_connection() as connection:
+            ensure_pilot_schema(connection)
+            dashboard_summary.generate_and_persist_brief(connection, job, provider=provider, logger=logger)
+            connection.commit()
+    except Exception:
+        logger.warning('event=dashboard_brief_background_refresh_failed workspace=%s', job.workspace_id)
 
 
 @app.post('/resilience/reconcile/state', summary='Feature 4 cross-chain reconciliation', description='Proxies a reconciliation request to the reconciliation-service and falls back to a deterministic local reconciliation summary if the service is unavailable.')

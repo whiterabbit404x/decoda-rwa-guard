@@ -198,7 +198,7 @@ export default function DashboardExecutiveSummary({ liveFeed }: Props) {
 
           <div className="execMainGrid execMainGridScreen2">
             <div className="execMainColumn">
-              <RiskTrendChart trend={data.risk_trend} available={data.trend_available} />
+              <RiskTrendChart trend={data.risk_trend} available={data.trend_available} partial={data.trend_partial} />
               <RecentAlertsCard alerts={data.recent_alerts} />
             </div>
             <CoPilotPanel data={data} onOpenBrief={() => setBriefOpen(true)} />
@@ -437,7 +437,11 @@ function ExecutiveBriefCard({ brief, onOpen }: { brief: ExecutiveBrief; onOpen: 
 
 /* ── Risk Trend chart ─────────────────────────────────────────── */
 
-function RiskTrendChart({ trend, available }: { trend: RiskTrendPoint[]; available: boolean }) {
+// Real snapshots only. `available`/`partial` come from the backend, which derives
+// them from real daily points (never fabricated dates or forward-filled scores):
+//   * fewer than 2 real daily points -> "Historical trend not available yet";
+//   * >= 2 points but < 7 days covered -> "Partial data" (window not yet full).
+function RiskTrendChart({ trend, available, partial }: { trend: RiskTrendPoint[]; available: boolean; partial: boolean }) {
   const points = trend.filter((p) => p.captured_at);
   const hasEnough = available && points.length >= 2;
 
@@ -448,7 +452,7 @@ function RiskTrendChart({ trend, available }: { trend: RiskTrendPoint[]; availab
           <p className="sectionEyebrow">Trend</p>
           <h2 className="execSectionTitle">Risk Trend — Last 7 Days</h2>
         </div>
-        {points.length > 0 && points.length < 2 ? <StatusPill label="Partial data" variant="warning" /> : null}
+        {hasEnough && partial ? <StatusPill label="Partial data" variant="warning" /> : null}
       </div>
       {!hasEnough ? (
         <div className="execEmptyState">

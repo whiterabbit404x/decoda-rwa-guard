@@ -24,11 +24,17 @@ max_output_tokens) -> ProviderRawResult`` works, so tests can inject fakes.
 
 from __future__ import annotations
 
+import hashlib
 import json
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 BRIEF_PROMPT_VERSION = 'dashboard-brief-2026-07-1'
-BRIEF_VERSION = 1
+# Bumped 1 -> 2: briefs stored before the canonical active-incident fix were keyed
+# only on the reporting date, so a stale "no open incidents" brief survived a same
+# day incident-state change. v2 keys carry a state fingerprint (see
+# ``brief_state_fingerprint``); bumping the version also forces every previously
+# stored, potentially inconsistent brief to be regenerated on next read.
+BRIEF_VERSION = 2
 
 # Destinations a recommended-focus item may deep-link to. Anything else is
 # coerced to 'monitoring' so the frontend never renders a broken link.
@@ -53,9 +59,52 @@ _SYSTEM_PROMPT = (
 # --------------------------------------------------------------------------
 
 
-def brief_idempotency_key(workspace_id: str, reporting_date: str, prompt_version: str = BRIEF_PROMPT_VERSION) -> str:
-    """Stable key: one brief per workspace per reporting date per prompt version."""
-    return f'{workspace_id}:{reporting_date}:v{BRIEF_VERSION}:{prompt_version}'
+# The canonical state a brief narrates. A change to ANY of these fields makes a
+# previously stored brief stale — its prose can no longer be trusted to match the
+# metrics — so the fingerprint (and therefore the idempotency key) changes and the
+# brief is regenerated. Kept explicit and ordered so the hash is stable/reviewable.
+_FINGERPRINT_FIELDS: tuple[str, ...] = (
+    'active_incidents_now',
+    'critical_high_active_incidents_now',
+    'active_alerts_now',
+    'risk_score',
+    'system_health_score',
+    'telemetry_freshness',
+    'monitoring_state',
+    'schema_version',
+)
+
+
+def brief_state_fingerprint(state: Mapping[str, Any]) -> str:
+    """Deterministic short hash of the canonical state a brief describes.
+
+    Folding the fingerprint into the idempotency key is what makes brief
+    invalidation reliable: when the active-incident count, critical/high count,
+    active-alert count, risk score, health score, telemetry freshness, monitoring
+    operational state, or prompt/brief schema version changes, the key changes and
+    the previously stored brief no longer matches (is treated as stale).
+    """
+    canonical = {field: state.get(field) for field in _FINGERPRINT_FIELDS}
+    blob = json.dumps(canonical, sort_keys=True, separators=(',', ':'), default=str)
+    return hashlib.sha256(blob.encode('utf-8')).hexdigest()[:16]
+
+
+def brief_idempotency_key(
+    workspace_id: str,
+    reporting_date: str,
+    prompt_version: str = BRIEF_PROMPT_VERSION,
+    fingerprint: str = '',
+) -> str:
+    """Versioned, state-aware key for one brief per workspace/date/state.
+
+    The base is ``{workspace}:{date}:v{brief_version}:{prompt_version}``; when a
+    ``fingerprint`` (see :func:`brief_state_fingerprint`) is supplied it is
+    appended, so two same-day requests collapse onto the same row only while the
+    underlying canonical state is unchanged — and a state change yields a distinct
+    key that misses the stale row and regenerates.
+    """
+    base = f'{workspace_id}:{reporting_date}:v{BRIEF_VERSION}:{prompt_version}'
+    return f'{base}:{fingerprint}' if fingerprint else base
 
 
 # --------------------------------------------------------------------------
@@ -148,13 +197,24 @@ def build_brief_evidence(aggregates: dict[str, Any]) -> dict[str, Any]:
             'freshness': aggregates.get('telemetry_freshness', 'unavailable'),
         },
         'alerts': {
+            # active_now == currently-active alerts; created_during_period == new
+            # alerts in the window. Kept separate so the model never conflates
+            # "0 active now" with "0 activity this period" (or vice-versa).
+            'active_now': metrics.get('active_alert_count', 0),
             'active_total': metrics.get('active_alert_count', 0),
+            'created_during_period': aggregates.get('alerts_created_24h', 0),
             'by_severity': aggregates.get('alert_severity_counts', {}),
             'clusters': aggregates.get('alert_cluster_count', 0),
             'delta_7d': deltas.get('active_alert_count'),
         },
         'incidents': {
+            # active_now / critical_high_active_now are the operator-visible current
+            # state; opened/resolved_during_period are reporting-period movement.
+            'active_now': metrics.get('open_incident_count', 0),
             'active_total': metrics.get('open_incident_count', 0),
+            'critical_high_active_now': aggregates.get('incidents_critical_high', 0),
+            'opened_during_period': aggregates.get('incidents_opened_24h', 0),
+            'resolved_during_period': aggregates.get('incidents_resolved_24h', 0),
             'opened_24h': aggregates.get('incidents_opened_24h', 0),
             'resolved_24h': aggregates.get('incidents_resolved_24h', 0),
             'critical_or_high': aggregates.get('incidents_critical_high', 0),
@@ -264,15 +324,13 @@ def build_deterministic_brief(aggregates: dict[str, Any]) -> dict[str, Any]:
         + _delta_phrase(deltas.get('system_health_score'), 'point')
         + '.'
     )
-    if active_alerts or open_incidents:
-        parts.append(f'{active_alerts} active alert(s) and {open_incidents} open incident(s) across monitored assets.')
-    else:
-        parts.append('No active alerts or open incidents in the current window.')
-    top_drivers = risk.get('top_risk_drivers', [])
-    if top_drivers:
-        lead = top_drivers[0]
-        parts.append(f'Primary risk driver: {lead.get("label")} ({lead.get("percent")}% of risk).')
-    summary = ' '.join(parts[:4])
+    # Current state vs reporting-period activity, stated precisely. Never says
+    # "no open incidents in the current window" while incidents are active — the
+    # bug this wording replaces. Assembled from the same aggregates the metric
+    # cards read, so the fallback prose can never contradict the numbers.
+    parts.append(_incident_activity_sentence(aggregates))
+    parts.append(_alert_activity_sentence(aggregates))
+    summary = ' '.join(p for p in parts[:4] if p)
 
     key_findings = _deterministic_findings(aggregates)
     recommended_focus = _deterministic_focus(aggregates)
@@ -291,6 +349,54 @@ def build_deterministic_brief(aggregates: dict[str, Any]) -> dict[str, Any]:
         'model': 'deterministic',
         'prompt_version': BRIEF_PROMPT_VERSION,
     }
+
+
+def _plural(n: int) -> str:
+    return '' if n == 1 else 's'
+
+
+def _incident_activity_sentence(aggregates: dict[str, Any]) -> str:
+    """Precise incident wording: current active state, then period movement.
+
+    Distinguishes *active now* (operator-visible open incidents) from *opened /
+    resolved during the reporting period*. Never claims "no open incidents" while
+    active incidents exist.
+    """
+    metrics = aggregates.get('metrics', {})
+    active = int(metrics.get('open_incident_count', 0) or 0)
+    crit_high = int(aggregates.get('incidents_critical_high', 0) or 0)
+    opened = int(aggregates.get('incidents_opened_24h', 0) or 0)
+    resolved = int(aggregates.get('incidents_resolved_24h', 0) or 0)
+
+    if active > 0:
+        verb = 'is' if active == 1 else 'are'
+        text = f'There {verb} {active} active incident{_plural(active)}'
+        if crit_high > 0:
+            text += f', including {crit_high} critical/high incident{_plural(crit_high)}'
+        if opened > 0 or resolved > 0:
+            return text + f'; {opened} opened and {resolved} resolved during the last 24 hours.'
+        return text + '.'
+    if opened > 0 or resolved > 0:
+        return f'No incidents are currently active; {opened} opened and {resolved} resolved during the last 24 hours.'
+    return 'No incidents are currently active.'
+
+
+def _alert_activity_sentence(aggregates: dict[str, Any]) -> str:
+    """Precise alert wording: current active state and period creations."""
+    metrics = aggregates.get('metrics', {})
+    active = int(metrics.get('active_alert_count', 0) or 0)
+    created = int(aggregates.get('alerts_created_24h', 0) or 0)
+
+    if active > 0:
+        verb = 'is' if active == 1 else 'are'
+        text = f'{active} active alert{_plural(active)} {verb} under review'
+        if created > 0:
+            text += f' ({created} new during the last 24 hours)'
+        return text + '.'
+    if created > 0:
+        verb = 'was' if created == 1 else 'were'
+        return f'No alerts are currently active; {created} new alert{_plural(created)} {verb} created during the last 24 hours.'
+    return 'No new alerts were created during the last 24 hours.'
 
 
 def _delta_phrase(delta: Any, unit: str) -> str:

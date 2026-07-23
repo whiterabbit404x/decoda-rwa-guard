@@ -24,8 +24,9 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 from services.api.app.dashboard_scoring import (
     AlertCluster,
@@ -38,6 +39,7 @@ from services.api.app.dashboard_scoring import (
 from services.api.app.dashboard_executive_brief import (
     BRIEF_PROMPT_VERSION,
     brief_idempotency_key,
+    brief_state_fingerprint,
     build_deterministic_brief,
     generate_executive_brief,
 )
@@ -208,6 +210,15 @@ def gather_dashboard_aggregates(
         (workspace_id, since_24h),
     )
     incidents_resolved_24h = _int(resolved_row.get('c'))
+    # Alerts CREATED during the reporting period — distinct from active-now alerts.
+    # Lets the brief say "N new alerts were created" without implying they are all
+    # still active (or that zero-active means zero-activity).
+    alerts_created_row = _safe_fetchone(
+        connection,
+        "SELECT COUNT(*) AS c FROM alerts WHERE workspace_id = %s AND created_at >= %s",
+        (workspace_id, since_24h),
+    )
+    alerts_created_24h = _int(alerts_created_row.get('c'))
 
     # --- Active monitors + data sources ------------------------------------
     monitor_row = _safe_fetchone(
@@ -290,6 +301,7 @@ def gather_dashboard_aggregates(
         'incident_severities': incident_severities,
         'incidents_opened_24h': incidents_opened_24h,
         'incidents_resolved_24h': incidents_resolved_24h,
+        'alerts_created_24h': alerts_created_24h,
         'incidents_critical_high': incidents_critical_high,
         'proof_chain_incident_count': proof_chain_incident_count,
         'evidence_incomplete_incident_count': evidence_incomplete_incident_count,
@@ -512,18 +524,62 @@ def latest_snapshot(connection: Any, workspace_id: str) -> dict[str, Any]:
 
 
 def build_risk_trend(snapshots: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Real snapshot history only — never synthesize zero-value days as data."""
-    trend: list[dict[str, Any]] = []
+    """Real snapshot history only, aggregated to one point per UTC day.
+
+    Truthfulness guarantees for the seven-day chart:
+
+      * **No fabricated dates.** Only days that have at least one real snapshot
+        appear; a day with no snapshot is simply absent (a gap), never invented.
+      * **No forward-fill / no carried-forward score.** A missing day is not
+        back-filled with the current or previous score.
+      * **Same-day snapshots are never shown as separate days.** When a UTC day
+        has multiple real captures we keep the *latest* one (a single, documented
+        daily aggregation); its real ``captured_at`` is preserved and surfaced,
+        so every plotted point maps to an actual snapshot record.
+
+    ``snapshots`` are expected in ascending ``captured_at`` order.
+    """
+    by_day: dict[str, tuple[datetime, dict[str, Any]]] = {}
     for snap in snapshots:
         captured = _parse_dt(snap.get('captured_at'))
+        if captured is None:
+            continue  # a row without a real timestamp is dropped, never dated.
+        day = captured.astimezone(timezone.utc).date().isoformat()
+        existing = by_day.get(day)
+        if existing is None or captured >= existing[0]:
+            by_day[day] = (captured, snap)
+
+    trend: list[dict[str, Any]] = []
+    for day in sorted(by_day):
+        captured, snap = by_day[day]
         trend.append({
             'captured_at': _iso(captured),
+            'captured_date': day,
             'risk_score': _int(snap.get('risk_score')),
             'health_score': _int(snap.get('health_score')),
             'active_alert_count': _int(snap.get('active_alert_count')),
             'open_incident_count': _int(snap.get('open_incident_count')),
         })
     return trend
+
+
+def compute_trend_meta(trend: list[dict[str, Any]], *, days: int = TREND_DAYS) -> dict[str, Any]:
+    """Derive trend availability + coverage from real daily points only.
+
+      * ``available`` — at least two real daily points exist (a line can be drawn).
+      * ``partial``  — available, but the points cover fewer than ``days`` days, so
+        the "Last 7 Days" window is only partially populated (never padded).
+
+    Fewer than two real points is *not* "partial"; the UI shows "not available
+    yet". This keeps missing history explicit instead of fabricated.
+    """
+    covered = len(trend)
+    available = covered >= 2
+    return {
+        'available': available,
+        'partial': available and covered < days,
+        'days_covered': covered,
+    }
 
 
 def compute_deltas(metrics: dict[str, Any], risk: dict[str, Any], health: dict[str, Any], prev: dict[str, Any]) -> dict[str, Any]:
@@ -589,8 +645,130 @@ def persist_dashboard_snapshot(
 
 
 # --------------------------------------------------------------------------
-# Executive brief: idempotent get-or-create
+# Executive brief: state-aware resolve + background refresh
 # --------------------------------------------------------------------------
+#
+# The brief is keyed on a fingerprint of the canonical state it narrates (active
+# incidents, critical/high incidents, active alerts, risk score, health score,
+# telemetry freshness, monitoring state, schema version). Resolution never blocks
+# the dashboard on the model:
+#
+#   * key HIT  -> return the stored brief (it was generated for this exact state).
+#   * key MISS -> the state changed (or no brief yet). Return a deterministic brief
+#     assembled from the CURRENT aggregates immediately — so displayed prose can
+#     never contradict the metric cards — and, when a real AI provider is available
+#     and a background scheduler was supplied, queue the AI regeneration to persist
+#     under the same key for the next request. Without a scheduler the brief is
+#     generated inline, but only on a miss (bounded by state change, not one model
+#     call per page request).
+
+
+@dataclass
+class BriefRefreshJob:
+    """A queued AI-brief regeneration for one workspace + fingerprinted key."""
+
+    workspace_id: str
+    key: str
+    reporting_date: str
+    aggregates: dict[str, Any]
+    prompt_version: str = BRIEF_PROMPT_VERSION
+    model: str = ''
+
+
+def _fingerprint_values_from_aggregates(aggregates: dict[str, Any], now: datetime) -> dict[str, Any]:
+    """Extract the canonical state fields that define brief staleness.
+
+    Reads exactly the aggregates that drive the Open Incidents card, the
+    critical/high subtitle, Risk Score, Top Risk Drivers and monitoring status, so
+    the fingerprint moves in lockstep with the numbers the customer sees.
+    """
+    metrics = aggregates.get('metrics', {})
+    risk = aggregates.get('risk', {})
+    health = aggregates.get('health', {})
+    data_freshness = derive_data_freshness(aggregates.get('last_telemetry_at'), now)
+    monitoring_state = derive_monitoring_state(aggregates, data_freshness)
+    return {
+        'active_incidents_now': _int(metrics.get('open_incident_count')),
+        'critical_high_active_incidents_now': _int(aggregates.get('incidents_critical_high')),
+        'active_alerts_now': _int(metrics.get('active_alert_count')),
+        'risk_score': _int(risk.get('score')),
+        'system_health_score': _int(health.get('score')),
+        'telemetry_freshness': str(data_freshness.get('status') or 'unavailable'),
+        'monitoring_state': str(monitoring_state.get('state') or 'offline'),
+        'schema_version': f'{BRIEF_PROMPT_VERSION}',
+    }
+
+
+def _finalize_brief(brief: dict[str, Any], aggregates: dict[str, Any], now: datetime) -> dict[str, Any]:
+    brief['generated_at'] = _iso(now)
+    brief['period_start'] = aggregates.get('period_start')
+    brief['period_end'] = aggregates.get('period_end')
+    return brief
+
+
+def resolve_executive_brief(
+    connection: Any,
+    *,
+    workspace_id: str,
+    aggregates: dict[str, Any],
+    provider: Any,
+    now: datetime,
+    model: str = '',
+    prompt_version: str = BRIEF_PROMPT_VERSION,
+    logger: Any = None,
+    persist: bool = True,
+    schedule_refresh: Callable[[BriefRefreshJob], None] | None = None,
+) -> dict[str, Any]:
+    """Return the brief to display now, refreshing (AI) in the background on a miss.
+
+    See the section comment above for the full contract. The returned brief is
+    always consistent with ``aggregates``: on a miss it is the deterministic brief
+    built from the very same aggregates, so it can never contradict the metrics.
+    """
+    reporting_date = now.date().isoformat()
+    fingerprint = brief_state_fingerprint(_fingerprint_values_from_aggregates(aggregates, now))
+    key = brief_idempotency_key(workspace_id, reporting_date, prompt_version, fingerprint)
+
+    existing = _safe_fetchone(
+        connection,
+        "SELECT headline, summary, key_findings, recommended_focus, citations, confidence, "
+        "generation_mode, provider, model, prompt_version, created_at "
+        "FROM dashboard_executive_briefs WHERE workspace_id = %s AND idempotency_key = %s",
+        (workspace_id, key),
+    )
+    if existing:
+        return _row_to_brief(existing, aggregates)
+
+    # MISS: build the deterministic brief from the current aggregates so what we
+    # show right now agrees with the metrics, regardless of any older stored prose.
+    deterministic = _finalize_brief(build_deterministic_brief(aggregates), aggregates, now)
+
+    # Background path: only when a real provider AND a scheduler are available. The
+    # dashboard returns the deterministic brief immediately; the AI brief lands
+    # under `key` for the next request in the same state. We deliberately do NOT
+    # persist the deterministic brief here, so the queued AI brief can take the slot.
+    if provider is not None and schedule_refresh is not None:
+        schedule_refresh(BriefRefreshJob(
+            workspace_id=workspace_id, key=key, reporting_date=reporting_date,
+            aggregates=aggregates, prompt_version=prompt_version, model=model,
+        ))
+        return deterministic
+
+    # Inline path (tests, or AI disabled): reached only on a miss, so it is bounded
+    # by state changes rather than firing on every page request.
+    if provider is not None:
+        brief = _finalize_brief(
+            generate_executive_brief(
+                aggregates=aggregates, provider=provider, model=model,
+                prompt_version=prompt_version, logger=logger,
+            ),
+            aggregates, now,
+        )
+    else:
+        brief = deterministic
+    if persist:
+        _persist_brief(connection, workspace_id=workspace_id, key=key, reporting_date=reporting_date, brief=brief, aggregates=aggregates, now=now)
+    return brief
 
 
 def get_or_create_executive_brief(
@@ -605,39 +783,44 @@ def get_or_create_executive_brief(
     logger: Any = None,
     persist: bool = True,
 ) -> dict[str, Any]:
-    """Return today's brief, generating and storing it once if absent.
+    """Backward-compatible synchronous get-or-create (no background scheduler).
 
-    Idempotent on (workspace_id, reporting_date, brief_version, prompt_version):
-    a second call the same day returns the stored row without re-calling the
-    model. If persistence is unavailable the brief is still generated in-memory
-    so the dashboard renders.
+    Delegates to :func:`resolve_executive_brief`; kept so existing callers/tests
+    that expect a single synchronous generate-and-store keep working.
     """
-    reporting_date = now.date().isoformat()
-    key = brief_idempotency_key(workspace_id, reporting_date, prompt_version)
-
-    existing = _safe_fetchone(
-        connection,
-        "SELECT headline, summary, key_findings, recommended_focus, citations, confidence, "
-        "generation_mode, provider, model, prompt_version, created_at "
-        "FROM dashboard_executive_briefs WHERE workspace_id = %s AND idempotency_key = %s",
-        (workspace_id, key),
+    return resolve_executive_brief(
+        connection, workspace_id=workspace_id, aggregates=aggregates, provider=provider,
+        now=now, model=model, prompt_version=prompt_version, logger=logger, persist=persist,
+        schedule_refresh=None,
     )
-    if existing:
-        return _row_to_brief(existing, aggregates)
 
+
+def generate_and_persist_brief(
+    connection: Any,
+    job: BriefRefreshJob,
+    *,
+    provider: Any,
+    now: datetime | None = None,
+    logger: Any = None,
+) -> dict[str, Any]:
+    """Run a queued brief refresh: generate (AI or deterministic) + persist by key.
+
+    Executed off the request path (background). Idempotent via the INSERT's
+    ``ON CONFLICT DO NOTHING`` — concurrent refreshes for the same key are safe.
+    """
+    now = now or datetime.now(timezone.utc)
     if provider is None:
-        brief = build_deterministic_brief(aggregates)
+        brief = build_deterministic_brief(job.aggregates)
     else:
         brief = generate_executive_brief(
-            aggregates=aggregates, provider=provider, model=model,
-            prompt_version=prompt_version, logger=logger,
+            aggregates=job.aggregates, provider=provider, model=job.model,
+            prompt_version=job.prompt_version, logger=logger,
         )
-    brief['generated_at'] = _iso(now)
-    brief['period_start'] = aggregates.get('period_start')
-    brief['period_end'] = aggregates.get('period_end')
-
-    if persist:
-        _persist_brief(connection, workspace_id=workspace_id, key=key, reporting_date=reporting_date, brief=brief, aggregates=aggregates, now=now)
+    brief = _finalize_brief(brief, job.aggregates, now)
+    _persist_brief(
+        connection, workspace_id=job.workspace_id, key=job.key,
+        reporting_date=job.reporting_date, brief=brief, aggregates=job.aggregates, now=now,
+    )
     return brief
 
 
@@ -865,6 +1048,27 @@ def build_evidence_freshness(
     }
 
 
+def build_activity_block(aggregates: dict[str, Any]) -> dict[str, Any]:
+    """Separate *current state* from *reporting-period activity*.
+
+    The two are never conflated: ``*_now`` fields are the operator-visible current
+    state (what the metric cards show); ``*_during_period`` fields are movement
+    within the last-24h window. A zero in one axis says nothing about the other.
+    """
+    metrics = aggregates.get('metrics', {})
+    return {
+        'period_start': aggregates.get('period_start'),
+        'period_end': aggregates.get('period_end'),
+        'period_label': 'last_24_hours',
+        'active_incidents_now': _int(metrics.get('open_incident_count')),
+        'critical_high_active_incidents_now': _int(aggregates.get('incidents_critical_high')),
+        'incidents_opened_during_period': _int(aggregates.get('incidents_opened_24h')),
+        'incidents_resolved_during_period': _int(aggregates.get('incidents_resolved_24h')),
+        'active_alerts_now': _int(metrics.get('active_alert_count')),
+        'alerts_created_during_period': _int(aggregates.get('alerts_created_24h')),
+    }
+
+
 def build_executive_summary_response(
     *,
     aggregates: dict[str, Any],
@@ -872,6 +1076,7 @@ def build_executive_summary_response(
     health: dict[str, Any],
     brief: dict[str, Any],
     trend: list[dict[str, Any]],
+    trend_meta: dict[str, Any],
     deltas: dict[str, Any],
     now: datetime,
 ) -> dict[str, Any]:
@@ -918,8 +1123,11 @@ def build_executive_summary_response(
             'evidence': evidence,
         },
         'metrics': metrics,
+        'activity': build_activity_block(aggregates),
         'risk_trend': trend,
-        'trend_available': len(trend) > 0,
+        'trend_available': bool(trend_meta.get('available')),
+        'trend_partial': bool(trend_meta.get('partial')),
+        'trend_days_covered': _int(trend_meta.get('days_covered')),
         'recent_alerts': aggregates.get('recent_alerts', []),
         'ai_copilot': {
             'generated_at': brief.get('generated_at'),
@@ -1004,11 +1212,14 @@ def build_dashboard_summary(
     model: str = '',
     logger: Any = None,
     persist: bool = True,
+    schedule_refresh: Callable[[BriefRefreshJob], None] | None = None,
 ) -> dict[str, Any]:
     """End-to-end: gather -> score -> brief -> trend/deltas -> assemble -> persist.
 
     This is the single entry point the endpoint calls. Everything it touches is
-    scoped to ``workspace_id``.
+    scoped to ``workspace_id``. ``schedule_refresh`` (optional) lets the endpoint
+    push AI-brief regeneration off the request path; without it the brief resolves
+    inline (deterministic unless a provider is supplied).
     """
     now = now or datetime.now(timezone.utc)
     aggregates = gather_dashboard_aggregates(
@@ -1023,16 +1234,20 @@ def build_dashboard_summary(
     prev = latest_snapshot(connection, workspace_id)
     snapshots = list_recent_snapshots(connection, workspace_id, now=now)
     trend = build_risk_trend(snapshots)
+    trend_meta = compute_trend_meta(trend)
     deltas = compute_deltas(aggregates['metrics'], risk, health, prev)
+    # Make deltas visible to the brief (delta phrases + evidence) via the same dict.
+    aggregates['deltas'] = deltas
 
-    brief = get_or_create_executive_brief(
+    brief = resolve_executive_brief(
         connection, workspace_id=workspace_id, aggregates=aggregates,
         provider=provider, now=now, model=model, logger=logger, persist=persist,
+        schedule_refresh=schedule_refresh,
     )
 
     response = build_executive_summary_response(
         aggregates=aggregates, risk=risk, health=health, brief=brief,
-        trend=trend, deltas=deltas, now=now,
+        trend=trend, trend_meta=trend_meta, deltas=deltas, now=now,
     )
     if persist:
         persist_dashboard_snapshot(

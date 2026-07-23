@@ -98,10 +98,26 @@ export type ExecMetrics = {
 
 export type RiskTrendPoint = {
   captured_at: string | null;
+  captured_date: string | null;
   risk_score: number;
   health_score: number;
   active_alert_count: number;
   open_incident_count: number;
+};
+
+// Current state vs reporting-period activity — deliberately separate axes so a
+// zero in one never implies a zero in the other. `*_now` fields are what the
+// metric cards show; `*_during_period` fields are movement within the window.
+export type ActivitySummary = {
+  period_start: string | null;
+  period_end: string | null;
+  period_label: string;
+  active_incidents_now: number;
+  critical_high_active_incidents_now: number;
+  incidents_opened_during_period: number;
+  incidents_resolved_during_period: number;
+  active_alerts_now: number;
+  alerts_created_during_period: number;
 };
 
 export type RecentAlert = {
@@ -150,8 +166,11 @@ export type ExecutiveSummary = {
   monitoring_state: MonitoringStatus;
   executive_brief: ExecutiveBrief;
   metrics: ExecMetrics;
+  activity: ActivitySummary;
   risk_trend: RiskTrendPoint[];
   trend_available: boolean;
+  trend_partial: boolean;
+  trend_days_covered: number;
   recent_alerts: RecentAlert[];
   ai_copilot: AiCopilot;
 };
@@ -250,6 +269,24 @@ function mapFocus(value: unknown): RecommendedFocus {
   return { title: str(f.title), reason: str(f.reason), destination: str(f.destination, 'monitoring') };
 }
 
+// Defensive: when the backend omits the activity block (older payload), fall back
+// to the current-state metrics for the `*_now` axis and 0 for period movement —
+// never conflating "no activity this period" with "nothing active now".
+function mapActivity(value: unknown, metrics: Record<string, unknown>): ActivitySummary {
+  const a = rec(value);
+  return {
+    period_start: a.period_start == null ? null : str(a.period_start),
+    period_end: a.period_end == null ? null : str(a.period_end),
+    period_label: str(a.period_label, 'last_24_hours'),
+    active_incidents_now: num(a.active_incidents_now, num(metrics.open_incident_count)),
+    critical_high_active_incidents_now: num(a.critical_high_active_incidents_now, num(metrics.critical_or_high_incident_count)),
+    incidents_opened_during_period: num(a.incidents_opened_during_period),
+    incidents_resolved_during_period: num(a.incidents_resolved_during_period),
+    active_alerts_now: num(a.active_alerts_now, num(metrics.active_alert_count)),
+    alerts_created_during_period: num(a.alerts_created_during_period),
+  };
+}
+
 export function mapExecutiveSummary(raw: unknown): ExecutiveSummary {
   const root = rec(raw);
   const metrics = rec(root.metrics);
@@ -310,10 +347,12 @@ export function mapExecutiveSummary(raw: unknown): ExecutiveSummary {
         open_incident_count: numOrNull(deltas.open_incident_count),
       },
     },
+    activity: mapActivity(root.activity, metrics),
     risk_trend: arr(root.risk_trend).map((p) => {
       const point = rec(p);
       return {
         captured_at: point.captured_at == null ? null : str(point.captured_at),
+        captured_date: point.captured_date == null ? null : str(point.captured_date),
         risk_score: num(point.risk_score),
         health_score: num(point.health_score),
         active_alert_count: num(point.active_alert_count),
@@ -321,6 +360,8 @@ export function mapExecutiveSummary(raw: unknown): ExecutiveSummary {
       };
     }),
     trend_available: Boolean(root.trend_available) && arr(root.risk_trend).length > 0,
+    trend_partial: Boolean(root.trend_partial),
+    trend_days_covered: num(root.trend_days_covered),
     recent_alerts: arr(root.recent_alerts).map((a) => {
       const alert = rec(a);
       return {

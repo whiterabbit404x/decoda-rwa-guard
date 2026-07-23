@@ -235,4 +235,63 @@ test.describe('executive summary data layer', () => {
     expect(formatAgeSeconds(45)).toBe('45s');
     expect(formatAgeSeconds(null)).toBe('unknown');
   });
+
+  // Activity block: current state and reporting-period activity are separate axes.
+  test('activity block separates active-now from reporting-period counts', () => {
+    const data = mapExecutiveSummary(sampleRaw({
+      activity: {
+        period_start: '2026-07-22T12:00:00Z', period_end: '2026-07-23T12:00:00Z', period_label: 'last_24_hours',
+        active_incidents_now: 4, critical_high_active_incidents_now: 4,
+        incidents_opened_during_period: 0, incidents_resolved_during_period: 1,
+        active_alerts_now: 0, alerts_created_during_period: 0,
+      },
+    }));
+    expect(data.activity.active_incidents_now).toBe(4);
+    expect(data.activity.critical_high_active_incidents_now).toBe(4);
+    expect(data.activity.incidents_opened_during_period).toBe(0);
+    expect(data.activity.incidents_resolved_during_period).toBe(1);
+    expect(data.activity.active_alerts_now).toBe(0);
+    expect(data.activity.alerts_created_during_period).toBe(0);
+    expect(data.activity.period_label).toBe('last_24_hours');
+  });
+
+  // Defensive: an absent activity block falls back to current metrics for *_now,
+  // and 0 for period movement — never conflating the two axes.
+  test('activity falls back to current metrics when the block is absent', () => {
+    const data = mapExecutiveSummary(sampleRaw());
+    expect(data.activity.active_incidents_now).toBe(1);
+    expect(data.activity.active_alerts_now).toBe(3);
+    expect(data.activity.incidents_opened_during_period).toBe(0);
+    expect(data.activity.alerts_created_during_period).toBe(0);
+  });
+
+  // Risk trend maps only real, timestamped snapshot points and the backend's
+  // partial/coverage flags — never fabricated dates.
+  test('risk trend preserves real captured_at/date + partial flag, never fabricated', () => {
+    const data = mapExecutiveSummary(sampleRaw({
+      risk_trend: [
+        { captured_at: '2026-07-22T23:30:00Z', captured_date: '2026-07-22', risk_score: 35, health_score: 90, active_alert_count: 1, open_incident_count: 0 },
+        { captured_at: '2026-07-23T08:00:00Z', captured_date: '2026-07-23', risk_score: 50, health_score: 88, active_alert_count: 2, open_incident_count: 1 },
+      ],
+      trend_available: true, trend_partial: true, trend_days_covered: 2,
+    }));
+    expect(data.risk_trend).toHaveLength(2);
+    expect(data.risk_trend[0].captured_at).toBe('2026-07-22T23:30:00Z');
+    expect(data.risk_trend[0].captured_date).toBe('2026-07-22');
+    expect(data.trend_partial).toBe(true);
+    expect(data.trend_days_covered).toBe(2);
+    // Every plotted point is backed by a real captured_at.
+    expect(data.risk_trend.every((p) => p.captured_at != null)).toBe(true);
+  });
+
+  // Fewer than two real snapshots => not available (the UI shows "not available
+  // yet", never a fabricated line).
+  test('single-snapshot trend is not available', () => {
+    const data = mapExecutiveSummary(sampleRaw({
+      risk_trend: [{ captured_at: '2026-07-23T08:00:00Z', captured_date: '2026-07-23', risk_score: 50, health_score: 88, active_alert_count: 0, open_incident_count: 0 }],
+      trend_available: false, trend_partial: false, trend_days_covered: 1,
+    }));
+    expect(data.trend_available).toBe(false);
+    expect(data.trend_partial).toBe(false);
+  });
 });
