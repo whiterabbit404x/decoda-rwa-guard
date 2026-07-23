@@ -11257,12 +11257,90 @@ def _provider_failure_reason(provider_health: dict[str, Any] | None) -> str:
     return err
 
 
+# Canonical reason string the monitoring worker persists when the process-wide RPC
+# backoff (a 429 opened backoff) skips or degrades a scheduled poll. Screen 4 reads it
+# from the SAME newest scheduled snapshot the status/score/route aggregation uses, so a
+# skipped/degraded backoff poll can never read healthy, score 100, or Primary.
+_PROVIDER_BACKOFF_REASON = 'provider_backoff_active'
+
+
+def _provider_backoff_active_signal(
+    *,
+    provider_health: dict[str, Any] | None,
+    provider_meta: dict[str, Any] | None,
+    target: dict[str, Any] | None,
+    system: dict[str, Any] | None,
+    provider_success: bool | None,
+    provider_checked_at: Any = None,
+    now: datetime | None = None,
+    freshness_seconds: float | None = None,
+) -> bool:
+    """True when the newest scheduled poll was skipped/degraded by the RPC backoff.
+
+    Fail-closed and derived from canonical backend facts only:
+      * signal (a): the newest scheduled ``provider_health_records`` snapshot is NOT
+        healthy and its error_message / degraded_reason names the backoff; or
+      * signal (b): the target's (or monitored system's) persisted
+        ``watcher_degraded_reason`` — the skip handler sets that flag even when it writes
+        no provider_health row for a skipped poll, so a run of backoff-skipped polls is
+        still visible when the newest persisted snapshot is a STALE pre-outage success.
+
+    A stale flag never overrides a genuinely FRESH successful poll: signal (b) is
+    suppressed only when the latest observation both succeeded AND is inside the
+    freshness window. A stale healthy snapshot (from before the 429) does NOT clear it —
+    that is exactly the case that made Screen 4 read score 100 during backoff.
+    """
+    from services.api.app import monitoring_health_engine as _he
+
+    # (a) The newest scheduled snapshot itself is a degraded/failed backoff observation.
+    status = str((provider_health or {}).get('status') or '').strip().lower()
+    if status and status != 'healthy':
+        reason_blob = ' '.join(
+            str(part or '').lower()
+            for part in (
+                (provider_health or {}).get('error_message'),
+                (provider_meta or {}).get('degraded_reason'),
+                (provider_meta or {}).get('status_reason_code'),
+                (provider_meta or {}).get('skip_reason'),
+            )
+        )
+        if _PROVIDER_BACKOFF_REASON in reason_blob or 'backoff' in reason_blob:
+            return True
+
+    # (b) The canonical target/system watcher backoff flag.
+    watcher_backoff = False
+    for row in (target, system):
+        if not isinstance(row, dict):
+            continue
+        watcher_status = str(row.get('watcher_source_status') or '').strip().lower()
+        watcher_reason = str(row.get('watcher_degraded_reason') or '').strip().lower()
+        if watcher_reason == _PROVIDER_BACKOFF_REASON or (
+            watcher_status == 'degraded' and 'backoff' in watcher_reason
+        ):
+            watcher_backoff = True
+            break
+    if not watcher_backoff:
+        return False
+
+    # A FRESH successful observation supersedes a stale watcher flag; a stale success
+    # (checked_at outside the freshness window) does not.
+    if provider_success is True:
+        checked = _coerce_datetime(provider_checked_at)
+        if checked is None or now is None or freshness_seconds is None:
+            return False  # no timestamp to judge — treat the success as current (back-compat)
+        age_seconds = (now - _he._as_aware(checked)).total_seconds()
+        if age_seconds <= float(freshness_seconds):
+            return False
+    return True
+
+
 def _derive_source_status(
     target: dict[str, Any],
     system: dict[str, Any] | None,
     *,
     provider_health: dict[str, Any] | None = None,
     recovery_state: str | None = None,
+    provider_backoff_active: bool = False,
 ) -> tuple[str, str | None]:
     """Return (status, reason) from canonical target + monitored-system facts, with
     the LATEST scheduled provider observation taking precedence over a quiet loop.
@@ -11315,6 +11393,13 @@ def _derive_source_status(
     #    "awaiting poll" (the poll already ran and failed).
     if provider_failed:
         return _SOURCE_STATUS_PROVIDER_UNAVAILABLE, _provider_failure_reason(provider_health)
+    # 3b. Provider backoff: the process-wide RPC backoff skipped/degraded the latest
+    #     scheduled poll (a 429 opened backoff). No operational poll occurred this
+    #     cycle, so the source is Provider Unavailable — never "healthy"/"awaiting".
+    #     Uses the SAME canonical backoff signal as the score/route aggregation so the
+    #     status, health score, route count, routing badge and agent panel all agree.
+    if provider_backoff_active:
+        return _SOURCE_STATUS_PROVIDER_UNAVAILABLE, _PROVIDER_BACKOFF_REASON
     # 4. Recovering: prior failure now followed by successful poll(s), before the
     #    required consecutive-success streak is met.
     if recovery_state == 'recovering':
@@ -12224,7 +12309,24 @@ def _build_monitoring_sources_enrichment(
         # engine as success=False so it overrides latency-based scoring.
         has_provider_record = bool(provider_health)
         provider_success: bool | None = (provider_status_raw == 'healthy') if has_provider_record else None
-        endpoint_unavailable = provider_status_raw in {'unavailable', 'error'} or runtime_failed
+        # Provider backoff (process-wide RPC 429 backoff) makes the newest scheduled poll a
+        # SKIPPED / degraded observation — never a healthy, operational one. Read from the
+        # SAME newest scheduled snapshot (+ the target's persisted watcher flag) that the
+        # status/score/route aggregation uses, so Screen 4 can never show a backoff poll as
+        # healthy, score 100, 1 active route, or Primary. Fail-closed.
+        provider_backoff_active = _provider_backoff_active_signal(
+            provider_health=provider_health if has_provider_record else None,
+            provider_meta=provider_meta,
+            target=target,
+            system=system,
+            provider_success=provider_success,
+            provider_checked_at=provider_health.get('checked_at'),
+            now=now,
+            freshness_seconds=thresholds.telemetry_freshness_seconds,
+        )
+        endpoint_unavailable = (
+            provider_status_raw in {'unavailable', 'error'} or runtime_failed or provider_backoff_active
+        )
         # Separate a SUCCESSFUL call's latency from a failed call's elapsed time. Only
         # a successful call has a real response latency; a failed call's ~21 ms elapsed
         # is never shown as healthy latency and never fed to the health engine.
@@ -12337,6 +12439,7 @@ def _build_monitoring_sources_enrichment(
             target, system,
             provider_health=provider_health if has_provider_record else None,
             recovery_state=recovery.get('recovery_state'),
+            provider_backoff_active=provider_backoff_active,
         )
 
         # Evidence/event-detection signal — kept SEPARATE from provider health and
@@ -12367,21 +12470,35 @@ def _build_monitoring_sources_enrichment(
         if status_reason in {'linked_asset_missing', 'monitored_system_missing'}:
             missing_target_links += 1
 
-        # OPERATIONAL routes are not derived from static routing config alone: a source
-        # that successfully polled its provider this cycle HAS an operational primary
-        # route even when the target's rpc_sources metadata is absent. Use the declared
-        # primary when present; otherwise fall back to the observed provider host from a
-        # SUCCESSFUL latest observation so a fresh successful poll never reads 0 routes.
-        route_is_operational = provider_success is True
-        effective_primary_provider = primary_provider or (
-            provider_host if (route_is_operational and provider_host) else None
+        # OPERATIONAL routes require a SUCCESSFUL latest scheduled observation — a route
+        # that is merely CONFIGURED (a declared primary/fallback host) but not succeeding
+        # right now (e.g. provider backoff active) is NOT an operational route and must
+        # never inflate Active Routes or read as Primary. A successful poll HAS an
+        # operational primary route even when rpc_sources metadata is absent: use the
+        # declared primary when present, else the observed provider host from the
+        # SUCCESSFUL observation, so a fresh successful poll never reads 0 routes.
+        route_is_operational = provider_success is True and not provider_backoff_active
+        operational_primary_provider = (
+            (primary_provider or provider_host)
+            if (route_is_operational and (primary_provider or provider_host))
+            else None
         )
-        if effective_primary_provider:
-            primary_host_counts[effective_primary_provider] = primary_host_counts.get(effective_primary_provider, 0) + 1
+        if operational_primary_provider:
+            primary_host_counts[operational_primary_provider] = primary_host_counts.get(operational_primary_provider, 0) + 1
             primary_route_count += 1
         if fallback_provider:
             fallback_host_counts[fallback_provider] = fallback_host_counts.get(fallback_provider, 0) + 1
             fallback_route_count += 1
+        # Routing badge value, consistent with the operational-route truth: 'primary' only
+        # when the primary route is operational; 'unavailable' when a route is configured
+        # but none is operational this cycle (backoff / provider down); None when nothing is
+        # configured. 'primary'/'fallback' always imply a real operational route.
+        if operational_primary_provider:
+            routing_value: str | None = 'primary'
+        elif primary_provider or fallback_provider:
+            routing_value = 'unavailable'
+        else:
+            routing_value = None
         if routing_explanation and latest_routing_decision is None:
             latest_routing_decision = routing_explanation
 
@@ -12454,9 +12571,18 @@ def _build_monitoring_sources_enrichment(
             'address_kind': address_kind,
             'provider': provider_host,
             'primary_provider': primary_provider,
+            # Configured (declared) primary provider — the route the operator set — kept
+            # DISTINCT from the operational provider so Screen 4 can show "Configured:
+            # Alchemy / Operational: None" during a provider outage.
+            'configured_primary_provider': primary_provider,
             # The operational primary provider reflects real evidence: the declared
-            # primary, or the observed provider host from a successful latest poll.
-            'operational_primary_provider': effective_primary_provider,
+            # primary, or the observed provider host from a successful latest poll. None
+            # when no route is operational this cycle (e.g. provider backoff active).
+            'operational_primary_provider': operational_primary_provider,
+            # Canonical process-wide RPC backoff signal for this source, from the same
+            # newest scheduled snapshot as status/score/routes — the UI shows "Reason:
+            # Provider backoff active" from it.
+            'provider_backoff_active': provider_backoff_active,
             'fallback_provider': fallback_provider,
             'source_type': target.get('monitoring_mode') or target.get('target_type'),
             'status': status,
@@ -12510,7 +12636,7 @@ def _build_monitoring_sources_enrichment(
             'last_telemetry_at': last_telemetry_at,
             'provider_checked_at': _isoformat_or_none(provider_health.get('checked_at')),
             'provider_health_record_id': provider_health.get('id') or None,
-            'routing': 'primary' if effective_primary_provider else ('fallback' if fallback_provider else None),
+            'routing': routing_value,
             'routing_explanation': routing_explanation,
             'coverage_state': coverage.get('coverage_status') or (system or {}).get('coverage_reason'),
             'evidence_source': evidence_source,
@@ -14003,6 +14129,7 @@ def list_targets(request: Request) -> dict[str, Any]:
                    t.chain_id, t.target_metadata,
                    t.monitoring_enabled, t.monitoring_mode, t.monitoring_interval_seconds, t.severity_threshold, t.auto_create_alerts, t.auto_create_incidents,
                    t.notification_channels, t.last_checked_at, t.last_run_status, t.last_run_id, t.last_alert_at, t.monitored_by_workspace_id, t.is_active,
+                   t.watcher_source_status, t.watcher_degraded_reason,
                    t.created_at, t.updated_at,
                    a.id AS resolved_asset_id, a.name AS asset_name,
                    ms.id AS monitored_system_id

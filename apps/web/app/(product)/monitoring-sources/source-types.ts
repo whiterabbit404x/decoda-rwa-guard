@@ -34,8 +34,15 @@ export type SourceRow = {
   scan_duration_ms?: number | null;
   rpc_successful_sample_count?: number | null;
   // The operational primary provider reflects real evidence (declared route, or the
-  // observed provider host from a successful latest poll).
+  // observed provider host from a successful latest poll). Null when no route is
+  // operational this cycle (e.g. provider backoff active).
   operational_primary_provider?: string | null;
+  // The configured (declared) primary provider — kept distinct from the operational one
+  // so the UI can show "Configured: Alchemy / Operational: None" during an outage.
+  configured_primary_provider?: string | null;
+  // Canonical process-wide RPC backoff signal (a 429 opened backoff) for this source,
+  // from the same newest scheduled snapshot as status/score/routes.
+  provider_backoff_active?: boolean | null;
   provider_health_record_id?: string | null;
   // P95 is only populated once enough measured samples exist. p95_insufficient=true
   // means the UI must show "Insufficient samples", never a fabricated number.
@@ -54,7 +61,10 @@ export type SourceRow = {
   last_heartbeat?: string | null;
   last_telemetry_at?: string | null;
   provider_checked_at?: string | null;
-  routing?: 'primary' | 'fallback' | null;
+  // 'primary'/'fallback' always imply a real OPERATIONAL route; 'unavailable' means a
+  // route is configured but none is operational this cycle (e.g. provider backoff);
+  // null means no route is configured.
+  routing?: 'primary' | 'fallback' | 'unavailable' | null;
   routing_explanation?: string | null;
   coverage_state?: string | null;
   evidence_source?: string | null;

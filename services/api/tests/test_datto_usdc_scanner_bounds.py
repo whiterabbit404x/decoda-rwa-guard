@@ -485,3 +485,97 @@ def test_production_shaped_datto_poll_is_bounded():
     assert target['_evm_poll_terminal_status'] in {'complete', 'partial', 'degraded'}
     # Real Transfer telemetry was produced from the receipt logs (no runaway).
     assert any(e.payload.get('event_type') == 'transfer' for e in events)
+
+
+# ===========================================================================
+# Strict production canary budget + terminal poll-safety summary.
+# (task PRODUCTION SAFETY 4 + 5; task tests 7, 8, 9, 10, 11.)
+# ===========================================================================
+import re as _re
+
+
+def _canary_budget(monkeypatch) -> None:
+    """The strict production-canary budget from the task (5 / 500 / 5 / 30 / 30s)."""
+    monkeypatch.setenv('MAX_BLOCKS_PER_TARGET_PER_CYCLE', '5')
+    monkeypatch.setenv('MAX_LOGS_PER_TARGET_PER_CYCLE', '500')
+    monkeypatch.setenv('MAX_TX_ENRICHMENTS_PER_TARGET_PER_CYCLE', '5')
+    monkeypatch.setenv('MAX_RPC_CALLS_PER_TARGET_PER_CYCLE', '30')
+    monkeypatch.setenv('MAX_POLL_DURATION_SECONDS', '30')
+    monkeypatch.setenv('MONITORING_RPC_MAX_CALLS_PER_MINUTE', '60')
+    monkeypatch.setenv('HISTORICAL_BACKFILL_ENABLED', 'false')
+
+
+def _parse_safety_summary(text: str) -> dict:
+    m = _re.search(r'event=monitoring_poll_safety_summary (.+)', text)
+    assert m is not None, 'every poll must emit a terminal safety summary'
+    return dict(kv.split('=', 1) for kv in m.group(1).split() if '=' in kv)
+
+
+def test_canary_budget_resolves_five_thirty_five(monkeypatch):
+    """Task tests 7/8/9: the canary env yields max_blocks=5, max_rpc_calls=30, max_tx=5."""
+    _canary_budget(monkeypatch)
+    budget = load_poll_budget()
+    assert budget.max_blocks == 5
+    assert budget.max_rpc_calls == 30
+    assert budget.max_tx_enrichments == 5
+    assert budget.max_duration_seconds == 30
+    limits = eap.resolved_scanner_limits()
+    assert limits['max_blocks_per_target_per_cycle'] == 5
+    assert limits['max_rpc_calls_per_target_per_cycle'] == 30
+    assert limits['max_tx_enrichments_per_target_per_cycle'] == 5
+    assert limits['historical_backfill_enabled'] is False
+
+
+def test_canary_block_limit_five_enforced(monkeypatch):
+    """Task test 7: the scanner never queries more than 5 blocks under the canary budget."""
+    _canary_budget(monkeypatch)
+    rpc = _UsdcRpc(latest=48_960_245, logs_per_block=40)
+    target = _contract_target(cursor=None)
+    fetch_evm_activity(target, None, rpc_client=rpc)
+    for frm, to in rpc.getlogs_ranges:
+        assert to - frm + 1 <= 5, f'canary must query <=5 blocks, got {to - frm + 1}'
+
+
+def test_canary_poll_emits_bounded_terminal_safety_summary(monkeypatch, caplog):
+    """Task tests 8/9/10: one terminal safety summary, within the canary acceptance limits."""
+    _canary_budget(monkeypatch)
+    rpc = _UsdcRpc(latest=48_960_245, logs_per_block=40)
+    target = _contract_target(cursor=None)
+    with caplog.at_level('INFO'):
+        fetch_evm_activity(target, None, rpc_client=rpc)
+    f = _parse_safety_summary(caplog.text)
+    assert f['workspace_id'] == WORKSPACE_ID
+    assert f['target_id'] == target['id']
+    assert int(f['blocks_queried']) <= 5           # acceptance: blocks_queried <= 5
+    assert int(f['rpc_calls_total']) <= 30          # acceptance: rpc_calls_total <= 30
+    assert int(f['transaction_enrichments']) <= 5   # acceptance: enrichments <= 5
+    assert float(f['poll_duration_seconds']) <= 30  # acceptance: duration <= 30s
+    assert f['terminal_status'] in {'completed', 'partial', 'failed'}
+    assert f['cursor_after'] != 'unknown', 'the terminal cursor must be persisted'
+
+
+def test_every_poll_emits_exactly_one_safety_summary(monkeypatch, caplog):
+    """Task test 10: exactly one terminal safety summary per poll (production defaults)."""
+    rpc = _UsdcRpc(latest=48_960_245, logs_per_block=40)
+    with caplog.at_level('INFO'):
+        fetch_evm_activity(_contract_target(cursor=None), None, rpc_client=rpc)
+    assert caplog.text.count('event=monitoring_poll_safety_summary') == 1
+
+
+def test_backoff_skip_summary_is_not_a_completed_canary(caplog):
+    """Task test 11: a provider-backoff skip emits terminal_status=skipped with zero work —
+    never 'completed', so a skip can never be counted as a successful canary."""
+    with caplog.at_level('INFO'):
+        eap.emit_poll_safety_summary(
+            workspace_id=WORKSPACE_ID,
+            target_id='9c6ecabb-cd52-404f-9859-40567b09dbb4',
+            terminal_status='skipped', blocks_queried=0, log_query_count=0, logs_received=0,
+            logs_processed=0, transaction_enrichments=0, rpc_calls_total=0,
+            poll_duration_seconds=0, cursor_before=100, cursor_after=100,
+            reason='provider_backoff_active',
+        )
+    f = _parse_safety_summary(caplog.text)
+    assert f['terminal_status'] == 'skipped'
+    assert f['terminal_status'] != 'completed'
+    assert f['blocks_queried'] == '0' and f['rpc_calls_total'] == '0'
+    assert f['reason'] == 'provider_backoff_active'

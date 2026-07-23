@@ -22,6 +22,7 @@ from services.api.app.activity_providers import (
 )
 from services.api.app.evm_activity_provider import (
     JsonRpcClient,
+    emit_poll_safety_summary,
     evaluate_chain_mismatch,
     resolve_monitored_wallet,
     rpc_metrics_capture,
@@ -34,6 +35,7 @@ from services.api.app.monitoring_truth import (
     ui_evidence_state,
     ui_truthfulness_state,
 )
+from services.api.app.monitoring_canary import resolve_canary_config
 from services.api.app.monitoring_reliability import MonitoringSLOs, evaluate_monitoring_slos, monitoring_slo_snapshot
 from services.api.app.monitorable_target_types import (
     is_monitorable_target_type,
@@ -4372,6 +4374,27 @@ def process_monitoring_target(
             'provider_poll_skipped target_id=%s workspace_id=%s reason=provider_backoff_active backoff_until=%s',
             target.get('id'), target.get('workspace_id'), _backoff_until or 'unknown',
         )
+        # Every poll attempt ends with exactly one terminal safety summary. A backoff
+        # SKIP performed no scan: zero blocks/logs/RPC calls, cursor unchanged, and
+        # terminal_status=skipped — so a skipped poll can never be counted as a
+        # successful canary (CLAUDE.md: a skip is never live customer evidence).
+        _skip_cursor = int(target.get('watcher_last_observed_block') or 0)
+        emit_poll_safety_summary(
+            logger,
+            workspace_id=target.get('workspace_id'),
+            target_id=target.get('id'),
+            terminal_status='skipped',
+            blocks_queried=0,
+            log_query_count=0,
+            logs_received=0,
+            logs_processed=0,
+            transaction_enrichments=0,
+            rpc_calls_total=0,
+            poll_duration_seconds=0,
+            cursor_before=_skip_cursor,
+            cursor_after=_skip_cursor,
+            reason='provider_backoff_active',
+        )
         connection.execute(
             '''
             UPDATE targets
@@ -6017,6 +6040,33 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 due_target_ids = _filtered_due_ids
                 _filtered_due_str = {str(t) for t in due_target_ids}
                 due_system_ids = {k: v for k, v in due_system_ids.items() if k in _filtered_due_str}
+        # Strict production canary: when canary mode is active, ONLY allowlisted targets
+        # are polled this cycle. Every other configured target stays configured but is
+        # excluded from the due slots (never polled during the canary). Resolved from env
+        # config only — no target id is hard-coded into this normal production path.
+        _canary = resolve_canary_config()
+        if _canary.enabled and due_target_ids:
+            _canary_kept: list[Any] = []
+            _canary_excluded = 0
+            for _tid in due_target_ids:
+                if _canary.is_target_allowed(_tid):
+                    _canary_kept.append(_tid)
+                else:
+                    _canary_excluded += 1
+                    logger.info(
+                        'event=monitoring_canary_target_excluded worker=%s target_id=%s '
+                        'reason=not_in_canary_allowlist allowed_target_count=%s',
+                        worker_name, _tid, _canary.allowed_target_count,
+                    )
+            if _canary_excluded:
+                due_target_ids = _canary_kept
+                _canary_kept_str = {str(t) for t in due_target_ids}
+                due_system_ids = {k: v for k, v in due_system_ids.items() if k in _canary_kept_str}
+                logger.info(
+                    'event=monitoring_canary_due_selection worker=%s allowed_target_count=%s '
+                    'excluded=%s remaining_due=%s',
+                    worker_name, _canary.allowed_target_count, _canary_excluded, len(due_target_ids),
+                )
         for workspace_id, entries in sorted(due_selection_workspace_snapshot.items()):
             soonest_entries = sorted(
                 entries,

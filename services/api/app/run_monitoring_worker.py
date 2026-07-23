@@ -153,6 +153,19 @@ def _compute_next_sleep_seconds(
     return max(float(min_sleep_seconds), next_sleep_seconds)
 
 
+def _disabled_idle_sleep_seconds() -> float:
+    """Seconds a DISABLED worker idles between no-op wakeups.
+
+    A disabled worker performs zero monitoring work and zero network calls; it only keeps
+    the process (and its /health endpoint) alive so the platform sees a healthy, idle
+    service. Configurable via WORKER_DISABLED_IDLE_SECONDS; floored at 1s.
+    """
+    try:
+        return max(1.0, float(os.getenv('WORKER_DISABLED_IDLE_SECONDS', '60')))
+    except (TypeError, ValueError):
+        return 60.0
+
+
 def _rpc_recheck_backoff_seconds() -> float:
     """Initial backoff between RPC health rechecks while the worker is unhealthy.
 
@@ -535,6 +548,9 @@ def _resolve_boot_configuration() -> dict[str, Any]:
     return {
         'worker_enabled': bool(worker_state['enabled']),
         'worker_enabled_source': worker_state['source'],
+        # True only for an EXPLICIT WORKER_ENABLED=false (the operator kill switch), as
+        # distinct from "disabled because no enabling flag is set" (a misconfiguration).
+        'worker_explicit_disable': bool(worker_state.get('explicit_disable')),
         'live_mode_enabled': bool(_live_mode_enabled()),
         'database_configured': bool((os.getenv('DATABASE_URL') or '').strip()),
         'rpc_configured': bool(rpc_url),
@@ -640,6 +656,51 @@ def main() -> int:
     )
 
     # ---------------------------------------------------------------------------
+    # KILL SWITCH. An EXPLICIT WORKER_ENABLED=false is the unambiguous operator kill:
+    # it is authoritative (no LIVE_MODE_ENABLED / STAGING_WORKER_ENABLED / other flag can
+    # re-enable it) and the worker must perform ZERO monitoring work and ZERO provider
+    # network calls — no startup RPC health check, no due selection, no target polls, no
+    # event scanning. It MAY expose /health so the platform sees a healthy, idle process.
+    # This is evaluated BEFORE the startup RPC probe and the monitoring loop, in EVERY
+    # runtime (including --once and non-production), so a killed worker never reaches the
+    # network. This is the fix for the production incident where a truthy WORKER_ENABLED
+    # kept the worker polling despite STAGING_WORKER_ENABLED=false — the operator must set
+    # WORKER_ENABLED=false, and now that stops everything.
+    #
+    # A worker disabled merely because NO enabling flag is set (worker_enabled_source=
+    # none) is a misconfiguration, NOT an intentional kill: it falls through to the
+    # start-blocked evaluation below (which fails the deploy loudly in production).
+    # ---------------------------------------------------------------------------
+    if _boot_config.get('worker_explicit_disable'):
+        logger.warning(
+            'event=monitoring_worker_start_blocked reason=worker_disabled '
+            'worker_enabled_source=%s network_attempted=false',
+            _boot_config['worker_enabled_source'],
+        )
+        if args.once:
+            # Single-cycle / diagnostic invocation: return cleanly, never touching the
+            # network. run_monitoring_cycle / probe_rpc_health are never reached.
+            logger.info(
+                'event=monitoring_worker_disabled_exit reason=worker_disabled '
+                'worker_enabled_source=%s network_attempted=false once=true',
+                _boot_config['worker_enabled_source'],
+            )
+            return 0
+        # Expose the health endpoint so the platform healthcheck passes, then idle with no
+        # monitoring work and no provider calls. The process stays up but does nothing.
+        _health_port_raw = (os.getenv('PORT') or '').strip()
+        _health_port = int(_health_port_raw) if _health_port_raw.isdigit() else 8000
+        _start_health_server(_health_port, logger)
+        logger.info(
+            'event=monitoring_worker_idle_disabled reason=worker_disabled '
+            'worker_enabled_source=%s network_attempted=false',
+            _boot_config['worker_enabled_source'],
+        )
+        _idle_seconds = _disabled_idle_sleep_seconds()
+        while True:
+            time.sleep(_idle_seconds)
+
+    # ---------------------------------------------------------------------------
     # Fail loudly when a required production configuration is missing. In a
     # production-like runtime a missing prerequisite is a hard, non-recoverable
     # misconfiguration: exit non-zero so Railway marks the deployment failed
@@ -674,6 +735,13 @@ def main() -> int:
     _start_health_server(_health_port, logger)
     logger.info('monitoring worker starting')
     logger.info('startup_git_commit_sha service_role=worker git_commit_sha=%s', _resolve_git_commit_sha() or 'unavailable')
+    # Prove, from logs alone, exactly which hard scanner ceilings this deployment enforces
+    # (production defaults or a tightened canary) and which canary posture is active. No
+    # secrets — only the resolved numeric limits and the allowed-target COUNT.
+    from services.api.app.evm_activity_provider import log_scanner_limits_resolved
+    from services.api.app.monitoring_canary import log_canary_mode_resolved
+    log_scanner_limits_resolved(logger)
+    log_canary_mode_resolved(logger)
     _startup_status = _log_startup_provider_status(logger)
     rpc_healthy_at_startup = bool(_startup_status.get('rpc_health_ok'))
     identity = runtime_environment_identity()
