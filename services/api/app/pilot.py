@@ -59,6 +59,44 @@ from services.api.app.credential_rotation import (
     next_rotation_at as calculate_next_rotation_at,
 )
 
+# ---------------------------------------------------------------------------
+# P1: Decomposed modules — re-exported for backward compatibility
+# ---------------------------------------------------------------------------
+from services.api.app.audit_helpers import (  # noqa: E402
+    utc_now,
+    utc_now_iso,
+    _json_safe_value,
+    _json_dumps,
+    log_audit,
+)
+from services.api.app.startup_validation import (  # noqa: E402
+    STARTUP_BOOTSTRAP_ENV,
+    env_flag,
+    _safe_int_env,
+    database_url,
+    resolve_db_backend,
+    runtime_mode_config_summary,
+    runtime_environment_identity,
+    live_mode_enabled,
+    pilot_mode,
+    auth_token_secret_configured,
+    token_secret,
+    billing_provider,
+    billing_runtime_status,
+    _billing_unavailable_detail,
+    ensure_billing_available,
+    paddle_runtime_config,
+    validate_runtime_configuration,
+)
+from services.api.app.rbac_helpers import (  # noqa: E402
+    ROLE_VALUES,
+    ROLE_CANONICAL_MAP,
+    WORKSPACE_PERMISSIONS,
+    DEFAULT_ROLE_PERMISSIONS,
+    _normalize_workspace_role,
+    _workspace_permission_granted,
+)
+
 _ACTIVE_DB_CONNECTIONS = 0
 _ACTIVE_DB_CONNECTIONS_LOCK = threading.Lock()
 
