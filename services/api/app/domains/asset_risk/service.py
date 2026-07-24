@@ -315,6 +315,7 @@ def gather_inputs(
         price_stale_seconds=int(config['price_stale_seconds']),
         governance_signals=governance_signals,
         contract_discovery_failed=contract_discovery_failed,
+        contract_applicable=has_contract,
         recent_high_severity_findings=recent_high,
         recent_anomaly_events=0,
         provider_failures=0,

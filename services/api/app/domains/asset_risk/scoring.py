@@ -57,7 +57,12 @@ RESERVE_WARNING = 'warning'
 RESERVE_CRITICAL = 'critical'
 RESERVE_INSUFFICIENT = 'insufficient_evidence'
 RESERVE_OVER_COLLATERALIZED = 'over_collateralized'
-RESERVE_NOT_REQUIRED = 'not_required'
+# Reserve backing does not apply to this asset shape (e.g. a plain wallet or a
+# non-reserve RWA type). This must never be presented as "missing reserve
+# evidence" — it is simply out of scope for that asset. RESERVE_NOT_REQUIRED is
+# retained as a backward-compatible alias of the same concept.
+RESERVE_NOT_APPLICABLE = 'not_applicable'
+RESERVE_NOT_REQUIRED = RESERVE_NOT_APPLICABLE
 
 # Market statuses.
 MARKET_BASELINE_LEARNING = 'baseline_learning'
@@ -200,6 +205,10 @@ class AssetRiskInputs:
     # Signal keys from GOVERNANCE_SIGNAL_WEIGHTS that are present for this asset.
     governance_signals: list[str] = field(default_factory=list)
     contract_discovery_failed: bool = False
+    # Whether this asset has an on-chain contract at all. A plain wallet (EOA)
+    # has no contract/governance surface, so that dimension is not applicable and
+    # must not dilute (or inflate) the score.
+    contract_applicable: bool = False
 
     # --- Recent abnormal activity ---------------------------------------
     recent_high_severity_findings: int = 0
@@ -252,13 +261,20 @@ class ScoreDimension:
     weight: Decimal
     contribution: Decimal
     findings: list[dict[str, Any]] = field(default_factory=list)
+    # Whether this dimension applies to the asset. Not-applicable dimensions are
+    # excluded from the weighted composite (their weight is redistributed) so an
+    # asset is never penalized — or credited — for evidence that cannot apply.
+    applicable: bool = True
+    effective_weight: Decimal = Decimal('0')
 
     def to_dict(self) -> dict[str, Any]:
         return {
             'key': self.key,
             'score': self.score,
             'weight': float(self.weight),
+            'effective_weight': float(self.effective_weight),
             'contribution': float(self.contribution),
+            'applicable': self.applicable,
             'findings': self.findings,
         }
 
@@ -292,10 +308,10 @@ class AssetRiskResult:
 def evaluate_reserve(inputs: AssetRiskInputs) -> ReserveResult:
     if not inputs.reserve_required:
         return ReserveResult(
-            status=RESERVE_NOT_REQUIRED,
+            status=RESERVE_NOT_APPLICABLE,
             risk_score=0,
             evidence_fresh=True,
-            reason='Reserve backing is not required for this asset type.',
+            reason='Reserve backing does not apply to this asset type.',
         )
 
     reserve = _to_decimal(inputs.reserve_value_usd)
@@ -552,32 +568,61 @@ def evaluate_recent_activity(inputs: AssetRiskInputs) -> int:
 # --------------------------------------------------------------------------
 # Confidence
 # --------------------------------------------------------------------------
+def dimension_applicability(inputs: AssetRiskInputs) -> dict[str, bool]:
+    """Which weighted dimensions apply to this asset.
+
+    Monitoring coverage and recent activity always apply. Reserve, market, and
+    oracle-freshness apply to value-bearing tokens (a reserve requirement or a
+    configured price source). Contract/governance applies only when the asset has
+    an on-chain contract or produced governance signals. A plain wallet therefore
+    is scored on monitoring + activity, not penalized for a reserve or price feed
+    it will never have."""
+    market_relevant = bool(inputs.price_source_configured or inputs.reserve_required)
+    return {
+        'reserve_backing': bool(inputs.reserve_required),
+        'market_valuation': market_relevant,
+        'monitoring_coverage': True,
+        'oracle_feed_freshness': market_relevant,
+        'contract_governance': bool(
+            inputs.contract_applicable or inputs.governance_signals or inputs.contract_discovery_failed
+        ),
+        'recent_activity': True,
+    }
+
+
 def evaluate_confidence(
     inputs: AssetRiskInputs,
     reserve: ReserveResult,
     market: MarketResult,
     monitoring: MonitoringResult,
+    applicability: dict[str, bool] | None = None,
 ) -> tuple[float, float]:
     """Return (confidence, data_completeness), both in [0, 1] rounded to 3 dp.
 
     Confidence is deliberately separate from the risk score: a high risk score
     computed from thin evidence should carry LOW confidence so the UI can be
-    honest about uncertainty.
+    honest about uncertainty. Not-applicable dimensions neither raise nor lower
+    confidence — an asset is never marked "incomplete" for evidence it can't have.
     """
-    # Data completeness — fraction of the evidence categories we actually have.
-    categories = []
+    applic = applicability or dimension_applicability(inputs)
+    market_applies = applic.get('market_valuation', True)
+
+    # Data completeness — fraction of the *applicable* evidence categories we have.
+    categories: list[bool] = []
     categories.append(monitoring.health not in (HEALTH_UNKNOWN, HEALTH_NOT_CONFIGURED))
-    categories.append(market.status not in (MARKET_NO_PRICE, MARKET_BASELINE_LEARNING))
+    if market_applies:
+        categories.append(market.status not in (MARKET_NO_PRICE, MARKET_BASELINE_LEARNING))
     if inputs.reserve_required:
         categories.append(reserve.status not in (RESERVE_INSUFFICIENT,))
-    categories.append(not inputs.contract_discovery_failed)
+    if applic.get('contract_governance', False):
+        categories.append(not inputs.contract_discovery_failed)
     categories.append(inputs.has_monitoring_target)
     completeness = sum(1 for c in categories if c) / len(categories) if categories else 0.0
 
     confidence = 1.0
-    if market.status == MARKET_NO_PRICE:
+    if market_applies and market.status == MARKET_NO_PRICE:
         confidence -= 0.15
-    if market.status == MARKET_BASELINE_LEARNING:
+    if market_applies and market.status == MARKET_BASELINE_LEARNING:
         confidence -= 0.10
     if inputs.reserve_required and reserve.status == RESERVE_INSUFFICIENT:
         confidence -= 0.20
@@ -648,12 +693,24 @@ def compute_asset_risk(inputs: AssetRiskInputs) -> AssetRiskResult:
         'recent_activity': [],
     }
 
+    applicability = dimension_applicability(inputs)
+    applicable_weight_total = sum(
+        (DIMENSION_WEIGHTS[k] for k, ok in applicability.items() if ok), Decimal('0')
+    )
+
     dimensions: list[ScoreDimension] = []
     total = Decimal('0')
     for key, weight in DIMENSION_WEIGHTS.items():
         score = _clamp_int(dimension_scores[key])
-        contribution = (Decimal(score) * weight).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-        total += contribution
+        is_applicable = applicability.get(key, True)
+        # Redistribute not-applicable weight across the applicable dimensions so
+        # the composite always reflects a full 100% of the relevant risk surface.
+        effective_weight = (
+            (weight / applicable_weight_total) if (is_applicable and applicable_weight_total > 0) else Decimal('0')
+        )
+        contribution = (Decimal(score) * effective_weight).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        if is_applicable:
+            total += contribution
         dimensions.append(
             ScoreDimension(
                 key=key,
@@ -661,6 +718,8 @@ def compute_asset_risk(inputs: AssetRiskInputs) -> AssetRiskResult:
                 weight=weight,
                 contribution=contribution,
                 findings=dimension_findings.get(key, []),
+                applicable=is_applicable,
+                effective_weight=effective_weight.quantize(Decimal('0.0001')),
             )
         )
 
@@ -673,7 +732,7 @@ def compute_asset_risk(inputs: AssetRiskInputs) -> AssetRiskResult:
     floor = _severity_floor(reserve, market)
     risk_score = max(weighted_score, floor)
     risk_level = risk_level_for_score(risk_score)
-    confidence, completeness = evaluate_confidence(inputs, reserve, market, monitoring)
+    confidence, completeness = evaluate_confidence(inputs, reserve, market, monitoring, applicability)
 
     return AssetRiskResult(
         risk_score=risk_score,

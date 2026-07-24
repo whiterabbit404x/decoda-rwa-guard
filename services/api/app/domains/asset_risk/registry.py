@@ -109,6 +109,11 @@ def attach_risk_and_filter(
         a['custodian'] = a.get('custodian')
         a['value_usd'] = _num(a.get('value_usd'))
         a['active_findings_count'] = int(finding_counts.get(aid, 0))
+        # Whether reserve backing applies to this asset at all (type-driven or a
+        # configured feed). A wallet / non-reserve asset must never be described as
+        # missing reserve evidence — its reserve status is "not applicable".
+        reserve_required = arc.reserve_required_for(rwa_type, a.get('reserve_feed_type'))
+        a['reserve_required'] = reserve_required
         if assessment is not None:
             a['risk_score'] = int(assessment['risk_score']) if assessment.get('risk_score') is not None else None
             a['risk_level'] = assessment.get('risk_level')
@@ -124,7 +129,10 @@ def attach_risk_and_filter(
             a['risk_score'] = None
             a['risk_level'] = 'unassessed'
             a['confidence'] = None
-            a['reserve_status'] = None
+            # Unassessed non-reserve assets are "not applicable", not "unknown" —
+            # reserve simply does not apply. Reserve-backed assets stay null until
+            # an assessment runs (frontend renders that as pending, not verified).
+            a['reserve_status'] = None if reserve_required else 'not_applicable'
             a['reserve_coverage_percent'] = None
             a['assessment_status'] = 'not_assessed'
             a['last_assessed_at'] = None
@@ -305,10 +313,21 @@ def validate_registry_payload(payload: dict[str, Any]) -> dict[str, Any]:
         except (ValueError, TypeError):
             bad('reserve_update_interval_seconds', 'Update interval must be a whole number of seconds.')
 
+    token_decimals = payload.get('token_decimals')
+    token_decimals_val = None
+    if token_decimals not in (None, ''):
+        try:
+            token_decimals_val = int(token_decimals)
+        except (ValueError, TypeError):
+            bad('token_decimals', 'Token decimals must be a whole number.')
+        if token_decimals_val is not None and (token_decimals_val < 0 or token_decimals_val > 36):
+            bad('token_decimals', 'Token decimals must be between 0 and 36.')
+
     return {
         'rwa_asset_type': rwa_asset_type,
         'custodian': (str(payload.get('custodian') or '').strip() or None),
         'token_symbol': (str(payload.get('token_symbol') or payload.get('asset_symbol') or '').strip() or None),
+        'token_decimals': token_decimals_val,
         'price_source': (str(payload.get('price_source') or '').strip() or None),
         'reserve_feed_type': reserve_feed_type,
         'reserve_feed_identifier': reserve_feed_identifier,
@@ -360,6 +379,7 @@ def persist_registry_fields(
             rwa_asset_type = COALESCE(%s, rwa_asset_type),
             custodian = COALESCE(%s, custodian),
             token_symbol = COALESCE(%s, token_symbol),
+            token_decimals = COALESCE(%s, token_decimals),
             price_source = COALESCE(%s, price_source),
             reserve_feed_type = %s,
             reserve_feed_identifier = COALESCE(%s, reserve_feed_identifier),
@@ -375,7 +395,7 @@ def persist_registry_fields(
         WHERE id = %s AND workspace_id = %s
         ''',
         (
-            fields['rwa_asset_type'], fields['custodian'], fields['token_symbol'], fields['price_source'],
+            fields['rwa_asset_type'], fields['custodian'], fields['token_symbol'], fields['token_decimals'], fields['price_source'],
             fields['reserve_feed_type'], fields['reserve_feed_identifier'], fields['reserve_min_coverage_ratio'],
             fields['reserve_update_interval_seconds'], fields['value_usd'], fields['reserve_value_usd'],
             fields['reference_price_usd'], fields['circulating_supply'], user_id, asset_id, workspace_id,

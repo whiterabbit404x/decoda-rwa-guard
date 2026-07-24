@@ -5,8 +5,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { usePilotAuth } from './pilot-auth-context';
 import { StatusPill } from './components/ui-primitives';
 import {
-  formatPercent,
+  assessmentStatusLabel,
+  assessmentStatusVariant,
   relativeTime,
+  reserveCoverageMessage,
   reserveStatusLabel,
   reserveStatusVariant,
 } from './asset-risk-presentation';
@@ -15,13 +17,25 @@ type ReserveCoverage = {
   coverage_percent: number | null;
   status: string;
   assets_included: number;
+  reserve_backed_count?: number;
   last_verified_at: string | null;
+};
+
+type WorkerHealth = {
+  enabled: boolean;
+  queued: number;
+  running: number;
+  failed: number;
+  last_completed_at: string | null;
+  last_error: string | null;
+  last_error_at: string | null;
 };
 
 type RiskSummary = {
   total_assets: number;
   total_protected_value_usd: number;
   assessed_assets: number;
+  reserve_backed_count?: number;
   risk_level_counts: { low: number; medium: number; high: number; critical: number };
   reserve_coverage: ReserveCoverage;
   anomaly_warnings: { assets: number; highest_severity: string | null };
@@ -30,12 +44,18 @@ type RiskSummary = {
   latest_assessment_at: string | null;
   data_completeness: number;
   confidence: number;
+  assessment_status?: string;
+  worker?: WorkerHealth;
   ai_summary: string;
   ai_summary_source: string;
 };
 
 type Props = {
   refreshSignal?: number;
+  // Parent-driven on-demand assessment (parent owns the asset list + auth).
+  onRunAssessment?: () => Promise<void> | void;
+  assessmentRunning?: boolean;
+  assessmentProgress?: string;
   onViewReport?: () => void;
   onFilterAnomalies?: () => void;
   onFilterGaps?: () => void;
@@ -67,7 +87,10 @@ function ReserveRing({ percent, variant }: { percent: number | null; variant: st
   );
 }
 
-export default function AssetRiskAssessorPanel({ refreshSignal, onViewReport, onFilterAnomalies, onFilterGaps }: Props) {
+export default function AssetRiskAssessorPanel({
+  refreshSignal, onRunAssessment, assessmentRunning, assessmentProgress,
+  onViewReport, onFilterAnomalies, onFilterGaps,
+}: Props) {
   const { authHeaders, signOut } = usePilotAuth();
   const [summary, setSummary] = useState<RiskSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -127,6 +150,50 @@ export default function AssetRiskAssessorPanel({ refreshSignal, onViewReport, on
         </div>
       ) : (
         <>
+          {/* Assessment status + on-demand run */}
+          {(() => {
+            const status = summary.assessment_status ?? (summary.assessed_assets > 0 ? 'complete' : 'not_started');
+            const worker = summary.worker;
+            const running = Boolean(assessmentRunning) || status === 'running' || (worker?.running ?? 0) > 0;
+            const disabled = running || summary.total_assets === 0 || !onRunAssessment;
+            const pending = Math.max(0, summary.total_assets - summary.assessed_assets);
+            return (
+              <section className="assessorSection">
+                <h3 className="assessorSectionTitle">Assessment</h3>
+                <div className="assessorStatusRow">
+                  <StatusPill label={assessmentStatusLabel(status)} variant={assessmentStatusVariant(status)} />
+                  <span className="assessorMeta">{summary.assessed_assets}/{summary.total_assets} assessed</span>
+                </div>
+                <p className="assessorMeta">
+                  {summary.latest_assessment_at
+                    ? `Last completed ${relativeTime(summary.latest_assessment_at)}`
+                    : 'No assessment has completed yet.'}
+                </p>
+                {onRunAssessment ? (
+                  <button
+                    type="button"
+                    className="btn btn-primary assessorRunBtn"
+                    disabled={disabled}
+                    aria-busy={running}
+                    onClick={() => { void onRunAssessment(); }}
+                  >
+                    {running
+                      ? (assessmentProgress || 'Running assessment…')
+                      : pending > 0 ? `Run assessment (${pending} pending)` : 'Run assessment'}
+                  </button>
+                ) : null}
+                {worker && !worker.enabled ? (
+                  <p className="assessorMeta assessorWorkerNote">
+                    Background assessment worker is disabled. Assessments run on demand when you click Run.
+                  </p>
+                ) : null}
+                {worker?.last_error ? (
+                  <p className="assessorMeta assessorWorkerError">Last worker error: {worker.last_error}</p>
+                ) : null}
+              </section>
+            );
+          })()}
+
           {/* Reserve Coverage */}
           <section className="assessorSection">
             <h3 className="assessorSectionTitle">Reserve Coverage</h3>
@@ -135,13 +202,14 @@ export default function AssetRiskAssessorPanel({ refreshSignal, onViewReport, on
               <div>
                 <StatusPill label={reserveStatusLabel(summary.reserve_coverage.status)} variant={reserveStatusVariant(summary.reserve_coverage.status)} />
                 <p className="assessorMeta">
-                  {summary.reserve_coverage.assets_included} asset{summary.reserve_coverage.assets_included === 1 ? '' : 's'} with verified reserves
+                  {reserveCoverageMessage(summary.reserve_coverage.status, summary.reserve_coverage.reserve_backed_count ?? summary.reserve_backed_count ?? 0)
+                    || `${summary.reserve_coverage.assets_included} asset${summary.reserve_coverage.assets_included === 1 ? '' : 's'} with verified reserves`}
                 </p>
-                <p className="assessorMeta">
-                  {summary.reserve_coverage.status === 'insufficient_evidence'
-                    ? 'Coverage cannot be verified for the current set.'
-                    : `Last verified ${relativeTime(summary.reserve_coverage.last_verified_at)}`}
-                </p>
+                {summary.reserve_coverage.coverage_percent !== null ? (
+                  <p className="assessorMeta">
+                    {summary.reserve_coverage.assets_included} asset{summary.reserve_coverage.assets_included === 1 ? '' : 's'} with verified reserves · last verified {relativeTime(summary.reserve_coverage.last_verified_at)}
+                  </p>
+                ) : null}
               </div>
             </div>
           </section>

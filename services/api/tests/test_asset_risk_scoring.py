@@ -88,10 +88,59 @@ def test_over_collateralization_is_flagged_not_auto_healthy():
     assert r.risk_score > 0
 
 
-def test_reserve_not_required_is_neutral():
+def test_reserve_not_required_is_not_applicable():
+    # A non-reserve asset (e.g. a wallet) reports "not applicable" — never
+    # "insufficient evidence" and never a scored 0 that would read as verified.
     r = s.evaluate_reserve(_healthy_inputs(reserve_required=False))
-    assert r.status == s.RESERVE_NOT_REQUIRED
+    assert r.status == s.RESERVE_NOT_APPLICABLE
+    assert r.status == s.RESERVE_NOT_REQUIRED  # backward-compatible alias
     assert r.risk_score == 0
+
+
+# --------------------------------------------------------------------------
+# Dimension applicability — wallets are not penalized for evidence they can't have
+# --------------------------------------------------------------------------
+def _wallet_inputs(controls, has_target):
+    return s.AssetRiskInputs(
+        reserve_required=False,
+        price_source_configured=False,
+        contract_applicable=False,
+        monitoring_controls=controls,
+        has_monitoring_target=has_target,
+    )
+
+
+def test_wallet_reserve_market_contract_are_not_applicable():
+    result = s.compute_asset_risk(_wallet_inputs([('monitoring_target', True, True), ('recent_telemetry', True, True)], True))
+    by_key = {d.key: d for d in result.dimensions}
+    for k in ('reserve_backing', 'market_valuation', 'oracle_feed_freshness', 'contract_governance'):
+        assert by_key[k].applicable is False
+        assert by_key[k].effective_weight == Decimal('0')
+    # Monitoring + activity carry the whole (renormalized) weight.
+    assert by_key['monitoring_coverage'].applicable is True
+    assert by_key['recent_activity'].applicable is True
+    # A fully-monitored wallet is low risk.
+    assert result.risk_level == 'low'
+
+
+def test_wallet_with_no_monitoring_is_not_low_risk():
+    # The truthfulness invariant: an unmonitored wallet must NOT read low just
+    # because reserve/market/contract dimensions score 0. Not-applicable weight is
+    # redistributed to monitoring, so the gap dominates the score.
+    result = s.compute_asset_risk(_wallet_inputs([('monitoring_target', True, False)], False))
+    assert result.risk_score >= 60
+    assert result.risk_level in ('high', 'critical')
+    # Reserve/market must not appear as a scored 0 dulling the composite.
+    by_key = {d.key: d for d in result.dimensions}
+    assert by_key['reserve_backing'].applicable is False
+
+
+def test_partially_monitored_wallet_is_not_diluted_to_low():
+    # Half-covered monitoring (~50) would blend to ~21 (low) under fixed weights;
+    # with renormalization it stays medium+.
+    result = s.compute_asset_risk(_wallet_inputs([('monitoring_target', True, True), ('recent_telemetry', True, False)], True))
+    assert result.risk_level in ('medium', 'high', 'critical')
+    assert result.risk_score >= 30
 
 
 # --------------------------------------------------------------------------

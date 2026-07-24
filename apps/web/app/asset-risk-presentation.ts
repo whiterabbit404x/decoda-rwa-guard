@@ -78,7 +78,9 @@ export function reserveStatusLabel(status: string | null | undefined): string {
     case 'critical': return 'Critical';
     case 'over_collateralized': return 'Over-collateralized';
     case 'insufficient_evidence': return 'Insufficient evidence';
-    case 'not_required': return 'Not required';
+    case 'not_configured': return 'Not configured';
+    case 'not_applicable':
+    case 'not_required': return 'Not applicable';
     default: return 'Unknown';
   }
 }
@@ -90,7 +92,66 @@ export function reserveStatusVariant(status: string | null | undefined): PillVar
     case 'over_collateralized': return 'warning';
     case 'critical': return 'danger';
     case 'insufficient_evidence': return 'neutral';
+    case 'not_configured': return 'neutral';
+    case 'not_applicable':
     case 'not_required': return 'info';
+    default: return 'neutral';
+  }
+}
+
+// Human-readable message for the reserve-coverage state on the AI panel. Uses
+// structured values only — never invents a percentage.
+export function reserveCoverageMessage(status: string | null | undefined, reserveBackedCount = 0): string {
+  switch ((status || '').toLowerCase()) {
+    case 'not_configured':
+      return reserveBackedCount > 0
+        ? 'Reserve coverage cannot be verified for the current asset set.'
+        : 'No reserve-backed assets are configured.';
+    case 'insufficient_evidence':
+      return 'Reserve-backed assets exist but have no verified reserve evidence.';
+    case 'not_applicable':
+    case 'not_required':
+      return 'Reserve coverage does not apply to the current asset set.';
+    case 'critical':
+      return 'Aggregate reserve coverage is below the required minimum.';
+    case 'warning':
+      return 'Aggregate reserve coverage is slightly below target.';
+    default:
+      return '';
+  }
+}
+
+// Assessment lifecycle status (workspace rollup or per-asset).
+export type AssessmentStatus =
+  | 'not_started' | 'not_assessed' | 'queued' | 'running' | 'complete' | 'completed'
+  | 'partial' | 'degraded' | 'failed' | 'stale';
+
+export function assessmentStatusLabel(status: string | null | undefined): string {
+  switch ((status || '').toLowerCase()) {
+    case 'not_started':
+    case 'not_assessed': return 'Not started';
+    case 'queued': return 'Queued';
+    case 'running': return 'Running';
+    case 'complete':
+    case 'completed': return 'Complete';
+    case 'partial': return 'Partial';
+    case 'degraded': return 'Degraded';
+    case 'failed': return 'Failed';
+    case 'stale': return 'Stale';
+    default: return 'Unknown';
+  }
+}
+
+export function assessmentStatusVariant(status: string | null | undefined): PillVariant {
+  switch ((status || '').toLowerCase()) {
+    case 'complete':
+    case 'completed': return 'success';
+    case 'running':
+    case 'queued': return 'info';
+    case 'partial':
+    case 'degraded':
+    case 'stale': return 'warning';
+    case 'failed': return 'danger';
     default: return 'neutral';
   }
 }
@@ -109,6 +170,19 @@ const RWA_TYPE_LABELS: Record<string, string> = {
 };
 
 export const RWA_TYPE_OPTIONS = Object.entries(RWA_TYPE_LABELS).map(([value, label]) => ({ value, label }));
+
+// RWA product types whose value is a claim on off-chain reserves — reserve
+// backing is required for these (mirrors backend RWA_ASSET_TYPES.reserve_required).
+// real_estate / other have no on-chain liability model, so reserve config is
+// optional there.
+export const RESERVE_BACKED_RWA_TYPES = new Set<string>([
+  'tokenized_treasury', 'stablecoin', 'money_market_fund', 'fund_share',
+  'corporate_bond', 'private_credit', 'invoice_financing', 'commodity',
+]);
+
+export function isReserveBackedRwaType(value: string | null | undefined): boolean {
+  return RESERVE_BACKED_RWA_TYPES.has((value || '').toLowerCase());
+}
 
 export function rwaTypeLabel(value: string | null | undefined, fallback?: string | null): string {
   const key = (value || '').toLowerCase();

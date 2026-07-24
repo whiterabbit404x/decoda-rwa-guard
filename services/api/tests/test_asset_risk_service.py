@@ -236,6 +236,32 @@ def test_assess_asset_persists_snapshot_and_returns_score():
     assert out['alerts_created'] == 0
 
 
+def test_assess_wallet_reserve_is_not_applicable_and_not_diluted():
+    # A plain wallet (no reserve, no token contract, no price source) must be
+    # assessed on its monitoring coverage — reserve is "not applicable", and the
+    # score is not diluted to "low" by unscored reserve/market dimensions.
+    now = _now()
+    conn = FakeConn(matchers=[
+        ('EXISTS(SELECT 1 FROM targets', [{'has_target': True, 'has_system': True, 'has_telemetry': False, 'telemetry_fresh': False}]),
+        ('FROM asset_valuation_snapshots', [{'n': 0, 'mean_30d': None, 'std_30d': None, 'mean_7d': None}]),
+        ('FROM alerts', [{'n': 0}]),
+        ('SELECT id, occurrence_count FROM alerts', []),
+        ('SELECT id, finding_type, alert_id FROM asset_risk_findings', []),
+    ])
+    row = _asset_row(
+        rwa_asset_type='other', reserve_feed_type='none', reserve_value_usd=None,
+        token_contract_address=None, price_source='', reference_price_usd=None,
+        circulating_supply=None, value_usd=None, verification_status='unknown',
+    )
+    gathered = service.gather_inputs(conn, workspace_id='ws-1', asset_row=row, config=_cfg(), now=now)
+    assert gathered['inputs'].contract_applicable is False
+    out = service.assess_asset(conn, workspace_id='ws-1', asset_row=row, config=_cfg(), trigger_source='manual', now=now)
+    assert out['reserve_status'] == scoring.RESERVE_NOT_APPLICABLE
+    # Not diluted to low: half-covered monitoring keeps the score at medium+.
+    assert out['risk_level'] in ('medium', 'high', 'critical')
+    assert conn.writes_matching('INSERT INTO asset_risk_assessments')
+
+
 def _cfg():
     return {
         'baseline_days': 30, 'min_baseline_samples': 5, 'reserve_stale_seconds': 86400,

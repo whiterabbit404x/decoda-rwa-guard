@@ -7490,7 +7490,9 @@ a.mktTrustBadge:hover {
  * ──────────────────────────────────────────────────────────────────────── */
 .assetsRegistryLayout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
+  /* Table ~72-76%, AI panel ~24-28% (clamped so it stays readable and never
+     collapses). Panel min 340px keeps typography legible on smaller desktops. */
+  grid-template-columns: minmax(0, 1fr) clamp(340px, 27%, 440px);
   gap: 1.5rem;
   align-items: start;
 }
@@ -7503,12 +7505,18 @@ a.mktTrustBadge:hover {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  padding: 1.25rem;
 }
 .assessorHeader { border-bottom: 1px solid var(--border); padding-bottom: 0.75rem; margin-bottom: 0.25rem; }
-.assessorSection { padding: 0.75rem 0; border-bottom: 1px solid var(--border); }
+.assessorSection { padding: 0.85rem 0; border-bottom: 1px solid var(--border); }
 .assessorSection:last-of-type { border-bottom: none; }
-.assessorSectionTitle { margin: 0 0 0.6rem; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-secondary); }
-.assessorMeta { margin: 0.2rem 0 0; font-size: 0.78rem; color: var(--text-secondary); }
+.assessorSectionTitle { margin: 0 0 0.6rem; font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-secondary); }
+.assessorMeta { margin: 0.25rem 0 0; font-size: 0.82rem; color: var(--text-secondary); line-height: 1.45; }
+.assessorStatusRow { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.15rem; flex-wrap: wrap; }
+.assessorRunBtn { width: 100%; margin-top: 0.6rem; }
+.assessorRunBtn:disabled { opacity: 0.55; cursor: not-allowed; }
+.assessorWorkerNote { color: var(--text-muted); font-style: italic; }
+.assessorWorkerError { color: var(--danger-fg, #f87171); }
 .reserveCoverageRow { display: flex; gap: 1rem; align-items: center; }
 .reserveRing { position: relative; width: 96px; height: 96px; flex: 0 0 auto; }
 .reserveRingLabel { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 1.15rem; color: var(--text-primary); }
@@ -7576,6 +7584,21 @@ a.mktTrustBadge:hover {
 .findingRow { display: flex; gap: 0.6rem; align-items: flex-start; padding: 0.5rem 0; border-bottom: 1px dashed var(--border); }
 .findingRow:last-child { border-bottom: none; }
 .drawerActions { display: flex; gap: 0.5rem; margin-top: 1rem; flex-wrap: wrap; }
+
+/* Compact runtime status strip (Screen 3): collapse the global monitoring
+ * checklist/health/timeline into an expandable section so Protected Assets
+ * starts higher on the page without discarding any monitoring information. */
+.runtimeSummaryDetails { margin-top: 0.5rem; }
+.runtimeSummaryToggle {
+  cursor: pointer; list-style: none; user-select: none;
+  font-size: 0.78rem; color: var(--text-secondary);
+  padding: 0.4rem 0.65rem; border: 1px solid var(--border); border-radius: 6px;
+  display: inline-flex; align-items: center; gap: 0.4rem; background: var(--surface-subtle);
+}
+.runtimeSummaryToggle::-webkit-details-marker { display: none; }
+.runtimeSummaryToggle::before { content: '▸'; font-size: 0.7rem; transition: transform 120ms ease; }
+.runtimeSummaryDetails[open] .runtimeSummaryToggle::before { transform: rotate(90deg); }
+.runtimeSummaryToggle:hover { color: var(--text-primary); border-color: var(--accent-blue); }
 
 @media (max-width: 1024px) {
   .assetsRegistryLayout { grid-template-columns: minmax(0, 1fr); }

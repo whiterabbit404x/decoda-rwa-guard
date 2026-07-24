@@ -11050,6 +11050,8 @@ def list_assets(request: Request) -> dict[str, Any]:
             '''
             SELECT id, name, description, asset_type, chain_network, identifier, asset_class, risk_tier, owner_team, notes, enabled,
                    rwa_asset_type, custodian, value_usd, token_symbol,
+                   price_source, reserve_feed_type, reserve_feed_identifier, reserve_min_coverage_ratio,
+                   reserve_update_interval_seconds, reserve_value_usd, reserve_verified_at, reference_price_usd,
                    issuer_name, asset_symbol, asset_identifier, token_contract_address, token_decimals, token_name, token_standard, chainlink_feeds, custody_wallets, treasury_ops_wallets, oracle_sources, venue_labels,
                    expected_counterparties, expected_flow_patterns, expected_approval_patterns, expected_liquidity_baseline,
                    expected_oracle_freshness_seconds, expected_oracle_update_cadence_seconds, policy_tags, jurisdiction_tags,
