@@ -71,9 +71,13 @@ export async function GET(request: Request): Promise<Response> {
     headers.set('X-Workspace-Id', workspaceId);
   }
 
+  // Forward the registry query string (search / filters / sort / pagination) so
+  // filtering stays server-side.
+  const incomingQuery = new URL(request.url).search;
+
   try {
     const response = await fetchWithTimeout(
-      `${backendApiUrl}/assets`,
+      `${backendApiUrl}/assets${incomingQuery}`,
       { method: 'GET', headers, cache: 'no-store' },
       PROXY_TIMEOUT_MS,
     );

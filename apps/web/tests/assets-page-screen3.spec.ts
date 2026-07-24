@@ -1,6 +1,10 @@
 /**
  * Screen 3 – Assets / Protected Asset Registry
  * Source-level contract tests (no browser required).
+ *
+ * The design-contract assertions (title, columns, filters) reflect the current
+ * Screen 3 (risk registry + AI Asset Risk Assessor). The truthfulness / monitoring
+ * fail-closed assertions are INVARIANTS and must never be relaxed.
  */
 import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
@@ -29,6 +33,11 @@ test('assets manager renders page title "Protected Assets"', () => {
   expect(managerSrc).toContain('Protected Assets');
 });
 
+// 2b. Subtitle reflects the risk-scoring registry
+test('page subtitle describes AI risk scoring and monitoring coverage', () => {
+  expect(managerSrc).toContain('AI risk scoring and monitoring coverage for all protected assets.');
+});
+
 // 3. "Add Asset" primary button exists
 test('assets manager has "Add Asset" button', () => {
   expect(managerSrc).toContain('Add Asset');
@@ -41,27 +50,38 @@ test('assets manager has search input with correct placeholder', () => {
   expect(managerSrc).toContain('aria-label="Search assets"');
 });
 
-// 5. Asset type filter with all required options
-test('assets manager has asset type filter with all required options', () => {
+// 5. Asset type filter uses the RWA product taxonomy plus risk/monitoring filters
+test('assets manager has RWA asset type filter with "All Types" plus RWA options', () => {
   expect(managerSrc).toContain('All Types');
-  expect(managerSrc).toContain('Wallet');
-  expect(managerSrc).toContain('Smart Contract');
-  expect(managerSrc).toContain('Treasury Vault');
-  expect(managerSrc).toContain('Tokenized RWA');
-  expect(managerSrc).toContain('Stablecoin / Cash');
-  expect(managerSrc).toContain('Other');
+  expect(managerSrc).toContain('RWA_TYPE_OPTIONS');
   expect(managerSrc).toContain('aria-label="Filter by asset type"');
+  expect(managerSrc).toContain('aria-label="Filter by risk level"');
+  expect(managerSrc).toContain('aria-label="Filter by monitoring health"');
 });
 
-// 6. Table has exactly the required 7 columns
-test('assets table headers are exactly Name, Type, Network, Value / Exposure, Status, Monitoring, Next Action', () => {
-  expect(managerSrc).toContain("'Name'");
-  expect(managerSrc).toContain("'Type'");
+// 6. Table has the Screen 3 registry columns
+test('assets table headers are Asset Name, Asset Type, Custodian, Network, Value (USD), Risk Score, Monitoring Health', () => {
+  expect(managerSrc).toContain("'Asset Name'");
+  expect(managerSrc).toContain("'Asset Type'");
+  expect(managerSrc).toContain("'Custodian'");
   expect(managerSrc).toContain("'Network'");
-  expect(managerSrc).toContain("'Value / Exposure'");
-  expect(managerSrc).toContain("'Status'");
-  expect(managerSrc).toContain("'Monitoring'");
-  expect(managerSrc).toContain("'Next Action'");
+  expect(managerSrc).toContain("'Value (USD)'");
+  expect(managerSrc).toContain("'Risk Score'");
+  expect(managerSrc).toContain("'Monitoring Health'");
+});
+
+// 6b. Risk score badge + tooltip + AI Assessor panel are present
+test('registry renders a risk badge with tooltip and the AI Asset Risk Assessor panel', () => {
+  expect(managerSrc).toContain('RiskBadge');
+  expect(managerSrc).toContain('RISK_SCORE_TOOLTIP');
+  expect(managerSrc).toContain('AssetRiskAssessorPanel');
+});
+
+// 6c. Server-side pagination is wired through the query string
+test('registry uses server-side query params and pagination', () => {
+  expect(managerSrc).toContain('/api/assets?');
+  expect(managerSrc).toContain('page_size');
+  expect(managerSrc).toContain('window.history.replaceState');
 });
 
 // 7. "Monitoring attached" label never appears anywhere in source
@@ -114,9 +134,4 @@ test('assets source does not label simulator data as live_provider', () => {
 test('empty state shows "No protected assets yet" with correct message', () => {
   expect(managerSrc).toContain('No protected assets yet');
   expect(managerSrc).toContain('Add your first wallet, smart contract, treasury vault, or tokenized RWA to begin monitoring.');
-});
-
-// Regression: subtitle matches spec
-test('page subtitle is "Manage your protected real-world assets."', () => {
-  expect(managerSrc).toContain('Manage your protected real-world assets.');
 });
