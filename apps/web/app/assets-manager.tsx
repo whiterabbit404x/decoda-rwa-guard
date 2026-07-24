@@ -13,6 +13,7 @@ import {
   RISK_SCORE_TOOLTIP,
   RWA_TYPE_OPTIONS,
   getAssetAssessmentDisplayState,
+  assessmentStatusTooltip,
   isReserveBackedRwaType,
   formatPercent,
   formatUsd,
@@ -53,6 +54,29 @@ const DEFAULT_FILTERS: Filters = {
 };
 const PAGE_SIZE = 25;
 
+// The canonical monitoring-gap filter value. "View assets with gaps" filters the
+// registry to monitoring-gap assets (no linked target => not_configured), which is
+// how the wallet with a missing target linkage surfaces — never as an anomaly.
+export const MONITORING_GAP_FILTER = 'not_configured';
+
+// Pure, testable filter -> query string. The registry list request AND the URL
+// (history.replaceState) are both built from this, so a filter like the
+// monitoring-gap link round-trips through the URL and survives a refresh.
+export function buildAssetsQuery(filters: Filters): string {
+  const params = new URLSearchParams();
+  if (filters.search) params.set('search', filters.search);
+  if (filters.asset_type !== 'all') params.set('asset_type', filters.asset_type);
+  if (filters.network !== 'all') params.set('network', filters.network);
+  if (filters.risk_level !== 'all') params.set('risk_level', filters.risk_level);
+  if (filters.monitoring_health !== 'all') params.set('monitoring_health', filters.monitoring_health);
+  if (filters.custodian !== 'all') params.set('custodian', filters.custodian);
+  params.set('sort', filters.sort);
+  params.set('dir', filters.dir);
+  params.set('page', String(filters.page));
+  params.set('page_size', String(PAGE_SIZE));
+  return params.toString();
+}
+
 // Technical monitoring taxonomy value (backend ASSET_TYPES). RWA product type is
 // captured separately in rwa_asset_type. Default 'contract' — RWA tokens are
 // on-chain contracts and 'contract' is a valid backend asset_type.
@@ -70,6 +94,35 @@ const QUICK_PRESETS = [
 ] as const;
 
 const ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
+
+// Human-readable names + not-applicable rationale for the canonical scoring
+// dimensions (services/api/.../scoring.py DIMENSION_WEIGHTS). The drawer explains
+// every dimension so the headline score is never an unexplained number.
+const DIMENSION_LABELS: Record<string, string> = {
+  reserve_backing: 'Reserve backing',
+  market_valuation: 'Market valuation',
+  monitoring_coverage: 'Monitoring coverage',
+  oracle_feed_freshness: 'Oracle / feed freshness',
+  contract_governance: 'Contract governance',
+  recent_activity: 'Recent activity',
+};
+
+const DIMENSION_NA_REASON: Record<string, string> = {
+  reserve_backing: 'Reserve backing does not apply — this asset has no on-chain liability to reserve against.',
+  market_valuation: 'Market valuation does not apply — no priced token liability for this asset.',
+  oracle_feed_freshness: 'Oracle / feed freshness does not apply — no price/oracle feed is required for this asset.',
+  contract_governance: 'No on-chain contract to assess for governance exposure.',
+};
+
+// Extract the human-readable reason/evidence a dimension carries (if any) from the
+// persisted scoring findings, without inventing text.
+function dimensionReason(dim: any): string {
+  const findings = Array.isArray(dim?.findings) ? dim.findings : [];
+  const reasons = findings
+    .map((f: any) => (f && typeof f === 'object' ? (f.reason || (f.signal ? `signal: ${String(f.signal).replace(/_/g, ' ')}` : '')) : ''))
+    .filter((s: string) => s);
+  return reasons.join('; ');
+}
 
 function assetTypeLabel(type: string): string {
   switch (type?.toLowerCase()) {
@@ -190,7 +243,7 @@ function monitoringHealthTooltip(health: string): string {
   switch ((health || '').toLowerCase()) {
     case 'healthy': return 'Monitoring is live and telemetry is fresh.';
     case 'warning': return 'Monitoring is degraded — telemetry is missing or stale.';
-    case 'critical': return 'Monitoring coverage is critically incomplete.';
+    case 'critical': return 'Critical monitoring gaps require attention — coverage is critically incomplete.';
     case 'degraded': return 'A provider failed or evidence is stale; showing last known state.';
     case 'provisioning': return 'Monitoring is being provisioned.';
     case 'not_configured': return 'No monitoring target is linked to this asset yet.';
@@ -230,7 +283,9 @@ function AssessmentCell({ asset }: { asset: Asset }) {
   const lastAssessed = asset.last_assessed_at as string | null | undefined;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem', alignItems: 'flex-start' }}>
-      <StatusPill label={display.statusLabel} variant={display.statusVariant} />
+      <span title={assessmentStatusTooltip(status)}>
+        <StatusPill label={display.statusLabel} variant={display.statusVariant} />
+      </span>
       <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }} title={lastAssessed ? `Last assessed ${new Date(lastAssessed).toLocaleString()}` : 'This asset has not been assessed yet.'}>
         {lastAssessed ? relativeTime(lastAssessed) : 'never'}
       </span>
@@ -302,20 +357,7 @@ export default function AssetsManager({ apiUrl }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const queryString = useMemo(() => {
-    const params = new URLSearchParams();
-    if (filters.search) params.set('search', filters.search);
-    if (filters.asset_type !== 'all') params.set('asset_type', filters.asset_type);
-    if (filters.network !== 'all') params.set('network', filters.network);
-    if (filters.risk_level !== 'all') params.set('risk_level', filters.risk_level);
-    if (filters.monitoring_health !== 'all') params.set('monitoring_health', filters.monitoring_health);
-    if (filters.custodian !== 'all') params.set('custodian', filters.custodian);
-    params.set('sort', filters.sort);
-    params.set('dir', filters.dir);
-    params.set('page', String(filters.page));
-    params.set('page_size', String(PAGE_SIZE));
-    return params.toString();
-  }, [filters]);
+  const queryString = useMemo(() => buildAssetsQuery(filters), [filters]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -797,7 +839,7 @@ export default function AssetsManager({ apiUrl }: Props) {
         onCapability={setCapability}
         onViewReport={() => updateFilter({ risk_level: 'high' })}
         onFilterAnomalies={() => updateFilter({ risk_level: 'critical' })}
-        onFilterGaps={() => updateFilter({ monitoring_health: 'not_configured' })}
+        onFilterGaps={() => updateFilter({ monitoring_health: MONITORING_GAP_FILTER })}
       />
 
       {/* ── Details drawer ───────────────────────────────────────────── */}
@@ -1213,27 +1255,45 @@ function AssetDetailsDrawer({
               <h3 className="drawerSectionTitle">Confidence &amp; completeness</h3>
               <div className="drawerKvRow"><span>Confidence</span><strong>{Math.round((Number(assessment.confidence) || 0) * 100)}%</strong></div>
               <div className="drawerKvRow"><span>Data completeness</span><strong>{Math.round((Number(assessment.data_completeness) || 0) * 100)}%</strong></div>
-              <p className="drawerFreshness">Assessed {relativeTime(assessment.assessed_at)} · status {assessment.status}{assessment.score_version ? ` · ${assessment.score_version}` : ''}</p>
+              <p className="drawerFreshness">Assessed {relativeTime(assessment.assessed_at)} · <span title={assessmentStatusTooltip(assessment.status)}>status {assessment.status}</span>{assessment.score_version ? ` · ${assessment.score_version}` : ''}</p>
+              <p className="muted" style={{ margin: '0.2rem 0 0', fontSize: '0.7rem' }}>
+                The assessment status describes whether the run finished (e.g. Complete = finished successfully); the monitoring health above describes the resulting condition (e.g. Critical = a monitoring gap needs attention). A completed assessment stays Complete even when its risk is high.
+              </p>
             </div>
 
-            {/* Risk breakdown — not-applicable dimensions are shown as n/a, never 0. */}
+            {/* Risk breakdown — every applicable dimension shows its score, weight,
+                and weighted contribution so the headline score is fully explained.
+                Not-applicable dimensions (e.g. reserve/oracle for a wallet) are shown
+                as n/a with the reason — their weight is redistributed, never a 0. */}
             <div className="drawerSection">
               <h3 className="drawerSectionTitle">Risk score breakdown</h3>
+              <p className="muted" style={{ margin: '0 0 0.4rem', fontSize: '0.72rem' }}>
+                Weighted composite ({assessment.score_version || 'asset-risk-v1'}). Not-applicable dimensions are excluded and their weight redistributed across the applicable ones.
+              </p>
               {(assessment.dimensions ?? []).map((dim: any) => {
                 const notApplicable = dim.applicable === false;
+                const label = DIMENSION_LABELS[dim.key] || String(dim.key).replace(/_/g, ' ');
+                const reason = dimensionReason(dim);
+                const weightPct = Math.round((Number(dim.effective_weight ?? dim.weight) || 0) * 100);
+                const nominalPct = Math.round((Number(dim.weight) || 0) * 100);
                 return (
-                  <div key={dim.key} className="dimRow" style={notApplicable ? { opacity: 0.55 } : undefined}>
-                    <span className="dimName" title={notApplicable ? 'Not applicable to this asset type — excluded from the score.' : undefined}>
-                      {String(dim.key).replace(/_/g, ' ')}
-                    </span>
-                    {notApplicable ? (
-                      <span className="muted" style={{ gridColumn: '2 / 4', fontSize: '0.72rem', textAlign: 'right' }}>Not applicable</span>
-                    ) : (
-                      <>
-                        <div className="dimBarTrack"><div className="dimBarFill" style={{ width: `${Math.max(2, Math.min(100, dim.score))}%` }} /></div>
-                        <span className="dimScore">{dim.score}</span>
-                      </>
-                    )}
+                  <div key={dim.key} style={{ marginBottom: '0.5rem', opacity: notApplicable ? 0.6 : 1 }}>
+                    <div className="dimRow">
+                      <span className="dimName">{label}</span>
+                      {notApplicable ? (
+                        <span className="muted" style={{ gridColumn: '2 / 4', fontSize: '0.72rem', textAlign: 'right' }}>Not applicable</span>
+                      ) : (
+                        <>
+                          <div className="dimBarTrack"><div className="dimBarFill" style={{ width: `${Math.max(2, Math.min(100, dim.score))}%` }} /></div>
+                          <span className="dimScore">{dim.score}</span>
+                        </>
+                      )}
+                    </div>
+                    <p className="muted" style={{ margin: '0.1rem 0 0', fontSize: '0.7rem' }}>
+                      {notApplicable
+                        ? (DIMENSION_NA_REASON[dim.key] || 'Does not apply to this asset type — excluded from the score.')
+                        : `weight ${weightPct}%${nominalPct !== weightPct ? ` (of ${nominalPct}% redistributed)` : ''} · weighted contribution ${Number(dim.contribution ?? 0).toFixed(1)} pts${reason ? ` · ${reason}` : ''}`}
+                    </p>
                   </div>
                 );
               })}

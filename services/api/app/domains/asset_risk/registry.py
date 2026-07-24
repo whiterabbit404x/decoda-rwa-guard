@@ -217,10 +217,25 @@ def _safe_int(value: Any, default: int) -> int:
 
 
 def _reconcile_health(assessment_health: Any, asset: dict[str, Any]) -> str:
-    """Never show a healthier state than current live telemetry supports."""
+    """Reconcile stored monitoring health against the asset's *current* monitoring
+    topology. Two truthfulness rules:
+
+      * Never show a healthier state than live telemetry supports (healthy with no
+        telemetry -> warning).
+      * Never show an *active* monitoring verdict (healthy / warning / critical) for
+        an asset that has no monitoring target at all. With nothing monitoring it,
+        the only truthful state is ``not_configured`` — a monitoring gap — never
+        ``Critical``. Critical must come from a real monitoring condition, not from
+        an unmonitored asset (and never from the global assessor worker being off).
+    """
     ah = str(assessment_health or '').strip().lower()
     monitoring_status = str(asset.get('monitoring_status') or '')
-    if monitoring_status == 'not_configured' and not asset.get('has_monitoring_target'):
+    has_target = bool(asset.get('has_monitoring_target'))
+    target_count = asset.get('monitoring_target_count')
+    no_target = not has_target and (target_count is None or int(target_count or 0) <= 0)
+    if no_target:
+        return 'not_configured'
+    if monitoring_status == 'not_configured' and not has_target:
         return 'not_configured'
     if ah in {'healthy', 'warning', 'critical', 'degraded', 'provisioning', 'not_configured'}:
         if ah == 'healthy' and asset.get('has_telemetry') is False:

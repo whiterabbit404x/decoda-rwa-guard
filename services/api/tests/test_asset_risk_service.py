@@ -201,6 +201,51 @@ def test_reconcile_findings_resolves_cleared_finding_and_alert():
     assert conn.writes_matching("UPDATE alerts SET status = 'resolved'")
 
 
+def test_reconcile_findings_reassessment_updates_not_duplicates():
+    # A re-assessment (Run again) where the alert already exists must UPDATE it in
+    # place (upsert), never create a second alert. The finding dedups by fingerprint.
+    now = _now()
+    conn = FakeConn(matchers=[
+        ('SELECT id, occurrence_count FROM alerts', [{'id': 'alert-existing', 'occurrence_count': 3}]),
+        ('SELECT id, finding_type, alert_id FROM asset_risk_findings', []),
+    ])
+    findings = [{'finding_type': 'asset_reserve_shortfall', 'severity': 'critical', 'title': 'Reserve shortfall', 'detail': 'x', 'evidence': {}}]
+    out = service.reconcile_findings(conn, workspace_id='ws-1', asset_id='asset-1', asset_name='A',
+                                     assessment_id='assess-2', user_id='user-1', findings=findings, now=now)
+    assert out['alerts_created'] == 0
+    assert out['alerts_updated'] == 1
+    # Exactly one alert write, and it is an idempotent upsert (not a duplicate row).
+    alert_writes = conn.writes_matching('INSERT INTO alerts')
+    assert len(alert_writes) == 1 and 'ON CONFLICT (id) DO UPDATE' in alert_writes[0][0]
+    finding_writes = conn.writes_matching('INSERT INTO asset_risk_findings')
+    assert len(finding_writes) == 1 and 'ON CONFLICT (workspace_id, asset_id, fingerprint) DO UPDATE' in finding_writes[0][0]
+
+
+def test_run_again_appends_a_new_assessment_snapshot():
+    # "Run again" appends a NEW snapshot (distinct assessment_id) per the versioning
+    # policy, and persists it — it never silently reuses the prior snapshot id.
+    now = _now()
+    from datetime import timedelta
+
+    def _conn():
+        return FakeConn(matchers=[
+            ('EXISTS(SELECT 1 FROM targets', [{'has_target': True, 'has_system': True, 'has_telemetry': True, 'telemetry_fresh': True}]),
+            ('FROM asset_valuation_snapshots', [{'n': 30, 'mean_30d': Decimal('1.00'), 'std_30d': Decimal('0.001'), 'mean_7d': Decimal('1.00')}]),
+            ('FROM alerts', [{'n': 0}]),
+            ('SELECT id, occurrence_count FROM alerts', []),
+            ('SELECT id, finding_type, alert_id FROM asset_risk_findings', []),
+        ])
+
+    row = _asset_row(reserve_verified_at=now - timedelta(minutes=5))
+    first = service.assess_asset(_conn(), workspace_id='ws-1', asset_row=row, config=_cfg(), trigger_source='manual', now=now)
+    second = service.assess_asset(_conn(), workspace_id='ws-1', asset_row=row, config=_cfg(), trigger_source='manual', now=now)
+    assert first['assessment_id'] != second['assessment_id']
+    # Both runs persist a snapshot (append-only history), preserving prior versions.
+    conn = _conn()
+    service.assess_asset(conn, workspace_id='ws-1', asset_row=row, config=_cfg(), trigger_source='manual', now=now)
+    assert conn.writes_matching('INSERT INTO asset_risk_assessments')
+
+
 def test_low_severity_finding_does_not_raise_alert():
     now = _now()
     conn = FakeConn(matchers=[('SELECT id, finding_type, alert_id FROM asset_risk_findings', [])])

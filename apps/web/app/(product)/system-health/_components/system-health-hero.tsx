@@ -48,9 +48,10 @@ export function SystemHealthHero({
         <div className="shHeroMeta">
           <p className="shMetaLabel">Last checked</p>
           <p className="shMetaValue">{generatedAt ?? 'Unavailable'}</p>
-          {gitCommit && <p className="shMetaCommit">api {gitCommit}</p>}
-          {/* Frontend build SHA — lets an operator confirm the deployed web bundle
-              is not stale (compare against the api commit above). */}
+          {/* API + web build SHAs, both always shown. A missing SHA reads "unknown"
+              (truthful) — never a fabricated value — so an operator can diagnose a
+              stale Vercel/Railway deployment by comparing the two. */}
+          <p className="shMetaCommit">api {gitCommit ?? 'unknown'}</p>
           <p className="shMetaCommit">web {frontendCommit ?? 'unknown'}</p>
         </div>
       </div>

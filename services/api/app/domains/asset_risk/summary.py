@@ -264,10 +264,15 @@ def build_risk_summary(connection: Any, *, workspace_id: str, config: dict[str, 
         for fr in finding_rows:
             ftype = str(fr.get('finding_type') or '')
             sev = str(fr.get('severity') or 'medium').lower()
-            if highest_severity is None or _SEVERITY_RANK.get(sev, 0) > _SEVERITY_RANK.get(highest_severity, 0):
-                highest_severity = sev
             if ftype in _ANOMALY_FINDING_TYPES:
                 anomaly_asset_ids.add(str(fr.get('asset_id')))
+                # Highest severity is derived from ANOMALY findings ONLY. A monitoring
+                # gap — however severe — is not an anomaly and must never set the
+                # anomaly severity (that produced the invalid "0 anomalies / Highest:
+                # high" state). The query restricts to status='active', so resolved or
+                # historical findings never contribute either.
+                if highest_severity is None or _SEVERITY_RANK.get(sev, 0) > _SEVERITY_RANK.get(highest_severity, 0):
+                    highest_severity = sev
             if ftype in _MONITORING_GAP_FINDING_TYPES:
                 gap_asset_ids.add(str(fr.get('asset_id')))
             if ftype == 'asset_reserve_feed_missing':
@@ -278,6 +283,10 @@ def build_risk_summary(connection: Any, *, workspace_id: str, config: dict[str, 
                 no_target += 1
         anomaly_assets = len(anomaly_asset_ids)
         gap_assets = len(gap_asset_ids)
+    # Invariant: no active anomalies => no anomaly severity. Fail closed against any
+    # future path that might set a severity without a counted anomaly asset.
+    if anomaly_assets == 0:
+        highest_severity = None
 
     stale_feed_count = missing_reserve_feed + stale_oracle
     worker = worker_health(connection, workspace_id=workspace_id, config=cfg, latest_assessment_at=latest_assessment_at)
@@ -504,6 +513,18 @@ def active_job_for_workspace(connection: Any, *, workspace_id: str) -> dict[str,
     }
 
 
+def _count_noun(n: int, singular: str, plural: str | None = None) -> str:
+    """Grammatical count phrase: 1 -> "1 asset", 2 -> "2 assets". Pass an explicit
+    plural for irregular words. Never emits "asset(s)"."""
+    word = singular if n == 1 else (plural if plural is not None else f'{singular}s')
+    return f'{n} {word}'
+
+
+def _verb(n: int, singular: str, plural: str) -> str:
+    """Subject-verb agreement: _verb(1, 'has', 'have') -> 'has'."""
+    return singular if n == 1 else plural
+
+
 def build_summary_narrative(summary: dict[str, Any]) -> str:
     """Concise, evidence-grounded narrative for the panel (deterministic).
 
@@ -536,17 +557,17 @@ def build_summary_narrative(summary: dict[str, Any]) -> str:
         return 'All assessed assets are within expected ranges with no active findings.'
 
     if at_risk > 0:
-        parts.append(f'{at_risk} asset(s) require review')
+        parts.append(f'{_count_noun(at_risk, "asset")} {_verb(at_risk, "requires", "require")} review')
     if reserve_status == 'critical':
         parts.append('aggregate reserve coverage is below the required minimum')
     elif reserve_status == 'warning':
         parts.append('aggregate reserve coverage is slightly below target')
     if stale > 0:
-        parts.append(f'{stale} reserve/oracle feed(s) are missing or stale')
+        parts.append(f'{_count_noun(stale, "reserve/oracle feed")} {_verb(stale, "is", "are")} missing or stale')
     if anomalies > 0:
-        parts.append(f'{anomalies} asset(s) show active market/reserve anomalies')
+        parts.append(f'{_count_noun(anomalies, "asset")} {_verb(anomalies, "shows", "show")} active market/reserve anomalies')
     if gaps > 0:
-        parts.append(f'{gaps} asset(s) have monitoring gaps')
+        parts.append(f'{_count_noun(gaps, "asset")} {_verb(gaps, "has", "have")} monitoring gaps')
 
     if not parts:
         return (reserve_note or 'Assessment complete. Review flagged assets for details.').strip()
