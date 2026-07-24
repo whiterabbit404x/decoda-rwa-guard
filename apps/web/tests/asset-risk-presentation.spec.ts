@@ -9,6 +9,7 @@ import {
   assessmentActionLabel,
   assessmentStatusLabel,
   assessmentStatusVariant,
+  getAssetAssessmentDisplayState,
   formatPercent,
   formatUsd,
   isReserveBackedRwaType,
@@ -113,9 +114,13 @@ test('assessment status labels + variants cover the lifecycle', () => {
 });
 
 test('per-asset Run button renders canonical state, never ambiguous "pending"', () => {
-  // No prior assessment, on-demand available -> plain "Run assessment".
-  expect(assessmentActionLabel('not_started', capability())).toEqual({ label: 'Run assessment', disabled: false });
-  expect(assessmentActionLabel('not_assessed', capability())).toEqual({ label: 'Run assessment', disabled: false });
+  // No prior assessment, background worker down but on-demand available -> the
+  // bounded on-demand affordance (same canonical selector as the workspace panel).
+  expect(assessmentActionLabel('not_started', capability())).toEqual({ label: 'Run limited assessment', disabled: false });
+  expect(assessmentActionLabel('not_assessed', capability())).toEqual({ label: 'Run limited assessment', disabled: false });
+  // With a healthy background worker -> plain "Run assessment".
+  const bg = capability({ background_enabled: true, worker_healthy: true, execution_mode: 'background' });
+  expect(assessmentActionLabel('not_started', bg)).toEqual({ label: 'Run assessment', disabled: false });
   // A persisted queued/running job -> that exact state, and the button is disabled.
   expect(assessmentActionLabel('queued', capability())).toEqual({ label: 'Assessment queued', disabled: true });
   expect(assessmentActionLabel('running', capability())).toEqual({ label: 'Assessment running', disabled: true });
@@ -156,6 +161,154 @@ test('workspace Run button reflects capability, never an unassessed-count "N pen
   expect(workspaceAssessmentAction({
     assessmentStatus: 'queued', capability: capability({ background_enabled: true, worker_healthy: true, execution_mode: 'background' }), hasAssets: true,
   })).toMatchObject({ label: 'Assessment queued', disabled: true });
+});
+
+// ── Canonical assessment display-state selector (the single source of truth) ──
+// These are the invariants that fix the impossible "Not started + Run assessment
+// (pending)" state. The button label must never be "pending" after the POST settles.
+
+test('fresh page with no job and no assessment shows "Run assessment", never pending', () => {
+  const bg = capability({ background_enabled: true, worker_healthy: true, execution_mode: 'background' });
+  const s = getAssetAssessmentDisplayState({ assessmentStatus: 'not_started', activeJob: null, capability: bg });
+  expect(s.statusLabel).toBe('Not started');
+  expect(s.actionLabel).toBe('Run assessment');
+  expect(s.actionDisabled).toBe(false);
+  expect(s.actionBusy).toBe(false);
+  expect(s.actionLabel).not.toContain('pending');
+});
+
+test('disabled background worker + on-demand enabled shows "Run limited assessment"', () => {
+  const s = getAssetAssessmentDisplayState({
+    assessmentStatus: 'not_started', activeJob: null, capability: capability({ execution_mode: 'on_demand' }),
+  });
+  expect(s.actionLabel).toBe('Run limited assessment');
+  expect(s.actionDisabled).toBe(false);
+});
+
+test('disabled background worker + on-demand disabled shows disabled "Worker unavailable"', () => {
+  const s = getAssetAssessmentDisplayState({
+    assessmentStatus: 'not_started', activeJob: null,
+    capability: capability({ on_demand_enabled: false, execution_mode: 'unavailable' }),
+  });
+  expect(s.actionLabel).toBe('Worker unavailable');
+  expect(s.actionDisabled).toBe(true);
+  expect(s.hint).toBeTruthy();
+});
+
+test('mutation in flight shows "Starting assessment…" and marks the button busy', () => {
+  const s = getAssetAssessmentDisplayState({
+    assessmentStatus: 'not_started', activeJob: null,
+    capability: capability({ execution_mode: 'on_demand' }), mutationInFlight: true,
+  });
+  expect(s.actionLabel).toBe('Starting assessment…');
+  expect(s.actionDisabled).toBe(true);
+  expect(s.actionBusy).toBe(true);
+  // The pill does NOT move to "queued/running" — no job has been persisted yet.
+  expect(s.statusLabel).toBe('Not started');
+});
+
+test('mutation SUCCESS clears pending: label returns to the persisted backend state', () => {
+  // In flight -> "Starting assessment…"
+  const inFlight = getAssetAssessmentDisplayState({
+    assessmentStatus: 'not_started', capability: capability({ execution_mode: 'on_demand' }), mutationInFlight: true,
+  });
+  expect(inFlight.actionLabel).toBe('Starting assessment…');
+  // After a successful on-demand assessment the backend state is partial/completed
+  // and the request has settled (mutationInFlight=false) -> "Run again", not pending.
+  const settled = getAssetAssessmentDisplayState({
+    assessmentStatus: 'partial', capability: capability({ execution_mode: 'on_demand' }), mutationInFlight: false,
+  });
+  expect(settled.actionLabel).toBe('Run again');
+  expect(settled.actionBusy).toBe(false);
+  expect(settled.actionLabel).not.toContain('pending');
+});
+
+test('mutation FAILURE clears pending: label returns to a retryable backend state', () => {
+  const settled = getAssetAssessmentDisplayState({
+    assessmentStatus: 'failed', capability: capability({ execution_mode: 'on_demand' }), mutationInFlight: false,
+  });
+  expect(settled.actionLabel).toBe('Retry assessment');
+  expect(settled.actionBusy).toBe(false);
+  // A failed POST with no execution path falls closed to disabled, still not pending.
+  const noPath = getAssetAssessmentDisplayState({
+    assessmentStatus: 'not_started', capability: capability({ on_demand_enabled: false, execution_mode: 'unavailable' }), mutationInFlight: false,
+  });
+  expect(noPath.actionLabel).toBe('Worker unavailable');
+  expect(noPath.actionLabel).not.toContain('pending');
+});
+
+test('"Assessment queued" requires a PERSISTED queued job, never a capability queue-depth', () => {
+  // A capability that reports a non-zero queue depth but NO persisted active job
+  // must NOT show "queued" — that was the old, misleading inference.
+  const cap = capability({ background_enabled: true, worker_healthy: true, execution_mode: 'background', queue_depth: 5, active_job_count: 5 });
+  const noJob = getAssetAssessmentDisplayState({ assessmentStatus: 'not_started', activeJob: null, capability: cap });
+  expect(noJob.statusLabel).toBe('Not started');
+  expect(noJob.actionLabel).toBe('Run assessment');
+  // With an actual persisted queued job it DOES show queued (disabled).
+  const withJob = getAssetAssessmentDisplayState({
+    assessmentStatus: 'not_started', activeJob: { status: 'queued', job_id: 'j1' }, capability: cap,
+  });
+  expect(withJob.statusLabel).toBe('Queued');
+  expect(withJob.actionLabel).toBe('Assessment queued');
+  expect(withJob.actionDisabled).toBe(true);
+  // A persisted running job -> running (disabled, busy).
+  const running = getAssetAssessmentDisplayState({
+    assessmentStatus: 'partial', activeJob: { status: 'running', job_id: 'j2' }, capability: cap,
+  });
+  expect(running.statusLabel).toBe('Running');
+  expect(running.actionLabel).toBe('Assessment running');
+  expect(running.actionBusy).toBe(true);
+});
+
+test('table and panel show IDENTICAL canonical status for the same backend facts', () => {
+  const args = {
+    assessmentStatus: 'partial',
+    activeJob: null,
+    capability: capability({ execution_mode: 'on_demand' }),
+  } as const;
+  // The table cell derives the pill; the panel derives pill + button. Same selector,
+  // same inputs -> identical status pill. This is the "one canonical source" rule.
+  const tableView = getAssetAssessmentDisplayState(args);
+  const panelView = getAssetAssessmentDisplayState(args);
+  expect(tableView.statusLabel).toBe(panelView.statusLabel);
+  expect(tableView.statusVariant).toBe(panelView.statusVariant);
+  expect(tableView.statusLabel).toBe('Partial');
+});
+
+test('page refresh does not restore mutation pending state (mutationInFlight defaults false)', () => {
+  // After a reload, React state is fresh: mutationInFlight is false. The selector
+  // must render the persisted backend state, never a lingering "Starting…" label.
+  const afterReload = getAssetAssessmentDisplayState({
+    assessmentStatus: 'not_started', activeJob: null, capability: capability({ execution_mode: 'on_demand' }),
+    // mutationInFlight omitted == false
+  });
+  expect(afterReload.actionLabel).toBe('Run limited assessment');
+  expect(afterReload.actionBusy).toBe(false);
+  expect(afterReload.actionLabel).not.toContain('Starting');
+});
+
+test('configuration warnings do not alter assessment job/display state', () => {
+  // A global monitoring contradiction flag (e.g. proof_chain_link_missing) is not an
+  // input to the assessment selector at all. Same typed inputs -> same output,
+  // regardless of any unrelated config warning elsewhere in the workspace.
+  const cap = capability({ background_enabled: true, worker_healthy: true, execution_mode: 'background' });
+  const base = getAssetAssessmentDisplayState({ assessmentStatus: 'not_started', activeJob: null, capability: cap });
+  // Extra/unknown fields are ignored; the selector reads only its typed contract.
+  const withNoise = getAssetAssessmentDisplayState({
+    assessmentStatus: 'not_started', activeJob: null, capability: { ...cap, ...( { contradiction_flags: ['proof_chain_link_missing'] } as any) },
+  });
+  expect(withNoise.actionLabel).toBe(base.actionLabel);
+  expect(withNoise.statusLabel).toBe(base.statusLabel);
+  expect(base.actionLabel).toBe('Run assessment');
+});
+
+test('workspace with no assets disables the Run button truthfully', () => {
+  const s = getAssetAssessmentDisplayState({
+    assessmentStatus: 'not_started', activeJob: null,
+    capability: capability({ execution_mode: 'on_demand' }), hasAssets: false,
+  });
+  expect(s.actionDisabled).toBe(true);
+  expect(s.actionLabel).toBe('Run assessment');
 });
 
 test('reserve-backed RWA types match the backend taxonomy', () => {
@@ -210,12 +363,16 @@ test('AI panel is the canonical assessor surface (not a chatbot) and consumes th
 test('AI panel surfaces an operational Run assessment + assessment status + worker health', () => {
   // On-demand assessment button, gated by permission/running state.
   expect(panelSrc).toContain('onRunAssessment');
-  expect(panelSrc).toContain('assessmentStatusLabel');
+  // The status pill comes from the canonical selector's statusLabel/statusVariant.
+  expect(panelSrc).toContain('display.statusLabel');
   expect(panelSrc).toContain('reserveCoverageMessage');
-  // The button label comes from the canonical, capability-aware helper — not from
-  // an ambiguous unassessed-asset count.
-  expect(panelSrc).toContain('workspaceAssessmentAction');
+  // The button label + status pill both come from the ONE canonical selector — not
+  // from an ambiguous unassessed-asset count and not from a separate derivation.
+  expect(panelSrc).toContain('getAssetAssessmentDisplayState');
   expect(panelSrc).toContain('assessment_capability');
+  // The active job (persisted) is a distinct input from the in-flight request.
+  expect(panelSrc).toContain('active_job');
+  expect(panelSrc).toContain('mutationInFlight');
   // The old ambiguous "(N pending)" label must be gone.
   expect(panelSrc).not.toContain('pending)');
 });

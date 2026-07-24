@@ -1,5 +1,6 @@
 import { normalizeMonitoringPresentation } from '../../monitoring-status-presentation';
 import RuntimeSummaryPanel from '../../runtime-summary-panel';
+import { getBuildInfo } from '../../build-info';
 import { fetchDashboardPageData, resolveApiUrl } from '../../dashboard-data';
 import { resolveWorkspaceMonitoringTruthFromSummary } from '../../workspace-monitoring-truth';
 import { fetchSystemHealth } from './_components/fetch-system-health';
@@ -76,6 +77,10 @@ export default async function SystemHealthPage() {
     : null;
   const environment = systemHealth?.environment ?? null;
   const gitCommit = systemHealth?.git_commit ? systemHealth.git_commit.slice(0, 8) : null;
+  // Frontend (web) build SHA from the deployment env, so this in-product diagnostics
+  // page can surface whether the served bundle is stale relative to the API.
+  const buildInfo = getBuildInfo(process.env);
+  const frontendCommit = buildInfo.shortCommitSha ?? (buildInfo.commitSha ? buildInfo.commitSha.slice(0, 8) : null);
 
   return (
     <main className="productPage">
@@ -114,6 +119,7 @@ export default async function SystemHealthPage() {
             contradictionFlags={contradictionFlags}
             environment={environment}
             gitCommit={gitCommit}
+            frontendCommit={frontendCommit}
             generatedAt={generatedAt}
           />
 

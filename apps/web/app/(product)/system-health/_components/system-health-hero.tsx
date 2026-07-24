@@ -7,6 +7,7 @@ type Props = {
   contradictionFlags: string[];
   environment: string | null;
   gitCommit: string | null;
+  frontendCommit?: string | null;
   generatedAt: string | null;
 };
 
@@ -17,6 +18,7 @@ export function SystemHealthHero({
   contradictionFlags,
   environment,
   gitCommit,
+  frontendCommit,
   generatedAt,
 }: Props) {
   return (
@@ -46,7 +48,10 @@ export function SystemHealthHero({
         <div className="shHeroMeta">
           <p className="shMetaLabel">Last checked</p>
           <p className="shMetaValue">{generatedAt ?? 'Unavailable'}</p>
-          {gitCommit && <p className="shMetaCommit">commit {gitCommit}</p>}
+          {gitCommit && <p className="shMetaCommit">api {gitCommit}</p>}
+          {/* Frontend build SHA — lets an operator confirm the deployed web bundle
+              is not stale (compare against the api commit above). */}
+          <p className="shMetaCommit">web {frontendCommit ?? 'unknown'}</p>
         </div>
       </div>
 
