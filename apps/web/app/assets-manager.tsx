@@ -12,9 +12,7 @@ import AssetRiskAssessorPanel from './asset-risk-assessor-panel';
 import {
   RISK_SCORE_TOOLTIP,
   RWA_TYPE_OPTIONS,
-  assessmentActionLabel,
-  assessmentStatusLabel,
-  assessmentStatusVariant,
+  getAssetAssessmentDisplayState,
   isReserveBackedRwaType,
   formatPercent,
   formatUsd,
@@ -221,12 +219,18 @@ function DataLabel({ kind }: { kind: DataLabelKind }) {
 }
 
 /* ── Assessment status cell (status + last assessed time) ─────────── */
+// Uses the SAME canonical selector as the AI panel and the details drawer, so the
+// table status pill can never disagree with them.
 function AssessmentCell({ asset }: { asset: Asset }) {
   const status = String(asset.assessment_status || (asset.risk_score == null ? 'not_assessed' : 'completed'));
+  const display = getAssetAssessmentDisplayState({
+    assessmentStatus: status,
+    activeJob: (asset.active_job as any) ?? null,
+  });
   const lastAssessed = asset.last_assessed_at as string | null | undefined;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem', alignItems: 'flex-start' }}>
-      <StatusPill label={assessmentStatusLabel(status)} variant={assessmentStatusVariant(status)} />
+      <StatusPill label={display.statusLabel} variant={display.statusVariant} />
       <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }} title={lastAssessed ? `Last assessed ${new Date(lastAssessed).toLocaleString()}` : 'This asset has not been assessed yet.'}>
         {lastAssessed ? relativeTime(lastAssessed) : 'never'}
       </span>
@@ -1105,11 +1109,18 @@ function AssetDetailsDrawer({
   const monHealth = asset.monitoring_health || assessment?.monitoring_health || 'unknown';
   const nextAction = assetNextAction(asset);
 
-  // Canonical per-asset assessment state → Run button label (never ambiguous text).
+  // Canonical per-asset assessment state → status pill + Run button, from the ONE
+  // shared selector. `actionLoading` is the in-flight POST (transient, local);
+  // `active_job` is a persisted queued/running job (the true in-progress fact).
   const assessmentStateForAction = String(
     assessment?.status || asset.assessment_status || (asset.risk_score == null ? 'not_started' : 'completed'),
   );
-  const assessAction = assessmentActionLabel(assessmentStateForAction, capability);
+  const assessDisplay = getAssetAssessmentDisplayState({
+    assessmentStatus: assessmentStateForAction,
+    activeJob: (detail?.active_job ?? asset.active_job) ?? null,
+    capability,
+    mutationInFlight: actionLoading,
+  });
 
   // Reserve applicability: type-driven (backend flag) or a configured feed. A
   // wallet / non-reserve asset is "not applicable" — never "missing evidence".
@@ -1279,11 +1290,12 @@ function AssetDetailsDrawer({
           <button
             type="button"
             className="btn btn-primary"
-            disabled={actionLoading || assessAction.disabled}
-            title={assessAction.hint}
-            onClick={() => { if (!assessAction.disabled) void onRunAssessment().then(() => loadDetail()); }}
+            disabled={assessDisplay.actionDisabled}
+            aria-busy={assessDisplay.actionBusy}
+            title={assessDisplay.hint}
+            onClick={() => { if (!assessDisplay.actionDisabled) void onRunAssessment().then(() => loadDetail()); }}
           >
-            {actionLoading ? 'Running…' : assessAction.label}
+            {assessDisplay.actionLabel}
           </button>
           {nextAction === 'Verify asset' ? (
             <button type="button" className="btn btn-secondary" disabled={actionLoading} onClick={() => onVerify(asset, nextAction)}>Verify asset</button>

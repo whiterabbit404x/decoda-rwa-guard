@@ -167,6 +167,63 @@ def test_summary_narrative_healthy():
 
 
 # --------------------------------------------------------------------------
+# active_job — the canonical persisted proof of a queued/running assessment.
+# This is what the frontend renders "Assessment queued/running" from, so the
+# button can never say "pending" off a mutation status or a queue-depth count.
+# --------------------------------------------------------------------------
+def test_active_job_for_workspace_returns_running_over_queued():
+    conn = FakeConn(matchers=[
+        ('FROM asset_risk_jobs', [
+            {'id': 'job-1', 'asset_id': 'a1', 'status': 'running', 'queued_at': _dt(), 'started_at': _dt()},
+        ]),
+    ])
+    job = summary.active_job_for_workspace(conn, workspace_id='ws-1')
+    assert job is not None
+    assert job['status'] == 'running'
+    assert job['job_id'] == 'job-1'
+    assert job['asset_id'] == 'a1'
+    assert job['started_at'] is not None
+
+
+def test_active_job_for_workspace_is_none_without_a_persisted_active_job():
+    # No active job row -> None. A queue-depth count is NOT an active job.
+    conn = FakeConn(matchers=[('FROM asset_risk_jobs', [])])
+    assert summary.active_job_for_workspace(conn, workspace_id='ws-1') is None
+    # Jobs table absent -> None (never raises).
+    assert summary.active_job_for_workspace(FakeConn(tables_exist=False), workspace_id='ws-1') is None
+
+
+def test_summary_exposes_active_job_null_when_no_job_and_status_not_started():
+    # The exact contract the impossible-state fix depends on:
+    #   { "assessment_status": "not_started", "active_job": null }
+    conn = FakeConn(tables_exist=False, matchers=[('FROM assets', [{'total_assets': 0, 'total_value': 0}])])
+    out = summary.build_risk_summary(conn, workspace_id='ws-1')
+    assert out['assessment_status'] == 'not_started'
+    assert out['active_job'] is None
+
+
+def test_summary_threads_persisted_active_job_into_the_payload():
+    conn = FakeConn(matchers=[
+        ('COALESCE(SUM(value_usd)', [{'total_assets': 1, 'total_value': Decimal('0')}]),
+        ('lower(COALESCE(rwa_asset_type', [{'n': 0}]),
+        ('DISTINCT ON (a.asset_id)', [
+            {'asset_id': 'w1', 'risk_score': 35, 'risk_level': 'medium', 'confidence': 0.6, 'data_completeness': 0.6,
+             'reserve_status': 'not_applicable', 'reserve_value_usd': None, 'liability_value_usd': None,
+             'reserve_coverage_percent': None, 'monitoring_health': 'warning', 'status': 'completed', 'assessed_at': _dt(), 'feed_freshness': {}},
+        ]),
+        ("status = 'active'", []),
+        ("status IN ('running', 'queued')", [
+            {'id': 'job-9', 'asset_id': 'w1', 'status': 'queued', 'queued_at': _dt(), 'started_at': None},
+        ]),
+    ])
+    out = summary.build_risk_summary(conn, workspace_id='ws-1')
+    assert out['active_job'] is not None
+    assert out['active_job']['status'] == 'queued'
+    assert out['active_job']['job_id'] == 'job-9'
+    assert out['active_job']['started_at'] is None
+
+
+# --------------------------------------------------------------------------
 # Registry enrichment / filter / sort / paginate
 # --------------------------------------------------------------------------
 def _assets():
@@ -285,6 +342,47 @@ def test_registry_marks_wallet_reserve_not_applicable_when_unassessed():
     assert row['reserve_required'] is False
     assert row['reserve_status'] == 'not_applicable'
     assert row['assessment_status'] == 'not_assessed'
+
+
+def test_registry_enrichment_attaches_active_job_per_asset():
+    # A persisted running job for the asset is surfaced on the row so the table's
+    # status pill can show "Running" from the SAME canonical fact the panel uses.
+    conn = FakeConn(matchers=[
+        ('DISTINCT ON (asset_id)', []),  # no completed assessment yet
+        ("status = 'active'", []),        # no findings
+        ("status IN ('running', 'queued')", [
+            {'asset_id': 'a1', 'id': 'job-1', 'status': 'running', 'queued_at': _dt(), 'started_at': _dt()},
+        ]),
+    ])
+    assets = [{'id': 'a1', 'name': 'X', 'chain_network': 'ethereum-mainnet', 'asset_type': 'wallet',
+               'rwa_asset_type': None, 'reserve_feed_type': 'none', 'value_usd': None}]
+    out = registry.attach_risk_and_filter(conn, workspace_id='ws-1', assets=assets, query_params=_QP())
+    row = out['assets'][0]
+    assert row['active_job'] is not None
+    assert row['active_job']['status'] == 'running'
+    assert row['active_job']['job_id'] == 'job-1'
+
+
+def test_registry_enrichment_active_job_is_none_without_a_job():
+    conn = FakeConn(matchers=[('DISTINCT ON (asset_id)', []), ("status = 'active'", []),
+                              ("status IN ('running', 'queued')", [])])
+    assets = [{'id': 'a1', 'name': 'X', 'chain_network': 'ethereum-mainnet', 'asset_type': 'wallet',
+               'rwa_asset_type': None, 'reserve_feed_type': 'none', 'value_usd': None}]
+    out = registry.attach_risk_and_filter(conn, workspace_id='ws-1', assets=assets, query_params=_QP())
+    assert out['assets'][0]['active_job'] is None
+
+
+def test_latest_assessment_payload_includes_active_job_when_unassessed():
+    conn = FakeConn(matchers=[
+        ("status IN ('running', 'queued')", [
+            {'asset_id': 'a1', 'id': 'job-2', 'status': 'queued', 'queued_at': _dt(), 'started_at': None},
+        ]),
+        ('ORDER BY assessed_at DESC LIMIT 1', []),  # no latest assessment
+    ])
+    out = registry.get_latest_assessment_payload(conn, workspace_id='ws-1', asset_id='a1')
+    assert out['status'] == 'not_assessed'
+    assert out['active_job'] is not None
+    assert out['active_job']['status'] == 'queued'
 
 
 def test_registry_reserve_backed_asset_stays_null_until_assessed():

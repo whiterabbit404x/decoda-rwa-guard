@@ -5,14 +5,13 @@ import { useCallback, useEffect, useState } from 'react';
 import { usePilotAuth } from './pilot-auth-context';
 import { StatusPill } from './components/ui-primitives';
 import {
-  assessmentStatusLabel,
-  assessmentStatusVariant,
+  getAssetAssessmentDisplayState,
   relativeTime,
   reserveCoverageMessage,
   reserveStatusLabel,
   reserveStatusVariant,
-  workspaceAssessmentAction,
   type AssessmentCapability,
+  type AssessmentJob,
 } from './asset-risk-presentation';
 
 type ReserveCoverage = {
@@ -47,6 +46,7 @@ type RiskSummary = {
   data_completeness: number;
   confidence: number;
   assessment_status?: string;
+  active_job?: AssessmentJob;
   worker?: WorkerHealth;
   assessment_capability?: AssessmentCapability;
   ai_summary: string;
@@ -157,38 +157,44 @@ export default function AssetRiskAssessorPanel({
         </div>
       ) : (
         <>
-          {/* Assessment status + on-demand run — canonical state only, never an
-              ambiguous "N pending" derived from the unassessed asset count. */}
+          {/* Assessment status + on-demand run — one canonical display state, never
+              an ambiguous "N pending" derived from the unassessed asset count and
+              never a mutation status that survived the request. */}
           {(() => {
             const status = summary.assessment_status ?? (summary.assessed_assets > 0 ? 'complete' : 'not_started');
-            const worker = summary.worker;
             const capability = summary.assessment_capability ?? null;
-            const running = Boolean(assessmentRunning) || status === 'running' || (worker?.running ?? 0) > 0;
-            const action = workspaceAssessmentAction({
+            // The canonical selector: mutation-in-flight (local batch) and the
+            // persisted active job are separate, truthful inputs.
+            const display = getAssetAssessmentDisplayState({
               assessmentStatus: status,
+              activeJob: summary.active_job ?? null,
               capability,
-              running,
+              mutationInFlight: Boolean(assessmentRunning),
               hasAssets: summary.total_assets > 0,
             });
-            const buttonDisabled = action.disabled || !onRunAssessment;
+            const buttonDisabled = display.actionDisabled || !onRunAssessment;
             const mode = capability?.execution_mode;
+            // Execution-mode line: one truthful sentence about how a Run executes.
+            // The on-demand promise is made ONLY when on-demand execution is actually
+            // available (execution_mode === 'on_demand'); a disabled worker with no
+            // on-demand path never claims "runs on demand".
+            const executionLine = !capability
+              ? 'Assessment worker status is unavailable.'
+              : mode === 'unavailable'
+                ? 'Asset assessment worker is disabled. Enable the Asset Risk Assessor worker or on-demand assessment to run assessments.'
+                : mode === 'on_demand'
+                  ? 'Background assessor is disabled. Stored-evidence assessment runs on demand when you click Run.'
+                  : capability.worker_healthy
+                    ? 'Background assessor is running. Assessments also run on demand.'
+                    : 'Assessment worker status is unavailable.';
             return (
               <section className="assessorSection">
                 <h3 className="assessorSectionTitle">Assessment</h3>
                 <div className="assessorStatusRow">
-                  <StatusPill label={assessmentStatusLabel(status)} variant={assessmentStatusVariant(status)} />
+                  <StatusPill label={display.statusLabel} variant={display.statusVariant} />
                   <span className="assessorMeta">{summary.assessed_assets}/{summary.total_assets} assessed</span>
                 </div>
-                {/* Execution-mode line: one truthful sentence about how a Run executes. */}
-                <p className="assessorMeta">
-                  {mode === 'unavailable'
-                    ? 'Assessment worker unavailable. Enable the Asset Risk Assessor worker to run assessments.'
-                    : mode === 'on_demand'
-                      ? 'Ready for limited on-demand assessment. Background worker disabled; stored evidence can still be evaluated.'
-                      : capability?.worker_healthy
-                        ? 'Background assessor is running. Assessments also run on demand.'
-                        : 'Assessments run on demand when you click Run.'}
-                </p>
+                <p className="assessorMeta">{executionLine}</p>
                 <p className="assessorMeta">
                   {summary.latest_assessment_at
                     ? `Last completed ${relativeTime(summary.latest_assessment_at)}`
@@ -199,19 +205,19 @@ export default function AssetRiskAssessorPanel({
                     type="button"
                     className="btn btn-primary assessorRunBtn"
                     disabled={buttonDisabled}
-                    aria-busy={running}
-                    title={action.hint}
+                    aria-busy={display.actionBusy}
+                    title={display.hint}
                     onClick={() => { if (!buttonDisabled) void onRunAssessment(); }}
                   >
-                    {running ? (assessmentProgress || 'Running assessment…') : action.label}
+                    {display.actionBusy && assessmentProgress ? assessmentProgress : display.actionLabel}
                   </button>
                 ) : null}
                 {capability?.last_assessment_failure?.message ? (
                   <p className="assessorMeta assessorWorkerError">
                     Last failure: {capability.last_assessment_failure.message}
                   </p>
-                ) : worker?.last_error ? (
-                  <p className="assessorMeta assessorWorkerError">Last worker error: {worker.last_error}</p>
+                ) : summary.worker?.last_error ? (
+                  <p className="assessorMeta assessorWorkerError">Last worker error: {summary.worker.last_error}</p>
                 ) : null}
               </section>
             );

@@ -113,6 +113,7 @@ def _empty_summary(total_assets: int, total_value: Any, reserve_backed_count: in
         'data_completeness': 0.0,
         'confidence': 0.0,
         'assessment_status': 'not_started',
+        'active_job': None,
         'ai_summary': _empty_narrative(total_assets, reserve_backed_count),
         'ai_summary_source': 'deterministic',
         'score_version': 'asset-risk-v1',
@@ -148,6 +149,7 @@ def build_risk_summary(connection: Any, *, workspace_id: str, config: dict[str, 
         empty = _empty_summary(total_assets, total_value, reserve_backed_count, reason='Assessment storage is provisioning.')
         empty['worker'] = worker_health(connection, workspace_id=workspace_id, config=cfg, latest_assessment_at=None)
         empty['assessment_capability'] = build_assessment_capability(cfg, empty['worker'])
+        empty['active_job'] = active_job_for_workspace(connection, workspace_id=workspace_id)
         return empty
 
     # Latest assessment per asset (workspace-scoped).
@@ -168,6 +170,7 @@ def build_risk_summary(connection: Any, *, workspace_id: str, config: dict[str, 
         empty = _empty_summary(total_assets, total_value, reserve_backed_count, reason='Awaiting the first assessment cycle.')
         empty['worker'] = worker_health(connection, workspace_id=workspace_id, config=cfg, latest_assessment_at=None)
         empty['assessment_capability'] = build_assessment_capability(cfg, empty['worker'])
+        empty['active_job'] = active_job_for_workspace(connection, workspace_id=workspace_id)
         return empty
 
     risk_counts = {'low': 0, 'medium': 0, 'high': 0, 'critical': 0}
@@ -305,6 +308,7 @@ def build_risk_summary(connection: Any, *, workspace_id: str, config: dict[str, 
         'data_completeness': round(completeness_sum / assessed_assets, 3) if assessed_assets else 0.0,
         'confidence': round(confidence_sum / assessed_assets, 3) if assessed_assets else 0.0,
         'assessment_status': assessment_status,
+        'active_job': active_job_for_workspace(connection, workspace_id=workspace_id),
         'worker': worker,
         'assessment_capability': build_assessment_capability(cfg, worker),
         'score_version': 'asset-risk-v1',
@@ -462,6 +466,41 @@ def build_assessment_capability(config: dict[str, Any], worker: dict[str, Any]) 
             {'code': worker.get('last_failure_code'), 'message': worker.get('last_error'), 'at': worker.get('last_error_at')}
             if worker.get('last_error') else None
         ),
+    }
+
+
+def active_job_for_workspace(connection: Any, *, workspace_id: str) -> dict[str, Any] | None:
+    """The single canonical active assessment job for a workspace, or None.
+
+    A running job wins over a queued one. Only genuinely-active states are returned
+    (``running`` / ``queued``); a stuck queued job is reconciled to ``blocked``
+    server-side before the summary is built, so it never surfaces here as active.
+    This is the persisted proof the frontend uses to show "Assessment queued /
+    running" — never inferred from a queue-depth count or an in-flight request."""
+    if not _table_exists(connection, 'asset_risk_jobs'):
+        return None
+    try:
+        row = connection.execute(
+            '''
+            SELECT id, asset_id, status, queued_at, started_at FROM asset_risk_jobs
+            WHERE workspace_id = %s AND status IN ('running', 'queued')
+            ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, queued_at ASC NULLS LAST
+            LIMIT 1
+            ''',
+            (workspace_id,),
+        ).fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    queued_at = row.get('queued_at')
+    started_at = row.get('started_at')
+    return {
+        'job_id': str(row.get('id')) if row.get('id') is not None else None,
+        'asset_id': str(row.get('asset_id')) if row.get('asset_id') is not None else None,
+        'status': str(row.get('status') or ''),
+        'queued_at': queued_at.isoformat() if queued_at is not None else None,
+        'started_at': started_at.isoformat() if started_at is not None else None,
     }
 
 

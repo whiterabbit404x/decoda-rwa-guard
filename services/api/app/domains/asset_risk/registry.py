@@ -99,6 +99,7 @@ def attach_risk_and_filter(
     asset_ids = [str(a['id']) for a in assets]
     latest = _load_latest_assessments(connection, workspace_id, asset_ids)
     finding_counts = _load_active_finding_counts(connection, workspace_id, asset_ids)
+    active_jobs = _load_active_jobs(connection, workspace_id, asset_ids)
 
     for a in assets:
         aid = str(a['id'])
@@ -109,6 +110,9 @@ def attach_risk_and_filter(
         a['custodian'] = a.get('custodian')
         a['value_usd'] = _num(a.get('value_usd'))
         a['active_findings_count'] = int(finding_counts.get(aid, 0))
+        # Persisted active (queued/running) job for this asset, if any — the canonical
+        # proof of "in progress" the table pill renders from (never an in-flight POST).
+        a['active_job'] = active_jobs.get(aid)
         # Whether reserve backing applies to this asset at all (type-driven or a
         # configured feed). A wallet / non-reserve asset must never be described as
         # missing reserve evidence — its reserve status is "not applicable".
@@ -259,6 +263,38 @@ def _load_active_finding_counts(connection: Any, workspace_id: str, asset_ids: l
         (workspace_id, asset_ids),
     ).fetchall()
     return {str(r['asset_id']): int(r['n']) for r in rows}
+
+
+def _load_active_jobs(connection: Any, workspace_id: str, asset_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """The current active (queued/running) assessment job per asset, if any.
+
+    The unique index guarantees at most one active job per asset. Only genuinely
+    active states are returned so the table's status pill reflects a persisted job,
+    never an in-flight request or a stuck/blocked job."""
+    if not asset_ids or not service._table_exists(connection, 'asset_risk_jobs'):
+        return {}
+    # The uq_asset_risk_jobs_active_per_asset unique index guarantees at most one
+    # active (queued/running) job per asset, so a plain filter suffices.
+    rows = connection.execute(
+        '''
+        SELECT asset_id, id, status, queued_at, started_at
+        FROM asset_risk_jobs
+        WHERE workspace_id = %s AND asset_id = ANY(%s::uuid[]) AND status IN ('running', 'queued')
+        ''',
+        (workspace_id, asset_ids),
+    ).fetchall()
+    out: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        queued_at = r.get('queued_at')
+        started_at = r.get('started_at')
+        out[str(r['asset_id'])] = {
+            'job_id': str(r.get('id')) if r.get('id') is not None else None,
+            'asset_id': str(r.get('asset_id')) if r.get('asset_id') is not None else None,
+            'status': str(r.get('status') or ''),
+            'queued_at': queued_at.isoformat() if queued_at is not None else None,
+            'started_at': started_at.isoformat() if started_at is not None else None,
+        }
+    return out
 
 
 def _build_facets(assets: list[dict[str, Any]]) -> dict[str, list[str]]:
@@ -449,8 +485,10 @@ def persist_registry_fields(
 # --------------------------------------------------------------------------
 def get_latest_assessment_payload(connection: Any, *, workspace_id: str, asset_id: str) -> dict[str, Any]:
     """Latest assessment + active findings + trend history. Truthful when absent."""
+    active_job = _load_active_jobs(connection, workspace_id, [asset_id]).get(str(asset_id))
     if not service._table_exists(connection, 'asset_risk_assessments'):
-        return {'assessment': None, 'status': 'provisioning', 'findings': [], 'history': [], 'valuation_history': []}
+        return {'assessment': None, 'status': 'provisioning', 'active_job': active_job,
+                'findings': [], 'history': [], 'valuation_history': []}
     latest = connection.execute(
         '''
         SELECT * FROM asset_risk_assessments
@@ -460,7 +498,8 @@ def get_latest_assessment_payload(connection: Any, *, workspace_id: str, asset_i
         (workspace_id, asset_id),
     ).fetchone()
     if latest is None:
-        return {'assessment': None, 'status': 'not_assessed', 'findings': [], 'history': [], 'valuation_history': []}
+        return {'assessment': None, 'status': 'not_assessed', 'active_job': active_job,
+                'findings': [], 'history': [], 'valuation_history': []}
 
     findings = connection.execute(
         '''
@@ -497,6 +536,7 @@ def get_latest_assessment_payload(connection: Any, *, workspace_id: str, asset_i
     return {
         'assessment': pilot._json_safe_value(dict(latest)),
         'status': str(latest.get('status') or 'completed'),
+        'active_job': active_job,
         'findings': [pilot._json_safe_value(dict(f)) for f in findings],
         'history': [pilot._json_safe_value(dict(h)) for h in history],
         'valuation_history': [pilot._json_safe_value(dict(v)) for v in valuation_history],

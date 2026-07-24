@@ -179,55 +179,121 @@ export type AssessmentCapability = {
 
 export type AssessmentAction = { label: string; disabled: boolean; hint?: string };
 
+// A persisted assessment job (from asset_risk_jobs) — the canonical proof that an
+// assessment is actually queued or running. The frontend consumes THIS instead of
+// inferring "queued/running" from a capability queue-depth or an in-flight POST.
+// null/undefined means no active job exists.
+export type AssessmentJob = {
+  status?: string | null; // 'queued' | 'running' | 'blocked' | ...
+  job_id?: string | null;
+  asset_id?: string | null;
+} | null;
+
+// The single canonical display state for an asset/workspace assessment. Both the
+// status pill AND the Run button are derived from this one object so the table,
+// the details drawer, and the AI panel can never disagree.
+export type AssessmentDisplayState = {
+  statusLabel: string;
+  statusVariant: PillVariant;
+  actionLabel: string;
+  actionDisabled: boolean;
+  actionBusy: boolean;
+  hint?: string;
+};
+
 const WORKER_UNAVAILABLE_HINT =
   'The background assessor is not running and on-demand assessment is disabled. Enable the Asset Risk Assessor worker or on-demand assessment to run assessments.';
 
-// Per-asset Run button. Renders ONLY from persisted backend job/assessment state
-// plus runtime capability — never from an ambiguous "unassessed asset count".
+// ── THE canonical assessment display-state selector ───────────────────────────
+// Pure. Every assessment surface (asset table cell, details drawer, AI panel)
+// derives its status pill and Run button from this one function, so there is
+// exactly one place that maps backend facts → UI. It renders ONLY from:
+//   * assessmentStatus — the last persisted assessment's status (never queued/running by itself)
+//   * activeJob        — a persisted queued/running job (the true "in progress" fact)
+//   * capability       — canonical runtime capability (execution_mode)
+//   * mutationInFlight — the POST request is actively in flight (transient, local)
+//
+// Priority (fail-closed):
+//   mutationInFlight            → "Starting assessment…"   (button only; pill unchanged)
+//   activeJob/status running    → "Assessment running"
+//   activeJob/status queued     → "Assessment queued"
+//   execution_mode unavailable  → "Worker unavailable"     (cannot start — disabled)
+//   no assets                   → "Run assessment"         (disabled)
+//   status failed/blocked       → "Retry assessment"
+//   status complete/partial/…   → "Run again"
+//   execution_mode on_demand    → "Run limited assessment"
+//   otherwise                   → "Run assessment"
+export function getAssetAssessmentDisplayState(args: {
+  assessmentStatus?: string | null;
+  activeJob?: AssessmentJob;
+  capability?: AssessmentCapability | null;
+  mutationInFlight?: boolean;
+  hasAssets?: boolean;
+}): AssessmentDisplayState {
+  const { assessmentStatus, activeJob, capability, mutationInFlight, hasAssets } = args;
+  const status = (assessmentStatus || '').toLowerCase();
+  const jobStatus = (activeJob?.status || '').toLowerCase();
+  const mode = capability?.execution_mode;
+
+  // Persisted active job is the live truth. A queued/running JOB is only ever
+  // created behind a healthy worker (background) or run inline (on_demand); a
+  // stuck queued job is reconciled to "blocked" server-side, so a surviving
+  // "queued" here is genuinely drainable — no extra client-side gate needed.
+  const running = jobStatus === 'running' || status === 'running';
+  const queued = !running && (jobStatus === 'queued' || status === 'queued');
+
+  // The status PILL reflects a persisted active job when one exists; otherwise the
+  // last assessment's status. A mutation in flight does NOT move the pill (no job
+  // has been persisted yet) — only the button changes.
+  const effectiveStatus = running ? 'running' : queued ? 'queued' : (status || 'not_started');
+  const statusLabel = assessmentStatusLabel(effectiveStatus);
+  const statusVariant = assessmentStatusVariant(effectiveStatus);
+
+  const out = (actionLabel: string, actionDisabled: boolean, actionBusy = false, hint?: string): AssessmentDisplayState => ({
+    statusLabel, statusVariant, actionLabel, actionDisabled, actionBusy, ...(hint ? { hint } : {}),
+  });
+
+  if (mutationInFlight) return out('Starting assessment…', true, true);
+  if (running) return out('Assessment running', true, true);
+  if (queued) return out('Assessment queued', true);
+  // No execution path → cannot start a new assessment, regardless of prior result.
+  if (mode === 'unavailable') return out('Worker unavailable', true, false, WORKER_UNAVAILABLE_HINT);
+  if (hasAssets === false) return out('Run assessment', true);
+  if (status === 'failed' || status === 'blocked') return out('Retry assessment', false);
+  if (status === 'complete' || status === 'completed' || status === 'partial' || status === 'degraded' || status === 'stale') {
+    return out('Run again', false);
+  }
+  // No prior assessment + no active job: the bounded on-demand affordance when the
+  // background worker is down but stored-evidence assessment can still run.
+  if (mode === 'on_demand') return out('Run limited assessment', false);
+  return out('Run assessment', false);
+}
+
+// Per-asset Run button. Thin wrapper over the canonical selector (kept for callers
+// that only need the button label/disabled/hint).
 export function assessmentActionLabel(
   status: string | null | undefined,
   capability?: AssessmentCapability | null,
+  activeJob?: AssessmentJob,
 ): AssessmentAction {
-  const s = (status || '').toLowerCase();
-  const mode = capability?.execution_mode;
-  // A persisted active job always wins — it is the true state.
-  if (s === 'running') return { label: 'Assessment running', disabled: true };
-  if (s === 'queued') return { label: 'Assessment queued', disabled: true };
-  // No execution path: cannot start a new assessment.
-  if (mode === 'unavailable') return { label: 'Worker unavailable', disabled: true, hint: WORKER_UNAVAILABLE_HINT };
-  switch (s) {
-    case 'complete':
-    case 'completed':
-    case 'partial':
-    case 'degraded':
-    case 'stale':
-      return { label: 'Run again', disabled: false };
-    case 'failed':
-    case 'blocked':
-      return { label: 'Retry assessment', disabled: false };
-    default:
-      return { label: 'Run assessment', disabled: false };
-  }
+  const s = getAssetAssessmentDisplayState({ assessmentStatus: status, capability, activeJob });
+  return { label: s.actionLabel, disabled: s.actionDisabled, ...(s.hint ? { hint: s.hint } : {}) };
 }
 
-// Workspace-level Run button on the AI panel. Same canonical rules, plus the
-// bounded on-demand affordance ("Run limited assessment") when the background
-// worker is not healthy but on-demand execution is available.
+// Workspace-level Run button on the AI panel. Thin wrapper over the canonical
+// selector; `running` maps to an in-flight bounded assessment (mutation in flight).
 export function workspaceAssessmentAction(args: {
   assessmentStatus?: string | null;
   capability?: AssessmentCapability | null;
   running?: boolean;
   hasAssets?: boolean;
+  activeJob?: AssessmentJob;
 }): AssessmentAction {
-  const { assessmentStatus, capability, running, hasAssets } = args;
-  const mode = capability?.execution_mode;
-  if (running) return { label: 'Running assessment…', disabled: true };
-  if (mode === 'unavailable') return { label: 'Worker unavailable', disabled: true, hint: WORKER_UNAVAILABLE_HINT };
-  // Only surface "queued" when a healthy worker / valid route exists to drain it.
-  if ((assessmentStatus || '').toLowerCase() === 'queued') return { label: 'Assessment queued', disabled: true };
-  if (hasAssets === false) return { label: 'Run assessment', disabled: true };
-  if (mode === 'on_demand') return { label: 'Run limited assessment', disabled: false };
-  return { label: 'Run assessment', disabled: false };
+  const { assessmentStatus, capability, running, hasAssets, activeJob } = args;
+  const s = getAssetAssessmentDisplayState({
+    assessmentStatus, capability, activeJob, mutationInFlight: running, hasAssets,
+  });
+  return { label: s.actionLabel, disabled: s.actionDisabled, ...(s.hint ? { hint: s.hint } : {}) };
 }
 
 const RWA_TYPE_LABELS: Record<string, string> = {
