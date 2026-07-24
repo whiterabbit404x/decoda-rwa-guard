@@ -10,7 +10,12 @@ import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { monitoringLinkStatusLabel, getMonitoringStatus } from '../app/assets-manager';
+import { monitoringLinkStatusLabel, getMonitoringStatus, buildAssetsQuery, MONITORING_GAP_FILTER } from '../app/assets-manager';
+
+const BASE_FILTERS = {
+  search: '', asset_type: 'all', network: 'all', risk_level: 'all', monitoring_health: 'all',
+  custodian: 'all', sort: 'risk', dir: 'desc', page: 1,
+};
 
 const managerSrc = fs.readFileSync(
   path.join(__dirname, '..', 'app', 'assets-manager.tsx'),
@@ -161,6 +166,37 @@ test('Add Asset modal has token metadata, reserve interval, and reserve-backed d
   expect(managerSrc).toContain('isReserveBackedRwaType');
   // Wallet monitoring type hides token-contract fields.
   expect(managerSrc).toContain('isWalletType');
+});
+
+// 13b. "View assets with gaps" applies the canonical monitoring-gap filter and
+// round-trips through the URL query (so it survives refresh / back-forward).
+test('monitoring-gap filter builds a canonical not_configured query preserved in the URL', () => {
+  expect(MONITORING_GAP_FILTER).toBe('not_configured');
+  const gapQuery = buildAssetsQuery({ ...BASE_FILTERS, monitoring_health: MONITORING_GAP_FILTER });
+  const params = new URLSearchParams(gapQuery);
+  expect(params.get('monitoring_health')).toBe('not_configured');
+  expect(params.get('page')).toBe('1');
+  expect(params.get('page_size')).toBe('25');
+  // Without the gap filter, monitoring_health is omitted (never the literal "all").
+  const noFilter = new URLSearchParams(buildAssetsQuery(BASE_FILTERS));
+  expect(noFilter.has('monitoring_health')).toBe(false);
+  // The panel wires the gap link to this exact canonical filter value.
+  expect(managerSrc).toContain('onFilterGaps={() => updateFilter({ monitoring_health: MONITORING_GAP_FILTER })}');
+});
+
+// 13c. Asset details drawer explains the score: per-dimension weight + weighted
+// contribution, applicable/not-applicable rationale, and status-vs-condition copy.
+test('asset details drawer explains dimensions (weight, contribution) and status meaning', () => {
+  expect(managerSrc).toContain('weighted contribution');
+  expect(managerSrc).toContain('effective_weight');
+  expect(managerSrc).toContain('DIMENSION_LABELS');
+  expect(managerSrc).toContain('DIMENSION_NA_REASON');
+  // Not-applicable dimensions (reserve/oracle for a wallet) are excluded, never 0.
+  expect(managerSrc).toContain('Not applicable');
+  expect(managerSrc).toContain("does not apply");
+  // Status vs condition is spelled out and tooltipped.
+  expect(managerSrc).toContain('assessmentStatusTooltip');
+  expect(managerSrc).toContain('A completed assessment stays Complete even when its risk is high.');
 });
 
 // 14. Reserve semantics: the registry never hardcodes a "missing reserve evidence"

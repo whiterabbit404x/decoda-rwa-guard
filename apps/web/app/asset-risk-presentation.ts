@@ -143,6 +143,28 @@ export function assessmentStatusLabel(status: string | null | undefined): string
   }
 }
 
+// Accessible description distinguishing assessment EXECUTION status ("Complete" =
+// the run finished) from a monitoring CONDITION ("Critical" = the resulting state
+// needs attention). These are different axes and must never be conflated: a
+// successfully-completed assessment stays "Complete" even when its result is high
+// or critical risk.
+export function assessmentStatusTooltip(status: string | null | undefined): string {
+  switch ((status || '').toLowerCase()) {
+    case 'complete':
+    case 'completed': return 'The assessment finished successfully.';
+    case 'partial':
+    case 'degraded': return 'The assessment finished, but some evidence was incomplete or stale.';
+    case 'running': return 'An assessment is currently running.';
+    case 'queued': return 'An assessment is queued to run.';
+    case 'failed': return 'The assessment did not finish. Retry to run it again.';
+    case 'blocked': return 'The assessment cannot run — no execution path is available.';
+    case 'stale': return 'The last assessment is older than its freshness window.';
+    case 'not_started':
+    case 'not_assessed': return 'No assessment has run for this asset yet.';
+    default: return 'Assessment execution status.';
+  }
+}
+
 export function assessmentStatusVariant(status: string | null | undefined): PillVariant {
   switch ((status || '').toLowerCase()) {
     case 'complete':

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { expect, test } from '@playwright/test';
 
 import { shouldRedirectUnauthenticatedProductAccess } from '../app/auth-guards';
+import { getBuildInfo } from '../app/build-info';
 import { GET as getBuildInfoRoute } from '../app/api/build-info/route';
 import { GET as getRuntimeConfigRoute } from '../app/api/runtime-config/route';
 import { resolveAuthFormState } from '../app/auth-form-state';
@@ -208,6 +209,19 @@ test.describe('runtime auth configuration', () => {
   });
 
 
+
+  test('build info reports a MISSING commit SHA truthfully as null (never a fabricated value)', () => {
+    // No VERCEL/RAILWAY git SHA env -> commitSha/shortCommitSha are null, so the
+    // System Health hero renders "unknown" rather than inventing a SHA. This is what
+    // lets an operator trust the SHA when diagnosing a stale deployment.
+    const info = getBuildInfo({ NODE_ENV: 'production' } as NodeJS.ProcessEnv, { host: 'app.example' });
+    expect(info.commitSha).toBeNull();
+    expect(info.shortCommitSha).toBeNull();
+    // When present, the short SHA is the first 7 chars of the full SHA.
+    const withSha = getBuildInfo({ VERCEL_GIT_COMMIT_SHA: 'abc123def456' } as unknown as NodeJS.ProcessEnv);
+    expect(withSha.commitSha).toBe('abc123def456');
+    expect(withSha.shortCommitSha).toBe('abc123d');
+  });
 
   test('pilot-auth-context fetches runtime config at runtime instead of reading public env at module scope', async () => {
     const source = readFileSync(path.join(process.cwd(), 'apps/web/app/pilot-auth-context.tsx'), 'utf8');

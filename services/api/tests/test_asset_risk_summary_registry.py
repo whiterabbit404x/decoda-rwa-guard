@@ -167,6 +167,92 @@ def test_summary_narrative_healthy():
 
 
 # --------------------------------------------------------------------------
+# Anomaly severity is derived from ANOMALY findings only (never monitoring gaps
+# or resolved findings). Zero anomalies => no severity. This fixes the invalid
+# "Active anomalies: 0 / Highest: high" state.
+# --------------------------------------------------------------------------
+def _wallet_assessment_row(monitoring_health='critical'):
+    return {'asset_id': 'w1', 'risk_score': 40, 'risk_level': 'medium', 'confidence': 0.95,
+            'data_completeness': 0.9, 'reserve_status': 'not_applicable', 'reserve_value_usd': None,
+            'liability_value_usd': None, 'reserve_coverage_percent': None, 'monitoring_health': monitoring_health,
+            'status': 'completed', 'assessed_at': _dt(), 'feed_freshness': {}}
+
+
+def test_summary_monitoring_gap_never_sets_anomaly_severity():
+    # A high-severity monitoring gap with NO anomaly finding must not produce an
+    # anomaly severity — anomaly count 0 and highest_severity None.
+    conn = FakeConn(matchers=[
+        ('COALESCE(SUM(value_usd)', [{'total_assets': 1, 'total_value': Decimal('0')}]),
+        ('lower(COALESCE(rwa_asset_type', [{'n': 0}]),
+        ('DISTINCT ON (a.asset_id)', [_wallet_assessment_row()]),
+        ("status = 'active'", [
+            {'asset_id': 'w1', 'finding_type': 'asset_monitoring_gap', 'severity': 'high'},
+        ]),
+    ])
+    out = summary.build_risk_summary(conn, workspace_id='ws-1')
+    assert out['anomaly_warnings']['assets'] == 0
+    assert out['anomaly_warnings']['highest_severity'] is None
+    # The gap is still counted as a monitoring gap (just not an anomaly).
+    assert out['monitoring_gaps']['assets'] == 1
+    assert out['monitoring_gaps']['no_target'] == 1
+
+
+def test_summary_anomaly_severity_ignores_more_severe_monitoring_gap():
+    # An anomaly (medium) coexists with a critical monitoring gap. The anomaly
+    # severity is the anomaly's (medium), never the more-severe gap's.
+    conn = FakeConn(matchers=[
+        ('COALESCE(SUM(value_usd)', [{'total_assets': 1, 'total_value': Decimal('0')}]),
+        ('lower(COALESCE(rwa_asset_type', [{'n': 0}]),
+        ('DISTINCT ON (a.asset_id)', [_wallet_assessment_row('warning')]),
+        ("status = 'active'", [
+            {'asset_id': 'w1', 'finding_type': 'asset_price_deviation', 'severity': 'medium'},   # anomaly
+            {'asset_id': 'w1', 'finding_type': 'asset_monitoring_gap', 'severity': 'critical'},    # gap
+        ]),
+    ])
+    out = summary.build_risk_summary(conn, workspace_id='ws-1')
+    assert out['anomaly_warnings']['assets'] == 1
+    assert out['anomaly_warnings']['highest_severity'] == 'medium'
+
+
+def test_count_noun_and_verb_helpers():
+    assert summary._count_noun(1, 'asset') == '1 asset'
+    assert summary._count_noun(2, 'asset') == '2 assets'
+    assert summary._count_noun(0, 'asset') == '0 assets'
+    assert summary._count_noun(1, 'reserve/oracle feed') == '1 reserve/oracle feed'
+    assert summary._count_noun(3, 'reserve/oracle feed') == '3 reserve/oracle feeds'
+    assert summary._verb(1, 'has', 'have') == 'has'
+    assert summary._verb(2, 'has', 'have') == 'have'
+
+
+def test_summary_narrative_uses_correct_singular_plural_grammar():
+    def nar(**over):
+        base = {
+            'risk_level_counts': {'low': 0, 'medium': 0, 'high': 0, 'critical': 0},
+            'anomaly_warnings': {'assets': 0}, 'monitoring_gaps': {'assets': 0}, 'stale_feed_count': 0,
+            'reserve_coverage': {'status': 'not_applicable'},
+        }
+        base.update(over)
+        return summary.build_summary_narrative(base)
+
+    one_gap = nar(monitoring_gaps={'assets': 1})
+    two_gaps = nar(monitoring_gaps={'assets': 2})
+    one_risk = nar(risk_level_counts={'low': 0, 'medium': 0, 'high': 1, 'critical': 0})
+    one_stale = nar(stale_feed_count=1)
+    two_stale = nar(stale_feed_count=2)
+    one_anom = nar(anomaly_warnings={'assets': 1})
+
+    assert '1 asset has monitoring gaps' in one_gap
+    assert '2 assets have monitoring gaps' in two_gaps
+    assert '1 asset requires review' in one_risk
+    assert '1 reserve/oracle feed is missing or stale' in one_stale
+    assert '2 reserve/oracle feeds are missing or stale' in two_stale
+    assert '1 asset shows active market/reserve anomalies' in one_anom
+    # The lazy "(s)" plural must never appear in generated summary text.
+    for text in (one_gap, two_gaps, one_risk, one_stale, two_stale, one_anom):
+        assert '(s)' not in text
+
+
+# --------------------------------------------------------------------------
 # active_job — the canonical persisted proof of a queued/running assessment.
 # This is what the frontend renders "Assessment queued/running" from, so the
 # button can never say "pending" off a mutation status or a queue-depth count.
@@ -397,11 +483,24 @@ def test_registry_reserve_backed_asset_stays_null_until_assessed():
 
 def test_health_reconcile_never_overstates():
     # Assessment said healthy, but asset currently has no live telemetry -> warning.
-    a = {'monitoring_status': 'live_verified', 'has_monitoring_target': True, 'has_telemetry': False}
+    a = {'monitoring_status': 'live_verified', 'has_monitoring_target': True, 'has_telemetry': False, 'monitoring_target_count': 1}
     assert registry._reconcile_health('healthy', a) == 'warning'
     # No target -> not_configured regardless of stored value.
     b = {'monitoring_status': 'not_configured', 'has_monitoring_target': False}
     assert registry._reconcile_health('healthy', b) == 'not_configured'
+
+
+def test_health_reconcile_no_target_never_reads_critical():
+    # A wallet with no monitoring target must never display Critical (that would be
+    # an active monitoring verdict for an asset nothing is monitoring). It reads as
+    # a monitoring gap (not_configured), whatever the stored assessment said.
+    wallet = {'has_monitoring_target': False, 'monitoring_target_count': 0, 'monitoring_status': ''}
+    assert registry._reconcile_health('critical', wallet) == 'not_configured'
+    assert registry._reconcile_health('warning', wallet) == 'not_configured'
+    # A target WITH missing telemetry is a legitimate live condition — not forced to
+    # not_configured (that would hide a real gap the other way).
+    monitored = {'has_monitoring_target': True, 'monitoring_target_count': 1, 'has_telemetry': False, 'monitoring_status': 'waiting_for_telemetry'}
+    assert registry._reconcile_health('critical', monitored) == 'critical'
 
 
 # --------------------------------------------------------------------------
