@@ -29,6 +29,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response, Streamin
 from fastapi.middleware.cors import CORSMiddleware
 
 from services.api.app.domains import alert_stream, alert_delivery
+from services.api.app.domains.asset_risk import registry as asset_risk_registry
 from services.api.app.domains.rate_limit import rate_limit_connectivity
 from services.api.app.quicknode_streams import (
     QUICKNODE_STREAMS_WEBHOOK_VERSION,
@@ -4591,6 +4592,14 @@ def assets_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: create_asset(payload, request))
 
 
+# NOTE: the static /assets/risk-summary route MUST be registered before the
+# /assets/{asset_id} route below, otherwise "risk-summary" is captured as an
+# asset_id and the summary endpoint is shadowed.
+@app.get('/assets/risk-summary', summary='Canonical asset risk summary (registry AI panel)')
+def assets_risk_summary(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: asset_risk_registry.risk_summary_endpoint(request))
+
+
 @app.get('/asset-profiles', summary='List workspace asset profiles')
 def asset_profiles_list(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_assets(request))
@@ -4614,6 +4623,16 @@ def assets_patch(asset_id: str, payload: dict[str, Any], request: Request) -> di
 @app.post('/assets/{asset_id}/verify', summary='Verify workspace asset and enable monitoring prerequisites')
 def assets_verify(asset_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: verify_asset(asset_id, request))
+
+
+@app.get('/assets/{asset_id}/risk-assessment', summary='Latest asset risk assessment + active findings')
+def assets_risk_assessment_get(asset_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: asset_risk_registry.latest_assessment_endpoint(asset_id, request))
+
+
+@app.post('/assets/{asset_id}/risk-assessment', summary='Trigger an asset risk assessment (idempotent)')
+def assets_risk_assessment_trigger(asset_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: asset_risk_registry.trigger_assessment_endpoint(asset_id, request))
 
 
 @app.patch('/asset-profiles/{asset_id}', summary='Update workspace asset profile')

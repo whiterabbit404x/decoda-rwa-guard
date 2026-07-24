@@ -6,3 +6,4 @@ realtime-worker: python -m services.api.app.run_realtime_worker
 quicknode-live-worker: python -m services.api.app.run_quicknode_live_worker
 ai-triage-worker: python -m services.api.app.run_ai_triage_worker
 onboarding-worker: python -m services.api.app.run_onboarding_worker
+asset-risk-worker: python -m services.api.app.run_asset_risk_worker

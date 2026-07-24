@@ -11049,6 +11049,7 @@ def list_assets(request: Request) -> dict[str, Any]:
         rows = connection.execute(
             '''
             SELECT id, name, description, asset_type, chain_network, identifier, asset_class, risk_tier, owner_team, notes, enabled,
+                   rwa_asset_type, custodian, value_usd, token_symbol,
                    issuer_name, asset_symbol, asset_identifier, token_contract_address, token_decimals, token_name, token_standard, chainlink_feeds, custody_wallets, treasury_ops_wallets, oracle_sources, venue_labels,
                    expected_counterparties, expected_flow_patterns, expected_approval_patterns, expected_liquidity_baseline,
                    expected_oracle_freshness_seconds, expected_oracle_update_cadence_seconds, policy_tags, jurisdiction_tags,
@@ -11197,7 +11198,30 @@ def list_assets(request: Request) -> dict[str, Any]:
             item['tags'] = tags_map.get(str(row['id']), [])
             item.update(_compute_asset_monitoring_status(item, workspace_has_live_telemetry))
             assets.append(item)
-        return {'assets': assets, 'workspace': workspace_context['workspace']}
+        # Enrich with the latest canonical risk assessment and apply optional
+        # server-side search / filter / sort / pagination. Kept in the asset_risk
+        # domain module rather than bloating this route. Degrades gracefully when
+        # the assessment tables are not yet provisioned.
+        from services.api.app.domains.asset_risk import registry as _asset_risk_registry
+
+        enriched = _asset_risk_registry.attach_risk_and_filter(
+            connection,
+            workspace_id=workspace_id,
+            assets=assets,
+            query_params=getattr(request, 'query_params', None),
+        )
+        return {
+            'assets': enriched['assets'],
+            'workspace': workspace_context['workspace'],
+            'pagination': {
+                'total': enriched['total'],
+                'filtered_total': enriched['filtered_total'],
+                'page': enriched['page'],
+                'page_size': enriched['page_size'],
+            },
+            'facets': enriched['facets'],
+            'score_version': 'asset-risk-v1',
+        }
 
 
 def _canonical_target_uuid(workspace_id: str, target_id: str) -> str:
@@ -13873,7 +13897,17 @@ def create_asset(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 'INSERT INTO asset_tags (id, workspace_id, asset_id, tag) VALUES (%s, %s, %s, %s) ON CONFLICT (asset_id, tag) DO NOTHING',
                 (str(uuid.uuid4()), workspace_id, asset_id, tag),
             )
-        log_audit(connection, action='asset.create', entity_type='asset', entity_id=asset_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'asset_type': validated['asset_type']})
+        # Persist the registry / reserve-backing fields (custodian, value, RWA
+        # type, reserve config) and seed the initial risk assessment. Registry
+        # validation errors (bad reserve config, SSRF-unsafe feed URL) raise a
+        # 400 here; the enclosing transaction rolls back so no partial asset is
+        # persisted. Kept in the asset_risk domain module, not this route.
+        from services.api.app.domains.asset_risk import registry as _asset_risk_registry
+
+        _asset_risk_registry.persist_registry_fields(
+            connection, workspace_id=workspace_id, asset_id=asset_id, payload=payload, user_id=str(user['id'])
+        )
+        log_audit(connection, action='asset.create', entity_type='asset', entity_id=asset_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'asset_type': validated['asset_type'], 'rwa_asset_type': str(payload.get('rwa_asset_type') or '') or None})
         connection.commit()
         return {'id': asset_id, **validated, 'verification_status': verification['verification_status'], 'verification_summary': verification['verification_summary'], 'normalized_identifier': verification['normalized_identifier']}
 
