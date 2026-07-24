@@ -283,6 +283,16 @@ test('no secrets or RPC URLs are rendered in any source file', () => {
   expect(allComponentSources).not.toContain('secret');
 });
 
+test('system health shows API + web build SHAs, missing reads "unknown" (never fabricated)', () => {
+  // Both build SHAs are surfaced so an operator can spot a stale Vercel/Railway
+  // deployment by comparing them. A missing SHA renders truthfully as "unknown".
+  expect(heroSource).toContain("api {gitCommit ?? 'unknown'}");
+  expect(heroSource).toContain("web {frontendCommit ?? 'unknown'}");
+  // The page derives the web SHA from build-info (deployment env), not a literal.
+  expect(pageSource).toContain('getBuildInfo(process.env)');
+  expect(pageSource).toContain('frontendCommit');
+});
+
 // ── Navigation backward compat ──────────────────────────────────────────────
 
 test('nav label is System Health and /resilience remains backward compatible', () => {

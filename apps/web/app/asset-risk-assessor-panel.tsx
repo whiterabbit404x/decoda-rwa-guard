@@ -6,6 +6,7 @@ import { usePilotAuth } from './pilot-auth-context';
 import { StatusPill } from './components/ui-primitives';
 import {
   getAssetAssessmentDisplayState,
+  assessmentStatusTooltip,
   relativeTime,
   reserveCoverageMessage,
   reserveStatusLabel,
@@ -191,7 +192,9 @@ export default function AssetRiskAssessorPanel({
               <section className="assessorSection">
                 <h3 className="assessorSectionTitle">Assessment</h3>
                 <div className="assessorStatusRow">
-                  <StatusPill label={display.statusLabel} variant={display.statusVariant} />
+                  <span title={assessmentStatusTooltip(status)}>
+                    <StatusPill label={display.statusLabel} variant={display.statusVariant} />
+                  </span>
                   <span className="assessorMeta">{summary.assessed_assets}/{summary.total_assets} assessed</span>
                 </div>
                 <p className="assessorMeta">{executionLine}</p>
@@ -250,7 +253,10 @@ export default function AssetRiskAssessorPanel({
               <span className="assessorStatValue">{summary.anomaly_warnings.assets}</span>
               <div>
                 <p className="assessorMeta">asset{summary.anomaly_warnings.assets === 1 ? '' : 's'} with active anomalies</p>
-                {summary.anomaly_warnings.highest_severity ? (
+                {/* Highest severity is shown ONLY when there is at least one active
+                    anomaly. A monitoring gap is not an anomaly, so zero anomalies can
+                    never read "Highest: high" — it reads "No active anomalies". */}
+                {summary.anomaly_warnings.assets > 0 && summary.anomaly_warnings.highest_severity ? (
                   <StatusPill
                     label={`Highest: ${summary.anomaly_warnings.highest_severity}`}
                     variant={summary.anomaly_warnings.highest_severity === 'critical' || summary.anomaly_warnings.highest_severity === 'high' ? 'danger' : 'warning'}

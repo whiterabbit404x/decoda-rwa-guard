@@ -8,6 +8,7 @@ import path from 'node:path';
 import {
   assessmentActionLabel,
   assessmentStatusLabel,
+  assessmentStatusTooltip,
   assessmentStatusVariant,
   getAssetAssessmentDisplayState,
   formatPercent,
@@ -111,6 +112,17 @@ test('assessment status labels + variants cover the lifecycle', () => {
   expect(assessmentStatusVariant('partial')).toBe('warning');
   expect(assessmentStatusVariant('failed')).toBe('danger');
   expect(assessmentStatusVariant('blocked')).toBe('danger');
+});
+
+test('assessment status tooltip distinguishes execution (Complete) from condition', () => {
+  // "Complete" is about the RUN finishing, not the resulting risk/monitoring state.
+  expect(assessmentStatusTooltip('completed')).toBe('The assessment finished successfully.');
+  expect(assessmentStatusTooltip('complete')).toBe('The assessment finished successfully.');
+  expect(assessmentStatusTooltip('failed')).toContain('did not finish');
+  expect(assessmentStatusTooltip('partial')).toContain('incomplete or stale');
+  expect(assessmentStatusTooltip('not_started')).toContain('No assessment');
+  // The tooltip never conflates a successful run with a high-risk result.
+  expect(assessmentStatusTooltip('completed').toLowerCase()).not.toContain('critical');
 });
 
 test('per-asset Run button renders canonical state, never ambiguous "pending"', () => {
@@ -375,4 +387,12 @@ test('AI panel surfaces an operational Run assessment + assessment status + work
   expect(panelSrc).toContain('mutationInFlight');
   // The old ambiguous "(N pending)" label must be gone.
   expect(panelSrc).not.toContain('pending)');
+});
+
+test('AI panel never shows an anomaly severity when there are zero active anomalies', () => {
+  // The highest-severity pill is gated on a non-zero anomaly count, so a
+  // high-severity monitoring gap can never render "Highest: high" alongside
+  // "0 assets with active anomalies". Zero anomalies -> "No active anomalies".
+  expect(panelSrc).toContain('summary.anomaly_warnings.assets > 0 && summary.anomaly_warnings.highest_severity');
+  expect(panelSrc).toContain('No active anomalies');
 });
