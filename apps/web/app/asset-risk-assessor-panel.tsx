@@ -11,6 +11,8 @@ import {
   reserveCoverageMessage,
   reserveStatusLabel,
   reserveStatusVariant,
+  workspaceAssessmentAction,
+  type AssessmentCapability,
 } from './asset-risk-presentation';
 
 type ReserveCoverage = {
@@ -46,6 +48,7 @@ type RiskSummary = {
   confidence: number;
   assessment_status?: string;
   worker?: WorkerHealth;
+  assessment_capability?: AssessmentCapability;
   ai_summary: string;
   ai_summary_source: string;
 };
@@ -59,6 +62,9 @@ type Props = {
   onViewReport?: () => void;
   onFilterAnomalies?: () => void;
   onFilterGaps?: () => void;
+  // Lifts the canonical runtime capability to the parent so the details drawer's
+  // per-asset button and this panel share one source of truth.
+  onCapability?: (capability: AssessmentCapability | null) => void;
 };
 
 // Ring gauge for the aggregate reserve coverage. Coverage is clamped to [0, 200]
@@ -89,7 +95,7 @@ function ReserveRing({ percent, variant }: { percent: number | null; variant: st
 
 export default function AssetRiskAssessorPanel({
   refreshSignal, onRunAssessment, assessmentRunning, assessmentProgress,
-  onViewReport, onFilterAnomalies, onFilterGaps,
+  onViewReport, onFilterAnomalies, onFilterGaps, onCapability,
 }: Props) {
   const { authHeaders, signOut } = usePilotAuth();
   const [summary, setSummary] = useState<RiskSummary | null>(null);
@@ -117,12 +123,13 @@ export default function AssetRiskAssessorPanel({
       }
       const payload = await response.json();
       setSummary(payload.summary ?? null);
+      if (onCapability) onCapability(payload.summary?.assessment_capability ?? null);
     } catch {
       setError('The assessor summary is temporarily unavailable.');
     } finally {
       setLoading(false);
     }
-  }, [authHeaders, signOut]);
+  }, [authHeaders, signOut, onCapability]);
 
   useEffect(() => { void load(); }, [load, refreshSignal]);
 
@@ -150,13 +157,21 @@ export default function AssetRiskAssessorPanel({
         </div>
       ) : (
         <>
-          {/* Assessment status + on-demand run */}
+          {/* Assessment status + on-demand run — canonical state only, never an
+              ambiguous "N pending" derived from the unassessed asset count. */}
           {(() => {
             const status = summary.assessment_status ?? (summary.assessed_assets > 0 ? 'complete' : 'not_started');
             const worker = summary.worker;
+            const capability = summary.assessment_capability ?? null;
             const running = Boolean(assessmentRunning) || status === 'running' || (worker?.running ?? 0) > 0;
-            const disabled = running || summary.total_assets === 0 || !onRunAssessment;
-            const pending = Math.max(0, summary.total_assets - summary.assessed_assets);
+            const action = workspaceAssessmentAction({
+              assessmentStatus: status,
+              capability,
+              running,
+              hasAssets: summary.total_assets > 0,
+            });
+            const buttonDisabled = action.disabled || !onRunAssessment;
+            const mode = capability?.execution_mode;
             return (
               <section className="assessorSection">
                 <h3 className="assessorSectionTitle">Assessment</h3>
@@ -164,6 +179,16 @@ export default function AssetRiskAssessorPanel({
                   <StatusPill label={assessmentStatusLabel(status)} variant={assessmentStatusVariant(status)} />
                   <span className="assessorMeta">{summary.assessed_assets}/{summary.total_assets} assessed</span>
                 </div>
+                {/* Execution-mode line: one truthful sentence about how a Run executes. */}
+                <p className="assessorMeta">
+                  {mode === 'unavailable'
+                    ? 'Assessment worker unavailable. Enable the Asset Risk Assessor worker to run assessments.'
+                    : mode === 'on_demand'
+                      ? 'Ready for limited on-demand assessment. Background worker disabled; stored evidence can still be evaluated.'
+                      : capability?.worker_healthy
+                        ? 'Background assessor is running. Assessments also run on demand.'
+                        : 'Assessments run on demand when you click Run.'}
+                </p>
                 <p className="assessorMeta">
                   {summary.latest_assessment_at
                     ? `Last completed ${relativeTime(summary.latest_assessment_at)}`
@@ -173,21 +198,19 @@ export default function AssetRiskAssessorPanel({
                   <button
                     type="button"
                     className="btn btn-primary assessorRunBtn"
-                    disabled={disabled}
+                    disabled={buttonDisabled}
                     aria-busy={running}
-                    onClick={() => { void onRunAssessment(); }}
+                    title={action.hint}
+                    onClick={() => { if (!buttonDisabled) void onRunAssessment(); }}
                   >
-                    {running
-                      ? (assessmentProgress || 'Running assessment…')
-                      : pending > 0 ? `Run assessment (${pending} pending)` : 'Run assessment'}
+                    {running ? (assessmentProgress || 'Running assessment…') : action.label}
                   </button>
                 ) : null}
-                {worker && !worker.enabled ? (
-                  <p className="assessorMeta assessorWorkerNote">
-                    Background assessment worker is disabled. Assessments run on demand when you click Run.
+                {capability?.last_assessment_failure?.message ? (
+                  <p className="assessorMeta assessorWorkerError">
+                    Last failure: {capability.last_assessment_failure.message}
                   </p>
-                ) : null}
-                {worker?.last_error ? (
+                ) : worker?.last_error ? (
                   <p className="assessorMeta assessorWorkerError">Last worker error: {worker.last_error}</p>
                 ) : null}
               </section>

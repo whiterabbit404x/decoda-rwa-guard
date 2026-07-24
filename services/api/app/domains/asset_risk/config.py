@@ -34,9 +34,23 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 def assessor_config() -> dict[str, Any]:
     """Resolve Asset Risk Assessor configuration from the environment."""
+    interval_seconds = max(30, _env_int('ASSET_RISK_ASSESSOR_INTERVAL_SECONDS', 900))
     return {
+        # Background worker: continuously enqueues + assesses due assets. Off by default.
         'enabled': _env_flag('ASSET_RISK_ASSESSOR_ENABLED', default=False),
-        'interval_seconds': max(30, _env_int('ASSET_RISK_ASSESSOR_INTERVAL_SECONDS', 900)),
+        # On-demand assessment: a bounded, synchronous assessment runs inside the API
+        # process when an operator clicks Run. It only reads stored evidence (no
+        # unbounded provider scans) so it is safe even while the background worker is
+        # disabled. On by default; set false to force a healthy background worker.
+        'on_demand_enabled': _env_flag('ASSET_RISK_ASSESSOR_ON_DEMAND_ENABLED', default=True),
+        'interval_seconds': interval_seconds,
+        # A worker whose last heartbeat is older than this is not "healthy"; the
+        # capability response reports worker_healthy=false. Defaults to two cycles so a
+        # single missed beat is tolerated. Never below 120s.
+        'worker_heartbeat_stale_seconds': max(120, _env_int('ASSET_RISK_WORKER_HEARTBEAT_STALE_SECONDS', interval_seconds * 2)),
+        # A job left queued longer than this with no healthy worker to claim it is
+        # reconciled to a terminal state (blocked) instead of pending forever.
+        'queued_job_timeout_seconds': max(60, _env_int('ASSET_RISK_QUEUED_JOB_TIMEOUT_SECONDS', 900)),
         # How many assets to assess per worker cycle (bounded so one cycle cannot
         # run unbounded provider work).
         'batch_size': max(1, _env_int('ASSET_RISK_ASSESSOR_BATCH_SIZE', 25)),
@@ -103,6 +117,34 @@ def reserve_required_for(rwa_asset_type: Any, reserve_feed_type: Any = None) -> 
     key = str(rwa_asset_type or '').strip().lower()
     entry = RWA_ASSET_TYPES.get(key)
     return bool(entry['reserve_required']) if entry else False
+
+
+def worker_heartbeat_is_fresh(last_heartbeat_at: Any, now: Any, config: dict[str, Any] | None = None) -> bool:
+    """Whether a persisted worker heartbeat is fresh enough to call the background
+    worker healthy. A missing heartbeat is never fresh (fail-closed)."""
+    if last_heartbeat_at is None or now is None:
+        return False
+    cfg = config or assessor_config()
+    try:
+        from datetime import timezone
+        hb = last_heartbeat_at
+        if getattr(hb, 'tzinfo', None) is None:
+            hb = hb.replace(tzinfo=timezone.utc)
+        return (now - hb).total_seconds() <= int(cfg['worker_heartbeat_stale_seconds'])
+    except Exception:
+        return False
+
+
+def execution_mode(config: dict[str, Any], *, worker_healthy: bool) -> str:
+    """Canonical execution mode for the Asset Risk Assessor.
+
+    * ``background``  — a healthy background worker is available (on-demand may also be on).
+    * ``on_demand``   — no healthy worker, but bounded synchronous assessment is enabled.
+    * ``unavailable`` — no execution path (worker unhealthy AND on-demand disabled).
+    """
+    if config.get('on_demand_enabled'):
+        return 'background' if worker_healthy else 'on_demand'
+    return 'background' if worker_healthy else 'unavailable'
 
 
 def blocking_configuration_errors(config: dict[str, Any] | None = None) -> list[str]:

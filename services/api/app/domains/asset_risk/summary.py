@@ -147,6 +147,7 @@ def build_risk_summary(connection: Any, *, workspace_id: str, config: dict[str, 
     if not _table_exists(connection, 'asset_risk_assessments'):
         empty = _empty_summary(total_assets, total_value, reserve_backed_count, reason='Assessment storage is provisioning.')
         empty['worker'] = worker_health(connection, workspace_id=workspace_id, config=cfg, latest_assessment_at=None)
+        empty['assessment_capability'] = build_assessment_capability(cfg, empty['worker'])
         return empty
 
     # Latest assessment per asset (workspace-scoped).
@@ -166,6 +167,7 @@ def build_risk_summary(connection: Any, *, workspace_id: str, config: dict[str, 
     if not rows:
         empty = _empty_summary(total_assets, total_value, reserve_backed_count, reason='Awaiting the first assessment cycle.')
         empty['worker'] = worker_health(connection, workspace_id=workspace_id, config=cfg, latest_assessment_at=None)
+        empty['assessment_capability'] = build_assessment_capability(cfg, empty['worker'])
         return empty
 
     risk_counts = {'low': 0, 'medium': 0, 'high': 0, 'critical': 0}
@@ -278,7 +280,8 @@ def build_risk_summary(connection: Any, *, workspace_id: str, config: dict[str, 
     worker = worker_health(connection, workspace_id=workspace_id, config=cfg, latest_assessment_at=latest_assessment_at)
     assessment_status = _rollup_assessment_status(
         total_assets=total_assets, assessed_assets=assessed_assets, degraded=degraded_assessments,
-        active_jobs=int(worker.get('queued', 0)) + int(worker.get('running', 0)),
+        running_jobs=int(worker.get('running', 0)), queued_jobs=int(worker.get('queued', 0)),
+        worker_healthy=bool(worker.get('healthy')),
         latest_assessment_at=latest_assessment_at, stale_seconds=int(cfg['assessment_stale_seconds']),
     )
 
@@ -303,6 +306,7 @@ def build_risk_summary(connection: Any, *, workspace_id: str, config: dict[str, 
         'confidence': round(confidence_sum / assessed_assets, 3) if assessed_assets else 0.0,
         'assessment_status': assessment_status,
         'worker': worker,
+        'assessment_capability': build_assessment_capability(cfg, worker),
         'score_version': 'asset-risk-v1',
     }
     summary['ai_summary'] = build_summary_narrative(summary)
@@ -311,16 +315,20 @@ def build_risk_summary(connection: Any, *, workspace_id: str, config: dict[str, 
 
 
 def _rollup_assessment_status(
-    *, total_assets: int, assessed_assets: int, degraded: int, active_jobs: int,
-    latest_assessment_at: Any, stale_seconds: int,
+    *, total_assets: int, assessed_assets: int, degraded: int, running_jobs: int, queued_jobs: int,
+    worker_healthy: bool, latest_assessment_at: Any, stale_seconds: int,
 ) -> str:
     """Workspace-level assessment status for the AI panel.
 
-    One of: not_started | running | partial | stale | complete. Fail-closed: a
-    degraded assessment or an incompletely-assessed workspace reads as ``partial``,
-    never ``complete``."""
-    if active_jobs > 0:
+    One of: not_started | queued | running | partial | stale | complete. Fail-closed:
+    a degraded assessment or an incompletely-assessed workspace reads as ``partial``,
+    never ``complete``. A job is only ``running`` once a worker claimed it, and only
+    ``queued`` when a healthy worker exists to claim it — a queued job with no healthy
+    worker never masquerades as active (it will be reconciled to blocked)."""
+    if running_jobs > 0:
         return 'running'
+    if queued_jobs > 0 and worker_healthy:
+        return 'queued'
     if total_assets == 0 or assessed_assets == 0:
         return 'not_started'
     if latest_assessment_at is not None and stale_seconds > 0:
@@ -338,52 +346,123 @@ def _rollup_assessment_status(
     return 'complete'
 
 
+def _worker_heartbeat(connection: Any, *, config: dict[str, Any], now: Any) -> tuple[Any, bool]:
+    """(last_heartbeat_at, worker_healthy) from the persisted worker state. The
+    background worker is workspace-agnostic, so the freshest heartbeat across all
+    replicas is authoritative. A missing/stale heartbeat is never healthy."""
+    if not _table_exists(connection, 'asset_risk_worker_state'):
+        return None, False
+    try:
+        row = connection.execute(
+            'SELECT MAX(heartbeat_at) AS hb FROM asset_risk_worker_state',
+        ).fetchone() or {}
+    except Exception:
+        return None, False
+    hb = row.get('hb')
+    healthy = bool(config.get('enabled')) and arc.worker_heartbeat_is_fresh(hb, now, config)
+    return hb, healthy
+
+
 def worker_health(connection: Any, *, workspace_id: str, config: dict[str, Any], latest_assessment_at: Any) -> dict[str, Any]:
     """Assessment worker visibility for the panel (workspace-scoped).
 
-    Reports whether the background worker is enabled, the queue depth, whether a
-    job is running, the last successful assessment time, and the most recent
-    worker error. When the worker is disabled, on-demand assessments still run
-    inline — the panel uses ``enabled`` to explain the difference truthfully."""
+    Reports whether the background worker is enabled AND actually alive (from a
+    persisted heartbeat, not just an env flag), the queue depth, whether a job is
+    running, the last successful assessment time, and the most recent worker error.
+    When the worker is not healthy, on-demand assessments still run inline — the
+    capability object explains the difference truthfully."""
+    from services.api.app import pilot
+
+    try:
+        now = pilot.utc_now()
+    except Exception:
+        now = None
+    last_heartbeat_at, worker_healthy = _worker_heartbeat(connection, config=config, now=now)
     health = {
         'enabled': bool(config.get('enabled')),
+        'healthy': worker_healthy,
+        'last_heartbeat_at': last_heartbeat_at.isoformat() if last_heartbeat_at is not None else None,
         'queued': 0,
         'running': 0,
         'failed': 0,
+        'blocked': 0,
+        'active_jobs': 0,
+        'oldest_queued_age_seconds': None,
         'last_completed_at': latest_assessment_at.isoformat() if latest_assessment_at is not None else None,
         'last_error': None,
         'last_error_at': None,
+        'last_failure_code': None,
     }
     if not _table_exists(connection, 'asset_risk_jobs'):
         return health
     try:
         rows = connection.execute(
             '''
-            SELECT status, COUNT(*) AS n FROM asset_risk_jobs
-            WHERE workspace_id = %s AND status IN ('queued', 'running', 'failed')
+            SELECT status, COUNT(*) AS n, MIN(queued_at) AS oldest_queued FROM asset_risk_jobs
+            WHERE workspace_id = %s AND status IN ('queued', 'running', 'failed', 'blocked')
             GROUP BY status
             ''',
             (workspace_id,),
         ).fetchall()
+        oldest_queued = None
         for r in rows:
             key = str(r.get('status') or '')
             if key in health:
                 health[key] = int(r.get('n') or 0)
+            if key == 'queued':
+                oldest_queued = r.get('oldest_queued')
+        health['active_jobs'] = int(health['queued']) + int(health['running'])
+        if oldest_queued is not None and now is not None:
+            try:
+                oq = oldest_queued
+                if getattr(oq, 'tzinfo', None) is None:
+                    from datetime import timezone
+                    oq = oq.replace(tzinfo=timezone.utc)
+                health['oldest_queued_age_seconds'] = max(0, int((now - oq).total_seconds()))
+            except Exception:
+                health['oldest_queued_age_seconds'] = None
         err = connection.execute(
             '''
-            SELECT last_error, updated_at FROM asset_risk_jobs
-            WHERE workspace_id = %s AND status = 'failed' AND last_error IS NOT NULL
+            SELECT last_error, failure_code, updated_at FROM asset_risk_jobs
+            WHERE workspace_id = %s AND status IN ('failed', 'blocked') AND last_error IS NOT NULL
             ORDER BY updated_at DESC LIMIT 1
             ''',
             (workspace_id,),
         ).fetchone()
         if err is not None:
             health['last_error'] = str(err.get('last_error') or '')[:300] or None
+            health['last_failure_code'] = str(err.get('failure_code') or '') or None
             le_at = err.get('updated_at')
             health['last_error_at'] = le_at.isoformat() if le_at is not None else None
     except Exception:
         return health
     return health
+
+
+def build_assessment_capability(config: dict[str, Any], worker: dict[str, Any]) -> dict[str, Any]:
+    """Canonical runtime capability the frontend consumes instead of guessing from
+    missing assessment data or an environment variable.
+
+    execution_mode is one of: background | on_demand | unavailable. No secrets or
+    raw environment values are exposed."""
+    worker_healthy = bool(worker.get('healthy'))
+    mode = arc.execution_mode(config, worker_healthy=worker_healthy)
+    return {
+        'background_enabled': bool(config.get('enabled')),
+        'on_demand_enabled': bool(config.get('on_demand_enabled')),
+        'worker_healthy': worker_healthy,
+        'last_heartbeat_at': worker.get('last_heartbeat_at'),
+        'execution_mode': mode,
+        'queue_depth': int(worker.get('queued', 0)),
+        'oldest_queued_job_age_seconds': worker.get('oldest_queued_age_seconds'),
+        'active_job_count': int(worker.get('active_jobs', 0)),
+        'blocked_job_count': int(worker.get('blocked', 0)),
+        'last_successful_assessment_at': worker.get('last_completed_at'),
+        'last_assessment_failure': (
+            {'code': worker.get('last_failure_code'), 'message': worker.get('last_error'), 'at': worker.get('last_error_at')}
+            if worker.get('last_error') else None
+        ),
+    }
 
 
 def build_summary_narrative(summary: dict[str, Any]) -> str:
@@ -443,13 +522,27 @@ def build_summary_narrative(summary: dict[str, Any]) -> str:
 
 
 def build_risk_summary_for_request(request: Any) -> dict[str, Any]:
-    """Endpoint helper: authenticate, resolve workspace, build the canonical summary."""
+    """Endpoint helper: authenticate, resolve workspace, build the canonical summary.
+
+    The panel polls this endpoint, so it is also where jobs left pending by a
+    disabled/crashed worker are reconciled to a terminal state — otherwise a
+    workspace with no healthy worker would show a job "pending" forever."""
     from services.api.app import pilot
+    from services.api.app.domains.asset_risk import worker as asset_risk_worker
 
     pilot.require_live_mode()
+    cfg = arc.assessor_config()
     with pilot.pg_connection() as connection:
         pilot.ensure_pilot_schema(connection)
         user = pilot.authenticate_with_connection(connection, request)
         workspace_context = pilot.resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
-        summary = build_risk_summary(connection, workspace_id=workspace_context['workspace_id'])
+        # Reconcile stuck jobs first (best-effort) so the summary reflects the truth.
+        try:
+            now = pilot.utc_now()
+            _hb, worker_healthy = _worker_heartbeat(connection, config=cfg, now=now)
+            asset_risk_worker.reconcile_stuck_jobs(connection, config=cfg, worker_healthy=worker_healthy, now=now)
+            connection.commit()
+        except Exception:
+            pass
+        summary = build_risk_summary(connection, workspace_id=workspace_context['workspace_id'], config=cfg)
         return {'summary': summary, 'workspace': workspace_context['workspace']}

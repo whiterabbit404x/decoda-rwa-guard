@@ -35,6 +35,18 @@ logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------
+# Canonical assessment-lifecycle logging
+# --------------------------------------------------------------------------
+# One structured event vocabulary shared by the on-demand endpoint and the
+# background worker so the whole lifecycle is greppable regardless of which path
+# executed. Never log provider secrets or raw credentials — only ids, the chosen
+# execution mode, worker availability, duration, result status, and failure code.
+def log_assessment_event(event: str, **fields: Any) -> None:
+    ordered = ' '.join(f'{k}={v}' for k, v in fields.items() if v is not None)
+    logger.info('event=%s %s', event, ordered)
+
+
+# --------------------------------------------------------------------------
 # Small helpers
 # --------------------------------------------------------------------------
 def _to_decimal(value: Any) -> Optional[Decimal]:

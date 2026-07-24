@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
+  assessmentActionLabel,
   assessmentStatusLabel,
   assessmentStatusVariant,
   formatPercent,
@@ -21,8 +22,21 @@ import {
   riskLevelLabel,
   riskLevelVariant,
   rwaTypeLabel,
+  workspaceAssessmentAction,
   RISK_SCORE_TOOLTIP,
+  type AssessmentCapability,
 } from '../app/asset-risk-presentation';
+
+function capability(overrides: Partial<AssessmentCapability> = {}): AssessmentCapability {
+  return {
+    background_enabled: false,
+    on_demand_enabled: true,
+    worker_healthy: false,
+    last_heartbeat_at: null,
+    execution_mode: 'on_demand',
+    ...overrides,
+  };
+}
 
 test('risk level thresholds match the canonical 0-100 scale (higher = riskier)', () => {
   expect(riskLevelForScore(0)).toBe('low');
@@ -85,14 +99,63 @@ test('reserve coverage message is generated from structured state only', () => {
 test('assessment status labels + variants cover the lifecycle', () => {
   expect(assessmentStatusLabel('not_started')).toBe('Not started');
   expect(assessmentStatusLabel('not_assessed')).toBe('Not started');
+  expect(assessmentStatusLabel('queued')).toBe('Queued');
   expect(assessmentStatusLabel('running')).toBe('Running');
   expect(assessmentStatusLabel('complete')).toBe('Complete');
   expect(assessmentStatusLabel('partial')).toBe('Partial');
   expect(assessmentStatusLabel('failed')).toBe('Failed');
+  expect(assessmentStatusLabel('blocked')).toBe('Blocked');
   expect(assessmentStatusVariant('complete')).toBe('success');
   expect(assessmentStatusVariant('running')).toBe('info');
   expect(assessmentStatusVariant('partial')).toBe('warning');
   expect(assessmentStatusVariant('failed')).toBe('danger');
+  expect(assessmentStatusVariant('blocked')).toBe('danger');
+});
+
+test('per-asset Run button renders canonical state, never ambiguous "pending"', () => {
+  // No prior assessment, on-demand available -> plain "Run assessment".
+  expect(assessmentActionLabel('not_started', capability())).toEqual({ label: 'Run assessment', disabled: false });
+  expect(assessmentActionLabel('not_assessed', capability())).toEqual({ label: 'Run assessment', disabled: false });
+  // A persisted queued/running job -> that exact state, and the button is disabled.
+  expect(assessmentActionLabel('queued', capability())).toEqual({ label: 'Assessment queued', disabled: true });
+  expect(assessmentActionLabel('running', capability())).toEqual({ label: 'Assessment running', disabled: true });
+  // After a completed / partial assessment -> "Run again".
+  expect(assessmentActionLabel('completed', capability()).label).toBe('Run again');
+  expect(assessmentActionLabel('partial', capability()).label).toBe('Run again');
+  expect(assessmentActionLabel('stale', capability()).label).toBe('Run again');
+  // After a failure / block -> "Retry assessment".
+  expect(assessmentActionLabel('failed', capability()).label).toBe('Retry assessment');
+  expect(assessmentActionLabel('blocked', capability()).label).toBe('Retry assessment');
+});
+
+test('per-asset Run button is disabled "Worker unavailable" when no execution path exists', () => {
+  const cap = capability({ on_demand_enabled: false, execution_mode: 'unavailable' });
+  const action = assessmentActionLabel('not_started', cap);
+  expect(action.label).toBe('Worker unavailable');
+  expect(action.disabled).toBe(true);
+  expect(action.hint).toBeTruthy();
+  // Even a previously-failed asset cannot be retried without an execution path.
+  expect(assessmentActionLabel('failed', cap).label).toBe('Worker unavailable');
+});
+
+test('workspace Run button reflects capability, never an unassessed-count "N pending"', () => {
+  // Healthy background worker -> plain "Run assessment".
+  expect(workspaceAssessmentAction({
+    assessmentStatus: 'not_started', capability: capability({ background_enabled: true, worker_healthy: true, execution_mode: 'background' }), hasAssets: true,
+  })).toEqual({ label: 'Run assessment', disabled: false });
+  // Background worker down but on-demand available -> "Run limited assessment".
+  expect(workspaceAssessmentAction({
+    assessmentStatus: 'not_started', capability: capability(), running: false, hasAssets: true,
+  }).label).toBe('Run limited assessment');
+  // No execution path -> disabled "Worker unavailable".
+  const unavailable = workspaceAssessmentAction({
+    assessmentStatus: 'not_started', capability: capability({ on_demand_enabled: false, execution_mode: 'unavailable' }), hasAssets: true,
+  });
+  expect(unavailable).toMatchObject({ label: 'Worker unavailable', disabled: true });
+  // A genuinely queued job with a healthy worker -> "Assessment queued".
+  expect(workspaceAssessmentAction({
+    assessmentStatus: 'queued', capability: capability({ background_enabled: true, worker_healthy: true, execution_mode: 'background' }), hasAssets: true,
+  })).toMatchObject({ label: 'Assessment queued', disabled: true });
 });
 
 test('reserve-backed RWA types match the backend taxonomy', () => {
@@ -147,10 +210,12 @@ test('AI panel is the canonical assessor surface (not a chatbot) and consumes th
 test('AI panel surfaces an operational Run assessment + assessment status + worker health', () => {
   // On-demand assessment button, gated by permission/running state.
   expect(panelSrc).toContain('onRunAssessment');
-  expect(panelSrc).toContain('Run assessment');
   expect(panelSrc).toContain('assessmentStatusLabel');
-  // Worker visibility (disabled worker + last error are surfaced truthfully).
-  expect(panelSrc).toContain('worker');
-  expect(panelSrc).toContain('Background assessment worker is disabled');
   expect(panelSrc).toContain('reserveCoverageMessage');
+  // The button label comes from the canonical, capability-aware helper — not from
+  // an ambiguous unassessed-asset count.
+  expect(panelSrc).toContain('workspaceAssessmentAction');
+  expect(panelSrc).toContain('assessment_capability');
+  // The old ambiguous "(N pending)" label must be gone.
+  expect(panelSrc).not.toContain('pending)');
 });

@@ -54,8 +54,8 @@ def enqueue_assessment(
     try:
         connection.execute(
             '''
-            INSERT INTO asset_risk_jobs (id, workspace_id, asset_id, status, trigger_source, requested_by_user_id)
-            VALUES (%s, %s, %s, 'queued', %s, %s)
+            INSERT INTO asset_risk_jobs (id, workspace_id, asset_id, status, trigger_source, requested_by_user_id, queued_at)
+            VALUES (%s, %s, %s, 'queued', %s, %s, NOW())
             ''',
             (job_id, workspace_id, asset_id, trigger_source, requested_by_user_id),
         )
@@ -109,6 +109,7 @@ def _claim_next_job(connection: Any, *, lease_owner: str, lease_seconds: int) ->
         '''
         UPDATE asset_risk_jobs
         SET status = 'running', lease_owner = %s, lease_expires_at = NOW() + (%s || ' seconds')::interval,
+            started_at = COALESCE(started_at, NOW()), heartbeat_at = NOW(),
             attempts = attempts + 1, updated_at = NOW()
         WHERE id = (
             SELECT id FROM asset_risk_jobs
@@ -125,6 +126,78 @@ def _claim_next_job(connection: Any, *, lease_owner: str, lease_seconds: int) ->
     return dict(row) if row is not None else None
 
 
+# --------------------------------------------------------------------------
+# Heartbeat + stuck-job reconciliation
+# --------------------------------------------------------------------------
+def record_heartbeat(connection: Any, *, worker_name: str, cycle_summary: dict[str, Any] | None = None) -> None:
+    """Persist a liveness heartbeat for the background assessor. Written only by an
+    ENABLED worker cycle, so a missing/stale row truthfully means "not healthy".
+    Best-effort: a heartbeat failure never stops the cycle."""
+    if not service._table_exists(connection, 'asset_risk_worker_state'):
+        return
+    summary = cycle_summary or {}
+    failed = int(summary.get('failed') or 0)
+    try:
+        connection.execute(
+            '''
+            INSERT INTO asset_risk_worker_state (worker_name, heartbeat_at, last_cycle_at, last_completed_at, consecutive_failures, updated_at)
+            VALUES (%s, NOW(), NOW(), CASE WHEN %s > 0 THEN NOW() ELSE NULL END, %s, NOW())
+            ON CONFLICT (worker_name) DO UPDATE SET
+                heartbeat_at = NOW(),
+                last_cycle_at = NOW(),
+                last_completed_at = CASE WHEN %s > 0 THEN NOW() ELSE asset_risk_worker_state.last_completed_at END,
+                consecutive_failures = CASE WHEN %s > 0 THEN asset_risk_worker_state.consecutive_failures + 1 ELSE 0 END,
+                updated_at = NOW()
+            ''',
+            (worker_name, int(summary.get('processed') or 0), failed, int(summary.get('processed') or 0), failed),
+        )
+        connection.commit()
+    except Exception:
+        logger.exception('event=asset_risk_worker_heartbeat_failed')
+
+
+def reconcile_stuck_jobs(connection: Any, *, config: dict[str, Any], worker_healthy: bool, now: Any = None) -> dict[str, Any]:
+    """Move jobs that can no longer make progress to a terminal state.
+
+    A queued job older than the configured timeout with no healthy worker to claim
+    it — or a running job whose lease expired with no healthy worker to reclaim it —
+    becomes ``blocked`` with failure_code ``assessment_worker_unavailable`` rather
+    than pending forever. When a healthy worker exists it reclaims expired running
+    jobs itself (see _claim_next_job), so this only acts when worker_healthy is
+    false. Idempotent and safe to call from the read path."""
+    if worker_healthy or not service._table_exists(connection, 'asset_risk_jobs'):
+        return {'blocked': 0}
+    timeout = int(config.get('queued_job_timeout_seconds') or 900)
+    try:
+        rows = connection.execute(
+            '''
+            UPDATE asset_risk_jobs
+            SET status = 'blocked', failure_code = 'assessment_worker_unavailable',
+                last_error = 'No healthy assessor worker claimed the job before the timeout.',
+                lease_owner = NULL, lease_expires_at = NULL, completed_at = NOW(), updated_at = NOW()
+            WHERE (
+                (status = 'queued' AND queued_at IS NOT NULL AND queued_at < NOW() - (%s || ' seconds')::interval)
+                OR (status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < NOW() - (%s || ' seconds')::interval)
+            )
+            RETURNING id, workspace_id, asset_id, status
+            ''',
+            (str(timeout), str(timeout)),
+        ).fetchall()
+    except Exception:
+        logger.exception('event=asset_assessment_reconcile_failed')
+        return {'blocked': 0}
+    for row in rows:
+        service.log_assessment_event(
+            'asset_assessment_blocked', workspace_id=row.get('workspace_id'), asset_id=row.get('asset_id'),
+            job_id=row.get('id'), failure_code='assessment_worker_unavailable', worker_healthy=False,
+        )
+        service.log_assessment_event(
+            'asset_assessment_stale_job_recovered', workspace_id=row.get('workspace_id'),
+            asset_id=row.get('asset_id'), job_id=row.get('id'), result='blocked',
+        )
+    return {'blocked': len(rows)}
+
+
 def run_asset_risk_worker_once(config: dict[str, Any] | None = None) -> dict[str, Any]:
     """One worker cycle. Enqueues due assets, then processes up to batch_size jobs."""
     cfg = config or arc.assessor_config()
@@ -133,8 +206,12 @@ def run_asset_risk_worker_once(config: dict[str, Any] | None = None) -> dict[str
     failed = 0
     enqueued = 0
 
-    # Enqueue in its own short transaction so claiming is not blocked by it.
+    # Enqueue in its own short transaction so claiming is not blocked by it. A
+    # running (enabled) cycle is proof of life, so the same short transaction also
+    # persists a heartbeat — letting the API report worker_healthy from a fact rather
+    # than an env var.
     with pilot.pg_connection() as connection:
+        record_heartbeat(connection, worker_name=lease_owner)
         try:
             enqueued = _enqueue_due_assets(connection, config=cfg)
             connection.commit()
@@ -164,20 +241,27 @@ def run_asset_risk_worker_once(config: dict[str, Any] | None = None) -> dict[str
                     )
                     connection.commit()
                     continue
+                service.log_assessment_event(
+                    'asset_assessment_started', workspace_id=workspace_id, asset_id=asset_id,
+                    job_id=job_id, execution_mode='background', worker_healthy=True,
+                )
                 outcome = service.assess_asset(
                     connection, workspace_id=workspace_id, asset_row=dict(asset_row),
                     config=cfg, trigger_source=trigger_source,
                 )
                 connection.execute(
-                    "UPDATE asset_risk_jobs SET status = 'completed', completed_at = NOW(), lease_owner = NULL, last_error = NULL, updated_at = NOW() WHERE id = %s",
+                    "UPDATE asset_risk_jobs SET status = 'completed', completed_at = NOW(), heartbeat_at = NOW(), lease_owner = NULL, last_error = NULL, failure_code = NULL, updated_at = NOW() WHERE id = %s",
                     (job_id,),
                 )
                 connection.commit()
                 processed += 1
-                logger.info(
-                    'event=asset_risk_assessed workspace_id=%s asset_id=%s risk_score=%s risk_level=%s status=%s findings=%s',
-                    workspace_id, asset_id, outcome.get('risk_score'), outcome.get('risk_level'),
-                    outcome.get('status'), outcome.get('findings_count'),
+                result_status = str(outcome.get('status') or 'completed')
+                completion_event = 'asset_assessment_partial' if result_status in ('partial', 'degraded') else 'asset_assessment_completed'
+                service.log_assessment_event(
+                    completion_event, workspace_id=workspace_id, asset_id=asset_id,
+                    assessment_id=outcome.get('assessment_id'), job_id=job_id, execution_mode='background',
+                    result=result_status, risk_score=outcome.get('risk_score'), risk_level=outcome.get('risk_level'),
+                    findings=outcome.get('findings_count'),
                 )
             except Exception as exc:  # noqa: BLE001 - one asset must not stop the batch
                 failed += 1
@@ -185,17 +269,19 @@ def run_asset_risk_worker_once(config: dict[str, Any] | None = None) -> dict[str
                 max_attempts = int(claimed.get('max_attempts') or cfg['max_attempts'])
                 terminal = attempts >= max_attempts
                 next_status = 'failed' if terminal else 'queued'
+                failure_code = 'assessment_error' if terminal else None
                 try:
                     connection.execute(
-                        'UPDATE asset_risk_jobs SET status = %s, last_error = %s, lease_owner = NULL, lease_expires_at = NULL, updated_at = NOW() WHERE id = %s',
-                        (next_status, str(exc)[:500], job_id),
+                        'UPDATE asset_risk_jobs SET status = %s, last_error = %s, failure_code = %s, lease_owner = NULL, lease_expires_at = NULL, updated_at = NOW() WHERE id = %s',
+                        (next_status, str(exc)[:500], failure_code, job_id),
                     )
                     connection.commit()
                 except Exception:
                     logger.exception('event=asset_risk_job_status_update_failed job_id=%s', job_id)
-                logger.warning(
-                    'event=asset_risk_assessment_failed workspace_id=%s asset_id=%s attempts=%s terminal=%s error=%s',
-                    workspace_id, asset_id, attempts, terminal, type(exc).__name__,
+                service.log_assessment_event(
+                    'asset_assessment_failed', workspace_id=workspace_id, asset_id=asset_id, job_id=job_id,
+                    execution_mode='background', attempts=attempts, terminal=terminal,
+                    failure_code=(failure_code or 'retrying'), error=type(exc).__name__,
                 )
 
     return {'enqueued': enqueued, 'processed': processed, 'failed': failed}
