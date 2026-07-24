@@ -296,7 +296,15 @@ function TelemetryTimeline({ summary }: { summary: WorkspaceMonitoringTruth }) {
   );
 }
 
-export default function RuntimeSummaryPanel() {
+type RuntimeSummaryPanelProps = {
+  /** Collapse the checklist / health cards / timeline into an expandable section
+   *  and keep only a compact status strip visible. Used on dense pages (Screen 3)
+   *  where the full panel consumes too much vertical space above the primary
+   *  content. No monitoring information is removed — only collapsed. */
+  compact?: boolean;
+};
+
+export default function RuntimeSummaryPanel({ compact = false }: RuntimeSummaryPanelProps) {
   const { summary, loading, providerHealth, workerHealth } = useRuntimeSummary();
 
   if (loading) return null;
@@ -304,44 +312,51 @@ export default function RuntimeSummaryPanel() {
   const bannerState = deriveBannerState(summary);
   const checklist = buildChecklist(summary, workerHealth);
   const subtext = bannerSubtext(bannerState, summary);
+  const doneCount = checklist.filter((s) => s.status === 'done').length;
 
-  return (
-    <section style={{ marginBottom: '1.5rem' }}>
-      {/* ── State banner ──────────────────────────────────────────── */}
-      <div style={{
-        display: 'flex', alignItems: 'flex-start', gap: '1rem',
-        padding: '0.875rem 1.25rem', borderRadius: '8px', marginBottom: '1rem',
-        background: 'var(--surface-subtle)',
-        borderLeft: `4px solid ${bannerColor(bannerState)}`,
-      }}>
-        <div style={{ flex: 1 }}>
-          <span style={{ fontWeight: 700, fontSize: '0.8rem', letterSpacing: '0.05em', color: bannerColor(bannerState) }}>
-            {bannerLabel(bannerState)}
-          </span>
-          <p style={{ margin: '0.2rem 0 0', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
-            {bannerHeadline(bannerState, summary)}
+  const banner = (
+    <div style={{
+      display: 'flex', alignItems: 'flex-start', gap: '1rem',
+      padding: '0.875rem 1.25rem', borderRadius: '8px', marginBottom: compact ? '0' : '1rem',
+      background: 'var(--surface-subtle)',
+      borderLeft: `4px solid ${bannerColor(bannerState)}`,
+    }}>
+      <div style={{ flex: 1 }}>
+        <span style={{ fontWeight: 700, fontSize: '0.8rem', letterSpacing: '0.05em', color: bannerColor(bannerState) }}>
+          {bannerLabel(bannerState)}
+        </span>
+        <p style={{ margin: '0.2rem 0 0', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+          {bannerHeadline(bannerState, summary)}
+        </p>
+        {subtext ? (
+          <p style={{ margin: '0.15rem 0 0', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+            {subtext}
           </p>
-          {subtext ? (
-            <p style={{ margin: '0.15rem 0 0', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-              {subtext}
-            </p>
-          ) : null}
-          {summary.contradiction_flags.length > 0 ? (
-            <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--warning-fg, #d97706)' }}>
-              Contradictions detected: {summary.contradiction_flags.join(', ')}
-            </p>
-          ) : null}
-        </div>
-        <div style={{ textAlign: 'right', minWidth: '120px' }}>
-          <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-            {summary.protected_assets_count} asset{summary.protected_assets_count !== 1 ? 's' : ''}
+        ) : null}
+        {summary.contradiction_flags.length > 0 ? (
+          <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--warning-fg, #d97706)' }}>
+            Contradictions detected: {summary.contradiction_flags.join(', ')}
           </p>
-          <p style={{ margin: '0.1rem 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-            {summary.reporting_systems_count} reporting system{summary.reporting_systems_count !== 1 ? 's' : ''}
-          </p>
-        </div>
+        ) : null}
       </div>
+      <div style={{ textAlign: 'right', minWidth: '120px' }}>
+        <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+          {summary.protected_assets_count} asset{summary.protected_assets_count !== 1 ? 's' : ''}
+        </p>
+        <p style={{ margin: '0.1rem 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+          {summary.reporting_systems_count} reporting system{summary.reporting_systems_count !== 1 ? 's' : ''}
+        </p>
+        {compact ? (
+          <p style={{ margin: '0.1rem 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+            Setup {doneCount}/{checklist.length}
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
 
+  const details = (
+    <>
       {/* ── Setup checklist ───────────────────────────────────────── */}
       <div className="dataCard" style={{ padding: '1rem', marginBottom: '1rem' }}>
         <p className="sectionEyebrow" style={{ marginBottom: '0.5rem' }}>Monitoring Setup Checklist</p>
@@ -358,6 +373,27 @@ export default function RuntimeSummaryPanel() {
 
       {/* ── Telemetry timeline ────────────────────────────────────── */}
       <TelemetryTimeline summary={summary} />
+    </>
+  );
+
+  // Compact mode: a thin status strip with the setup/health detail collapsed
+  // into an expandable section so the primary content starts higher.
+  if (compact) {
+    return (
+      <section style={{ marginBottom: '1rem' }} className="runtimeSummaryCompact">
+        {banner}
+        <details className="runtimeSummaryDetails">
+          <summary className="runtimeSummaryToggle">Monitoring setup &amp; health</summary>
+          <div style={{ marginTop: '1rem' }}>{details}</div>
+        </details>
+      </section>
+    );
+  }
+
+  return (
+    <section style={{ marginBottom: '1.5rem' }}>
+      {banner}
+      {details}
     </section>
   );
 }

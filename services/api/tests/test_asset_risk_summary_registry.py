@@ -54,11 +54,65 @@ def _dt(day=23):
 # Summary
 # --------------------------------------------------------------------------
 def test_summary_empty_workspace_is_truthful():
+    # An empty workspace has no reserve-backed assets -> not_configured, never a
+    # coverage percent and never "insufficient evidence" (which would imply a
+    # reserve-backed asset is missing its proof).
     conn = FakeConn(tables_exist=False, matchers=[('FROM assets', [{'total_assets': 0, 'total_value': 0}])])
     out = summary.build_risk_summary(conn, workspace_id='ws-1')
-    assert out['reserve_coverage']['status'] == 'insufficient_evidence'
+    assert out['reserve_coverage']['status'] == 'not_configured'
+    assert out['reserve_coverage']['coverage_percent'] is None
     assert out['assessed_assets'] == 0
-    assert 'No assessments yet' in out['ai_summary']
+    assert out['assessment_status'] == 'not_started'
+    assert 'No protected assets' in out['ai_summary']
+
+
+def test_summary_wallet_only_workspace_is_not_configured_not_insufficient():
+    # A workspace that contains a wallet but no reserve-backed asset must report
+    # reserve coverage as not_configured, not insufficient_evidence.
+    conn = FakeConn(matchers=[
+        ('COALESCE(SUM(value_usd)', [{'total_assets': 1, 'total_value': Decimal('0')}]),
+        # No reserve-backed assets configured -> reserve_backed count query returns 0.
+        ('lower(COALESCE(rwa_asset_type', [{'n': 0}]),
+        ('DISTINCT ON (a.asset_id)', [
+            {'asset_id': 'w1', 'risk_score': 35, 'risk_level': 'medium', 'confidence': 0.6, 'data_completeness': 0.6,
+             'reserve_status': 'not_applicable', 'reserve_value_usd': None, 'liability_value_usd': None,
+             'reserve_coverage_percent': None, 'monitoring_health': 'warning', 'status': 'completed', 'assessed_at': _dt(), 'feed_freshness': {}},
+        ]),
+        ("status = 'active'", []),
+        ('GROUP BY status', []),
+    ])
+    out = summary.build_risk_summary(conn, workspace_id='ws-1')
+    assert out['reserve_coverage']['status'] == 'not_configured'
+    assert out['reserve_coverage']['coverage_percent'] is None
+    assert out['reserve_backed_count'] == 0
+    assert 'reserve-backed' in out['ai_summary'].lower()
+
+
+def test_summary_reserve_backed_without_evidence_is_insufficient():
+    # A reserve-backed asset exists (config count = 1) but no verified reserve
+    # evidence -> insufficient_evidence (NOT not_configured, NOT a 0%).
+    conn = FakeConn(matchers=[
+        ('COALESCE(SUM(value_usd)', [{'total_assets': 1, 'total_value': Decimal('1000000')}]),
+        ('lower(COALESCE(rwa_asset_type', [{'n': 1}]),
+        ('DISTINCT ON (a.asset_id)', [
+            {'asset_id': 's1', 'risk_score': 65, 'risk_level': 'high', 'confidence': 0.5, 'data_completeness': 0.5,
+             'reserve_status': 'insufficient_evidence', 'reserve_value_usd': None, 'liability_value_usd': None,
+             'reserve_coverage_percent': None, 'monitoring_health': 'warning', 'status': 'completed', 'assessed_at': _dt(), 'feed_freshness': {}},
+        ]),
+        ("status = 'active'", []),
+        ('GROUP BY status', []),
+    ])
+    out = summary.build_risk_summary(conn, workspace_id='ws-1')
+    assert out['reserve_coverage']['status'] == 'insufficient_evidence'
+    assert out['reserve_coverage']['coverage_percent'] is None
+    assert out['reserve_backed_count'] == 1
+
+
+def test_summary_worker_disabled_is_reported():
+    conn = FakeConn(tables_exist=False, matchers=[('FROM assets', [{'total_assets': 0, 'total_value': 0}])])
+    out = summary.build_risk_summary(conn, workspace_id='ws-1')
+    assert out['worker']['enabled'] is False
+    assert out['worker']['queued'] == 0 and out['worker']['running'] == 0
 
 
 def test_summary_aggregates_reserve_coverage_from_verified_only():
@@ -205,6 +259,42 @@ def test_validate_registry_payload_accepts_public_https_and_opaque_id():
     assert ok['reserve_feed_type'] == 'api'
     ok2 = registry.validate_registry_payload({'rwa_asset_type': 'stablecoin', 'reserve_feed_type': 'attestation', 'reserve_feed_identifier': 'attestation-feed-123', 'value_usd': '1000000', 'reserve_value_usd': '1280000', 'reserve_verified': True})
     assert ok2['reserve_verified'] is True
+
+
+def test_validate_registry_payload_token_decimals():
+    import pytest
+    from fastapi import HTTPException
+    ok = registry.validate_registry_payload({'token_decimals': '18'})
+    assert ok['token_decimals'] == 18
+    ok2 = registry.validate_registry_payload({})
+    assert ok2['token_decimals'] is None
+    with pytest.raises(HTTPException):
+        registry.validate_registry_payload({'token_decimals': '99'})
+    with pytest.raises(HTTPException):
+        registry.validate_registry_payload({'token_decimals': 'abc'})
+
+
+def test_registry_marks_wallet_reserve_not_applicable_when_unassessed():
+    # A wallet-type asset with no assessment must report reserve status
+    # not_applicable (never null/insufficient), and reserve_required False.
+    conn = FakeConn(matchers=[('DISTINCT ON (asset_id)', []), ("status = 'active'", [])])
+    wallet = [{'id': 'w1', 'name': 'Test Wallet', 'chain_network': 'ethereum-mainnet', 'asset_type': 'wallet',
+               'rwa_asset_type': None, 'reserve_feed_type': 'none', 'value_usd': None}]
+    out = registry.attach_risk_and_filter(conn, workspace_id='ws-1', assets=wallet, query_params=_QP())
+    row = out['assets'][0]
+    assert row['reserve_required'] is False
+    assert row['reserve_status'] == 'not_applicable'
+    assert row['assessment_status'] == 'not_assessed'
+
+
+def test_registry_reserve_backed_asset_stays_null_until_assessed():
+    conn = FakeConn(matchers=[('DISTINCT ON (asset_id)', []), ("status = 'active'", [])])
+    backed = [{'id': 's1', 'name': 'Stable', 'chain_network': 'ethereum-mainnet', 'asset_type': 'contract',
+               'rwa_asset_type': 'stablecoin', 'reserve_feed_type': 'none', 'value_usd': Decimal('1000000')}]
+    out = registry.attach_risk_and_filter(conn, workspace_id='ws-1', assets=backed, query_params=_QP())
+    row = out['assets'][0]
+    assert row['reserve_required'] is True
+    assert row['reserve_status'] is None  # pending assessment, not "not applicable"
 
 
 def test_health_reconcile_never_overstates():

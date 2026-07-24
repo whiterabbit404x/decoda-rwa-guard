@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 export default async function AssetsPage() {
   return (
     <main className="container productPage">
-      <RuntimeSummaryPanel />
+      <RuntimeSummaryPanel compact />
       <AssetsManager apiUrl={resolveApiUrl()} />
     </main>
   );

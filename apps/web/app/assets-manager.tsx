@@ -12,6 +12,9 @@ import AssetRiskAssessorPanel from './asset-risk-assessor-panel';
 import {
   RISK_SCORE_TOOLTIP,
   RWA_TYPE_OPTIONS,
+  assessmentStatusLabel,
+  assessmentStatusVariant,
+  isReserveBackedRwaType,
   formatPercent,
   formatUsd,
   monitoringHealthLabel,
@@ -55,9 +58,9 @@ const PAGE_SIZE = 25;
 // on-chain contracts and 'contract' is a valid backend asset_type.
 const EMPTY_ASSET = {
   name: '', asset_type: 'contract', rwa_asset_type: 'tokenized_treasury', chain_network: 'ethereum-mainnet', identifier: '',
-  custodian: '', token_symbol: '', owner_team: '', value_usd: '', tags: [] as string[], description: '', notes: '', enabled: true,
+  custodian: '', token_symbol: '', token_contract_address: '', token_decimals: '', owner_team: '', value_usd: '', tags: [] as string[], description: '', notes: '', enabled: true,
   price_source: '', reference_price_usd: '', circulating_supply: '',
-  reserve_feed_type: 'none', reserve_feed_identifier: '', reserve_value_usd: '', reserve_verified: false,
+  reserve_feed_type: 'none', reserve_feed_identifier: '', reserve_value_usd: '', reserve_verified: false, reserve_update_interval_seconds: '',
 };
 
 const QUICK_PRESETS = [
@@ -169,6 +172,66 @@ function assetNextAction(asset: Asset): string {
   return 'View detections';
 }
 
+/** Human label for a reserve feed type (config value → display). */
+function reserveFeedTypeLabel(type: string | null | undefined): string {
+  switch ((type || '').toLowerCase()) {
+    case 'manual': return 'Manual attestation';
+    case 'attestation': return 'Attestation report';
+    case 'proof_of_reserve': return 'Proof of reserve';
+    case 'api': return 'Reserve API';
+    case 'none':
+    case '': return 'Not configured';
+    default: return type as string;
+  }
+}
+
+/** Truthful monitoring-health tooltip so an unavailable value is explained. */
+function monitoringHealthTooltip(health: string): string {
+  switch ((health || '').toLowerCase()) {
+    case 'healthy': return 'Monitoring is live and telemetry is fresh.';
+    case 'warning': return 'Monitoring is degraded — telemetry is missing or stale.';
+    case 'critical': return 'Monitoring coverage is critically incomplete.';
+    case 'degraded': return 'A provider failed or evidence is stale; showing last known state.';
+    case 'provisioning': return 'Monitoring is being provisioned.';
+    case 'not_configured': return 'No monitoring target is linked to this asset yet.';
+    default: return 'Monitoring state could not be classified from backend facts.';
+  }
+}
+
+/** — cell with an explanatory tooltip for a genuinely-absent value. */
+function AbsentCell({ reason }: { reason: string }) {
+  return <span className="muted" title={reason} aria-label={reason}>—</span>;
+}
+
+/** Provenance label for a value in the details drawer. */
+type DataLabelKind = 'live' | 'delayed' | 'estimated' | 'unverified' | 'missing' | 'not_applicable';
+function DataLabel({ kind }: { kind: DataLabelKind }) {
+  const map: Record<DataLabelKind, [string, PillVariant]> = {
+    live: ['Live', 'success'],
+    delayed: ['Delayed', 'warning'],
+    estimated: ['Estimated', 'warning'],
+    unverified: ['Unverified', 'warning'],
+    missing: ['Missing', 'neutral'],
+    not_applicable: ['Not applicable', 'info'],
+  };
+  const [label, variant] = map[kind];
+  return <StatusPill label={label} variant={variant} />;
+}
+
+/* ── Assessment status cell (status + last assessed time) ─────────── */
+function AssessmentCell({ asset }: { asset: Asset }) {
+  const status = String(asset.assessment_status || (asset.risk_score == null ? 'not_assessed' : 'completed'));
+  const lastAssessed = asset.last_assessed_at as string | null | undefined;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem', alignItems: 'flex-start' }}>
+      <StatusPill label={assessmentStatusLabel(status)} variant={assessmentStatusVariant(status)} />
+      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }} title={lastAssessed ? `Last assessed ${new Date(lastAssessed).toLocaleString()}` : 'This asset has not been assessed yet.'}>
+        {lastAssessed ? relativeTime(lastAssessed) : 'never'}
+      </span>
+    </div>
+  );
+}
+
 /* ── Risk badge (compact colored score with tooltip) ──────────────── */
 function RiskBadge({ score, level }: { score: number | null | undefined; level?: string | null }) {
   const resolvedLevel: RiskLevel = (level as RiskLevel) || riskLevelForScore(score);
@@ -205,6 +268,8 @@ export default function AssetsManager({ apiUrl }: Props) {
   const [showAddModal, setShowAddModal] = useState(false);
   const [drawerAsset, setDrawerAsset] = useState<Asset | null>(null);
   const [panelRefresh, setPanelRefresh] = useState(0);
+  const [workspaceAssessing, setWorkspaceAssessing] = useState(false);
+  const [assessmentProgress, setAssessmentProgress] = useState('');
   const fieldRefs = useRef<Record<FieldName, HTMLInputElement | HTMLSelectElement | null>>({
     name: null, asset_type: null, chain_network: null, identifier: null,
   });
@@ -317,6 +382,10 @@ export default function AssetsManager({ apiUrl }: Props) {
 
   const validationErrors = useMemo(() => validate(form), [form]);
   const isFormValid = Object.keys(validationErrors).length === 0;
+  // Progressive disclosure: reserve-backed RWA types (or an explicit feed) surface
+  // the reserve configuration; wallets do not require it.
+  const reserveBacked = isReserveBackedRwaType(form.rwa_asset_type) || form.reserve_feed_type !== 'none';
+  const isWalletType = form.asset_type === 'wallet';
   const blockedReason = !form.name.trim()
     ? 'Add an asset name to enable creation.'
     : !form.identifier.trim()
@@ -486,6 +555,56 @@ export default function AssetsManager({ apiUrl }: Props) {
     }
   }
 
+  // Fire a single idempotent assessment for one asset (no per-row spinner state).
+  const assessOne = useCallback(async (assetId: string): Promise<boolean> => {
+    const headers = authHeaders();
+    let response = await fetch(`/api/assets/${assetId}/risk-assessment`, { method: 'POST', headers: { ...headers } });
+    if (response.status === 403) {
+      const initial = await response.json().catch(() => ({}));
+      if (initial?.code === 'CSRF_INVALID' || initial?.code === 'csrf_invalid' || initial?.code === 'CSRF_EXPIRED') {
+        const freshToken = await refreshCsrfToken();
+        if (freshToken) {
+          response = await fetch(`/api/assets/${assetId}/risk-assessment`, { method: 'POST', headers: { ...headers, 'X-CSRF-Token': freshToken } });
+        }
+      }
+    }
+    return response.ok || response.status === 409; // 409 => an active job already exists (idempotent)
+  }, [authHeaders, refreshCsrfToken]);
+
+  // Workspace-level "Run assessment": assess the assets that need it (unassessed,
+  // stale, or degraded) from the currently loaded page. Bounded and sequential so
+  // it never floods the backend; duplicate concurrent jobs are prevented server-side.
+  const runWorkspaceAssessment = useCallback(async () => {
+    if (workspaceAssessing) return;
+    setSubmitError('');
+    const needsAssessment = assets.filter((a) => {
+      const s = String(a.assessment_status || '');
+      return a.risk_score === null || a.risk_score === undefined || s === 'not_assessed' || s === 'degraded' || s === 'partial';
+    });
+    const queue = (needsAssessment.length > 0 ? needsAssessment : assets).slice(0, 25);
+    if (queue.length === 0) return;
+    setWorkspaceAssessing(true);
+    let failures = 0;
+    try {
+      for (let i = 0; i < queue.length; i += 1) {
+        setAssessmentProgress(`Assessing ${i + 1}/${queue.length}…`);
+        // eslint-disable-next-line no-await-in-loop
+        const ok = await assessOne(queue[i].id);
+        if (!ok) failures += 1;
+      }
+      if (failures > 0) {
+        setSubmitError(`Assessment completed with ${failures} asset(s) unable to run. Their state is unchanged.`);
+      }
+      setPanelRefresh((v) => v + 1);
+      await load();
+    } catch (error) {
+      setSubmitError(classifyApiTransportError('run the assessment', apiUrl, error));
+    } finally {
+      setWorkspaceAssessing(false);
+      setAssessmentProgress('');
+    }
+  }, [apiUrl, assessOne, assets, load, workspaceAssessing]);
+
   async function archiveAsset(asset: Asset) {
     if (typeof window !== 'undefined' && !window.confirm(`Archive "${asset.name}"? It will stop being monitored.`)) return;
     setActionLoadingAssetId(asset.id);
@@ -596,11 +715,12 @@ export default function AssetsManager({ apiUrl }: Props) {
         ) : (
           <>
             <DataTable
-              headers={['Asset Name', 'Asset Type', 'Custodian', 'Network', 'Value (USD)', 'Risk Score', 'Monitoring Health']}
+              headers={['Asset Name', 'Asset Type', 'Custodian', 'Network', 'Value (USD)', 'Risk Score', 'Monitoring Health', 'Assessment']}
               compact
             >
               {assets.map((asset) => {
                 const monHealth = asset.monitoring_health || 'unknown';
+                const valueDisplay = formatUsd(asset.value_usd);
                 return (
                   <tr
                     key={asset.id}
@@ -618,11 +738,18 @@ export default function AssetsManager({ apiUrl }: Props) {
                       ) : null}
                     </td>
                     <td>{rwaTypeLabel(asset.rwa_asset_type, asset.asset_type)}</td>
-                    <td>{asset.custodian || <span className="muted">--</span>}</td>
-                    <td>{asset.chain_network || '--'}</td>
-                    <td>{formatUsd(asset.value_usd)}</td>
+                    <td>{asset.custodian || <AbsentCell reason="No custodian recorded for this asset." />}</td>
+                    <td>{asset.chain_network || <AbsentCell reason="No network recorded for this asset." />}</td>
+                    <td title={valueDisplay === '--' ? 'No protected value has been recorded for this asset.' : undefined}>
+                      {valueDisplay === '--' ? <AbsentCell reason="No protected value has been recorded for this asset." /> : valueDisplay}
+                    </td>
                     <td><RiskBadge score={asset.risk_score} level={asset.risk_level} /></td>
-                    <td><StatusPill label={monitoringHealthLabel(monHealth)} variant={monitoringHealthVariant(monHealth)} /></td>
+                    <td>
+                      <span title={monitoringHealthTooltip(monHealth)}>
+                        <StatusPill label={monitoringHealthLabel(monHealth)} variant={monitoringHealthVariant(monHealth)} />
+                      </span>
+                    </td>
+                    <td><AssessmentCell asset={asset} /></td>
                   </tr>
                 );
               })}
@@ -646,6 +773,9 @@ export default function AssetsManager({ apiUrl }: Props) {
       {/* ── Right-side AI Asset Risk Assessor panel ──────────────────── */}
       <AssetRiskAssessorPanel
         refreshSignal={panelRefresh}
+        onRunAssessment={runWorkspaceAssessment}
+        assessmentRunning={workspaceAssessing}
+        assessmentProgress={assessmentProgress}
         onViewReport={() => updateFilter({ risk_level: 'high' })}
         onFilterAnomalies={() => updateFilter({ risk_level: 'critical' })}
         onFilterGaps={() => updateFilter({ monitoring_health: 'not_configured' })}
@@ -716,9 +846,23 @@ export default function AssetsManager({ apiUrl }: Props) {
               <div className="buttonRow">
                 <div className="formField">
                   <label htmlFor="asset-rwa-type">Asset type</label>
-                  <select id="asset-rwa-type" value={form.rwa_asset_type} onChange={(e) => setForm({ ...form, rwa_asset_type: e.target.value })}>
+                  <select
+                    id="asset-rwa-type"
+                    value={form.rwa_asset_type}
+                    onChange={(e) => {
+                      const nextType = e.target.value;
+                      setForm({ ...form, rwa_asset_type: nextType });
+                      // Reserve-backed types reveal the reserve config automatically.
+                      if (isReserveBackedRwaType(nextType)) setShowAdvanced(true);
+                    }}
+                  >
                     {RWA_TYPE_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                   </select>
+                  <p className="inputHint">
+                    {reserveBacked
+                      ? 'Reserve-backed type — configure a reserve feed below so coverage can be verified.'
+                      : 'Reserve backing is optional for this type.'}
+                  </p>
                 </div>
                 <div className="formField">
                   <label htmlFor="asset-custodian">Custodian</label>
@@ -794,14 +938,37 @@ export default function AssetsManager({ apiUrl }: Props) {
                   <input id="asset-symbol" placeholder="e.g., USTB" value={form.token_symbol} onChange={(e) => setForm({ ...form, token_symbol: e.target.value })} />
                 </div>
               </div>
-              <button type="button" className="secondaryCta" onClick={() => setShowAdvanced((v) => !v)}>
-                {showAdvanced ? 'Hide reserve & source settings' : 'Reserve & source settings'}
-              </button>
-              {showAdvanced ? (
+              {/* Token metadata (on-chain assets). Wallets don't need a token contract. */}
+              {!isWalletType ? (
+                <div className="buttonRow">
+                  <div className="formField">
+                    <label htmlFor="asset-token-contract">Token contract address</label>
+                    <input
+                      id="asset-token-contract"
+                      placeholder="0x… (ERC-20 contract)"
+                      value={form.token_contract_address}
+                      onChange={(e) => setForm({ ...form, token_contract_address: e.target.value.trim() })}
+                    />
+                    <p className="inputHint">Metadata (decimals, symbol) can be discovered on-chain after creation when a provider is connected.</p>
+                  </div>
+                  <div className="formField">
+                    <label htmlFor="asset-token-decimals">Token decimals</label>
+                    <input id="asset-token-decimals" type="number" min={0} max={36} placeholder="e.g., 18" value={form.token_decimals} onChange={(e) => setForm({ ...form, token_decimals: e.target.value })} />
+                  </div>
+                </div>
+              ) : null}
+              {!reserveBacked ? (
+                <button type="button" className="secondaryCta" onClick={() => setShowAdvanced((v) => !v)}>
+                  {showAdvanced ? 'Hide reserve & source settings' : 'Reserve & source settings'}
+                </button>
+              ) : (
+                <p className="sectionEyebrow" style={{ marginTop: '0.5rem' }}>Reserve &amp; source settings</p>
+              )}
+              {(showAdvanced || reserveBacked) ? (
                 <>
                   <div className="buttonRow">
                     <div className="formField">
-                      <label htmlFor="asset-reserve-feed-type">Reserve feed type</label>
+                      <label htmlFor="asset-reserve-feed-type">Reserve feed type {reserveBacked ? <span className="requiredMark" aria-hidden="true">*</span> : null}</label>
                       <select id="asset-reserve-feed-type" value={form.reserve_feed_type} onChange={(e) => setForm({ ...form, reserve_feed_type: e.target.value })}>
                         <option value="none">None</option>
                         <option value="manual">Manual attestation</option>
@@ -809,6 +976,9 @@ export default function AssetsManager({ apiUrl }: Props) {
                         <option value="proof_of_reserve">Proof of reserve</option>
                         <option value="api">Reserve API</option>
                       </select>
+                      {reserveBacked && form.reserve_feed_type === 'none' ? (
+                        <p className="inputHint">Reserve-backed assets should configure a reserve feed. You can still save now and finish later — it will be marked <strong>Provisioning</strong>.</p>
+                      ) : null}
                     </div>
                     <div className="formField">
                       <label htmlFor="asset-reserve-feed-id">Reserve feed identifier / endpoint</label>
@@ -820,16 +990,20 @@ export default function AssetsManager({ apiUrl }: Props) {
                       <label htmlFor="asset-reserve-value">Verified reserve value (USD)</label>
                       <input id="asset-reserve-value" type="number" placeholder="Latest attested reserve" value={form.reserve_value_usd} onChange={(e) => setForm({ ...form, reserve_value_usd: e.target.value })} />
                     </div>
-                    <div className="formField" style={{ display: 'flex', alignItems: 'flex-end' }}>
-                      <label style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                        <input type="checkbox" checked={form.reserve_verified} onChange={(e) => setForm({ ...form, reserve_verified: e.target.checked })} />
-                        Mark reserve value as verified now
-                      </label>
+                    <div className="formField">
+                      <label htmlFor="asset-reserve-interval">Expected update interval (seconds)</label>
+                      <input id="asset-reserve-interval" type="number" min={0} placeholder="e.g., 86400" value={form.reserve_update_interval_seconds} onChange={(e) => setForm({ ...form, reserve_update_interval_seconds: e.target.value })} />
                     </div>
+                  </div>
+                  <div className="formField" style={{ display: 'flex', alignItems: 'center' }}>
+                    <label style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                      <input type="checkbox" checked={form.reserve_verified} onChange={(e) => setForm({ ...form, reserve_verified: e.target.checked })} />
+                      Mark reserve value as verified now
+                    </label>
                   </div>
                   <div className="buttonRow">
                     <div className="formField">
-                      <label htmlFor="asset-price-source">Price / oracle source</label>
+                      <label htmlFor="asset-price-source">Oracle / price source</label>
                       <input id="asset-price-source" placeholder="e.g., chainlink" value={form.price_source} onChange={(e) => setForm({ ...form, price_source: e.target.value })} />
                     </div>
                     <div className="formField">
@@ -909,8 +1083,18 @@ function AssetDetailsDrawer({
 
   const assessment = detail?.assessment ?? null;
   const findings: any[] = detail?.findings ?? [];
+  const history: any[] = detail?.history ?? [];
+  const valuationHistory: any[] = detail?.valuation_history ?? [];
   const monHealth = asset.monitoring_health || assessment?.monitoring_health || 'unknown';
   const nextAction = assetNextAction(asset);
+
+  // Reserve applicability: type-driven (backend flag) or a configured feed. A
+  // wallet / non-reserve asset is "not applicable" — never "missing evidence".
+  const reserveApplies = Boolean(asset.reserve_required) || (asset.reserve_feed_type && asset.reserve_feed_type !== 'none');
+  const reserveStatus = assessment?.reserve_status || (reserveApplies ? 'insufficient_evidence' : 'not_applicable');
+  const linkedTargets = Number(asset.monitoring_target_count ?? 0);
+  const linkedSystems = Number(asset.monitoring_systems_count ?? 0);
+  const priceSource = String(asset.price_source || '').trim();
 
   return (
     <div className="drawerOverlay" role="dialog" aria-modal="true" aria-label={`${asset.name} details`} onClick={onClose}>
@@ -925,11 +1109,35 @@ function AssetDetailsDrawer({
 
         <div className="drawerMetaGrid">
           <div><span className="drawerMetaLabel">Asset type</span><span>{rwaTypeLabel(asset.rwa_asset_type, asset.asset_type)}</span></div>
-          <div><span className="drawerMetaLabel">Custodian</span><span>{asset.custodian || '--'}</span></div>
-          <div><span className="drawerMetaLabel">Network</span><span>{asset.chain_network || '--'}</span></div>
+          <div><span className="drawerMetaLabel">Custodian</span><span>{asset.custodian || '—'}</span></div>
+          <div><span className="drawerMetaLabel">Network</span><span>{asset.chain_network || '—'}</span></div>
           <div><span className="drawerMetaLabel">Protected value</span><span>{formatUsd(asset.value_usd)}</span></div>
           <div><span className="drawerMetaLabel">Risk score</span><span><RiskBadge score={asset.risk_score} level={asset.risk_level} /></span></div>
-          <div><span className="drawerMetaLabel">Monitoring</span><StatusPill label={monitoringHealthLabel(monHealth)} variant={monitoringHealthVariant(monHealth)} /></div>
+          <div><span className="drawerMetaLabel">Monitoring</span><span title={monitoringHealthTooltip(monHealth)}><StatusPill label={monitoringHealthLabel(monHealth)} variant={monitoringHealthVariant(monHealth)} /></span></div>
+        </div>
+
+        {/* Identity & configuration (independent of assessment) */}
+        <div className="drawerSection">
+          <h3 className="drawerSectionTitle">Configuration</h3>
+          {asset.token_contract_address ? (
+            <div className="drawerKvRow"><span>Contract address</span><span style={{ fontFamily: 'monospace', fontSize: '0.72rem' }}>{asset.token_contract_address}</span></div>
+          ) : null}
+          <div className="drawerKvRow">
+            <span>Linked monitoring targets</span>
+            {linkedTargets > 0
+              ? <strong>{linkedTargets} target{linkedTargets === 1 ? '' : 's'} · {linkedSystems} system{linkedSystems === 1 ? '' : 's'}</strong>
+              : <DataLabel kind="missing" />}
+          </div>
+          <div className="drawerKvRow">
+            <span>Valuation source</span>
+            {priceSource ? <span>{priceSource}</span> : <DataLabel kind="missing" />}
+          </div>
+          <div className="drawerKvRow">
+            <span>Reserve backing</span>
+            {reserveApplies
+              ? <span title="Reserve feed type configured for this asset.">{String(asset.reserve_feed_type || 'none') === 'none' ? <DataLabel kind="missing" /> : reserveFeedTypeLabel(asset.reserve_feed_type)}</span>
+              : <DataLabel kind="not_applicable" />}
+          </div>
         </div>
 
         {loading ? (
@@ -941,37 +1149,63 @@ function AssetDetailsDrawer({
             <p className="muted">
               {detail?.status === 'provisioning'
                 ? 'Assessment storage is provisioning. Run an assessment shortly.'
-                : 'This asset has not been assessed yet. Run an assessment to compute its risk.'}
+                : 'This asset has not been assessed yet. Run an assessment to compute its risk and monitoring coverage.'}
             </p>
           </div>
         ) : (
           <>
-            {/* Reserve + liability */}
+            {/* Reserve coverage — only meaningful when reserve backing applies. */}
             <div className="drawerSection">
               <h3 className="drawerSectionTitle">Reserve coverage</h3>
               <div className="drawerKvRow">
                 <span>Status</span>
-                <StatusPill label={reserveStatusLabel(assessment.reserve_status)} variant={reserveStatusVariant(assessment.reserve_status)} />
+                <StatusPill label={reserveStatusLabel(reserveStatus)} variant={reserveStatusVariant(reserveStatus)} />
               </div>
-              <div className="drawerKvRow"><span>Coverage</span><strong>{formatPercent(assessment.reserve_coverage_percent, 1)}</strong></div>
-              <div className="drawerKvRow"><span>Verified reserve</span><span>{formatUsd(assessment.reserve_value_usd)}</span></div>
-              <div className="drawerKvRow"><span>On-chain liability</span><span>{formatUsd(assessment.liability_value_usd)}</span></div>
-              <p className="drawerFreshness">Assessed {relativeTime(assessment.assessed_at)} · confidence {Math.round((Number(assessment.confidence) || 0) * 100)}% · status {assessment.status}</p>
+              {reserveApplies ? (
+                <>
+                  <div className="drawerKvRow"><span>Coverage</span><strong>{formatPercent(assessment.reserve_coverage_percent, 1)}</strong></div>
+                  <div className="drawerKvRow"><span>Verified reserve</span><span>{formatUsd(assessment.reserve_value_usd)}</span></div>
+                  <div className="drawerKvRow"><span>On-chain liability</span><span>{formatUsd(assessment.liability_value_usd)}</span></div>
+                </>
+              ) : (
+                <p className="muted" style={{ margin: '0.35rem 0 0', fontSize: '0.8rem' }}>
+                  Reserve backing does not apply to this asset type; it is excluded from reserve coverage.
+                </p>
+              )}
             </div>
 
-            {/* Risk breakdown */}
+            {/* Confidence & completeness */}
+            <div className="drawerSection">
+              <h3 className="drawerSectionTitle">Confidence &amp; completeness</h3>
+              <div className="drawerKvRow"><span>Confidence</span><strong>{Math.round((Number(assessment.confidence) || 0) * 100)}%</strong></div>
+              <div className="drawerKvRow"><span>Data completeness</span><strong>{Math.round((Number(assessment.data_completeness) || 0) * 100)}%</strong></div>
+              <p className="drawerFreshness">Assessed {relativeTime(assessment.assessed_at)} · status {assessment.status}{assessment.score_version ? ` · ${assessment.score_version}` : ''}</p>
+            </div>
+
+            {/* Risk breakdown — not-applicable dimensions are shown as n/a, never 0. */}
             <div className="drawerSection">
               <h3 className="drawerSectionTitle">Risk score breakdown</h3>
-              {(assessment.dimensions ?? []).map((dim: any) => (
-                <div key={dim.key} className="dimRow">
-                  <span className="dimName">{String(dim.key).replace(/_/g, ' ')}</span>
-                  <div className="dimBarTrack"><div className="dimBarFill" style={{ width: `${Math.max(2, Math.min(100, dim.score))}%` }} /></div>
-                  <span className="dimScore">{dim.score}</span>
-                </div>
-              ))}
+              {(assessment.dimensions ?? []).map((dim: any) => {
+                const notApplicable = dim.applicable === false;
+                return (
+                  <div key={dim.key} className="dimRow" style={notApplicable ? { opacity: 0.55 } : undefined}>
+                    <span className="dimName" title={notApplicable ? 'Not applicable to this asset type — excluded from the score.' : undefined}>
+                      {String(dim.key).replace(/_/g, ' ')}
+                    </span>
+                    {notApplicable ? (
+                      <span className="muted" style={{ gridColumn: '2 / 4', fontSize: '0.72rem', textAlign: 'right' }}>Not applicable</span>
+                    ) : (
+                      <>
+                        <div className="dimBarTrack"><div className="dimBarFill" style={{ width: `${Math.max(2, Math.min(100, dim.score))}%` }} /></div>
+                        <span className="dimScore">{dim.score}</span>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
             </div>
 
-            {/* Active findings */}
+            {/* Active findings + monitoring gaps */}
             <div className="drawerSection">
               <h3 className="drawerSectionTitle">Active findings ({findings.length})</h3>
               {findings.length === 0 ? (
@@ -986,6 +1220,35 @@ function AssetDetailsDrawer({
                 </div>
               ))}
             </div>
+
+            {/* Last provider observations (labelled by provenance) */}
+            {valuationHistory.length > 0 ? (
+              <div className="drawerSection">
+                <h3 className="drawerSectionTitle">Recent provider observations</h3>
+                {valuationHistory.slice(0, 5).map((v: any, i: number) => (
+                  <div key={i} className="drawerKvRow">
+                    <span>{formatUsd(v.price_usd)} <span className="muted" style={{ fontSize: '0.72rem' }}>· {v.source || 'unknown'}</span></span>
+                    <span style={{ display: 'inline-flex', gap: '0.4rem', alignItems: 'center' }}>
+                      <DataLabel kind={v.is_estimated ? 'estimated' : 'live'} />
+                      <span className="muted" style={{ fontSize: '0.72rem' }}>{relativeTime(v.observed_at)}</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {/* Assessment history */}
+            {history.length > 1 ? (
+              <div className="drawerSection">
+                <h3 className="drawerSectionTitle">Assessment history</h3>
+                {history.slice(0, 6).map((h: any, i: number) => (
+                  <div key={i} className="drawerKvRow">
+                    <span><RiskBadge score={h.risk_score} level={h.risk_level} /> <span className="muted" style={{ fontSize: '0.72rem' }}>{h.status}</span></span>
+                    <span className="muted" style={{ fontSize: '0.72rem' }}>{relativeTime(h.assessed_at)}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </>
         )}
 

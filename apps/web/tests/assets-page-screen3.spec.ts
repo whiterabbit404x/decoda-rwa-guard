@@ -60,7 +60,7 @@ test('assets manager has RWA asset type filter with "All Types" plus RWA options
 });
 
 // 6. Table has the Screen 3 registry columns
-test('assets table headers are Asset Name, Asset Type, Custodian, Network, Value (USD), Risk Score, Monitoring Health', () => {
+test('assets table headers are Asset Name, Asset Type, Custodian, Network, Value (USD), Risk Score, Monitoring Health, Assessment', () => {
   expect(managerSrc).toContain("'Asset Name'");
   expect(managerSrc).toContain("'Asset Type'");
   expect(managerSrc).toContain("'Custodian'");
@@ -68,6 +68,9 @@ test('assets table headers are Asset Name, Asset Type, Custodian, Network, Value
   expect(managerSrc).toContain("'Value (USD)'");
   expect(managerSrc).toContain("'Risk Score'");
   expect(managerSrc).toContain("'Monitoring Health'");
+  // Assessment status + last-assessed time are surfaced in the table.
+  expect(managerSrc).toContain("'Assessment'");
+  expect(managerSrc).toContain('AssessmentCell');
 });
 
 // 6b. Risk score badge + tooltip + AI Assessor panel are present
@@ -134,4 +137,38 @@ test('assets source does not label simulator data as live_provider', () => {
 test('empty state shows "No protected assets yet" with correct message', () => {
   expect(managerSrc).toContain('No protected assets yet');
   expect(managerSrc).toContain('Add your first wallet, smart contract, treasury vault, or tokenized RWA to begin monitoring.');
+});
+
+// 11. The tall global monitoring panel is collapsed into a compact strip on Screen 3.
+test('assets page uses the compact runtime status strip (not the full-height panel)', () => {
+  expect(pageSrc).toContain('<RuntimeSummaryPanel compact />');
+});
+
+// 12. Workspace-level Run assessment is wired from the page into the AI panel.
+test('assets manager wires an operational workspace assessment into the AI panel', () => {
+  expect(managerSrc).toContain('runWorkspaceAssessment');
+  expect(managerSrc).toContain('onRunAssessment={runWorkspaceAssessment}');
+  expect(managerSrc).toContain('assessmentRunning={workspaceAssessing}');
+  // Duplicate concurrent jobs are tolerated (409 => idempotent), never surfaced as failure.
+  expect(managerSrc).toContain('response.status === 409');
+});
+
+// 13. Add Asset modal has the production fields + progressive disclosure.
+test('Add Asset modal has token metadata, reserve interval, and reserve-backed disclosure', () => {
+  expect(managerSrc).toContain('Token contract address');
+  expect(managerSrc).toContain('Token decimals');
+  expect(managerSrc).toContain('Expected update interval (seconds)');
+  expect(managerSrc).toContain('isReserveBackedRwaType');
+  // Wallet monitoring type hides token-contract fields.
+  expect(managerSrc).toContain('isWalletType');
+});
+
+// 14. Reserve semantics: the registry never hardcodes a "missing reserve evidence"
+// message for a non-reserve asset, and uses the not_applicable path.
+test('drawer treats non-reserve assets as not applicable, not missing evidence', () => {
+  expect(managerSrc).toContain('reserveApplies');
+  expect(managerSrc).toContain('Reserve backing does not apply to this asset type');
+  // Data-provenance labels exist for the details drawer.
+  expect(managerSrc).toContain('DataLabel');
+  expect(managerSrc).toContain("'not_applicable'");
 });

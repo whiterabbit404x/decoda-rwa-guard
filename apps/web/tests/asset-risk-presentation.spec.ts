@@ -6,12 +6,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
+  assessmentStatusLabel,
+  assessmentStatusVariant,
   formatPercent,
   formatUsd,
+  isReserveBackedRwaType,
   monitoringHealthLabel,
   monitoringHealthVariant,
   relativeTime,
+  reserveCoverageMessage,
   reserveStatusLabel,
+  reserveStatusVariant,
   riskLevelForScore,
   riskLevelLabel,
   riskLevelVariant,
@@ -59,6 +64,45 @@ test('reserve status labels are truthful (insufficient evidence surfaced)', () =
   expect(reserveStatusLabel('over_collateralized')).toBe('Over-collateralized');
 });
 
+test('reserve status distinguishes not applicable, not configured, insufficient evidence', () => {
+  // Wallet / non-reserve asset — never "missing evidence".
+  expect(reserveStatusLabel('not_applicable')).toBe('Not applicable');
+  expect(reserveStatusLabel('not_required')).toBe('Not applicable');
+  expect(reserveStatusVariant('not_applicable')).toBe('info');
+  // No reserve-backed assets configured — distinct from insufficient evidence.
+  expect(reserveStatusLabel('not_configured')).toBe('Not configured');
+  expect(reserveStatusVariant('not_configured')).toBe('neutral');
+});
+
+test('reserve coverage message is generated from structured state only', () => {
+  expect(reserveCoverageMessage('not_configured', 0)).toBe('No reserve-backed assets are configured.');
+  expect(reserveCoverageMessage('not_configured', 2)).toContain('cannot be verified');
+  expect(reserveCoverageMessage('insufficient_evidence')).toContain('no verified reserve evidence');
+  expect(reserveCoverageMessage('not_applicable')).toContain('does not apply');
+  expect(reserveCoverageMessage('healthy')).toBe('');
+});
+
+test('assessment status labels + variants cover the lifecycle', () => {
+  expect(assessmentStatusLabel('not_started')).toBe('Not started');
+  expect(assessmentStatusLabel('not_assessed')).toBe('Not started');
+  expect(assessmentStatusLabel('running')).toBe('Running');
+  expect(assessmentStatusLabel('complete')).toBe('Complete');
+  expect(assessmentStatusLabel('partial')).toBe('Partial');
+  expect(assessmentStatusLabel('failed')).toBe('Failed');
+  expect(assessmentStatusVariant('complete')).toBe('success');
+  expect(assessmentStatusVariant('running')).toBe('info');
+  expect(assessmentStatusVariant('partial')).toBe('warning');
+  expect(assessmentStatusVariant('failed')).toBe('danger');
+});
+
+test('reserve-backed RWA types match the backend taxonomy', () => {
+  expect(isReserveBackedRwaType('tokenized_treasury')).toBe(true);
+  expect(isReserveBackedRwaType('stablecoin')).toBe(true);
+  expect(isReserveBackedRwaType('real_estate')).toBe(false);
+  expect(isReserveBackedRwaType('other')).toBe(false);
+  expect(isReserveBackedRwaType(null)).toBe(false);
+});
+
 test('currency + percent formatting', () => {
   expect(formatUsd(991320000)).toBe('$991.32M');
   expect(formatUsd(3420000000)).toBe('$3.42B');
@@ -98,4 +142,15 @@ test('AI panel is the canonical assessor surface (not a chatbot) and consumes th
   // No free-text chat surface.
   expect(panelSrc).not.toContain('chatbot');
   expect(panelSrc).not.toContain('textarea');
+});
+
+test('AI panel surfaces an operational Run assessment + assessment status + worker health', () => {
+  // On-demand assessment button, gated by permission/running state.
+  expect(panelSrc).toContain('onRunAssessment');
+  expect(panelSrc).toContain('Run assessment');
+  expect(panelSrc).toContain('assessmentStatusLabel');
+  // Worker visibility (disabled worker + last error are surfaced truthfully).
+  expect(panelSrc).toContain('worker');
+  expect(panelSrc).toContain('Background assessment worker is disabled');
+  expect(panelSrc).toContain('reserveCoverageMessage');
 });
