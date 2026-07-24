@@ -124,7 +124,7 @@ export function reserveCoverageMessage(status: string | null | undefined, reserv
 // Assessment lifecycle status (workspace rollup or per-asset).
 export type AssessmentStatus =
   | 'not_started' | 'not_assessed' | 'queued' | 'running' | 'complete' | 'completed'
-  | 'partial' | 'degraded' | 'failed' | 'stale';
+  | 'partial' | 'degraded' | 'failed' | 'blocked' | 'stale';
 
 export function assessmentStatusLabel(status: string | null | undefined): string {
   switch ((status || '').toLowerCase()) {
@@ -137,6 +137,7 @@ export function assessmentStatusLabel(status: string | null | undefined): string
     case 'partial': return 'Partial';
     case 'degraded': return 'Degraded';
     case 'failed': return 'Failed';
+    case 'blocked': return 'Blocked';
     case 'stale': return 'Stale';
     default: return 'Unknown';
   }
@@ -151,9 +152,82 @@ export function assessmentStatusVariant(status: string | null | undefined): Pill
     case 'partial':
     case 'degraded':
     case 'stale': return 'warning';
-    case 'failed': return 'danger';
+    case 'failed':
+    case 'blocked': return 'danger';
     default: return 'neutral';
   }
+}
+
+// Canonical runtime capability from the API (services/api/.../summary.build_assessment_capability).
+// The frontend consumes THIS instead of inferring worker health from a missing
+// assessment or an environment variable.
+export type ExecutionMode = 'background' | 'on_demand' | 'unavailable';
+
+export type AssessmentCapability = {
+  background_enabled: boolean;
+  on_demand_enabled: boolean;
+  worker_healthy: boolean;
+  last_heartbeat_at: string | null;
+  execution_mode: ExecutionMode;
+  queue_depth?: number;
+  oldest_queued_job_age_seconds?: number | null;
+  active_job_count?: number;
+  blocked_job_count?: number;
+  last_successful_assessment_at?: string | null;
+  last_assessment_failure?: { code: string | null; message: string | null; at: string | null } | null;
+};
+
+export type AssessmentAction = { label: string; disabled: boolean; hint?: string };
+
+const WORKER_UNAVAILABLE_HINT =
+  'The background assessor is not running and on-demand assessment is disabled. Enable the Asset Risk Assessor worker or on-demand assessment to run assessments.';
+
+// Per-asset Run button. Renders ONLY from persisted backend job/assessment state
+// plus runtime capability — never from an ambiguous "unassessed asset count".
+export function assessmentActionLabel(
+  status: string | null | undefined,
+  capability?: AssessmentCapability | null,
+): AssessmentAction {
+  const s = (status || '').toLowerCase();
+  const mode = capability?.execution_mode;
+  // A persisted active job always wins — it is the true state.
+  if (s === 'running') return { label: 'Assessment running', disabled: true };
+  if (s === 'queued') return { label: 'Assessment queued', disabled: true };
+  // No execution path: cannot start a new assessment.
+  if (mode === 'unavailable') return { label: 'Worker unavailable', disabled: true, hint: WORKER_UNAVAILABLE_HINT };
+  switch (s) {
+    case 'complete':
+    case 'completed':
+    case 'partial':
+    case 'degraded':
+    case 'stale':
+      return { label: 'Run again', disabled: false };
+    case 'failed':
+    case 'blocked':
+      return { label: 'Retry assessment', disabled: false };
+    default:
+      return { label: 'Run assessment', disabled: false };
+  }
+}
+
+// Workspace-level Run button on the AI panel. Same canonical rules, plus the
+// bounded on-demand affordance ("Run limited assessment") when the background
+// worker is not healthy but on-demand execution is available.
+export function workspaceAssessmentAction(args: {
+  assessmentStatus?: string | null;
+  capability?: AssessmentCapability | null;
+  running?: boolean;
+  hasAssets?: boolean;
+}): AssessmentAction {
+  const { assessmentStatus, capability, running, hasAssets } = args;
+  const mode = capability?.execution_mode;
+  if (running) return { label: 'Running assessment…', disabled: true };
+  if (mode === 'unavailable') return { label: 'Worker unavailable', disabled: true, hint: WORKER_UNAVAILABLE_HINT };
+  // Only surface "queued" when a healthy worker / valid route exists to drain it.
+  if ((assessmentStatus || '').toLowerCase() === 'queued') return { label: 'Assessment queued', disabled: true };
+  if (hasAssets === false) return { label: 'Run assessment', disabled: true };
+  if (mode === 'on_demand') return { label: 'Run limited assessment', disabled: false };
+  return { label: 'Run assessment', disabled: false };
 }
 
 const RWA_TYPE_LABELS: Record<string, string> = {

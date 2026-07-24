@@ -413,15 +413,18 @@ def persist_registry_fields(
             (str(uuid.uuid4()), workspace_id, asset_id, fields['reference_price_usd']),
         )
 
-    # Enqueue an initial assessment (idempotent) and run it inline so the registry
-    # immediately reflects a deterministic score even where the worker is disabled.
-    # Best-effort: any failure leaves the queued job for the worker to retry and
-    # never blocks asset creation.
+    # Enqueue an initial assessment (idempotent). When on-demand assessment is
+    # enabled we run it inline so the registry immediately reflects a deterministic
+    # score even where the background worker is disabled; otherwise the queued job is
+    # left for a healthy worker to claim. Best-effort: any failure leaves the queued
+    # job behind and never blocks asset creation.
     if service._table_exists(connection, 'asset_risk_jobs'):
         enq = worker.enqueue_assessment(
             connection, workspace_id=workspace_id, asset_id=asset_id,
             trigger_source='asset_created', requested_by_user_id=user_id,
         )
+        if not arc.assessor_config().get('on_demand_enabled'):
+            return fields
         try:
             fresh = connection.execute(
                 'SELECT * FROM assets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL',
@@ -525,11 +528,32 @@ def latest_assessment_endpoint(asset_id: str, request: Any) -> dict[str, Any]:
         return payload
 
 
-def trigger_assessment_endpoint(asset_id: str, request: Any) -> dict[str, Any]:
-    """Enqueue (idempotent) and run an assessment inline for immediate feedback.
+def _resolve_execution_mode(connection: Any, config: dict[str, Any], now: Any) -> tuple[str, bool]:
+    """Choose how a Run-assessment click executes, from canonical runtime facts.
 
-    Repeated clicks never create duplicate concurrent jobs: if an active job
-    already exists the call reports in_progress instead of starting another."""
+    * ``on_demand``   — bounded synchronous assessment runs inline (default). Safe
+                        even with the background worker down; reads stored evidence only.
+    * ``background``  — on-demand is disabled but a healthy worker exists: enqueue and
+                        let the worker claim it.
+    * ``unavailable`` — no execution path: on-demand disabled AND no healthy worker.
+                        The endpoint returns a structured 503 and creates no job.
+    """
+    _hb, worker_healthy = arsummary._worker_heartbeat(connection, config=config, now=now)
+    if config.get('on_demand_enabled'):
+        return 'on_demand', worker_healthy
+    if worker_healthy:
+        return 'background', worker_healthy
+    return 'unavailable', worker_healthy
+
+
+def trigger_assessment_endpoint(asset_id: str, request: Any) -> dict[str, Any]:
+    """Run an assessment under an explicit execution policy.
+
+    On-demand runs a bounded synchronous assessment inline for immediate feedback.
+    When on-demand is disabled and no healthy worker exists there is no execution
+    path, so the call returns a structured 503 and creates no queued job (the asset
+    stays not_started) rather than a job that would pend forever. Repeated clicks
+    never create duplicate concurrent jobs (idempotent enqueue)."""
     pilot.require_live_mode()
     with pilot.pg_connection() as connection:
         pilot.ensure_pilot_schema(connection)
@@ -546,38 +570,101 @@ def trigger_assessment_endpoint(asset_id: str, request: Any) -> dict[str, Any]:
         if not service._table_exists(connection, 'asset_risk_jobs'):
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='Asset risk assessment storage is provisioning. Try again shortly.')
 
+        cfg = arc.assessor_config()
+        now = pilot.utc_now()
+        execution_mode, worker_healthy = _resolve_execution_mode(connection, cfg, now)
+        service.log_assessment_event(
+            'asset_assessment_requested', workspace_id=workspace_id, asset_id=asset_id,
+            user_id=user_id, execution_mode=execution_mode, worker_healthy=worker_healthy,
+        )
+
+        # No execution path: fail closed. Do NOT create a queued job.
+        if execution_mode == 'unavailable':
+            service.log_assessment_event(
+                'asset_assessment_blocked', workspace_id=workspace_id, asset_id=asset_id,
+                execution_mode='unavailable', failure_code='assessment_worker_unavailable',
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    'code': 'assessment_worker_unavailable',
+                    'message': 'The Asset Risk Assessor worker is unavailable and on-demand assessment is disabled. Enable the worker or on-demand assessment to run assessments.',
+                    'execution_mode': 'unavailable',
+                },
+            )
+
+        service.log_assessment_event(
+            'asset_assessment_execution_selected', workspace_id=workspace_id, asset_id=asset_id, execution_mode=execution_mode,
+        )
         enq = worker.enqueue_assessment(
             connection, workspace_id=workspace_id, asset_id=asset_id,
             trigger_source='manual', requested_by_user_id=user_id,
         )
-        # Claim the queued job we just created (skip if another replica running it).
+        if not enq['enqueued']:
+            # An active (queued/running) job already exists — never start a duplicate.
+            service.log_assessment_event(
+                'asset_assessment_deduplicated', workspace_id=workspace_id, asset_id=asset_id,
+                job_id=enq['job_id'], status=enq['status'],
+            )
+            connection.commit()
+            return {'status': enq['status'], 'job_id': enq['job_id'], 'asset_id': asset_id,
+                    'execution_mode': execution_mode, 'deduplicated': True}
+        service.log_assessment_event(
+            'asset_assessment_queued', workspace_id=workspace_id, asset_id=asset_id, job_id=enq['job_id'], execution_mode=execution_mode,
+        )
+
+        # Background mode: leave the queued job for the healthy worker to claim.
+        if execution_mode == 'background':
+            connection.commit()
+            return {'status': 'queued', 'job_id': enq['job_id'], 'asset_id': asset_id, 'execution_mode': 'background'}
+
+        # On-demand: claim the job we just created and run it inline.
         claimed = connection.execute(
-            "UPDATE asset_risk_jobs SET status = 'running', lease_owner = %s, lease_expires_at = NOW() + INTERVAL '5 minutes', attempts = attempts + 1, updated_at = NOW() WHERE id = %s AND status = 'queued' RETURNING id",
+            "UPDATE asset_risk_jobs SET status = 'running', lease_owner = %s, lease_expires_at = NOW() + INTERVAL '5 minutes', started_at = NOW(), heartbeat_at = NOW(), attempts = attempts + 1, updated_at = NOW() WHERE id = %s AND status = 'queued' RETURNING id",
             (f'inline:{user_id}', enq['job_id']),
         ).fetchone()
         if claimed is None:
             connection.commit()
-            return {'status': 'in_progress', 'job_id': enq['job_id'], 'asset_id': asset_id}
+            return {'status': 'running', 'job_id': enq['job_id'], 'asset_id': asset_id, 'execution_mode': 'on_demand'}
+        service.log_assessment_event(
+            'asset_assessment_started', workspace_id=workspace_id, asset_id=asset_id,
+            job_id=enq['job_id'], execution_mode='on_demand',
+        )
 
         try:
+            started = pilot.utc_now()
             outcome = service.assess_asset(
                 connection, workspace_id=workspace_id, asset_row=dict(asset_row), trigger_source='manual'
             )
             connection.execute(
-                "UPDATE asset_risk_jobs SET status = 'completed', completed_at = NOW(), lease_owner = NULL, updated_at = NOW() WHERE id = %s",
+                "UPDATE asset_risk_jobs SET status = 'completed', completed_at = NOW(), heartbeat_at = NOW(), lease_owner = NULL, last_error = NULL, failure_code = NULL, updated_at = NOW() WHERE id = %s",
                 (enq['job_id'],),
+            )
+            duration = max(0.0, (pilot.utc_now() - started).total_seconds())
+            result_status = str(outcome.get('status') or 'completed')
+            completion_event = 'asset_assessment_partial' if result_status in ('partial', 'degraded') else 'asset_assessment_completed'
+            service.log_assessment_event(
+                completion_event, workspace_id=workspace_id, asset_id=asset_id,
+                assessment_id=outcome.get('assessment_id'), job_id=enq['job_id'], execution_mode='on_demand',
+                duration=round(duration, 3), result=result_status, risk_score=outcome.get('risk_score'),
+                risk_level=outcome.get('risk_level'), findings=outcome.get('findings_count'),
             )
             pilot.log_audit(
                 connection, action='asset.risk_assessment.trigger', entity_type='asset', entity_id=asset_id,
                 request=request, user_id=user_id, workspace_id=workspace_id,
-                metadata={'risk_score': outcome.get('risk_score'), 'risk_level': outcome.get('risk_level'), 'trigger': 'manual'},
+                metadata={'risk_score': outcome.get('risk_score'), 'risk_level': outcome.get('risk_level'),
+                          'trigger': 'manual', 'execution_mode': 'on_demand', 'result': result_status},
             )
             connection.commit()
-            return {'status': 'completed', 'job_id': enq['job_id'], 'assessment': outcome}
+            return {'status': result_status, 'job_id': enq['job_id'], 'assessment': outcome, 'execution_mode': 'on_demand'}
         except Exception as exc:
             connection.execute(
-                "UPDATE asset_risk_jobs SET status = 'failed', last_error = %s, lease_owner = NULL, updated_at = NOW() WHERE id = %s",
+                "UPDATE asset_risk_jobs SET status = 'failed', last_error = %s, failure_code = 'assessment_error', lease_owner = NULL, updated_at = NOW() WHERE id = %s",
                 (str(exc)[:500], enq['job_id']),
             )
+            service.log_assessment_event(
+                'asset_assessment_failed', workspace_id=workspace_id, asset_id=asset_id,
+                job_id=enq['job_id'], execution_mode='on_demand', failure_code='assessment_error', error=type(exc).__name__,
+            )
             connection.commit()
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='Assessment failed to complete. It has been re-queued.')
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='Assessment failed to complete. It has been recorded as failed; retry to run it again.')

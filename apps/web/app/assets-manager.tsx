@@ -12,6 +12,7 @@ import AssetRiskAssessorPanel from './asset-risk-assessor-panel';
 import {
   RISK_SCORE_TOOLTIP,
   RWA_TYPE_OPTIONS,
+  assessmentActionLabel,
   assessmentStatusLabel,
   assessmentStatusVariant,
   isReserveBackedRwaType,
@@ -26,6 +27,7 @@ import {
   riskLevelLabel,
   riskLevelVariant,
   rwaTypeLabel,
+  type AssessmentCapability,
   type RiskLevel,
 } from './asset-risk-presentation';
 
@@ -270,6 +272,9 @@ export default function AssetsManager({ apiUrl }: Props) {
   const [panelRefresh, setPanelRefresh] = useState(0);
   const [workspaceAssessing, setWorkspaceAssessing] = useState(false);
   const [assessmentProgress, setAssessmentProgress] = useState('');
+  // Canonical runtime capability, lifted from the AI panel's summary fetch so the
+  // details drawer's per-asset Run button shares one truthful source.
+  const [capability, setCapability] = useState<AssessmentCapability | null>(null);
   const fieldRefs = useRef<Record<FieldName, HTMLInputElement | HTMLSelectElement | null>>({
     name: null, asset_type: null, chain_network: null, identifier: null,
   });
@@ -541,7 +546,16 @@ export default function AssetsManager({ apiUrl }: Props) {
         return null;
       }
       if (!response.ok) {
-        setSubmitError((typeof payload?.detail === 'string' && payload.detail) || 'Unable to run the assessment right now.');
+        // Structured 503 (assessment_worker_unavailable) carries an object detail.
+        const detail = payload?.detail;
+        const message = typeof detail === 'string'
+          ? detail
+          : (detail && typeof detail === 'object' && typeof detail.message === 'string')
+            ? detail.message
+            : 'Unable to run the assessment right now.';
+        setSubmitError(message);
+        // Refresh capability so the button reflects the worker-unavailable state.
+        setPanelRefresh((v) => v + 1);
         return null;
       }
       setPanelRefresh((v) => v + 1);
@@ -776,6 +790,7 @@ export default function AssetsManager({ apiUrl }: Props) {
         onRunAssessment={runWorkspaceAssessment}
         assessmentRunning={workspaceAssessing}
         assessmentProgress={assessmentProgress}
+        onCapability={setCapability}
         onViewReport={() => updateFilter({ risk_level: 'high' })}
         onFilterAnomalies={() => updateFilter({ risk_level: 'critical' })}
         onFilterGaps={() => updateFilter({ monitoring_health: 'not_configured' })}
@@ -786,6 +801,7 @@ export default function AssetsManager({ apiUrl }: Props) {
         <AssetDetailsDrawer
           asset={drawerAsset}
           apiUrl={apiUrl}
+          capability={capability}
           onClose={() => setDrawerAsset(null)}
           onRunAssessment={() => runAssessment(drawerAsset)}
           onVerify={(asset: Asset, action: string) => runNextAction(asset, action)}
@@ -1047,10 +1063,11 @@ export default function AssetsManager({ apiUrl }: Props) {
 
 /* ── Asset details drawer ───────────────────────────────────────────── */
 function AssetDetailsDrawer({
-  asset, apiUrl, onClose, onRunAssessment, onVerify, onArchive, actionLoading,
+  asset, apiUrl, capability, onClose, onRunAssessment, onVerify, onArchive, actionLoading,
 }: {
   asset: Asset;
   apiUrl: string;
+  capability: AssessmentCapability | null;
   onClose: () => void;
   onRunAssessment: () => Promise<any | null>;
   onVerify: (asset: Asset, action: string) => void;
@@ -1087,6 +1104,12 @@ function AssetDetailsDrawer({
   const valuationHistory: any[] = detail?.valuation_history ?? [];
   const monHealth = asset.monitoring_health || assessment?.monitoring_health || 'unknown';
   const nextAction = assetNextAction(asset);
+
+  // Canonical per-asset assessment state → Run button label (never ambiguous text).
+  const assessmentStateForAction = String(
+    assessment?.status || asset.assessment_status || (asset.risk_score == null ? 'not_started' : 'completed'),
+  );
+  const assessAction = assessmentActionLabel(assessmentStateForAction, capability);
 
   // Reserve applicability: type-driven (backend flag) or a configured feed. A
   // wallet / non-reserve asset is "not applicable" — never "missing evidence".
@@ -1253,8 +1276,14 @@ function AssetDetailsDrawer({
         )}
 
         <div className="drawerActions">
-          <button type="button" className="btn btn-primary" disabled={actionLoading} onClick={() => { void onRunAssessment().then(() => loadDetail()); }}>
-            {actionLoading ? 'Running…' : 'Run assessment'}
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={actionLoading || assessAction.disabled}
+            title={assessAction.hint}
+            onClick={() => { if (!assessAction.disabled) void onRunAssessment().then(() => loadDetail()); }}
+          >
+            {actionLoading ? 'Running…' : assessAction.label}
           </button>
           {nextAction === 'Verify asset' ? (
             <button type="button" className="btn btn-secondary" disabled={actionLoading} onClick={() => onVerify(asset, nextAction)}>Verify asset</button>
