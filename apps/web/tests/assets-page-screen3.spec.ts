@@ -10,7 +10,7 @@ import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { monitoringLinkStatusLabel, getMonitoringStatus, buildAssetsQuery, MONITORING_GAP_FILTER, monitoringGapFilterLabel } from '../app/assets-manager';
+import { monitoringLinkStatusLabel, getMonitoringStatus, buildAssetsQuery, MONITORING_GAP_FILTER, monitoringGapFilterLabel, reconcileMonitoringGapFilter } from '../app/assets-manager';
 
 const BASE_FILTERS = {
   search: '', asset_type: 'all', network: 'all', risk_level: 'all', monitoring_health: 'all',
@@ -221,6 +221,90 @@ test('filter UI represents the active monitoring-gap filter as its own chip', ()
   // The Monitoring HEALTH dropdown value is bound to monitoring_health ONLY — the
   // gap filter never drives it (so it can't display a misleading "Not configured").
   expect(managerSrc).toContain('value={filters.monitoring_health} onChange={(e) => updateFilter({ monitoring_health: e.target.value })}');
+});
+
+// 13b-iv. LEGACY → CANONICAL gap-filter migration. The production bug: "View assets
+// with gaps" set the canonical monitoring_gap=any but LEFT the legacy
+// monitoring_health=not_configured in the URL. Because the two are AND-ed server-side
+// and the affected wallet is Monitoring Health = Critical (not not_configured), the
+// stale health constraint excluded it and the table showed no results.
+// reconcileMonitoringGapFilter is the single source of truth for dropping the legacy
+// constraint whenever the canonical gap filter is active; it is applied at both
+// state-merge points (updateFilter for the click, URL parsing for old bookmarks).
+
+const LEGACY_STATE = { ...BASE_FILTERS, monitoring_health: 'not_configured' };
+const EXPECTED_GAP_URL = '/assets?monitoring_gap=any&sort=risk&dir=desc&page=1&page_size=25';
+
+// (1) Clicking "View assets with gaps" removes the legacy health filter. This mirrors
+// the exact state merge updateFilter performs for onFilterGaps, starting from a state
+// that already carries the legacy monitoring_health=not_configured.
+test('clicking the gap link drops the legacy monitoring_health=not_configured constraint', () => {
+  const merged = reconcileMonitoringGapFilter({ ...LEGACY_STATE, monitoring_gap: MONITORING_GAP_FILTER, page: 1 });
+  expect(merged.monitoring_gap).toBe('any');
+  expect(merged.monitoring_health).toBe('all'); // dropped, so the dropdown shows "All Monitoring"
+  const params = new URLSearchParams(buildAssetsQuery(merged));
+  expect(params.get('monitoring_gap')).toBe('any');
+  expect(params.has('monitoring_health')).toBe(false);
+  // updateFilter (which onFilterGaps calls) runs the merged state through the reconcile.
+  expect(managerSrc).toContain('reconcileMonitoringGapFilter({ ...current, ...patch, page: patch.page ?? 1 })');
+});
+
+// (2) Old bookmarked URLs containing BOTH parameters normalize to the canonical gap
+// only, and the resulting URL is exactly the expected one.
+test('old URL with both filters normalizes to canonical monitoring_gap=any only', () => {
+  const parsed = reconcileMonitoringGapFilter({ ...BASE_FILTERS, monitoring_health: 'not_configured', monitoring_gap: 'any' });
+  expect(parsed.monitoring_health).toBe('all');
+  expect(parsed.monitoring_gap).toBe('any');
+  expect(`/assets?${buildAssetsQuery(parsed)}`).toBe(EXPECTED_GAP_URL);
+  // The parse-on-mount effect feeds the incoming URL params through the same reconcile.
+  expect(managerSrc).toContain('setFilters((current) => reconcileMonitoringGapFilter({');
+});
+
+// (3) A Critical asset with a monitoring gap remains visible: after reconcile the query
+// sent to the backend carries NO monitoring_health constraint, so the server-side gap
+// filter (a separate dimension) returns the Critical wallet instead of ANDing it away.
+// (The backend counterpart is test_gap_filter_any_returns_critical_asset_with_missing_target.)
+test('a Critical asset with a gap is not excluded — no stale health constraint is sent', () => {
+  const reconciled = reconcileMonitoringGapFilter({ ...BASE_FILTERS, monitoring_health: 'not_configured', monitoring_gap: 'any' });
+  const params = new URLSearchParams(buildAssetsQuery(reconciled));
+  expect(params.has('monitoring_health')).toBe(false);
+  expect(params.get('monitoring_gap')).toBe('any');
+  // A legitimate NON-not_configured health filter is preserved alongside the gap — only
+  // the legacy not_configured alias is dropped, so a real Critical health filter still works.
+  const withCritical = reconcileMonitoringGapFilter({ ...BASE_FILTERS, monitoring_health: 'critical', monitoring_gap: 'any' });
+  expect(withCritical.monitoring_health).toBe('critical');
+});
+
+// (4) Refresh preserves ONLY monitoring_gap=any: round-trip state → query → URL → parse
+// yields the gap alone; the legacy not_configured never survives the refresh.
+test('refresh preserves only monitoring_gap=any (legacy not_configured does not survive)', () => {
+  const canonical = reconcileMonitoringGapFilter({ ...LEGACY_STATE, monitoring_gap: 'any' });
+  const reparsed = new URLSearchParams(buildAssetsQuery(canonical));
+  expect(reparsed.get('monitoring_gap')).toBe('any');
+  expect(reparsed.has('monitoring_health')).toBe(false);
+  expect(reparsed.get('sort')).toBe('risk');
+  expect(reparsed.get('dir')).toBe('desc');
+});
+
+// (5) Back/Forward cannot restore the legacy constraint: normalization rewrites the URL
+// with history.replaceState (in place) and never history.pushState, so the not_configured
+// entry is replaced — not stacked — and no history entry retains it to navigate back to.
+test('URL normalization uses replaceState (not pushState) so back/forward cannot restore the legacy constraint', () => {
+  expect(managerSrc).toContain('window.history.replaceState');
+  // No pushState CALL anywhere — a mention in a comment is fine, an actual
+  // history.pushState(...) that would stack the legacy URL as a restorable entry is not.
+  expect(managerSrc).not.toContain('.pushState(');
+  // The reconcile that strips the legacy constraint runs on the parsed URL, so the state
+  // (and therefore every replaced URL) never carries not_configured alongside a gap.
+  expect(managerSrc).toContain('reconcileMonitoringGapFilter');
+});
+
+// (6) Clear filters removes BOTH parameters (full reset to defaults, gap='all'/health='all').
+test('clear filters removes both monitoring_gap and the legacy monitoring_health', () => {
+  const cleared = new URLSearchParams(buildAssetsQuery(BASE_FILTERS));
+  expect(cleared.has('monitoring_gap')).toBe(false);
+  expect(cleared.has('monitoring_health')).toBe(false);
+  expect(managerSrc).toContain('onClick={() => setFilters(DEFAULT_FILTERS)}');
 });
 
 // 13c. Asset details drawer explains the score: per-dimension weight + weighted
