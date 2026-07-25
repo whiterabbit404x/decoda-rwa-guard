@@ -76,6 +76,30 @@ export function monitoringGapFilterLabel(value: string): string {
   return MONITORING_GAP_LABELS[value] ?? value;
 }
 
+// The canonical monitoring_gap filter SUPERSEDES the legacy way a monitoring gap was
+// expressed — monitoring_health=not_configured. They are two encodings of the same
+// "show me assets with monitoring gaps" intent, but the backend treats health and gap
+// as INDEPENDENT, AND-ed constraints. So keeping both returns only assets that are
+// BOTH not_configured AND have a gap, dropping a real gap that sits on a Critical (or
+// any non-not_configured) asset. That was the production bug: "View assets with gaps"
+// (and old bookmarks) merged monitoring_gap=any on top of an existing
+// monitoring_health=not_configured, and the Critical wallet with a genuine
+// no_linked_target gap fell out of the table ("No assets match these filters").
+//
+// Whenever the canonical gap filter is active, drop ONLY the legacy not_configured
+// health constraint. Every other monitoring_health value (healthy/warning/critical/
+// degraded/provisioning) is an independent, legitimate filter and is preserved. This
+// is applied at BOTH state-merge points — updateFilter (the click) and URL parsing
+// (old bookmarks) — so the invariant "gap active ⇒ health ≠ not_configured" always
+// holds and the normalized URL never carries the legacy constraint.
+export function reconcileMonitoringGapFilter(filters: Filters): Filters {
+  const gapActive = Boolean(filters.monitoring_gap) && filters.monitoring_gap !== 'all';
+  if (gapActive && filters.monitoring_health === 'not_configured') {
+    return { ...filters, monitoring_health: 'all' };
+  }
+  return filters;
+}
+
 // Pure, testable filter -> query string. The registry list request AND the URL
 // (history.replaceState) are both built from this, so a filter like the
 // monitoring-gap link round-trips through the URL and survives a refresh.
@@ -362,7 +386,12 @@ export default function AssetsManager({ apiUrl }: Props) {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search);
-    setFilters((current) => ({
+    // Parse the incoming URL, then reconcile: an old bookmark carrying BOTH
+    // monitoring_health=not_configured and monitoring_gap normalizes to the canonical
+    // gap alone. The queryString memo + replaceState effect below then rewrite the URL
+    // (in place, never pushState) so the legacy constraint is dropped and cannot be
+    // restored via Back/Forward.
+    setFilters((current) => reconcileMonitoringGapFilter({
       ...current,
       search: params.get('search') ?? current.search,
       asset_type: params.get('asset_type') ?? current.asset_type,
@@ -425,7 +454,10 @@ export default function AssetsManager({ apiUrl }: Props) {
   useEffect(() => { setLoading(true); void load(); }, [load]);
 
   function updateFilter(patch: Partial<Filters>) {
-    setFilters((current) => ({ ...current, ...patch, page: patch.page ?? 1 }));
+    // Reconcile after every merge so activating the canonical monitoring_gap filter
+    // (e.g. "View assets with gaps") simultaneously clears a stale legacy
+    // monitoring_health=not_configured that would otherwise AND it away.
+    setFilters((current) => reconcileMonitoringGapFilter({ ...current, ...patch, page: patch.page ?? 1 }));
   }
 
   function validate(values: AssetForm): FieldErrors {
