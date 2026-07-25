@@ -30,6 +30,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from services.api.app.domains import alert_stream, alert_delivery
 from services.api.app.domains.asset_risk import registry as asset_risk_registry
+from services.api.app.domains.threat_detection import endpoints as threat_detection_endpoints
 from services.api.app.domains.rate_limit import rate_limit_connectivity
 from services.api.app.quicknode_streams import (
     QUICKNODE_STREAMS_WEBHOOK_VERSION,
@@ -4774,6 +4775,82 @@ def detections_get(detection_id: str, request: Request) -> dict[str, Any]:
 @app.get('/detections/{detection_id}/evidence', summary='Detection evidence detail')
 def detections_evidence_get(detection_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_detection_evidence(detection_id, request))
+
+
+# --- Threat Detection Engineer (Screen 5 — Threat Monitoring) -----------------
+# Canonical correlated threat-detection layer. Workspace is resolved from the
+# authenticated session + X-Workspace-Id header (matching the repo convention).
+# All GETs are strictly read-only: opening/refreshing Screen 5 never writes.
+@app.get('/threat-monitoring/summary', summary='Canonical threat-monitoring summary (Screen 5)')
+def threat_monitoring_summary(request: Request, window_days: int = 7) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: threat_detection_endpoints.summary_endpoint(request, window_days=window_days))
+
+
+@app.get('/threat-monitoring/detections', summary='List correlated threat detections')
+def threat_monitoring_detections(
+    request: Request,
+    detection_type: str | None = None,
+    severity: str | None = None,
+    status_value: str | None = None,
+    asset_id: str | None = None,
+    min_confidence: float | None = None,
+    window_days: int | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: threat_detection_endpoints.detections_endpoint(
+            request, detection_type=detection_type, severity=severity, status_value=status_value,
+            asset_id=asset_id, min_confidence=min_confidence, window_days=window_days, limit=limit, offset=offset,
+        )
+    )
+
+
+@app.get('/threat-monitoring/telemetry', summary='List normalized telemetry for Screen 5 Telemetry tab')
+def threat_monitoring_telemetry(
+    request: Request,
+    event_type: str | None = None,
+    asset_id: str | None = None,
+    evidence_source: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: threat_detection_endpoints.telemetry_endpoint(
+            request, event_type=event_type, asset_id=asset_id, evidence_source=evidence_source, limit=limit, offset=offset,
+        )
+    )
+
+
+@app.get('/threat-monitoring/anomalies', summary='List sub-threshold threat anomalies')
+def threat_monitoring_anomalies(
+    request: Request,
+    detection_type: str | None = None,
+    asset_id: str | None = None,
+    window_days: int | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: threat_detection_endpoints.anomalies_endpoint(
+            request, detection_type=detection_type, asset_id=asset_id, window_days=window_days, limit=limit, offset=offset,
+        )
+    )
+
+
+@app.get('/threat-monitoring/detections/{detection_id}', summary='Threat detection detail + evidence')
+def threat_monitoring_detection_detail(detection_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: threat_detection_endpoints.detection_detail_endpoint(detection_id, request))
+
+
+@app.post('/threat-monitoring/detections/{detection_id}/investigate', summary='Start an investigation from a threat detection (idempotent)')
+def threat_monitoring_investigate(detection_id: str, request: Request, response: Response) -> Any:
+    result = with_auth_schema_json(lambda: threat_detection_endpoints.investigate_endpoint(detection_id, request))
+    if isinstance(result, dict):
+        status_value = str(result.get('status') or '')
+        if status_value == 'created':
+            response.status_code = 201
+    return result
 
 
 @app.get('/alerts/{alert_id}', summary='Alert detail')
