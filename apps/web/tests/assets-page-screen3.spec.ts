@@ -10,11 +10,11 @@ import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { monitoringLinkStatusLabel, getMonitoringStatus, buildAssetsQuery, MONITORING_GAP_FILTER } from '../app/assets-manager';
+import { monitoringLinkStatusLabel, getMonitoringStatus, buildAssetsQuery, MONITORING_GAP_FILTER, monitoringGapFilterLabel } from '../app/assets-manager';
 
 const BASE_FILTERS = {
   search: '', asset_type: 'all', network: 'all', risk_level: 'all', monitoring_health: 'all',
-  custodian: 'all', sort: 'risk', dir: 'desc', page: 1,
+  monitoring_gap: 'all', custodian: 'all', sort: 'risk', dir: 'desc', page: 1,
 };
 
 const managerSrc = fs.readFileSync(
@@ -168,20 +168,59 @@ test('Add Asset modal has token metadata, reserve interval, and reserve-backed d
   expect(managerSrc).toContain('isWalletType');
 });
 
-// 13b. "View assets with gaps" applies the canonical monitoring-gap filter and
-// round-trips through the URL query (so it survives refresh / back-forward).
-test('monitoring-gap filter builds a canonical not_configured query preserved in the URL', () => {
-  expect(MONITORING_GAP_FILTER).toBe('not_configured');
-  const gapQuery = buildAssetsQuery({ ...BASE_FILTERS, monitoring_health: MONITORING_GAP_FILTER });
+// 13b. "View assets with gaps" applies the CANONICAL monitoring-gap filter
+// (monitoring_gap=any) — a SEPARATE dimension from monitoring health — and
+// round-trips through the URL so it survives refresh / back-forward. Regression
+// guard for the bug where the gap link mapped onto monitoring_health=not_configured
+// (which returned nothing for a Critical wallet that truly had a missing-target gap).
+test('monitoring-gap link is canonical monitoring_gap=any (never a monitoring_health value)', () => {
+  expect(MONITORING_GAP_FILTER).toBe('any');
+  const gapQuery = buildAssetsQuery({ ...BASE_FILTERS, monitoring_gap: MONITORING_GAP_FILTER });
   const params = new URLSearchParams(gapQuery);
-  expect(params.get('monitoring_health')).toBe('not_configured');
+  expect(params.get('monitoring_gap')).toBe('any');
+  // It must NOT hijack monitoring_health — that was the production bug.
+  expect(params.has('monitoring_health')).toBe(false);
+  expect(params.get('sort')).toBe('risk');
+  expect(params.get('dir')).toBe('desc');
   expect(params.get('page')).toBe('1');
   expect(params.get('page_size')).toBe('25');
-  // Without the gap filter, monitoring_health is omitted (never the literal "all").
+  // Without the gap filter, monitoring_gap is omitted (never the literal "all").
   const noFilter = new URLSearchParams(buildAssetsQuery(BASE_FILTERS));
-  expect(noFilter.has('monitoring_health')).toBe(false);
-  // The panel wires the gap link to this exact canonical filter value.
-  expect(managerSrc).toContain('onFilterGaps={() => updateFilter({ monitoring_health: MONITORING_GAP_FILTER })}');
+  expect(noFilter.has('monitoring_gap')).toBe(false);
+  // The panel wires the gap link to this exact canonical filter value, and never
+  // again onto monitoring_health.
+  expect(managerSrc).toContain('onFilterGaps={() => updateFilter({ monitoring_gap: MONITORING_GAP_FILTER })}');
+  expect(managerSrc).not.toContain('onFilterGaps={() => updateFilter({ monitoring_health');
+});
+
+// 13b-i. Refresh preserves the gap filter: the URL is parsed back into filter state,
+// and a specific gap value survives the query -> URL -> query round-trip.
+test('refresh preserves the monitoring_gap filter (URL is the source of truth)', () => {
+  expect(managerSrc).toContain("monitoring_gap: params.get('monitoring_gap')");
+  const q = buildAssetsQuery({ ...BASE_FILTERS, monitoring_gap: 'no_linked_target' });
+  expect(new URLSearchParams(q).get('monitoring_gap')).toBe('no_linked_target');
+});
+
+// 13b-ii. Clear filters removes monitoring_gap (and every other param) and restores
+// the complete list; the chip also offers a targeted clear of just the gap filter.
+test('clear filters removes monitoring_gap and restores the complete list', () => {
+  const cleared = new URLSearchParams(buildAssetsQuery(BASE_FILTERS));
+  expect(cleared.has('monitoring_gap')).toBe(false);
+  expect(managerSrc).toContain('onClick={() => setFilters(DEFAULT_FILTERS)}');
+  expect(managerSrc).toContain("updateFilter({ monitoring_gap: 'all' })");
+});
+
+// 13b-iii. The filter UI truthfully represents the active gap filter as its own chip
+// and never mislabels the gap as a monitoring health. The Monitoring dropdown is
+// bound to monitoring_health ONLY, so a gap filter never shows "Not configured".
+test('filter UI represents the active monitoring-gap filter as its own chip', () => {
+  expect(monitoringGapFilterLabel('any')).toBe('Any');
+  expect(monitoringGapFilterLabel('no_linked_target')).toBe('No linked target');
+  expect(managerSrc).toContain('Monitoring gap: {monitoringGapFilterLabel(filters.monitoring_gap)}');
+  expect(managerSrc).toContain('aria-label="Clear monitoring gap filter"');
+  // The Monitoring HEALTH dropdown value is bound to monitoring_health ONLY — the
+  // gap filter never drives it (so it can't display a misleading "Not configured").
+  expect(managerSrc).toContain('value={filters.monitoring_health} onChange={(e) => updateFilter({ monitoring_health: e.target.value })}');
 });
 
 // 13c. Asset details drawer explains the score: per-dimension weight + weighted

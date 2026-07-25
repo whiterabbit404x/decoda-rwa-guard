@@ -42,6 +42,7 @@ type Filters = {
   network: string;
   risk_level: string;
   monitoring_health: string;
+  monitoring_gap: string;
   custodian: string;
   sort: string;
   dir: string;
@@ -50,14 +51,30 @@ type Filters = {
 
 const DEFAULT_FILTERS: Filters = {
   search: '', asset_type: 'all', network: 'all', risk_level: 'all', monitoring_health: 'all',
-  custodian: 'all', sort: 'risk', dir: 'desc', page: 1,
+  monitoring_gap: 'all', custodian: 'all', sort: 'risk', dir: 'desc', page: 1,
 };
 const PAGE_SIZE = 25;
 
 // The canonical monitoring-gap filter value. "View assets with gaps" filters the
-// registry to monitoring-gap assets (no linked target => not_configured), which is
-// how the wallet with a missing target linkage surfaces — never as an anomaly.
-export const MONITORING_GAP_FILTER = 'not_configured';
+// registry to assets with an ACTIVE monitoring gap (missing target/feed, stale
+// evidence, incomplete coverage). This is a SEPARATE dimension from monitoring
+// health — an asset can be Critical and still have a missing-target gap — so it maps
+// to monitoring_gap=any, never to monitoring_health=not_configured.
+export const MONITORING_GAP_FILTER = 'any';
+
+// Human-readable labels for the active monitoring-gap filter chip. Keeps the UI
+// truthful about which gap dimension is active (never mislabels it as a health).
+const MONITORING_GAP_LABELS: Record<string, string> = {
+  any: 'Any',
+  no_linked_target: 'No linked target',
+  missing_reserve_feed: 'Missing reserve feed',
+  stale_feed: 'Stale feed',
+  incomplete_provider_coverage: 'Incomplete provider coverage',
+};
+
+export function monitoringGapFilterLabel(value: string): string {
+  return MONITORING_GAP_LABELS[value] ?? value;
+}
 
 // Pure, testable filter -> query string. The registry list request AND the URL
 // (history.replaceState) are both built from this, so a filter like the
@@ -69,6 +86,9 @@ export function buildAssetsQuery(filters: Filters): string {
   if (filters.network !== 'all') params.set('network', filters.network);
   if (filters.risk_level !== 'all') params.set('risk_level', filters.risk_level);
   if (filters.monitoring_health !== 'all') params.set('monitoring_health', filters.monitoring_health);
+  // Monitoring gap is a separate query dimension from monitoring health; both can be
+  // active at once and each is omitted (never sent as the literal "all") when unset.
+  if (filters.monitoring_gap && filters.monitoring_gap !== 'all') params.set('monitoring_gap', filters.monitoring_gap);
   if (filters.custodian !== 'all') params.set('custodian', filters.custodian);
   params.set('sort', filters.sort);
   params.set('dir', filters.dir);
@@ -349,6 +369,7 @@ export default function AssetsManager({ apiUrl }: Props) {
       network: params.get('network') ?? current.network,
       risk_level: params.get('risk_level') ?? current.risk_level,
       monitoring_health: params.get('monitoring_health') ?? current.monitoring_health,
+      monitoring_gap: params.get('monitoring_gap') ?? current.monitoring_gap,
       custodian: params.get('custodian') ?? current.custodian,
       sort: params.get('sort') ?? current.sort,
       dir: params.get('dir') ?? current.dir,
@@ -748,6 +769,33 @@ export default function AssetsManager({ apiUrl }: Props) {
           ) : null}
         </div>
 
+        {/* ── Active monitoring-gap filter chip ─────────────────────────
+            The gap filter is a separate dimension from monitoring health, so it is
+            surfaced as its own chip (the Monitoring dropdown stays "All Monitoring",
+            never misleadingly "Not configured"). The URL remains the source of
+            truth; the chip just reflects it and offers a targeted clear. */}
+        {filters.monitoring_gap !== 'all' ? (
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap' }}>
+            <span
+              className="filterChip"
+              role="status"
+              aria-label={`Active filter: Monitoring gap ${monitoringGapFilterLabel(filters.monitoring_gap)}`}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', padding: '0.25rem 0.6rem', borderRadius: '999px', background: 'var(--surface-2, rgba(127,127,127,0.12))', border: '1px solid var(--border, rgba(127,127,127,0.25))', fontSize: '0.82rem', color: 'var(--text-primary)' }}
+            >
+              Monitoring gap: {monitoringGapFilterLabel(filters.monitoring_gap)}
+              <button
+                type="button"
+                aria-label="Clear monitoring gap filter"
+                onClick={() => updateFilter({ monitoring_gap: 'all' })}
+                style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'inherit', fontSize: '1rem', lineHeight: 1, padding: 0 }}
+              >
+                ×
+              </button>
+            </span>
+            <button type="button" className="btn btn-secondary" onClick={() => setFilters(DEFAULT_FILTERS)}>Clear filters</button>
+          </div>
+        ) : null}
+
         {loadError ? <p className="statusLine" role="alert" style={{ marginBottom: '1rem' }}>{loadError}</p> : null}
         {submitError && !showAddModal ? <p className="statusLine" role="alert" style={{ marginBottom: '1rem' }}>{submitError}</p> : null}
         {successMessage ? <p className="statusLine successLine" role="status" style={{ marginBottom: '1rem' }}>{successMessage}</p> : null}
@@ -839,7 +887,7 @@ export default function AssetsManager({ apiUrl }: Props) {
         onCapability={setCapability}
         onViewReport={() => updateFilter({ risk_level: 'high' })}
         onFilterAnomalies={() => updateFilter({ risk_level: 'critical' })}
-        onFilterGaps={() => updateFilter({ monitoring_health: MONITORING_GAP_FILTER })}
+        onFilterGaps={() => updateFilter({ monitoring_gap: MONITORING_GAP_FILTER })}
       />
 
       {/* ── Details drawer ───────────────────────────────────────────── */}

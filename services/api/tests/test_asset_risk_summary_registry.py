@@ -377,6 +377,141 @@ def test_registry_no_params_returns_all_enriched():
 
 
 # --------------------------------------------------------------------------
+# Canonical monitoring-gap filter (monitoring_gap=any / no_linked_target / ...).
+# A monitoring GAP is a separate dimension from monitoring HEALTH: a Critical asset
+# with a missing-target gap must still surface here. Gaps come from ACTIVE findings
+# (+ deterministic linkage), never inferred from monitoring_health.
+# --------------------------------------------------------------------------
+def _gap_assets():
+    # Both assets have a linked monitoring target, so _reconcile_health does NOT
+    # force them to not_configured — health stays Critical/Warning while the gap
+    # (missing controls / stale feed) is a separate, active finding.
+    return [
+        {'id': 'w1', 'name': 'Treasury Wallet', 'chain_network': 'ethereum-mainnet', 'asset_type': 'wallet',
+         'rwa_asset_type': None, 'reserve_feed_type': 'none', 'value_usd': Decimal('0'),
+         'has_monitoring_target': True, 'monitoring_target_count': 1, 'monitoring_status': 'waiting_for_telemetry'},
+        {'id': 'a2', 'name': 'Stable Coin', 'chain_network': 'ethereum-mainnet', 'asset_type': 'contract',
+         'rwa_asset_type': 'stablecoin', 'reserve_feed_type': 'none', 'value_usd': Decimal('1000'),
+         'has_monitoring_target': True, 'monitoring_target_count': 1, 'monitoring_status': 'waiting_for_telemetry'},
+    ]
+
+
+def _gap_registry_conn(gap_rows):
+    # Matcher order matters: the gap-findings loader query ("DISTINCT asset_id,
+    # finding_type") is matched before the active-count query ("status = 'active'").
+    return FakeConn(matchers=[
+        ('DISTINCT ON (asset_id)', [
+            {'asset_id': 'w1', 'risk_score': 55, 'risk_level': 'high', 'confidence': 0.9, 'reserve_status': 'not_applicable',
+             'reserve_coverage_percent': None, 'monitoring_health': 'critical', 'status': 'completed', 'assessed_at': _dt()},
+            {'asset_id': 'a2', 'risk_score': 60, 'risk_level': 'high', 'confidence': 0.8, 'reserve_status': 'insufficient_evidence',
+             'reserve_coverage_percent': None, 'monitoring_health': 'warning', 'status': 'completed', 'assessed_at': _dt()},
+        ]),
+        ('DISTINCT asset_id, finding_type', gap_rows),
+        ("status = 'active'", []),
+        ("status IN ('running', 'queued')", []),
+    ])
+
+
+def test_gap_filter_any_returns_critical_asset_with_missing_target():
+    # The exact production bug: the wallet has an ACTIVE asset_monitoring_gap finding
+    # AND Monitoring Health = Critical. monitoring_gap=any must return it (it never
+    # would under the old monitoring_health=not_configured mapping).
+    conn = _gap_registry_conn([{'asset_id': 'w1', 'finding_type': 'asset_monitoring_gap'}])
+    out = registry.attach_risk_and_filter(conn, workspace_id='ws-1', assets=_gap_assets(), query_params=_QP(monitoring_gap='any'))
+    ids = [a['id'] for a in out['assets']]
+    assert ids == ['w1']
+    assert out['filtered_total'] == 1
+    # And it is NOT required to have monitoring_health=not_configured — health is
+    # Critical, a separate dimension from the gap.
+    assert out['assets'][0]['monitoring_health'] == 'critical'
+
+
+def test_gap_filter_no_linked_target_returns_critical_wallet():
+    conn = _gap_registry_conn([{'asset_id': 'w1', 'finding_type': 'asset_monitoring_gap'}])
+    out = registry.attach_risk_and_filter(conn, workspace_id='ws-1', assets=_gap_assets(), query_params=_QP(monitoring_gap='no_linked_target'))
+    assert [a['id'] for a in out['assets']] == ['w1']
+    assert out['assets'][0]['monitoring_health'] == 'critical'
+
+
+def test_gap_filter_any_spans_multiple_gap_kinds_and_specific_kinds_narrow():
+    # w1 -> no_linked_target gap; a2 -> stale_feed gap. any=both; specific kinds narrow.
+    conn = _gap_registry_conn([
+        {'asset_id': 'w1', 'finding_type': 'asset_monitoring_gap'},
+        {'asset_id': 'a2', 'finding_type': 'asset_reserve_feed_stale'},
+    ])
+    any_out = registry.attach_risk_and_filter(conn, workspace_id='ws-1', assets=_gap_assets(), query_params=_QP(monitoring_gap='any'))
+    assert {a['id'] for a in any_out['assets']} == {'w1', 'a2'}
+
+    stale_out = registry.attach_risk_and_filter(_gap_registry_conn([
+        {'asset_id': 'w1', 'finding_type': 'asset_monitoring_gap'},
+        {'asset_id': 'a2', 'finding_type': 'asset_reserve_feed_stale'},
+    ]), workspace_id='ws-1', assets=_gap_assets(), query_params=_QP(monitoring_gap='stale_feed'))
+    assert [a['id'] for a in stale_out['assets']] == ['a2']
+
+    missing_out = registry.attach_risk_and_filter(_gap_registry_conn([
+        {'asset_id': 'w1', 'finding_type': 'asset_monitoring_gap'},
+    ]), workspace_id='ws-1', assets=_gap_assets(), query_params=_QP(monitoring_gap='missing_reserve_feed'))
+    assert missing_out['filtered_total'] == 0
+
+
+def test_gap_filter_dedupes_asset_with_multiple_gaps():
+    # An asset with several active gap findings appears exactly once.
+    conn = _gap_registry_conn([
+        {'asset_id': 'w1', 'finding_type': 'asset_monitoring_gap'},
+        {'asset_id': 'w1', 'finding_type': 'asset_reserve_feed_stale'},
+        {'asset_id': 'w1', 'finding_type': 'asset_reserve_feed_missing'},
+    ])
+    out = registry.attach_risk_and_filter(conn, workspace_id='ws-1', assets=_gap_assets(), query_params=_QP(monitoring_gap='any'))
+    assert [a['id'] for a in out['assets']] == ['w1']
+    assert out['filtered_total'] == 1
+
+
+def test_gap_filter_does_not_infer_gap_from_critical_health():
+    # A Critical asset with a linked target but NO active gap finding is not a gap.
+    # (If its only gap finding were resolved, the active-gap loader returns nothing,
+    # so it must drop out — gaps are never inferred from monitoring_health.)
+    conn = _gap_registry_conn([])  # no ACTIVE gap findings
+    out = registry.attach_risk_and_filter(conn, workspace_id='ws-1', assets=_gap_assets(), query_params=_QP(monitoring_gap='any'))
+    assert out['filtered_total'] == 0
+
+
+def test_gap_loader_excludes_resolved_findings_via_active_filter():
+    # Resolved / historical findings are excluded at the source: the loader restricts
+    # to status = 'active' and the canonical gap finding types only.
+    captured: dict[str, object] = {}
+
+    class Rec(FakeConn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'finding_type = ANY' in q:
+                captured['q'] = q
+                captured['params'] = params
+                return _Result([{'asset_id': 'w1', 'finding_type': 'asset_monitoring_gap'}])
+            return super().execute(query, params)
+
+    out = registry._load_active_gap_findings(Rec(), 'ws-1', ['w1'])
+    assert out == {'w1': {'asset_monitoring_gap'}}
+    assert "status = 'active'" in str(captured['q'])
+    assert 'finding_type = ANY' in str(captured['q'])
+
+
+def test_gap_filter_uses_deterministic_no_target_without_a_finding():
+    # An asset with NO monitoring target at all is a no_linked_target gap even before
+    # an assessment records a finding (deterministic linkage, fail-closed).
+    conn = FakeConn(matchers=[
+        ('DISTINCT ON (asset_id)', []),                # unassessed
+        ('DISTINCT asset_id, finding_type', []),       # no findings yet
+        ("status = 'active'", []),
+        ("status IN ('running', 'queued')", []),
+    ])
+    assets = [{'id': 'u1', 'name': 'Unmonitored', 'chain_network': 'ethereum-mainnet', 'asset_type': 'wallet',
+               'rwa_asset_type': None, 'reserve_feed_type': 'none', 'value_usd': None,
+               'has_monitoring_target': False, 'monitoring_target_count': 0}]
+    out = registry.attach_risk_and_filter(conn, workspace_id='ws-1', assets=assets, query_params=_QP(monitoring_gap='no_linked_target'))
+    assert [a['id'] for a in out['assets']] == ['u1']
+
+
+# --------------------------------------------------------------------------
 # Registry create-field validation + SSRF guard
 # --------------------------------------------------------------------------
 def test_validate_registry_payload_rejects_bad_type_and_negative_value():
