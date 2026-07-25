@@ -27,6 +27,23 @@ function resolveBuildTimestamp(env: NodeJS.ProcessEnv) {
     ?? null;
 }
 
+// The frontend commit SHA is resolved from the deployment platform's own env var.
+// Order matches the existing repository convention (instrumentation.ts): Railway
+// first (the web bundle can be deployed on Railway too), then Vercel's standard
+// system variable, then the bare GIT_COMMIT_SHA used by the Vercel build check,
+// then the NEXT_PUBLIC_* client-exposed fallback. A missing/blank value is
+// normalized to null so a truthful "unknown" is shown rather than an empty string.
+function resolveCommitSha(env: NodeJS.ProcessEnv): string | null {
+  const raw = env.RAILWAY_GIT_COMMIT_SHA
+    ?? env.VERCEL_GIT_COMMIT_SHA
+    ?? env.GIT_COMMIT_SHA
+    ?? env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA
+    ?? null;
+
+  const trimmed = raw?.trim();
+  return trimmed ? trimmed : null;
+}
+
 function resolveHost(host?: string | null) {
   if (!host) {
     return null;
@@ -38,13 +55,14 @@ function resolveHost(host?: string | null) {
 
 export function getBuildInfo(env: NodeJS.ProcessEnv = process.env, options?: { host?: string | null }): BuildInfo {
   const runtimeConfig = getRuntimeConfig(env);
+  const commitSha = resolveCommitSha(env);
 
   return {
     vercelEnv: env.VERCEL_ENV ?? env.NEXT_PUBLIC_VERCEL_ENV ?? env.NODE_ENV ?? null,
     host: resolveHost(options?.host ?? env.VERCEL_URL ?? env.NEXT_PUBLIC_VERCEL_URL ?? null),
     branch: env.VERCEL_GIT_COMMIT_REF ?? env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_REF ?? null,
-    commitSha: env.RAILWAY_GIT_COMMIT_SHA ?? env.VERCEL_GIT_COMMIT_SHA ?? env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA ?? null,
-    shortCommitSha: (env.RAILWAY_GIT_COMMIT_SHA ?? env.VERCEL_GIT_COMMIT_SHA ?? env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA ?? '').slice(0, 7) || null,
+    commitSha,
+    shortCommitSha: commitSha ? commitSha.slice(0, 7) : null,
     buildTimestamp: resolveBuildTimestamp(env),
     authMode: AUTH_MODE,
     runtimeConfig: {

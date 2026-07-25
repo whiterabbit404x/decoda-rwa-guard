@@ -6862,6 +6862,84 @@ a.mktTrustBadge:hover {
   font-family: ui-monospace, monospace;
 }
 
+/* Deployment Version — always-visible web/API build identity near the top of
+   System Health. Readable at normal zoom (no tiny meta text); missing values are
+   shown truthfully as an "unknown" message rather than hidden. */
+.deploymentVersionCard {
+  margin-top: 1rem;
+}
+.deploymentVersionHeader {
+  margin-bottom: 0.85rem;
+}
+.deploymentVersionTitle {
+  margin: 0.15rem 0 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.deploymentVersionSubtitle {
+  margin: 0.35rem 0 0;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  max-width: 62ch;
+}
+.deploymentVersionGrid {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0.6rem 1.5rem;
+}
+.deploymentVersionRow {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+}
+.deploymentVersionLabel {
+  margin: 0;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-muted);
+  font-weight: 700;
+}
+.deploymentVersionValue {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.deploymentVersionText {
+  font-size: 0.95rem;
+  font-family: ui-monospace, monospace;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+.deploymentVersionText-unknown {
+  font-family: inherit;
+  font-style: italic;
+  color: var(--text-muted);
+}
+.deploymentVersionCopy {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.deploymentVersionCopy:hover {
+  border-color: var(--border-hover);
+  color: var(--text-primary);
+}
+
 /* Action callout */
 .shActionCallout {
   margin-top: 1.25rem;

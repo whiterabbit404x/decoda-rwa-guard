@@ -21,6 +21,8 @@ const typesSource = readFileSync(join(componentsDir, 'types.ts'), 'utf8');
 const helpersSource = readFileSync(join(componentsDir, 'helpers.ts'), 'utf8');
 const fetchSource = readFileSync(join(componentsDir, 'fetch-system-health.ts'), 'utf8');
 const endpointErrorSource = readFileSync(join(componentsDir, 'system-health-endpoint-error.tsx'), 'utf8');
+const deploymentVersionSectionSource = readFileSync(join(componentsDir, 'deployment-version-section.tsx'), 'utf8');
+const deploymentVersionLogicSource = readFileSync(join(componentsDir, 'deployment-version.ts'), 'utf8');
 
 const resilienceSource = readFileSync(
   join(process.cwd(), 'app/(product)/resilience/page.tsx'),
@@ -291,6 +293,39 @@ test('system health shows API + web build SHAs, missing reads "unknown" (never f
   // The page derives the web SHA from build-info (deployment env), not a literal.
   expect(pageSource).toContain('getBuildInfo(process.env)');
   expect(pageSource).toContain('frontendCommit');
+});
+
+test('Deployment Version section is rendered near the top and ALWAYS, not gated on backend health', () => {
+  // The section must be present...
+  expect(pageSource).toContain('<DeploymentVersionSection');
+  expect(pageSource).toContain("import { DeploymentVersionSection } from './_components/deployment-version-section'");
+  // ...and rendered OUTSIDE the `healthResult.ok ? (...)` branch so the web build SHA
+  // stays visible even when the API health endpoint is unreachable (never hidden).
+  const sectionIndex = pageSource.indexOf('<DeploymentVersionSection');
+  const conditionalIndex = pageSource.indexOf('{healthResult.ok ? (');
+  expect(sectionIndex).toBeGreaterThan(-1);
+  expect(conditionalIndex).toBeGreaterThan(-1);
+  expect(sectionIndex).toBeLessThan(conditionalIndex);
+  // The page feeds it the real web (build-info) and API (health snapshot) commits.
+  expect(pageSource).toContain('webCommit={webCommit}');
+  expect(pageSource).toContain('apiCommit={apiCommit}');
+  expect(pageSource).toContain('const webCommit = buildInfo.commitSha');
+  expect(pageSource).toContain('const apiCommit = systemHealth?.git_commit ?? null');
+});
+
+test('Deployment Version section renders every field truthfully with a copy/tooltip for the full SHA', () => {
+  // A clearly labelled, in-DOM heading (not tiny hero meta text).
+  expect(deploymentVersionSectionSource).toContain('Deployment Version');
+  // Uses the canonical pure builder rather than re-deriving display logic.
+  expect(deploymentVersionSectionSource).toContain('buildDeploymentVersionFields');
+  // Full SHA is exposed via BOTH a copy button and a tooltip (title/aria-label).
+  expect(deploymentVersionSectionSource).toContain('deploymentVersionCopy');
+  expect(deploymentVersionSectionSource).toContain('Full commit SHA:');
+  expect(deploymentVersionSectionSource).toContain('clipboard');
+  // Truthful fallback lives in one canonical constant, shown for any missing field.
+  expect(deploymentVersionLogicSource).toContain('Unknown — build metadata unavailable');
+  // No fabricated placeholder SHA anywhere in the display logic.
+  expect(deploymentVersionLogicSource).not.toContain('0000000');
 });
 
 // ── Navigation backward compat ──────────────────────────────────────────────
