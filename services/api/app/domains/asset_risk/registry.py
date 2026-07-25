@@ -46,6 +46,19 @@ _SORTABLE = {
     'last_assessed_at': 'last_assessed_at',
 }
 
+# Canonical monitoring-gap taxonomy. A monitoring *gap* is a separate dimension
+# from monitoring *health*: an asset can be Critical (an active monitoring verdict)
+# and still carry a missing-target or missing-feed gap. Gap kinds are derived from
+# the SAME active findings the AI panel's monitoring_gaps counts use, plus a
+# deterministic no-linked-target linkage fact — never inferred from monitoring_health.
+_GAP_FINDING_KIND = {
+    'asset_monitoring_gap': 'no_linked_target',
+    'asset_reserve_feed_missing': 'missing_reserve_feed',
+    'asset_reserve_feed_stale': 'stale_feed',
+}
+# Specific gap kinds the ``monitoring_gap`` filter accepts (besides ``any``).
+_GAP_KINDS = {'no_linked_target', 'missing_reserve_feed', 'stale_feed', 'incomplete_provider_coverage'}
+
 
 # --------------------------------------------------------------------------
 # Number / value helpers
@@ -99,7 +112,13 @@ def attach_risk_and_filter(
     asset_ids = [str(a['id']) for a in assets]
     latest = _load_latest_assessments(connection, workspace_id, asset_ids)
     finding_counts = _load_active_finding_counts(connection, workspace_id, asset_ids)
+    gap_findings = _load_active_gap_findings(connection, workspace_id, asset_ids)
     active_jobs = _load_active_jobs(connection, workspace_id, asset_ids)
+
+    # Canonical monitoring-gap kinds per asset, derived from active findings +
+    # deterministic linkage (never monitoring_health). Kept in a local map so the
+    # response shape is unchanged; the ``monitoring_gap`` filter reads from it.
+    gap_kinds_by_id: dict[str, set[str]] = {}
 
     for a in assets:
         aid = str(a['id'])
@@ -141,6 +160,7 @@ def attach_risk_and_filter(
             a['assessment_status'] = 'not_assessed'
             a['last_assessed_at'] = None
             a['monitoring_health'] = _reconcile_health(None, a)
+        gap_kinds_by_id[aid] = _asset_gap_kinds(a, gap_findings.get(aid, set()))
 
     facets = _build_facets(assets)
 
@@ -150,10 +170,11 @@ def attach_risk_and_filter(
     filter_risk = _first_query_value(query_params, 'risk_level')
     filter_health = _first_query_value(query_params, 'monitoring_health')
     filter_custodian = _first_query_value(query_params, 'custodian')
+    filter_gap = _first_query_value(query_params, 'monitoring_gap')
     sort_key = _SORTABLE.get((_first_query_value(query_params, 'sort') or '').lower(), None)
     sort_dir = (_first_query_value(query_params, 'dir') or 'desc').lower()
     has_params = any([
-        search, filter_type, filter_network, filter_risk, filter_health, filter_custodian, sort_key,
+        search, filter_type, filter_network, filter_risk, filter_health, filter_custodian, filter_gap, sort_key,
         _first_query_value(query_params, 'page'), _first_query_value(query_params, 'page_size'),
     ])
 
@@ -172,6 +193,18 @@ def attach_risk_and_filter(
             return False
         if filter_custodian and filter_custodian != 'all' and str(a.get('custodian') or '').lower() != filter_custodian.lower():
             return False
+        if filter_gap and filter_gap.lower() != 'all':
+            # Monitoring-gap filter: a SEPARATE dimension from monitoring health.
+            # A Critical asset with a missing-target gap must still match here.
+            kinds = gap_kinds_by_id.get(str(a['id']), frozenset())
+            want = filter_gap.strip().lower()
+            if want in _GAP_KINDS:
+                if want not in kinds:
+                    return False
+            elif not kinds:
+                # 'any' (or any unrecognized value) matches assets with at least one
+                # active gap. Fail-closed: never widen to non-gap assets.
+                return False
         return True
 
     filtered = [a for a in assets if matches(a)] if has_params else list(assets)
@@ -278,6 +311,56 @@ def _load_active_finding_counts(connection: Any, workspace_id: str, asset_ids: l
         (workspace_id, asset_ids),
     ).fetchall()
     return {str(r['asset_id']): int(r['n']) for r in rows}
+
+
+def _load_active_gap_findings(connection: Any, workspace_id: str, asset_ids: list[str]) -> dict[str, set[str]]:
+    """Active monitoring-gap finding types per asset (workspace-scoped).
+
+    Only ``status = 'active'`` findings are read, so resolved / historical gaps are
+    excluded. This is the SAME canonical source the AI panel's monitoring_gaps
+    counts derive from, which keeps the "View assets with gaps" filter and the panel
+    from ever diverging. Monitoring health is deliberately not consulted here."""
+    if not asset_ids or not service._table_exists(connection, 'asset_risk_findings'):
+        return {}
+    rows = connection.execute(
+        '''
+        SELECT DISTINCT asset_id, finding_type FROM asset_risk_findings
+        WHERE workspace_id = %s AND asset_id = ANY(%s::uuid[])
+          AND status = 'active' AND finding_type = ANY(%s)
+        ''',
+        (workspace_id, asset_ids, list(_GAP_FINDING_KIND.keys())),
+    ).fetchall()
+    out: dict[str, set[str]] = {}
+    for r in rows:
+        ftype = r.get('finding_type')
+        if ftype is None:
+            continue
+        out.setdefault(str(r['asset_id']), set()).add(str(ftype))
+    return out
+
+
+def _asset_gap_kinds(asset: dict[str, Any], active_gap_finding_types: set[str]) -> set[str]:
+    """Canonical monitoring-gap kinds for one asset.
+
+    Combines active gap findings with the deterministic no-linked-target linkage
+    fact (an asset with no monitoring target at all is a gap even before an
+    assessment records the finding). Monitoring health is intentionally NOT
+    consulted — a Critical asset that carries a missing-target finding is still a
+    ``no_linked_target`` gap."""
+    kinds: set[str] = set()
+    for ftype in active_gap_finding_types:
+        kind = _GAP_FINDING_KIND.get(ftype)
+        if kind:
+            kinds.add(kind)
+    has_target = bool(asset.get('has_monitoring_target'))
+    target_count = asset.get('monitoring_target_count')
+    if not has_target and (target_count is None or int(target_count or 0) <= 0):
+        kinds.add('no_linked_target')
+    # Incomplete provider coverage mirrors the panel's derived count
+    # (gap_assets - no_target): an active gap that is not a no-linked-target gap.
+    if kinds and 'no_linked_target' not in kinds:
+        kinds.add('incomplete_provider_coverage')
+    return kinds
 
 
 def _load_active_jobs(connection: Any, workspace_id: str, asset_ids: list[str]) -> dict[str, dict[str, Any]]:
