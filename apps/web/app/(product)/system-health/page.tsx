@@ -6,6 +6,7 @@ import { resolveWorkspaceMonitoringTruthFromSummary } from '../../workspace-moni
 import { fetchSystemHealth } from './_components/fetch-system-health';
 import { SystemHealthEndpointError } from './_components/system-health-endpoint-error';
 import { SystemHealthHero } from './_components/system-health-hero';
+import { DeploymentVersionSection } from './_components/deployment-version-section';
 import { HealthSummaryCards } from './_components/health-summary-cards';
 import { OperationalOverview } from './_components/operational-overview';
 import { LiveChainMonitoringPanel } from './_components/live-chain-monitoring-panel';
@@ -82,6 +83,17 @@ export default async function SystemHealthPage() {
   const buildInfo = getBuildInfo(process.env);
   const frontendCommit = buildInfo.shortCommitSha ?? (buildInfo.commitSha ? buildInfo.commitSha.slice(0, 8) : null);
 
+  // Canonical inputs for the always-visible Deployment Version section. Full SHAs are
+  // passed through (the section shortens for display and keeps the full value for the
+  // copy button / tooltip). The API commit comes from the backend health snapshot, so
+  // it reads truthfully as "unknown" whenever that endpoint is unreachable. The API
+  // does not currently expose a deploy timestamp, so it too renders as unknown rather
+  // than a fabricated value.
+  const webCommit = buildInfo.commitSha;
+  const apiCommit = systemHealth?.git_commit ?? null;
+  const webBuildTime = buildInfo.buildTimestamp;
+  const apiDeployTime = null;
+
   return (
     <main className="productPage">
       <RuntimeSummaryPanel />
@@ -109,6 +121,15 @@ export default async function SystemHealthPage() {
           </a>
         </div>
       </section>
+
+      {/* Always rendered — outside the backend-health branch below — so the web build
+          SHA stays visible even when the API health endpoint is unreachable. */}
+      <DeploymentVersionSection
+        webCommit={webCommit}
+        apiCommit={apiCommit}
+        webBuildTime={webBuildTime}
+        apiDeployTime={apiDeployTime}
+      />
 
       {healthResult.ok ? (
         <>
