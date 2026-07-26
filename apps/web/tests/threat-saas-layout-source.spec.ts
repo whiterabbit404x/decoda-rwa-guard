@@ -25,11 +25,11 @@ test('/threat page source does not render RuntimeSummaryPanel at top level', () 
   expect(src).not.toContain('RuntimeSummaryPanel');
 });
 
-test('/threat page renders only ThreatMonitoringPanel', () => {
+test('/threat page renders the ThreatMonitoringScreen (Screen 5 rebuild)', () => {
   const src = appSource('(product)/threat/page.tsx');
-  expect(src).toContain('ThreatMonitoringPanel');
-  // No hero section injected at the route level — header lives in ThreatMonitoringPanel
-  expect(src).not.toContain('<h1>');
+  expect(src).toContain('ThreatMonitoringScreen');
+  // The page owns the accessible <h1>; the screen renders the subtitle + content.
+  expect(src).toContain('<h1>Threat Monitoring</h1>');
   expect(src).not.toContain('hero compactHero');
 });
 

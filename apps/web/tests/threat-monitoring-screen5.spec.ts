@@ -240,9 +240,10 @@ test('page does not render RuntimeSummaryPanel at top level', () => {
   expect(src).not.toContain('RuntimeSummaryPanel');
 });
 
-test('page uses ThreatMonitoringPanel', () => {
+test('page uses ThreatMonitoringScreen', () => {
   const src = appSource('(product)/threat/page.tsx');
-  expect(src).toContain('ThreatMonitoringPanel');
+  // Screen 5 was rebuilt as ThreatMonitoringScreen (Threat Detection Engineer).
+  expect(src).toContain('ThreatMonitoringScreen');
 });
 
 // -- 17. Simulator signal CTA only shown in simulator mode --------
