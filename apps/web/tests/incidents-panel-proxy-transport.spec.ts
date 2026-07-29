@@ -38,7 +38,7 @@ test.describe('Incidents page same-origin proxy transport', () => {
   });
 
   test('Alerts page View/Open Incident routes to the specific incident, not just /incidents', () => {
-    const alerts = read('alerts-panel.tsx');
+    const alerts = read('alerts-screen.tsx');
     // Table row + detail-panel "View Incident" links deep-link to the persisted incident id.
     expect(alerts).toContain('href={`/incidents/${alert.incident_id}`}');
     // Open Incident escalates then navigates to the incident the backend created/linked.

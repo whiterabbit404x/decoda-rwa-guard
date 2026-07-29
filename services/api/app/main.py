@@ -31,6 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from services.api.app.domains import alert_stream, alert_delivery
 from services.api.app.domains.asset_risk import registry as asset_risk_registry
 from services.api.app.domains.threat_detection import endpoints as threat_detection_endpoints
+from services.api.app.domains.alert_triage import endpoints as alert_triage_endpoints
 from services.api.app.domains.rate_limit import rate_limit_connectivity
 from services.api.app.quicknode_streams import (
     QUICKNODE_STREAMS_WEBHOOK_VERSION,
@@ -4893,6 +4894,49 @@ def alerts_evidence(alert_id: str, request: Request) -> dict[str, Any]:
 @app.post('/alerts/suppressions', summary='Create alert suppression rule')
 def alerts_suppressions_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: create_alert_suppression(payload, request))
+
+
+# --- Alert Triage Agent (Screen 6 — Active Alerts) ---------------------------
+# Composed, workspace-scoped read model + the deterministic Alert Triage Agent
+# command. GETs are strictly read-only: opening/refreshing Screen 6 never runs
+# triage, creates clusters, or mutates an alert. Every path is workspace-scoped.
+@app.get('/alerts/triage/summary', summary='Composed Active Alerts read model (Screen 6)')
+def alerts_triage_summary(
+    request: Request,
+    severity: str | None = None,
+    asset_id: str | None = None,
+    status_value: str | None = None,
+    search: str | None = None,
+    cluster_id: str | None = None,
+    limit: int = 25,
+    offset: int = 0,
+) -> dict[str, Any]:
+    try:
+        return with_auth_schema_json(lambda: alert_triage_endpoints.summary_endpoint(
+            request, severity=severity, asset_id=asset_id, status_value=status_value,
+            search=search, cluster_id=cluster_id, limit=limit, offset=offset,
+        ))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Never leak alert evidence through the error message (requirement F).
+        logger.error('alerts_triage_summary_failed method=%s error_type=%s error=%s', request.method, exc.__class__.__name__, exc)
+        raise HTTPException(status_code=500, detail='Unable to load the alerts summary at this time.') from None
+
+
+@app.post('/alerts/triage/run', summary='Run the Alert Triage Agent (cluster active alerts)')
+def alerts_triage_run(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: alert_triage_endpoints.run_triage_endpoint(request))
+
+
+@app.get('/alerts/triage/clusters', summary='List active alert clusters (Screen 6)')
+def alerts_triage_clusters(request: Request, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: alert_triage_endpoints.clusters_endpoint(request, limit=limit, offset=offset))
+
+
+@app.get('/alerts/triage/clusters/{cluster_id}', summary='Alert cluster detail + members (Screen 6)')
+def alerts_triage_cluster_detail(cluster_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: alert_triage_endpoints.cluster_detail_endpoint(cluster_id, request))
 
 
 @app.get('/incidents', summary='List incidents')
