@@ -1,5 +1,5 @@
 import RuntimeSummaryPanel from '../../runtime-summary-panel';
-import AlertsPanel from '../../alerts-panel';
+import AlertsScreen from '../../alerts-screen';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,11 +12,11 @@ export default function AlertsPage() {
           <p className="eyebrow">Security Operations</p>
           <h1>Active Alerts</h1>
           <p className="lede">
-            Review security alerts generated from telemetry and detections.
+            Alerts prioritized and grouped into root-cause clusters by the Alert Triage Agent.
           </p>
         </div>
       </section>
-      <AlertsPanel />
+      <AlertsScreen />
     </main>
   );
 }

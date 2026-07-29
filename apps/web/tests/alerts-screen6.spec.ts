@@ -1,237 +1,227 @@
 /**
- * Screen 6 – Alerts / Active Alerts contract tests.
- * Source-level: reads .tsx files and asserts on string/structural presence.
- * No browser required.
+ * Screen 6 — Alerts / Active Alerts contract tests.
+ *
+ * Two layers:
+ *   1. Executable unit tests for the canonical presentation helpers (pure logic).
+ *   2. Source-level structural tests that assert the screen renders the required
+ *      states/columns/actions and does NOT hardcode the reference-design numbers.
  */
 import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import {
+  confidenceText,
+  getTriageDisplayState,
+  recommendationLabel,
+  severityLabel,
+  severityVariant,
+  statusLabel,
+  statusVariant,
+  triageModeLabel,
+  triageModeVariant,
+  triageSummaryText,
+  type TriageState,
+} from '../app/alerts-triage-presentation';
+
 function appSource(fileName: string): string {
   return fs.readFileSync(path.join(__dirname, '..', 'app', fileName), 'utf-8');
 }
 
-// ── 1. /alerts route renders ─────────────────────────────────────
-test('/alerts route file exists and exports a default page component', () => {
+function triageState(overrides: Partial<TriageState> = {}): TriageState {
+  return {
+    schema_ready: true,
+    ai_available: false,
+    mode: 'rules_based',
+    processing: false,
+    last_run: null,
+    last_success_at: null,
+    cluster_count: 0,
+    unclustered_count: null,
+    top_recommendation: null,
+    clusters_preview: [],
+    state: 'not_run',
+    ...overrides,
+  };
+}
+
+/* ───────────────────────── 1. Pure presentation logic ─────────────────── */
+
+test('severity labels + variants are canonical (Critical/High/Medium/Low)', () => {
+  expect(severityLabel('critical')).toBe('Critical');
+  expect(severityLabel('high')).toBe('High');
+  expect(severityLabel('medium')).toBe('Medium');
+  expect(severityLabel('low')).toBe('Low');
+  expect(severityVariant('critical')).toBe('danger');
+  expect(severityVariant('high')).toBe('danger');
+  expect(severityVariant('medium')).toBe('warning');
+  expect(severityVariant('low')).toBe('success');
+});
+
+test('status labels use canonical lifecycle names, not invented ones', () => {
+  expect(statusLabel('open')).toBe('Open');
+  expect(statusLabel('investigating')).toBe('Investigating');
+  expect(statusLabel('acknowledged')).toBe('Acknowledged');
+  expect(statusLabel('linked_to_incident')).toBe('Linked to Incident');
+  expect(statusLabel('resolved')).toBe('Resolved');
+  expect(statusVariant('open')).toBe('danger');
+  expect(statusVariant('resolved')).toBe('success');
+});
+
+test('triage mode label: rules_based -> Rules-based, ai_assisted -> AI-assisted', () => {
+  expect(triageModeLabel('rules_based')).toBe('Rules-based');
+  expect(triageModeLabel('ai_assisted')).toBe('AI-assisted');
+  expect(triageModeLabel('unavailable')).toBe('Unavailable');
+  // Fail-closed default is rules-based (never claims AI).
+  expect(triageModeLabel(undefined)).toBe('Rules-based');
+  expect(triageModeVariant('ai_assisted')).toBe('info');
+});
+
+test('confidence: missing reads "Not calculated", present is a real percent + band', () => {
+  expect(confidenceText(null)).toBe('Not calculated');
+  expect(confidenceText(undefined)).toBe('Not calculated');
+  expect(confidenceText(0.87, 'high')).toBe('87% (High)');
+  expect(confidenceText(0.5, 'medium')).toBe('50% (Medium)');
+  expect(confidenceText(0.9)).toBe('90%');
+});
+
+test('recommendation labels map the canonical categories', () => {
+  expect(recommendationLabel('escalate_to_incident')).toBe('Escalate to incident');
+  expect(recommendationLabel('validate_oracle_source')).toBe('Validate oracle source');
+  expect(recommendationLabel('review_immediately')).toBe('Review immediately');
+  expect(recommendationLabel(null)).toBe('Continue monitoring');
+});
+
+test('Run Triage is disabled while a run is processing (never optimistic)', () => {
+  const processing = getTriageDisplayState({ triage: triageState({ processing: true, state: 'processing' }) });
+  expect(processing.runDisabled).toBe(true);
+  expect(processing.runBusy).toBe(true);
+  expect(processing.statusLabel).toBe('Running…');
+});
+
+test('Run Triage is disabled while the mutation is in flight', () => {
+  const inFlight = getTriageDisplayState({ triage: triageState(), mutationInFlight: true });
+  expect(inFlight.runDisabled).toBe(true);
+  expect(inFlight.runBusy).toBe(true);
+});
+
+test('triage display: not-run is runnable, degraded retries, provisioning is blocked', () => {
+  const notRun = getTriageDisplayState({ triage: triageState({ state: 'not_run' }) });
+  expect(notRun.runLabel).toBe('Run Triage');
+  expect(notRun.runDisabled).toBe(false);
+  expect(notRun.statusLabel).toBe('Triage not run');
+
+  const degraded = getTriageDisplayState({ triage: triageState({ state: 'degraded' }) });
+  expect(degraded.runLabel).toBe('Retry Triage');
+  expect(degraded.statusLabel).toBe('Last run failed');
+
+  const provisioning = getTriageDisplayState({ triage: triageState({ schema_ready: false }) });
+  expect(provisioning.runDisabled).toBe(true);
+  expect(provisioning.statusLabel).toBe('Provisioning');
+
+  const noPerm = getTriageDisplayState({ triage: triageState({ state: 'not_run' }), canRun: false });
+  expect(noPerm.runDisabled).toBe(true);
+});
+
+test('triage summary sentence is DERIVED from run counts, never hardcoded', () => {
+  expect(triageSummaryText(null)).toBe('Triage not run.');
+  expect(triageSummaryText(triageState({ schema_ready: false }))).toContain('provisioning');
+  const grouped = triageState({
+    state: 'ready',
+    last_run: {
+      id: 'r1', status: 'completed', mode: 'rules_based', alerts_considered: 23,
+      clusters_total: 5, clusters_created: 5, unclustered_count: 0,
+    },
+  });
+  // Reference wording, but computed from the run (23 considered, 0 unclustered, 5 clusters).
+  expect(triageSummaryText(grouped)).toBe('Grouped 23 related alerts into 5 clusters.');
+  const none = triageState({
+    state: 'ready',
+    last_run: { id: 'r2', status: 'completed', mode: 'rules_based', alerts_considered: 4, clusters_total: 0, clusters_created: 0, unclustered_count: 4 },
+  });
+  expect(triageSummaryText(none)).toContain('No related-alert clusters');
+});
+
+/* ───────────────────────── 2. Page + screen structure ─────────────────── */
+
+test('/alerts page renders the h1, the screen, and a triage-focused subtitle', () => {
   const src = appSource('(product)/alerts/page.tsx');
   expect(src).toContain('export default function AlertsPage');
-});
-
-// ── 2. Page title "Active Alerts" exists ─────────────────────────
-test('page title "Active Alerts" exists', () => {
-  const src = appSource('(product)/alerts/page.tsx');
   expect(src).toContain('<h1>Active Alerts</h1>');
-});
-
-// ── 3. Search filter exists ───────────────────────────────────────
-test('search filter exists', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain('Search alerts...');
-});
-
-// ── 4. Severity filter exists ─────────────────────────────────────
-test('severity filter exists', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain('Severity filter');
-});
-
-// ── 5. Status filter exists ───────────────────────────────────────
-test('status filter exists', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain('Status filter');
-});
-
-// ── 6. Top metric cards exist ─────────────────────────────────────
-test('metric card "Active Alerts" exists', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain('Active Alerts');
-});
-
-test('metric card "Critical Alerts" exists', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain('Critical Alerts');
-});
-
-test('metric card "High Confidence" exists', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain('High Confidence');
-});
-
-test('metric card "Linked Incidents" exists', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain('Linked Incidents');
-});
-
-// ── 7. Main table columns exist exactly ──────────────────────────
-test('table column "Alert ID" exists', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain('Alert ID');
-});
-
-test('table column "Severity" exists', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain('Severity');
-});
-
-test('table column "Title" exists', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain("'Title'");
-});
-
-test('table column "Asset" exists', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain("'Asset'");
-});
-
-test('table column "Status" exists', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain("'Status'");
-});
-
-test('table column "Time" exists', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain("'Time'");
-});
-
-test('table column "Action" exists', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain("'Action'");
-});
-
-// ── 8. Empty state Case A: no telemetry ─────────────────────────
-test('empty state shows "No alerts yet because no telemetry has been received" when no telemetry exists', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain('No alerts yet because no telemetry has been received.');
-});
-
-// ── 9. Empty state Case B: telemetry exists but no detection ────
-test('empty state shows detection blocker when telemetry exists but no detection exists', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain(
-    'Telemetry has been received, but no detection has been generated yet.',
-  );
-});
-
-// ── 10. Empty state Case C: detection exists but no alert ────────
-test('empty state shows open-alert blocker when detection exists but no alert exists', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain('Detections exist, but no alert has been opened yet.');
-});
-
-// ── 11. Linked to Incident requires valid incident_id ────────────
-test('Linked to Incident status requires incident_id to be non-null', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain('Linked to Incident');
-  // resolvedStatus() guards against showing Linked to Incident when incident_id is absent
-  expect(panel).toContain('linked_to_incident');
-  expect(panel).toContain('incident_id');
-  // The guard function must check for the absence of incident_id
-  const fnStart = panel.indexOf('function resolvedStatus');
-  const fnEnd = panel.indexOf('function fmt');
-  const fnText = panel.slice(fnStart, fnEnd);
-  expect(fnText).toContain('incident_id');
-  expect(fnText).toContain("'linked_to_incident'");
-});
-
-// ── 12. Simulator evidence not labeled as live_provider ──────────
-test('page does not label simulator evidence as live_provider', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain("workspaceSource === 'simulator'");
-  expect(panel).toContain("label: 'simulator'");
-
-  const fnStart = panel.indexOf('function evidenceSourcePill');
-  const fnEnd = panel.indexOf('function severityPill');
-  const fnText = panel.slice(fnStart, fnEnd);
-  const simulatorGuardPos = fnText.indexOf("workspaceSource === 'simulator'");
-  const liveProviderBranchPos = fnText.indexOf("label: 'live_provider'");
-  expect(simulatorGuardPos).toBeGreaterThan(-1);
-  expect(liveProviderBranchPos).toBeGreaterThan(simulatorGuardPos);
-});
-
-// ── 13. Alert links to detection and incident fields ─────────────
-test('page links alert to detection_id and shows warning when unavailable', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain('detection_id');
-  expect(panel).toContain('Detection link unavailable');
-});
-
-test('page links alert to incident_id and shows View Incident or Open Incident', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain('incident_id');
-  expect(panel).toContain('View Incident');
-  expect(panel).toContain('Open Incident');
-});
-
-// ── 14. Page uses RuntimeSummaryPanel and AlertsPanel ────────────
-test('page uses RuntimeSummaryPanel', () => {
-  const src = appSource('(product)/alerts/page.tsx');
   expect(src).toContain('RuntimeSummaryPanel');
+  expect(src).toContain('AlertsScreen');
+  expect(src.toLowerCase()).toContain('cluster');
 });
 
-test('page uses AlertsPanel', () => {
-  const src = appSource('(product)/alerts/page.tsx');
-  expect(src).toContain('AlertsPanel');
+test('severity tabs All/Critical/High/Medium/Low render real counts from the read model', () => {
+  const screen = appSource('alerts-screen.tsx');
+  for (const label of ['All', 'Critical', 'High', 'Medium', 'Low']) {
+    expect(screen).toContain(`label: '${label}'`);
+  }
+  // Counts come from severity_totals in the same summary payload as the rows.
+  expect(screen).toContain('summary?.severity_totals');
+  expect(screen).toContain('totals[tab.countKey]');
+  expect(screen).toContain('data-testid={`severity-tab-');
 });
 
-// ── 15. Page subtitle is correct ─────────────────────────────────
-test('page subtitle matches spec', () => {
-  const src = appSource('(product)/alerts/page.tsx');
-  expect(src).toContain('Review security alerts generated from telemetry and detections.');
+test('table columns are exactly Severity/Alert Title/Asset/Status/Time/Cluster', () => {
+  const screen = appSource('alerts-screen.tsx');
+  expect(screen).toContain("['Severity', 'Alert Title', 'Asset', 'Status', 'Time', 'Cluster']");
 });
 
-// ── 16. On-chain wallet-transfer evidence is shown ───────────────
-test('alert detail panel shows on-chain transaction fields', () => {
-  const panel = appSource('alerts-panel.tsx');
-  // Detail section + each required field label from the acceptance criteria.
-  expect(panel).toContain('On-chain Transaction');
-  expect(panel).toContain('Tx Hash');
-  expect(panel).toContain('From');
-  expect(panel).toContain('To');
-  expect(panel).toContain('Amount (wei)');
-  expect(panel).toContain('Chain ID');
-  expect(panel).toContain('Block');
-  // Detection source label (e.g. "QuickNode Stream" / "Stable RPC Polling"),
-  // resolved via the shared canonical Detected By map — never re-invented here.
-  expect(panel).toContain('Detected By');
-  expect(panel).toContain('detectedByLabelOf');
-  expect(panel).toContain('walletTransferDetectedBy');
+test('all required states are implemented and testable', () => {
+  const screen = appSource('alerts-screen.tsx');
+  expect(screen).toContain('data-testid="alerts-loading"');
+  expect(screen).toContain('data-testid="alerts-error"');
+  expect(screen).toContain('data-testid="alerts-empty"');          // no active alerts
+  expect(screen).toContain('data-testid="alerts-empty-filters"');  // no results for filters
+  expect(screen).toContain('data-testid="triage-provisioning"');   // schema provisioning
+  expect(screen).toContain('data-testid="unclustered"');           // Unclustered cell
 });
 
-test('alert detail reads on-chain fields from the alert (top-level or payload)', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain('from_address');
-  expect(panel).toContain('to_address');
-  expect(panel).toContain('amount_wei');
-  expect(panel).toContain('chain_id');
-  expect(panel).toContain('block_number');
+test('unclustered alerts show "Unclustered" (never a made-up cluster)', () => {
+  const screen = appSource('alerts-screen.tsx');
+  expect(screen).toContain('>Unclustered</span>');
 });
 
-// ── 17. tx_hash surfaced in the alert list rows ──────────────────
-test('alert table row shows the transaction hash', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain('txHashOf(alert)');
-  expect(panel).toContain('shortHash(');
+test('AI Alert Triage Agent panel + Review Clusters + Run Triage actions exist', () => {
+  const screen = appSource('alerts-screen.tsx');
+  expect(screen).toContain('AI Alert Triage Agent');
+  expect(screen).toContain('data-testid="run-triage"');
+  expect(screen).toContain('data-testid="review-clusters"');
+  expect(screen).toContain('data-testid="cluster-drawer"');
+  expect(screen).toContain('data-testid="cluster-item"');
+  // Response actions are explicitly NOT executed from Screen 6.
+  expect(screen).toContain('Response actions are not run from this screen.');
 });
 
-// ── 18. High Confidence is derived from live evidence + tx_hash ──
-test('High Confidence counts live, tx-bearing alerts (not payload.confidence string)', () => {
-  const panel = appSource('alerts-panel.tsx');
-  expect(panel).toContain('function isHighConfidence');
-  const fnStart = panel.indexOf('function isHighConfidence');
-  const fnEnd = panel.indexOf('}', panel.indexOf('return isLive'));
-  const fnText = panel.slice(fnStart, fnEnd);
-  // Truthful: requires live evidence AND a real tx_hash.
-  expect(fnText).toContain('live');
-  expect(fnText).toContain('txHashOf');
-  // The count uses the helper.
-  expect(panel).toContain('alerts.filter(isHighConfidence)');
+test('AI-unavailable + rules-based states are surfaced truthfully', () => {
+  const screen = appSource('alerts-screen.tsx');
+  expect(screen).toContain('!triage.ai_available');
+  expect(screen).toContain('deterministic rules only');
+  // AI narrative is rendered as plain text, never dangerouslySetInnerHTML.
+  expect(screen).not.toContain('dangerouslySetInnerHTML');
 });
 
-// ── 19. On-chain section is gated on a real tx_hash (no empty/fake row) ──
-test('on-chain transaction section only renders when a tx_hash exists', () => {
-  const panel = appSource('alerts-panel.tsx');
-  const sectionPos = panel.indexOf('On-chain Transaction');
-  const guardPos = panel.lastIndexOf('txHashOf(alert) ?', sectionPos);
-  expect(guardPos).toBeGreaterThan(-1);
-  expect(guardPos).toBeLessThan(sectionPos);
+test('pagination is backend-driven with an accurate range + total', () => {
+  const screen = appSource('alerts-screen.tsx');
+  expect(screen).toContain('data-testid="pagination-range"');
+  expect(screen).toContain('Showing {pagination.showing_from}–{pagination.showing_to} of {pagination.total}');
+  expect(screen).toContain('data-testid="page-prev"');
+  expect(screen).toContain('data-testid="page-next"');
+});
+
+test('changing filters resets pagination to page 1', () => {
+  const screen = appSource('alerts-screen.tsx');
+  // Every filter setter passes resetPage.
+  expect(screen).toContain('resetPage: true');
+  expect(screen).toContain("params.delete('page')");
+});
+
+test('screen does NOT hardcode the reference-design numbers or labels', () => {
+  const screen = appSource('alerts-screen.tsx');
+  // None of the reference mock values may be baked into the UI.
+  for (const forbidden of ['87%', '23 related alerts into 5', 'Cluster A', 'Cluster B', 'Oracle Price Deviation', '$3.42B', '28 alerts']) {
+    expect(screen).not.toContain(forbidden);
+  }
 });
