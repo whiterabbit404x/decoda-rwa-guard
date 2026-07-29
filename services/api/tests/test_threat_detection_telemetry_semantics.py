@@ -300,6 +300,39 @@ def test_engine_panel_copy_is_not_repeated():
     assert len({panel['headline'], panel['finding'], panel['explanation']}) == 3
 
 
+def test_engine_panel_exposes_historical_telemetry_and_ingestion_heartbeat():
+    # Deployment shape: nothing in-window, but security telemetry exists ~40d ago and
+    # the ingestion (poll) heartbeat is ~147h old. The panel must surface BOTH — never
+    # collapse to "—" while the summary already carries these canonical timestamps.
+    now = _now()
+    ever = now - timedelta(days=40)
+    poll = now - timedelta(hours=147)
+    db = _RecordingSummaryDB(last_security_at=None, last_ingestion_at=poll, last_security_ever=ever)
+    s = db_build(db)
+    fields = s['engine_panel']['fields']
+    # Latest security telemetry falls back to the newest-ever timestamp (not None).
+    assert fields['last_security_telemetry_at'] is not None
+    assert fields['last_security_telemetry_at'] == s['last_security_telemetry_ever_at']
+    # Worker heartbeat falls back to the canonical ingestion signal that drives the
+    # stale worker_status, so the panel age matches the global runtime strip.
+    assert fields['worker_heartbeat_at'] is not None
+    assert fields['worker_heartbeat_at'] == s['ingestion_health']['last_ingestion_at']
+
+
+def test_degraded_reason_distinguishes_in_window_from_ever():
+    now = _now()
+    # (a) Older telemetry exists outside the window → in-window reason, NOT "no_telemetry".
+    older = _RecordingSummaryDB(last_security_at=None, last_ingestion_at=None, last_security_ever=now - timedelta(days=40))
+    s_older = db_build(older)
+    assert 'no_security_telemetry_in_window' in s_older['degraded_reasons']
+    assert 'no_telemetry' not in s_older['degraded_reasons']
+    # (b) Never any telemetry → the honest "no telemetry ever" reason is used.
+    never = _RecordingSummaryDB(last_security_at=None, last_ingestion_at=None, last_security_ever=None)
+    s_never = db_build(never)
+    assert 'no_telemetry' in s_never['degraded_reasons']
+    assert 'no_security_telemetry_in_window' not in s_never['degraded_reasons']
+
+
 # --------------------------------------------------------------------------
 # 15-16. GET builds / telemetry list perform NO writes
 # --------------------------------------------------------------------------
@@ -349,6 +382,54 @@ def test_workspace_next_action_zero_detections_is_not_open_incident():
     )
     action = wms.resolve_next_required_action(chain)
     assert action != 'open_incident', 'zero detections must never resolve to open_incident'
+
+
+def _full_chain(*, detections, alerts, incidents):
+    from services.api.app import workspace_monitoring_summary as wms
+
+    return wms.build_runtime_setup_chain(
+        counters={
+            'workspaces_count': 1, 'assets_count': 1, 'verified_assets_count': 1,
+            'targets_count': 1, 'monitored_systems_count': 1, 'enabled_monitored_systems_count': 1,
+            'detections_count': detections, 'alerts_count': alerts, 'incidents_count': incidents,
+            'response_actions_count': 0, 'evidence_count': 0,
+        },
+        timestamps={'last_heartbeat_at': '2026-07-01T00:00:00Z', 'last_telemetry_at': '2026-07-01T00:00:00Z'},
+    )
+
+
+def test_stale_ingestion_overrides_open_incident_workflow_action():
+    # A pre-existing alert with no incident normally resolves to open_incident; when
+    # ingestion is stale, restoring ingestion takes priority (canonical, fail-closed).
+    from services.api.app import workspace_monitoring_summary as wms
+
+    chain = _full_chain(detections=1, alerts=1, incidents=0)
+    assert wms.resolve_next_required_action(chain) == 'open_incident'
+    assert wms.resolve_next_required_action(chain, ingestion_stale=True) == 'diagnose_ingestion'
+
+
+def test_stale_ingestion_zero_detections_never_open_incident():
+    # Zero detections + stale ingestion → diagnose_ingestion, and never open_incident.
+    from services.api.app import workspace_monitoring_summary as wms
+
+    chain = _full_chain(detections=0, alerts=0, incidents=0)
+    assert wms.resolve_next_required_action(chain, ingestion_stale=True) == 'diagnose_ingestion'
+    assert wms.resolve_next_required_action(chain, ingestion_stale=True) != 'open_incident'
+
+
+def test_stale_ingestion_does_not_override_setup_actions():
+    # Before the worker ever reports, "add asset" etc. are true prerequisites that a
+    # stale-ingestion signal must NOT hijack into diagnose_ingestion.
+    from services.api.app import workspace_monitoring_summary as wms
+
+    chain = wms.build_runtime_setup_chain(
+        counters={'workspaces_count': 1, 'assets_count': 0, 'verified_assets_count': 0,
+                  'targets_count': 0, 'monitored_systems_count': 0, 'enabled_monitored_systems_count': 0,
+                  'detections_count': 0, 'alerts_count': 0, 'incidents_count': 0,
+                  'response_actions_count': 0, 'evidence_count': 0},
+        timestamps={'last_heartbeat_at': None, 'last_telemetry_at': None},
+    )
+    assert wms.resolve_next_required_action(chain, ingestion_stale=True) == 'add_asset'
 
 
 # ==========================================================================

@@ -81,6 +81,12 @@ NEXT_ACTION_BY_STEP = {
     'response_ready': 'export_evidence_package',
     'evidence_export_ready': 'export_evidence_package',
 }
+# Post-ingestion workflow actions: these only make sense once telemetry is flowing.
+# When ingestion is stale/offline they are superseded by diagnose_ingestion so the
+# banner never recommends acting on stale detections/alerts/incidents. Earlier setup
+# actions (add_asset, verify_asset, …) are NOT in this set — they are genuine
+# prerequisites that stand regardless of ingestion freshness.
+NEXT_ACTION_POST_INGESTION = frozenset({'view_detection', 'open_incident', 'export_evidence_package'})
 HARD_GUARD_FLAGS = {
     'offline_with_current_telemetry',
     'telemetry_unavailable_with_high_confidence',
@@ -413,7 +419,11 @@ def _canonical_summary(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def resolve_next_required_action(runtime_setup_chain: dict[str, Any] | None) -> str:
+def resolve_next_required_action(
+    runtime_setup_chain: dict[str, Any] | None,
+    *,
+    ingestion_stale: bool = False,
+) -> str:
     chain = runtime_setup_chain if isinstance(runtime_setup_chain, dict) else {}
     steps = chain.get('steps') if isinstance(chain.get('steps'), list) else []
     for step in steps:
@@ -423,7 +433,17 @@ def resolve_next_required_action(runtime_setup_chain: dict[str, Any] | None) -> 
             continue
         step_id = str(step.get('id') or '').strip()
         if step_id:
-            return NEXT_ACTION_BY_STEP.get(step_id, 'review_reason_codes')
+            action = NEXT_ACTION_BY_STEP.get(step_id, 'review_reason_codes')
+            # Fail-closed: when ingestion is stale/offline the monitoring pipeline
+            # cannot be trusted, so a downstream detection→alert→incident→evidence
+            # action (e.g. a pre-existing alert without fresh evidence surfacing as
+            # "open incident") must never take priority over restoring ingestion.
+            # Stale ingestion always resolves to diagnose_ingestion first; it does
+            # NOT override the earlier setup steps (add asset, verify, …), which are
+            # true prerequisites regardless of freshness.
+            if ingestion_stale and action in NEXT_ACTION_POST_INGESTION:
+                return 'diagnose_ingestion'
+            return action
     return 'monitoring_live'
 
 

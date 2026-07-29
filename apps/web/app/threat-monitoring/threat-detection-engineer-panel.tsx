@@ -12,9 +12,11 @@ import {
   detectionTypeLabel,
   degradedReasonCopy,
   enginePanelPresentation,
+  evidenceCoverageLabel,
   evidenceQualityLabel,
   evidenceSourceLabel,
   evidenceSourceVariant,
+  formatDate,
   ingestionBadge,
   relativeTime,
   severityLabel,
@@ -44,10 +46,11 @@ export default function ThreatDetectionEngineerPanel({
     <aside className="dataCard assessorPanel" aria-label="Threat Detection Engineer" data-testid="threat-detection-engineer-panel">
       <div className="assessorHeader">
         <h2 className="sectionEyebrow" style={{ margin: 0 }}>Threat Detection Engineer</h2>
-        {/* Purpose descriptor — kept muted so the canonical Finding below is the
-            prominent state statement, never this generic panel subtitle. */}
-        <p className="assessorMeta" style={{ margin: '0.2rem 0 0', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-          Correlated exploit &amp; anomaly detection
+        {/* Purpose descriptor — kept muted and specific to what the panel does, so the
+            canonical Finding below is the prominent state statement (never a generic
+            feature tagline). */}
+        <p className="assessorMeta" data-testid="engine-purpose" style={{ margin: '0.2rem 0 0', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+          Autonomous review of the current threat state
         </p>
       </div>
 
@@ -103,7 +106,7 @@ function PanelBody({
     : ingestionBadge(fields.worker_status, fields.ingestion_status);
   // Degraded reasons already conveyed by the headline/finding are dropped so the
   // panel never states the same "no telemetry"/"stale" sentence twice.
-  const REDUNDANT_REASONS = new Set(['no_telemetry', 'telemetry_stale', 'worker_unhealthy']);
+  const REDUNDANT_REASONS = new Set(['no_telemetry', 'no_security_telemetry_in_window', 'telemetry_stale', 'worker_unhealthy']);
   const extraDegraded = degradedReasons.filter((r) => !REDUNDANT_REASONS.has(r));
   // Start Investigation is only meaningful when a canonical detection exists. With
   // zero detections the primary action becomes Run Source Diagnostic.
@@ -131,13 +134,16 @@ function PanelBody({
       <section className="assessorSection">
         <ul className="assessorGapList" data-testid="engine-fields">
           <li><span>Selected window</span><strong>{windowText}</strong></li>
-          <li><span>Latest security telemetry</span><strong>{relativeTime(fields.last_security_telemetry_at)}</strong></li>
-          <li><span>Worker heartbeat</span><strong>{relativeTime(fields.worker_heartbeat_at)}</strong></li>
+          {/* Latest security telemetry is a historical fact → absolute date; heartbeat
+              is a liveness age → relative "N ago". Both derive from the canonical
+              summary, so neither collapses to "—" while a timestamp exists. */}
+          <li><span>Latest security telemetry</span><strong data-testid="engine-latest-telemetry">{formatDate(fields.last_security_telemetry_at)}</strong></li>
+          <li><span>Worker heartbeat</span><strong data-testid="engine-worker-heartbeat">{relativeTime(fields.worker_heartbeat_at)}</strong></li>
           <li>
             <span>Ingestion status</span>
             <strong><StatusPill label={workerStatusLabel(fields.worker_status)} variant={workerStatusVariant(fields.worker_status)} /></strong>
           </li>
-          <li><span>Evidence coverage</span><strong>{fields.evidence_coverage.live_backed}/{fields.evidence_coverage.active_detections} live-backed</strong></li>
+          <li><span>Evidence coverage</span><strong data-testid="engine-evidence-coverage">{evidenceCoverageLabel(fields.evidence_coverage)}</strong></li>
           <li>
             <span title={CONFIDENCE_TOOLTIP}>Detection confidence</span>
             <strong>{fields.detection_confidence != null ? `${confidencePercent(fields.detection_confidence)} (${confidenceBand(fields.detection_confidence)})` : 'Unavailable'}</strong>

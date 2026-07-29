@@ -281,8 +281,8 @@ const DETECTION_TYPE_LABELS: Record<string, string> = {
   mint_burn_irregularity: 'Mint/Burn Irregularity',
   privileged_action: 'Privileged/Admin Action',
   oracle_deviation: 'Oracle Deviation',
-  reentrancy_pattern: 'Reentrancy Pattern',
-  flash_loan_pattern: 'Flash-Loan Pattern',
+  reentrancy_pattern: 'Possible Reentrancy',
+  flash_loan_pattern: 'Flash-Loan-Assisted Sequence',
   other: 'Other',
 };
 
@@ -426,6 +426,15 @@ export function relativeTime(iso: string | null | undefined): string {
   return parsed.toLocaleDateString();
 }
 
+/** Absolute calendar date (e.g. "July 11, 2026") for a historical fact such as the
+ *  latest security telemetry — shown as a fixed date, not a decaying "N days ago". */
+export function formatDate(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return '—';
+  return parsed.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+}
+
 export function shortHex(value: string | null | undefined, lead = 6, tail = 4): string {
   const v = String(value ?? '');
   if (!v) return '—';
@@ -438,7 +447,11 @@ export function shortHex(value: string | null | undefined, lead = 6, tail = 4): 
 // --------------------------------------------------------------------------
 const DEGRADED_REASON_COPY: Record<string, string> = {
   telemetry_stale: 'Telemetry is stale — detections may be based on older data.',
+  // "No telemetry has arrived yet" is reserved for a workspace that has NEVER
+  // received security telemetry. When older telemetry exists outside the selected
+  // window the in-window reason is used instead, so the banner is never false.
   no_telemetry: 'No telemetry has arrived yet.',
+  no_security_telemetry_in_window: 'No security telemetry in the selected window; older telemetry exists outside it.',
   detection_storage_provisioning: 'Detection storage is provisioning.',
   worker_unhealthy: 'The detection worker heartbeat is stale; new detections may be delayed.',
 };
@@ -644,7 +657,7 @@ export function emptyStateCopy(
   opts?: { windowText?: string; latestEverAt?: string | null; stale?: boolean },
 ): EmptyStateCopy {
   const windowText = opts?.windowText ?? windowLabel(undefined);
-  const latest = opts?.latestEverAt ? ` Latest security telemetry: ${relativeTime(opts.latestEverAt)}.` : '';
+  const latest = opts?.latestEverAt ? ` Latest security telemetry: ${formatDate(opts.latestEverAt)}.` : '';
   const staleWarning = opts?.stale ? 'Monitoring ingestion is stale, so this result may be incomplete.' : undefined;
   const inWindow = {
     title: 'No security telemetry in this period',
@@ -669,6 +682,18 @@ export function emptyStateCopy(
     default:
       return { title: 'No telemetry has arrived yet', body: 'This workspace has not received any on-chain security telemetry yet.' };
   }
+}
+
+// Evidence coverage label — NEVER a bare "0/0". With no qualifying active detections
+// there is nothing to back, so we say so; otherwise we show live-backed / active.
+export type EvidenceCoverage = { active_detections: number; live_backed: number; non_live_backed: number };
+
+export function evidenceCoverageLabel(coverage: EvidenceCoverage | null | undefined): string {
+  if (!coverage) return 'Unavailable';
+  const active = Number(coverage.active_detections ?? 0);
+  const live = Number(coverage.live_backed ?? 0);
+  if (Number.isNaN(active) || active <= 0) return 'No qualifying events';
+  return `${live}/${active} live-backed`;
 }
 
 // Ingestion status badge — derived from canonical worker status + freshness, so a
