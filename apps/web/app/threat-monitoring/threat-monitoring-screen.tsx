@@ -24,6 +24,7 @@ import {
   detectionStatusLabel,
   detectionStatusVariant,
   detectionTypeLabel,
+  emptyStateCopy,
   eventTypeLabel,
   evidenceQualityLabel,
   ingestionSourceLabel,
@@ -166,7 +167,7 @@ function ThreatMonitoringScreenInner() {
   const nextAction = summary?.next_action ?? 'diagnose_ingestion';
 
   return (
-    <div style={{ maxWidth: '1440px', width: '100%', margin: '0 auto' }}>
+    <div style={{ maxWidth: '1680px', width: '100%', margin: '0 auto' }}>
       {/* Page header — title (owned by the page <h1>), subtitle, window selector, Refresh. */}
       <header style={{ marginBottom: '1.25rem' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap' }}>
@@ -215,6 +216,7 @@ function ThreatMonitoringScreenInner() {
           <ThreatDetectionEngineerPanel
             panel={summary?.engine_panel ?? null}
             degradedReasons={summary?.degraded_reasons ?? []}
+            windowText={windowLabel(windowKey)}
             loading={loading}
             error={error}
             investigating={investigatingId !== null}
@@ -319,15 +321,21 @@ function Kpi({
 function TelemetryVolumeCard({ summary, loading }: { summary: ThreatSummary | null; loading: boolean }) {
   const buckets = summary?.telemetry_volume_buckets ?? [];
   const max = buckets.reduce((m, b) => Math.max(m, b.count), 0);
+  const emptyCopy = emptyStateCopy(summary?.empty_state_reason, {
+    windowText: windowLabel(summary?.window),
+    latestEverAt: summary?.last_security_telemetry_ever_at ?? null,
+    stale: summary ? summary.data_freshness === 'stale' || summary.worker_status === 'stale' || summary.worker_status === 'offline' : false,
+  });
   return (
     <article className="dataCard" aria-label="Telemetry Volume" style={{ minHeight: '12rem' }}>
-      <p className="sectionEyebrow">Telemetry Volume</p>
+      <p className="sectionEyebrow">Security Telemetry Volume · {windowLabel(summary?.window)}</p>
       {loading ? (
         <div className="skelBlock" style={{ height: '8rem' }} aria-hidden="true" />
       ) : buckets.length === 0 ? (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '8rem', color: 'var(--text-muted)', gap: '0.35rem' }}>
-          <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>No security telemetry in this window</span>
-          <span style={{ fontSize: '0.875rem' }}>Bars appear once the monitoring worker delivers on-chain signals.</span>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '8rem', color: 'var(--text-muted)', gap: '0.35rem', textAlign: 'center', padding: '0 1rem' }} data-testid="chart-empty-state">
+          <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>{emptyCopy.title}</span>
+          <span style={{ fontSize: '0.875rem' }}>{emptyCopy.body}</span>
+          {emptyCopy.staleWarning ? <span style={{ fontSize: '0.8rem', color: 'var(--warning-fg, #f59e0b)' }}>{emptyCopy.staleWarning}</span> : null}
         </div>
       ) : (
         <div style={{ display: 'flex', alignItems: 'flex-end', gap: '3px', height: '8rem', padding: '0.5rem 0 0', overflowX: 'auto' }} data-testid="telemetry-volume-bars">
@@ -355,7 +363,6 @@ function TelemetryVolumeCard({ summary, loading }: { summary: ThreatSummary | nu
 /* ── Detections by type ─────────────────────────────────────────── */
 function DetectionsByTypeCard({ summary, loading }: { summary: ThreatSummary | null; loading: boolean }) {
   const rows = summary?.detections_by_type ?? [];
-  const supported = rows.filter((r) => r.supported);
   const unsupported = rows.filter((r) => !r.supported);
   return (
     <article className="dataCard" aria-label="Detections by Type" style={{ minHeight: '10rem' }}>
@@ -364,25 +371,29 @@ function DetectionsByTypeCard({ summary, loading }: { summary: ThreatSummary | n
         <div className="skelBlock" style={{ height: '6rem' }} aria-hidden="true" />
       ) : (
         <>
+          {/* Every canonical detection type is listed. Supported detectors show a
+              real count (0 is a valid "evaluated, none found"); unsupported ones show
+              "Not evaluated" so a 0 is never mistaken for an executed detector. */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.5rem' }} data-testid="detections-by-type">
-            {supported.map((r) => (
+            {rows.map((r) => (
               <div key={r.type} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.9rem' }}>
                 <span style={{ color: 'var(--text-secondary)' }}>{r.label}</span>
-                <span style={{ color: 'var(--text-accent)', fontWeight: 700, minWidth: '2rem', textAlign: 'right' }}>{r.count}</span>
+                {r.supported ? (
+                  <span style={{ color: 'var(--text-accent)', fontWeight: 700, minWidth: '2rem', textAlign: 'right' }}>{r.count}</span>
+                ) : (
+                  <span className="muted" title={r.unsupported_reason ?? 'Evidence unavailable'} style={{ fontSize: '0.78rem', textAlign: 'right' }}>Not evaluated</span>
+                )}
               </div>
             ))}
           </div>
           {unsupported.length > 0 ? (
-            <details style={{ marginTop: '0.75rem' }}>
-              <summary className="muted" style={{ cursor: 'pointer', fontSize: '0.8rem' }}>
-                {unsupported.length} detector(s) not evaluated (evidence unavailable)
-              </summary>
-              <ul className="assessorGapList" style={{ marginTop: '0.5rem' }}>
-                {unsupported.map((r) => (
-                  <li key={r.type}><span>{r.label}</span><strong title={r.unsupported_reason ?? ''} style={{ color: 'var(--text-muted)' }}>n/a</strong></li>
-                ))}
-              </ul>
-            </details>
+            <p
+              className="assessorMeta"
+              data-testid="detector-capability-note"
+              style={{ marginTop: '0.75rem', fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: 1.45 }}
+            >
+              <strong style={{ fontWeight: 600 }}>Evidence unavailable</strong> — not evaluated: {unsupported.map((r) => r.label).join(', ')}. These detectors need trace/oracle evidence this workspace does not collect.
+            </p>
           ) : null}
         </>
       )}

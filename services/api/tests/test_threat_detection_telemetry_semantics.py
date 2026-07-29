@@ -244,7 +244,7 @@ def test_summary_stale_telemetry_recommends_diagnose_ingestion():
     assert s['engine_panel']['recommended_action'] == 'diagnose_ingestion'
     # Panel finding/explanation are the truthful stale copy.
     assert s['engine_panel']['finding'] == 'No fresh evidence available'
-    assert 'freshness window' in s['engine_panel']['explanation']
+    assert 'fresh on-chain security telemetry is unavailable' in s['engine_panel']['explanation']
     # can_investigate must be false with no detection.
     assert s['engine_panel']['can_investigate'] is False
 
@@ -254,6 +254,50 @@ def test_summary_window_key_is_echoed():
     assert db_build(db, window='24h')['window'] == '24h'
     assert db_build(db, window='30d')['window'] == '30d'
     assert db_build(db, window='bogus')['window'] == '7d'
+
+
+# --------------------------------------------------------------------------
+# Canonical empty-state reason: "no data in the selected window" is DISTINCT
+# from "no data ever" (the top banner reports a non-windowed telemetry age).
+# --------------------------------------------------------------------------
+def test_empty_state_no_telemetry_ever():
+    # Nothing in-window, nothing ever, no ingestion heartbeat -> a truly empty workspace.
+    db = _RecordingSummaryDB(last_security_at=None, last_ingestion_at=None, last_security_ever=None)
+    s = db_build(db)
+    assert s['data_freshness'] == 'no_telemetry'
+    assert s['empty_state_reason'] == 'no_telemetry_ever'
+    assert s['last_security_telemetry_ever_at'] is None
+    assert s['engine_panel']['finding'] == 'No telemetry received'
+
+
+def test_empty_state_no_security_telemetry_in_window_when_older_exists():
+    # Nothing in the selected window, but security telemetry exists OUTSIDE it.
+    now = _now()
+    db = _RecordingSummaryDB(last_security_at=None, last_ingestion_at=None, last_security_ever=now - timedelta(days=40))
+    s = db_build(db)
+    assert s['data_freshness'] == 'no_telemetry'
+    assert s['empty_state_reason'] == 'no_security_telemetry_in_window'
+    assert s['last_security_telemetry_ever_at'] is not None
+    # Must NOT claim "no telemetry has arrived yet" when older telemetry exists.
+    assert 'has arrived yet' not in s['engine_panel']['headline'].lower()
+    assert s['engine_panel']['finding'] == 'No security telemetry in the selected period'
+
+
+def test_empty_state_runtime_only_telemetry():
+    # No security telemetry ever, but ingestion heartbeats exist (worker reporting).
+    now = _now()
+    db = _RecordingSummaryDB(last_security_at=None, last_ingestion_at=now - timedelta(hours=1), last_security_ever=None)
+    s = db_build(db)
+    assert s['data_freshness'] == 'no_telemetry'
+    assert s['empty_state_reason'] == 'runtime_only_telemetry'
+
+
+def test_engine_panel_copy_is_not_repeated():
+    # headline / finding / explanation must be three DISTINCT sentences (no refrain).
+    now = _now()
+    db = _RecordingSummaryDB(last_security_at=None, last_ingestion_at=None, last_security_ever=now - timedelta(days=40))
+    panel = db_build(db)['engine_panel']
+    assert len({panel['headline'], panel['finding'], panel['explanation']}) == 3
 
 
 # --------------------------------------------------------------------------
@@ -333,10 +377,14 @@ class _RecordingSummaryDB:
     """Read-only fake that records every executed query and returns canned rows,
     so both the SQL shape and the composed summary can be asserted."""
 
-    def __init__(self, *, last_security_at=None, last_ingestion_at=None):
+    def __init__(self, *, last_security_at=None, last_ingestion_at=None, last_security_ever=None):
         self.tables = {'threat_detections', 'threat_detection_evidence', 'telemetry_events', 'threat_detection_worker_state'}
         self.last_security_at = last_security_at
         self.last_ingestion_at = last_ingestion_at
+        # Non-windowed newest security telemetry (defaults to the in-window value so
+        # existing callers keep their behaviour). Set explicitly to model "older
+        # security telemetry exists outside the selected window".
+        self.last_security_ever = last_security_ever if last_security_ever is not None else last_security_at
         self.queries = []
         self.writes = []
 
@@ -352,6 +400,9 @@ class _RecordingSummaryDB:
             return _R([{'hb': None, 'done': None}])
         if 'max(observed_at) as last_ingestion_at' in q:
             return _R([{'last_ingestion_at': self.last_ingestion_at}])
+        if 'max(observed_at) as last_at' in q and '<> all' in q:
+            # Non-windowed "newest security telemetry ever" query.
+            return _R([{'last_at': self.last_security_ever}])
         if 'current_count' in q and 'security_events' in q:
             return _R([{'current_count': 0, 'previous_count': 0, 'last_at': self.last_security_at,
                         'live_count': 0, 'sim_count': 0, 'replay_count': 0}])

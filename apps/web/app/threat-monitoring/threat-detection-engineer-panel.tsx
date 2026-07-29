@@ -15,6 +15,7 @@ import {
   evidenceQualityLabel,
   evidenceSourceLabel,
   evidenceSourceVariant,
+  ingestionBadge,
   relativeTime,
   severityLabel,
   severityVariant,
@@ -26,6 +27,7 @@ import {
 type Props = {
   panel: EnginePanel | null;
   degradedReasons: string[];
+  windowText: string;
   loading: boolean;
   error: string;
   investigating: boolean;
@@ -36,13 +38,17 @@ type Props = {
 };
 
 export default function ThreatDetectionEngineerPanel({
-  panel, degradedReasons, loading, error, investigating, investigateError, onInvestigate, onViewEvidence, onRetry,
+  panel, degradedReasons, windowText, loading, error, investigating, investigateError, onInvestigate, onViewEvidence, onRetry,
 }: Props) {
   return (
     <aside className="dataCard assessorPanel" aria-label="Threat Detection Engineer" data-testid="threat-detection-engineer-panel">
       <div className="assessorHeader">
-        <p className="sectionEyebrow">Threat Detection Engineer</p>
-        <h2 style={{ margin: '0.15rem 0 0', fontSize: '1.05rem' }}>Correlated exploit &amp; anomaly detection</h2>
+        <h2 className="sectionEyebrow" style={{ margin: 0 }}>Threat Detection Engineer</h2>
+        {/* Purpose descriptor — kept muted so the canonical Finding below is the
+            prominent state statement, never this generic panel subtitle. */}
+        <p className="assessorMeta" style={{ margin: '0.2rem 0 0', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+          Correlated exploit &amp; anomaly detection
+        </p>
       </div>
 
       {loading ? (
@@ -64,6 +70,7 @@ export default function ThreatDetectionEngineerPanel({
         <PanelBody
           panel={panel}
           degradedReasons={degradedReasons}
+          windowText={windowText}
           investigating={investigating}
           investigateError={investigateError}
           onInvestigate={onInvestigate}
@@ -75,10 +82,11 @@ export default function ThreatDetectionEngineerPanel({
 }
 
 function PanelBody({
-  panel, degradedReasons, investigating, investigateError, onInvestigate, onViewEvidence,
+  panel, degradedReasons, windowText, investigating, investigateError, onInvestigate, onViewEvidence,
 }: {
   panel: EnginePanel;
   degradedReasons: string[];
+  windowText: string;
   investigating: boolean;
   investigateError: string;
   onInvestigate: (id: string) => void;
@@ -87,6 +95,16 @@ function PanelBody({
   const detection = panel.detection;
   const presentation = enginePanelPresentation(panel.state, detection?.severity);
   const fields = panel.fields;
+  // Status badge: for the no-detection states derive an ingestion-truthful badge
+  // ("Ingestion stale") from canonical worker status; keep the state eyebrow when a
+  // material detection exists (e.g. "Threat detected").
+  const badge = detection != null
+    ? { label: presentation.eyebrow, variant: presentation.variant }
+    : ingestionBadge(fields.worker_status, fields.ingestion_status);
+  // Degraded reasons already conveyed by the headline/finding are dropped so the
+  // panel never states the same "no telemetry"/"stale" sentence twice.
+  const REDUNDANT_REASONS = new Set(['no_telemetry', 'telemetry_stale', 'worker_unhealthy']);
+  const extraDegraded = degradedReasons.filter((r) => !REDUNDANT_REASONS.has(r));
   // Start Investigation is only meaningful when a canonical detection exists. With
   // zero detections the primary action becomes Run Source Diagnostic.
   const showInvestigate = detection != null;
@@ -96,7 +114,7 @@ function PanelBody({
       {/* State headline — never a scary alert when evidence is thin. */}
       <section className="assessorSection">
         <div className="assessorStatusRow">
-          <StatusPill label={presentation.eyebrow} variant={presentation.variant} />
+          <StatusPill label={badge.label} variant={badge.variant} />
         </div>
         <p className="assessorSummaryText" data-testid="engine-headline">{panel.headline}</p>
       </section>
@@ -112,6 +130,7 @@ function PanelBody({
       {/* Canonical operational fields — derived from the backend summary only. */}
       <section className="assessorSection">
         <ul className="assessorGapList" data-testid="engine-fields">
+          <li><span>Selected window</span><strong>{windowText}</strong></li>
           <li><span>Latest security telemetry</span><strong>{relativeTime(fields.last_security_telemetry_at)}</strong></li>
           <li><span>Worker heartbeat</span><strong>{relativeTime(fields.worker_heartbeat_at)}</strong></li>
           <li>
@@ -167,11 +186,13 @@ function PanelBody({
         </section>
       ) : null}
 
-      {/* Degraded banner (truthful). */}
-      {degradedReasons.length > 0 ? (
+      {/* Degraded banner (truthful) — only for reasons NOT already stated by the
+          headline/finding above, so the same "no telemetry"/"stale" sentence is
+          never repeated across sections. */}
+      {extraDegraded.length > 0 ? (
         <section className="assessorSection">
           <div className="statusLine statusLine-warning" role="status" data-testid="engine-degraded">
-            {degradedReasons.map((r) => degradedReasonCopy(r)).join(' ')}
+            {extraDegraded.map((r) => degradedReasonCopy(r)).join(' ')}
           </div>
         </section>
       ) : null}

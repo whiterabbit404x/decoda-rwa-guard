@@ -110,7 +110,7 @@ def test_stale_heartbeat_only_when_stable_polling_actually_stale():
     )
     assert status['stable_polling']['state'] == 'stale'
     assert status['stable_polling']['detection_supported'] is False
-    assert status['headline'] == 'Stable RPC polling heartbeat is stale.'
+    assert status['headline'] == 'RPC polling worker heartbeat is stale.'
     assert status['monitoring_source_live'] is False
 
 
@@ -125,7 +125,7 @@ def test_stable_polling_never_reported_is_offline_not_stale():
         realtime_watcher=None,
     )
     assert status['stable_polling']['state'] == 'offline'
-    assert status['headline'] == 'Stable RPC polling worker is not reporting.'
+    assert status['headline'] == 'RPC polling worker is not reporting.'
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +499,7 @@ def test_both_heartbeat_and_poll_stale_yields_stale_warning():
     assert status['stable_polling']['poll_fresh'] is False
     assert status['stable_polling']['detection_supported'] is False
     assert status['monitoring_source_live'] is False
-    assert status['headline'] == 'Stable RPC polling heartbeat is stale.'
+    assert status['headline'] == 'RPC polling worker heartbeat is stale.'
 
 
 def test_realtime_disabled_stable_active_via_poll_only_acceptance_headline():
@@ -613,7 +613,7 @@ def test_heartbeat_sixteen_minutes_old_exceeds_threshold_is_stale():
     )
     assert status['stable_polling']['state'] == 'stale'
     assert status['stable_polling']['active'] is False
-    assert status['headline'] == 'Stable RPC polling heartbeat is stale.'
+    assert status['headline'] == 'RPC polling worker heartbeat is stale.'
 
 
 def test_stable_polling_exposes_debug_threshold_age_and_status_fields():

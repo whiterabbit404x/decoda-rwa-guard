@@ -803,9 +803,12 @@ def build_worker_status(
     elif stable_active:
         headline = 'Stable polling active.'
     elif stable_state == 'stale':
-        headline = 'Stable RPC polling heartbeat is stale.'
+        # Do NOT prefix a stale status with the worker's "Stable" brand name — a
+        # customer reads "Stable ... is stale" as a contradiction. The structured
+        # stable_polling.{state,label,last_heartbeat_at,last_poll_at} carry the name.
+        headline = 'RPC polling worker heartbeat is stale.'
     else:
-        headline = 'Stable RPC polling worker is not reporting.'
+        headline = 'RPC polling worker is not reporting.'
 
     return {
         'stable_polling': {
