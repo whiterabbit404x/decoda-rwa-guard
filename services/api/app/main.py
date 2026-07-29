@@ -4782,8 +4782,8 @@ def detections_evidence_get(detection_id: str, request: Request) -> dict[str, An
 # authenticated session + X-Workspace-Id header (matching the repo convention).
 # All GETs are strictly read-only: opening/refreshing Screen 5 never writes.
 @app.get('/threat-monitoring/summary', summary='Canonical threat-monitoring summary (Screen 5)')
-def threat_monitoring_summary(request: Request, window_days: int = 7) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: threat_detection_endpoints.summary_endpoint(request, window_days=window_days))
+def threat_monitoring_summary(request: Request, window_days: int = 7, window: str | None = None) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: threat_detection_endpoints.summary_endpoint(request, window_days=window_days, window=window))
 
 
 @app.get('/threat-monitoring/detections', summary='List correlated threat detections')
@@ -4795,13 +4795,14 @@ def threat_monitoring_detections(
     asset_id: str | None = None,
     min_confidence: float | None = None,
     window_days: int | None = None,
+    window: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
     return with_auth_schema_json(
         lambda: threat_detection_endpoints.detections_endpoint(
             request, detection_type=detection_type, severity=severity, status_value=status_value,
-            asset_id=asset_id, min_confidence=min_confidence, window_days=window_days, limit=limit, offset=offset,
+            asset_id=asset_id, min_confidence=min_confidence, window_days=window_days, window=window, limit=limit, offset=offset,
         )
     )
 
@@ -4812,12 +4813,17 @@ def threat_monitoring_telemetry(
     event_type: str | None = None,
     asset_id: str | None = None,
     evidence_source: str | None = None,
+    freshness: str | None = None,
+    category: str | None = None,
+    window_days: int | None = None,
+    window: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
     return with_auth_schema_json(
         lambda: threat_detection_endpoints.telemetry_endpoint(
-            request, event_type=event_type, asset_id=asset_id, evidence_source=evidence_source, limit=limit, offset=offset,
+            request, event_type=event_type, asset_id=asset_id, evidence_source=evidence_source,
+            freshness=freshness, category=category, window_days=window_days, window=window, limit=limit, offset=offset,
         )
     )
 
@@ -4828,12 +4834,13 @@ def threat_monitoring_anomalies(
     detection_type: str | None = None,
     asset_id: str | None = None,
     window_days: int | None = None,
+    window: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
     return with_auth_schema_json(
         lambda: threat_detection_endpoints.anomalies_endpoint(
-            request, detection_type=detection_type, asset_id=asset_id, window_days=window_days, limit=limit, offset=offset,
+            request, detection_type=detection_type, asset_id=asset_id, window_days=window_days, window=window, limit=limit, offset=offset,
         )
     )
 

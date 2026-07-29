@@ -98,6 +98,146 @@ TRANSFER_EVENT_TYPES = frozenset(
     {'wallet_transfer_detected', 'native_transfer', 'erc20_transfer', 'token_transfer', 'transfer'}
 )
 
+# --------------------------------------------------------------------------
+# Security vs runtime/ingestion telemetry — the single canonical predicate.
+#
+# CLAUDE.md rule 3: heartbeat / poll / telemetry are separate facts. A row that
+# only proves the *ingestion loop ran* (an RPC poll cycle, a provider health
+# check, a worker heartbeat, a cursor/checkpoint advance, a diagnostic probe) is
+# NOT an on-chain security telemetry event. Such rows must never:
+#   * increment the Screen 5 "Telemetry Events" KPI,
+#   * appear in the default security telemetry table,
+#   * enter threat-detector evaluation, or
+#   * become anomalies / detections.
+# They are retained for Monitoring Sources / System Health / ingestion-health.
+RUNTIME_EVENT_TYPES = frozenset(
+    {
+        'rpc_polling',
+        'live_provider',
+        'poll',
+        'poll_heartbeat',
+        'provider_check',
+        'provider_health',
+        'coverage_probe',
+        'worker_heartbeat',
+        'heartbeat',
+        'cursor_update',
+        'checkpoint_update',
+        'diagnostic',
+        'diagnostic_result',
+    }
+)
+
+
+def runtime_event_types() -> list[str]:
+    """Lower-cased runtime/ingestion event types, sorted for stable SQL binding.
+
+    Bind this list once and reuse it in every place that must separate security
+    telemetry from ingestion telemetry (summary counts, telemetry listing,
+    detector scan window) so the boundary is defined in exactly one place."""
+    return sorted(RUNTIME_EVENT_TYPES)
+
+
+def is_runtime_event_type(event_type: Any) -> bool:
+    """True when the row is an ingestion/runtime heartbeat, not a security event."""
+    return str(event_type or '').strip().lower() in RUNTIME_EVENT_TYPES
+
+
+def is_security_event_type(event_type: Any) -> bool:
+    """True when the row is a canonical on-chain security telemetry event.
+
+    An empty/unknown event type is NOT counted as security telemetry (fail-closed:
+    we never inflate the security count with unclassifiable rows)."""
+    value = str(event_type or '').strip().lower()
+    return bool(value) and value not in RUNTIME_EVENT_TYPES
+
+
+# SQL fragment (payload_json → canonical on-chain transaction hash). A raw event
+# and its normalized/derived representation of the SAME transaction share this
+# hash, so grouping by it collapses duplicate representations to one canonical
+# on-chain event (never double-counted).
+TELEMETRY_TX_HASH_SQL = (
+    "COALESCE("
+    "NULLIF(payload_json->>'tx_hash',''),"
+    "NULLIF(payload_json->>'transaction_hash',''),"
+    "NULLIF(payload_json->>'hash','')"
+    ")"
+)
+
+
+# --------------------------------------------------------------------------
+# Canonical selected time window (shared by every Screen 5 section).
+# --------------------------------------------------------------------------
+WINDOW_PRESETS: dict[str, int] = {
+    '24h': 24 * 60 * 60,
+    '7d': 7 * 24 * 60 * 60,
+    '30d': 30 * 24 * 60 * 60,
+}
+DEFAULT_WINDOW = '7d'
+
+
+def resolve_window(window: Any = None, window_days: Any = None) -> dict[str, Any]:
+    """Resolve one canonical window shared by KPIs, chart, and every table.
+
+    Precedence: an explicit preset string ('24h' | '7d' | '30d') wins; otherwise a
+    legacy ``window_days`` int is mapped to the nearest preset key; anything
+    invalid falls back safely to the 7-day default (never an error, never an
+    unbounded scan). Returns ``{'key', 'seconds', 'days'}``."""
+    if window is not None:
+        key = str(window).strip().lower()
+        if key in WINDOW_PRESETS:
+            seconds = WINDOW_PRESETS[key]
+            return {'key': key, 'seconds': seconds, 'days': seconds / 86400.0}
+    if window_days is not None:
+        try:
+            days = int(window_days)
+        except (ValueError, TypeError):
+            days = None
+        if days is not None and days > 0:
+            if days == 1:
+                return {'key': '24h', 'seconds': WINDOW_PRESETS['24h'], 'days': 1.0}
+            if days == 7:
+                return {'key': '7d', 'seconds': WINDOW_PRESETS['7d'], 'days': 7.0}
+            if days == 30:
+                return {'key': '30d', 'seconds': WINDOW_PRESETS['30d'], 'days': 30.0}
+            clamped = max(1, min(days, 90))
+            return {'key': f'{clamped}d', 'seconds': clamped * 86400, 'days': float(clamped)}
+    seconds = WINDOW_PRESETS[DEFAULT_WINDOW]
+    return {'key': DEFAULT_WINDOW, 'seconds': seconds, 'days': seconds / 86400.0}
+
+
+def classify_worker_status(
+    *,
+    last_ingestion_at: Any,
+    now: Any,
+    config: dict[str, Any] | None = None,
+    worker_enabled: bool = False,
+) -> str:
+    """Canonical operational classification of the ingestion worker for Screen 5.
+
+    Truthfulness: a heartbeat/poll that is hours old is NEVER 'healthy'/'stable'.
+    Returns one of healthy | degraded | stale | offline | unknown. ``last_ingestion_at``
+    is the most recent ingestion signal (poll heartbeat), which proves the loop ran."""
+    if last_ingestion_at is None:
+        # Never beat: offline if we expect a worker, otherwise simply unknown.
+        return 'offline' if worker_enabled else 'unknown'
+    cfg = config or engine_config()
+    try:
+        from datetime import timezone
+
+        hb = last_ingestion_at
+        if getattr(hb, 'tzinfo', None) is None:
+            hb = hb.replace(tzinfo=timezone.utc)
+        age = (now - hb).total_seconds()
+    except Exception:
+        return 'unknown'
+    stale = int(cfg['telemetry_stale_seconds'])
+    if age <= stale:
+        return 'healthy'
+    if age <= stale * 3:
+        return 'degraded'
+    return 'stale'
+
 # Event types that indicate a privileged / administrative on-chain action. The
 # privileged-action detector only fires on decoded evidence like this — never on
 # a plain transfer — so a normal transaction never becomes an "admin misuse".

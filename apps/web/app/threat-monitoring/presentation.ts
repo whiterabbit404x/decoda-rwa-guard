@@ -70,18 +70,34 @@ export type TopDetection = {
   incident_id: string | null;
 };
 
+export type EnginePanelFields = {
+  last_security_telemetry_at: string | null;
+  worker_heartbeat_at: string | null;
+  worker_status: string;
+  ingestion_status: string;
+  evidence_coverage: { active_detections: number; live_backed: number; non_live_backed: number };
+  detection_confidence: number | null;
+};
+
 export type EnginePanel = {
   state: string;
   headline: string;
+  finding: string;
+  explanation: string;
   detection: TopDetection | null;
   ai_summary_source: string;
+  next_action: string;
+  recommended_action: string;
   can_investigate: boolean;
+  fields: EnginePanelFields;
 };
 
 export type ThreatSummary = {
   workspace_id: string;
   generated_at: string | null;
+  window: string;
   window_days: number;
+  window_seconds: number;
   window_start: string | null;
   window_end: string | null;
   telemetry_events_count: number;
@@ -100,13 +116,21 @@ export type ThreatSummary = {
   top_detection: TopDetection | null;
   ingestion_health: {
     last_telemetry_at: string | null;
+    last_security_telemetry_at: string | null;
+    last_ingestion_at: string | null;
     data_freshness: string;
     telemetry_events_window: number;
     source_breakdown: { live?: number; simulator?: number; replay?: number };
     worker: { enabled: boolean; healthy: boolean; last_heartbeat_at: string | null; last_completed_at: string | null };
+    worker_status: string;
+    heartbeat_age_seconds: number | null;
+    poll_age_seconds: number | null;
+    last_security_age_seconds: number | null;
   };
   evidence_coverage: { active_detections: number; live_backed: number; non_live_backed: number };
   data_freshness: string;
+  worker_status: string;
+  next_action: string;
   degraded_reasons: string[];
   detector_support: DetectorSupport;
   detector_version: string;
@@ -134,6 +158,22 @@ export type DetectionRow = {
   detected_at: string | null;
   linked_alert_id: string | null;
   linked_incident_id: string | null;
+};
+
+export type TelemetryRow = {
+  id: string;
+  event_type: string | null;
+  asset_id: string | null;
+  asset_name: string | null;
+  provider_type: string | null;
+  ingestion_source: string | null;
+  evidence_source: string | null;
+  evidence_mode: string | null;
+  evidence_quality: string | null;
+  freshness: string | null;
+  tx_hash: string | null;
+  block_number: number | string | null;
+  observed_at: string | null;
 };
 
 // --------------------------------------------------------------------------
@@ -426,3 +466,187 @@ export function investigateOutcomeMessage(result: InvestigateResult): string {
       return result.detail ?? 'Unable to start the investigation.';
   }
 }
+
+// --------------------------------------------------------------------------
+// Canonical selected time window — shared by every Screen 5 section.
+// --------------------------------------------------------------------------
+export type WindowKey = '24h' | '7d' | '30d';
+export const WINDOW_OPTIONS: Array<{ value: WindowKey; label: string }> = [
+  { value: '24h', label: 'Last 24 hours' },
+  { value: '7d', label: 'Last 7 days' },
+  { value: '30d', label: 'Last 30 days' },
+];
+export const DEFAULT_WINDOW: WindowKey = '7d';
+
+export function isWindowKey(value: string | null | undefined): value is WindowKey {
+  return value === '24h' || value === '7d' || value === '30d';
+}
+
+/** Parse a URL/query window into a valid preset; invalid values fall back to 7d. */
+export function resolveWindow(value: string | null | undefined): WindowKey {
+  return isWindowKey(value ?? undefined) ? (value as WindowKey) : DEFAULT_WINDOW;
+}
+
+export function windowLabel(value: string | null | undefined): string {
+  const key = resolveWindow(value);
+  return WINDOW_OPTIONS.find((o) => o.value === key)?.label ?? 'Last 7 days';
+}
+
+// --------------------------------------------------------------------------
+// URL-addressable tabs.
+// --------------------------------------------------------------------------
+export type TabKey = 'overview' | 'telemetry' | 'detections' | 'anomalies';
+export const TAB_KEYS: TabKey[] = ['overview', 'telemetry', 'detections', 'anomalies'];
+export const DEFAULT_TAB: TabKey = 'overview';
+
+/** Parse a URL/query tab into a valid key; invalid values fall back to overview. */
+export function resolveTab(value: string | null | undefined): TabKey {
+  return (TAB_KEYS as string[]).includes(value ?? '') ? (value as TabKey) : DEFAULT_TAB;
+}
+
+// --------------------------------------------------------------------------
+// Human-readable telemetry event labels — never raw snake_case in the UI.
+// --------------------------------------------------------------------------
+const EVENT_TYPE_LABELS: Record<string, string> = {
+  native_transfer: 'Native Transfer',
+  wallet_transfer_detected: 'Wallet Transfer Detected',
+  erc20_transfer: 'Token Transfer',
+  token_transfer: 'Token Transfer',
+  transfer: 'Transfer',
+  privileged_action: 'Privileged Action',
+  ownership_transferred: 'Ownership Transferred',
+  owner_changed: 'Owner Changed',
+  role_granted: 'Role Granted',
+  role_revoked: 'Role Revoked',
+  admin_changed: 'Admin Changed',
+  paused: 'Paused',
+  unpaused: 'Unpaused',
+  upgraded: 'Upgraded',
+  implementation_upgraded: 'Implementation Upgraded',
+  proxy_upgraded: 'Proxy Upgraded',
+  minter_added: 'Minter Added',
+  minter_removed: 'Minter Removed',
+  blacklist_updated: 'Blacklist Updated',
+  config_changed: 'Config Changed',
+  parameter_changed: 'Parameter Changed',
+  mint: 'Mint',
+  burn: 'Burn',
+  transfer_observed: 'Transfer Observed',
+  decoded_event: 'Decoded Event',
+  oracle_observation: 'Oracle Observation',
+  // Runtime/ingestion (only shown in the runtime/ingestion view, labelled honestly).
+  rpc_polling: 'RPC Poll Heartbeat',
+  live_provider: 'Provider Heartbeat',
+  provider_check: 'Provider Check',
+  cursor_update: 'Cursor Update',
+  worker_heartbeat: 'Worker Heartbeat',
+  diagnostic_result: 'Diagnostic Result',
+};
+
+export function eventTypeLabel(eventType: string | null | undefined): string {
+  const key = String(eventType ?? '').trim().toLowerCase();
+  if (!key) return 'Unknown';
+  return EVENT_TYPE_LABELS[key] ?? key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// --------------------------------------------------------------------------
+// Ingestion source (HOW captured) — distinct from evidence mode + freshness.
+// --------------------------------------------------------------------------
+const INGESTION_SOURCE_LABELS: Record<string, string> = {
+  quicknode_stream: 'QuickNode stream',
+  rpc_polling: 'RPC polling',
+  webhook: 'Webhook',
+  backfill: 'Backfill',
+  manual: 'Manual / imported',
+};
+
+export function ingestionSourceLabel(source: string | null | undefined): string {
+  const key = String(source ?? '').trim().toLowerCase();
+  if (!key) return 'Unknown';
+  return INGESTION_SOURCE_LABELS[key] ?? key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// --------------------------------------------------------------------------
+// Per-row freshness — an old live-ingested row is still stale today.
+// --------------------------------------------------------------------------
+export function rowFreshnessLabel(freshness: string | null | undefined): string {
+  switch (String(freshness ?? '').toLowerCase()) {
+    case 'fresh':
+      return 'Fresh';
+    case 'stale':
+      return 'Stale';
+    case 'delayed':
+      return 'Delayed';
+    default:
+      return 'Unknown';
+  }
+}
+
+export function rowFreshnessVariant(freshness: string | null | undefined): PillVariant {
+  switch (String(freshness ?? '').toLowerCase()) {
+    case 'fresh':
+      return 'success';
+    case 'stale':
+      return 'warning';
+    case 'delayed':
+      return 'info';
+    default:
+      return 'neutral';
+  }
+}
+
+// --------------------------------------------------------------------------
+// Canonical worker status (a 71h heartbeat is never "stable").
+// --------------------------------------------------------------------------
+export function workerStatusLabel(status: string | null | undefined): string {
+  const s = String(status ?? '').toLowerCase();
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : 'Unknown';
+}
+
+export function workerStatusVariant(status: string | null | undefined): PillVariant {
+  switch (String(status ?? '').toLowerCase()) {
+    case 'healthy':
+      return 'success';
+    case 'degraded':
+      return 'warning';
+    case 'stale':
+      return 'warning';
+    case 'offline':
+      return 'danger';
+    default:
+      return 'neutral';
+  }
+}
+
+// --------------------------------------------------------------------------
+// Canonical next action — one source of truth for every stale-state CTA.
+// --------------------------------------------------------------------------
+export type NextAction = 'diagnose_ingestion' | 'start_investigation' | 'open_investigation' | 'none' | string;
+
+const NEXT_ACTION_LABELS: Record<string, string> = {
+  diagnose_ingestion: 'Run Source Diagnostic',
+  start_investigation: 'Start Investigation',
+  open_investigation: 'Open Investigation',
+  none: 'No action required',
+};
+
+export function nextActionLabel(action: string | null | undefined): string {
+  return NEXT_ACTION_LABELS[String(action ?? 'none')] ?? 'Run Source Diagnostic';
+}
+
+/** Destination for the canonical action. Diagnosing ingestion goes to Monitoring
+ *  Sources (never a Screen-5-local re-implementation of provider diagnostics). */
+export function nextActionHref(action: string | null | undefined): string {
+  switch (String(action ?? '')) {
+    case 'diagnose_ingestion':
+      return '/monitoring-sources';
+    case 'open_investigation':
+    case 'start_investigation':
+      return '/alerts';
+    default:
+      return '/monitoring-sources';
+  }
+}
+
+export const RUN_SOURCE_DIAGNOSTIC_LABEL = 'Run Source Diagnostic';
+export const SOURCE_DIAGNOSTIC_HREF = '/monitoring-sources';

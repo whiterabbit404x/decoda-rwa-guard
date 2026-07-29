@@ -38,7 +38,9 @@ class FakeConn:
         if 'to_regclass' in q:
             table = str((params or ('',))[0]).split('.')[-1]
             return _Result([{'ok': table in self.tables}])
-        if 'count(*) as n from threat_detections' in q or 'count(*) as n from telemetry_events' in q:
+        # Count queries (detection count, or the deduplicated canonical telemetry
+        # count wrapped in a subquery) both expose `count(*) as n`.
+        if 'count(*) as n' in q:
             return _Result([{'n': self.total}])
         if 'from threat_detections td' in q:
             self.select_params = params
