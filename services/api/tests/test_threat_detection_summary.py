@@ -184,6 +184,25 @@ def test_detector_support_marks_unsupported_types():
     assert by_type['unusual_transfer']['supported'] is True
 
 
+def test_other_type_is_a_supported_catch_all_not_capability_gated():
+    # "Other" is a count-only catch-all bucket, never a capability-gated detector,
+    # so it must read as supported (count 0) and must NOT inflate the "not evaluated"
+    # capability note — only trace/oracle-dependent detectors belong there.
+    s = _build(SummaryFakeDB())
+    by_type = {row['type']: row for row in s['detections_by_type']}
+    assert by_type['other']['supported'] is True
+    assert by_type['other']['unsupported_reason'] is None
+    unsupported = {t for t, row in by_type.items() if not row['supported']}
+    assert unsupported == {'oracle_deviation', 'reentrancy_pattern', 'flash_loan_pattern'}
+
+
+def test_empty_state_reason_present_and_no_telemetry_ever_for_empty_workspace():
+    s = _build(SummaryFakeDB())
+    assert s['empty_state_reason'] == 'no_telemetry_ever'
+    assert s['ingestion_health']['empty_state_reason'] == 'no_telemetry_ever'
+    assert s['last_security_telemetry_ever_at'] is None
+
+
 # --------------------------------------------------------------------------
 # Degraded / stale
 # --------------------------------------------------------------------------

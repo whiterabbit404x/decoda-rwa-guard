@@ -201,6 +201,55 @@ def _last_ingestion_at(connection: Any, *, workspace_id: str) -> Any:
     return row.get('last_ingestion_at')
 
 
+def _last_security_telemetry_ever(connection: Any, *, workspace_id: str) -> Any:
+    """Most recent SECURITY telemetry across ALL time (NOT windowed).
+
+    Lets the UI distinguish "no security telemetry in the selected window" (older
+    events exist outside it) from "no security telemetry has EVER arrived". Runtime
+    heartbeats (rpc_polling / provider checks / …) are excluded via the same
+    canonical predicate, so a poll heartbeat never masquerades as a security event.
+    Returns None when the workspace has never received any security telemetry."""
+    if not _table_exists(connection, 'telemetry_events'):
+        return None
+    try:
+        row = connection.execute(
+            '''
+            SELECT MAX(observed_at) AS last_at
+            FROM telemetry_events
+            WHERE workspace_id = %s AND lower(event_type) <> ALL(%s)
+            ''',
+            (workspace_id, tdc.runtime_event_types()),
+        ).fetchone() or {}
+    except Exception:
+        return None
+    return row.get('last_at')
+
+
+def _empty_state_reason(*, data_freshness: str, last_security_ever: Any, last_ingestion_at: Any) -> str:
+    """Canonical empty-state classification so the UI never shows "no telemetry has
+    arrived yet" when older security telemetry exists outside the selected window.
+
+      * unavailable                        — detection/telemetry storage provisioning
+      * telemetry_stale                    — security telemetry exists in-window but stale
+      * none                               — fresh security telemetry present (not empty)
+      * no_security_telemetry_in_window    — none in-window, but security telemetry exists ever
+      * runtime_only_telemetry             — none ever, but ingestion heartbeats exist
+      * no_telemetry_ever                  — nothing relevant has ever arrived
+    """
+    if data_freshness == 'unavailable':
+        return 'unavailable'
+    if data_freshness == 'stale':
+        return 'telemetry_stale'
+    if data_freshness == 'fresh':
+        return 'none'
+    # data_freshness == 'no_telemetry': nothing in the selected window.
+    if last_security_ever is not None:
+        return 'no_security_telemetry_in_window'
+    if last_ingestion_at is not None:
+        return 'runtime_only_telemetry'
+    return 'no_telemetry_ever'
+
+
 def _telemetry_volume_buckets(connection: Any, *, workspace_id: str, window_start: Any, window_end: Any, window_seconds: int) -> list[dict[str, Any]]:
     if not _table_exists(connection, 'telemetry_events'):
         return []
@@ -281,7 +330,7 @@ def _detections_by_type(connection: Any, *, workspace_id: str, window_start: Any
     # Emit every canonical type: supported ones (with real counts) and unsupported
     # ones flagged, so the UI never implies an unsupported detector "found 0".
     for dtype in tdc.DETECTION_TYPES:
-        meta = support.get(dtype, {'supported': dtype in counts})
+        meta = _type_support_meta(dtype, support)
         result.append(
             {
                 'type': dtype,
@@ -292,6 +341,16 @@ def _detections_by_type(connection: Any, *, workspace_id: str, window_start: Any
             }
         )
     return result
+
+
+def _type_support_meta(dtype: str, support: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Support metadata for a detection type. ``other`` is a count-only CATCH-ALL
+    category (always a valid bucket, never a capability-gated detector), so it is
+    reported ``supported=True`` and never rolled into the "not evaluated" note that
+    lists trace/oracle-dependent detectors the platform genuinely cannot run."""
+    if dtype == 'other':
+        return {'supported': True, 'reason': None}
+    return support.get(dtype, {'supported': False, 'reason': None})
 
 
 def _mean_time_to_detect(connection: Any, *, workspace_id: str, window_start: Any) -> Optional[float]:
@@ -479,6 +538,7 @@ def build_threat_summary(connection: Any, *, workspace_id: str, config: dict[str
         connection, workspace_id=workspace_id, window_start=window_start, window_end=window_end, prev_start=prev_start
     )
     last_ingestion_at = _last_ingestion_at(connection, workspace_id=workspace_id)
+    last_security_ever = _last_security_telemetry_ever(connection, workspace_id=workspace_id)
     volume_buckets = _telemetry_volume_buckets(
         connection, workspace_id=workspace_id, window_start=window_start, window_end=window_end, window_seconds=window_seconds
     )
@@ -497,11 +557,18 @@ def build_threat_summary(connection: Any, *, workspace_id: str, config: dict[str
     if data_freshness == 'no_telemetry':
         degraded_reasons.append('no_telemetry')
 
+    # Canonical empty-state reason: distinguishes "no security telemetry in the
+    # selected window" (older events exist) from "no telemetry has ever arrived".
+    empty_state_reason = _empty_state_reason(
+        data_freshness=data_freshness, last_security_ever=last_security_ever, last_ingestion_at=last_ingestion_at,
+    )
+
     counts = {'detection_count': 0, 'previous_detection_count': 0, 'anomaly_count': 0, 'previous_anomaly_count': 0}
+    _support = tdc.detector_support()
     detections_by_type = [
         {'type': t, 'label': tdc.DETECTION_TYPE_LABELS.get(t, t), 'count': 0,
-         'supported': tdc.detector_support().get(t, {}).get('supported', False),
-         'unsupported_reason': None if tdc.detector_support().get(t, {}).get('supported') else tdc.detector_support().get(t, {}).get('reason')}
+         'supported': bool(_type_support_meta(t, _support).get('supported')),
+         'unsupported_reason': None if _type_support_meta(t, _support).get('supported') else _type_support_meta(t, _support).get('reason')}
         for t in tdc.DETECTION_TYPES
     ]
     mttd = None
@@ -535,8 +602,10 @@ def build_threat_summary(connection: Any, *, workspace_id: str, config: dict[str
     ingestion_health = {
         'last_telemetry_at': _iso(last_telemetry_at),
         'last_security_telemetry_at': _iso(last_telemetry_at),
+        'last_security_telemetry_ever_at': _iso(last_security_ever),
         'last_ingestion_at': _iso(last_ingestion_at),
         'data_freshness': data_freshness,
+        'empty_state_reason': empty_state_reason,
         'telemetry_events_window': tele_current,
         'source_breakdown': source_breakdown,
         'worker': worker,
@@ -575,6 +644,8 @@ def build_threat_summary(connection: Any, *, workspace_id: str, config: dict[str
         'ingestion_health': ingestion_health,
         'evidence_coverage': evidence_coverage,
         'data_freshness': data_freshness,
+        'empty_state_reason': empty_state_reason,
+        'last_security_telemetry_ever_at': _iso(last_security_ever),
         'worker_status': worker_status,
         'next_action': next_action,
         'degraded_reasons': degraded_reasons,
@@ -583,7 +654,8 @@ def build_threat_summary(connection: Any, *, workspace_id: str, config: dict[str
         'engine_panel': _build_engine_panel(
             top, data_freshness, degraded_reasons, worker, counts,
             next_action=next_action, worker_status=worker_status, ingestion_health=ingestion_health,
-            evidence_coverage=evidence_coverage,
+            evidence_coverage=evidence_coverage, empty_state_reason=empty_state_reason,
+            last_security_ever_iso=_iso(last_security_ever),
         ),
     }
     return summary
@@ -600,6 +672,8 @@ def _build_engine_panel(
     worker_status: str = 'unknown',
     ingestion_health: dict[str, Any] | None = None,
     evidence_coverage: dict[str, Any] | None = None,
+    empty_state_reason: str = 'none',
+    last_security_ever_iso: Optional[str] = None,
 ) -> dict[str, Any]:
     """Canonical state for the Threat Detection Engineer panel, so the UI never
     invents a scary alert when evidence is thin, and never claims healthy when
@@ -610,7 +684,14 @@ def _build_engine_panel(
         headline = 'Threat detection storage is provisioning.'
     elif data_freshness == 'no_telemetry':
         state = 'no_telemetry'
-        headline = 'No telemetry has arrived yet — nothing to correlate.'
+        # Distinguish "none in the selected window" from "none ever" so the panel
+        # never claims "no telemetry has arrived yet" when older events exist.
+        if empty_state_reason == 'no_security_telemetry_in_window':
+            headline = 'No security telemetry in the selected window.'
+        elif empty_state_reason == 'runtime_only_telemetry':
+            headline = 'Monitoring is running, but no on-chain security telemetry has arrived yet.'
+        else:
+            headline = 'No telemetry has arrived yet — nothing to correlate.'
     elif 'worker_unhealthy' in degraded_reasons:
         state = 'provider_degraded'
         headline = 'Detection worker heartbeat is stale; detections may be delayed.'
@@ -633,7 +714,7 @@ def _build_engine_panel(
 
     ih = ingestion_health or {}
     ec = evidence_coverage or {}
-    finding, explanation = _engine_finding(state, top)
+    finding, explanation = _engine_finding(state, top, empty_state_reason=empty_state_reason, last_security_ever_iso=last_security_ever_iso)
     return {
         'state': state,
         'headline': headline,
@@ -659,16 +740,35 @@ def _build_engine_panel(
     }
 
 
-def _engine_finding(state: str, top: Optional[dict[str, Any]]) -> tuple[str, str]:
-    """(finding, explanation) copy for the panel — truthful per canonical state."""
+def _engine_finding(
+    state: str,
+    top: Optional[dict[str, Any]],
+    *,
+    empty_state_reason: str = 'none',
+    last_security_ever_iso: Optional[str] = None,
+) -> tuple[str, str]:
+    """(finding, explanation) copy for the panel — truthful per canonical state.
+
+    ``finding``, ``explanation`` and the panel headline are kept deliberately
+    distinct (never the same sentence three times) so the panel reads as one
+    structured statement rather than a repeated "no telemetry" refrain."""
     if state in ('telemetry_stale', 'provider_degraded'):
         return (
             'No fresh evidence available',
-            'No material threat can be confirmed because the latest security telemetry is '
-            'outside the accepted freshness window.',
+            'No material threat can be evaluated because fresh on-chain security telemetry is unavailable.',
         )
     if state == 'no_telemetry':
-        return ('No telemetry received', 'No on-chain security telemetry has arrived yet, so there is nothing to correlate.')
+        if empty_state_reason == 'no_security_telemetry_in_window':
+            explanation = 'No on-chain security events were recorded during the selected window.'
+            if last_security_ever_iso:
+                explanation += ' Older security telemetry exists outside it.'
+            return ('No security telemetry in the selected period', explanation)
+        if empty_state_reason == 'runtime_only_telemetry':
+            return (
+                'No security telemetry yet',
+                'The monitoring worker is reporting ingestion heartbeats, but no on-chain security events have been ingested yet.',
+            )
+        return ('No telemetry received', 'No on-chain security telemetry has ever arrived for this workspace, so there is nothing to correlate.')
     if state == 'unavailable':
         return ('Provisioning', 'Threat detection storage is still provisioning for this workspace.')
     if state == 'anomalies_only':

@@ -117,8 +117,10 @@ export type ThreatSummary = {
   ingestion_health: {
     last_telemetry_at: string | null;
     last_security_telemetry_at: string | null;
+    last_security_telemetry_ever_at: string | null;
     last_ingestion_at: string | null;
     data_freshness: string;
+    empty_state_reason: string;
     telemetry_events_window: number;
     source_breakdown: { live?: number; simulator?: number; replay?: number };
     worker: { enabled: boolean; healthy: boolean; last_heartbeat_at: string | null; last_completed_at: string | null };
@@ -129,6 +131,8 @@ export type ThreatSummary = {
   };
   evidence_coverage: { active_detections: number; live_backed: number; non_live_backed: number };
   data_freshness: string;
+  empty_state_reason: string;
+  last_security_telemetry_ever_at: string | null;
   worker_status: string;
   next_action: string;
   degraded_reasons: string[];
@@ -615,6 +619,85 @@ export function workerStatusVariant(status: string | null | undefined): PillVari
       return 'danger';
     default:
       return 'neutral';
+  }
+}
+
+// --------------------------------------------------------------------------
+// Canonical empty-state reason — distinguishes "no data in the selected window"
+// from "no data ever" so the UI never says "no telemetry has arrived yet" while
+// older security telemetry exists outside the window (see the runtime banner's
+// non-windowed "last telemetry" age).
+// --------------------------------------------------------------------------
+export type EmptyStateReason =
+  | 'none'
+  | 'unavailable'
+  | 'no_telemetry_ever'
+  | 'no_security_telemetry_in_window'
+  | 'runtime_only_telemetry'
+  | 'telemetry_stale'
+  | 'filters_no_match';
+
+export type EmptyStateCopy = { title: string; body: string; staleWarning?: string };
+
+export function emptyStateCopy(
+  reason: string | null | undefined,
+  opts?: { windowText?: string; latestEverAt?: string | null; stale?: boolean },
+): EmptyStateCopy {
+  const windowText = opts?.windowText ?? windowLabel(undefined);
+  const latest = opts?.latestEverAt ? ` Latest security telemetry: ${relativeTime(opts.latestEverAt)}.` : '';
+  const staleWarning = opts?.stale ? 'Monitoring ingestion is stale, so this result may be incomplete.' : undefined;
+  const inWindow = {
+    title: 'No security telemetry in this period',
+    body: `No on-chain security events were recorded in the selected window (${windowText}).${latest}`,
+  };
+  switch (String(reason ?? '')) {
+    case 'unavailable':
+      return { title: 'Threat detection is provisioning', body: 'Detection storage is still being prepared for this workspace.' };
+    case 'no_security_telemetry_in_window':
+      return { ...inWindow, staleWarning };
+    case 'telemetry_stale':
+      return { ...inWindow, staleWarning: 'Monitoring ingestion is stale, so this result may be incomplete.' };
+    case 'runtime_only_telemetry':
+      return {
+        title: 'No security telemetry yet',
+        body: 'The monitoring worker is reporting ingestion heartbeats, but no on-chain security events have been ingested yet.',
+        staleWarning,
+      };
+    case 'filters_no_match':
+      return { title: 'No matches', body: 'No records match the current filters during this period.' };
+    case 'no_telemetry_ever':
+    default:
+      return { title: 'No telemetry has arrived yet', body: 'This workspace has not received any on-chain security telemetry yet.' };
+  }
+}
+
+// Ingestion status badge — derived from canonical worker status + freshness, so a
+// stale-ingestion panel reads "Ingestion stale" rather than a generic "Awaiting".
+export function ingestionBadge(
+  workerStatus: string | null | undefined,
+  dataFreshness: string | null | undefined,
+): { label: string; variant: PillVariant } {
+  switch (String(workerStatus ?? '').toLowerCase()) {
+    case 'stale':
+      return { label: 'Ingestion stale', variant: 'warning' };
+    case 'offline':
+      return { label: 'Ingestion offline', variant: 'danger' };
+    case 'degraded':
+      return { label: 'Ingestion degraded', variant: 'warning' };
+    default:
+      break;
+  }
+  switch (String(dataFreshness ?? '').toLowerCase()) {
+    case 'stale':
+      return { label: 'Telemetry stale', variant: 'warning' };
+    case 'unavailable':
+      return { label: 'Provisioning', variant: 'neutral' };
+    case 'no_telemetry':
+      return { label: 'Awaiting telemetry', variant: 'neutral' };
+    case 'fresh':
+      return { label: 'Ingestion healthy', variant: 'success' };
+    default:
+      return { label: 'Ingestion status unknown', variant: 'neutral' };
   }
 }
 

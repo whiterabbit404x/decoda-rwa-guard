@@ -3200,7 +3200,7 @@ def test_runtime_status_worker_status_stable_polling_stale(monkeypatch):
     payload = monitoring_runner.monitoring_runtime_status()
     ws = payload['worker_status']
     assert ws['stable_polling']['state'] == 'stale'
-    assert ws['headline'] == 'Stable RPC polling heartbeat is stale.'
+    assert ws['headline'] == 'RPC polling worker heartbeat is stale.'
 
 
 def test_runtime_status_stable_polling_active_via_fresh_poll_when_heartbeat_stale(monkeypatch):
