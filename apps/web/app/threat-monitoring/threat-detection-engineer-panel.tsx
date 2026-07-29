@@ -4,7 +4,9 @@ import { StatusPill } from '../components/ui-primitives';
 import {
   CONFIDENCE_TOOLTIP,
   EVIDENCE_QUALITY_TOOLTIP,
+  RUN_SOURCE_DIAGNOSTIC_LABEL,
   SEVERITY_TOOLTIP,
+  SOURCE_DIAGNOSTIC_HREF,
   confidencePercent,
   confidenceBand,
   detectionTypeLabel,
@@ -16,6 +18,8 @@ import {
   relativeTime,
   severityLabel,
   severityVariant,
+  workerStatusLabel,
+  workerStatusVariant,
   type EnginePanel,
 } from './presentation';
 
@@ -82,6 +86,10 @@ function PanelBody({
 }) {
   const detection = panel.detection;
   const presentation = enginePanelPresentation(panel.state, detection?.severity);
+  const fields = panel.fields;
+  // Start Investigation is only meaningful when a canonical detection exists. With
+  // zero detections the primary action becomes Run Source Diagnostic.
+  const showInvestigate = detection != null;
 
   return (
     <>
@@ -91,6 +99,31 @@ function PanelBody({
           <StatusPill label={presentation.eyebrow} variant={presentation.variant} />
         </div>
         <p className="assessorSummaryText" data-testid="engine-headline">{panel.headline}</p>
+      </section>
+
+      {/* Finding + explanation (truthful for the current canonical state). */}
+      <section className="assessorSection">
+        <ul className="assessorGapList">
+          <li><span>Finding</span><strong data-testid="engine-finding">{panel.finding}</strong></li>
+        </ul>
+        <p className="assessorMeta" data-testid="engine-explanation" style={{ marginTop: '0.4rem' }}>{panel.explanation}</p>
+      </section>
+
+      {/* Canonical operational fields — derived from the backend summary only. */}
+      <section className="assessorSection">
+        <ul className="assessorGapList" data-testid="engine-fields">
+          <li><span>Latest security telemetry</span><strong>{relativeTime(fields.last_security_telemetry_at)}</strong></li>
+          <li><span>Worker heartbeat</span><strong>{relativeTime(fields.worker_heartbeat_at)}</strong></li>
+          <li>
+            <span>Ingestion status</span>
+            <strong><StatusPill label={workerStatusLabel(fields.worker_status)} variant={workerStatusVariant(fields.worker_status)} /></strong>
+          </li>
+          <li><span>Evidence coverage</span><strong>{fields.evidence_coverage.live_backed}/{fields.evidence_coverage.active_detections} live-backed</strong></li>
+          <li>
+            <span title={CONFIDENCE_TOOLTIP}>Detection confidence</span>
+            <strong>{fields.detection_confidence != null ? `${confidencePercent(fields.detection_confidence)} (${confidenceBand(fields.detection_confidence)})` : 'Unavailable'}</strong>
+          </li>
+        </ul>
       </section>
 
       {/* Detected pattern detail (only when a material detection exists). */}
@@ -143,26 +176,44 @@ function PanelBody({
         </section>
       ) : null}
 
-      {/* Primary action — Start Investigation. Disabled unless the backend says the
-          detection is investigable (promoted + evidence-backed). */}
+      {/* Recommendation copy for the no-detection state. */}
+      {!detection ? (
+        <p className="assessorMeta" data-testid="engine-recommendation" style={{ marginTop: '0.25rem' }}>
+          <strong>Recommended action:</strong> Restore telemetry ingestion before beginning a new investigation.
+        </p>
+      ) : null}
+
+      {/* Primary action. When there is a canonical detection: Start Investigation
+          (disabled unless the backend says it is investigable). Otherwise the
+          canonical action is Run Source Diagnostic — never a dead Start button. */}
       <div className="assessorActions">
-        <button
-          type="button"
-          className="btn btn-primary"
-          data-testid="start-investigation"
-          disabled={!panel.can_investigate || !detection || investigating}
-          aria-busy={investigating}
-          title={
-            !detection
-              ? 'No material detection to investigate.'
-              : !panel.can_investigate
-                ? 'This detection is below investigation criteria.'
-                : 'Open an investigation from this detection.'
-          }
-          onClick={() => { if (detection && panel.can_investigate && !investigating) onInvestigate(detection.detection_id); }}
-        >
-          {investigating ? 'Opening investigation…' : 'Start Investigation'}
-        </button>
+        {showInvestigate ? (
+          <button
+            type="button"
+            className="btn btn-primary"
+            data-testid="start-investigation"
+            disabled={!panel.can_investigate || !detection || investigating}
+            aria-busy={investigating}
+            title={
+              !detection
+                ? 'No material detection to investigate.'
+                : !panel.can_investigate
+                  ? 'This detection is below investigation criteria.'
+                  : 'Open an investigation from this detection.'
+            }
+            onClick={() => { if (detection && panel.can_investigate && !investigating) onInvestigate(detection.detection_id); }}
+          >
+            {investigating ? 'Opening investigation…' : 'Start Investigation'}
+          </button>
+        ) : (
+          <a
+            href={SOURCE_DIAGNOSTIC_HREF}
+            className="btn btn-primary"
+            data-testid="run-source-diagnostic"
+          >
+            {RUN_SOURCE_DIAGNOSTIC_LABEL}
+          </a>
+        )}
         {detection ? (
           <button type="button" className="btn btn-secondary" data-testid="view-evidence" onClick={() => onViewEvidence(detection.detection_id)}>
             View Evidence

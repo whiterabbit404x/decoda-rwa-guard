@@ -131,11 +131,13 @@ test('investigate outcome messages cover created / existing / error', () => {
 // --------------------------------------------------------------------------
 // Source contract: canonical summary, GET-only load, proxy transport
 // --------------------------------------------------------------------------
-test('screen loads the canonical summary via the same-origin proxy, GET only', () => {
+test('screen loads the canonical summary via the same-origin proxy, GET only, with the selected window', () => {
   const src = read('threat-monitoring/threat-monitoring-screen.tsx');
   expect(src).toContain('/api/threat-monitoring/summary');
-  // The summary fetch must be read-only (no-store, GET default) so page load never writes.
-  expect(src).toContain("fetch('/api/threat-monitoring/summary?window_days=7', { headers: { ...headers }, cache: 'no-store' })");
+  // The summary fetch carries the ONE canonical selected window and is read-only
+  // (no-store, GET default) so page load / window change never writes.
+  expect(src).toContain('`/api/threat-monitoring/summary?window=${windowKey}`');
+  expect(src).toContain("cache: 'no-store'");
   // KPI values derive from the canonical summary — not hardcoded.
   expect(src).toContain('summary.telemetry_events_count');
   expect(src).toContain('summary.detection_count');
@@ -162,12 +164,14 @@ test('Start Investigation posts to the idempotent proxy and navigates to the des
   expect(src).toContain('setInvestigateError');
 });
 
-test('all four tabs are present with Overview default', () => {
+test('all four tabs are present and tab state is URL-derived (Overview default)', () => {
   const src = read('threat-monitoring/threat-monitoring-screen.tsx');
   for (const label of ['Overview', 'Telemetry', 'Detections', 'Anomalies']) {
     expect(src).toContain(`label: '${label}'`);
   }
-  expect(src).toContain("useState<TabKey>('overview')");
+  // Tab + window are derived from the URL (refresh + Back/Forward safe), not local state.
+  expect(src).toContain("resolveTab(searchParams.get('tab'))");
+  expect(src).toContain("resolveWindow(searchParams.get('window'))");
 });
 
 test('primary control is accessible (aria-busy, disabled state, testid)', () => {

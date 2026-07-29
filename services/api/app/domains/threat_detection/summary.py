@@ -53,6 +53,48 @@ def _num(value: Any) -> Optional[float]:
         return None
 
 
+def _age_seconds(value: Any, now: Any) -> Optional[int]:
+    """Seconds between ``value`` (datetime or ISO string) and ``now``. None if
+    unparseable/missing. Naive timestamps are treated as UTC (fail-safe)."""
+    if value is None or now is None:
+        return None
+    ts = value
+    if isinstance(ts, str):
+        try:
+            from datetime import datetime as _dt
+
+            ts = _dt.fromisoformat(ts.replace('Z', '+00:00'))
+        except ValueError:
+            return None
+    try:
+        from datetime import timezone
+
+        if getattr(ts, 'tzinfo', None) is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return max(0, int((now - ts).total_seconds()))
+    except Exception:
+        return None
+
+
+def _next_action(*, data_freshness: str, worker_status: str, top: Optional[dict[str, Any]], counts: dict[str, int]) -> str:
+    """Canonical Screen 5 next action, in strict priority order. NEVER returns
+    ``open_incident`` — with zero canonical detections there is nothing to escalate.
+
+      1. stale/offline/unavailable ingestion  -> diagnose_ingestion
+      2. fresh open detection, not investigated -> start_investigation
+      3. existing open investigation            -> open_investigation
+      4. healthy and no material threat         -> none
+    """
+    if data_freshness in ('stale', 'no_telemetry', 'unavailable') or worker_status in ('stale', 'offline'):
+        return 'diagnose_ingestion'
+    status = str((top or {}).get('status') or '')
+    if top is not None and status == 'open':
+        return 'start_investigation'
+    if top is not None and status == 'investigating':
+        return 'open_investigation'
+    return 'none'
+
+
 def _change_percent(current: int, previous: int) -> Optional[float]:
     """Percent change, or None when there is no valid comparison base.
 
@@ -88,20 +130,37 @@ def worker_health(connection: Any, *, config: dict[str, Any], now: Any) -> dict[
 # Telemetry counts + volume buckets
 # --------------------------------------------------------------------------
 def _telemetry_counts(connection: Any, *, workspace_id: str, window_start: Any, window_end: Any, prev_start: Any) -> tuple[int, int, Any, dict[str, int]]:
-    """(current_count, previous_count, last_telemetry_at, source_breakdown)."""
+    """(current_count, previous_count, last_security_telemetry_at, source_breakdown).
+
+    Counts CANONICAL SECURITY telemetry only:
+      * ingestion/runtime rows (rpc_polling heartbeats, provider checks, cursor
+        updates, …) are excluded via the single canonical predicate, so a poll
+        heartbeat is never counted as an on-chain threat event;
+      * a raw event and its normalized/derived representation of the *same*
+        transaction collapse to one canonical event (COUNT DISTINCT on the tx
+        hash), so a transaction is never double-counted.
+    ``last_at`` is the newest SECURITY telemetry — freshness is judged from real
+    on-chain evidence, not from an ingestion heartbeat."""
     if not _table_exists(connection, 'telemetry_events'):
         return 0, 0, None, {}
+    runtime_types = tdc.runtime_event_types()
+    canon = tdc.TELEMETRY_TX_HASH_SQL
     row = connection.execute(
-        '''
+        f'''
         SELECT
-            COUNT(*) FILTER (WHERE observed_at >= %s AND observed_at <= %s) AS current_count,
-            COUNT(*) FILTER (WHERE observed_at >= %s AND observed_at < %s) AS previous_count,
-            MAX(observed_at) AS last_at,
-            COUNT(*) FILTER (WHERE observed_at >= %s AND observed_at <= %s AND evidence_source = 'live') AS live_count,
-            COUNT(*) FILTER (WHERE observed_at >= %s AND observed_at <= %s AND evidence_source = 'simulator') AS sim_count,
-            COUNT(*) FILTER (WHERE observed_at >= %s AND observed_at <= %s AND evidence_source = 'replay') AS replay_count
-        FROM telemetry_events
-        WHERE workspace_id = %s AND observed_at >= %s
+            COUNT(DISTINCT canon) FILTER (WHERE observed_at >= %s AND observed_at <= %s) AS current_count,
+            COUNT(DISTINCT canon) FILTER (WHERE observed_at >= %s AND observed_at < %s) AS previous_count,
+            MAX(observed_at) FILTER (WHERE observed_at >= %s AND observed_at <= %s) AS last_at,
+            COUNT(DISTINCT canon) FILTER (WHERE observed_at >= %s AND observed_at <= %s AND evidence_source = 'live') AS live_count,
+            COUNT(DISTINCT canon) FILTER (WHERE observed_at >= %s AND observed_at <= %s AND evidence_source = 'simulator') AS sim_count,
+            COUNT(DISTINCT canon) FILTER (WHERE observed_at >= %s AND observed_at <= %s AND evidence_source = 'replay') AS replay_count
+        FROM (
+            SELECT observed_at, evidence_source,
+                   COALESCE({canon}, id::text) AS canon
+            FROM telemetry_events
+            WHERE workspace_id = %s AND observed_at >= %s
+              AND lower(event_type) <> ALL(%s)
+        ) security_events
         ''',
         (
             window_start, window_end,
@@ -109,7 +168,8 @@ def _telemetry_counts(connection: Any, *, workspace_id: str, window_start: Any, 
             window_start, window_end,
             window_start, window_end,
             window_start, window_end,
-            workspace_id, prev_start,
+            window_start, window_end,
+            workspace_id, prev_start, runtime_types,
         ),
     ).fetchone() or {}
     breakdown = {
@@ -118,6 +178,27 @@ def _telemetry_counts(connection: Any, *, workspace_id: str, window_start: Any, 
         'replay': int(row.get('replay_count') or 0),
     }
     return int(row.get('current_count') or 0), int(row.get('previous_count') or 0), row.get('last_at'), breakdown
+
+
+def _last_ingestion_at(connection: Any, *, workspace_id: str) -> Any:
+    """Most recent ingestion/runtime signal (rpc_polling / provider check / …).
+
+    This proves the monitoring *loop ran* (poll heartbeat); it is deliberately
+    separate from security telemetry freshness. Returns None if none exists."""
+    if not _table_exists(connection, 'telemetry_events'):
+        return None
+    try:
+        row = connection.execute(
+            '''
+            SELECT MAX(observed_at) AS last_ingestion_at
+            FROM telemetry_events
+            WHERE workspace_id = %s AND lower(event_type) = ANY(%s)
+            ''',
+            (workspace_id, tdc.runtime_event_types()),
+        ).fetchone() or {}
+    except Exception:
+        return None
+    return row.get('last_ingestion_at')
 
 
 def _telemetry_volume_buckets(connection: Any, *, workspace_id: str, window_start: Any, window_end: Any, window_seconds: int) -> list[dict[str, Any]]:
@@ -134,10 +215,11 @@ def _telemetry_volume_buckets(connection: Any, *, workspace_id: str, window_star
                    COUNT(*) FILTER (WHERE evidence_source <> 'live') AS other_count
             FROM telemetry_events
             WHERE workspace_id = %s AND observed_at >= %s AND observed_at <= %s
+              AND lower(event_type) <> ALL(%s)
             GROUP BY 1
             ORDER BY 1
             ''',
-            (int(bucket_seconds), int(bucket_seconds), workspace_id, window_start, window_end),
+            (int(bucket_seconds), int(bucket_seconds), workspace_id, window_start, window_end, tdc.runtime_event_types()),
         ).fetchall()
     except Exception:
         return []
@@ -374,18 +456,21 @@ def _evidence_coverage(connection: Any, *, workspace_id: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 # Canonical builder
 # --------------------------------------------------------------------------
-def build_threat_summary(connection: Any, *, workspace_id: str, config: dict[str, Any] | None = None, window_days: int = 7) -> dict[str, Any]:
+def build_threat_summary(connection: Any, *, workspace_id: str, config: dict[str, Any] | None = None, window_days: int = 7, window: str | None = None) -> dict[str, Any]:
     from services.api.app import pilot
 
     cfg = config or tdc.engine_config()
     now = pilot.utc_now()
-    window_days = max(1, min(int(window_days), 90))
-    window_seconds = window_days * 24 * 60 * 60
+    # One canonical selected window (24h / 7d / 30d), shared by every section.
+    resolved_window = tdc.resolve_window(window, window_days)
+    window_key = resolved_window['key']
+    window_seconds = int(resolved_window['seconds'])
+    window_days = max(1, int(round(resolved_window['days'])))
     from datetime import timedelta
 
     window_end = now
-    window_start = now - timedelta(days=window_days)
-    prev_start = now - timedelta(days=window_days * 2)
+    window_start = now - timedelta(seconds=window_seconds)
+    prev_start = now - timedelta(seconds=window_seconds * 2)
 
     detections_table = _table_exists(connection, 'threat_detections')
     degraded_reasons: list[str] = []
@@ -393,11 +478,13 @@ def build_threat_summary(connection: Any, *, workspace_id: str, config: dict[str
     tele_current, tele_previous, last_telemetry_at, source_breakdown = _telemetry_counts(
         connection, workspace_id=workspace_id, window_start=window_start, window_end=window_end, prev_start=prev_start
     )
+    last_ingestion_at = _last_ingestion_at(connection, workspace_id=workspace_id)
     volume_buckets = _telemetry_volume_buckets(
         connection, workspace_id=workspace_id, window_start=window_start, window_end=window_end, window_seconds=window_seconds
     )
 
-    # Data freshness — distinguishes unavailable / no_telemetry / stale / fresh.
+    # Data freshness — judged from the newest SECURITY telemetry (not an ingestion
+    # heartbeat). Distinguishes unavailable / no_telemetry / stale / fresh.
     if not _table_exists(connection, 'telemetry_events'):
         data_freshness = 'unavailable'
     elif last_telemetry_at is None:
@@ -435,18 +522,40 @@ def build_threat_summary(connection: Any, *, workspace_id: str, config: dict[str
     if cfg.get('enabled') and not worker.get('healthy'):
         degraded_reasons.append('worker_unhealthy')
 
+    # Canonical operational classification of the ingestion worker. A heartbeat/poll
+    # that is hours old is NEVER 'healthy'/'stable'. The ingestion signal (last poll)
+    # is separate from security-telemetry freshness above.
+    worker_status = tdc.classify_worker_status(
+        last_ingestion_at=last_ingestion_at, now=now, config=cfg, worker_enabled=bool(worker.get('enabled')),
+    )
+    heartbeat_age_seconds = _age_seconds(worker.get('last_heartbeat_at'), now)
+    poll_age_seconds = _age_seconds(last_ingestion_at, now)
+    last_security_age_seconds = _age_seconds(last_telemetry_at, now)
+
     ingestion_health = {
         'last_telemetry_at': _iso(last_telemetry_at),
+        'last_security_telemetry_at': _iso(last_telemetry_at),
+        'last_ingestion_at': _iso(last_ingestion_at),
         'data_freshness': data_freshness,
         'telemetry_events_window': tele_current,
         'source_breakdown': source_breakdown,
         'worker': worker,
+        'worker_status': worker_status,
+        'heartbeat_age_seconds': heartbeat_age_seconds,
+        'poll_age_seconds': poll_age_seconds,
+        'last_security_age_seconds': last_security_age_seconds,
     }
+
+    next_action = _next_action(
+        data_freshness=data_freshness, worker_status=worker_status, top=top, counts=counts,
+    )
 
     summary = {
         'workspace_id': workspace_id,
         'generated_at': _iso(now),
+        'window': window_key,
         'window_days': window_days,
+        'window_seconds': window_seconds,
         'window_start': _iso(window_start),
         'window_end': _iso(window_end),
         'telemetry_events_count': tele_current,
@@ -466,18 +575,36 @@ def build_threat_summary(connection: Any, *, workspace_id: str, config: dict[str
         'ingestion_health': ingestion_health,
         'evidence_coverage': evidence_coverage,
         'data_freshness': data_freshness,
+        'worker_status': worker_status,
+        'next_action': next_action,
         'degraded_reasons': degraded_reasons,
         'detector_support': tdc.detector_support(),
         'detector_version': tdc.DETECTOR_VERSION,
-        'engine_panel': _build_engine_panel(top, data_freshness, degraded_reasons, worker, counts),
+        'engine_panel': _build_engine_panel(
+            top, data_freshness, degraded_reasons, worker, counts,
+            next_action=next_action, worker_status=worker_status, ingestion_health=ingestion_health,
+            evidence_coverage=evidence_coverage,
+        ),
     }
     return summary
 
 
-def _build_engine_panel(top: Optional[dict[str, Any]], data_freshness: str, degraded_reasons: list[str], worker: dict[str, Any], counts: dict[str, int]) -> dict[str, Any]:
+def _build_engine_panel(
+    top: Optional[dict[str, Any]],
+    data_freshness: str,
+    degraded_reasons: list[str],
+    worker: dict[str, Any],
+    counts: dict[str, int],
+    *,
+    next_action: str = 'none',
+    worker_status: str = 'unknown',
+    ingestion_health: dict[str, Any] | None = None,
+    evidence_coverage: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Canonical state for the Threat Detection Engineer panel, so the UI never
     invents a scary alert when evidence is thin, and never claims healthy when
-    ingestion is degraded."""
+    ingestion is degraded. Also carries the exact operational fields the panel
+    renders, so the frontend derives nothing on its own."""
     if data_freshness == 'unavailable':
         state = 'unavailable'
         headline = 'Threat detection storage is provisioning.'
@@ -504,19 +631,59 @@ def _build_engine_panel(top: Optional[dict[str, Any]], data_freshness: str, degr
         state = 'active_detection'
         headline = top.get('ai_summary') or top.get('title') or 'Active threat detection requires review.'
 
+    ih = ingestion_health or {}
+    ec = evidence_coverage or {}
+    finding, explanation = _engine_finding(state, top)
     return {
         'state': state,
         'headline': headline,
+        'finding': finding,
+        'explanation': explanation,
         'detection': top,
         'ai_summary_source': (top or {}).get('ai_summary_source') or 'deterministic',
+        'next_action': next_action,
+        'recommended_action': next_action,
         'can_investigate': bool(top is not None and str(top.get('status')) in ('open', 'investigating') and int((top or {}).get('evidence_count') or 0) > 0),
+        'fields': {
+            'last_security_telemetry_at': ih.get('last_security_telemetry_at'),
+            'worker_heartbeat_at': (ih.get('worker') or {}).get('last_heartbeat_at'),
+            'worker_status': worker_status,
+            'ingestion_status': data_freshness,
+            'evidence_coverage': {
+                'active_detections': int(ec.get('active_detections') or 0),
+                'live_backed': int(ec.get('live_backed') or 0),
+                'non_live_backed': int(ec.get('non_live_backed') or 0),
+            },
+            'detection_confidence': _num((top or {}).get('confidence')) if top else None,
+        },
     }
+
+
+def _engine_finding(state: str, top: Optional[dict[str, Any]]) -> tuple[str, str]:
+    """(finding, explanation) copy for the panel — truthful per canonical state."""
+    if state in ('telemetry_stale', 'provider_degraded'):
+        return (
+            'No fresh evidence available',
+            'No material threat can be confirmed because the latest security telemetry is '
+            'outside the accepted freshness window.',
+        )
+    if state == 'no_telemetry':
+        return ('No telemetry received', 'No on-chain security telemetry has arrived yet, so there is nothing to correlate.')
+    if state == 'unavailable':
+        return ('Provisioning', 'Threat detection storage is still provisioning for this workspace.')
+    if state == 'anomalies_only':
+        return ('Sub-threshold anomalies', 'Deviations were observed but none has crossed detection criteria; no confirmed threat.')
+    if state == 'investigation_open':
+        return ('Investigation in progress', 'An investigation is already open for the highest-priority detection.')
+    if state == 'active_detection':
+        return ('Active detection requires review', (top or {}).get('ai_summary') or (top or {}).get('title') or 'A material detection is awaiting investigation.')
+    return ('No material threat', 'No material threat detected in the current window from fresh security telemetry.')
 
 
 # --------------------------------------------------------------------------
 # Request helper
 # --------------------------------------------------------------------------
-def build_summary_for_request(request: Any, *, window_days: int = 7) -> dict[str, Any]:
+def build_summary_for_request(request: Any, *, window_days: int = 7, window: str | None = None) -> dict[str, Any]:
     from services.api.app import pilot
 
     pilot.require_live_mode()
@@ -525,6 +692,6 @@ def build_summary_for_request(request: Any, *, window_days: int = 7) -> dict[str
         pilot.ensure_pilot_schema(connection)
         user = pilot.authenticate_with_connection(connection, request)
         workspace_context = pilot.resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
-        summary = build_threat_summary(connection, workspace_id=workspace_context['workspace_id'], config=cfg, window_days=window_days)
+        summary = build_threat_summary(connection, workspace_id=workspace_context['workspace_id'], config=cfg, window_days=window_days, window=window)
         # GET is strictly read-only: no commit, no writes.
         return {'summary': summary, 'workspace': workspace_context['workspace']}

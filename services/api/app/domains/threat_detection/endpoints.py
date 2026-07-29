@@ -28,8 +28,8 @@ def _num(value: Any) -> Optional[float]:
     return summary._num(value)
 
 
-def summary_endpoint(request: Any, *, window_days: int = 7) -> dict[str, Any]:
-    return summary.build_summary_for_request(request, window_days=window_days)
+def summary_endpoint(request: Any, *, window_days: int = 7, window: Optional[str] = None) -> dict[str, Any]:
+    return summary.build_summary_for_request(request, window_days=window_days, window=window)
 
 
 def _serialize_detection_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -74,6 +74,7 @@ def _list_detections(
     asset_id: Optional[str],
     min_confidence: Optional[float],
     window_days: Optional[int],
+    window: Optional[str],
     limit: int,
     offset: int,
 ) -> dict[str, Any]:
@@ -105,9 +106,10 @@ def _list_detections(
         if severity and str(severity).strip().lower() not in _VALID_SEVERITIES:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid severity filter.')
 
-        window_clause_days: Optional[int] = None
-        if window_days is not None:
-            window_clause_days = max(1, min(int(window_days), 365))
+        # One canonical selected window (24h / 7d / 30d), shared with the summary.
+        window_clause_seconds: Optional[int] = None
+        if window is not None or window_days is not None:
+            window_clause_seconds = int(tdc.resolve_window(window, window_days)['seconds'])
 
         params: list[Any] = [workspace_id, effective_statuses]
         where = ['td.workspace_id = %s', 'td.status = ANY(%s)']
@@ -123,9 +125,9 @@ def _list_detections(
         if min_confidence is not None:
             where.append('td.confidence >= %s')
             params.append(float(min_confidence))
-        if window_clause_days is not None:
-            where.append("td.detected_at >= NOW() - (%s || ' days')::interval")
-            params.append(str(window_clause_days))
+        if window_clause_seconds is not None:
+            where.append("td.detected_at >= NOW() - (%s || ' seconds')::interval")
+            params.append(str(window_clause_seconds))
         where_sql = ' AND '.join(where)
 
         total_row = connection.execute(
@@ -163,6 +165,7 @@ def detections_endpoint(
     asset_id: Optional[str] = None,
     min_confidence: Optional[float] = None,
     window_days: Optional[int] = None,
+    window: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -170,7 +173,7 @@ def detections_endpoint(
     return _list_detections(
         request, statuses=_PROMOTED_STATUSES, detection_type=detection_type, severity=severity,
         status_value=status_value, asset_id=asset_id, min_confidence=min_confidence,
-        window_days=window_days, limit=limit, offset=offset,
+        window_days=window_days, window=window, limit=limit, offset=offset,
     )
 
 
@@ -180,6 +183,7 @@ def anomalies_endpoint(
     detection_type: Optional[str] = None,
     asset_id: Optional[str] = None,
     window_days: Optional[int] = None,
+    window: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -187,7 +191,7 @@ def anomalies_endpoint(
     result = _list_detections(
         request, statuses=('anomaly',), detection_type=detection_type, severity=None,
         status_value=None, asset_id=asset_id, min_confidence=None,
-        window_days=window_days, limit=limit, offset=offset,
+        window_days=window_days, window=window, limit=limit, offset=offset,
     )
     # Anomaly-specific framing: why each has not been promoted.
     for row in result.get('detections', []):
@@ -285,20 +289,82 @@ def _telemetry_evidence_quality(event_type: str, payload: Any) -> str:
     return 'normalized_telemetry'
 
 
+def _ingestion_source(provider_type: Any, event_type: Any) -> str:
+    """Canonical ingestion-source key (HOW the row was captured), distinct from the
+    evidence MODE (live/simulator/replay) and from freshness. The frontend maps
+    this key to a human label."""
+    pt = str(provider_type or '').strip().lower()
+    et = str(event_type or '').strip().lower()
+    if 'quicknode' in pt or pt == 'quicknode_stream':
+        return 'quicknode_stream'
+    if 'webhook' in pt:
+        return 'webhook'
+    if 'backfill' in pt or et == 'backfill':
+        return 'backfill'
+    if pt in ('evm_rpc', 'rpc', 'rpc_polling') or et in ('rpc_polling', 'poll', 'poll_heartbeat'):
+        return 'rpc_polling'
+    if pt in ('guided_workflow', 'manual', 'imported', 'simulator'):
+        return 'manual'
+    return pt or 'unknown'
+
+
+def _row_freshness(observed_at: Any, now: Any, stale_seconds: int) -> str:
+    """Per-row freshness (fresh | stale | unknown). An old row captured live is
+    still stale today — freshness is time-based, never inferred from the source."""
+    if observed_at is None:
+        return 'unknown'
+    ts = observed_at
+    if isinstance(ts, str):
+        try:
+            from datetime import datetime as _dt
+
+            ts = _dt.fromisoformat(ts.replace('Z', '+00:00'))
+        except ValueError:
+            return 'unknown'
+    try:
+        from datetime import timezone
+
+        if getattr(ts, 'tzinfo', None) is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return 'fresh' if (now - ts).total_seconds() <= int(stale_seconds) else 'stale'
+    except Exception:
+        return 'unknown'
+
+
 def telemetry_endpoint(
     request: Any,
     *,
     event_type: Optional[str] = None,
     asset_id: Optional[str] = None,
     evidence_source: Optional[str] = None,
+    freshness: Optional[str] = None,
+    category: Optional[str] = None,
+    window_days: Optional[int] = None,
+    window: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
     from services.api.app import pilot
+    from services.api.app.domains.threat_detection import config as tdc
 
     pilot.require_live_mode()
     max_limit = max(1, min(int(limit or 50), 200))
     offset = max(0, int(offset or 0))
+    now = pilot.utc_now()
+    cfg = tdc.engine_config()
+    stale_seconds = int(cfg['telemetry_stale_seconds'])
+    # Default view is canonical SECURITY telemetry: ingestion/runtime heartbeats
+    # (rpc_polling, provider checks, cursor updates, …) are excluded so a poll
+    # heartbeat is never shown as an on-chain security event.
+    cat = str(category or 'security').strip().lower()
+    if cat not in ('security', 'runtime', 'all'):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid telemetry category.')
+    fresh_filter: Optional[str] = None
+    if freshness:
+        fresh_filter = str(freshness).strip().lower()
+        if fresh_filter not in ('fresh', 'stale'):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid freshness filter.')
+
     with pilot.pg_connection() as connection:
         pilot.ensure_pilot_schema(connection)
         user = pilot.authenticate_with_connection(connection, request)
@@ -310,6 +376,12 @@ def telemetry_endpoint(
 
         params: list[Any] = [workspace_id]
         where = ['te.workspace_id = %s']
+        if cat == 'security':
+            where.append('lower(te.event_type) <> ALL(%s)')
+            params.append(tdc.runtime_event_types())
+        elif cat == 'runtime':
+            where.append('lower(te.event_type) = ANY(%s)')
+            params.append(tdc.runtime_event_types())
         if event_type:
             where.append('te.event_type = %s')
             params.append(str(event_type).strip().lower())
@@ -322,17 +394,37 @@ def telemetry_endpoint(
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid evidence source filter.')
             where.append('te.evidence_source = %s')
             params.append(sv)
+        if window is not None or window_days is not None:
+            where.append("te.observed_at >= NOW() - (%s || ' seconds')::interval")
+            params.append(str(int(tdc.resolve_window(window, window_days)['seconds'])))
+        if fresh_filter == 'fresh':
+            where.append('te.observed_at >= NOW() - (%s || \' seconds\')::interval')
+            params.append(str(stale_seconds))
+        elif fresh_filter == 'stale':
+            where.append('te.observed_at < NOW() - (%s || \' seconds\')::interval')
+            params.append(str(stale_seconds))
         where_sql = ' AND '.join(where)
 
-        total = int((connection.execute(f'SELECT COUNT(*) AS n FROM telemetry_events te WHERE {where_sql}', tuple(params)).fetchone() or {}).get('n') or 0)
+        # Canonical key collapses a raw event and its normalized/derived twin of the
+        # SAME transaction into one row (never double-counted). Total reflects the
+        # deduplicated canonical count so pagination stays truthful.
+        canon = f"COALESCE({tdc.TELEMETRY_TX_HASH_SQL.replace('payload_json', 'te.payload_json')}, te.id::text)"
+        total = int((connection.execute(
+            f'SELECT COUNT(*) AS n FROM (SELECT DISTINCT {canon} AS canon_key FROM telemetry_events te WHERE {where_sql}) canonical_events',
+            tuple(params),
+        ).fetchone() or {}).get('n') or 0)
         rows = connection.execute(
             f'''
-            SELECT te.id, te.event_type, te.asset_id, te.provider_type, te.evidence_source, te.observed_at,
-                   te.payload_json, a.name AS asset_name
-            FROM telemetry_events te
-            LEFT JOIN assets a ON a.id = te.asset_id AND a.workspace_id = te.workspace_id
-            WHERE {where_sql}
-            ORDER BY te.observed_at DESC
+            SELECT * FROM (
+                SELECT DISTINCT ON ({canon})
+                       te.id, te.event_type, te.asset_id, te.provider_type, te.evidence_source, te.observed_at,
+                       te.payload_json, a.name AS asset_name
+                FROM telemetry_events te
+                LEFT JOIN assets a ON a.id = te.asset_id AND a.workspace_id = te.workspace_id
+                WHERE {where_sql}
+                ORDER BY {canon}, te.observed_at DESC
+            ) deduped
+            ORDER BY observed_at DESC
             LIMIT %s OFFSET %s
             ''',
             tuple(params + [max_limit, offset]),
@@ -347,11 +439,16 @@ def telemetry_endpoint(
                 'event_type': r.get('event_type'),
                 'asset_id': str(r['asset_id']) if r.get('asset_id') else None,
                 'asset_name': r.get('asset_name'),
-                'source': r.get('provider_type'),
+                'provider_type': r.get('provider_type'),
+                # Ingestion source (HOW captured), evidence mode (live/sim/replay),
+                # evidence quality, and freshness are four independent facts.
+                'ingestion_source': _ingestion_source(r.get('provider_type'), r.get('event_type')),
                 'evidence_source': r.get('evidence_source'),
+                'evidence_mode': r.get('evidence_source'),
                 'evidence_quality': _telemetry_evidence_quality(r.get('event_type'), payload),
+                'freshness': _row_freshness(r.get('observed_at'), now, stale_seconds),
                 'tx_hash': payload.get('tx_hash') or payload.get('transaction_hash') or payload.get('hash'),
                 'block_number': payload.get('block_number') or payload.get('block'),
                 'observed_at': _iso(r.get('observed_at')),
             })
-        return {'telemetry': telemetry, 'total': total, 'limit': max_limit, 'offset': offset, 'degraded': False}
+        return {'telemetry': telemetry, 'total': total, 'limit': max_limit, 'offset': offset, 'category': cat, 'degraded': False}

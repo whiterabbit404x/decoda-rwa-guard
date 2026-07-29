@@ -1,9 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 
-import { EmptyStateBlocker, StatusPill, TabStrip, TableShell } from '../components/ui-primitives';
+import { EmptyStateBlocker, Select, StatusPill, TabStrip, TableShell } from '../components/ui-primitives';
 import { usePilotAuth } from '../pilot-auth-context';
 import {
   ANOMALIES_TOOLTIP,
@@ -11,7 +11,10 @@ import {
   DETECTIONS_TOOLTIP,
   EVIDENCE_QUALITY_TOOLTIP,
   MTTD_TOOLTIP,
+  RUN_SOURCE_DIAGNOSTIC_LABEL,
+  SOURCE_DIAGNOSTIC_HREF,
   TELEMETRY_TOOLTIP,
+  WINDOW_OPTIONS,
   confidenceBand,
   confidencePercent,
   confidenceVariant,
@@ -21,26 +24,35 @@ import {
   detectionStatusLabel,
   detectionStatusVariant,
   detectionTypeLabel,
+  eventTypeLabel,
   evidenceQualityLabel,
+  ingestionSourceLabel,
   evidenceSourceLabel,
   evidenceSourceVariant,
   formatMttd,
   investigateOutcomeMessage,
+  nextActionLabel,
   relativeTime,
+  resolveTab,
+  resolveWindow,
+  rowFreshnessLabel,
+  rowFreshnessVariant,
   severityLabel,
   severityVariant,
   shortHex,
   trend,
   trendColor,
+  windowLabel,
   type DetectionRow,
+  type TabKey,
+  type TelemetryRow,
   type ThreatSummary,
   type TrendMetric,
+  type WindowKey,
 } from './presentation';
 import ThreatDetectionEngineerPanel from './threat-detection-engineer-panel';
 
-type TabKey = 'overview' | 'telemetry' | 'detections' | 'anomalies';
-
-const TABS = [
+const TABS: Array<{ key: TabKey; label: string }> = [
   { key: 'overview', label: 'Overview' },
   { key: 'telemetry', label: 'Telemetry' },
   { key: 'detections', label: 'Detections' },
@@ -50,16 +62,38 @@ const TABS = [
 const PAGE_SIZE = 25;
 
 export default function ThreatMonitoringScreen() {
-  const { authHeaders, signOut, isAuthenticated } = usePilotAuth();
+  // useSearchParams requires a Suspense boundary; the page owns the <h1>.
+  return (
+    <Suspense fallback={<div className="muted" style={{ padding: '1.5rem 0' }}>Loading threat monitoring…</div>}>
+      <ThreatMonitoringScreenInner />
+    </Suspense>
+  );
+}
+
+function ThreatMonitoringScreenInner() {
+  const { authHeaders, signOut } = usePilotAuth();
   const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // URL is the single source of truth for the selected tab + window, so refresh
+  // restores them and browser Back/Forward navigates between them.
+  const activeTab = resolveTab(searchParams.get('tab'));
+  const windowKey = resolveWindow(searchParams.get('window'));
 
   const [summary, setSummary] = useState<ThreatSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [activeTab, setActiveTab] = useState<TabKey>('overview');
 
   const [investigatingId, setInvestigatingId] = useState<string | null>(null);
   const [investigateError, setInvestigateError] = useState('');
+
+  const setUrl = useCallback((next: { tab?: TabKey; window?: WindowKey }) => {
+    const params = new URLSearchParams();
+    params.set('tab', next.tab ?? activeTab);
+    params.set('window', next.window ?? windowKey);
+    // Navigation only — reading Screen 5 never writes to the database.
+    router.push(`/threat?${params.toString()}`, { scroll: false });
+  }, [router, activeTab, windowKey]);
 
   const loadSummary = useCallback(async () => {
     setError('');
@@ -70,8 +104,8 @@ export default function ThreatMonitoringScreen() {
       return;
     }
     try {
-      // GET only — opening/refreshing Screen 5 never writes.
-      const res = await fetch('/api/threat-monitoring/summary?window_days=7', { headers: { ...headers }, cache: 'no-store' });
+      // GET only — opening/refreshing/switching windows never writes.
+      const res = await fetch(`/api/threat-monitoring/summary?window=${windowKey}`, { headers: { ...headers }, cache: 'no-store' });
       if (res.status === 401 || res.status === 403) {
         await signOut();
         setError('Your session is missing or expired. Please sign in again.');
@@ -88,9 +122,10 @@ export default function ThreatMonitoringScreen() {
     } finally {
       setLoading(false);
     }
-  }, [authHeaders, signOut]);
+  }, [authHeaders, signOut, windowKey]);
 
   useEffect(() => {
+    setLoading(true);
     void loadSummary();
   }, [loadSummary]);
 
@@ -110,7 +145,6 @@ export default function ThreatMonitoringScreen() {
         router.push(destination);
         return;
       }
-      // Actionable errors: 422 insufficient evidence / 409 resolved / others.
       setInvestigateError(payload.detail || investigateOutcomeMessage(payload));
     } catch {
       setInvestigateError('Unable to start the investigation. Please try again.');
@@ -120,24 +154,39 @@ export default function ThreatMonitoringScreen() {
   }, [authHeaders, router]);
 
   const onViewEvidence = useCallback((detectionId: string) => {
-    setActiveTab('detections');
+    setUrl({ tab: 'detections' });
     if (typeof window !== 'undefined') {
       window.setTimeout(() => {
         document.getElementById(`detection-${detectionId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }, 60);
+      }, 120);
     }
-  }, []);
+  }, [setUrl]);
+
+  const stale = summary ? summary.data_freshness !== 'fresh' : false;
+  const nextAction = summary?.next_action ?? 'diagnose_ingestion';
 
   return (
     <div style={{ maxWidth: '1440px', width: '100%', margin: '0 auto' }}>
+      {/* Page header — title (owned by the page <h1>), subtitle, window selector, Refresh. */}
       <header style={{ marginBottom: '1.25rem' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap' }}>
-          <p className="muted" style={{ margin: 0, fontSize: '0.95rem' }}>
+          <p className="muted" data-testid="threat-subtitle" style={{ margin: 0, fontSize: '0.95rem', maxWidth: '52ch' }}>
             Correlated telemetry, behavioral anomalies, and exploit detections.
           </p>
-          <button type="button" className="btn btn-secondary" onClick={() => { setLoading(true); void loadSummary(); }}>
-            Refresh
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+            <div style={{ minWidth: '180px' }}>
+              <Select
+                value={windowKey}
+                onValueChange={(v) => setUrl({ window: v as WindowKey })}
+                options={WINDOW_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+                ariaLabel="Select time window"
+                testId="window-selector"
+              />
+            </div>
+            <button type="button" className="btn btn-secondary" onClick={() => { setLoading(true); void loadSummary(); }}>
+              Refresh
+            </button>
+          </div>
         </div>
       </header>
 
@@ -147,14 +196,14 @@ export default function ThreatMonitoringScreen() {
         </div>
       ) : null}
 
-      {/* KPI row */}
-      <KpiRow summary={summary} loading={loading} />
+      {/* KPI row — labelled with the SAME selected window as every table below it. */}
+      <KpiRow summary={summary} loading={loading} windowKey={windowKey} />
 
       {error ? (
         <p className="statusLine" style={{ color: 'var(--danger-fg)', margin: '0 0 1rem' }} role="alert">{error}</p>
       ) : null}
 
-      <TabStrip tabs={TABS} active={activeTab} onChange={(k) => setActiveTab(k as TabKey)} />
+      <TabStrip tabs={TABS} active={activeTab} onChange={(k) => setUrl({ tab: k as TabKey })} />
 
       {activeTab === 'overview' ? (
         <div role="tabpanel" aria-label="Overview" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)', gap: '1.5rem', marginTop: '0.5rem' }}>
@@ -177,18 +226,19 @@ export default function ThreatMonitoringScreen() {
         </div>
       ) : null}
 
-      {activeTab === 'telemetry' ? <TelemetryTab authHeaders={authHeaders} /> : null}
+      {activeTab === 'telemetry' ? <TelemetryTab authHeaders={authHeaders} windowKey={windowKey} /> : null}
       {activeTab === 'detections' ? (
-        <DetectionsTab authHeaders={authHeaders} onInvestigate={onInvestigate} investigatingId={investigatingId} investigateError={investigateError} />
+        <DetectionsTab authHeaders={authHeaders} windowKey={windowKey} stale={stale} nextAction={nextAction} onInvestigate={onInvestigate} investigatingId={investigatingId} investigateError={investigateError} />
       ) : null}
-      {activeTab === 'anomalies' ? <AnomaliesTab authHeaders={authHeaders} /> : null}
+      {activeTab === 'anomalies' ? <AnomaliesTab authHeaders={authHeaders} windowKey={windowKey} stale={stale} /> : null}
     </div>
   );
 }
 
 /* ── KPI row ─────────────────────────────────────────────────────── */
-function KpiRow({ summary, loading }: { summary: ThreatSummary | null; loading: boolean }) {
+function KpiRow({ summary, loading, windowKey }: { summary: ThreatSummary | null; loading: boolean; windowKey: WindowKey }) {
   const freshness = summary?.data_freshness ?? 'unavailable';
+  const windowText = windowLabel(windowKey);
   return (
     <div
       style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '1.25rem', margin: '0 0 1.5rem' }}
@@ -200,7 +250,7 @@ function KpiRow({ summary, loading }: { summary: ThreatSummary | null; loading: 
         tooltip={TELEMETRY_TOOLTIP}
         metric="telemetry"
         changePercent={summary?.telemetry_change_percent}
-        windowDays={summary?.window_days}
+        windowText={windowText}
         freshnessLabel={dataFreshnessLabel(freshness)}
         freshnessVariant={dataFreshnessVariant(freshness)}
       />
@@ -210,7 +260,7 @@ function KpiRow({ summary, loading }: { summary: ThreatSummary | null; loading: 
         tooltip={DETECTIONS_TOOLTIP}
         metric="detections"
         changePercent={summary?.detection_change_percent}
-        windowDays={summary?.window_days}
+        windowText={windowText}
       />
       <Kpi
         label="Anomalies"
@@ -218,7 +268,7 @@ function KpiRow({ summary, loading }: { summary: ThreatSummary | null; loading: 
         tooltip={ANOMALIES_TOOLTIP}
         metric="anomalies"
         changePercent={summary?.anomaly_change_percent}
-        windowDays={summary?.window_days}
+        windowText={windowText}
       />
       <Kpi
         label="Mean Time to Detect"
@@ -226,7 +276,7 @@ function KpiRow({ summary, loading }: { summary: ThreatSummary | null; loading: 
         tooltip={MTTD_TOOLTIP}
         metric="mttd"
         changePercent={null}
-        windowDays={summary?.window_days}
+        windowText={windowText}
         emptyHint={summary && summary.mean_time_to_detect_seconds === null ? 'No promoted detections to measure' : undefined}
       />
     </div>
@@ -234,14 +284,14 @@ function KpiRow({ summary, loading }: { summary: ThreatSummary | null; loading: 
 }
 
 function Kpi({
-  label, value, tooltip, metric, changePercent, windowDays, freshnessLabel, freshnessVariant, emptyHint,
+  label, value, tooltip, metric, changePercent, windowText, freshnessLabel, freshnessVariant, emptyHint,
 }: {
   label: string;
   value: string;
   tooltip: string;
   metric: TrendMetric;
   changePercent: number | null | undefined;
-  windowDays?: number;
+  windowText: string;
   freshnessLabel?: string;
   freshnessVariant?: 'success' | 'warning' | 'danger' | 'info' | 'neutral' | 'default';
   emptyHint?: string;
@@ -252,7 +302,7 @@ function Kpi({
       <p className="metricLabel" title={tooltip} style={{ cursor: 'help' }}>{label}</p>
       <p className="metricValue">{value}</p>
       <p className="metricMeta" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
-        <span>{windowDays ? `Last ${windowDays}d` : 'Selected window'}</span>
+        <span data-testid={`kpi-window-${metric}`}>{windowText}</span>
         {t ? (
           <span data-testid={`trend-${metric}`} style={{ color: trendColor(t.tone), fontWeight: 600 }}>
             {t.arrow} {t.label}
@@ -276,8 +326,8 @@ function TelemetryVolumeCard({ summary, loading }: { summary: ThreatSummary | nu
         <div className="skelBlock" style={{ height: '8rem' }} aria-hidden="true" />
       ) : buckets.length === 0 ? (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '8rem', color: 'var(--text-muted)', gap: '0.35rem' }}>
-          <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>No telemetry in this window</span>
-          <span style={{ fontSize: '0.875rem' }}>Bars appear once the monitoring worker delivers signals.</span>
+          <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>No security telemetry in this window</span>
+          <span style={{ fontSize: '0.875rem' }}>Bars appear once the monitoring worker delivers on-chain signals.</span>
         </div>
       ) : (
         <div style={{ display: 'flex', alignItems: 'flex-end', gap: '3px', height: '8rem', padding: '0.5rem 0 0', overflowX: 'auto' }} data-testid="telemetry-volume-bars">
@@ -295,7 +345,7 @@ function TelemetryVolumeCard({ summary, loading }: { summary: ThreatSummary | nu
         </div>
       )}
       <p className="muted" style={{ fontSize: '0.85rem', marginTop: '0.5rem' }}>
-        {summary?.ingestion_health?.last_telemetry_at ? `Last event ${relativeTime(summary.ingestion_health.last_telemetry_at)}` : 'No events received'}
+        {summary?.ingestion_health?.last_security_telemetry_at ? `Last security event ${relativeTime(summary.ingestion_health.last_security_telemetry_at)}` : 'No security events received'}
         {summary && summary.ingestion_health?.source_breakdown?.simulator ? ' · includes simulator data' : ''}
       </p>
     </article>
@@ -376,9 +426,12 @@ function WatchlistCard({ summary, loading, onViewEvidence }: { summary: ThreatSu
 
 /* ── Detections tab ─────────────────────────────────────────────── */
 function DetectionsTab({
-  authHeaders, onInvestigate, investigatingId, investigateError,
+  authHeaders, windowKey, stale, nextAction, onInvestigate, investigatingId, investigateError,
 }: {
   authHeaders: () => Record<string, string>;
+  windowKey: WindowKey;
+  stale: boolean;
+  nextAction: string;
   onInvestigate: (id: string) => void;
   investigatingId: string | null;
   investigateError: string;
@@ -390,16 +443,18 @@ function DetectionsTab({
   const [offset, setOffset] = useState(0);
   const [severity, setSeverity] = useState('');
   const [type, setType] = useState('');
-  const filtersKey = `${severity}|${type}|${offset}`;
+  const [statusValue, setStatusValue] = useState('');
+  const filtersKey = `${severity}|${type}|${statusValue}|${windowKey}|${offset}`;
   const reqId = useRef(0);
 
   useEffect(() => {
     const id = ++reqId.current;
     setLoading(true);
     setErr('');
-    const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
+    const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset), window: windowKey });
     if (severity) params.set('severity', severity);
     if (type) params.set('detection_type', type);
+    if (statusValue) params.set('status_value', statusValue);
     fetch(`/api/threat-monitoring/detections?${params.toString()}`, { headers: { ...authHeaders() }, cache: 'no-store' })
       .then(async (res) => {
         if (id !== reqId.current) return;
@@ -415,11 +470,13 @@ function DetectionsTab({
 
   return (
     <div role="tabpanel" aria-label="Detections" style={{ marginTop: '0.75rem' }}>
-      <FilterBar
+      <DetectionFilterBar
         severity={severity}
         type={type}
+        statusValue={statusValue}
         onSeverity={(v) => { setSeverity(v); setOffset(0); }}
         onType={(v) => { setType(v); setOffset(0); }}
+        onStatus={(v) => { setStatusValue(v); setOffset(0); }}
       />
       {investigateError ? <p className="statusLine" role="alert" style={{ color: 'var(--danger-fg)' }}>{investigateError}</p> : null}
       {loading ? (
@@ -427,19 +484,26 @@ function DetectionsTab({
       ) : err ? (
         <p className="statusLine" role="alert" style={{ color: 'var(--danger-fg)' }}>{err}</p>
       ) : rows.length === 0 ? (
-        <EmptyStateBlocker title="No detections" body="No promoted threat detections match the current filters in this window. Anomalies below detection criteria appear in the Anomalies tab." ctaHref="/monitoring-sources" ctaLabel="Review monitoring coverage" />
+        <StaleEmptyState
+          title="No detections"
+          body="No promoted threat detections match the current filters during this period."
+          stale={stale}
+          staleWarning="Detection coverage may be incomplete because fresh telemetry is unavailable."
+          nextAction={nextAction}
+        />
       ) : (
         <>
-          <TableShell headers={['Detection', 'Severity', 'Confidence', 'Asset', 'First seen', 'Last seen', 'Evidence', 'Status', 'Action']} compact>
+          <TableShell headers={['Detection', 'Type', 'Severity', 'Confidence', 'Asset', 'Evidence', 'First seen', 'Last seen', 'Status', 'Action']} compact>
             {rows.map((d) => (
               <tr key={d.id} id={`detection-${d.id}`}>
+                <td>{d.title || (d.detection_type_label || detectionTypeLabel(d.detection_type))}</td>
                 <td>{d.detection_type_label || detectionTypeLabel(d.detection_type)}</td>
                 <td title="Potential impact if valid."><StatusPill label={severityLabel(d.severity)} variant={severityVariant(d.severity)} /></td>
                 <td title={CONFIDENCE_TOOLTIP}><StatusPill label={`${confidencePercent(d.confidence)} (${confidenceBand(d.confidence)})`} variant={confidenceVariant(d.confidence)} /></td>
                 <td>{d.asset_name ?? '—'}</td>
+                <td>{d.evidence_count}</td>
                 <td style={{ whiteSpace: 'nowrap' }}>{relativeTime(d.first_seen_at)}</td>
                 <td style={{ whiteSpace: 'nowrap' }}>{relativeTime(d.last_seen_at)}</td>
-                <td>{d.evidence_count}</td>
                 <td><StatusPill label={detectionStatusLabel(d.status)} variant={detectionStatusVariant(d.status)} /></td>
                 <td>
                   {d.status === 'open' ? (
@@ -461,7 +525,7 @@ function DetectionsTab({
 }
 
 /* ── Anomalies tab ──────────────────────────────────────────────── */
-function AnomaliesTab({ authHeaders }: { authHeaders: () => Record<string, string> }) {
+function AnomaliesTab({ authHeaders, windowKey, stale }: { authHeaders: () => Record<string, string>; windowKey: WindowKey; stale: boolean }) {
   const [rows, setRows] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -473,7 +537,7 @@ function AnomaliesTab({ authHeaders }: { authHeaders: () => Record<string, strin
     const id = ++reqId.current;
     setLoading(true);
     setErr('');
-    fetch(`/api/threat-monitoring/anomalies?limit=${PAGE_SIZE}&offset=${offset}`, { headers: { ...authHeaders() }, cache: 'no-store' })
+    fetch(`/api/threat-monitoring/anomalies?limit=${PAGE_SIZE}&offset=${offset}&window=${windowKey}`, { headers: { ...authHeaders() }, cache: 'no-store' })
       .then(async (res) => {
         if (id !== reqId.current) return;
         if (!res.ok) { setErr('Unable to load anomalies.'); return; }
@@ -483,7 +547,7 @@ function AnomaliesTab({ authHeaders }: { authHeaders: () => Record<string, strin
       })
       .catch(() => { if (id === reqId.current) setErr('Anomalies are temporarily unavailable.'); })
       .finally(() => { if (id === reqId.current) setLoading(false); });
-  }, [offset, authHeaders]);
+  }, [offset, windowKey, authHeaders]);
 
   return (
     <div role="tabpanel" aria-label="Anomalies" style={{ marginTop: '0.75rem' }}>
@@ -495,18 +559,25 @@ function AnomaliesTab({ authHeaders }: { authHeaders: () => Record<string, strin
       ) : err ? (
         <p className="statusLine" role="alert" style={{ color: 'var(--danger-fg)' }}>{err}</p>
       ) : rows.length === 0 ? (
-        <EmptyStateBlocker title="No anomalies" body="No sub-threshold deviations are currently tracked for this workspace." />
+        <StaleEmptyState
+          title="No anomalies tracked"
+          body="No sub-threshold deviations match the selected period."
+          stale={stale}
+          staleWarning="Results may be incomplete because telemetry ingestion is stale."
+          nextAction="diagnose_ingestion"
+        />
       ) : (
         <>
-          <TableShell headers={['Type', 'Confidence', 'Asset', 'Evidence', 'First seen', 'Last seen', 'Why not promoted']} compact>
+          <TableShell headers={['Type', 'Asset', 'Confidence', 'Evidence', 'First seen', 'Last seen', 'Promotion status', 'Why not promoted']} compact>
             {rows.map((a) => (
               <tr key={a.id}>
                 <td>{a.detection_type_label || detectionTypeLabel(a.detection_type)}</td>
-                <td title={CONFIDENCE_TOOLTIP}>{confidencePercent(a.confidence)} ({confidenceBand(a.confidence)})</td>
                 <td>{a.asset_name ?? '—'}</td>
+                <td title={CONFIDENCE_TOOLTIP}>{confidencePercent(a.confidence)} ({confidenceBand(a.confidence)})</td>
                 <td>{a.evidence_count}</td>
                 <td style={{ whiteSpace: 'nowrap' }}>{relativeTime(a.first_seen_at)}</td>
                 <td style={{ whiteSpace: 'nowrap' }}>{relativeTime(a.last_seen_at)}</td>
+                <td><StatusPill label="Not promoted" variant="neutral" /></td>
                 <td className="muted" style={{ maxWidth: '22rem' }}>{a.not_promoted_reason ?? 'Below the promotion threshold.'}</td>
               </tr>
             ))}
@@ -519,50 +590,113 @@ function AnomaliesTab({ authHeaders }: { authHeaders: () => Record<string, strin
 }
 
 /* ── Telemetry tab ──────────────────────────────────────────────── */
-function TelemetryTab({ authHeaders }: { authHeaders: () => Record<string, string> }) {
-  const [rows, setRows] = useState<any[]>([]);
+function TelemetryTab({ authHeaders, windowKey }: { authHeaders: () => Record<string, string>; windowKey: WindowKey }) {
+  const [rows, setRows] = useState<TelemetryRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [offset, setOffset] = useState(0);
+  const [eventType, setEventType] = useState('');
+  const [source, setSource] = useState('');
+  const [freshness, setFreshness] = useState('');
+  const [sortDesc, setSortDesc] = useState(true);
+  const [copied, setCopied] = useState<string | null>(null);
+  const filtersKey = `${eventType}|${source}|${freshness}|${windowKey}|${offset}`;
   const reqId = useRef(0);
 
   useEffect(() => {
     const id = ++reqId.current;
     setLoading(true);
     setErr('');
-    fetch(`/api/threat-monitoring/telemetry?limit=${PAGE_SIZE}&offset=${offset}`, { headers: { ...authHeaders() }, cache: 'no-store' })
+    const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset), window: windowKey, category: 'security' });
+    if (eventType) params.set('event_type', eventType);
+    if (source) params.set('evidence_source', source);
+    if (freshness) params.set('freshness', freshness);
+    fetch(`/api/threat-monitoring/telemetry?${params.toString()}`, { headers: { ...authHeaders() }, cache: 'no-store' })
       .then(async (res) => {
         if (id !== reqId.current) return;
         if (!res.ok) { setErr('Unable to load telemetry.'); return; }
         const payload = await res.json();
-        setRows((payload.telemetry ?? []) as any[]);
+        setRows((payload.telemetry ?? []) as TelemetryRow[]);
         setTotal(Number(payload.total ?? 0));
       })
       .catch(() => { if (id === reqId.current) setErr('Telemetry is temporarily unavailable.'); })
       .finally(() => { if (id === reqId.current) setLoading(false); });
-  }, [offset, authHeaders]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtersKey, authHeaders]);
+
+  const sorted = [...rows].sort((a, b) => {
+    const ta = a.observed_at ? new Date(a.observed_at).getTime() : 0;
+    const tb = b.observed_at ? new Date(b.observed_at).getTime() : 0;
+    return sortDesc ? tb - ta : ta - tb;
+  });
+
+  const copyHash = useCallback((hash: string) => {
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      void navigator.clipboard.writeText(hash).then(() => {
+        setCopied(hash);
+        window.setTimeout(() => setCopied((c) => (c === hash ? null : c)), 1200);
+      }).catch(() => undefined);
+    }
+  }, []);
 
   return (
     <div role="tabpanel" aria-label="Telemetry" style={{ marginTop: '0.75rem' }}>
+      <TelemetryFilterBar
+        eventType={eventType}
+        source={source}
+        freshness={freshness}
+        onEventType={(v) => { setEventType(v); setOffset(0); }}
+        onSource={(v) => { setSource(v); setOffset(0); }}
+        onFreshness={(v) => { setFreshness(v); setOffset(0); }}
+      />
+      <p className="muted" style={{ fontSize: '0.8rem', marginBottom: '0.5rem' }}>
+        Canonical on-chain security telemetry for the selected window. Ingestion heartbeats (RPC polling, provider checks) are shown under Monitoring Sources, not here. Times are your local timezone.
+      </p>
       {loading ? (
         <p className="muted" style={{ padding: '1.5rem 0' }}>Loading telemetry…</p>
       ) : err ? (
         <p className="statusLine" role="alert" style={{ color: 'var(--danger-fg)' }}>{err}</p>
-      ) : rows.length === 0 ? (
-        <EmptyStateBlocker title="No telemetry events" body="No normalized telemetry has been ingested for this workspace yet." ctaHref="/monitoring-sources" ctaLabel="Check Monitoring Sources" />
+      ) : sorted.length === 0 ? (
+        <EmptyStateBlocker title="No security telemetry" body="No canonical on-chain security telemetry has been ingested for this workspace in the selected window." ctaHref={SOURCE_DIAGNOSTIC_HREF} ctaLabel="Check Monitoring Sources" />
       ) : (
         <>
-          <TableShell headers={['Event Type', 'Asset', 'Tx Hash', 'Block', 'Source', 'Evidence Quality', 'Observed']} compact>
-            {rows.map((e) => (
+          <TableShell headers={['Event Type', 'Asset', 'Transaction', 'Block', 'Ingestion Source', 'Evidence Quality', 'Freshness', 'Observed At']} compact>
+            {sorted.map((e) => (
               <tr key={e.id}>
-                <td>{e.event_type ?? '—'}</td>
+                <td>{eventTypeLabel(e.event_type)}</td>
                 <td>{e.asset_name ?? '—'}</td>
-                <td style={{ fontFamily: 'monospace', fontSize: '0.82rem' }}>{shortHex(e.tx_hash)}</td>
+                <td>
+                  {e.tx_hash ? (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+                      <span style={{ fontFamily: 'monospace', fontSize: '0.82rem' }} title={e.tx_hash}>{shortHex(e.tx_hash)}</span>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        aria-label="Copy transaction hash"
+                        title="Copy transaction hash"
+                        style={{ fontSize: '0.7rem', padding: '0.1rem 0.35rem', lineHeight: 1.2 }}
+                        onClick={() => copyHash(e.tx_hash as string)}
+                      >
+                        {copied === e.tx_hash ? '✓' : 'Copy'}
+                      </button>
+                    </span>
+                  ) : '—'}
+                </td>
                 <td>{e.block_number ?? '—'}</td>
-                <td><StatusPill label={evidenceSourceLabel(e.evidence_source)} variant={evidenceSourceVariant(e.evidence_source)} /></td>
+                <td>{ingestionSourceLabel(e.ingestion_source)}</td>
                 <td title={EVIDENCE_QUALITY_TOOLTIP}>{evidenceQualityLabel(e.evidence_quality)}</td>
-                <td style={{ whiteSpace: 'nowrap' }}>{relativeTime(e.observed_at)}</td>
+                <td>
+                  <span style={{ display: 'inline-flex', gap: '0.3rem', alignItems: 'center' }}>
+                    <StatusPill label={evidenceSourceLabel(e.evidence_mode ?? e.evidence_source)} variant={evidenceSourceVariant(e.evidence_mode ?? e.evidence_source)} />
+                    <StatusPill label={rowFreshnessLabel(e.freshness)} variant={rowFreshnessVariant(e.freshness)} />
+                  </span>
+                </td>
+                <td style={{ whiteSpace: 'nowrap' }} title={e.observed_at ?? ''}>
+                  <button type="button" className="btnLink" onClick={() => setSortDesc((s) => !s)} title="Sort by observed time" style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', padding: 0 }}>
+                    {relativeTime(e.observed_at)}
+                  </button>
+                </td>
               </tr>
             ))}
           </TableShell>
@@ -573,31 +707,136 @@ function TelemetryTab({ authHeaders }: { authHeaders: () => Record<string, strin
   );
 }
 
-/* ── Shared: filter bar + pager ─────────────────────────────────── */
-function FilterBar({ severity, type, onSeverity, onType }: { severity: string; type: string; onSeverity: (v: string) => void; onType: (v: string) => void }) {
+/* ── Shared: stale empty state ──────────────────────────────────── */
+function StaleEmptyState({ title, body, stale, staleWarning, nextAction }: { title: string; body: string; stale: boolean; staleWarning: string; nextAction: string }) {
+  // A stale state always recommends restoring ingestion (Run Source Diagnostic),
+  // derived from the canonical next action rather than invented per-tab.
+  const showDiagnostic = stale || nextAction === 'diagnose_ingestion';
+  return (
+    <div className="emptyStatePanel sharedEmptyStateBlocker" data-testid="stale-empty-state">
+      <h4>{title}</h4>
+      <p className="muted">{body}</p>
+      {stale ? (
+        <p className="statusLine statusLine-warning" role="status" data-testid="empty-stale-warning" style={{ marginTop: '0.6rem' }}>{staleWarning}</p>
+      ) : null}
+      {showDiagnostic ? (
+        <a href={SOURCE_DIAGNOSTIC_HREF} className="btn btn-secondary" data-testid="run-source-diagnostic" style={{ marginTop: '0.75rem', display: 'inline-block' }}>
+          {nextActionLabel('diagnose_ingestion') || RUN_SOURCE_DIAGNOSTIC_LABEL}
+        </a>
+      ) : null}
+    </div>
+  );
+}
+
+/* ── Shared: filter bars + pager ────────────────────────────────── */
+function DetectionFilterBar({ severity, type, statusValue, onSeverity, onType, onStatus }: {
+  severity: string; type: string; statusValue: string;
+  onSeverity: (v: string) => void; onType: (v: string) => void; onStatus: (v: string) => void;
+}) {
   return (
     <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
-      <label style={{ display: 'flex', flexDirection: 'column', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-        Severity
-        <select value={severity} onChange={(e) => onSeverity(e.target.value)} aria-label="Filter by severity" style={{ marginTop: '0.25rem' }}>
-          <option value="">All</option>
-          <option value="critical">Critical</option>
-          <option value="high">High</option>
-          <option value="medium">Medium</option>
-          <option value="low">Low</option>
-        </select>
-      </label>
-      <label style={{ display: 'flex', flexDirection: 'column', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-        Type
-        <select value={type} onChange={(e) => onType(e.target.value)} aria-label="Filter by detection type" style={{ marginTop: '0.25rem' }}>
-          <option value="">All</option>
-          <option value="unusual_transfer">Unusual Transfer</option>
-          <option value="coordinated_activity">Coordinated Activity</option>
-          <option value="mint_burn_irregularity">Mint/Burn Irregularity</option>
-          <option value="privileged_action">Privileged/Admin Action</option>
-        </select>
-      </label>
+      <FilterField label="Severity">
+        <Select
+          value={severity}
+          onValueChange={onSeverity}
+          ariaLabel="Filter by severity"
+          options={[
+            { value: '', label: 'All severities' },
+            { value: 'critical', label: 'Critical' },
+            { value: 'high', label: 'High' },
+            { value: 'medium', label: 'Medium' },
+            { value: 'low', label: 'Low' },
+          ]}
+        />
+      </FilterField>
+      <FilterField label="Type">
+        <Select
+          value={type}
+          onValueChange={onType}
+          ariaLabel="Filter by detection type"
+          options={[
+            { value: '', label: 'All types' },
+            { value: 'unusual_transfer', label: 'Unusual Transfer' },
+            { value: 'coordinated_activity', label: 'Coordinated Activity' },
+            { value: 'mint_burn_irregularity', label: 'Mint/Burn Irregularity' },
+            { value: 'privileged_action', label: 'Privileged/Admin Action' },
+          ]}
+        />
+      </FilterField>
+      <FilterField label="Status">
+        <Select
+          value={statusValue}
+          onValueChange={onStatus}
+          ariaLabel="Filter by investigation status"
+          options={[
+            { value: '', label: 'All statuses' },
+            { value: 'open', label: 'Open' },
+            { value: 'investigating', label: 'Investigating' },
+            { value: 'resolved', label: 'Resolved' },
+            { value: 'dismissed', label: 'Dismissed' },
+          ]}
+        />
+      </FilterField>
     </div>
+  );
+}
+
+function TelemetryFilterBar({ eventType, source, freshness, onEventType, onSource, onFreshness }: {
+  eventType: string; source: string; freshness: string;
+  onEventType: (v: string) => void; onSource: (v: string) => void; onFreshness: (v: string) => void;
+}) {
+  return (
+    <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
+      <FilterField label="Event type">
+        <Select
+          value={eventType}
+          onValueChange={onEventType}
+          ariaLabel="Filter by event type"
+          options={[
+            { value: '', label: 'All event types' },
+            { value: 'native_transfer', label: 'Native Transfer' },
+            { value: 'wallet_transfer_detected', label: 'Wallet Transfer Detected' },
+            { value: 'erc20_transfer', label: 'Token Transfer' },
+            { value: 'ownership_transferred', label: 'Ownership Transferred' },
+            { value: 'role_granted', label: 'Role Granted' },
+          ]}
+        />
+      </FilterField>
+      <FilterField label="Evidence mode">
+        <Select
+          value={source}
+          onValueChange={onSource}
+          ariaLabel="Filter by evidence mode"
+          options={[
+            { value: '', label: 'All modes' },
+            { value: 'live', label: 'Live' },
+            { value: 'simulator', label: 'Simulator' },
+            { value: 'replay', label: 'Replay' },
+          ]}
+        />
+      </FilterField>
+      <FilterField label="Freshness">
+        <Select
+          value={freshness}
+          onValueChange={onFreshness}
+          ariaLabel="Filter by freshness"
+          options={[
+            { value: '', label: 'Any freshness' },
+            { value: 'fresh', label: 'Fresh' },
+            { value: 'stale', label: 'Stale' },
+          ]}
+        />
+      </FilterField>
+    </div>
+  );
+}
+
+function FilterField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label style={{ display: 'flex', flexDirection: 'column', fontSize: '0.8rem', color: 'var(--text-muted)', minWidth: '160px' }}>
+      {label}
+      <span style={{ marginTop: '0.25rem' }}>{children}</span>
+    </label>
   );
 }
 
@@ -606,7 +845,7 @@ function Pager({ offset, total, onPrev, onNext }: { offset: number; total: numbe
   const to = Math.min(offset + PAGE_SIZE, total);
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.75rem' }}>
-      <span className="muted" style={{ fontSize: '0.85rem' }}>{from}–{to} of {total}</span>
+      <span className="muted" style={{ fontSize: '0.85rem' }} data-testid="pager-total">{from}–{to} of {total}</span>
       <div style={{ display: 'flex', gap: '0.5rem' }}>
         <button type="button" className="btn btn-secondary" disabled={offset <= 0} onClick={onPrev}>Previous</button>
         <button type="button" className="btn btn-secondary" disabled={offset + PAGE_SIZE >= total} onClick={onNext}>Next</button>

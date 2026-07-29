@@ -186,16 +186,21 @@ def _load_scan_window(connection: Any, *, workspace_id: str, config: dict[str, A
     last_at = checkpoint.get('last_processed_at')
     # telemetry_events has no chain_id column; chain_id is read from payload_json by
     # normalize_event, so it is not selected here.
+    # Runtime/ingestion rows (rpc_polling heartbeats, provider checks, cursor
+    # updates, …) are excluded here at the source so they can never enter detector
+    # evaluation or become anomalies/detections. extract_candidates also filters by
+    # event type, so this is defence-in-depth plus a smaller, cheaper scan.
     rows = connection.execute(
         '''
         SELECT id, workspace_id, asset_id, target_id, event_type, observed_at, evidence_source, payload_json
         FROM telemetry_events
         WHERE workspace_id = %s
           AND observed_at >= COALESCE(%s::timestamptz, NOW()) - (%s || ' seconds')::interval
+          AND lower(event_type) <> ALL(%s)
         ORDER BY observed_at ASC, id ASC
         LIMIT %s
         ''',
-        (workspace_id, last_at, str(int(correlation_seconds)), int(config['batch_size'])),
+        (workspace_id, last_at, str(int(correlation_seconds)), tdc.runtime_event_types(), int(config['batch_size'])),
     ).fetchall()
     return [dict(r) for r in rows]
 
