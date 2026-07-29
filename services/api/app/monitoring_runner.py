@@ -10144,7 +10144,14 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'last_telemetry_at': summary.get('last_telemetry_at'),
             },
         )
-        summary['next_required_action'] = resolve_next_required_action(summary.get('runtime_setup_chain'))
+        # A stale worker heartbeat means ingestion is not alive; the downstream
+        # detection→alert→incident→evidence workflow action must yield to
+        # diagnose_ingestion so the banner never surfaces "open incident" on top of
+        # a dead monitoring pipeline (canonical, fail-closed).
+        summary['next_required_action'] = resolve_next_required_action(
+            summary.get('runtime_setup_chain'),
+            ingestion_stale=bool(stale_heartbeat),
+        )
         # canonical_last_telemetry_at is already filtered to live telemetry_events in SQL,
         # so it is safe to use as the event-ingestion fallback regardless of evidence_source.
         # Gating on evidence_source == 'live' creates a circular dependency: reporting_systems

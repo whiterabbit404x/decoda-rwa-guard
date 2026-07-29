@@ -279,8 +279,8 @@ DETECTION_TYPE_LABELS: dict[str, str] = {
     'mint_burn_irregularity': 'Mint/Burn Irregularity',
     'privileged_action': 'Privileged/Admin Action',
     'oracle_deviation': 'Oracle Deviation',
-    'reentrancy_pattern': 'Reentrancy Pattern',
-    'flash_loan_pattern': 'Flash-Loan Pattern',
+    'reentrancy_pattern': 'Possible Reentrancy',
+    'flash_loan_pattern': 'Flash-Loan-Assisted Sequence',
     'other': 'Other',
 }
 

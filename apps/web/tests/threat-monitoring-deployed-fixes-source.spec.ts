@@ -71,8 +71,11 @@ test('engineer panel is compact, window-aware, and non-repetitive', () => {
   const panel = PANEL();
   expect(panel).toContain('Selected window');
   expect(panel).toContain('Threat Detection Engineer');
-  // The generic descriptor is present but demoted (muted), never the state finding.
-  expect(panel).toContain('Correlated exploit &amp; anomaly detection');
+  // A specific purpose descriptor is present but demoted (muted) — never a generic
+  // feature tagline, and never the state finding.
+  expect(panel).toContain('data-testid="engine-purpose"');
+  expect(panel).toContain('Autonomous review of the current threat state');
+  expect(panel).not.toContain('Correlated exploit &amp; anomaly detection');
   // Badge is derived from canonical ingestion status ("Ingestion stale"), not a
   // generic eyebrow, for the no-detection states.
   expect(panel).toContain('ingestionBadge(fields.worker_status, fields.ingestion_status)');

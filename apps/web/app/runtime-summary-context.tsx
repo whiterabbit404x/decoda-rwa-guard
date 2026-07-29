@@ -79,6 +79,7 @@ const NEXT_ACTION_LABELS: Record<string, string> = {
   enable_monitored_system: 'Enable monitored system',
   start_simulator_signal: 'Start telemetry signal',
   view_detection: 'Review detections',
+  diagnose_ingestion: 'Diagnose ingestion',
   open_incident: 'Open incident',
   export_evidence_package: 'Export evidence package',
   resolve_runtime_contradictions: 'Resolve runtime contradictions',

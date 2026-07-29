@@ -167,27 +167,29 @@ function ThreatMonitoringScreenInner() {
   const nextAction = summary?.next_action ?? 'diagnose_ingestion';
 
   return (
-    <div style={{ maxWidth: '1680px', width: '100%', margin: '0 auto' }}>
-      {/* Page header — title (owned by the page <h1>), subtitle, window selector, Refresh. */}
-      <header style={{ marginBottom: '1.25rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap' }}>
-          <p className="muted" data-testid="threat-subtitle" style={{ margin: 0, fontSize: '0.95rem', maxWidth: '52ch' }}>
-            Correlated telemetry, behavioral anomalies, and exploit detections.
-          </p>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
-            <div style={{ minWidth: '180px' }}>
-              <Select
-                value={windowKey}
-                onValueChange={(v) => setUrl({ window: v as WindowKey })}
-                options={WINDOW_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
-                ariaLabel="Select time window"
-                testId="window-selector"
-              />
-            </div>
-            <button type="button" className="btn btn-secondary" onClick={() => { setLoading(true); void loadSummary(); }}>
-              Refresh
-            </button>
+    // Left-aligned (no auto-centering) so the header/content share the SAME left edge
+    // as the page <h1> above — the title never sits isolated at the far left while the
+    // subtitle starts in a centered column. maxWidth keeps ultra-wide lines readable.
+    <div style={{ maxWidth: '1680px', width: '100%' }}>
+      {/* Page header — the page owns the <h1>; the subtitle sits directly beneath it as
+          one title block, with the window selector + Refresh aligned to the right. */}
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap', marginTop: '-0.75rem', marginBottom: '1.5rem' }}>
+        <p className="muted" data-testid="threat-subtitle" style={{ margin: 0, fontSize: '0.95rem', maxWidth: '60ch', color: 'var(--text-secondary)' }}>
+          Correlated telemetry, behavioral anomalies, and exploit detections.
+        </p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+          <div style={{ minWidth: '180px' }}>
+            <Select
+              value={windowKey}
+              onValueChange={(v) => setUrl({ window: v as WindowKey })}
+              options={WINDOW_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+              ariaLabel="Select time window"
+              testId="window-selector"
+            />
           </div>
+          <button type="button" className="btn btn-secondary" onClick={() => { setLoading(true); void loadSummary(); }}>
+            Refresh
+          </button>
         </div>
       </header>
 
@@ -404,13 +406,24 @@ function DetectionsByTypeCard({ summary, loading }: { summary: ThreatSummary | n
 /* ── Watchlist matches ──────────────────────────────────────────── */
 function WatchlistCard({ summary, loading, onViewEvidence }: { summary: ThreatSummary | null; loading: boolean; onViewEvidence: (id: string) => void }) {
   const matches = summary?.active_watchlist_matches ?? [];
+  // Stale coverage means an unmatched watchlist may simply be under-observed — never
+  // imply that no risky addresses exist globally.
+  const stale = summary ? summary.data_freshness !== 'fresh' || summary.worker_status === 'stale' || summary.worker_status === 'offline' : false;
   return (
     <article className="dataCard" aria-label="Active Watchlist Matches">
       <p className="sectionEyebrow">Active Watchlist Matches</p>
       {loading ? (
         <div className="skelBlock" style={{ height: '5rem' }} aria-hidden="true" />
       ) : matches.length === 0 ? (
-        <p className="muted" style={{ fontSize: '0.9rem', padding: '0.5rem 0' }}>No active watchlist matches.</p>
+        <div data-testid="watchlist-empty-state" style={{ padding: '0.5rem 0' }}>
+          <p style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-secondary)', margin: 0 }}>No active watchlist matches</p>
+          <p className="muted" style={{ fontSize: '0.85rem', margin: '0.25rem 0 0' }}>No monitored addresses matched active watchlists during the selected period.</p>
+          {stale ? (
+            <p className="statusLine statusLine-warning" role="status" data-testid="watchlist-stale-warning" style={{ marginTop: '0.5rem', fontSize: '0.82rem' }}>
+              Results may be incomplete until telemetry ingestion resumes.
+            </p>
+          ) : null}
+        </div>
       ) : (
         <TableShell headers={['Actor', 'Asset', 'Reason', 'Confidence', 'First seen', 'Last seen', 'Status', 'Evidence']} compact>
           {matches.map((m) => (

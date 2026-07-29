@@ -555,7 +555,14 @@ def build_threat_summary(connection: Any, *, workspace_id: str, config: dict[str
     if data_freshness == 'stale':
         degraded_reasons.append('telemetry_stale')
     if data_freshness == 'no_telemetry':
-        degraded_reasons.append('no_telemetry')
+        # "no_telemetry" here means nothing in the SELECTED WINDOW. Only surface the
+        # "no telemetry has ever arrived" reason when the workspace has genuinely
+        # never received security telemetry; when older telemetry exists outside the
+        # window, emit the in-window reason so the banner never falsely claims the
+        # workspace has no telemetry at all.
+        degraded_reasons.append(
+            'no_security_telemetry_in_window' if last_security_ever is not None else 'no_telemetry'
+        )
 
     # Canonical empty-state reason: distinguishes "no security telemetry in the
     # selected window" (older events exist) from "no telemetry has ever arrived".
@@ -726,8 +733,16 @@ def _build_engine_panel(
         'recommended_action': next_action,
         'can_investigate': bool(top is not None and str(top.get('status')) in ('open', 'investigating') and int((top or {}).get('evidence_count') or 0) > 0),
         'fields': {
-            'last_security_telemetry_at': ih.get('last_security_telemetry_at'),
-            'worker_heartbeat_at': (ih.get('worker') or {}).get('last_heartbeat_at'),
+            # "Latest security telemetry" is the newest security event EVER — the same
+            # value the overview chart's empty state shows — so the panel never renders
+            # "—" while the summary already carries a historical timestamp outside the
+            # selected window.
+            'last_security_telemetry_at': ih.get('last_security_telemetry_at') or ih.get('last_security_telemetry_ever_at'),
+            # Worker liveness: the threat worker's own heartbeat when present, otherwise
+            # the canonical ingestion signal (last runtime/poll event) that drives the
+            # stale worker_status — so the panel's heartbeat age matches the global
+            # runtime strip instead of collapsing to "—".
+            'worker_heartbeat_at': (ih.get('worker') or {}).get('last_heartbeat_at') or ih.get('last_ingestion_at'),
             'worker_status': worker_status,
             'ingestion_status': data_freshness,
             'evidence_coverage': {
