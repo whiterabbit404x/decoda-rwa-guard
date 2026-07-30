@@ -2140,6 +2140,67 @@ td .tableMeta {
   font-size: 0.82rem;
 }
 
+/* --- Screen 6 · Active Alerts layout ------------------------------
+   The alerts table and the AI Alert Triage Agent panel sit in a split
+   grid. On wide desktops they render side by side; below that the panel
+   stacks under the table so the six-column operational table always
+   keeps the full main-content width. The 1360px breakpoint is derived
+   from the shell geometry (240px sidebar + a 300px triage panel): only
+   above it does the main column stay wide enough for a side-by-side
+   table without a horizontal scrollbar. */
+.alertsSplit {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+
+@media (min-width: 1360px) {
+  .alertsSplit {
+    grid-template-columns: minmax(0, 3fr) minmax(300px, 1fr);
+  }
+}
+
+/* Fixed column sizing keeps all six columns inside the available width
+   with no desktop horizontal scrollbar. Alert title and asset wrap;
+   severity, status and time stay compact; the cluster column is always
+   fully visible. The min-width is a readable floor: only when the
+   container is genuinely narrow (mobile / tablet) does the table exceed
+   it and the .tableWrap scroll horizontally. */
+.alertsTableShell table {
+  table-layout: fixed;
+  width: 100%;
+  min-width: 720px;
+}
+
+.alertsTableShell thead th:nth-child(1) { width: 7rem; }    /* Severity */
+.alertsTableShell thead th:nth-child(3) { width: 18%; }     /* Asset    */
+.alertsTableShell thead th:nth-child(4) { width: 9.5rem; }  /* Status   */
+.alertsTableShell thead th:nth-child(5) { width: 5rem; }    /* Time     */
+.alertsTableShell thead th:nth-child(6) { width: 9.5rem; }  /* Cluster  */
+/* Column 2 (Alert Title) absorbs the remaining space. */
+
+/* Long titles, asset names, addresses and cluster identifiers break
+   inside their fixed column instead of forcing the table wider. */
+.alertsTableShell th,
+.alertsTableShell td {
+  overflow-wrap: anywhere;
+}
+
+/* Severity/Status badges cap at their cell so an unusually long label
+   wraps instead of overflowing the fixed column (fail-closed layout). */
+.alertsTableShell tbody td .sharedStatusPill {
+  max-width: 100%;
+}
+
+/* Severity and Time stay on a single compact line. */
+.alertsTableShell thead th:nth-child(1),
+.alertsTableShell tbody td:nth-child(1),
+.alertsTableShell thead th:nth-child(5),
+.alertsTableShell tbody td:nth-child(5) {
+  white-space: nowrap;
+}
+
 /* --- Dashboard Executive Summary (Screen 2) ---------------------- */
 
 .dashboardExecPage {
