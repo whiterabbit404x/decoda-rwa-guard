@@ -71,13 +71,20 @@ test('detail tabs exist exactly', () => {
   expect(panel).toContain("label: 'Response Actions'");
 });
 
-test('incident progress checklist exists', () => {
+test('overview shows the canonical investigation workflow (not a browser-inferred checklist)', () => {
   const panel = appSource('incidents-panel.tsx');
-  expect(panel).toContain('Alert Received');
-  expect(panel).toContain('Investigation Started');
-  expect(panel).toContain('Evidence Collected');
-  expect(panel).toContain('Response Initiated');
-  expect(panel).toContain('Resolution');
+  // Investigation Progress renders the persisted Screen 7 workflow stages via the shared
+  // renderer + the canonical AI Investigation Summary state — never the old locally
+  // inferred five-step checklist that disagreed with the full incident page.
+  expect(panel).toContain('Investigation Progress');
+  expect(panel).toContain('<WorkflowStages stages={stages} load={load} />');
+  expect(panel).toContain('investigationSummaryState(investigation.analysis.status, investigation.ai_triage?.status)');
+  // The legacy, browser-inferred progress labels are gone (they are what disagreed with
+  // the canonical full page).
+  expect(panel).not.toContain("label: 'Alert Received'");
+  expect(panel).not.toContain("label: 'Investigation Started'");
+  expect(panel).not.toContain("label: 'Evidence Collected'");
+  expect(panel).not.toContain('function recommendedNextAction');
 });
 
 test('empty state shows no telemetry blocker', () => {
@@ -115,7 +122,8 @@ test('page does not show linked alert unless valid alert exists', () => {
 test('page does not show response action ready unless valid incident/action exists', () => {
   const panel = appSource('incidents-panel.tsx');
   expect(panel).toContain('No response action recommended yet.');
-  expect(panel).toContain('responseActions.length === 0');
+  // The Response Actions tab fails closed on an empty action list (prop is `actions`).
+  expect(panel).toContain('actions.length === 0');
 });
 
 test('page does not label simulator evidence as live_provider', () => {
