@@ -63,9 +63,9 @@ export function statusVariantFromStatus(status: string): PillVariant {
 }
 
 /* ── Table shell ──────────────────────────────────────────────── */
-export function TableShell({ headers, children, compact = false }: { headers: string[]; children: ReactNode; compact?: boolean }) {
+export function TableShell({ headers, children, compact = false, className = '' }: { headers: string[]; children: ReactNode; compact?: boolean; className?: string }) {
   return (
-    <div className={`tableWrap sharedTableShell${compact ? ' tableCompact' : ''}`}>
+    <div className={`tableWrap sharedTableShell${compact ? ' tableCompact' : ''}${className ? ` ${className}` : ''}`}>
       <table>
         <thead>
           <tr>{headers.map((h) => <th key={h}>{h}</th>)}</tr>

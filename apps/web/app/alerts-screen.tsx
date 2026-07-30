@@ -198,8 +198,10 @@ function AlertsScreenInner() {
 
   return (
     <div style={{ maxWidth: '1680px', width: '100%' }}>
-      {/* Two-column split: ~75% alerts, ~25% triage agent. */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 3fr) minmax(300px, 1fr)', gap: '1.25rem', alignItems: 'start' }}>
+      {/* Two-column split (~75% alerts, ~25% triage agent) on wide desktops;
+          stacks to one column below 1360px so the table keeps the full
+          main-content width. Sizing lives in .alertsSplit (styles.css). */}
+      <div className="alertsSplit">
         {/* ── Main panel ─────────────────────────────────────────────── */}
         <main style={{ minWidth: 0 }}>
           {/* Severity tabs with real counts (from the same read model as the rows). */}
@@ -391,7 +393,7 @@ function AlertsTableRegion({
     }
   }
   return (
-    <TableShell headers={TABLE_HEADERS} compact>
+    <TableShell headers={TABLE_HEADERS} compact className="alertsTableShell">
       {alerts.map((alert) => {
         const isSelected = alert.id === selectedAlertId;
         return (
@@ -402,7 +404,9 @@ function AlertsTableRegion({
             data-testid="alert-row"
           >
             <td><StatusPill label={severityLabel(alert.severity)} variant={severityVariant(alert.severity)} /></td>
-            <td style={{ maxWidth: '320px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {/* Title wraps within its fixed column (see .alertsTableShell) so long
+                titles never force a horizontal scrollbar. */}
+            <td>
               {alert.title}
               {alert.detection_family_label ? (
                 <div className="muted" style={{ fontSize: '0.7rem' }}>{alert.detection_family_label}</div>
@@ -425,7 +429,9 @@ function AlertsTableRegion({
                 <button
                   type="button"
                   className="btn btn-ghost"
-                  style={{ padding: '0.1rem 0.4rem', fontSize: '0.72rem' }}
+                  // Override the .btn nowrap so a long cluster title wraps inside
+                  // the fixed Cluster column instead of overflowing it.
+                  style={{ padding: '0.15rem 0.45rem', fontSize: '0.72rem', whiteSpace: 'normal', overflowWrap: 'anywhere', textAlign: 'left', maxWidth: '100%', height: 'auto', lineHeight: 1.3 }}
                   title={alert.cluster.title ?? undefined}
                   onClick={(e) => { e.stopPropagation(); onSelect(alert.id); }}
                 >
