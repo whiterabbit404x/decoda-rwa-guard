@@ -286,6 +286,7 @@ from services.api.app.monitoring_runner import (
     set_background_loop_health,
 )
 from services.api.app import ai_triage
+from services.api.app import forensic_investigation
 from services.api.app import onboarding_agent
 from services.api.app import dashboard_summary
 from services.api.app.workspace_monitoring_summary import build_workspace_monitoring_summary_fallback
@@ -5069,6 +5070,31 @@ def incident_recommendation_reject(incident_id: str, recommendation_id: str, pay
 @app.get('/incidents/ai-triage/usage', summary='Workspace AI triage usage and estimated cost')
 def incident_ai_triage_usage(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: ai_triage.usage_metrics(request))
+
+
+# --- Digital Forensics Investigator (deterministic, evidence-grounded) -------
+# Screen 7. These read/derive the DETERMINISTIC forensic layer (findings, rule
+# matches, confidence, evidence coverage, workflow stages) from the immutable
+# evidence snapshot. Mutations are authorized, workspace-scoped, and audited; none
+# executes a fund-moving/contract-changing/pause/key-rotation action.
+@app.get('/incidents/{incident_id}/investigation', summary='Deterministic forensic investigation overview')
+def incident_investigation_get(incident_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: forensic_investigation.get_investigation(incident_id, request))
+
+
+@app.get('/incidents/{incident_id}/workflow', summary='Persisted forensic investigation workflow stages')
+def incident_workflow_get(incident_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: forensic_investigation.get_workflow(incident_id, request))
+
+
+@app.post('/incidents/{incident_id}/investigations', summary='Re-run the deterministic forensic investigation (idempotent AI hand-off)')
+def incident_investigation_rerun(incident_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: forensic_investigation.rerun_investigation(incident_id, request))
+
+
+@app.post('/incidents/{incident_id}/reports', summary='Generate a persisted, cited forensic investigation report')
+def incident_report_generate(incident_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: forensic_investigation.generate_report(incident_id, request))
 
 
 @app.post('/response/actions/{action_id}/simulate', summary='Mark response action as simulated (dry-run, no on-chain effect)')
