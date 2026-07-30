@@ -13,6 +13,11 @@ import {
   type PillVariant,
 } from './components/ui-primitives';
 import AiInvestigationPanel from './ai-investigation-panel';
+import {
+  workflowStateLabel,
+  workflowStateVariant,
+  type WorkflowStage,
+} from './forensic-investigation-presentation';
 import { usePilotAuth } from './pilot-auth-context';
 import { useRuntimeSummary } from './runtime-summary-context';
 // Canonical Detected By resolver + label map (single source of truth, mirrors the
@@ -209,6 +214,7 @@ const DETAIL_TABS = [
   { key: 'alerts',            label: 'Alerts' },
   { key: 'evidence',          label: 'Evidence' },
   { key: 'response-actions',  label: 'Response Actions' },
+  { key: 'workflow',          label: 'Workflow' },
   { key: 'ai-investigation',  label: 'AI Investigation' },
 ] as const;
 
@@ -694,6 +700,9 @@ function IncidentDetailPanel({ incident, timeline, linkedAlert, evidence, respon
             recommendError={recommendError}
           />
         )}
+        {/* Persisted forensic investigation workflow stages (Detection → Report). State
+            comes from the backend (never inferred in the browser). */}
+        {activeTab === 'workflow' && <WorkflowTab incidentId={incident.id} />}
         {/* Evidence-grounded AI investigation for the selected incident. The panel is
             workspace-scoped, polls its own state, and exposes the Start AI Investigation
             button; it fails closed to a disabled/unavailable message when triage is off
@@ -933,5 +942,62 @@ function ResponseActionsTab({ actions, incidentId, onRecommend, recommending, re
         </tr>
       ))}
     </TableShell>
+  );
+}
+
+/* ── Workflow tab ────────────────────────────────────────────────── */
+// Persisted forensic investigation workflow stages. State is read from the backend
+// (`/incidents/{id}/workflow`); the browser never marks a stage "Completed" on its own.
+function WorkflowTab({ incidentId }: { incidentId: string }) {
+  const { authHeaders } = usePilotAuth();
+  const [stages, setStages] = useState<WorkflowStage[]>([]);
+  const [state, setState] = useState<'loading' | 'ready' | 'unavailable' | 'error'>('loading');
+
+  useEffect(() => {
+    let cancelled = false;
+    setState('loading');
+    void fetch(`${API_PROXY_BASE}/incidents/${encodeURIComponent(incidentId)}/workflow`, {
+      headers: authHeaders(), cache: 'no-store',
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((json) => {
+        if (cancelled) return;
+        const payload = json as { status?: string; stages?: WorkflowStage[] } | null;
+        if (!payload) { setState('error'); return; }
+        if (payload.status === 'unavailable') { setState('unavailable'); return; }
+        setStages(Array.isArray(payload.stages) ? payload.stages : []);
+        setState('ready');
+      })
+      .catch(() => { if (!cancelled) setState('error'); });
+    return () => { cancelled = true; };
+  }, [incidentId, authHeaders]);
+
+  if (state === 'loading') return <p className="muted" style={{ fontSize: '0.85rem' }}>Loading workflow…</p>;
+  if (state === 'unavailable') return <p className="muted" style={{ fontSize: '0.85rem' }}>Investigation workflow is not available for this deployment yet.</p>;
+  if (state === 'error') return <p className="muted" style={{ fontSize: '0.85rem' }}>Unable to load the investigation workflow.</p>;
+  if (stages.length === 0) return <p className="muted" style={{ fontSize: '0.85rem' }}>No workflow stages recorded yet.</p>;
+
+  return (
+    <ol style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}
+      aria-label="Investigation workflow stages">
+      {stages.map((s, i) => {
+        const done = s.state === 'completed';
+        const failed = s.state === 'failed';
+        const active = s.state === 'in_progress' || s.state === 'queued';
+        return (
+          <li key={s.stage} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', fontSize: '0.83rem' }}>
+            <span aria-hidden="true" style={{
+              width: '18px', height: '18px', borderRadius: '50%', flexShrink: 0,
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.62rem', fontWeight: 700,
+              background: done ? 'rgba(34,197,94,0.18)' : failed ? 'rgba(239,68,68,0.18)' : active ? 'rgba(59,130,246,0.18)' : 'rgba(148,163,184,0.12)',
+              border: `1px solid ${done ? 'rgba(34,197,94,0.5)' : failed ? 'rgba(239,68,68,0.5)' : active ? 'rgba(59,130,246,0.5)' : 'rgba(148,163,184,0.25)'}`,
+              color: done ? 'var(--success-fg)' : failed ? 'var(--danger-fg)' : 'var(--text-muted)',
+            }}>{done ? '✓' : failed ? '!' : i + 1}</span>
+            <span style={{ flex: 1, color: done ? 'var(--text-primary)' : 'var(--text-muted)' }}>{s.label}</span>
+            <StatusPill label={workflowStateLabel(s.state)} variant={workflowStateVariant(s.state)} />
+          </li>
+        );
+      })}
+    </ol>
   );
 }

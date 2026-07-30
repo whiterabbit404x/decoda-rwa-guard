@@ -26,7 +26,7 @@ from typing import Any, Optional
 
 from fastapi import HTTPException, status
 
-from services.api.app import pilot
+from services.api.app import incident_auto_creation, pilot
 from services.api.app.domains.threat_detection import ai_explanation
 from services.api.app.domains.threat_detection import config as tdc
 from services.api.app.domains.threat_detection import detectors, scoring
@@ -510,7 +510,7 @@ def process_workspace(connection: Any, *, workspace_id: str, config: dict[str, A
     checkpoint = _read_checkpoint(connection, workspace_id)
     rows = _load_scan_window(connection, workspace_id=workspace_id, config=cfg, now=now, checkpoint=checkpoint)
 
-    stats = {'workspace_id': workspace_id, 'telemetry_scanned': len(rows), 'candidates': 0, 'detections_created': 0, 'detections_updated': 0, 'anomalies': 0, 'alerts_upserted': 0, 'skipped': False}
+    stats = {'workspace_id': workspace_id, 'telemetry_scanned': len(rows), 'candidates': 0, 'detections_created': 0, 'detections_updated': 0, 'anomalies': 0, 'alerts_upserted': 0, 'incidents_auto_created': 0, 'skipped': False}
     if not rows:
         stats['skipped'] = True
         return stats
@@ -546,14 +546,25 @@ def process_workspace(connection: Any, *, workspace_id: str, config: dict[str, A
         # Worker may upsert an eligible canonical alert when a user is resolvable.
         if outcome['alert_eligible']:
             det = connection.execute(
-                'SELECT id, cluster_key, detection_type, title, explanation, severity, confidence, evidence_source, evidence_quality, primary_asset_id FROM threat_detections WHERE id = %s AND workspace_id = %s',
+                'SELECT id, cluster_key, detection_type, title, explanation, severity, confidence, evidence_source, evidence_quality, primary_asset_id, linked_incident_id, alert_eligible FROM threat_detections WHERE id = %s AND workspace_id = %s',
                 (outcome['detection_id'], workspace_id),
             ).fetchone()
             uid = _resolve_asset_user_id(connection, workspace_id=workspace_id, asset_id=(det or {}).get('primary_asset_id'))
             if det is not None and uid:
-                ensure_alert_for_detection(connection, workspace_id=workspace_id, user_id=uid, detection=dict(det), now=now)
+                alert_id = ensure_alert_for_detection(connection, workspace_id=workspace_id, user_id=uid, detection=dict(det), now=now)
                 stats['alerts_upserted'] += 1
                 log_event('threat_detection_alert_upserted', workspace_id=workspace_id, detection_id=outcome['detection_id'])
+                # Screen 7: a genuinely critical, high-confidence detection auto-opens an
+                # incident from the canonical pipeline (idempotent; never executes a
+                # response action). Non-critical detections remain manually promotable.
+                auto = incident_auto_creation.maybe_auto_create_incident(
+                    connection, workspace_id=workspace_id, user_id=uid, detection=dict(det),
+                    alert_id=alert_id, now=now,
+                )
+                if auto and auto.get('created'):
+                    stats['incidents_auto_created'] = stats.get('incidents_auto_created', 0) + 1
+                    log_event('threat_detection_incident_auto_created', workspace_id=workspace_id,
+                              detection_id=outcome['detection_id'], incident_id=auto.get('incident_id'))
 
     # Advance checkpoint to the max scanned position.
     max_row = max(rows, key=lambda r: (_epoch(r.get('observed_at')) or 0, str(r.get('id'))))

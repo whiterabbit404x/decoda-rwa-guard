@@ -1,13 +1,18 @@
 import RuntimeSummaryPanel from '../../../runtime-summary-panel';
 import IncidentsPanel from '../../../incidents-panel';
+import ForensicInvestigatorPanel from '../../../forensic-investigator-panel';
 
 export const dynamic = 'force-dynamic';
 
 // Incident detail route. "View Incident" / "Open Incident" on the Alerts page route here with the
 // persisted incident_id, so a linked incident always has a real, loadable destination (not just
-// the /incidents list). IncidentsPanel preselects and, if needed, deep-fetches the incident; its
-// case-file drawer now carries the AI Investigation tab, so the panel is not rendered separately
-// here (that would double-render it on this route).
+// the /incidents list).
+//
+// Screen 7: the Digital Forensics Investigator is the hero of this route — the deterministic,
+// evidence-grounded investigation view (AI Investigation Summary, Evidence — Corroborated,
+// Investigation Workflow, and the Investigator agent panel). The existing IncidentsPanel drawer is
+// preserved below it for the full tabbed case file (Overview/Timeline/Alerts/Evidence/Response
+// Actions/Workflow/AI Investigation), so no working functionality is lost.
 export default async function IncidentDetailPage({
   params,
 }: {
@@ -26,6 +31,7 @@ export default async function IncidentDetailPage({
           </p>
         </div>
       </section>
+      <ForensicInvestigatorPanel incidentId={incidentId} />
       <IncidentsPanel initialSelectedId={incidentId} />
     </main>
   );
