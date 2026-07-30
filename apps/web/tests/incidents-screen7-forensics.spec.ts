@@ -222,9 +222,16 @@ test('evidence identifiers use copy/truncate so they do not overflow the layout'
   expect(src).toContain('overflowX: \'auto\'');
 });
 
-test('layout is responsive (auto-fit columns, no horizontal page overflow)', () => {
+test('layout is responsive (readable two-column investigation layout)', () => {
   const src = appSource('forensic-investigator-panel.tsx');
-  expect(src).toContain('repeat(auto-fit, minmax(300px, 1fr))');
+  // The four regions are no longer flattened into one auto-fit row of equally
+  // narrow columns. Main investigation content (AI Summary + Workflow, then
+  // Evidence at full width) sits in .forensicMain; the agent panel is the
+  // second child of .forensicLayout (its right column on desktop).
+  expect(src).toContain('className="forensicLayout"');
+  expect(src).toContain('className="forensicMain"');
+  expect(src).toContain('className="forensicMainTop"');
+  expect(src).not.toContain('repeat(auto-fit, minmax(300px, 1fr))');
 });
 
 test('mandatory generated-content + non-execution disclaimer is shown', () => {
