@@ -2201,6 +2201,121 @@ td .tableMeta {
   white-space: nowrap;
 }
 
+/* --- Screen 7 · Incident forensic investigation layout ------------
+   The Digital Forensics Investigator renders four regions — the AI
+   Investigation Summary, the Investigation Workflow, the Evidence —
+   Corroborated table, and the Investigator agent panel. They must never
+   be crushed into four equally narrow columns beside the 240px app
+   sidebar.
+
+   Structure (mobile-first, progressively widened):
+     .forensicLayout      main investigation column | agent panel
+       .forensicMain        .forensicMainTop (AI Summary + Workflow) then
+                            Evidence at the full main-column width below
+       agent panel          stays in the right column on desktop
+
+   Breakpoints are viewport-based but derived from the shell geometry
+   (240px sidebar; the shell itself collapses the sidebar at 1100px). No
+   breakpoint produces a page-level horizontal scrollbar — long content
+   wraps and the evidence table keeps a contained scroll only on
+   genuinely narrow screens. */
+/* The whole investigator section (and its inner layout) clears the sticky
+   application header + monitoring-status ("Limited coverage") banner when
+   scrolled or deep-linked into view, so the top of the content is never
+   hidden beneath them. */
+.forensicInvestigator,
+.forensicLayout {
+  scroll-margin-top: 96px;
+}
+
+.forensicLayout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.forensicMain {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  min-width: 0;
+  align-content: start;
+}
+
+.forensicMainTop {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+/* Tablet and up: the AI Investigation Summary and the Investigation
+   Workflow sit side by side once there is room for two readable columns.
+   The agent panel still stacks below the main investigation content. */
+@media (min-width: 768px) {
+  .forensicMainTop {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Standard desktop (1280–1439px) and above: two columns — the main
+   investigation content at ~2fr beside the agent panel at ~1fr with a
+   readable minimum width. The main column keeps the AI Summary + Workflow
+   side by side and the Evidence table at full width below, so at most
+   three practical columns are ever shown (never four narrow ones). */
+@media (min-width: 1280px) {
+  .forensicLayout {
+    grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr);
+  }
+}
+
+/* Evidence — Corroborated: a fixed-layout table that fits the card width
+   with no desktop horizontal scrollbar. Type / Source / Observed / State
+   stay compact; Title absorbs the remaining space; long hashes, ids and
+   addresses wrap inside their cell. The min-width is a readable floor:
+   only on genuinely narrow (mobile) widths does the table exceed it and
+   scroll horizontally inside its own wrapper — never the page. */
+.forensicEvidenceTable table {
+  table-layout: fixed;
+  width: 100%;
+  min-width: 560px;
+}
+
+.forensicEvidenceTable th,
+.forensicEvidenceTable td {
+  overflow-wrap: anywhere;
+}
+
+.forensicEvidenceTable thead th:nth-child(1) { width: 4.5rem; }  /* Type       */
+.forensicEvidenceTable thead th:nth-child(3) { width: 5.5rem; }  /* Source     */
+.forensicEvidenceTable thead th:nth-child(4) { width: 8rem; }    /* Tx / Block */
+.forensicEvidenceTable thead th:nth-child(5) { width: 5rem; }    /* Observed   */
+.forensicEvidenceTable thead th:nth-child(6) { width: 6rem; }    /* State      */
+/* Column 2 (Title) absorbs the remaining space. */
+
+/* Badges cap at their cell so an unusually long label wraps instead of
+   forcing the fixed column wider (fail-closed layout). */
+.forensicEvidenceTable tbody td .sharedStatusPill {
+  max-width: 100%;
+  white-space: normal;
+}
+
+/* Narrow screens: drop the lower-priority Tx / Block column so the five
+   essential columns (Type, Title, Source, Observed, State) stay readable.
+   The full transaction hash + block remain reachable through the row's
+   copy control and the "View all evidence" drawer — the identifier is
+   never lost. */
+@media (max-width: 640px) {
+  .forensicEvidenceTable thead th:nth-child(4),
+  .forensicEvidenceTable tbody td:nth-child(4) {
+    display: none;
+  }
+  .forensicEvidenceTable table {
+    min-width: 440px;
+  }
+}
+
 /* --- Dashboard Executive Summary (Screen 2) ---------------------- */
 
 .dashboardExecPage {
