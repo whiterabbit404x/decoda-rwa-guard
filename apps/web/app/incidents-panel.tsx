@@ -1075,3 +1075,18 @@ function WorkflowStages({ stages, load }: { stages: WorkflowStage[]; load: Inves
     </ol>
   );
 }
+
+/* ── Re-exports for the standalone incident detail route ──────────────────
+   The full /incidents/[incidentId] page reuses these Case File tab bodies
+   (Timeline / Alerts / Evidence / Response Actions) WITHOUT the list shell —
+   no table, KPIs, filters, pagination, Create Incident, or the Case File
+   drawer. Keeping a single source for the tab content means the drawer and the
+   full page can never render a different Timeline/Evidence/Response Actions. */
+export {
+  TimelineTab,
+  AlertsTab,
+  EvidenceTab,
+  ResponseActionsTab,
+  onlyResponseActions,
+};
+export type { TimelineEntry, AlertRow, EvidenceRow, ResponseActionRow };

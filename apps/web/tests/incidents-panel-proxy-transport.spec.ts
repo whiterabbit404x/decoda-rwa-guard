@@ -33,8 +33,12 @@ test.describe('Incidents page same-origin proxy transport', () => {
 
   test('an incident detail route page exists so /incidents/{id} loads', () => {
     const page = read('(product)', 'incidents', '[incidentId]', 'page.tsx');
-    expect(page).toContain('IncidentsPanel');
-    expect(page).toContain('initialSelectedId={incidentId}');
+    // The detail route is the standalone forensic investigation experience for one
+    // incident. The list panel (IncidentsPanel) must NOT render here — that duplicate
+    // list-page composition beneath the investigator was the Screen 7 detail-route bug.
+    expect(page).toContain('<ForensicInvestigatorPanel incidentId={incidentId} />');
+    expect(page).toContain('<IncidentCaseFileTabs incidentId={incidentId} />');
+    expect(page).not.toContain('IncidentsPanel');
   });
 
   test('Alerts page View/Open Incident routes to the specific incident, not just /incidents', () => {

@@ -255,10 +255,15 @@ test('Workflow tab is wired into the incidents drawer and reads canonical backen
   expect(panel).toContain("{ key: 'ai-investigation',  label: 'AI Investigation' }");
 });
 
-test('detail route renders the investigator hero and preserves the drawer', () => {
+test('detail route renders the investigator hero as the standalone experience (no list panel)', () => {
   const detail = appSource('(product)/incidents/[incidentId]/page.tsx');
+  // The Digital Forensics Investigator is the hero of the standalone detail route …
   expect(detail).toContain('<ForensicInvestigatorPanel incidentId={incidentId} />');
-  expect(detail).toContain('<IncidentsPanel initialSelectedId={incidentId} />');
+  // … and the supplementary Case File tabs keep Timeline / Alerts / Evidence / Response
+  // Actions reachable without re-rendering the incidents list (the Screen 7 fix). The list
+  // panel that used to render beneath the investigator (the bug) is gone.
+  expect(detail).toContain('<IncidentCaseFileTabs incidentId={incidentId} />');
+  expect(detail).not.toContain('IncidentsPanel');
 });
 
 test('forensic proxy routes exist and target the backend', () => {
