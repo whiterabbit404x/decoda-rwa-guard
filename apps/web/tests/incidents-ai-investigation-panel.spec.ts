@@ -147,9 +147,18 @@ test('citations link to their telemetry/evidence record and missing evidence is 
   expect(panel).toContain("['completed', 'completed_with_warnings'].includes(state?.status ?? '')");
 });
 
-test('incident detail route renders the drawer (no duplicate standalone AI panel)', async () => {
+test('incident detail route has no duplicate standalone AI panel', async () => {
   const detail = read('(product)/incidents/[incidentId]/page.tsx');
-  expect(detail).toContain('<IncidentsPanel initialSelectedId={incidentId} />');
-  // The standalone panel was removed to avoid double-rendering; the drawer tab covers it.
+  // The detail route is the standalone forensic experience — the list drawer no longer
+  // renders here (Screen 7 composition fix). The AI Investigation is represented by the
+  // forensic AI Investigation Summary, so the standalone AiInvestigationPanel (its own
+  // triage flow) must not double-render on this route.
+  expect(detail).toContain('<ForensicInvestigatorPanel incidentId={incidentId} />');
+  expect(detail).not.toContain('<IncidentsPanel');
   expect(detail).not.toContain('<AiInvestigationPanel');
+  // The supplementary Case File tabs reuse the drawer bodies but deliberately omit the AI
+  // Investigation tab, so AiInvestigationPanel is not pulled in there either.
+  const tabs = read('incident-case-file-tabs.tsx');
+  expect(tabs).not.toContain('AiInvestigationPanel');
+  expect(tabs).not.toContain('ai-investigation');
 });
