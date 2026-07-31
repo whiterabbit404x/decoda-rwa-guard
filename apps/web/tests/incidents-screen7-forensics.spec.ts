@@ -240,11 +240,16 @@ test('mandatory generated-content + non-execution disclaimer is shown', () => {
   expect(src).toContain('No fund-moving, contract-changing');
 });
 
-test('Workflow tab is wired into the incidents drawer and reads backend state', () => {
+test('Workflow tab is wired into the incidents drawer and reads canonical backend state', () => {
   const panel = appSource('incidents-panel.tsx');
   expect(panel).toContain("{ key: 'workflow',          label: 'Workflow' }");
   expect(panel).toContain("activeTab === 'workflow'");
-  expect(panel).toContain('/incidents/${encodeURIComponent(incidentId)}/workflow');
+  // The drawer now sources workflow stages from the SAME canonical investigation payload
+  // the full incident page uses (fetched once per selected incident), not a separate
+  // /workflow request — so the drawer and full page can never disagree.
+  expect(panel).toContain('/incidents/${encodeURIComponent(selectedId)}/investigation');
+  expect(panel).toContain('<WorkflowTab stages={workflowStages} load={investigationLoad} />');
+  expect(panel).toContain('workflowStateLabel(s.state)');
   // Existing tabs are preserved (regression).
   expect(panel).toContain("{ key: 'overview',          label: 'Overview' }");
   expect(panel).toContain("{ key: 'ai-investigation',  label: 'AI Investigation' }");

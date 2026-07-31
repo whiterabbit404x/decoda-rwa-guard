@@ -14,8 +14,16 @@ import {
 } from './components/ui-primitives';
 import AiInvestigationPanel from './ai-investigation-panel';
 import {
+  investigationNextAction,
+  investigationSummaryState,
+  isAwaitingResponseStatus,
+  isInInvestigationStatus,
+  linkedDetectionRef,
+  summaryStateVariant,
   workflowStateLabel,
   workflowStateVariant,
+  type ForensicInvestigation,
+  type NextAction,
   type WorkflowStage,
 } from './forensic-investigation-presentation';
 import { usePilotAuth } from './pilot-auth-context';
@@ -120,6 +128,12 @@ type ResponseActionRow = {
   mode?: string;
   record_type?: string;
 };
+
+// Load lifecycle for the selected incident's canonical forensic investigation payload
+// (`/incidents/{id}/investigation`). 'unavailable' = the forensic layer is not enabled
+// for this deployment (fail-closed); 'error' = the fetch failed. Workflow stages, the
+// next action, and the linked detection are all derived from this — never re-inferred.
+type InvestigationLoad = 'idle' | 'loading' | 'ready' | 'unavailable' | 'error';
 
 /* ── Helpers ────────────────────────────────────────────────────── */
 
@@ -244,6 +258,10 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
   const [responseActions, setResponseActions] = useState<ResponseActionRow[]>([]);
   const [recommending, setRecommending] = useState(false);
   const [recommendError, setRecommendError] = useState('');
+  // Canonical Screen 7 investigation payload for the SELECTED incident only (one
+  // request per selection — never one per table row).
+  const [investigation, setInvestigation] = useState<ForensicInvestigation | null>(null);
+  const [investigationLoad, setInvestigationLoad] = useState<InvestigationLoad>('idle');
 
   const counts = runtime?.counts as Record<string, number> | undefined;
   const workspaceEvidenceSource: string = summary.evidence_source_summary ?? '';
@@ -428,6 +446,39 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
       .catch(() => setResponseActions([]));
   }, [apiUrl, authHeaders, selectedId]);
 
+  // Canonical forensic investigation for the selected incident — the SAME source the
+  // full /incidents/[incidentId] page uses. Fetched once per selection (never per table
+  // row). A `cancelled` guard + AbortController ensures a response for a previously
+  // selected/closed incident can never overwrite the current drawer's state.
+  useEffect(() => {
+    if (!selectedId) {
+      setInvestigation(null);
+      setInvestigationLoad('idle');
+      return;
+    }
+    let cancelled = false;
+    const controller = new AbortController();
+    setInvestigationLoad('loading');
+    setInvestigation(null);
+    void fetch(`${apiUrl}/incidents/${encodeURIComponent(selectedId)}/investigation`, {
+      headers: authHeaders(),
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((json) => {
+        if (cancelled) return;
+        const payload = json as ForensicInvestigation | null;
+        if (!payload) { setInvestigationLoad('error'); return; }
+        setInvestigation(payload);
+        setInvestigationLoad(
+          payload.status === 'unavailable' || payload.schema_ready === false ? 'unavailable' : 'ready',
+        );
+      })
+      .catch(() => { if (!cancelled) setInvestigationLoad('error'); });
+    return () => { cancelled = true; controller.abort(); };
+  }, [apiUrl, authHeaders, selectedId]);
+
   /* ── Metrics ─────────────────────────────────────────────────── */
   const openCount = incidents.filter((i) =>
     ['open', 'reopened'].includes(incidentStatus(i).toLowerCase()),
@@ -435,12 +486,12 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
   const criticalCount = incidents.filter(
     (i) => (i.severity ?? '').toLowerCase() === 'critical',
   ).length;
-  const investigatingCount = incidents.filter(
-    (i) => incidentStatus(i).toLowerCase() === 'investigating',
-  ).length;
-  const awaitingCount = incidents.filter((i) =>
-    ['contained', 'awaiting_response'].includes(incidentStatus(i).toLowerCase()),
-  ).length;
+  // Canonical KPI semantics from persisted per-row incident status (never inferred from
+  // transient drawer state, and no per-row investigation fetch): In Investigation counts
+  // incidents whose canonical status is investigating; Awaiting Response counts incidents
+  // at the approval-required response stage.
+  const investigatingCount = incidents.filter((i) => isInInvestigationStatus(incidentStatus(i))).length;
+  const awaitingCount = incidents.filter((i) => isAwaitingResponseStatus(incidentStatus(i))).length;
 
   /* ── Empty state ─────────────────────────────────────────────── */
   type Blocker = { title: string; body: string; ctaHref?: string; ctaLabel?: string };
@@ -593,6 +644,8 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
               linkedAlert={linkedAlert}
               evidence={evidence}
               responseActions={responseActions}
+              investigation={investigation}
+              investigationLoad={investigationLoad}
               activeTab={activeTab}
               onTabChange={(tab) => setActiveTab(tab as TabKey)}
               workspaceEvidenceSource={workspaceEvidenceSource}
@@ -615,36 +668,31 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
 /* ── Incident detail panel ──────────────────────────────────────── */
 
 function IncidentDetailPanel({ incident, timeline, linkedAlert, evidence, responseActions,
-  activeTab, onTabChange, workspaceEvidenceSource, onMessage: _onMessage,
-  onRecommend, recommending, recommendError }: {
+  investigation, investigationLoad, activeTab, onTabChange, workspaceEvidenceSource,
+  onMessage: _onMessage, onRecommend, recommending, recommendError }: {
   incident: IncidentRow; timeline: TimelineEntry[]; linkedAlert: AlertRow | null;
   evidence: EvidenceRow[]; responseActions: ResponseActionRow[];
+  investigation: ForensicInvestigation | null; investigationLoad: InvestigationLoad;
   activeTab: string; onTabChange: (tab: string) => void;
   workspaceEvidenceSource: string; onMessage: (msg: string) => void;
   onRecommend: () => void; recommending: boolean; recommendError: string;
 }) {
   const sev = severityPill(incident.severity);
   const st  = incidentStatusPill(incidentStatus(incident));
-  const ws  = incidentStatus(incident).toLowerCase();
   const evSrc = evidenceSourcePill(incident.evidence_source ?? incident.evidence_origin, workspaceEvidenceSource);
   const hasLinkedAlert = !!incident.source_alert_id;
-  const linkedEvidenceCount = Number(incident.linked_evidence_count ?? 0);
 
-  const progress = [
-    { label: 'Alert Received', done: hasLinkedAlert },
-    { label: 'Investigation Started', done: ['investigating', 'contained', 'resolved', 'closed', 'reopened'].includes(ws) },
-    { label: 'Evidence Collected', done: linkedEvidenceCount > 0 || evidence.length > 0 },
-    { label: 'Response Initiated', done: responseActions.length > 0 || ['response_initiated', 'contained', 'resolved', 'closed'].includes(ws) },
-    { label: 'Resolution', done: ['resolved', 'closed'].includes(ws) },
-  ];
-
-  function recommendedNextAction(): string {
-    if (!['investigating', 'contained', 'resolved', 'closed', 'reopened'].includes(ws)) return 'Start Investigation';
-    if (linkedEvidenceCount === 0 && evidence.length === 0) return 'Collect Evidence';
-    if (responseActions.length === 0 && !['resolved', 'closed'].includes(ws)) return 'Recommend Response';
-    if (!['resolved', 'closed'].includes(ws)) return 'Resolve Incident';
-    return 'Resolved';
-  }
+  // Everything below is derived from the SAME canonical investigation payload the full
+  // /incidents/[incidentId] page renders — the drawer keeps no second definition of state.
+  const analysis = investigation?.analysis ?? null;
+  const workflowStages = analysis?.workflow_stages ?? [];
+  const awaitingResponse = isAwaitingResponseStatus(incidentStatus(incident));
+  const nextAction: NextAction = investigationNextAction(investigation, { awaitingResponse });
+  // Linked Detection: the incident row's own detection id when the source alert carries
+  // one, else the canonical originating detection/rule reference from the investigation
+  // snapshot. Never "none" while the full page shows an originating detection rule.
+  const rowDetectionId = incident.chain_linked_ids?.detection_id ?? incident.linked_detection_id ?? null;
+  const detectionRef = linkedDetectionRef(investigation);
 
   return (
     <aside className="dataCard sharedSurfaceCard"
@@ -671,12 +719,24 @@ function IncidentDetailPanel({ incident, timeline, linkedAlert, evidence, respon
               : <span className="muted" style={{ fontSize: '0.78rem' }}>Linked alert unavailable</span>
           } />
           <DetailField label="Linked Detection" value={
-            incident.chain_linked_ids?.detection_id
-              ? <span style={{ fontFamily: 'monospace', fontSize: '0.72rem', wordBreak: 'break-all' }}>{incident.chain_linked_ids.detection_id}</span>
-              : <span className="muted" style={{ fontSize: '0.78rem' }}>No linked detection</span>
+            rowDetectionId
+              ? <span style={{ fontFamily: 'monospace', fontSize: '0.72rem', wordBreak: 'break-all' }}>{rowDetectionId}</span>
+              : detectionRef
+                ? <span style={{ fontFamily: 'monospace', fontSize: '0.72rem', wordBreak: 'break-all' }}
+                    title={detectionRef.reference}>{detectionRef.title ?? detectionRef.reference}</span>
+                : investigationLoad === 'loading'
+                  ? <span className="muted" style={{ fontSize: '0.78rem' }}>Loading…</span>
+                  : <span className="muted" style={{ fontSize: '0.78rem' }}>No linked detection</span>
           } />
           <DetailField label="Evidence Source" value={<StatusPill label={evSrc.label} variant={evSrc.variant} />} />
-          <DetailField label="Next Action" value={recommendedNextAction()} />
+          <DetailField label="Next Action" value={
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem' }}>
+              <span>{nextAction.label}</span>
+              {nextAction.secondary
+                ? <span className="muted" style={{ fontSize: '0.72rem' }}>{nextAction.secondary.label}</span>
+                : null}
+            </div>
+          } />
         </div>
       </div>
 
@@ -687,7 +747,14 @@ function IncidentDetailPanel({ incident, timeline, linkedAlert, evidence, respon
 
       {/* ── Tab content ────────────────────────────────────────── */}
       <div style={{ padding: '0.75rem 1rem 1rem' }}>
-        {activeTab === 'overview' && <OverviewTab incident={incident} progress={progress} />}
+        {activeTab === 'overview' && (
+          <OverviewTab
+            incident={incident}
+            investigation={investigation}
+            stages={workflowStages}
+            load={investigationLoad}
+          />
+        )}
         {activeTab === 'timeline' && <TimelineTab timeline={timeline} />}
         {activeTab === 'alerts' && <AlertsTab linkedAlert={linkedAlert} hasLinkedAlert={hasLinkedAlert} workspaceEvidenceSource={workspaceEvidenceSource} />}
         {activeTab === 'evidence' && <EvidenceTab evidence={evidence} workspaceEvidenceSource={workspaceEvidenceSource} />}
@@ -700,9 +767,10 @@ function IncidentDetailPanel({ incident, timeline, linkedAlert, evidence, respon
             recommendError={recommendError}
           />
         )}
-        {/* Persisted forensic investigation workflow stages (Detection → Report). State
-            comes from the backend (never inferred in the browser). */}
-        {activeTab === 'workflow' && <WorkflowTab incidentId={incident.id} />}
+        {/* Persisted forensic investigation workflow stages (Detection → Report Generated),
+            read from the SAME canonical investigation payload the full page and the Overview
+            progress use — never inferred in the browser, never a second fetch. */}
+        {activeTab === 'workflow' && <WorkflowTab stages={workflowStages} load={investigationLoad} />}
         {/* Evidence-grounded AI investigation for the selected incident. The panel is
             workspace-scoped, polls its own state, and exposes the Start AI Investigation
             button; it fails closed to a disabled/unavailable message when triage is off
@@ -724,7 +792,17 @@ function DetailField({ label, value }: { label: string; value: ReactNode }) {
 }
 
 /* ── Overview tab ────────────────────────────────────────────────── */
-function OverviewTab({ incident, progress }: { incident: IncidentRow; progress: Array<{ label: string; done: boolean }> }) {
+function OverviewTab({ incident, investigation, stages, load }: {
+  incident: IncidentRow;
+  investigation: ForensicInvestigation | null;
+  stages: WorkflowStage[];
+  load: InvestigationLoad;
+}) {
+  // Canonical investigation state — the same value the full page's AI Investigation
+  // Summary shows (derived from the deterministic analysis status + AI triage status).
+  const summaryState = investigation?.analysis
+    ? investigationSummaryState(investigation.analysis.status, investigation.ai_triage?.status)
+    : null;
   return (
     <div>
       <div style={{ marginBottom: '0.75rem' }}>
@@ -754,27 +832,16 @@ function OverviewTab({ incident, progress }: { incident: IncidentRow; progress: 
         </div>
       )}
       <div>
-        <p className="sectionEyebrow">Incident Progress</p>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-          {progress.map(({ label, done }, i) => (
-            <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', fontSize: '0.83rem' }}>
-              <span style={{
-                width: '18px', height: '18px', borderRadius: '50%',
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: '0.65rem', fontWeight: 700,
-                background: done ? 'rgba(34,197,94,0.18)' : 'rgba(148,163,184,0.12)',
-                border: `1px solid ${done ? 'rgba(34,197,94,0.5)' : 'rgba(148,163,184,0.25)'}`,
-                color: done ? 'var(--success-fg)' : 'var(--text-muted)',
-                flexShrink: 0,
-              }}>
-                {done ? '✓' : i + 1}
-              </span>
-              <span style={{ color: done ? 'var(--text-primary)' : 'var(--text-muted)', flex: 1 }}>
-                {label}
-              </span>
-              <StatusPill label={done ? 'Completed' : 'Pending'} variant={done ? 'success' : 'neutral'} />
-            </div>
-          ))}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+          <p className="sectionEyebrow" style={{ margin: 0 }}>Investigation Progress</p>
+          {summaryState
+            ? <StatusPill label={summaryState} variant={summaryStateVariant(summaryState)} />
+            : null}
+        </div>
+        {/* Canonical Screen 7 workflow stages — identical source to the full incident
+            page and to the Workflow tab (no browser-inferred checklist). */}
+        <div style={{ marginTop: '0.5rem' }}>
+          <WorkflowStages stages={stages} load={load} />
         </div>
       </div>
     </div>
@@ -945,36 +1012,23 @@ function ResponseActionsTab({ actions, incidentId, onRecommend, recommending, re
   );
 }
 
-/* ── Workflow tab ────────────────────────────────────────────────── */
-// Persisted forensic investigation workflow stages. State is read from the backend
-// (`/incidents/{id}/workflow`); the browser never marks a stage "Completed" on its own.
-function WorkflowTab({ incidentId }: { incidentId: string }) {
-  const { authHeaders } = usePilotAuth();
-  const [stages, setStages] = useState<WorkflowStage[]>([]);
-  const [state, setState] = useState<'loading' | 'ready' | 'unavailable' | 'error'>('loading');
+/* ── Workflow tab + shared canonical stage renderer ──────────────── */
+// Persisted forensic investigation workflow stages. Stages come from the canonical
+// `/incidents/{id}/investigation` payload (the SAME source the full incident page uses),
+// fetched once at the panel level and passed in — the browser never marks a stage
+// "Completed" on its own and never issues a second per-incident request.
+function WorkflowTab({ stages, load }: { stages: WorkflowStage[]; load: InvestigationLoad }) {
+  return <WorkflowStages stages={stages} load={load} />;
+}
 
-  useEffect(() => {
-    let cancelled = false;
-    setState('loading');
-    void fetch(`${API_PROXY_BASE}/incidents/${encodeURIComponent(incidentId)}/workflow`, {
-      headers: authHeaders(), cache: 'no-store',
-    })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((json) => {
-        if (cancelled) return;
-        const payload = json as { status?: string; stages?: WorkflowStage[] } | null;
-        if (!payload) { setState('error'); return; }
-        if (payload.status === 'unavailable') { setState('unavailable'); return; }
-        setStages(Array.isArray(payload.stages) ? payload.stages : []);
-        setState('ready');
-      })
-      .catch(() => { if (!cancelled) setState('error'); });
-    return () => { cancelled = true; };
-  }, [incidentId, authHeaders]);
-
-  if (state === 'loading') return <p className="muted" style={{ fontSize: '0.85rem' }}>Loading workflow…</p>;
-  if (state === 'unavailable') return <p className="muted" style={{ fontSize: '0.85rem' }}>Investigation workflow is not available for this deployment yet.</p>;
-  if (state === 'error') return <p className="muted" style={{ fontSize: '0.85rem' }}>Unable to load the investigation workflow.</p>;
+// Single rendering path for the canonical workflow stages, shared by the Overview
+// "Investigation Progress" and the Workflow tab, so the two drawer views (and the full
+// page, which renders the identical stages) can never disagree. Fails closed: a
+// loading/unavailable/error investigation never renders a stage as complete.
+function WorkflowStages({ stages, load }: { stages: WorkflowStage[]; load: InvestigationLoad }) {
+  if (load === 'loading' || load === 'idle') return <p className="muted" style={{ fontSize: '0.85rem' }}>Loading investigation workflow…</p>;
+  if (load === 'unavailable') return <p className="muted" style={{ fontSize: '0.85rem' }}>Investigation workflow is not available for this deployment yet.</p>;
+  if (load === 'error') return <p className="muted" style={{ fontSize: '0.85rem' }}>Unable to load the investigation workflow.</p>;
   if (stages.length === 0) return <p className="muted" style={{ fontSize: '0.85rem' }}>No workflow stages recorded yet.</p>;
 
   return (

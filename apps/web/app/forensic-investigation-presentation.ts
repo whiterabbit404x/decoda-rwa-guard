@@ -300,3 +300,123 @@ export function incidentReference(reference?: string | null, incidentId?: string
   const id = (incidentId ?? '').trim();
   return id ? `INC-${id.slice(0, 8)}` : 'Incident';
 }
+
+/* ── Drawer ↔ full-page consistency selectors ──────────────────────────────
+ * The /incidents Case File drawer and the canonical Screen 7 full incident page
+ * MUST derive workflow state, the next action, and the linked detection from the
+ * SAME persisted investigation payload (`/incidents/{id}/investigation`). These pure
+ * selectors are the single source of truth so the two views can never disagree —
+ * there is no second, browser-inferred definition of investigation state. */
+
+// Deterministic findings are "available" when the analysis produced at least one
+// finding that is not merely a verified *absence* of evidence (an evidence_gap).
+export function investigationHasFindings(analysis?: ForensicAnalysis | null): boolean {
+  if (!analysis) return false;
+  const counts = analysis.counts;
+  if (counts && typeof counts.findings === 'number') {
+    const gaps = typeof counts.evidence_gaps === 'number' ? counts.evidence_gaps : 0;
+    return counts.findings - gaps > 0;
+  }
+  return (analysis.findings ?? []).some((f) => (f.finding_type ?? '') !== 'evidence_gap');
+}
+
+/* ── Linked detection / originating rule reference ────────────────────────── */
+export type DetectionReference = { reference: string; label: string; title?: string };
+
+// The canonical originating detection/rule reference for an incident, taken from the
+// immutable investigation snapshot: the 'rule' evidence row, else the deterministic
+// 'detection_rule' finding's rule ref. Returns null only when no such reference
+// exists — so the drawer never renders "none" while the full page shows an
+// originating detection rule for the same incident.
+export function linkedDetectionRef(investigation?: ForensicInvestigation | null): DetectionReference | null {
+  if (!investigation) return null;
+  const ruleRow = (investigation.evidence?.rows ?? []).find(
+    (r) => (r.kind ?? '').toLowerCase() === 'rule' && !!r.reference,
+  );
+  if (ruleRow?.reference) {
+    return { reference: ruleRow.reference, label: refKindLabel(ruleRow.reference), title: ruleRow.title ?? undefined };
+  }
+  const finding = (investigation.analysis?.findings ?? []).find(
+    (f) => (f.finding_type ?? '') === 'detection_rule',
+  );
+  const ref = (finding?.evidence_refs ?? []).find((r) => refKind(r) === 'rule');
+  if (ref) {
+    return { reference: ref, label: refKindLabel(ref), title: finding?.title };
+  }
+  return null;
+}
+
+/* ── Canonical next action (drawer) ───────────────────────────────────────── */
+export type NextActionKind =
+  | 'start' | 'progress' | 'review-findings' | 'retry' | 'rerun' | 'review-response';
+
+export type NextAction = {
+  label: string;
+  kind: NextActionKind;
+  secondary?: { label: string; kind: 'rerun' };
+};
+
+const NEXT_ACTION_LABELS: Record<NextActionKind, string> = {
+  start: 'Start Investigation',
+  progress: 'View Investigation Progress',
+  'review-findings': 'Review Findings',
+  retry: 'Retry Investigation',
+  rerun: 'Re-run Investigation',
+  'review-response': 'Review Response Recommendation',
+};
+
+// Derive the drawer's next action purely from persisted investigation state (never
+// from the incident's coarse workflow_status alone). `awaitingResponse` is the
+// canonical approval-required signal, supplied by the caller from the incident's
+// persisted awaiting-response status, so the drawer and the "Awaiting Response" KPI
+// agree and Screen 8's approval boundary is respected: the drawer only routes a
+// reviewer to the recommendation — it never approves anything itself.
+export function investigationNextAction(
+  investigation?: ForensicInvestigation | null,
+  opts?: { awaitingResponse?: boolean },
+): NextAction {
+  const analysis = investigation?.analysis;
+  // No forensic investigation exists yet (schema not ready / nothing built).
+  if (!investigation || investigation.status === 'unavailable' || !analysis) {
+    return { label: NEXT_ACTION_LABELS.start, kind: 'start' };
+  }
+  const state = investigationSummaryState(analysis.status, investigation.ai_triage?.status);
+  // Investigation still in flight.
+  if (state === 'Queued' || state === 'Investigating') {
+    return { label: NEXT_ACTION_LABELS.progress, kind: 'progress' };
+  }
+  if (state === 'Failed') {
+    return { label: NEXT_ACTION_LABELS.retry, kind: 'retry' };
+  }
+  // Terminal deterministic analysis (Completed or Degraded).
+  // An approval-required response recommendation is the reviewer's next step.
+  if (opts?.awaitingResponse) {
+    return { label: NEXT_ACTION_LABELS['review-response'], kind: 'review-response' };
+  }
+  // Findings exist → review them; a manual re-run stays available as a secondary action.
+  if (investigationHasFindings(analysis)) {
+    return {
+      label: NEXT_ACTION_LABELS['review-findings'],
+      kind: 'review-findings',
+      secondary: { label: NEXT_ACTION_LABELS.rerun, kind: 'rerun' },
+    };
+  }
+  // Terminal but nothing derived yet — offer to (re)start the investigation.
+  return { label: NEXT_ACTION_LABELS.start, kind: 'start' };
+}
+
+/* ── Canonical incident KPI predicates (list-page) ────────────────────────── */
+// "In Investigation": the incident's persisted workflow/status is investigating —
+// the project's canonical equivalent of a running investigation. Derived from the
+// persisted incident row, never from transient drawer state.
+export function isInInvestigationStatus(status?: string | null): boolean {
+  return (status ?? '').toLowerCase() === 'investigating';
+}
+
+// "Awaiting Response": the incident is at the approval-required response stage.
+// 'awaiting_response' is canonical; 'contained' is the legacy persisted value that
+// maps to Awaiting Response in the status pill.
+export function isAwaitingResponseStatus(status?: string | null): boolean {
+  const s = (status ?? '').toLowerCase();
+  return s === 'awaiting_response' || s === 'contained';
+}
