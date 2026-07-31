@@ -623,11 +623,19 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
                       <td><StatusPill label={st.label} variant={st.variant} /></td>
                       <td style={{ fontSize: '0.78rem', whiteSpace: 'nowrap' }}>{fmt(incident.created_at)}</td>
                       <td>
-                        <button type="button" className="btn btn-secondary"
+                        {/* Full-page navigation is a SEPARATE action from drawer selection. This routes to
+                            the canonical incident detail page (Digital Forensics Investigator) using the
+                            incident's canonical UUID (incident.id) — never the displayed reference — and is a
+                            real accessible <Link>, so a single click (or keyboard Enter) always navigates,
+                            even when this row is already the selected/open drawer. stopPropagation keeps the
+                            row's onClick (drawer select) from also firing; preventDefault is NEVER called, so
+                            the link is not swallowed and navigation is never blocked. */}
+                        <Link href={`/incidents/${encodeURIComponent(incident.id)}`} prefetch={false}
+                          className="btn btn-secondary"
                           style={{ fontSize: '0.73rem', padding: '0.2rem 0.5rem' }}
-                          onClick={(e) => { e.stopPropagation(); setSelectedId(incident.id); setActiveTab('overview'); }}>
+                          onClick={(e) => { e.stopPropagation(); }}>
                           View Incident
-                        </button>
+                        </Link>
                       </td>
                     </tr>
                   );
@@ -738,6 +746,18 @@ function IncidentDetailPanel({ incident, timeline, linkedAlert, evidence, respon
             </div>
           } />
         </div>
+        {/* Full investigation navigation — a SEPARATE action from drawer selection. Opens the
+            canonical incident detail page (Digital Forensics Investigator) for this incident's
+            canonical UUID (incident.id), never the displayed reference. An accessible <Link>, so
+            keyboard activation and browser back navigation both work; it never calls preventDefault. */}
+        <Link
+          href={`/incidents/${encodeURIComponent(incident.id)}`}
+          prefetch={false}
+          className="btn btn-primary"
+          style={{ marginTop: '0.85rem', width: '100%', fontSize: '0.8rem' }}
+        >
+          Open Full Investigation
+        </Link>
       </div>
 
       {/* ── Tabs ───────────────────────────────────────────────── */}
