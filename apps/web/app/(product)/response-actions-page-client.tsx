@@ -48,6 +48,15 @@ type ActionRow = {
   model?: string | null;
   evidenceSnapshotId?: string | null;
   evidenceRefsCount?: number;
+  // Deterministic Playbook Execution Agent profile (from the backend `playbook`
+  // field for policy actions, or derived from runbook_id/risk_level for AI reviews).
+  priority?: string;
+  runbookId?: string | null;
+  runbookName?: string | null;
+  blastRadius?: string | null;
+  reversibility?: string | null;
+  category?: string | null;
+  riskLevel?: string | null;
 };
 
 type HistoryRow = {
@@ -74,9 +83,11 @@ type HistoryRow = {
 const RECOMMENDED_HEADERS = [
   'Action',
   'Type',
+  'Priority',
   'Impact',
   'Status',
   'Recommended By',
+  'Runbook',
   'Linked Incident',
   'Evidence Source',
   'Requires Approval',
@@ -145,6 +156,20 @@ function actionStatusPill(status: string, simulated: boolean): { label: string; 
   return { label: `${display}${tag}`, variant: 'neutral' };
 }
 
+// Deterministic priority label from a risk level (used for AI-review records that
+// carry risk_level rather than a backend playbook priority). Never random.
+function priorityFromRisk(risk?: string | null): string | null {
+  const r = (risk ?? '').toLowerCase();
+  if (r === 'critical' || r === 'high' || r === 'medium' || r === 'low') return r;
+  return null;
+}
+
+// Priority pill reuses the shared severity palette (critical/high → danger,
+// medium → warning, low → success) so Screen 8 stays visually consistent.
+function priorityPill(priority?: string | null): { label: string; variant: PillVariant } {
+  return impactPill(String(priority ?? 'medium'));
+}
+
 function impactPill(impact: string): { label: string; variant: PillVariant } {
   const i = impact.toLowerCase();
 
@@ -206,6 +231,14 @@ function normalizeActionRow(input: any, validIncidentIds: Set<string>): ActionRo
     ? String(input?.title || input?.action_type || 'AI recommendation')
     : String(input?.action_type || input?.action || 'Response action');
 
+  // Deterministic Playbook Execution Agent profile. Policy actions carry a backend
+  // `playbook` object; AI reviews carry runbook_id + risk_level. Never fabricated.
+  const playbook = input?.playbook && typeof input.playbook === 'object' ? input.playbook : {};
+  const riskLevel = input?.risk_level ? String(input.risk_level) : null;
+  const priority = String(
+    playbook.priority || priorityFromRisk(riskLevel) || input?.impact || input?.severity || 'medium',
+  );
+
   return {
     id: String(input?.id || `${input?.action_type || 'action'}-${rawIncidentId || 'none'}`),
     action: displayAction,
@@ -237,6 +270,13 @@ function normalizeActionRow(input: any, validIncidentIds: Set<string>): ActionRo
         : Array.isArray(input?.evidence_refs)
           ? input.evidence_refs.length
           : 0,
+    priority,
+    runbookId: playbook.runbook_id ?? input?.runbook_id ?? null,
+    runbookName: playbook.runbook_name ?? null,
+    blastRadius: playbook.blast_radius ?? null,
+    reversibility: playbook.reversibility ?? null,
+    category: playbook.category ?? null,
+    riskLevel,
   };
 }
 
@@ -484,6 +524,17 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
     r.status.toLowerCase().includes('executed'),
   ).length;
 
+  // Approval-required count for the orange banner + agent panel. Derived ONLY
+  // from persisted action state (requiresApproval and the persisted status),
+  // never hardcoded. An action still needs approval until it is approved,
+  // executed, or rejected.
+  function actionNeedsApproval(r: ActionRow): boolean {
+    if (!r.requiresApproval) return false;
+    const s = r.status.toLowerCase();
+    return !s.includes('approved') && !s.includes('executed') && !s.includes('rejected');
+  }
+  const approvalRequiredCount = recommendedRows.filter(actionNeedsApproval).length;
+
   function getBlocker(): Blocker | null {
     // If actions already exist, never block the table — pipeline checks are only relevant
     // when there are truly zero actions. Decided AI recommendation reviews live only in
@@ -630,6 +681,46 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
           <MetricTile label="Executed Actions" value={executedCount} />
         </div>
 
+        {/* Orange approval banner — shown only when persisted state has actions
+            awaiting approval on the Recommended Actions tab. The count comes from
+            actionNeedsApproval() over persisted rows, never a hardcoded value. */}
+        {!blocker && tab === 'recommended' && approvalRequiredCount > 0 ? (
+          <div
+            role="alert"
+            aria-label="Approval required banner"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '1rem',
+              padding: '0.85rem 1rem',
+              marginBottom: '1rem',
+              borderRadius: '12px',
+              border: '1px solid rgba(245, 158, 11, 0.5)',
+              background: 'rgba(245, 158, 11, 0.12)',
+              flexWrap: 'wrap',
+            }}
+          >
+            <div>
+              <p style={{ margin: 0, fontWeight: 700, color: 'var(--warning-fg)' }}>Approval Required</p>
+              <p style={{ margin: '0.15rem 0 0', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                {approvalRequiredCount} action{approvalRequiredCount === 1 ? '' : 's'} require your approval before execution.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ fontSize: '0.8rem' }}
+              onClick={() => {
+                setApprovalFilter('yes');
+                setTab('recommended');
+              }}
+            >
+              Review All
+            </button>
+          </div>
+        ) : null}
+
         {blocker ? (
           <EmptyStateBlocker
             title={blocker.title}
@@ -638,14 +729,7 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
             ctaLabel={blocker.ctaLabel}
           />
         ) : (
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: selectedAction ? 'minmax(0, 1fr) 380px' : '1fr',
-              gap: '1rem',
-              alignItems: 'start',
-            }}
-          >
+          <div className="twoColumnSection" style={{ marginTop: 0, alignItems: 'start' }}>
             <div>
               <TabStrip
                 tabs={[
@@ -666,6 +750,7 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
                   {filteredRecommended.map((row) => {
                     const st = actionStatusPill(row.status, row.simulated);
                     const imp = impactPill(row.impact);
+                    const pri = priorityPill(row.priority);
                     const evSrc = evidenceSourcePill(row.evidenceSource, workspaceEvidenceSource);
                     const isSelected = row.id === selectedId;
 
@@ -682,9 +767,13 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
                           {row.action}
                         </td>
                         <td style={{ fontSize: '0.8rem' }}>{row.type}</td>
+                        <td><StatusPill label={pri.label} variant={pri.variant} /></td>
                         <td><StatusPill label={imp.label} variant={imp.variant} /></td>
                         <td><StatusPill label={st.label} variant={st.variant} /></td>
                         <td style={{ fontSize: '0.8rem' }}>{row.recommendedBy}</td>
+                        <td style={{ fontSize: '0.78rem', fontFamily: 'monospace', maxWidth: '110px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.runbookName ?? row.runbookId ?? ''}>
+                          {row.runbookId ? row.runbookId : <span className="muted">—</span>}
+                        </td>
                         <td style={{ fontSize: '0.8rem' }}>
                           {row.linkedIncident ? (
                             <Link href="/incidents" prefetch={false} onClick={(e) => e.stopPropagation()} style={{ fontSize: '0.78rem' }}>
@@ -777,17 +866,28 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
               )}
             </div>
 
-            {selectedAction ? (
-              <ActionDetailPanel
-                action={selectedAction}
-                workspaceEvidenceSource={workspaceEvidenceSource}
+            <div style={{ display: 'grid', gap: '1rem' }}>
+              <PlaybookAgentPanel
+                rows={recommendedRows}
+                incidentIdFilter={incidentIdFilter}
+                selectedAction={selectedAction}
                 liveExecutionAllowed={liveExecutionAllowed}
-                onMessage={setMessage}
                 apiUrl={apiUrl}
                 authHeaders={authHeaders}
-                refreshCsrfToken={refreshCsrfToken}
+                onMessage={setMessage}
               />
-            ) : null}
+              {selectedAction ? (
+                <ActionDetailPanel
+                  action={selectedAction}
+                  workspaceEvidenceSource={workspaceEvidenceSource}
+                  liveExecutionAllowed={liveExecutionAllowed}
+                  onMessage={setMessage}
+                  apiUrl={apiUrl}
+                  authHeaders={authHeaders}
+                  refreshCsrfToken={refreshCsrfToken}
+                />
+              ) : null}
+            </div>
           </div>
         )}
 
@@ -1082,6 +1182,38 @@ function ActionDetailPanel({
         </div>
       ) : null}
 
+      {!isAiReview && (action.runbookId || action.blastRadius) ? (
+        <div style={{ marginBottom: '0.5rem' }}>
+          <p className="tableMeta" style={{ marginBottom: '0.1rem' }}>Playbook</p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.35rem 1rem' }}>
+            <div>
+              <p className="tableMeta" style={{ marginBottom: '0.05rem', fontSize: '0.65rem' }}>Runbook</p>
+              <p style={{ fontSize: '0.78rem', margin: 0, fontFamily: 'monospace' }}>
+                {action.runbookId ?? '—'}
+              </p>
+            </div>
+            <div>
+              <p className="tableMeta" style={{ marginBottom: '0.05rem', fontSize: '0.65rem' }}>Priority</p>
+              <StatusPill label={priorityPill(action.priority).label} variant={priorityPill(action.priority).variant} />
+            </div>
+            <div>
+              <p className="tableMeta" style={{ marginBottom: '0.05rem', fontSize: '0.65rem' }}>Blast Radius</p>
+              <p style={{ fontSize: '0.78rem', margin: 0 }}>{(action.blastRadius ?? 'unknown').replace(/_/g, ' ')}</p>
+            </div>
+            <div>
+              <p className="tableMeta" style={{ marginBottom: '0.05rem', fontSize: '0.65rem' }}>Rollback</p>
+              <p style={{ fontSize: '0.78rem', margin: 0 }}>
+                {action.reversibility === 'reversible'
+                  ? 'Available'
+                  : action.reversibility === 'irreversible'
+                    ? 'Not available (irreversible)'
+                    : 'Unknown'}
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div style={{ marginBottom: '0.75rem' }}>
         <p className="tableMeta" style={{ marginBottom: '0.1rem' }}>Audit Trail</p>
         <p className="muted" style={{ fontSize: '0.78rem', margin: 0 }}>
@@ -1160,6 +1292,255 @@ function ActionDetailPanel({
           </button>
         </div>
       )}
+    </aside>
+  );
+}
+
+/* ── Playbook Execution Agent panel ──────────────────────────────────────────
+   The right-side agent surface from the Screen 8 reference. Every number here is
+   derived from PERSISTED action state (the rows the backend returned) or from the
+   read-only safety-checks endpoint — nothing is fabricated. "Simulate All" hits
+   the backend batch endpoint, which enforces eligibility server-side. */
+
+type SafetyCheck = {
+  key: string;
+  label: string;
+  status: 'pass' | 'warning' | 'fail' | 'unknown' | string;
+  detail: string;
+  checked_at?: string;
+};
+
+type SafetyChecksPayload = {
+  checks?: SafetyCheck[];
+  summary?: { overall?: string; total?: number; counts?: Record<string, number> };
+  live_execution_configured?: boolean;
+  playbook?: { runbook_id?: string | null; runbook_name?: string | null };
+};
+
+function safetyStatusPill(status: string): { label: string; variant: PillVariant } {
+  const s = status.toLowerCase();
+  if (s === 'pass') return { label: 'Pass', variant: 'success' };
+  if (s === 'warning') return { label: 'Warning', variant: 'warning' };
+  if (s === 'fail') return { label: 'Fail', variant: 'danger' };
+  return { label: 'Unknown', variant: 'neutral' };
+}
+
+// Eligible for Simulate All (mirrors the backend eligibility so the displayed
+// count matches what the batch command will act on). AI recommendation-review
+// records are never executable/simulatable and are excluded.
+function isSimulateEligible(r: ActionRow): boolean {
+  if (r.recordType === 'ai_recommendation_review') return false;
+  if (r.simulated) return false;
+  const s = r.status.toLowerCase();
+  return !s.includes('executed') && !s.includes('failed') && !s.includes('cancelled') && !s.includes('rejected');
+}
+
+function PlaybookAgentPanel({
+  rows,
+  incidentIdFilter,
+  selectedAction,
+  liveExecutionAllowed,
+  apiUrl: _apiUrl,
+  authHeaders,
+  onMessage,
+}: {
+  rows: ActionRow[];
+  incidentIdFilter: string;
+  selectedAction: ActionRow | null;
+  liveExecutionAllowed: boolean;
+  apiUrl: string;
+  authHeaders: () => Record<string, string>;
+  onMessage: (msg: string) => void;
+}) {
+  const router = useRouter();
+  const [simulating, setSimulating] = useState(false);
+  const [checks, setChecks] = useState<SafetyChecksPayload | null>(null);
+  const [checksState, setChecksState] = useState<'idle' | 'loading' | 'ready' | 'error' | 'not_applicable'>('idle');
+
+  // Agent summary — all from persisted row state.
+  const recommended = rows.length;
+  const awaitingApproval = rows.filter((r) => {
+    if (!r.requiresApproval) return false;
+    const s = r.status.toLowerCase();
+    return !s.includes('approved') && !s.includes('executed') && !s.includes('rejected');
+  }).length;
+  const readyForDryRun = rows.filter(isSimulateEligible).length;
+  const simulated = rows.filter((r) => r.simulated).length;
+  const readyForExecution = rows.filter((r) => {
+    const s = r.status.toLowerCase();
+    return s.includes('approved') && !s.includes('executed');
+  }).length;
+  const blocked = rows.filter((r) => {
+    const s = r.status.toLowerCase();
+    return s.includes('blocked') || s.includes('failed');
+  }).length;
+  const lastEval = rows
+    .map((r) => r.createdAt)
+    .filter(Boolean)
+    .sort()
+    .slice(-1)[0] as string | undefined;
+
+  // Load deterministic safety checks for the selected executable action.
+  useEffect(() => {
+    const a = selectedAction;
+    if (!a) {
+      setChecks(null);
+      setChecksState('idle');
+      return;
+    }
+    if (a.recordType === 'ai_recommendation_review') {
+      setChecks(null);
+      setChecksState('not_applicable');
+      return;
+    }
+    let cancelled = false;
+    setChecksState('loading');
+    void fetch(`/api/response/actions/${encodeURIComponent(a.id)}/safety-checks`, {
+      headers: authHeaders(),
+      cache: 'no-store',
+    })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((data: SafetyChecksPayload) => {
+        if (cancelled) return;
+        setChecks(data);
+        setChecksState('ready');
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setChecks(null);
+        setChecksState('error');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedAction?.id, selectedAction?.recordType, authHeaders]);
+
+  async function simulateAll() {
+    if (simulating) return;
+    setSimulating(true);
+    onMessage('Simulating all eligible actions…');
+    try {
+      const qs = incidentIdFilter ? `?incident_id=${encodeURIComponent(incidentIdFilter)}` : '';
+      const res = await fetch(`/api/response/actions/simulate-all${qs}`, {
+        method: 'POST',
+        headers: authHeaders(),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        counts?: { simulated?: number; skipped?: number };
+        detail?: unknown;
+      };
+      if (res.ok) {
+        const n = data.counts?.simulated ?? 0;
+        const skipped = data.counts?.skipped ?? 0;
+        onMessage(
+          n > 0
+            ? `Simulated ${n} eligible action${n === 1 ? '' : 's'}${skipped ? ` (${skipped} skipped)` : ''}.`
+            : 'No eligible actions to simulate.',
+        );
+        router.refresh();
+      } else {
+        const detail = data.detail;
+        onMessage(typeof detail === 'string' ? detail : 'Simulate All failed.');
+      }
+    } catch {
+      onMessage('Simulate All request failed. Check network connection.');
+    } finally {
+      setSimulating(false);
+    }
+  }
+
+  const summaryRows: Array<[string, number]> = [
+    ['Actions recommended', recommended],
+    ['Awaiting approval', awaitingApproval],
+    ['Ready for dry run', readyForDryRun],
+    ['Simulated', simulated],
+    ['Ready for execution', readyForExecution],
+    ['Blocked', blocked],
+  ];
+
+  return (
+    <aside
+      className="dataCard sharedSurfaceCard"
+      style={{ padding: '1rem' }}
+      aria-label="Playbook Execution Agent"
+    >
+      <p className="eyebrow" style={{ marginBottom: '0.15rem', fontSize: '0.7rem' }}>
+        Autonomous operations
+      </p>
+      <h4 style={{ marginBottom: '0.25rem', fontSize: '0.95rem' }}>Playbook Execution Agent</h4>
+      <p className="muted" style={{ fontSize: '0.76rem', margin: '0 0 0.75rem' }}>
+        Deterministic execution. Runbooks are version-controlled and peer-reviewed; nothing executes without passing safety checks and required approval.
+      </p>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', rowGap: '0.3rem', columnGap: '0.75rem', marginBottom: '0.85rem' }}>
+        {summaryRows.map(([label, value]) => (
+          <div key={label} style={{ display: 'contents' }}>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{label}</span>
+            <span style={{ fontSize: '0.8rem', fontWeight: 700, textAlign: 'right' }}>{value}</span>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ marginBottom: '0.85rem' }}>
+        <p className="tableMeta" style={{ marginBottom: '0.15rem' }}>Dry Run Status</p>
+        <p style={{ fontSize: '0.8rem', margin: 0 }}>
+          {readyForDryRun} ready · {simulated} simulated
+        </p>
+        <p className="muted" style={{ fontSize: '0.72rem', margin: '0.15rem 0 0' }}>
+          {liveExecutionAllowed
+            ? 'Live execution path detected for eligible actions.'
+            : 'Execution is dry-run only until a live provider is configured.'}
+        </p>
+      </div>
+
+      <button
+        type="button"
+        className="btn btn-primary"
+        style={{ fontSize: '0.82rem', width: '100%', marginBottom: '0.85rem' }}
+        disabled={simulating || readyForDryRun === 0}
+        title={readyForDryRun === 0 ? 'No eligible actions to simulate' : 'Simulate all eligible actions'}
+        onClick={() => void simulateAll()}
+      >
+        {simulating ? 'Simulating…' : 'Simulate All'}
+      </button>
+
+      <div>
+        <p className="tableMeta" style={{ marginBottom: '0.35rem' }}>Safety Checks</p>
+        {!selectedAction ? (
+          <p className="muted" style={{ fontSize: '0.78rem', margin: 0 }}>Select an action to run its safety checks.</p>
+        ) : checksState === 'not_applicable' ? (
+          <p className="muted" style={{ fontSize: '0.78rem', margin: 0 }}>
+            Safety checks apply to executable response actions. This is an AI recommendation review (never executed).
+          </p>
+        ) : checksState === 'loading' ? (
+          <p className="muted" style={{ fontSize: '0.78rem', margin: 0 }}>Running safety checks…</p>
+        ) : checksState === 'error' ? (
+          <p className="muted" style={{ fontSize: '0.78rem', margin: 0 }}>
+            Safety checks are unavailable for this action right now.
+          </p>
+        ) : checks && Array.isArray(checks.checks) && checks.checks.length > 0 ? (
+          <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+            {checks.checks.map((c) => {
+              const pill = safetyStatusPill(c.status);
+              return (
+                <li key={c.key} style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', flex: 1 }} title={c.detail}>
+                    {c.label}
+                  </span>
+                  <StatusPill label={pill.label} variant={pill.variant} />
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <p className="muted" style={{ fontSize: '0.78rem', margin: 0 }}>No safety checks were produced.</p>
+        )}
+        {checksState === 'ready' && checks?.summary?.overall ? (
+          <p className="muted" style={{ fontSize: '0.72rem', margin: '0.5rem 0 0' }}>
+            Overall: {checks.summary.overall}. Checks that lack data are shown as Unknown, never Pass.
+          </p>
+        ) : null}
+      </div>
     </aside>
   );
 }

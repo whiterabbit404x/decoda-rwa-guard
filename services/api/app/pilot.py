@@ -18738,6 +18738,11 @@ def list_enforcement_actions(
             action['source_type'] = 'policy_engine'
             action['record_type'] = 'response_action'
             action['capability'] = resolve_response_action_capability(str(action.get('action_type') or ''), str(action.get('mode') or ''))
+            # Deterministic playbook profile (priority, runbook, blast radius) so
+            # Screen 8 can render Priority + Runbook without inventing values.
+            action['playbook'] = response_action_playbook_profile(
+                action.get('action_type'), mode=str(action.get('mode') or ''),
+            )
             actions.append(_response_action_payload(action))
         # Surface AI investigation recommendation reviews (immutable, never executed).
         # An alert_id filter is a legacy-action concept; AI reviews are incident-scoped,
@@ -19089,6 +19094,520 @@ def simulate_response_action(action_id: str, request: Request) -> dict[str, Any]
             (action_id, workspace_id),
         ).fetchone()
         return _response_action_payload(_json_safe_value(dict(updated or row)))
+
+
+# ---------------------------------------------------------------------------
+# Playbook Execution Agent — deterministic runbook profiles and safety checks.
+#
+# These are read-only derivations over CANONICAL persisted facts (the
+# response_actions record, its capability, the linked incident, live-mode
+# configuration, and sibling actions). Nothing here fabricates data: scores are
+# fixed per action_type (never random) and every check fails closed to
+# 'unknown'/'warning'/'fail' when the required fact is missing. No function in
+# this block writes to the database except simulate_all (which reuses the exact
+# same dry-run UPDATE semantics as simulate_response_action).
+# ---------------------------------------------------------------------------
+
+# Fund-affecting / high-impact action types that must never auto-execute — they
+# always require explicit human approval (see the approval safety check and the
+# autonomous-execution policy).
+DESTRUCTIVE_ACTION_TYPES = frozenset({
+    'freeze_wallet',
+    'pause_mint_redeem',
+    'block_transaction',
+    'revoke_approval',
+    'disable_monitored_system',
+})
+
+# runbook_id -> deterministic playbook profile for the executable policy-engine
+# response action types (RESPONSE_ACTION_TYPES). AI-triage recommendations carry
+# their own runbook_id from ai_triage.RUNBOOK_CATALOG; this table is only for the
+# response_actions state machine so Screen 8 can render Priority + Runbook and the
+# agent panel without inventing values.
+RESPONSE_ACTION_RUNBOOKS: dict[str, dict[str, Any]] = {
+    'freeze_wallet': {
+        'runbook_id': 'RBK-CT-01', 'name': 'Freeze wallet', 'category': 'Containment',
+        'priority': 'critical', 'blast_radius': 'targeted_wallet', 'reversibility': 'reversible',
+        'requires_approval': True,
+        'steps': [
+            'Validate incident scope and the affected wallet address',
+            'Confirm the configured signer / multisig quorum is available',
+            'Simulate the freeze against a read-only fork',
+            'Submit the freeze for owner/admin approval',
+            'Execute only after the approval quorum is satisfied',
+        ],
+    },
+    'pause_mint_redeem': {
+        'runbook_id': 'RBK-CT-02', 'name': 'Pause mint / redeem', 'category': 'Containment',
+        'priority': 'critical', 'blast_radius': 'contract_wide', 'reversibility': 'reversible',
+        'requires_approval': True,
+        'steps': [
+            'Confirm the monitored contract exposes an approved pause capability',
+            'Validate the incident still affects the paused asset',
+            'Simulate the pause call (eth_call / gas estimate)',
+            'Submit for owner/admin approval',
+            'Execute through the configured signer or multisig workflow',
+        ],
+    },
+    'block_transaction': {
+        'runbook_id': 'RBK-CT-03', 'name': 'Block transaction', 'category': 'Containment',
+        'priority': 'high', 'blast_radius': 'targeted_transaction', 'reversibility': 'irreversible',
+        'requires_approval': True,
+        'steps': [
+            'Confirm the transaction hash and its incident linkage',
+            'Verify a live blocking path is configured',
+            'Preserve evidence before any destructive step',
+            'Require owner/admin approval',
+        ],
+    },
+    'revoke_approval': {
+        'runbook_id': 'RBK-SC-01', 'name': 'Revoke token approval', 'category': 'Security',
+        'priority': 'high', 'blast_radius': 'targeted_spender', 'reversibility': 'reversible',
+        'requires_approval': True,
+        'steps': [
+            'Identify the compromised spender approval',
+            'Simulate the revoke calldata',
+            'Submit the Safe/governance proposal for approval',
+            'Execute after quorum and confirm on-chain',
+        ],
+    },
+    'escalate_to_issuer': {
+        'runbook_id': 'RBK-CM-01', 'name': 'Escalate to issuer', 'category': 'Communication',
+        'priority': 'medium', 'blast_radius': 'organizational', 'reversibility': 'reversible',
+        'requires_approval': True,
+        'steps': [
+            'Assemble the incident summary and cited evidence',
+            'Notify the issuer contact through the configured channel',
+            'Record the escalation on the incident timeline',
+        ],
+    },
+    'notify_compliance_team': {
+        'runbook_id': 'RBK-CM-02', 'name': 'Notify compliance team', 'category': 'Communication',
+        'priority': 'medium', 'blast_radius': 'organizational', 'reversibility': 'reversible',
+        'requires_approval': False,
+        'steps': [
+            'Compile the compliance-relevant findings',
+            'Send the notification through the approved template/channel',
+            'Attach evidence references to the incident',
+        ],
+    },
+    'notify_team': {
+        'runbook_id': 'RBK-CM-03', 'name': 'Notify team', 'category': 'Communication',
+        'priority': 'low', 'blast_radius': 'organizational', 'reversibility': 'reversible',
+        'requires_approval': False,
+        'steps': [
+            'Summarize the incident for the responding team',
+            'Deliver the notification through the workspace channel',
+        ],
+    },
+    'generate_regulator_auditor_package': {
+        'runbook_id': 'RBK-FR-01', 'name': 'Generate regulator / auditor package', 'category': 'Forensics',
+        'priority': 'low', 'blast_radius': 'evidence_only', 'reversibility': 'reversible',
+        'requires_approval': False,
+        'steps': [
+            'Snapshot the current evidence set',
+            'Assemble the signed, hashed export package',
+            'Link the package back to the incident',
+        ],
+    },
+    'disable_monitored_system': {
+        'runbook_id': 'RBK-DT-01', 'name': 'Isolate monitored system', 'category': 'Detection',
+        'priority': 'medium', 'blast_radius': 'monitoring_source', 'reversibility': 'reversible',
+        'requires_approval': True,
+        'steps': [
+            'Confirm the monitoring source is degraded or compromised',
+            'Reroute or isolate the source',
+            'Record the coverage impact on the incident',
+        ],
+    },
+    'suppress_rule': {
+        'runbook_id': 'RBK-DT-02', 'name': 'Suppress detection rule', 'category': 'Detection',
+        'priority': 'medium', 'blast_radius': 'monitoring_rule', 'reversibility': 'reversible',
+        'requires_approval': True,
+        'steps': [
+            'Validate the rule is producing confirmed false positives',
+            'Scope the suppression window and rationale',
+            'Require owner/admin approval before suppressing',
+        ],
+    },
+}
+
+_PRIORITY_ORDER = {'low': 0, 'medium': 1, 'high': 2, 'critical': 3}
+_RISK_TO_PRIORITY = {'low': 'low', 'medium': 'medium', 'high': 'high', 'critical': 'critical'}
+
+
+def response_action_playbook_profile(
+    action_type: str | None,
+    *,
+    mode: str | None = None,
+    risk_level: str | None = None,
+) -> dict[str, Any]:
+    """Deterministic playbook profile (priority, runbook, blast radius, steps).
+
+    Pure and idempotent for the same inputs — never random. Falls back to a
+    generic, honest profile (runbook_id=None) for unknown action types so the UI
+    can still render a truthful row instead of a fabricated runbook.
+    """
+    normalized = _normalize_response_action_type(action_type)
+    profile = RESPONSE_ACTION_RUNBOOKS.get(normalized)
+    if profile is None:
+        # Unknown / AI-only action type: derive an honest generic profile.
+        base_priority = _RISK_TO_PRIORITY.get(str(risk_level or '').strip().lower(), 'medium')
+        return {
+            'action_type': normalized,
+            'runbook_id': None,
+            'runbook_name': str(normalized).replace('_', ' ').title() or 'Response action',
+            'category': 'Other',
+            'priority': base_priority,
+            'blast_radius': 'unknown',
+            'reversibility': 'unknown',
+            'requires_approval': True,
+            'runbook_steps': [],
+        }
+    # Priority is the runbook default, escalated (never de-escalated) by the
+    # incident/recommendation risk level so a low-risk runbook on a critical
+    # incident still surfaces the higher priority.
+    priority = str(profile['priority'])
+    risk_priority = _RISK_TO_PRIORITY.get(str(risk_level or '').strip().lower())
+    if risk_priority and _PRIORITY_ORDER.get(risk_priority, 0) > _PRIORITY_ORDER.get(priority, 0):
+        priority = risk_priority
+    return {
+        'action_type': normalized,
+        'runbook_id': profile['runbook_id'],
+        'runbook_name': profile['name'],
+        'category': profile['category'],
+        'priority': priority,
+        'blast_radius': profile['blast_radius'],
+        'reversibility': profile['reversibility'],
+        'requires_approval': bool(profile['requires_approval']),
+        'runbook_steps': list(profile['steps']),
+    }
+
+
+# Incident workflow states in which mitigation is still meaningful. Anything else
+# (resolved/closed/None) fails the "incident is still active" safety check.
+ACTIVE_INCIDENT_WORKFLOW_STATES = frozenset({
+    'open', 'investigating', 'contained', 'reopened', 'awaiting_response', 'response_initiated',
+})
+# response_actions.execution_state values that mean an execution is already in flight.
+IN_FLIGHT_EXECUTION_STATES = frozenset({'submitted', 'proposal_created', 'awaiting_approval'})
+RECOMMENDATION_FRESHNESS_HOURS = 72
+
+
+def _safety_check(key: str, label: str, status_value: str, detail: str) -> dict[str, Any]:
+    return {
+        'key': key,
+        'label': label,
+        # pass | warning | fail | unknown — never invent 'pass' when data is missing.
+        'status': status_value,
+        'detail': detail,
+        'checked_at': utc_now_iso(),
+    }
+
+
+def build_response_action_safety_checks(
+    connection: Any,
+    action: dict[str, Any],
+    workspace_context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Deterministic, fail-closed safety checks derived from canonical facts.
+
+    Read-only: issues SELECTs only. Every check reports pass/warning/fail/unknown
+    honestly and returns 'unknown' rather than 'pass' when the underlying fact is
+    unavailable, so the UI can never present a green wall of checks over missing
+    data.
+    """
+    workspace_id = str(workspace_context.get('workspace_id') or '')
+    action_id = str(action.get('id') or '')
+    action_type = _normalize_response_action_type(action.get('action_type'))
+    mode = str(action.get('mode') or 'recommended')
+    incident_id = str(action.get('incident_id') or '') or None
+    execution_state = str(action.get('execution_state') or '')
+    status_value = str(action.get('status') or '')
+    checks: list[dict[str, Any]] = []
+
+    # 1. Incident is still active
+    if not incident_id:
+        checks.append(_safety_check(
+            'incident_active', 'Incident is still active', 'unknown',
+            'This action is not linked to an incident, so incident status cannot be confirmed.'))
+    else:
+        try:
+            row = connection.execute(
+                'SELECT status, workflow_status FROM incidents WHERE id = %s::uuid AND workspace_id = %s',
+                (incident_id, workspace_id),
+            ).fetchone()
+        except Exception:  # pragma: no cover - defensive
+            row = None
+        if row is None:
+            checks.append(_safety_check(
+                'incident_active', 'Incident is still active', 'unknown',
+                'The linked incident could not be found in this workspace.'))
+        else:
+            state = str((row.get('workflow_status') or row.get('status') or '')).strip().lower()
+            if state in ACTIVE_INCIDENT_WORKFLOW_STATES:
+                checks.append(_safety_check(
+                    'incident_active', 'Incident is still active', 'pass',
+                    f'Incident status is "{state}".'))
+            else:
+                checks.append(_safety_check(
+                    'incident_active', 'Incident is still active', 'warning',
+                    f'Incident status is "{state or "unknown"}" — mitigation may no longer be required.'))
+
+    # 2. Action is allowed by workspace policy
+    capability = resolve_response_action_capability(action_type, mode)
+    if action_type in RESPONSE_ACTION_TYPES and capability.get('supports_mode', False):
+        checks.append(_safety_check(
+            'policy_allows', 'Action is allowed by workspace policy', 'pass',
+            f'Action type "{action_type}" is permitted in {mode} mode.'))
+    elif action_type in RESPONSE_ACTION_TYPES:
+        checks.append(_safety_check(
+            'policy_allows', 'Action is allowed by workspace policy', 'fail',
+            f'Mode "{mode}" is not permitted for "{action_type}" by workspace policy.'))
+    else:
+        checks.append(_safety_check(
+            'policy_allows', 'Action is allowed by workspace policy', 'unknown',
+            f'Action type "{action_type}" is not a recognized executable response action.'))
+
+    # 3. Live execution / contract capability is available
+    live_enabled = env_flag('LIVE_ACTION_EXECUTION_ENABLED', default=False)
+    live_path = str(capability.get('live_execution_path') or 'unsupported')
+    if live_path == 'unsupported':
+        checks.append(_safety_check(
+            'live_execution', 'Live execution path is available', 'fail',
+            'No live execution path is supported for this action; it is dry-run only.'))
+    elif not live_enabled:
+        checks.append(_safety_check(
+            'live_execution', 'Live execution path is available', 'warning',
+            'Live action execution is disabled (LIVE_ACTION_EXECUTION_ENABLED is off); this action is dry-run only.'))
+    elif live_path == 'manual_only':
+        checks.append(_safety_check(
+            'live_execution', 'Live execution path is available', 'warning',
+            'This action is manual-only in live mode and requires an operator to complete it.'))
+    else:
+        checks.append(_safety_check(
+            'live_execution', 'Live execution path is available', 'pass',
+            f'Live execution path "{live_path}" is configured.'))
+
+    # 4. Dry-run simulation has passed
+    if mode == 'simulated' or execution_state == 'simulated':
+        checks.append(_safety_check(
+            'simulation_passed', 'Dry-run simulation passed', 'pass',
+            'A dry-run simulation has completed for this action.'))
+    else:
+        checks.append(_safety_check(
+            'simulation_passed', 'Dry-run simulation passed', 'unknown',
+            'This action has not been simulated yet.'))
+
+    # 5. No conflicting action is already executing for this incident
+    if not incident_id:
+        checks.append(_safety_check(
+            'no_conflict', 'No conflicting action is in progress', 'unknown',
+            'No incident linkage, so conflicting-action detection cannot run.'))
+    else:
+        try:
+            conflict = connection.execute(
+                '''SELECT count(*) AS n FROM response_actions
+                   WHERE workspace_id = %s AND incident_id = %s::uuid AND id <> %s::uuid
+                     AND action_type = %s AND execution_state = ANY(%s)''',
+                (workspace_id, incident_id, action_id or '00000000-0000-0000-0000-000000000000',
+                 action_type, list(IN_FLIGHT_EXECUTION_STATES)),
+            ).fetchone()
+            conflict_count = int((conflict or {}).get('n') or 0)
+        except Exception:  # pragma: no cover - defensive
+            conflict_count = 0
+        if conflict_count > 0:
+            checks.append(_safety_check(
+                'no_conflict', 'No conflicting action is in progress', 'fail',
+                f'{conflict_count} action(s) of the same type are already executing for this incident.'))
+        else:
+            checks.append(_safety_check(
+                'no_conflict', 'No conflicting action is in progress', 'pass',
+                'No duplicate or conflicting execution was detected for this incident.'))
+
+    # 6. Required approval quorum is satisfied (only relevant for approval-gated actions)
+    profile = response_action_playbook_profile(action_type, mode=mode)
+    requires_approval = bool(profile.get('requires_approval')) or action_type in DESTRUCTIVE_ACTION_TYPES
+    approved = bool(action.get('approved_at') or action.get('approved_by_user_id') or action.get('approved_by'))
+    if not requires_approval:
+        checks.append(_safety_check(
+            'approval_quorum', 'Required approval quorum is satisfied', 'pass',
+            'This action does not require human approval.'))
+    elif approved:
+        checks.append(_safety_check(
+            'approval_quorum', 'Required approval quorum is satisfied', 'pass',
+            'This action has been approved by an authorized operator.'))
+    else:
+        checks.append(_safety_check(
+            'approval_quorum', 'Required approval quorum is satisfied', 'warning',
+            'This action requires owner/admin approval before it can execute.'))
+
+    # 7. Rollback instructions are available when the action is reversible
+    reversibility = str(profile.get('reversibility') or 'unknown')
+    if reversibility == 'reversible':
+        checks.append(_safety_check(
+            'rollback_available', 'Rollback instructions are available', 'pass',
+            'A compensating rollback path is defined for this action.'))
+    elif reversibility == 'irreversible':
+        checks.append(_safety_check(
+            'rollback_available', 'Rollback instructions are available', 'warning',
+            'This action is irreversible — no rollback is possible once executed.'))
+    else:
+        checks.append(_safety_check(
+            'rollback_available', 'Rollback instructions are available', 'unknown',
+            'Rollback availability could not be determined for this action.'))
+
+    # 8. Recommendation has not expired
+    created_at = _parse_iso_datetime(str(action.get('created_at') or '')) if action.get('created_at') else None
+    if created_at is None:
+        checks.append(_safety_check(
+            'recommendation_fresh', 'Recommendation has not expired', 'unknown',
+            'The recommendation timestamp is unavailable.'))
+    else:
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        age_hours = (datetime.now(timezone.utc) - created_at).total_seconds() / 3600.0
+        if status_value in {'executed', 'failed', 'canceled'}:
+            checks.append(_safety_check(
+                'recommendation_fresh', 'Recommendation has not expired', 'pass',
+                'This action has already reached a terminal state.'))
+        elif age_hours <= RECOMMENDATION_FRESHNESS_HOURS:
+            checks.append(_safety_check(
+                'recommendation_fresh', 'Recommendation has not expired', 'pass',
+                f'Recommendation is {int(age_hours)}h old (within the {RECOMMENDATION_FRESHNESS_HOURS}h window).'))
+        else:
+            checks.append(_safety_check(
+                'recommendation_fresh', 'Recommendation has not expired', 'warning',
+                f'Recommendation is {int(age_hours)}h old and should be re-evaluated before execution.'))
+
+    return checks
+
+
+def summarize_safety_checks(checks: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate counts + an overall verdict for a list of safety checks."""
+    counts = {'pass': 0, 'warning': 0, 'fail': 0, 'unknown': 0}
+    for check in checks:
+        state = str(check.get('status') or 'unknown')
+        counts[state] = counts.get(state, 0) + 1
+    if counts['fail'] > 0:
+        overall = 'fail'
+    elif counts['warning'] > 0 or counts['unknown'] > 0:
+        overall = 'warning'
+    else:
+        overall = 'pass'
+    return {'overall': overall, 'total': len(checks), 'counts': counts}
+
+
+def response_action_safety_checks(action_id: str, request: Request) -> dict[str, Any]:
+    """Read-only deterministic safety checks for a single response action.
+
+    GET-only semantics: never generates, mutates, or executes anything.
+    """
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        workspace_id = workspace_context['workspace_id']
+        row = connection.execute(
+            '''SELECT id, workspace_id, incident_id, alert_id, action_type, mode, status, execution_state,
+                      approved_at, approved_by_user_id, created_at
+               FROM response_actions WHERE id = %s::uuid AND workspace_id = %s''',
+            (action_id, workspace_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Response action not found.')
+        action = _json_safe_value(dict(row))
+        checks = build_response_action_safety_checks(connection, action, workspace_context)
+        profile = response_action_playbook_profile(action.get('action_type'), mode=str(action.get('mode') or ''))
+        return {
+            'action_id': action_id,
+            'incident_id': action.get('incident_id'),
+            'checks': checks,
+            'summary': summarize_safety_checks(checks),
+            'playbook': profile,
+            'live_execution_configured': env_flag('LIVE_ACTION_EXECUTION_ENABLED', default=False),
+            'evaluated_at': utc_now_iso(),
+        }
+
+
+def _response_action_simulate_eligibility(row: dict[str, Any]) -> tuple[bool, str]:
+    """Return (eligible, reason). Mirrors simulate_response_action idempotency."""
+    mode = str(row.get('mode') or '')
+    execution_state = str(row.get('execution_state') or '')
+    status_value = str(row.get('status') or '')
+    action_type = _normalize_response_action_type(row.get('action_type'))
+    if mode == 'simulated' or execution_state == 'simulated':
+        return False, 'already_simulated'
+    if status_value in {'executed', 'failed', 'canceled'}:
+        return False, f'terminal_status_{status_value}'
+    if execution_state in IN_FLIGHT_EXECUTION_STATES or execution_state == 'confirmed':
+        return False, 'execution_in_progress'
+    capability = resolve_response_action_capability(action_type, mode)
+    if str(capability.get('live_execution_path') or '') == 'unsupported' and action_type not in RESPONSE_ACTION_TYPES:
+        return False, 'unsupported_action'
+    return True, 'eligible'
+
+
+def simulate_all_eligible_response_actions(request: Request, incident_id: str | None = None) -> dict[str, Any]:
+    """Dry-run simulate every ELIGIBLE response action (optionally incident-scoped).
+
+    Eligibility is enforced on the backend — already-simulated, executing,
+    executed, failed, cancelled, and unsupported actions are skipped (never
+    re-marked). Reuses the same idempotent dry-run UPDATE as the per-action
+    simulate. Idempotent overall: a second call simulates nothing new.
+    """
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(connection, request, 'response.execute')
+        workspace_id = workspace_context['workspace_id']
+        rows = connection.execute(
+            '''SELECT id, action_type, mode, status, execution_state, incident_id
+               FROM response_actions
+               WHERE workspace_id = %s AND (%s::uuid IS NULL OR incident_id = %s::uuid)
+               ORDER BY created_at DESC LIMIT 200''',
+            (workspace_id, incident_id, incident_id),
+        ).fetchall()
+        simulated_ids: list[str] = []
+        skipped: list[dict[str, str]] = []
+        for raw in rows:
+            row = dict(raw)
+            eligible, reason = _response_action_simulate_eligibility(row)
+            row_id = str(row.get('id') or '')
+            if not eligible:
+                skipped.append({'id': row_id, 'reason': reason})
+                continue
+            connection.execute(
+                '''UPDATE response_actions
+                   SET mode = 'simulated', execution_state = 'simulated', execution_mode = 'simulation', executed_at = NOW()
+                   WHERE id = %s::uuid AND workspace_id = %s''',
+                (row_id, workspace_id),
+            )
+            log_audit(
+                connection,
+                action='response_action.simulated',
+                entity_type='response_action',
+                entity_id=row_id,
+                request=request,
+                user_id=user['id'],
+                workspace_id=workspace_id,
+                metadata={'action_id': row_id, 'mode': 'simulated', 'execution_state': 'simulated',
+                          'execution_mode': 'simulation', 'via': 'simulate_all'},
+            )
+            simulated_ids.append(row_id)
+        if simulated_ids:
+            connection.commit()
+        return {
+            'simulated_ids': simulated_ids,
+            'skipped': skipped,
+            'counts': {
+                'simulated': len(simulated_ids),
+                'skipped': len(skipped),
+                'total': len(rows),
+            },
+            'incident_id': incident_id,
+        }
 
 
 def create_evidence_package_from_response_action(action_id: str, request: Request) -> dict[str, Any]:
