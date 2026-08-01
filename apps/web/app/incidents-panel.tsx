@@ -1009,7 +1009,44 @@ function ResponseActionsTab({ actions, incidentId, onRecommend, recommending, re
       </div>
     );
   }
+  // Concise response summary (Screen 7) — counts derived from persisted action
+  // state, plus a button that opens the Screen 8 Playbook Execution workspace
+  // scoped to this incident. Screen 7 (investigation) and Screen 8 (mitigation)
+  // stay separate routes.
+  const norm = (a: ResponseActionRow) => (a.status ?? '').toLowerCase();
+  const recommendedN = actions.length;
+  const awaitingApprovalN = actions.filter(
+    (a) => a.requires_approval && !norm(a).includes('approved') && !norm(a).includes('executed'),
+  ).length;
+  const executedN = actions.filter((a) => norm(a).includes('executed') || norm(a) === 'succeeded').length;
+  const failedN = actions.filter((a) => norm(a).includes('failed')).length;
   return (
+    <div>
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '0.75rem',
+          marginBottom: '0.75rem',
+        }}
+      >
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }} aria-label="Response summary">
+          <StatusPill label={`Recommended ${recommendedN}`} variant="info" />
+          <StatusPill label={`Awaiting approval ${awaitingApprovalN}`} variant={awaitingApprovalN > 0 ? 'warning' : 'neutral'} />
+          <StatusPill label={`Executed ${executedN}`} variant={executedN > 0 ? 'success' : 'neutral'} />
+          <StatusPill label={`Failed ${failedN}`} variant={failedN > 0 ? 'danger' : 'neutral'} />
+        </div>
+        <Link
+          href={`/response-actions?incident_id=${encodeURIComponent(incidentId)}`}
+          prefetch={false}
+          className="btn btn-primary"
+          style={{ fontSize: '0.75rem', padding: '0.25rem 0.6rem' }}
+        >
+          Open in Response Actions
+        </Link>
+      </div>
     <TableShell headers={RESPONSE_HEADERS} compact>
       {actions.map((action, i) => (
         <tr key={action.id ?? i}>
@@ -1029,6 +1066,7 @@ function ResponseActionsTab({ actions, incidentId, onRecommend, recommending, re
         </tr>
       ))}
     </TableShell>
+    </div>
   );
 }
 

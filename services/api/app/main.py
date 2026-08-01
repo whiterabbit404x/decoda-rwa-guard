@@ -214,6 +214,8 @@ from services.api.app.pilot import (
     create_proof_bundle_export,
     create_incident_report_export,
     simulate_response_action,
+    simulate_all_eligible_response_actions,
+    response_action_safety_checks,
     create_evidence_package_from_response_action,
     get_mttd_metrics,
     list_exports,
@@ -5100,6 +5102,16 @@ def incident_report_generate(incident_id: str, request: Request) -> dict[str, An
 @app.post('/response/actions/{action_id}/simulate', summary='Mark response action as simulated (dry-run, no on-chain effect)')
 def response_action_simulate(action_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: simulate_response_action(action_id, request))
+
+
+@app.post('/response/actions/simulate-all', summary='Dry-run simulate all eligible response actions (optionally incident-scoped)')
+def response_actions_simulate_all(request: Request, incident_id: str | None = None) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: simulate_all_eligible_response_actions(request, incident_id=incident_id))
+
+
+@app.get('/response/actions/{action_id}/safety-checks', summary='Deterministic, read-only safety checks for a response action')
+def response_action_safety_checks_route(action_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: response_action_safety_checks(action_id, request))
 
 
 @app.post('/response/actions/{action_id}/evidence-package', summary='Create evidence package from response action (idempotent)')
