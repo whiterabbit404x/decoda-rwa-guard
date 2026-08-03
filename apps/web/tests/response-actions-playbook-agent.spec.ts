@@ -73,6 +73,34 @@ test('Simulate All only targets eligible actions', () => {
   expect(src).toContain('readyForDryRun === 0');
 });
 
+test('Simulate All eligible count comes from the canonical backend breakdown', () => {
+  const src = pageSource();
+  // The eligible/already-simulated/blocked counts prefer the backend summary.simulation
+  // breakdown (one predicate) over row guessing.
+  expect(src).toContain('summary?.simulation');
+  expect(src).toContain('simBreakdown');
+  expect(src).toContain('simBreakdown?.eligible');
+  expect(src).toContain('simBreakdown?.alreadySimulated');
+});
+
+test('agent panel explains WHY nothing is eligible, not just "No Eligible Actions"', () => {
+  const src = pageSource();
+  // A visible breakdown line + per-reason list, never only the disabled button label.
+  expect(src).toContain('eligible ·');
+  expect(src).toContain('already simulated');
+  expect(src).toContain('simBlockedReasons');
+  // Each blocked reason is rendered with its count and truthful label.
+  expect(src).toContain('r.label');
+});
+
+test('normalizeSummary parses the canonical simulation breakdown', () => {
+  const src = pageSource();
+  expect(src).toContain('type SimulationBreakdown');
+  expect(src).toContain('input.simulation');
+  expect(src).toContain('already_simulated');
+  expect(src).toContain('blocked_reasons');
+});
+
 // ── Safety Checks ────────────────────────────────────────────────────────────
 
 test('Safety Checks section fetches the deterministic read-only endpoint', () => {

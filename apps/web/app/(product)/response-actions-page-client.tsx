@@ -87,6 +87,17 @@ type ActionRow = {
   targetLabel?: string | null;
 };
 
+// Canonical simulation-eligibility breakdown so the agent panel can explain WHY
+// nothing is eligible (already-simulated vs blocked + reason) rather than a bare
+// "No Eligible Actions to Simulate".
+type SimulationBreakdown = {
+  eligible: number;
+  alreadySimulated: number;
+  blockedTotal: number;
+  blockedReasons: Array<{ reasonCode: string; label: string; count: number }>;
+  total: number;
+};
+
 // Canonical response-action summary returned by the backend list endpoint. ONE
 // definition, shared by the cards, the Approval Required banner, and the agent
 // panel so those surfaces can never disagree with the rows.
@@ -98,11 +109,28 @@ type ActionsSummary = {
   readyForExecution: number;
   blocked: number;
   total: number;
+  simulation: SimulationBreakdown | null;
 };
 
 function normalizeSummary(input: any): ActionsSummary | null {
   if (!input || typeof input !== 'object') return null;
   const num = (v: any): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  const simInput = input.simulation && typeof input.simulation === 'object' ? input.simulation : null;
+  const simulation: SimulationBreakdown | null = simInput
+    ? {
+        eligible: num(simInput.eligible),
+        alreadySimulated: num(simInput.already_simulated),
+        blockedTotal: num(simInput.blocked_total),
+        blockedReasons: Array.isArray(simInput.blocked_reasons)
+          ? simInput.blocked_reasons.map((r: any) => ({
+              reasonCode: String(r?.reason_code ?? ''),
+              label: String(r?.label ?? ''),
+              count: num(r?.count),
+            }))
+          : [],
+        total: num(simInput.total),
+      }
+    : null;
   return {
     recommended: num(input.recommended),
     pendingApproval: num(input.pending_approval ?? input.awaiting_approval),
@@ -111,6 +139,7 @@ function normalizeSummary(input: any): ActionsSummary | null {
     readyForExecution: num(input.ready_for_execution),
     blocked: num(input.blocked),
     total: num(input.total),
+    simulation,
   };
 }
 
@@ -1774,9 +1803,18 @@ function PlaybookAgentPanel({
   // panel and the cards can never disagree. Row-derived values are the fallback.
   const recommended = summary?.recommended ?? rows.length;
   const awaitingApproval = summary?.pendingApproval ?? rows.filter((r) => r.approvalStatus === 'pending').length;
-  // Eligibility for the batch dry-run is a row-level concern (mirrors the backend
-  // simulate eligibility) — the summary does not carry it.
-  const readyForDryRun = rows.filter(isSimulateEligible).length;
+  // Canonical simulation-eligibility breakdown (ONE backend predicate). The eligible
+  // count, already-simulated count, and blocked reasons all come from the summary so
+  // the panel truthfully explains WHY nothing is eligible. Row-derived counts remain
+  // the fallback for an older backend that does not yet return the breakdown.
+  const simBreakdown = summary?.simulation ?? null;
+  const readyForDryRun = simBreakdown?.eligible ?? rows.filter(isSimulateEligible).length;
+  const alreadySimulated =
+    simBreakdown?.alreadySimulated ?? rows.filter((r) => r.simulationStatus === 'passed').length;
+  const simBlockedTotal =
+    simBreakdown?.blockedTotal ??
+    rows.filter((r) => r.recordType === 'ai_recommendation_review').length;
+  const simBlockedReasons = simBreakdown?.blockedReasons ?? [];
   const simulated = summary?.simulated ?? rows.filter((r) => r.simulationStatus === 'passed').length;
   const readyForExecution = summary?.readyForExecution ?? rows.filter((r) => r.lifecycleState === 'ready_to_execute').length;
   const blocked =
@@ -1891,9 +1929,21 @@ function PlaybookAgentPanel({
 
       <div style={{ marginBottom: '0.85rem' }}>
         <p className="tableMeta" style={{ marginBottom: '0.15rem' }}>Dry Run Status</p>
+        {/* Canonical eligibility breakdown — never a bare "no eligible actions".
+            Every action is accounted for: eligible vs already-simulated vs blocked. */}
         <p style={{ fontSize: '0.8rem', margin: 0 }}>
-          {readyForDryRun} ready · {simulated} simulated
+          {readyForDryRun} eligible · {alreadySimulated} already simulated
+          {simBlockedTotal > 0 ? ` · ${simBlockedTotal} blocked` : ''}
         </p>
+        {readyForDryRun === 0 && simBlockedReasons.length > 0 ? (
+          <ul style={{ margin: '0.3rem 0 0', paddingLeft: '1rem', listStyle: 'disc' }}>
+            {simBlockedReasons.map((r) => (
+              <li key={r.reasonCode} className="muted" style={{ fontSize: '0.72rem', lineHeight: 1.35 }}>
+                {r.count} {r.count === 1 ? 'action' : 'actions'}: {r.label}
+              </li>
+            ))}
+          </ul>
+        ) : null}
         <p className="muted" style={{ fontSize: '0.72rem', margin: '0.15rem 0 0' }}>
           {liveExecutionAllowed
             ? 'Live execution path detected for eligible actions.'
@@ -1904,7 +1954,7 @@ function PlaybookAgentPanel({
       {/* Truthful eligibility label: only actions without a currently-valid
           simulation (and not terminal/executing) are eligible, so already-simulated
           actions are never re-run. When nothing is eligible the button is disabled
-          with the reason. */}
+          and the breakdown above states exactly why. */}
       <button
         type="button"
         className="btn btn-primary"
@@ -1912,9 +1962,11 @@ function PlaybookAgentPanel({
         disabled={simulating || readyForDryRun === 0}
         title={
           readyForDryRun === 0
-            ? simulated > 0
+            ? alreadySimulated > 0 && simBlockedTotal === 0
               ? 'All eligible actions already have a valid simulation'
-              : 'No eligible actions to simulate'
+              : simBlockedTotal > 0
+                ? `${alreadySimulated} already simulated · ${simBlockedTotal} blocked`
+                : 'No eligible actions to simulate'
             : `Dry-run simulate the ${readyForDryRun} eligible action${readyForDryRun === 1 ? '' : 's'}`
         }
         onClick={() => void simulateAll()}

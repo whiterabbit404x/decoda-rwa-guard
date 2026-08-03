@@ -259,6 +259,151 @@ def test_approval_permission_allows_authorized_approver():
     assert perm['approval_permission_reason'] is None
 
 
+def test_approval_permission_resolves_reject_alongside_approve():
+    # can_current_user_reject mirrors approve: the same owner/admin + separation-of-
+    # duties gate governs both decisions (Section 4/5).
+    authorized = pilot.response_action_approval_permission(
+        {'action_type': 'freeze_wallet', 'created_by_user_id': 'user-2'},
+        workspace_context={'role': 'admin'}, current_user_id='user-1')
+    assert authorized['can_current_user_reject'] is True
+
+    non_admin = pilot.response_action_approval_permission(
+        {'action_type': 'freeze_wallet', 'created_by_user_id': 'user-2'},
+        workspace_context={'role': 'analyst'}, current_user_id='user-1')
+    assert non_admin['can_current_user_reject'] is False
+
+    proposer = pilot.response_action_approval_permission(
+        {'action_type': 'freeze_wallet', 'created_by_user_id': 'user-1'},
+        workspace_context={'role': 'admin'}, current_user_id='user-1')
+    assert proposer['can_current_user_reject'] is False
+
+
+# ── Canonical simulation-eligibility breakdown (Sections 7, 8, 16) ────────────
+
+def _deployed_six_actions():
+    """The exact deployed shape: 4 simulated Notify Team policy actions + 2 pending
+    AI recommendation reviews (real triage always persists requires_human_approval).
+    """
+    notify = [_policy('notify_team', mode='simulated', execution_state='simulated') for _ in range(4)]
+    for idx, action in enumerate(notify):
+        action['id'] = f'notify-{idx}'
+    reviews = [
+        _ai_review(reason=f'Page the on-call security team for incident {i}.') for i in range(2)
+    ]
+    for idx, review in enumerate(reviews):
+        review['id'] = f'rec-{idx}'
+    return notify + reviews
+
+
+def test_deployed_scenario_resolves_to_truthful_counts():
+    """Regression pin for the deployed contradiction: the six-action page must read
+    Pending Approval = 2 (the AI reviews), Simulated = 4, NOT Pending Approval = 0."""
+    summary = pilot.build_response_actions_summary(_deployed_six_actions())
+    assert summary['recommended'] == 6
+    assert summary['pending_approval'] == 2
+    assert summary['awaiting_approval'] == 2
+    assert summary['simulated'] == 4
+    assert summary['executed'] == 0
+
+
+def test_simulation_breakdown_explains_why_nothing_is_eligible():
+    """The agent panel must never show a bare 'No Eligible Actions'. The breakdown
+    accounts for every action: eligible vs already-simulated vs blocked + reason."""
+    summary = pilot.build_response_actions_summary(_deployed_six_actions())
+    sim = summary['simulation']
+    assert sim['eligible'] == 0
+    assert sim['already_simulated'] == 4
+    assert sim['blocked_total'] == 2
+    # The two blocked are the AI reviews, with a truthful, non-enum reason.
+    codes = {r['reason_code']: r for r in sim['blocked_reasons']}
+    assert 'review_not_simulatable' in codes
+    assert codes['review_not_simulatable']['count'] == 2
+    assert 'not_simulatable' not in codes['review_not_simulatable']['label'].lower() or codes['review_not_simulatable']['label']
+    # Every action is accounted for.
+    assert sim['eligible'] + sim['already_simulated'] + sim['blocked_total'] == sim['total'] == 6
+
+
+def test_recommended_un_simulated_action_is_eligible():
+    """A freshly recommended (un-simulated) policy action IS eligible for a dry run,
+    so Simulate All shows a real count rather than zero."""
+    actions = [_policy('notify_team', mode='recommended', execution_state='recommended')]
+    sim = pilot.build_response_actions_summary(actions)['simulation']
+    assert sim['eligible'] == 1
+    assert sim['already_simulated'] == 0
+    assert sim['blocked_total'] == 0
+    assert actions[0]['commands']['can_simulate'] is True
+
+
+def test_valid_simulated_action_is_not_eligible_again():
+    """A currently-valid simulation is never re-run by Simulate All (Section 14.15)."""
+    action = _policy('notify_team', mode='simulated', execution_state='simulated')
+    assert action['commands']['can_simulate'] is False
+    assert action['commands']['simulation_is_valid'] is True
+    state = pilot.response_action_simulation_state(action)
+    assert state['blocked_reason_code'] == 'already_simulated'
+
+
+def test_executed_action_exposes_terminal_simulation_reason():
+    """An executed action is blocked from simulation with a humanized terminal reason
+    (never a raw code) (Section 14.17)."""
+    action = _policy('escalate_to_issuer', status='executed', execution_state='confirmed',
+                     approved_at='2026-08-03T00:00:00Z')
+    state = pilot.response_action_simulation_state(action)
+    assert state['can_simulate'] is False
+    assert state['is_valid'] is False
+    assert state['blocked_reason_code'] == 'terminal_status_executed'
+    assert state['blocked_reason_label'] and '_' not in state['blocked_reason_label'].split(' ')[0]
+
+
+# ── Canonical command DTO completeness (Section 4) ────────────────────────────
+
+def test_command_dto_exposes_canonical_capability_fields():
+    pending = _policy('escalate_to_issuer')  # requires approval, un-simulated
+    cmd = pending['commands']
+    for field in (
+        'can_simulate', 'can_execute', 'can_roll_back', 'simulation_is_valid',
+        'simulation_expires_at', 'simulation_blocked_reason', 'approval_progress_label',
+        'can_current_user_approve', 'can_current_user_reject', 'required_approval_count',
+        'current_approval_count',
+    ):
+        assert field in cmd, f'missing canonical command field: {field}'
+    assert cmd['approval_progress_label'] == '0 of 1'
+    assert cmd['can_simulate'] is True  # un-simulated -> eligible
+    # Execute stays blocked (dry-run env) with a truthful reason, never a fake path.
+    assert cmd['can_execute'] is False
+
+
+def test_ai_review_command_dto_matches_policy_shape():
+    review = _ai_review()
+    cmd = review['commands']
+    # Same canonical keys as a policy action so the frontend renders both uniformly.
+    for field in (
+        'can_simulate', 'can_execute', 'simulation_blocked_reason', 'approval_progress_label',
+        'can_current_user_approve', 'can_current_user_reject',
+    ):
+        assert field in cmd
+    assert cmd['can_simulate'] is False
+    assert cmd['approval_progress_label'] == '0 of 1'
+    assert 'decision' in cmd['simulation_blocked_reason'].lower()
+
+
+# ── Recommended count agrees with the visible Recommended tab (Section 13) ─────
+
+def test_decided_ai_review_excluded_from_recommended_count():
+    """An ACCEPTED AI review moves to Action History in the UI, so it must not inflate
+    the Recommended card above the rows the operator can see."""
+    actions = [
+        _policy('notify_team', mode='simulated', execution_state='simulated'),
+        _policy('escalate_to_issuer'),
+        _ai_review(review_state='accepted'),   # -> Action History, not Recommended
+        _ai_review(review_state='rejected'),   # -> excluded (inactive)
+        _ai_review(review_state='pending_review'),  # -> Recommended
+    ]
+    summary = pilot.build_response_actions_summary(actions)
+    # Only the 2 policy actions + 1 pending review remain in the Recommended list.
+    assert summary['recommended'] == 3
+
+
 # ── Reject endpoint: reason required, requires-approval, persistence ──────────
 
 class _RejectResult:
