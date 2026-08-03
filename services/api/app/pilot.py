@@ -17292,6 +17292,8 @@ def _response_action_payload(action: dict[str, Any]) -> dict[str, Any]:
     result['execution_status'] = lifecycle['execution_status']
     result['rollback_status'] = lifecycle['rollback_status']
     result['requires_approval'] = bool(lifecycle['requires_approval'])
+    result['required_approval_count'] = int(lifecycle.get('required_approval_count') or 0)
+    result['current_approval_count'] = int(lifecycle.get('current_approval_count') or 0)
     result['provenance'] = response_action_provenance(result)
     result['commands'] = response_action_command_eligibility(result, lifecycle=lifecycle)
     return result
@@ -18030,8 +18032,13 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Enforcement action not found.')
         mode = str(row.get('mode') or 'simulated')
-        if mode not in {'recommended', 'live'}:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Only recommended/live actions require explicit approval.')
+        # Approval eligibility follows the CANONICAL lifecycle, not the raw mode: a
+        # dry-run simulation does not clear the approval requirement, so a simulated
+        # action that still requires approval remains approvable (approval and
+        # simulation are overlapping operational dimensions). Crafted requests to
+        # approve an action that never required approval are rejected truthfully.
+        if not response_action_lifecycle(_json_safe_value(dict(row)))['requires_approval']:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='This action does not require approval.')
         if str(row.get('created_by_user_id') or '') == str(user['id']):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -18098,14 +18105,108 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
         return _response_action_payload(
             {
                 'id': action_id,
+                'action_type': row.get('action_type'),
                 'status': 'pending',
                 'mode': row.get('mode') or 'simulated',
                 'execution_state': row.get('execution_state') or 'proposed',
+                'execution_metadata': row.get('execution_metadata') if isinstance(row.get('execution_metadata'), dict) else {},
                 'execution_artifacts': artifacts,
                 'provider_receipts': row.get('provider_receipts') if isinstance(row.get('provider_receipts'), list) else [],
                 'safe_tx_hash': row.get('safe_tx_hash'),
+                'incident_id': row.get('incident_id'),
+                'alert_id': row.get('alert_id'),
                 'error_code': None,
                 'approved_at': approved_at,
+            }
+        )
+
+
+def reject_enforcement_action(action_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Reject a response action that requires approval. A reason is mandatory.
+
+    Rejection is a governed approver decision (same ``response.approve`` permission
+    as approval). The rejection is persisted in execution_metadata with status
+    'canceled' (the response_actions_status_check constraint has no 'rejected'
+    value), and the canonical lifecycle then reads it as 'Rejected' so it drops out
+    of Pending Approval. Idempotent: rejecting an already-rejected action is a no-op.
+    """
+    require_live_mode()
+    reason = str((payload or {}).get('reason') or '').strip()
+    if not reason:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='A rejection reason is required.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(
+            connection, request, 'response.approve', True, True
+        )
+        row = connection.execute(
+            'SELECT id, status, incident_id, alert_id, action_type, mode, execution_state, execution_metadata, execution_artifacts, provider_receipts, safe_tx_hash, approved_at, created_by_user_id FROM response_actions WHERE id = %s AND workspace_id = %s',
+            (action_id, workspace_context['workspace_id']),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Enforcement action not found.')
+        metadata = row.get('execution_metadata') if isinstance(row.get('execution_metadata'), dict) else {}
+        if metadata.get('rejected_at') or str(row.get('status') or '') == 'canceled':
+            # Idempotent: already rejected/cancelled — return the canonical payload.
+            return _response_action_payload(_json_safe_value(dict(row)))
+        if not response_action_lifecycle(_json_safe_value(dict(row)))['requires_approval']:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='This action does not require approval.')
+        if str(row.get('status')) not in {'pending', 'failed', 'planned'}:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Action cannot be rejected from current status.')
+        rejected_at = utc_now_iso()
+        metadata = {
+            **metadata,
+            'rejected_at': rejected_at,
+            'rejected_by_user_id': str(user['id']),
+            'rejection_reason': reason,
+        }
+        artifacts = row.get('execution_artifacts') if isinstance(row.get('execution_artifacts'), dict) else {}
+        artifacts = _append_status_transition(
+            artifacts,
+            from_status=str(row.get('status') or ''),
+            to_status='canceled',
+            mode=str(row.get('mode') or 'recommended'),
+            execution_state=str(row.get('execution_state') or 'recommended'),
+            reason='rejected',
+        )
+        connection.execute(
+            'UPDATE response_actions SET status = %s, execution_metadata = execution_metadata || %s::jsonb, execution_artifacts = %s::jsonb, result_status = %s WHERE id = %s',
+            ('canceled', _json_dumps({'rejected_at': rejected_at, 'rejected_by_user_id': str(user['id']), 'rejection_reason': reason}), _json_dumps(artifacts), 'canceled', action_id),
+        )
+        write_action_history(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            actor_type='user',
+            actor_id=user['id'],
+            object_type='response_action',
+            object_id=action_id,
+            action_type='response_action.rejected',
+            details={'reason': reason},
+        )
+        append_incident_timeline_event(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            incident_id=str(row.get('incident_id') or ''),
+            event_type='response_action.rejected',
+            message='Response action rejected.',
+            actor_user_id=user['id'],
+            metadata={'response_action_id': action_id, 'action_type': row.get('action_type'), 'reason': reason},
+        )
+        log_audit(connection, action='enforcement.action.reject', entity_type='enforcement_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'reason': reason})
+        connection.commit()
+        return _response_action_payload(
+            {
+                'id': action_id,
+                'action_type': row.get('action_type'),
+                'status': 'canceled',
+                'mode': row.get('mode') or 'recommended',
+                'execution_state': row.get('execution_state') or 'recommended',
+                'execution_metadata': metadata,
+                'execution_artifacts': artifacts,
+                'provider_receipts': row.get('provider_receipts') if isinstance(row.get('provider_receipts'), list) else [],
+                'incident_id': row.get('incident_id'),
+                'alert_id': row.get('alert_id'),
+                'error_code': None,
             }
         )
 
@@ -18742,6 +18843,37 @@ def _ai_review_status(review_state: str | None) -> str:
     return 'pending_approval'
 
 
+def _ai_review_lifecycle(review_state: str, requires_approval: bool) -> dict[str, Any]:
+    """Canonical lifecycle for an AI recommendation review, shaped exactly like
+    response_action_lifecycle so Screen 8 treats reviews and policy actions the
+    same way. A ``pending_review`` recommendation that still requires human
+    approval IS awaiting approval — it must never read as "not required" and must
+    be counted in Pending Approval like any other approval-required action.
+    """
+    state = str(review_state or 'pending_review').strip().lower()
+    if state == 'rejected':
+        primary, approval_status = 'rejected', 'rejected'
+    elif state == 'accepted':
+        primary, approval_status = 'approved', 'approved'
+    elif requires_approval:
+        primary, approval_status = 'awaiting_approval', 'pending'
+    else:
+        primary, approval_status = 'recommended', 'not_required'
+    approved = approval_status == 'approved'
+    return {
+        'lifecycle_state': primary,
+        'lifecycle_label': RESPONSE_ACTION_LIFECYCLE_LABELS.get(primary, primary.replace('_', ' ').title()),
+        'approval_status': approval_status,
+        # A recommendation review is a human decision, never a dry-run/execution.
+        'simulation_status': 'not_started',
+        'execution_status': 'not_started',
+        'rollback_status': 'not_available',
+        'requires_approval': bool(requires_approval),
+        'required_approval_count': 1 if requires_approval else 0,
+        'current_approval_count': 1 if (requires_approval and approved) else 0,
+    }
+
+
 def _ai_recommendation_review_payload(row: dict[str, Any]) -> dict[str, Any]:
     """Normalize an ``ai_recommendations`` (+ triage job/result) row into a review record."""
     safe = _json_safe_value(dict(row))
@@ -18752,6 +18884,52 @@ def _ai_recommendation_review_payload(row: dict[str, Any]) -> dict[str, Any]:
     evidence_refs = safe.get('evidence_refs') if isinstance(safe.get('evidence_refs'), list) else []
     reviewer_id = str(safe['reviewed_by_user_id']) if safe.get('reviewed_by_user_id') else None
     recommendation_id = str(safe.get('recommendation_id') or safe.get('id') or '')
+    incident_id = str(safe['incident_id']) if safe.get('incident_id') else None
+    requires_approval = bool(safe.get('requires_human_approval', True))
+    lifecycle = _ai_review_lifecycle(review_state, requires_approval)
+    # Structured, truthful provenance: an AI review is grounded in the incident
+    # investigation + evidence snapshot, never simulator/fabricated evidence.
+    evidence_snapshot_id = str(safe['evidence_snapshot_id']) if safe.get('evidence_snapshot_id') else None
+    provenance_records: list[dict[str, Any]] = []
+    if incident_id:
+        provenance_records.append({
+            'source_type': 'incident', 'source_id': incident_id,
+            'source_label': _PROVENANCE_SOURCE_LABELS['incident'],
+            'source_route': f'/incidents/{incident_id}',
+        })
+    provenance = {
+        'records': provenance_records,
+        'primary_source_label': 'AI investigation',
+        'has_evidence_package': False,
+        'evidence_package_id': None,
+        'evidence_source': 'ai_investigation',
+        'incident_id': incident_id,
+        'alert_id': None,
+        'detection_id': None,
+        'evidence_snapshot_id': evidence_snapshot_id,
+    }
+    # Approve/reject for a review are the incident recommendation endpoints — the
+    # frontend routes there. On Screen 8 the review is read-forward, so no
+    # policy-action command is offered, but the reason is truthful.
+    commands = {
+        'allowed_commands': [],
+        'blocked_reasons': [{
+            'command': 'approve',
+            'reason': 'Approve or reject this AI recommendation from the incident investigation.',
+        }] if lifecycle['approval_status'] == 'pending' else [],
+        'next_required_step': 'review_in_incident' if lifecycle['approval_status'] == 'pending' else 'none',
+        'requires_confirmation': False,
+        'live_execution_configured': False,
+        'requires_approval': requires_approval,
+        'required_approval_count': lifecycle['required_approval_count'],
+        'current_approval_count': lifecycle['current_approval_count'],
+        'can_current_user_approve': None,
+        'approval_permission_reason': None,
+    }
+    # Distinct target so repeated same-type recommendations (e.g. several "Notify
+    # security team" reviews) are disambiguated without opening every row.
+    reason_text = str(safe.get('reason') or '').strip()
+    target_label = (reason_text[:80] + '…') if len(reason_text) > 80 else (reason_text or None)
     return {
         # Identity + record classification (keeps legacy vs AI records distinguishable).
         'id': recommendation_id,
@@ -18772,14 +18950,29 @@ def _ai_recommendation_review_payload(row: dict[str, Any]) -> dict[str, Any]:
         'decision': decision,
         'review_state': review_state,
         'status': _ai_review_status(review_state),
-        'requires_approval': bool(safe.get('requires_human_approval', True)),
-        'requires_human_approval': bool(safe.get('requires_human_approval', True)),
+        'requires_approval': requires_approval,
+        'requires_human_approval': requires_approval,
         'executed': False,
         'mode': 'review',
         'is_simulated': False,
         'simulated': False,
+        # Canonical lifecycle — identical shape to a policy response action so the
+        # summary, table, and detail panel treat both records the same way. This is
+        # what makes an approval-required review count in Pending Approval.
+        'lifecycle': lifecycle,
+        'lifecycle_state': lifecycle['lifecycle_state'],
+        'lifecycle_label': lifecycle['lifecycle_label'],
+        'approval_status': lifecycle['approval_status'],
+        'simulation_status': None,
+        'execution_status': lifecycle['execution_status'],
+        'rollback_status': lifecycle['rollback_status'],
+        'required_approval_count': lifecycle['required_approval_count'],
+        'current_approval_count': lifecycle['current_approval_count'],
+        'provenance': provenance,
+        'commands': commands,
+        'target_label': target_label,
         # Provenance.
-        'incident_id': str(safe['incident_id']) if safe.get('incident_id') else None,
+        'incident_id': incident_id,
         'reviewer_id': reviewer_id,
         'reviewed_by_user_id': reviewer_id,
         'reviewer_email': safe.get('reviewer_email'),
@@ -18872,7 +19065,7 @@ def list_enforcement_actions(
         workspace_id = workspace_context['workspace_id']
         rows = connection.execute(
             '''
-            SELECT id, action_type, mode, status, result_status, execution_state, result_summary, operator_notes, created_at, approved_at, executed_at, failed_at, rolled_back_at, incident_id, alert_id, safe_tx_hash, tx_hash, execution_metadata
+            SELECT id, action_type, mode, status, result_status, execution_state, result_summary, operator_notes, created_at, approved_at, executed_at, failed_at, rolled_back_at, incident_id, alert_id, safe_tx_hash, tx_hash, execution_metadata, created_by_user_id
                  , execution_artifacts, provider_receipts, provider_request_id, provider_response_id, error_reason, error_code
             FROM response_actions
             WHERE workspace_id = %s
@@ -18896,7 +19089,17 @@ def list_enforcement_actions(
             action['playbook'] = response_action_playbook_profile(
                 action.get('action_type'), mode=str(action.get('mode') or ''),
             )
-            actions.append(_response_action_payload(action))
+            payload = _response_action_payload(action)
+            # Resolve the caller's approval permission (role + separation of duties)
+            # so the UI shows Approve/Reject only when authorized, with a truthful
+            # read-only reason otherwise. Backend commands re-check this — button
+            # visibility is never authorization.
+            if isinstance(payload.get('commands'), dict) and 'approve' in (payload['commands'].get('allowed_commands') or []):
+                permission = response_action_approval_permission(
+                    action, workspace_context=workspace_context, current_user_id=user['id'],
+                )
+                payload['commands'].update(permission)
+            actions.append(payload)
         # Surface AI investigation recommendation reviews (immutable, never executed).
         # An alert_id filter is a legacy-action concept; AI reviews are incident-scoped,
         # so we only include them when the caller is not narrowing to a specific alert.
@@ -18914,7 +19117,8 @@ def list_enforcement_actions(
                 )
             except Exception:  # pragma: no cover - never let the AI read break the legacy list
                 logger.warning('event=ai_recommendation_review_read_failed workspace_id=%s incident_id=%s', workspace_id, incident_id)
-        return {'actions': actions}
+        # ONE canonical summary consumed by the cards, agent panel, and banner.
+        return {'actions': actions, 'summary': build_response_actions_summary(actions)}
 
 
 def create_action_history_entry(payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -19659,8 +19863,12 @@ def response_action_lifecycle(action: dict[str, Any]) -> dict[str, Any]:
     mode = str(action.get('mode') or 'recommended').strip().lower()
     execution_state = str(action.get('execution_state') or '').strip().lower()
     action_type = _normalize_response_action_type(action.get('action_type'))
+    metadata = action.get('execution_metadata') if isinstance(action.get('execution_metadata'), dict) else {}
     approved = bool(action.get('approved_at') or action.get('approved_by_user_id') or action.get('approved_by'))
-    rejected = bool(action.get('rejected_at')) or status_value == 'rejected'
+    # Rejection is persisted in execution_metadata (status stays 'canceled' to
+    # honor the response_actions_status_check constraint), so a rejected action
+    # never lingers as "pending approval".
+    rejected = bool(action.get('rejected_at')) or status_value == 'rejected' or bool(metadata.get('rejected_at'))
     rolled_back = bool(action.get('rolled_back_at'))
     profile = response_action_playbook_profile(action_type, mode=mode)
     requires_approval = bool(profile.get('requires_approval')) or action_type in DESTRUCTIVE_ACTION_TYPES
@@ -19716,6 +19924,12 @@ def response_action_lifecycle(action: dict[str, Any]) -> dict[str, Any]:
     else:
         primary = 'recommended'
 
+    # Approval quorum progress. Single-approver policy today (quorum of 1), but the
+    # count is explicit so the UI can render "0 of 1"/"1 of 1" and a future quorum
+    # rule only changes this one place.
+    required_approval_count = 1 if requires_approval else 0
+    current_approval_count = 1 if (requires_approval and approved) else 0
+
     return {
         'lifecycle_state': primary,
         'lifecycle_label': RESPONSE_ACTION_LIFECYCLE_LABELS.get(primary, primary.replace('_', ' ').title()),
@@ -19724,6 +19938,8 @@ def response_action_lifecycle(action: dict[str, Any]) -> dict[str, Any]:
         'execution_status': execution_status,
         'rollback_status': rollback_status,
         'requires_approval': requires_approval,
+        'required_approval_count': required_approval_count,
+        'current_approval_count': current_approval_count,
     }
 
 
@@ -19893,6 +20109,82 @@ def response_action_command_eligibility(
         'next_required_step': next_step,
         'requires_confirmation': action_type in DESTRUCTIVE_ACTION_TYPES,
         'live_execution_configured': bool(live_execution_configured),
+        'requires_approval': bool(lifecycle['requires_approval']),
+        'required_approval_count': int(lifecycle.get('required_approval_count') or 0),
+        'current_approval_count': int(lifecycle.get('current_approval_count') or 0),
+        # Filled in per-request at the list/detail layer, which knows the caller's
+        # role and the proposer (separation of duties). Defaults are conservative
+        # so button visibility is never mistaken for authorization.
+        'can_current_user_approve': None,
+        'approval_permission_reason': None,
+    }
+
+
+def response_action_approval_permission(
+    action: dict[str, Any],
+    *,
+    workspace_context: dict[str, Any],
+    current_user_id: str | None,
+) -> dict[str, Any]:
+    """Resolve whether the CURRENT caller may approve this action.
+
+    Enforced canonically by role (owner/admin) plus separation of duties (the
+    proposer can never approve their own action). Returns a truthful reason so
+    the UI can show a read-only explanation instead of silently hiding controls.
+    """
+    role_str = str(workspace_context.get('role') or '').strip().lower()
+    normalized_role = ROLE_CANONICAL_MAP.get(role_str, role_str)
+    proposer_id = str(action.get('created_by_user_id') or '').strip()
+    if normalized_role and normalized_role not in LIVE_ACTION_APPROVER_ROLES:
+        return {'can_current_user_approve': False,
+                'approval_permission_reason': 'Owner or admin role is required to approve response actions.'}
+    if proposer_id and current_user_id and proposer_id == str(current_user_id):
+        return {'can_current_user_approve': False,
+                'approval_permission_reason': 'The action proposer cannot approve the same action (separation of duties).'}
+    return {'can_current_user_approve': True, 'approval_permission_reason': None}
+
+
+# Lifecycle states in which a recommendation is no longer an ACTIVE recommendation.
+_INACTIVE_RECOMMENDATION_STATES = frozenset({'cancelled', 'rejected', 'rolled_back'})
+
+
+def _summary_field(action: dict[str, Any], key: str) -> str:
+    lifecycle = action.get('lifecycle') if isinstance(action.get('lifecycle'), dict) else {}
+    return str(action.get(key) or lifecycle.get(key) or '').strip().lower()
+
+
+def build_response_actions_summary(actions: list[dict[str, Any]]) -> dict[str, Any]:
+    """The ONE canonical count definition for response actions.
+
+    Consumed by the Screen 8 summary cards, the Playbook Execution Agent panel,
+    the Approval Required banner, and any workspace/Screen 7 response-action
+    summary — so those surfaces can never disagree. Every count is derived from
+    each record's canonical lifecycle/approval/simulation/execution fields (which
+    are identical for policy actions and AI recommendation reviews), NEVER from a
+    display string. Because an approval-required record is 'pending' whether or not
+    it has also been simulated, a simulated action correctly still counts in
+    Pending Approval.
+    """
+    def simulation_status(action: dict[str, Any]) -> str:
+        lifecycle = action.get('lifecycle') if isinstance(action.get('lifecycle'), dict) else {}
+        return str(lifecycle.get('simulation_status') or '').strip().lower()
+
+    recommended = sum(1 for a in actions if _summary_field(a, 'lifecycle_state') not in _INACTIVE_RECOMMENDATION_STATES)
+    pending_approval = sum(1 for a in actions if _summary_field(a, 'approval_status') == 'pending')
+    simulated = sum(1 for a in actions if simulation_status(a) == 'passed')
+    executed = sum(1 for a in actions if _summary_field(a, 'execution_status') == 'executed')
+    ready_for_execution = sum(1 for a in actions if _summary_field(a, 'lifecycle_state') == 'ready_to_execute')
+    blocked = sum(1 for a in actions if _summary_field(a, 'lifecycle_state') in {'execution_failed', 'blocked'})
+    return {
+        'recommended': recommended,
+        'pending_approval': pending_approval,
+        # Alias so the agent panel and banner read the same field name they use.
+        'awaiting_approval': pending_approval,
+        'simulated': simulated,
+        'executed': executed,
+        'ready_for_execution': ready_for_execution,
+        'blocked': blocked,
+        'total': len(actions),
     }
 
 

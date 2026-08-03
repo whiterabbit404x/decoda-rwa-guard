@@ -78,9 +78,41 @@ type ActionRow = {
   nextRequiredStep?: string;
   requiresConfirmation?: boolean;
   liveExecutionConfigured?: boolean;
+  // Canonical approval quorum + caller permission (backend is the authority).
+  requiredApprovalCount?: number;
+  currentApprovalCount?: number;
+  canCurrentUserApprove?: boolean | null;
+  approvalPermissionReason?: string | null;
   // Distinct target so same-title actions across incidents are disambiguated.
   targetLabel?: string | null;
 };
+
+// Canonical response-action summary returned by the backend list endpoint. ONE
+// definition, shared by the cards, the Approval Required banner, and the agent
+// panel so those surfaces can never disagree with the rows.
+type ActionsSummary = {
+  recommended: number;
+  pendingApproval: number;
+  simulated: number;
+  executed: number;
+  readyForExecution: number;
+  blocked: number;
+  total: number;
+};
+
+function normalizeSummary(input: any): ActionsSummary | null {
+  if (!input || typeof input !== 'object') return null;
+  const num = (v: any): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  return {
+    recommended: num(input.recommended),
+    pendingApproval: num(input.pending_approval ?? input.awaiting_approval),
+    simulated: num(input.simulated),
+    executed: num(input.executed),
+    readyForExecution: num(input.ready_for_execution),
+    blocked: num(input.blocked),
+    total: num(input.total),
+  };
+}
 
 type HistoryRow = {
   id: string;
@@ -357,6 +389,26 @@ function normalizeActionRow(input: any, validIncidentIds: Set<string>): ActionRo
     nextRequiredStep: commands.next_required_step ? String(commands.next_required_step) : undefined,
     requiresConfirmation: commands.requires_confirmation === true,
     liveExecutionConfigured: commands.live_execution_configured === true,
+    // Canonical approval quorum + caller permission (from the backend, single source).
+    requiredApprovalCount:
+      typeof commands.required_approval_count === 'number'
+        ? commands.required_approval_count
+        : typeof input?.required_approval_count === 'number'
+          ? input.required_approval_count
+          : lifecycle.requires_approval || input?.requires_approval !== false
+            ? 1
+            : 0,
+    currentApprovalCount:
+      typeof commands.current_approval_count === 'number'
+        ? commands.current_approval_count
+        : typeof input?.current_approval_count === 'number'
+          ? input.current_approval_count
+          : 0,
+    canCurrentUserApprove:
+      typeof commands.can_current_user_approve === 'boolean' ? commands.can_current_user_approve : null,
+    approvalPermissionReason: commands.approval_permission_reason
+      ? String(commands.approval_permission_reason)
+      : null,
     targetLabel,
   };
 }
@@ -450,6 +502,7 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
     router.replace(qs ? `/response-actions?${qs}` : '/response-actions', { scroll: false });
   };
   const [recommendedRows, setRecommendedRows] = useState<ActionRow[]>([]);
+  const [backendSummary, setBackendSummary] = useState<ActionsSummary | null>(null);
   const [historyRows, setHistoryRows] = useState<HistoryRow[]>([]);
   const [selectedId, setSelectedId] = useState(actionIdParam);
   const [search, setSearch] = useState('');
@@ -549,6 +602,10 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
 
         if (!cancelled) {
           setRecommendedRows(recommended);
+          // Canonical counts from the backend summary (one definition for cards,
+          // banner, and agent panel). The row-derived counts stay as a fallback +
+          // dev-time consistency check.
+          setBackendSummary(normalizeSummary(actionsPayload?.summary));
           setHistoryRows(history);
 
           const targetId = actionIdParam || selectedId;
@@ -616,26 +673,51 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
     [filteredRecommended, selectedId],
   );
 
-  // Summary-card counts are derived from CANONICAL persisted state (the backend's
-  // approval_status / simulation_status / execution_status), never by searching
-  // display strings. An action that has not reached a terminal state and is not
-  // superseded is "recommended".
+  // Summary-card counts come from the ONE canonical backend summary so the cards,
+  // the Approval Required banner, and the Playbook Execution Agent panel can never
+  // disagree with each other or with the rows. The row-derived values are kept as
+  // a fallback (older backend without a summary) AND as a dev-time consistency
+  // assertion — a mismatch means the backend and the rows have diverged.
   const isActiveRecommendation = (r: ActionRow): boolean => {
     const s = (r.lifecycleState ?? '').toLowerCase();
     return s !== 'cancelled' && s !== 'rejected' && s !== 'rolled_back';
   };
-  const recommendedCount = recommendedRows.filter(isActiveRecommendation).length;
-  const pendingApprovalCount = recommendedRows.filter((r) => r.approvalStatus === 'pending').length;
-  const simulatedCount = recommendedRows.filter((r) => r.simulationStatus === 'passed').length;
-  const executedCount = recommendedRows.filter((r) => r.executionStatus === 'executed').length;
+  const rowRecommended = recommendedRows.filter(isActiveRecommendation).length;
+  const rowPendingApproval = recommendedRows.filter((r) => r.approvalStatus === 'pending').length;
+  const rowSimulated = recommendedRows.filter((r) => r.simulationStatus === 'passed').length;
+  const rowExecuted = recommendedRows.filter((r) => r.executionStatus === 'executed').length;
 
-  // Approval-required count for the orange banner + agent panel. Derived ONLY
-  // from persisted canonical approval_status, never hardcoded and never from a
-  // display string.
+  const recommendedCount = backendSummary?.recommended ?? rowRecommended;
+  const pendingApprovalCount = backendSummary?.pendingApproval ?? rowPendingApproval;
+  const simulatedCount = backendSummary?.simulated ?? rowSimulated;
+  const executedCount = backendSummary?.executed ?? rowExecuted;
+
+  // Dev-time invariant: the canonical backend summary must match the row-derived
+  // counts. Surfacing a divergence here prevents the "cards say 0 while rows say
+  // Requires Approval" class of bug from silently returning.
+  useEffect(() => {
+    if (!backendSummary || recommendedRows.length === 0) return;
+    if (process.env.NODE_ENV === 'production') return;
+    if (
+      backendSummary.pendingApproval !== rowPendingApproval ||
+      backendSummary.simulated !== rowSimulated ||
+      backendSummary.executed !== rowExecuted ||
+      backendSummary.recommended !== rowRecommended
+    ) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        'response-actions summary/rows count mismatch',
+        { backendSummary, rowRecommended, rowPendingApproval, rowSimulated, rowExecuted },
+      );
+    }
+  }, [backendSummary, rowRecommended, rowPendingApproval, rowSimulated, rowExecuted, recommendedRows.length]);
+
+  // Approval-required count for the orange banner + agent panel. Canonical backend
+  // summary first; row-derived approval_status as the fallback.
   function actionNeedsApproval(r: ActionRow): boolean {
     return r.approvalStatus === 'pending';
   }
-  const approvalRequiredCount = recommendedRows.filter(actionNeedsApproval).length;
+  const approvalRequiredCount = backendSummary?.pendingApproval ?? recommendedRows.filter(actionNeedsApproval).length;
 
   function getBlocker(): Blocker | null {
     // If actions already exist, never block the table — pipeline checks are only relevant
@@ -988,6 +1070,7 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
             <div style={{ display: 'grid', gap: '1rem' }}>
               <PlaybookAgentPanel
                 rows={recommendedRows}
+                summary={backendSummary}
                 incidentIdFilter={incidentIdFilter}
                 selectedAction={selectedAction}
                 liveExecutionAllowed={liveExecutionAllowed}
@@ -1052,6 +1135,66 @@ function ActionDetailPanel({
   const canSimulate = !isAiReview && (allowedCommands.includes('simulate') || allowedCommands.includes('retry_simulation'));
 
   const approvalBlocked = action.approvalStatus === 'pending';
+  // Approve / Reject visibility. For a policy action the backend's allowed_commands
+  // is the authority; for an AI recommendation review the decision is made in the
+  // incident investigation, so we route there. can_current_user_approve gates the
+  // controls: when the caller is not authorized we show the truthful reason instead
+  // of silently hiding the buttons. Button visibility is NEVER authorization — the
+  // backend re-checks role + separation of duties on every command.
+  const approvalPending = action.approvalStatus === 'pending';
+  const policyCanApprove = !isAiReview && allowedCommands.includes('approve');
+  const userMayApprove = action.canCurrentUserApprove !== false;
+  const showPolicyApproval = policyCanApprove && userMayApprove;
+  const showAiReviewApproval = isAiReview && approvalPending && !!action.linkedIncident;
+  const approvalDenominator = action.requiredApprovalCount ?? (action.requiresApproval ? 1 : 0);
+  const approvalNumerator = action.currentApprovalCount ?? 0;
+
+  async function approveAction() {
+    // Policy action -> response-action approve. AI review -> incident recommendation
+    // approve (the real, existing governed command). Both persist server-side.
+    const endpoint = isAiReview
+      ? `/api/incidents/${action.linkedIncident}/recommendations/${action.id}/approve`
+      : `/api/response/actions/${action.id}/approve`;
+    onMessage('Submitting approval…');
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({}),
+      });
+      const data = (await res.json().catch(() => ({}))) as { detail?: unknown };
+      onMessage(res.ok ? 'Approval recorded.' : _extractErrorMessage(data.detail, 'Approval was blocked by the backend.'));
+      router.refresh();
+    } catch {
+      onMessage('Approval request failed. Check network connection.');
+    }
+  }
+
+  async function rejectAction() {
+    // Reject requires a reason (enforced by the backend too — the prompt is a
+    // convenience, not the authority).
+    const reason = typeof window !== 'undefined' ? window.prompt('Reason for rejecting this action (required):')?.trim() : '';
+    if (!reason) {
+      onMessage('Rejection cancelled — a reason is required.');
+      return;
+    }
+    const endpoint = isAiReview
+      ? `/api/incidents/${action.linkedIncident}/recommendations/${action.id}/reject`
+      : `/api/response/actions/${action.id}/reject`;
+    onMessage('Submitting rejection…');
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ reason }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { detail?: unknown };
+      onMessage(res.ok ? 'Rejection recorded.' : _extractErrorMessage(data.detail, 'Rejection was blocked by the backend.'));
+      router.refresh();
+    } catch {
+      onMessage('Rejection request failed. Check network connection.');
+    }
+  }
 
   function _extractErrorMessage(detail: unknown, fallback: string): string {
     if (typeof detail === 'string') return detail;
@@ -1352,6 +1495,12 @@ function ActionDetailPanel({
                       ? 'Rejected'
                       : 'Not required'}
               </p>
+              {/* Approval quorum progress (0 of 1, 1 of 2, …) from canonical counts. */}
+              {approvalDenominator > 0 ? (
+                <p className="muted" style={{ fontSize: '0.68rem', margin: '0.1rem 0 0' }}>
+                  {approvalNumerator} of {approvalDenominator} approved
+                </p>
+              ) : null}
             </div>
             <div>
               <p className="tableMeta" style={{ marginBottom: '0.05rem', fontSize: '0.65rem' }}>Simulation</p>
@@ -1433,9 +1582,22 @@ function ActionDetailPanel({
       </div>
 
       {isAiReview ? (
-        // AI recommendation reviews are immutable human-review records. Never offer
-        // Simulate/Execute here — only neutral read links to the underlying evidence.
+        // AI recommendation reviews are decided (approve/reject) in the incident
+        // investigation — the same governed backend command Screen 7 uses. They are
+        // never simulated/executed here. When still awaiting a decision we surface
+        // Approve/Reject inline (routing to the incident endpoints); otherwise only
+        // neutral read links to the underlying evidence.
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          {showAiReviewApproval ? (
+            <>
+              <button type="button" className="btn btn-primary" style={{ fontSize: '0.8rem' }} onClick={() => void approveAction()}>
+                Approve
+              </button>
+              <button type="button" className="btn btn-secondary" style={{ fontSize: '0.8rem' }} onClick={() => void rejectAction()}>
+                Reject
+              </button>
+            </>
+          ) : null}
           <Link
             href={action.linkedIncident ? `/incidents/${action.linkedIncident}` : '/incidents'}
             prefetch={false}
@@ -1470,7 +1632,29 @@ function ActionDetailPanel({
               <strong style={{ color: 'var(--warning-fg)' }}>Execution blocked:</strong> {executeBlockedReason}
             </p>
           ) : null}
+          {/* Read-only approval permission explanation: when approval is pending but
+              the current user is not authorized, we say WHY rather than hiding the
+              controls with no reason. */}
+          {approvalPending && policyCanApprove && !userMayApprove ? (
+            <p className="muted" style={{ fontSize: '0.75rem', margin: '0 0 0.5rem' }}>
+              <strong style={{ color: 'var(--warning-fg)' }}>Approval required:</strong>{' '}
+              {action.approvalPermissionReason ?? 'You do not have permission to approve this action.'}
+            </p>
+          ) : null}
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            {/* Approve / Reject appear when the backend says approval is the next
+                step AND the caller is authorized. Reject requires a reason. Both
+                call real, permission-enforced backend commands. */}
+            {showPolicyApproval ? (
+              <>
+                <button type="button" className="btn btn-primary" style={{ fontSize: '0.8rem' }} onClick={() => void approveAction()}>
+                  Approve
+                </button>
+                <button type="button" className="btn btn-secondary" style={{ fontSize: '0.8rem' }} onClick={() => void rejectAction()}>
+                  Reject
+                </button>
+              </>
+            ) : null}
             {canExecute ? (
               <button
                 type="button"
@@ -1480,10 +1664,13 @@ function ActionDetailPanel({
               >
                 Execute Action
               </button>
-            ) : canSimulate ? (
+            ) : canSimulate && !showPolicyApproval ? (
               <button type="button" className="btn btn-primary" style={{ fontSize: '0.8rem' }} onClick={() => void simulateAction()}>
                 {action.simulationStatus === 'passed' ? 'Retry Simulation' : 'Simulate Action'}
               </button>
+            ) : showPolicyApproval ? (
+              // Approve/Reject already shown above — don't duplicate a disabled pill.
+              null
             ) : (
               <button type="button" className="btn btn-primary" style={{ fontSize: '0.8rem' }} disabled title={executeBlockedReason ?? 'No command available'}>
                 {approvalBlocked ? 'Awaiting Approval' : 'No Action Available'}
@@ -1561,6 +1748,7 @@ function isSimulateEligible(r: ActionRow): boolean {
 
 function PlaybookAgentPanel({
   rows,
+  summary,
   incidentIdFilter,
   selectedAction,
   liveExecutionAllowed,
@@ -1569,6 +1757,7 @@ function PlaybookAgentPanel({
   onMessage,
 }: {
   rows: ActionRow[];
+  summary: ActionsSummary | null;
   incidentIdFilter: string;
   selectedAction: ActionRow | null;
   liveExecutionAllowed: boolean;
@@ -1581,16 +1770,18 @@ function PlaybookAgentPanel({
   const [checks, setChecks] = useState<SafetyChecksPayload | null>(null);
   const [checksState, setChecksState] = useState<'idle' | 'loading' | 'ready' | 'error' | 'not_applicable'>('idle');
 
-  // Agent summary — all from CANONICAL persisted row state (lifecycle_state /
-  // approval_status / execution_status), never from display-string matching.
-  const recommended = rows.length;
-  const awaitingApproval = rows.filter((r) => r.approvalStatus === 'pending').length;
+  // Agent summary — the SAME canonical backend summary the top cards use, so the
+  // panel and the cards can never disagree. Row-derived values are the fallback.
+  const recommended = summary?.recommended ?? rows.length;
+  const awaitingApproval = summary?.pendingApproval ?? rows.filter((r) => r.approvalStatus === 'pending').length;
+  // Eligibility for the batch dry-run is a row-level concern (mirrors the backend
+  // simulate eligibility) — the summary does not carry it.
   const readyForDryRun = rows.filter(isSimulateEligible).length;
-  const simulated = rows.filter((r) => r.simulationStatus === 'passed').length;
-  const readyForExecution = rows.filter((r) => r.lifecycleState === 'ready_to_execute').length;
-  const blocked = rows.filter(
-    (r) => r.lifecycleState === 'execution_failed' || r.lifecycleState === 'blocked',
-  ).length;
+  const simulated = summary?.simulated ?? rows.filter((r) => r.simulationStatus === 'passed').length;
+  const readyForExecution = summary?.readyForExecution ?? rows.filter((r) => r.lifecycleState === 'ready_to_execute').length;
+  const blocked =
+    summary?.blocked ??
+    rows.filter((r) => r.lifecycleState === 'execution_failed' || r.lifecycleState === 'blocked').length;
   const lastEval = rows
     .map((r) => r.createdAt)
     .filter(Boolean)
@@ -1710,15 +1901,29 @@ function PlaybookAgentPanel({
         </p>
       </div>
 
+      {/* Truthful eligibility label: only actions without a currently-valid
+          simulation (and not terminal/executing) are eligible, so already-simulated
+          actions are never re-run. When nothing is eligible the button is disabled
+          with the reason. */}
       <button
         type="button"
         className="btn btn-primary"
         style={{ fontSize: '0.82rem', width: '100%', marginBottom: '0.85rem' }}
         disabled={simulating || readyForDryRun === 0}
-        title={readyForDryRun === 0 ? 'No eligible actions to simulate' : 'Simulate all eligible actions'}
+        title={
+          readyForDryRun === 0
+            ? simulated > 0
+              ? 'All eligible actions already have a valid simulation'
+              : 'No eligible actions to simulate'
+            : `Dry-run simulate the ${readyForDryRun} eligible action${readyForDryRun === 1 ? '' : 's'}`
+        }
         onClick={() => void simulateAll()}
       >
-        {simulating ? 'Simulating…' : 'Simulate All'}
+        {simulating
+          ? 'Simulating…'
+          : readyForDryRun === 0
+            ? 'No Eligible Actions to Simulate'
+            : `Simulate ${readyForDryRun} Eligible Action${readyForDryRun === 1 ? '' : 's'}`}
       </button>
 
       <div>
