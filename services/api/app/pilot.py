@@ -16999,12 +16999,20 @@ def append_incident_timeline_note(incident_id: str, payload: dict[str, Any], req
 RESPONSE_ACTION_TYPES = {
     'freeze_wallet',
     'pause_mint_redeem',
+    'pause_asset_transfers',
     'block_transaction',
     'revoke_approval',
     'escalate_to_issuer',
+    'escalate_multisig',
     'notify_compliance_team',
     'generate_regulator_auditor_package',
     'disable_monitored_system',
+    'disable_integration',
+    'isolate_provider',
+    'rotate_credential',
+    'preserve_evidence',
+    'snapshot_chain_state',
+    'increase_monitoring',
     'suppress_rule',
     'notify_team',
 }
@@ -17020,14 +17028,30 @@ RESPONSE_ACTION_MODE_POLICY: dict[str, tuple[str, ...]] = {
     'suppress_rule': ('simulated', 'recommended', 'live'),
     'notify_team': ('simulated', 'recommended', 'live'),
     'block_transaction': ('simulated', 'recommended', 'live'),
+    'pause_asset_transfers': ('simulated', 'recommended', 'live'),
+    'escalate_multisig': ('simulated', 'recommended', 'live'),
+    'disable_integration': ('simulated', 'recommended', 'live'),
+    'isolate_provider': ('simulated', 'recommended', 'live'),
+    'rotate_credential': ('simulated', 'recommended', 'live'),
+    'preserve_evidence': ('simulated', 'recommended', 'live'),
+    'snapshot_chain_state': ('simulated', 'recommended', 'live'),
+    'increase_monitoring': ('simulated', 'recommended', 'live'),
 }
 RESPONSE_ACTION_LIVE_EXECUTION_PATHS = {'safe', 'governance', 'manual_only', 'unsupported'}
 RESPONSE_ACTION_LIVE_EXECUTION_DEFAULTS: dict[str, tuple[str, str | None]] = {
     'notify_compliance_team': ('governance', None),
     'escalate_to_issuer': ('governance', None),
+    'escalate_multisig': ('governance', None),
     'generate_regulator_auditor_package': ('manual_only', 'Manual-only in live mode'),
     'pause_mint_redeem': ('manual_only', 'Manual-only in live mode'),
+    'pause_asset_transfers': ('manual_only', 'Manual-only in live mode'),
     'disable_monitored_system': ('manual_only', 'Manual-only in live mode'),
+    'disable_integration': ('manual_only', 'Manual-only in live mode'),
+    'isolate_provider': ('manual_only', 'Manual-only in live mode'),
+    'rotate_credential': ('manual_only', 'Manual-only in live mode'),
+    'preserve_evidence': ('manual_only', 'Manual-only in live mode'),
+    'snapshot_chain_state': ('manual_only', 'Manual-only in live mode'),
+    'increase_monitoring': ('manual_only', 'Manual-only in live mode'),
     'suppress_rule': ('manual_only', 'Manual-only in live mode'),
     'notify_team': ('governance', None),
     'freeze_wallet': ('governance', None),
@@ -17049,6 +17073,14 @@ RESPONSE_ACTION_INTENTS: dict[str, str] = {
     'block_transaction': 'block transaction recommendation',
     'disable_monitored_system': 'pause mint/redeem recommendation',
     'notify_team': 'notify compliance team',
+    'escalate_multisig': 'escalate multisig approval',
+    'preserve_evidence': 'preserve incident evidence',
+    'snapshot_chain_state': 'snapshot blockchain state',
+    'increase_monitoring': 'increase monitoring sensitivity',
+    'isolate_provider': 'isolate degraded provider',
+    'disable_integration': 'disable vulnerable integration',
+    'rotate_credential': 'rotate compromised credential',
+    'pause_asset_transfers': 'pause asset transfers recommendation',
 }
 ENFORCEMENT_STATUSES = {'pending', 'executed', 'failed', 'canceled'}
 LIVE_ACTION_APPROVER_ROLES = {'owner', 'admin'}
@@ -17241,6 +17273,27 @@ def _response_action_payload(action: dict[str, Any]) -> dict[str, Any]:
         'incident_id': result.get('incident_id') or meta_chain.get('incident_id'),
         'action_id': result.get('id'),
     }
+
+    # ── Canonical operator-facing presentation (single source of truth) ──────
+    # display_title/description so the raw action_type key is never the primary
+    # UI title; a single derived lifecycle state so approval/simulation/execution
+    # are never concatenated; truthful provenance so evidence is never shown as
+    # 'none'; and allowed_commands so button visibility is not authorization.
+    presentation = response_action_presentation(result.get('action_type'))
+    result['display_title'] = presentation['display_title']
+    result['display_description'] = presentation['display_description']
+    lifecycle = response_action_lifecycle(result)
+    result['lifecycle'] = lifecycle
+    result['lifecycle_state'] = lifecycle['lifecycle_state']
+    result['lifecycle_label'] = lifecycle['lifecycle_label']
+    result['approval_status'] = lifecycle['approval_status']
+    # Preserve the existing top-level simulation_status contract ('simulated'/None).
+    # The canonical passed/not_started value lives under result['lifecycle'].
+    result['execution_status'] = lifecycle['execution_status']
+    result['rollback_status'] = lifecycle['rollback_status']
+    result['requires_approval'] = bool(lifecycle['requires_approval'])
+    result['provenance'] = response_action_provenance(result)
+    result['commands'] = response_action_command_eligibility(result, lifecycle=lifecycle)
     return result
 
 
@@ -17760,107 +17813,207 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
         )
 
 
-def recommend_response_action_for_incident(incident_id: str, request: Request) -> dict[str, Any]:
-    """Create or return an existing recommended response action for an incident.
+def recommended_action_plan_for_incident(
+    *,
+    severity: str | None,
+    event_type: str | None,
+    alert_type: str | None = None,
+    summary: str | None = None,
+) -> list[str]:
+    """Deterministic, context-specific mitigation plan for an incident.
 
-    Unlike create_enforcement_action, this does not require live mode — recommended
-    actions are the planning/triage step before live execution. Deduplicates on
-    (incident_id, action_type, mode='recommended') so clicking twice is safe.
+    Pure and idempotent for the same inputs — never random. Draws only from the
+    canonical response action types. It fails safe: destructive containment
+    (freeze/pause/block) is never recommended without a matching signal, and a
+    provider-latency incident yields provider isolation + monitoring, never an
+    asset pause. Evidence preservation is always first for forensic integrity,
+    and a team notification is always included.
+    """
+    text = ' '.join(str(t) for t in (event_type, alert_type, summary) if t).lower()
+    sev = str(severity or '').strip().lower()
+
+    def has(*needles: str) -> bool:
+        return any(n in text for n in needles)
+
+    plan: list[str] = ['preserve_evidence']
+    if has('mint', 'unauthorized', 'supply', 'inflation'):
+        plan += ['snapshot_chain_state', 'escalate_multisig', 'increase_monitoring']
+    elif has('approval', 'allowance', 'credential', 'compromis', 'private key', 'permission'):
+        plan += ['revoke_approval', 'rotate_credential', 'disable_integration']
+    elif has('rpc', 'provider', 'latency', 'degraded', 'endpoint', 'timeout'):
+        plan += ['isolate_provider', 'increase_monitoring']
+    elif has('oracle', 'heartbeat', 'feed', 'stale', 'price'):
+        plan += ['isolate_provider', 'increase_monitoring']
+    elif has('transfer', 'suspicious', 'drain', 'exfil', 'launder', 'mixer'):
+        plan += ['increase_monitoring', 'escalate_multisig']
+    else:
+        plan += ['increase_monitoring']
+
+    plan.append('notify_team')
+    if sev in {'critical', 'high'}:
+        plan.append('escalate_to_issuer')
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for action_type in plan:
+        if action_type not in seen:
+            seen.add(action_type)
+            ordered.append(action_type)
+    return ordered
+
+
+def recommend_response_action_for_incident(incident_id: str, request: Request) -> dict[str, Any]:
+    """Create or return the recommended response plan for an incident.
+
+    The Playbook Execution Agent formulates an incident-SPECIFIC set of mitigation
+    steps (see recommended_action_plan_for_incident) rather than a single generic
+    action. Idempotent: deduplicates on (workspace_id, incident_id, action_type,
+    mode='recommended'), so re-running for the same incident never creates
+    duplicates and reuses the existing rows. Freshly recommended actions record
+    the honest execution_state='recommended' (not 'simulated') and an
+    'incident_context' provenance — never simulator/fake evidence. Unlike
+    create_enforcement_action this does not require live mode; recommendation is
+    the planning/triage step before any simulation or execution.
     """
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_permission(connection, request, 'response.propose')
         workspace_id = workspace_context['workspace_id']
         incident_row = connection.execute(
-            'SELECT id, source_alert_id FROM incidents WHERE id = %s::uuid AND workspace_id = %s',
+            'SELECT id, source_alert_id, severity, event_type, summary FROM incidents WHERE id = %s::uuid AND workspace_id = %s',
             (incident_id, workspace_id),
         ).fetchone()
         if incident_row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Incident not found.')
         alert_id = incident_row.get('source_alert_id')
-        action_type = 'notify_team'
-        existing = connection.execute(
-            """SELECT id FROM response_actions
-               WHERE incident_id = %s::uuid AND workspace_id = %s AND action_type = %s AND mode = 'recommended'
-               ORDER BY created_at DESC LIMIT 1""",
-            (incident_id, workspace_id, action_type),
-        ).fetchone()
-        if existing:
-            return {'response_action_id': str(existing['id']), 'incident_id': incident_id, 'created': False}
-        action_id = str(uuid.uuid4())
-        execution_metadata = _json_safe_value({
-            'params': {},
-            'created_via': 'recommend_endpoint',
-            'action_intent': RESPONSE_ACTION_INTENTS.get(action_type, 'Notify Team'),
-            'evidence_source': 'simulator',
-            'chain_linked_ids': {
-                'incident_id': incident_id,
-                'alert_id': str(alert_id) if alert_id else None,
-            },
-        })
-        execution_artifacts = _json_safe_value({
-            'provider': {'receipts': []},
-            'status_transitions': [
-                _json_safe_value({
-                    'at': utc_now_iso(),
-                    'from_status': None,
-                    'to_status': 'pending',
+        alert_type = None
+        if alert_id:
+            alert_row = connection.execute(
+                'SELECT alert_type, title FROM alerts WHERE id = %s::uuid AND workspace_id = %s',
+                (str(alert_id), workspace_id),
+            ).fetchone()
+            if alert_row:
+                alert_type = ' '.join(
+                    str(v) for v in (alert_row.get('alert_type'), alert_row.get('title')) if v
+                )
+
+        plan = recommended_action_plan_for_incident(
+            severity=incident_row.get('severity'),
+            event_type=incident_row.get('event_type'),
+            alert_type=alert_type,
+            summary=incident_row.get('summary'),
+        )
+
+        created_ids: list[str] = []
+        action_ids_by_type: dict[str, str] = {}
+        for action_type in plan:
+            existing = connection.execute(
+                """SELECT id FROM response_actions
+                   WHERE incident_id = %s::uuid AND workspace_id = %s AND action_type = %s AND mode = 'recommended'
+                   ORDER BY created_at DESC LIMIT 1""",
+                (incident_id, workspace_id, action_type),
+            ).fetchone()
+            if existing:
+                action_ids_by_type[action_type] = str(existing['id'])
+                continue
+            action_id = str(uuid.uuid4())
+            execution_metadata = _json_safe_value({
+                'params': {},
+                'created_via': 'recommend_endpoint',
+                'action_intent': RESPONSE_ACTION_INTENTS.get(action_type, action_type.replace('_', ' ')),
+                # Derived from canonical incident context — NOT simulator/demo data.
+                'evidence_source': 'incident_context',
+                'chain_linked_ids': {
+                    'incident_id': incident_id,
+                    'alert_id': str(alert_id) if alert_id else None,
+                },
+            })
+            execution_artifacts = _json_safe_value({
+                'provider': {'receipts': []},
+                'status_transitions': [
+                    _json_safe_value({
+                        'at': utc_now_iso(),
+                        'from_status': None,
+                        'to_status': 'pending',
+                        'mode': 'recommended',
+                        'execution_state': 'recommended',
+                        'reason': 'created_via_recommend',
+                    })
+                ],
+            })
+            connection.execute(
+                '''INSERT INTO response_actions (
+                    id, workspace_id, incident_id, alert_id, action_type, mode, status, result_summary, operator_notes,
+                    chain_network, target_wallet, token_contract, spender, calldata,
+                    execution_state, execution_metadata, execution_artifacts, provider_receipts, error_code, result_status, tx_hash, created_by_user_id
+                ) VALUES (
+                    %(id)s, %(workspace_id)s, %(incident_id)s::uuid, %(alert_id)s::uuid, %(action_type)s, %(mode)s, %(status)s,
+                    %(result_summary)s, %(operator_notes)s, %(chain_network)s, %(target_wallet)s, %(token_contract)s, %(spender)s, %(calldata)s,
+                    %(execution_state)s, %(execution_metadata)s::jsonb, %(execution_artifacts)s::jsonb, %(provider_receipts)s::jsonb,
+                    %(error_code)s, %(result_status)s, %(tx_hash)s, %(created_by_user_id)s
+                )''',
+                {
+                    'id': action_id,
+                    'workspace_id': workspace_id,
+                    'incident_id': incident_id,
+                    'alert_id': str(alert_id) if alert_id else None,
+                    'action_type': action_type,
                     'mode': 'recommended',
-                    'execution_state': 'simulated',
-                    'reason': 'created_via_recommend',
-                })
-            ],
-        })
-        connection.execute(
-            '''INSERT INTO response_actions (
-                id, workspace_id, incident_id, alert_id, action_type, mode, status, result_summary, operator_notes,
-                chain_network, target_wallet, token_contract, spender, calldata,
-                execution_state, execution_metadata, execution_artifacts, provider_receipts, error_code, result_status, tx_hash, created_by_user_id
-            ) VALUES (
-                %(id)s, %(workspace_id)s, %(incident_id)s::uuid, %(alert_id)s::uuid, %(action_type)s, %(mode)s, %(status)s,
-                %(result_summary)s, %(operator_notes)s, %(chain_network)s, %(target_wallet)s, %(token_contract)s, %(spender)s, %(calldata)s,
-                %(execution_state)s, %(execution_metadata)s::jsonb, %(execution_artifacts)s::jsonb, %(provider_receipts)s::jsonb,
-                %(error_code)s, %(result_status)s, %(tx_hash)s, %(created_by_user_id)s
-            )''',
-            {
-                'id': action_id,
-                'workspace_id': workspace_id,
-                'incident_id': incident_id,
-                'alert_id': str(alert_id) if alert_id else None,
-                'action_type': action_type,
-                'mode': 'recommended',
-                'status': 'pending',
-                'result_summary': None,
-                'operator_notes': None,
-                'chain_network': None,
-                'target_wallet': None,
-                'token_contract': None,
-                'spender': None,
-                'calldata': None,
-                'execution_state': 'simulated',
-                'execution_metadata': _json_dumps(execution_metadata),
-                'execution_artifacts': _json_dumps(execution_artifacts),
-                'provider_receipts': _json_dumps([]),
-                'error_code': None,
-                'result_status': 'pending',
-                'tx_hash': None,
-                'created_by_user_id': user['id'],
-            },
-        )
-        write_action_history(
-            connection, workspace_id=workspace_id, actor_type='user', actor_id=user['id'],
-            object_type='response_action', object_id=action_id,
-            action_type='response_action.created',
-            details={'action_type': action_type, 'mode': 'recommended', 'incident_id': incident_id},
-        )
-        write_action_history(
-            connection, workspace_id=workspace_id, actor_type='user', actor_id=user['id'],
-            object_type='incident', object_id=incident_id,
-            action_type='incident.response_action_created',
-            details={'response_action_id': action_id, 'action_type': action_type, 'mode': 'recommended'},
-        )
-        connection.commit()
-        return {'response_action_id': action_id, 'incident_id': incident_id, 'created': True}
+                    'status': 'pending',
+                    'result_summary': None,
+                    'operator_notes': None,
+                    'chain_network': None,
+                    'target_wallet': None,
+                    'token_contract': None,
+                    'spender': None,
+                    'calldata': None,
+                    'execution_state': 'recommended',
+                    'execution_metadata': _json_dumps(execution_metadata),
+                    'execution_artifacts': _json_dumps(execution_artifacts),
+                    'provider_receipts': _json_dumps([]),
+                    'error_code': None,
+                    'result_status': 'pending',
+                    'tx_hash': None,
+                    'created_by_user_id': user['id'],
+                },
+            )
+            action_ids_by_type[action_type] = action_id
+            created_ids.append(action_id)
+            write_action_history(
+                connection, workspace_id=workspace_id, actor_type='user', actor_id=user['id'],
+                object_type='response_action', object_id=action_id,
+                action_type='response_action.created',
+                details={'action_type': action_type, 'mode': 'recommended', 'incident_id': incident_id},
+            )
+
+        if created_ids:
+            # One incident-timeline event summarizing the recommended plan (Screen 7
+            # integration), rather than N noisy per-action incident events.
+            write_action_history(
+                connection, workspace_id=workspace_id, actor_type='user', actor_id=user['id'],
+                object_type='incident', object_id=incident_id,
+                action_type='incident.response_plan_recommended',
+                details={
+                    'mode': 'recommended',
+                    'created_count': len(created_ids),
+                    'action_types': plan,
+                    'response_action_ids': created_ids,
+                },
+            )
+            connection.commit()
+
+        # Anchor the caller on the primary mitigation (the first context-specific
+        # action after evidence preservation), stable across repeated calls.
+        anchor_type = plan[1] if len(plan) > 1 else plan[0]
+        anchor_id = action_ids_by_type.get(anchor_type) or next(iter(action_ids_by_type.values()), None)
+        return {
+            'response_action_id': anchor_id,
+            'incident_id': incident_id,
+            'created': bool(created_ids),
+            'created_count': len(created_ids),
+            'action_ids': [action_ids_by_type[t] for t in plan if t in action_ids_by_type],
+            'action_types': plan,
+        }
 
 
 def approve_enforcement_action(action_id: str, request: Request) -> dict[str, Any]:
@@ -19230,6 +19383,87 @@ RESPONSE_ACTION_RUNBOOKS: dict[str, dict[str, Any]] = {
             'Require owner/admin approval before suppressing',
         ],
     },
+    'preserve_evidence': {
+        'runbook_id': 'RBK-FR-02', 'name': 'Preserve incident evidence', 'category': 'Forensics',
+        'priority': 'high', 'blast_radius': 'evidence_only', 'reversibility': 'reversible',
+        'requires_approval': False,
+        'steps': [
+            'Snapshot the current incident evidence set',
+            'Hash and seal the snapshot for forensic integrity',
+            'Link the preserved evidence back to the incident',
+        ],
+    },
+    'snapshot_chain_state': {
+        'runbook_id': 'RBK-FR-03', 'name': 'Snapshot blockchain state', 'category': 'Forensics',
+        'priority': 'medium', 'blast_radius': 'evidence_only', 'reversibility': 'reversible',
+        'requires_approval': False,
+        'steps': [
+            'Capture the current block height and affected contract state',
+            'Record the on-chain read for forensic continuity',
+            'Attach the snapshot to the incident evidence set',
+        ],
+    },
+    'increase_monitoring': {
+        'runbook_id': 'RBK-DT-03', 'name': 'Increase monitoring sensitivity', 'category': 'Detection',
+        'priority': 'medium', 'blast_radius': 'monitoring_rule', 'reversibility': 'reversible',
+        'requires_approval': False,
+        'steps': [
+            'Identify the affected assets and related addresses',
+            'Tighten detection thresholds around them',
+            'Record the coverage change on the incident timeline',
+        ],
+    },
+    'isolate_provider': {
+        'runbook_id': 'RBK-DT-04', 'name': 'Isolate degraded provider', 'category': 'Detection',
+        'priority': 'high', 'blast_radius': 'monitoring_source', 'reversibility': 'reversible',
+        'requires_approval': True,
+        'steps': [
+            'Confirm the RPC/oracle provider is degraded or stale',
+            'Route telemetry to an approved healthy fallback',
+            'Verify block-height / feed continuity after the switch',
+        ],
+    },
+    'disable_integration': {
+        'runbook_id': 'RBK-SC-02', 'name': 'Disable vulnerable integration', 'category': 'Security',
+        'priority': 'high', 'blast_radius': 'integration', 'reversibility': 'reversible',
+        'requires_approval': True,
+        'steps': [
+            'Confirm the integration is affected or compromised',
+            'Disable the integration and narrow its permissions',
+            'Record the change and schedule a review before re-enabling',
+        ],
+    },
+    'rotate_credential': {
+        'runbook_id': 'RBK-SC-03', 'name': 'Rotate compromised credential', 'category': 'Security',
+        'priority': 'high', 'blast_radius': 'integration', 'reversibility': 'reversible',
+        'requires_approval': True,
+        'steps': [
+            'Identify the affected credential',
+            'Rotate the credential through the approved workflow',
+            'Verify dependent services after rotation',
+        ],
+    },
+    'escalate_multisig': {
+        'runbook_id': 'RBK-CM-03', 'name': 'Escalate multisig approval', 'category': 'Communication',
+        'priority': 'high', 'blast_radius': 'organizational', 'reversibility': 'reversible',
+        'requires_approval': True,
+        'steps': [
+            'Assemble the incident summary and cited evidence',
+            'Request review from the configured multisig approvers',
+            'Record the escalation on the incident timeline',
+        ],
+    },
+    'pause_asset_transfers': {
+        'runbook_id': 'RBK-CT-04', 'name': 'Pause asset transfers', 'category': 'Containment',
+        'priority': 'critical', 'blast_radius': 'contract_wide', 'reversibility': 'reversible',
+        'requires_approval': True,
+        'steps': [
+            'Confirm the asset contract exposes an approved pause capability',
+            'Validate the incident still affects the paused asset',
+            'Simulate the pause call before any live execution',
+            'Require owner/admin approval before executing',
+        ],
+    },
 }
 
 _PRIORITY_ORDER = {'low': 0, 'medium': 1, 'high': 2, 'critical': 3}
@@ -19281,6 +19515,384 @@ def response_action_playbook_profile(
         'reversibility': profile['reversibility'],
         'requires_approval': bool(profile['requires_approval']),
         'runbook_steps': list(profile['steps']),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Canonical operator-facing presentation for response actions.
+#
+# ONE source of truth for the human title/description of every action_type, so
+# the raw persistence key (e.g. 'notify_team') is never rendered as the primary
+# operator title and no React component re-implements its own mapping. The stable
+# action_key is always preserved for persistence, dedup, adapters, and commands.
+# ---------------------------------------------------------------------------
+RESPONSE_ACTION_DEFINITIONS: dict[str, dict[str, str]] = {
+    'notify_team': {
+        'display_title': 'Notify Security Team',
+        'display_description': 'Alert the incident-response team through the workspace channel.',
+    },
+    'notify_compliance_team': {
+        'display_title': 'Notify Compliance Team',
+        'display_description': 'Send the compliance-relevant findings to the compliance group.',
+    },
+    'escalate_to_issuer': {
+        'display_title': 'Escalate to Issuer',
+        'display_description': 'Escalate the incident to the token issuer contact for response.',
+    },
+    'escalate_multisig': {
+        'display_title': 'Escalate Multisig Approval',
+        'display_description': 'Request review and sign-off from the configured multisig approvers.',
+    },
+    'preserve_evidence': {
+        'display_title': 'Preserve Incident Evidence',
+        'display_description': 'Snapshot and hash the current evidence set before any mitigation.',
+    },
+    'snapshot_chain_state': {
+        'display_title': 'Snapshot Blockchain State',
+        'display_description': 'Capture the on-chain state and block height for forensic continuity.',
+    },
+    'generate_regulator_auditor_package': {
+        'display_title': 'Generate Regulator / Auditor Package',
+        'display_description': 'Assemble the signed, hashed export package for regulators or auditors.',
+    },
+    'increase_monitoring': {
+        'display_title': 'Increase Monitoring Sensitivity',
+        'display_description': 'Tighten detection thresholds around the affected assets and addresses.',
+    },
+    'isolate_provider': {
+        'display_title': 'Isolate Degraded Provider',
+        'display_description': 'Route telemetry away from the degraded RPC/oracle provider to a healthy fallback.',
+    },
+    'disable_monitored_system': {
+        'display_title': 'Isolate Monitored System',
+        'display_description': 'Isolate or reroute the degraded monitoring source and record the coverage impact.',
+    },
+    'disable_integration': {
+        'display_title': 'Disable Vulnerable Integration',
+        'display_description': 'Disable the affected integration until it can be reviewed and re-enabled.',
+    },
+    'rotate_credential': {
+        'display_title': 'Rotate Compromised Credential',
+        'display_description': 'Rotate the affected credential and narrow its permissions.',
+    },
+    'suppress_rule': {
+        'display_title': 'Suppress Detection Rule',
+        'display_description': 'Scope a suppression window for a confirmed false-positive detection rule.',
+    },
+    'freeze_wallet': {
+        'display_title': 'Freeze Wallet',
+        'display_description': 'Freeze the targeted wallet address pending investigation.',
+    },
+    'pause_mint_redeem': {
+        'display_title': 'Pause Mint / Redeem',
+        'display_description': 'Pause mint and redeem on the affected asset contract.',
+    },
+    'pause_asset_transfers': {
+        'display_title': 'Pause Asset Transfers',
+        'display_description': 'Pause transfers on the affected tokenized asset.',
+    },
+    'block_transaction': {
+        'display_title': 'Block Transaction',
+        'display_description': 'Block the specific transaction identified in the incident.',
+    },
+    'revoke_approval': {
+        'display_title': 'Revoke Token Approval',
+        'display_description': 'Revoke the compromised ERC-20 spender approval.',
+    },
+}
+
+
+def response_action_presentation(action_type: str | None) -> dict[str, str]:
+    """Canonical display title/description for an action_type.
+
+    Falls back to a Title-Cased version of the key so an unknown/AI-only type
+    still renders a readable title instead of the raw snake_case key — never the
+    raw key itself.
+    """
+    normalized = _normalize_response_action_type(action_type)
+    definition = RESPONSE_ACTION_DEFINITIONS.get(normalized)
+    if definition is not None:
+        return {
+            'action_key': normalized,
+            'display_title': definition['display_title'],
+            'display_description': definition['display_description'],
+        }
+    friendly = str(normalized or 'response_action').replace('_', ' ').strip().title() or 'Response Action'
+    return {
+        'action_key': normalized,
+        'display_title': friendly,
+        'display_description': f'{friendly} response action.',
+    }
+
+
+# Canonical operator-facing lifecycle states. The primary state always names the
+# NEXT required operator step (so an approved-but-not-executed action reads
+# "Ready to Execute", and a simulated-but-unapproved one reads "Awaiting
+# Approval", never a concatenation of raw enums).
+RESPONSE_ACTION_LIFECYCLE_LABELS: dict[str, str] = {
+    'recommended': 'Recommended',
+    'awaiting_approval': 'Awaiting Approval',
+    'approved': 'Approved',
+    'ready_to_execute': 'Ready to Execute',
+    'simulation_passed': 'Simulation Passed',
+    'executing': 'Executing',
+    'executed': 'Executed',
+    'execution_failed': 'Execution Failed',
+    'rejected': 'Rejected',
+    'cancelled': 'Cancelled',
+    'rolled_back': 'Rolled Back',
+    'blocked': 'Blocked',
+}
+
+_MULTISIG_EXECUTION_STATES = frozenset({'proposal_created', 'awaiting_approval'})
+
+
+def response_action_lifecycle(action: dict[str, Any]) -> dict[str, Any]:
+    """Derive the single canonical operator-facing lifecycle for an action.
+
+    Reads ONLY persisted canonical facts (status, mode, execution_state,
+    approved_at, rolled_back_at) plus the deterministic playbook profile. Returns
+    the primary lifecycle state plus SEPARATE approval/simulation/execution/
+    rollback statuses so the UI never has to concatenate raw enums.
+    """
+    status_value = str(action.get('status') or 'pending').strip().lower()
+    mode = str(action.get('mode') or 'recommended').strip().lower()
+    execution_state = str(action.get('execution_state') or '').strip().lower()
+    action_type = _normalize_response_action_type(action.get('action_type'))
+    approved = bool(action.get('approved_at') or action.get('approved_by_user_id') or action.get('approved_by'))
+    rejected = bool(action.get('rejected_at')) or status_value == 'rejected'
+    rolled_back = bool(action.get('rolled_back_at'))
+    profile = response_action_playbook_profile(action_type, mode=mode)
+    requires_approval = bool(profile.get('requires_approval')) or action_type in DESTRUCTIVE_ACTION_TYPES
+    simulated = mode == 'simulated' or execution_state == 'simulated'
+
+    # Separate canonical sub-statuses (never merged into one pill).
+    approval_status = 'not_required'
+    if rejected:
+        approval_status = 'rejected'
+    elif requires_approval:
+        approval_status = 'approved' if approved else 'pending'
+    simulation_status = 'passed' if simulated else 'not_started'
+    if execution_state in {'submitted'}:
+        execution_status = 'executing'
+    elif status_value == 'executed' or execution_state == 'confirmed':
+        execution_status = 'executed'
+    elif status_value == 'failed' or execution_state == 'failed':
+        execution_status = 'failed'
+    else:
+        execution_status = 'not_started'
+    reversibility = str(profile.get('reversibility') or 'unknown')
+    if rolled_back:
+        rollback_status = 'rolled_back'
+    elif execution_status == 'executed' and reversibility == 'reversible':
+        rollback_status = 'available'
+    else:
+        rollback_status = 'not_available'
+
+    # Primary lifecycle — ordered so it always names the next required step.
+    if rolled_back:
+        primary = 'rolled_back'
+    elif rejected:
+        primary = 'rejected'
+    elif status_value == 'canceled' or execution_state == 'cancelled':
+        primary = 'cancelled'
+    elif execution_status == 'failed':
+        primary = 'execution_failed'
+    elif execution_status == 'executed':
+        primary = 'executed'
+    elif execution_status == 'executing':
+        primary = 'executing'
+    elif execution_state in _MULTISIG_EXECUTION_STATES:
+        # On-chain proposal is open and waiting on multisig signers.
+        primary = 'awaiting_approval'
+    elif requires_approval and not approved:
+        # Awaiting approval takes precedence over a passed simulation: approval
+        # is the next operator step even when a dry-run already succeeded.
+        primary = 'awaiting_approval'
+    elif approved and execution_status == 'not_started':
+        primary = 'ready_to_execute'
+    elif simulated:
+        primary = 'simulation_passed'
+    else:
+        primary = 'recommended'
+
+    return {
+        'lifecycle_state': primary,
+        'lifecycle_label': RESPONSE_ACTION_LIFECYCLE_LABELS.get(primary, primary.replace('_', ' ').title()),
+        'approval_status': approval_status,
+        'simulation_status': simulation_status,
+        'execution_status': execution_status,
+        'rollback_status': rollback_status,
+        'requires_approval': requires_approval,
+    }
+
+
+# Canonical provenance source labels (never the raw column name, never 'none').
+_PROVENANCE_SOURCE_LABELS: dict[str, str] = {
+    'incident': 'Incident Context',
+    'alert': 'Alert Evidence',
+    'detection': 'Threat Detection',
+    'finding': 'Investigation Finding',
+    'evidence_package': 'Evidence Package',
+    'monitoring_event': 'Monitoring Health Event',
+    'asset_risk_finding': 'Asset Risk Finding',
+    'integration_health_event': 'Integration Health Finding',
+    'workspace_policy': 'Workspace Policy',
+}
+
+
+def response_action_provenance(action: dict[str, Any]) -> dict[str, Any]:
+    """Structured, truthful provenance for a response action.
+
+    Only reports sources that actually exist on the persisted record. When no
+    standalone evidence package is attached, the primary label is an HONEST state
+    ('Incident context only' / 'Source unavailable') rather than 'none' or a
+    fabricated evidence link.
+    """
+    metadata = action.get('execution_metadata') if isinstance(action.get('execution_metadata'), dict) else {}
+    chain = metadata.get('chain_linked_ids') if isinstance(metadata.get('chain_linked_ids'), dict) else {}
+    incident_id = str(action.get('incident_id') or chain.get('incident_id') or '').strip() or None
+    alert_id = str(action.get('alert_id') or chain.get('alert_id') or '').strip() or None
+    detection_id = str(chain.get('detection_id') or '').strip() or None
+    evidence_package_id = str(metadata.get('evidence_package_id') or '').strip() or None
+    raw_source = canonicalize_evidence_source(str(metadata.get('evidence_source') or ''))
+
+    records: list[dict[str, Any]] = []
+    if incident_id:
+        records.append({
+            'source_type': 'incident', 'source_id': incident_id,
+            'source_label': _PROVENANCE_SOURCE_LABELS['incident'],
+            'source_route': f'/incidents/{incident_id}',
+        })
+    if alert_id:
+        records.append({
+            'source_type': 'alert', 'source_id': alert_id,
+            'source_label': _PROVENANCE_SOURCE_LABELS['alert'],
+            'source_route': '/alerts',
+        })
+    if detection_id:
+        records.append({
+            'source_type': 'detection', 'source_id': detection_id,
+            'source_label': _PROVENANCE_SOURCE_LABELS['detection'],
+            'source_route': '/threat',
+        })
+    if evidence_package_id:
+        records.append({
+            'source_type': 'evidence_package', 'source_id': evidence_package_id,
+            'source_label': _PROVENANCE_SOURCE_LABELS['evidence_package'],
+            'source_route': f'/evidence?package_id={evidence_package_id}',
+        })
+
+    has_evidence_package = bool(evidence_package_id)
+    if has_evidence_package:
+        primary_label = _PROVENANCE_SOURCE_LABELS['evidence_package']
+    elif any(r['source_type'] in {'detection', 'alert'} for r in records):
+        primary_label = next(r['source_label'] for r in records if r['source_type'] in {'detection', 'alert'})
+    elif incident_id:
+        # Derived from incident context, with no standalone evidence package yet.
+        primary_label = 'Incident context only'
+    else:
+        primary_label = 'Source unavailable'
+
+    return {
+        'records': records,
+        'primary_source_label': primary_label,
+        'has_evidence_package': has_evidence_package,
+        'evidence_package_id': evidence_package_id,
+        'evidence_source': raw_source or 'none',
+        'incident_id': incident_id,
+        'alert_id': alert_id,
+        'detection_id': detection_id,
+    }
+
+
+# Terminal statuses in which no further operator command applies.
+_TERMINAL_ACTION_STATUSES = frozenset({'executed', 'failed', 'canceled', 'rejected'})
+
+
+def response_action_command_eligibility(
+    action: dict[str, Any],
+    *,
+    lifecycle: dict[str, Any] | None = None,
+    live_execution_configured: bool | None = None,
+) -> dict[str, Any]:
+    """Canonical allowed_commands / blocked_reasons for the selected action.
+
+    The backend — not the button visibility — is the authority on which commands
+    are valid. Execution stays truthfully blocked (with a specific reason) unless
+    every prerequisite actually passes, so the UI can never present a fake
+    "execute" path when the environment is dry-run only.
+    """
+    lifecycle = lifecycle or response_action_lifecycle(action)
+    if live_execution_configured is None:
+        live_execution_configured = env_flag('LIVE_ACTION_EXECUTION_ENABLED', default=False)
+    action_type = _normalize_response_action_type(action.get('action_type'))
+    status_value = str(action.get('status') or 'pending').strip().lower()
+    capability = resolve_response_action_capability(action_type, str(action.get('mode') or ''))
+    live_path = str(capability.get('live_execution_path') or 'unsupported')
+
+    approval_status = lifecycle['approval_status']
+    simulation_status = lifecycle['simulation_status']
+    execution_status = lifecycle['execution_status']
+    terminal = status_value in _TERMINAL_ACTION_STATUSES or lifecycle['lifecycle_state'] in {
+        'executed', 'cancelled', 'rejected', 'rolled_back'
+    }
+
+    allowed: list[str] = []
+    blocked: list[dict[str, str]] = []
+
+    if not terminal:
+        allowed.append('review')
+
+    # Approve / Reject — only when approval is actually pending.
+    if approval_status == 'pending':
+        allowed.extend(['approve', 'reject'])
+
+    # Simulate — mirrors the backend simulate eligibility.
+    eligible, sim_reason = _response_action_simulate_eligibility(action)
+    if eligible:
+        allowed.append('simulate')
+    elif sim_reason == 'already_simulated' and not terminal:
+        allowed.append('retry_simulation')
+
+    # Execute — blocked unless every prerequisite passes. Reasons are specific.
+    if terminal:
+        pass
+    elif live_path == 'unsupported':
+        blocked.append({'command': 'execute', 'reason': 'No live execution path is supported for this action; it is dry-run only.'})
+    elif not live_execution_configured:
+        blocked.append({'command': 'execute', 'reason': 'Live execution is not configured for this workspace; this action is dry-run only.'})
+    elif live_path == 'manual_only':
+        blocked.append({'command': 'execute', 'reason': 'This action is manual-only in live mode and must be completed by an operator.'})
+    elif lifecycle['requires_approval'] and approval_status != 'approved':
+        blocked.append({'command': 'execute', 'reason': 'Requires owner/admin approval before execution.'})
+    elif simulation_status != 'passed':
+        blocked.append({'command': 'execute', 'reason': 'Run a dry-run simulation before executing.'})
+    else:
+        allowed.append('execute')
+
+    # Rollback — only for an executed, reversible action.
+    if lifecycle['rollback_status'] == 'available':
+        allowed.append('roll_back')
+
+    # Next required operator step.
+    if 'execute' in allowed:
+        next_step = 'execute'
+    elif 'approve' in allowed:
+        next_step = 'approve'
+    elif 'simulate' in allowed:
+        next_step = 'simulate'
+    elif execution_status == 'executed':
+        next_step = 'none'
+    else:
+        next_step = 'review'
+
+    return {
+        'allowed_commands': allowed,
+        'blocked_reasons': blocked,
+        'next_required_step': next_step,
+        'requires_confirmation': action_type in DESTRUCTIVE_ACTION_TYPES,
+        'live_execution_configured': bool(live_execution_configured),
     }
 
 

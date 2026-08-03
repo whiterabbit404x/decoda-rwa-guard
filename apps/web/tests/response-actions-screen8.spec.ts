@@ -97,20 +97,62 @@ test('empty state shows response blocker when incident exists but no response ac
   expect(src).toContain('Go to Incidents');
 });
 
-test('Execute Action is only shown when liveExecutionAllowed is true', () => {
+test('Execute eligibility comes from the backend allowed_commands, not button visibility', () => {
   const src = pageSource();
-  expect(src).toContain('canExecute');
-  expect(src).toContain('liveExecutionAllowed');
+  // The backend is the authority on whether execute is permitted.
+  expect(src).toContain('allowedCommands.includes(\'execute\')');
+  expect(src).toContain('const canExecute =');
   expect(src).toContain('Execute Action');
-  expect(src).toContain('Simulate Action');
-  expect(src).toContain('liveExecutionAllowed && !isSimulatorAction');
+  // Execute calls a REAL backend proxy — never a fake success message.
+  expect(src).toContain('/api/response/actions/${action.id}/execute');
+  expect(src).not.toContain("onMessage('Execution initiated.')");
+  // A blocked execution shows the specific backend reason.
+  expect(src).toContain('Execution blocked:');
+  expect(src).toContain('executeBlockedReason');
 });
 
-test('simulator actions are labeled SIMULATED in status', () => {
+test('lifecycle labels are canonical and never concatenate approval with simulation', () => {
   const src = pageSource();
-  expect(src).toContain('SIMULATED');
-  expect(src).toContain('路 SIMULATED');
-  expect(src).toContain('`${rawStatus} 路 SIMULATED`');
+  // Primary lifecycle label comes from the backend canonical field.
+  expect(src).toContain('lifecyclePill(row.lifecycleState, row.lifecycleLabel)');
+  // Simulation is a SEPARATE secondary chip, never merged into the status label.
+  expect(src).toContain("row.simulationStatus === 'passed'");
+  // The old concatenation pattern must be gone.
+  expect(src).not.toContain('`${rawStatus} 路 SIMULATED`');
+  expect(src).not.toContain('路 SIMULATED');
+});
+
+test('raw action_type keys are never rendered as the primary title', () => {
+  const src = pageSource();
+  // The recommended-row title prefers the backend canonical display_title.
+  expect(src).toContain('String(input?.display_title || input?.action || titleCasedKey)');
+  // Any fallback is a title-cased key, never the raw snake_case action_type.
+  expect(src).toContain('titleCasedKey');
+  expect(src).toContain("replace(/_/g, ' ')");
+});
+
+test('summary counts use canonical persisted fields, not display-string matching', () => {
+  const src = pageSource();
+  expect(src).toContain("r.approvalStatus === 'pending'");
+  expect(src).toContain("r.simulationStatus === 'passed'");
+  expect(src).toContain("r.executionStatus === 'executed'");
+  // No counting by searching the concatenated status string.
+  expect(src).not.toContain("r.status.toLowerCase().includes('pending')");
+  expect(src).not.toContain("r.status.toLowerCase().includes('executed')");
+});
+
+test('evidence source uses truthful provenance label and never a bare none', () => {
+  const src = pageSource();
+  expect(src).toContain('provenanceLabel');
+  expect(src).toContain('No evidence attached');
+  // The old hardcoded 'none' fallback pill is gone.
+  expect(src).not.toContain("return { label: 'none', variant: 'neutral' };");
+});
+
+test('Action History tab survives refresh via the tab query param', () => {
+  const src = pageSource();
+  expect(src).toContain("searchParams.get('tab')");
+  expect(src).toContain("params.set('tab', 'history')");
 });
 
 test('evidence source guard: simulator is never labeled as live_provider', () => {

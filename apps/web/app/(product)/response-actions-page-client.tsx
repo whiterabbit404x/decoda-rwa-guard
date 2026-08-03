@@ -57,6 +57,29 @@ type ActionRow = {
   reversibility?: string | null;
   category?: string | null;
   riskLevel?: string | null;
+  // Canonical operator-facing fields from the backend (single source of truth).
+  // The raw action_type key is preserved in `actionKey` for persistence/commands,
+  // but is never rendered as the primary title.
+  actionKey?: string;
+  displayDescription?: string;
+  // ONE derived primary lifecycle state — never a concatenation of raw enums.
+  lifecycleState?: string;
+  lifecycleLabel?: string;
+  approvalStatus?: string;
+  simulationStatus?: string; // canonical: 'passed' | 'not_started'
+  executionStatus?: string;
+  rollbackStatus?: string;
+  // Truthful provenance (never 'none'/'null').
+  provenanceLabel?: string;
+  hasEvidencePackage?: boolean;
+  // Backend command eligibility — button visibility is NOT authorization.
+  allowedCommands?: string[];
+  blockedReasons?: Array<{ command: string; reason: string }>;
+  nextRequiredStep?: string;
+  requiresConfirmation?: boolean;
+  liveExecutionConfigured?: boolean;
+  // Distinct target so same-title actions across incidents are disambiguated.
+  targetLabel?: string | null;
 };
 
 type HistoryRow = {
@@ -106,9 +129,14 @@ const HISTORY_HEADERS = [
   'Links',
 ];
 
+// Truthful evidence/provenance pill. Prefers the backend's canonical provenance
+// label (e.g. "Incident context only", "Evidence Package") so we NEVER render a
+// bare 'none'/'null'. Falls back to the legacy evidence_source classification for
+// rows that predate structured provenance.
 function evidenceSourcePill(
   rowSource?: string | null,
   workspaceSource?: string,
+  provenanceLabel?: string | null,
 ): { label: string; variant: PillVariant } {
   const raw = (rowSource ?? '').toLowerCase();
   const workspace = (workspaceSource ?? '').toLowerCase();
@@ -133,27 +161,37 @@ function evidenceSourcePill(
     return { label: 'AI investigation', variant: 'info' };
   }
 
-  return { label: 'none', variant: 'neutral' };
+  // Canonical backend provenance label — always truthful, never 'none'.
+  const label = (provenanceLabel ?? '').trim();
+  if (label) {
+    if (label === 'Evidence Package') return { label, variant: 'success' };
+    if (label === 'Threat Detection' || label === 'Alert Evidence') return { label, variant: 'info' };
+    if (label === 'Source unavailable') return { label, variant: 'neutral' };
+    return { label, variant: 'neutral' }; // "Incident context only" etc.
+  }
+
+  // No provenance and no evidence source: state it honestly.
+  return { label: 'No evidence attached', variant: 'neutral' };
 }
 
-function actionStatusPill(status: string, simulated: boolean): { label: string; variant: PillVariant } {
-  const base = status.toLowerCase().replace(/\s路\ssimulated$/, '').trim();
-  const tag = simulated ? ' 路 SIMULATED' : '';
+// Canonical lifecycle variant. The LABEL is supplied by the backend
+// (lifecycleLabel) — this only maps the state to a color, and never concatenates
+// approval/simulation/execution into one string.
+function lifecyclePill(lifecycleState?: string, lifecycleLabel?: string): { label: string; variant: PillVariant } {
+  const state = (lifecycleState ?? '').toLowerCase();
+  const label = lifecycleLabel || (state ? state.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : 'Unknown');
 
-  if (base === 'recommended') return { label: `Recommended${tag}`, variant: 'info' };
-  if (base === 'pending_approval' || base === 'pending approval' || base === 'pending_review') {
-    return { label: `Pending Approval${tag}`, variant: 'warning' };
-  }
-  if (base === 'accepted') return { label: `Accepted${tag}`, variant: 'success' };
-  if (base === 'rejected') return { label: `Rejected${tag}`, variant: 'neutral' };
-  if (base === 'approved') return { label: `Approved${tag}`, variant: 'success' };
-  if (base === 'simulated') return { label: `Simulated${tag}`, variant: 'info' };
-  if (base === 'executed') return { label: `Executed${tag}`, variant: 'success' };
-  if (base === 'failed') return { label: `Failed${tag}`, variant: 'danger' };
-  if (base === 'cancelled') return { label: `Cancelled${tag}`, variant: 'neutral' };
-
-  const display = base ? base.charAt(0).toUpperCase() + base.slice(1) : 'Unknown';
-  return { label: `${display}${tag}`, variant: 'neutral' };
+  const variant: PillVariant =
+    state === 'executed' || state === 'approved' || state === 'ready_to_execute'
+      ? 'success'
+      : state === 'awaiting_approval'
+        ? 'warning'
+        : state === 'execution_failed' || state === 'blocked'
+          ? 'danger'
+          : state === 'recommended' || state === 'simulation_passed' || state === 'executing'
+            ? 'info'
+            : 'neutral';
+  return { label, variant };
 }
 
 // Deterministic priority label from a risk level (used for AI-review records that
@@ -198,16 +236,14 @@ function fmt(value?: string | null): string {
 }
 
 function normalizeActionRow(input: any, validIncidentIds: Set<string>): ActionRow {
-  const mode = String(input?.mode || input?.response_action_mode || '').toLowerCase();
-  const source = String(input?.source || input?.evidence_source || '').toLowerCase();
-
-  const simulated =
-    mode === 'simulated' ||
-    mode === 'recommended' ||
-    source === 'fallback' ||
-    source === 'simulator' ||
-    source === 'demo' ||
-    source === 'replay';
+  // Canonical lifecycle from the backend (single source of truth). Never infer
+  // "simulated" from mode='recommended' — a recommended action has NOT been
+  // simulated. simulation_status='passed' means a real dry-run actually ran.
+  const lifecycle = input?.lifecycle && typeof input.lifecycle === 'object' ? input.lifecycle : {};
+  const simulationStatus = String(
+    lifecycle.simulation_status || (input?.simulated === true ? 'passed' : 'not_started'),
+  );
+  const simulated = simulationStatus === 'passed';
 
   const rawStatus = String(input?.status || input?.workflow_status || 'recommended');
 
@@ -226,10 +262,29 @@ function normalizeActionRow(input: any, validIncidentIds: Set<string>): ActionRo
   const linkedAlert = rawAlertId || null;
 
   const isAiReview = String(input?.record_type || '') === 'ai_recommendation_review';
-  // AI review records carry a human-readable title; legacy rows keep action_type/action.
+  // Prefer the backend canonical display_title. The raw snake_case action_type
+  // key is NEVER used as the primary operator title — fall back to a title-cased
+  // key only if the backend sent no display_title.
+  const titleCasedKey = String(input?.action_type || 'response action')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c: string) => c.toUpperCase());
   const displayAction = isAiReview
-    ? String(input?.title || input?.action_type || 'AI recommendation')
-    : String(input?.action_type || input?.action || 'Response action');
+    ? String(input?.title || input?.display_title || 'AI recommendation')
+    : String(input?.display_title || input?.action || titleCasedKey);
+
+  // Distinct target so same-title actions (e.g. Notify Security Team across
+  // different incidents) are disambiguated in the table.
+  const shortId = (value: string) => (value.length > 8 ? `${value.slice(0, 8)}…` : value);
+  const targetLabel = input?.target_wallet
+    ? String(input.target_wallet)
+    : input?.token_contract
+      ? String(input.token_contract)
+      : directIncidentId
+        ? `Incident ${shortId(directIncidentId)}`
+        : null;
+
+  const provenance = input?.provenance && typeof input.provenance === 'object' ? input.provenance : {};
+  const commands = input?.commands && typeof input.commands === 'object' ? input.commands : {};
 
   // Deterministic Playbook Execution Agent profile. Policy actions carry a backend
   // `playbook` object; AI reviews carry runbook_id + risk_level. Never fabricated.
@@ -244,7 +299,10 @@ function normalizeActionRow(input: any, validIncidentIds: Set<string>): ActionRo
     action: displayAction,
     type: String(input?.category || input?.type || 'Other'),
     impact: String(input?.impact || input?.severity || 'medium'),
-    status: simulated ? `${rawStatus} 路 SIMULATED` : rawStatus,
+    // Keep the RAW canonical status for filtering only; the operator-facing
+    // label comes from lifecycleLabel — approval/simulation/execution are never
+    // concatenated into one string.
+    status: rawStatus,
     recommendedBy: String(input?.recommended_by || input?.actor_type || 'Policy engine'),
     linkedIncident,
     linkedAlert,
@@ -277,6 +335,29 @@ function normalizeActionRow(input: any, validIncidentIds: Set<string>): ActionRo
     reversibility: playbook.reversibility ?? null,
     category: playbook.category ?? null,
     riskLevel,
+    // Canonical operator-facing fields (single source of truth from the backend).
+    actionKey: input?.action_key ?? input?.action_type ?? undefined,
+    displayDescription: input?.display_description ?? undefined,
+    lifecycleState: String(lifecycle.lifecycle_state || input?.lifecycle_state || rawStatus),
+    lifecycleLabel: String(
+      lifecycle.lifecycle_label ||
+        input?.lifecycle_label ||
+        (rawStatus ? rawStatus.charAt(0).toUpperCase() + rawStatus.slice(1) : 'Recommended'),
+    ),
+    approvalStatus: String(lifecycle.approval_status || input?.approval_status || ''),
+    simulationStatus,
+    executionStatus: String(lifecycle.execution_status || input?.execution_status || 'not_started'),
+    rollbackStatus: String(lifecycle.rollback_status || input?.rollback_status || 'not_available'),
+    provenanceLabel: provenance.primary_source_label ? String(provenance.primary_source_label) : undefined,
+    hasEvidencePackage: provenance.has_evidence_package === true,
+    allowedCommands: Array.isArray(commands.allowed_commands) ? commands.allowed_commands.map(String) : [],
+    blockedReasons: Array.isArray(commands.blocked_reasons)
+      ? commands.blocked_reasons.map((b: any) => ({ command: String(b?.command ?? ''), reason: String(b?.reason ?? '') }))
+      : [],
+    nextRequiredStep: commands.next_required_step ? String(commands.next_required_step) : undefined,
+    requiresConfirmation: commands.requires_confirmation === true,
+    liveExecutionConfigured: commands.live_execution_configured === true,
+    targetLabel,
   };
 }
 
@@ -351,7 +432,23 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
 
   const actionIdParam = searchParams.get('action_id') ?? '';
 
-  const [tab, setTab] = useState<'recommended' | 'history'>('recommended');
+  // The selected tab survives refresh via the ?tab= query param (a canonical URL
+  // pattern) rather than living only in client memory.
+  const tabParam = searchParams.get('tab') === 'history' ? 'history' : 'recommended';
+  const [tab, setTabState] = useState<'recommended' | 'history'>(tabParam);
+  const router = useRouter();
+  // Keep tab state in sync when the URL query changes (e.g. back/forward).
+  useEffect(() => {
+    setTabState(tabParam);
+  }, [tabParam]);
+  const setTab = (next: 'recommended' | 'history') => {
+    setTabState(next);
+    const params = new URLSearchParams(Array.from(searchParams.entries()));
+    if (next === 'history') params.set('tab', 'history');
+    else params.delete('tab');
+    const qs = params.toString();
+    router.replace(qs ? `/response-actions?${qs}` : '/response-actions', { scroll: false });
+  };
   const [recommendedRows, setRecommendedRows] = useState<ActionRow[]>([]);
   const [historyRows, setHistoryRows] = useState<HistoryRow[]>([]);
   const [selectedId, setSelectedId] = useState(actionIdParam);
@@ -491,7 +588,11 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
         (row.linkedIncident ?? '').toLowerCase().includes(q);
 
       const matchesType = !typeFilter || row.type.toLowerCase().includes(typeFilter.toLowerCase());
-      const matchesStatus = !statusFilter || row.status.toLowerCase().includes(statusFilter.toLowerCase());
+      // Filter against the CANONICAL lifecycle state/label, not the raw status.
+      const matchesStatus =
+        !statusFilter ||
+        (row.lifecycleState ?? '').toLowerCase().includes(statusFilter.toLowerCase()) ||
+        (row.lifecycleLabel ?? '').toLowerCase().includes(statusFilter.toLowerCase());
       const matchesApproval =
         !approvalFilter ||
         (approvalFilter === 'yes' && row.requiresApproval) ||
@@ -515,23 +616,24 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
     [filteredRecommended, selectedId],
   );
 
-  const recommendedCount = recommendedRows.length;
-  const pendingApprovalCount = recommendedRows.filter((r) =>
-    r.status.toLowerCase().includes('pending'),
-  ).length;
-  const simulatedCount = recommendedRows.filter((r) => r.simulated).length;
-  const executedCount = recommendedRows.filter((r) =>
-    r.status.toLowerCase().includes('executed'),
-  ).length;
+  // Summary-card counts are derived from CANONICAL persisted state (the backend's
+  // approval_status / simulation_status / execution_status), never by searching
+  // display strings. An action that has not reached a terminal state and is not
+  // superseded is "recommended".
+  const isActiveRecommendation = (r: ActionRow): boolean => {
+    const s = (r.lifecycleState ?? '').toLowerCase();
+    return s !== 'cancelled' && s !== 'rejected' && s !== 'rolled_back';
+  };
+  const recommendedCount = recommendedRows.filter(isActiveRecommendation).length;
+  const pendingApprovalCount = recommendedRows.filter((r) => r.approvalStatus === 'pending').length;
+  const simulatedCount = recommendedRows.filter((r) => r.simulationStatus === 'passed').length;
+  const executedCount = recommendedRows.filter((r) => r.executionStatus === 'executed').length;
 
   // Approval-required count for the orange banner + agent panel. Derived ONLY
-  // from persisted action state (requiresApproval and the persisted status),
-  // never hardcoded. An action still needs approval until it is approved,
-  // executed, or rejected.
+  // from persisted canonical approval_status, never hardcoded and never from a
+  // display string.
   function actionNeedsApproval(r: ActionRow): boolean {
-    if (!r.requiresApproval) return false;
-    const s = r.status.toLowerCase();
-    return !s.includes('approved') && !s.includes('executed') && !s.includes('rejected');
+    return r.approvalStatus === 'pending';
   }
   const approvalRequiredCount = recommendedRows.filter(actionNeedsApproval).length;
 
@@ -647,13 +749,13 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
           <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Status filter">
             <option value="">All Statuses</option>
             <option value="recommended">Recommended</option>
-            <option value="pending_approval">Pending Approval</option>
-            <option value="approved">Approved</option>
-            <option value="simulated">Simulated</option>
+            <option value="awaiting_approval">Awaiting Approval</option>
+            <option value="ready_to_execute">Ready to Execute</option>
+            <option value="simulation_passed">Simulation Passed</option>
             <option value="executed">Executed</option>
-            <option value="failed">Failed</option>
+            <option value="execution_failed">Execution Failed</option>
             <option value="cancelled">Cancelled</option>
-            <option value="unknown">Unknown</option>
+            <option value="rolled_back">Rolled Back</option>
           </select>
 
           <select
@@ -748,10 +850,10 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
               ) : tab === 'recommended' ? (
                 <TableShell headers={RECOMMENDED_HEADERS}>
                   {filteredRecommended.map((row) => {
-                    const st = actionStatusPill(row.status, row.simulated);
+                    const st = lifecyclePill(row.lifecycleState, row.lifecycleLabel);
                     const imp = impactPill(row.impact);
                     const pri = priorityPill(row.priority);
-                    const evSrc = evidenceSourcePill(row.evidenceSource, workspaceEvidenceSource);
+                    const evSrc = evidenceSourcePill(row.evidenceSource, workspaceEvidenceSource, row.provenanceLabel);
                     const isSelected = row.id === selectedId;
 
                     return (
@@ -763,13 +865,30 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
                           background: isSelected ? 'rgba(59,130,246,0.08)' : undefined,
                         }}
                       >
-                        <td style={{ maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500 }}>
-                          {row.action}
+                        <td style={{ maxWidth: '190px' }}>
+                          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500 }} title={row.action}>
+                            {row.action}
+                          </div>
+                          {/* Distinct target disambiguates same-title actions across incidents. */}
+                          {row.targetLabel ? (
+                            <div className="muted" style={{ fontSize: '0.72rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.targetLabel}>
+                              {row.targetLabel}
+                            </div>
+                          ) : null}
                         </td>
                         <td style={{ fontSize: '0.8rem' }}>{row.type}</td>
                         <td><StatusPill label={pri.label} variant={pri.variant} /></td>
                         <td><StatusPill label={imp.label} variant={imp.variant} /></td>
-                        <td><StatusPill label={st.label} variant={st.variant} /></td>
+                        <td>
+                          <StatusPill label={st.label} variant={st.variant} />
+                          {/* Simulation is shown as a SEPARATE secondary chip — never
+                              concatenated into the primary lifecycle label. */}
+                          {row.simulationStatus === 'passed' && row.lifecycleState !== 'simulation_passed' ? (
+                            <div style={{ marginTop: '0.2rem' }}>
+                              <StatusPill label="Simulated" variant="info" />
+                            </div>
+                          ) : null}
+                        </td>
                         <td style={{ fontSize: '0.8rem' }}>{row.recommendedBy}</td>
                         <td style={{ fontSize: '0.78rem', fontFamily: 'monospace', maxWidth: '110px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.runbookName ?? row.runbookId ?? ''}>
                           {row.runbookId ? row.runbookId : <span className="muted">—</span>}
@@ -880,7 +999,6 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
                 <ActionDetailPanel
                   action={selectedAction}
                   workspaceEvidenceSource={workspaceEvidenceSource}
-                  liveExecutionAllowed={liveExecutionAllowed}
                   onMessage={setMessage}
                   apiUrl={apiUrl}
                   authHeaders={authHeaders}
@@ -904,7 +1022,6 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
 function ActionDetailPanel({
   action,
   workspaceEvidenceSource,
-  liveExecutionAllowed,
   onMessage,
   apiUrl,
   authHeaders,
@@ -912,27 +1029,29 @@ function ActionDetailPanel({
 }: {
   action: ActionRow;
   workspaceEvidenceSource: string;
-  liveExecutionAllowed: boolean;
   onMessage: (msg: string) => void;
   apiUrl: string;
   authHeaders: () => Record<string, string>;
   refreshCsrfToken: () => Promise<string | null>;
 }) {
   const router = useRouter();
-  const st = actionStatusPill(action.status, action.simulated);
+  const st = lifecyclePill(action.lifecycleState, action.lifecycleLabel);
   const imp = impactPill(action.impact);
-  const evSrc = evidenceSourcePill(action.evidenceSource, workspaceEvidenceSource);
+  const evSrc = evidenceSourcePill(action.evidenceSource, workspaceEvidenceSource, action.provenanceLabel);
   // AI recommendation reviews are human-review records, not simulator/executable actions.
   const isAiReview = action.recordType === 'ai_recommendation_review';
-  const isSimulatorAction = !isAiReview && (action.simulated || evSrc.label === 'simulator');
+  const isSimulatorAction = !isAiReview && evSrc.label === 'simulator';
 
-  // Do not show Execute Action when backend only supports simulator mode.
-  // AI review records are never executable — reviewing records a decision only.
-  const canExecute = liveExecutionAllowed && !isSimulatorAction && !isAiReview;
+  // The BACKEND is the authority on which commands are valid — button visibility
+  // is not authorization. Execute is only offered when the backend's
+  // allowed_commands includes it; otherwise the specific blocked reason is shown.
+  const allowedCommands = action.allowedCommands ?? [];
+  const executeBlockedReason =
+    (action.blockedReasons ?? []).find((b) => b.command === 'execute')?.reason ?? null;
+  const canExecute = !isAiReview && allowedCommands.includes('execute');
+  const canSimulate = !isAiReview && (allowedCommands.includes('simulate') || allowedCommands.includes('retry_simulation'));
 
-  const approvalBlocked =
-    action.requiresApproval &&
-    !['approved', 'executed'].some((s) => action.status.toLowerCase().includes(s));
+  const approvalBlocked = action.approvalStatus === 'pending';
 
   function _extractErrorMessage(detail: unknown, fallback: string): string {
     if (typeof detail === 'string') return detail;
@@ -960,6 +1079,41 @@ function ActionDetailPanel({
       }
     } catch {
       onMessage('Simulate request failed. Check network connection.');
+    }
+  }
+
+  // Real execution: the backend re-validates every prerequisite (approval,
+  // simulation, live-execution config, workspace isolation) and returns the
+  // CANONICAL persisted state. We never fabricate a success — the message and
+  // refresh reflect only what the backend actually persisted.
+  async function executeAction() {
+    if (action.requiresConfirmation && typeof window !== 'undefined') {
+      const ok = window.confirm(
+        `This is a high-impact action (${action.action}). Execute it now? This is guarded by the backend and requires all safety checks and approvals to pass.`,
+      );
+      if (!ok) return;
+    }
+    onMessage('Requesting execution…');
+    try {
+      const res = await fetch(`/api/response/actions/${action.id}/execute`, {
+        method: 'POST',
+        headers: authHeaders(),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        status?: string;
+        execution_state?: string;
+        lifecycle_label?: string;
+        detail?: unknown;
+      };
+      if (res.ok) {
+        onMessage(`Execution recorded: ${data.lifecycle_label ?? data.status ?? 'updated'}.`);
+      } else {
+        onMessage(_extractErrorMessage(data.detail, 'Execution was blocked by the backend.'));
+      }
+      // Always refresh to reflect the canonical persisted state (success OR block).
+      router.refresh();
+    } catch {
+      onMessage('Execution request failed. Check network connection.');
     }
   }
 
@@ -1040,15 +1194,30 @@ function ActionDetailPanel({
         Action Detail
       </p>
 
-      <h4 style={{ marginBottom: '0.75rem', fontSize: '0.95rem', lineHeight: 1.35 }}>
+      <h4 style={{ marginBottom: action.displayDescription ? '0.25rem' : '0.75rem', fontSize: '0.95rem', lineHeight: 1.35 }}>
         {action.action}
       </h4>
+      {action.displayDescription && !isAiReview ? (
+        <p className="muted" style={{ fontSize: '0.78rem', margin: '0 0 0.7rem', lineHeight: 1.4 }}>
+          {action.displayDescription}
+        </p>
+      ) : null}
 
       {isSimulatorAction ? (
         <div style={{ marginBottom: '0.6rem' }}>
           <StatusPill label="SIMULATED" variant="info" />
           <span className="muted" style={{ fontSize: '0.75rem', marginLeft: '0.4rem' }}>
             Simulator action only
+          </span>
+        </div>
+      ) : null}
+
+      {/* Truthful execution-blocked reason, if any (backend-derived). */}
+      {!isAiReview && (action.blockedReasons ?? []).some((b) => b.command === 'execute') ? (
+        <div style={{ marginBottom: '0.6rem' }}>
+          <StatusPill label="Execution blocked" variant="warning" />
+          <span className="muted" style={{ fontSize: '0.75rem', marginLeft: '0.4rem' }}>
+            {(action.blockedReasons ?? []).find((b) => b.command === 'execute')?.reason}
           </span>
         </div>
       ) : null}
@@ -1168,10 +1337,47 @@ function ActionDetailPanel({
         </div>
       ) : (
         <div style={{ marginBottom: '0.5rem' }}>
-          <p className="tableMeta" style={{ marginBottom: '0.1rem' }}>Approval State</p>
-          <p style={{ fontSize: '0.8rem', margin: 0 }}>
-            {action.approvalState ?? (action.requiresApproval ? 'Pending approval' : 'Not required')}
-          </p>
+          {/* Approval, Simulation, and Execution are SEPARATE canonical states —
+              shown as three distinct rows, never concatenated into one pill. */}
+          <p className="tableMeta" style={{ marginBottom: '0.1rem' }}>Lifecycle</p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.35rem 0.6rem' }}>
+            <div>
+              <p className="tableMeta" style={{ marginBottom: '0.05rem', fontSize: '0.65rem' }}>Approval</p>
+              <p style={{ fontSize: '0.76rem', margin: 0 }}>
+                {action.approvalStatus === 'approved'
+                  ? 'Approved'
+                  : action.approvalStatus === 'pending'
+                    ? 'Pending'
+                    : action.approvalStatus === 'rejected'
+                      ? 'Rejected'
+                      : 'Not required'}
+              </p>
+            </div>
+            <div>
+              <p className="tableMeta" style={{ marginBottom: '0.05rem', fontSize: '0.65rem' }}>Simulation</p>
+              <p style={{ fontSize: '0.76rem', margin: 0 }}>
+                {action.simulationStatus === 'passed' ? 'Passed' : 'Not started'}
+              </p>
+            </div>
+            <div>
+              <p className="tableMeta" style={{ marginBottom: '0.05rem', fontSize: '0.65rem' }}>Execution</p>
+              <p style={{ fontSize: '0.76rem', margin: 0 }}>
+                {action.executionStatus === 'executed'
+                  ? 'Executed'
+                  : action.executionStatus === 'executing'
+                    ? 'Executing'
+                    : action.executionStatus === 'failed'
+                      ? 'Failed'
+                      : 'Not started'}
+              </p>
+            </div>
+          </div>
+          {action.provenanceLabel ? (
+            <>
+              <p className="tableMeta" style={{ marginTop: '0.4rem', marginBottom: '0.05rem' }}>Provenance</p>
+              <p style={{ fontSize: '0.76rem', margin: 0 }}>{action.provenanceLabel}</p>
+            </>
+          ) : null}
         </div>
       )}
 
@@ -1256,40 +1462,52 @@ function ActionDetailPanel({
           </Link>
         </div>
       ) : (
-        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-          {canExecute ? (
+        <div>
+          {/* Blocked-execution reason is shown truthfully — the operator always
+              sees exactly why an action cannot execute yet. */}
+          {!canExecute && executeBlockedReason ? (
+            <p className="muted" style={{ fontSize: '0.75rem', margin: '0 0 0.5rem' }}>
+              <strong style={{ color: 'var(--warning-fg)' }}>Execution blocked:</strong> {executeBlockedReason}
+            </p>
+          ) : null}
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            {canExecute ? (
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{ fontSize: '0.8rem' }}
+                onClick={() => void executeAction()}
+              >
+                Execute Action
+              </button>
+            ) : canSimulate ? (
+              <button type="button" className="btn btn-primary" style={{ fontSize: '0.8rem' }} onClick={() => void simulateAction()}>
+                {action.simulationStatus === 'passed' ? 'Retry Simulation' : 'Simulate Action'}
+              </button>
+            ) : (
+              <button type="button" className="btn btn-primary" style={{ fontSize: '0.8rem' }} disabled title={executeBlockedReason ?? 'No command available'}>
+                {approvalBlocked ? 'Awaiting Approval' : 'No Action Available'}
+              </button>
+            )}
+
+            <Link
+              href={action.linkedIncident ? `/incidents/${action.linkedIncident}` : '/incidents'}
+              prefetch={false}
+              className="btn btn-secondary"
+              style={{ fontSize: '0.8rem' }}
+            >
+              {action.linkedIncident ? 'View Incident' : 'View Incidents'}
+            </Link>
+
             <button
               type="button"
-              className="btn btn-primary"
+              className="btn btn-secondary"
               style={{ fontSize: '0.8rem' }}
-              disabled={approvalBlocked}
-              onClick={() => onMessage('Execution initiated.')}
+              onClick={() => void handleEvidenceExport()}
             >
-              Execute Action
+              Evidence Export
             </button>
-          ) : (
-            <button type="button" className="btn btn-primary" style={{ fontSize: '0.8rem' }} onClick={() => void simulateAction()}>
-              Simulate Action
-            </button>
-          )}
-
-          <Link
-            href={action.linkedIncident ? `/incidents/${action.linkedIncident}` : '/incidents'}
-            prefetch={false}
-            className="btn btn-secondary"
-            style={{ fontSize: '0.8rem' }}
-          >
-            {action.linkedIncident ? 'View Incident' : 'View Incidents'}
-          </Link>
-
-          <button
-            type="button"
-            className="btn btn-secondary"
-            style={{ fontSize: '0.8rem' }}
-            onClick={() => void handleEvidenceExport()}
-          >
-            Evidence Export
-          </button>
+          </div>
         </div>
       )}
     </aside>
@@ -1325,14 +1543,20 @@ function safetyStatusPill(status: string): { label: string; variant: PillVariant
   return { label: 'Unknown', variant: 'neutral' };
 }
 
-// Eligible for Simulate All (mirrors the backend eligibility so the displayed
-// count matches what the batch command will act on). AI recommendation-review
-// records are never executable/simulatable and are excluded.
+// Eligible for Simulate All. Mirrors the backend eligibility (which is the real
+// authority) using the canonical allowed_commands when present, so the displayed
+// count matches exactly what the batch command will act on. AI recommendation-
+// review records are never executable/simulatable and are excluded.
 function isSimulateEligible(r: ActionRow): boolean {
   if (r.recordType === 'ai_recommendation_review') return false;
-  if (r.simulated) return false;
-  const s = r.status.toLowerCase();
-  return !s.includes('executed') && !s.includes('failed') && !s.includes('cancelled') && !s.includes('rejected');
+  if (Array.isArray(r.allowedCommands) && r.allowedCommands.length > 0) {
+    return r.allowedCommands.includes('simulate');
+  }
+  // Fallback for rows without canonical commands: only truly un-simulated,
+  // non-terminal actions are eligible.
+  if (r.simulationStatus === 'passed') return false;
+  const s = (r.lifecycleState ?? '').toLowerCase();
+  return s !== 'executed' && s !== 'execution_failed' && s !== 'cancelled' && s !== 'rejected' && s !== 'rolled_back';
 }
 
 function PlaybookAgentPanel({
@@ -1357,23 +1581,16 @@ function PlaybookAgentPanel({
   const [checks, setChecks] = useState<SafetyChecksPayload | null>(null);
   const [checksState, setChecksState] = useState<'idle' | 'loading' | 'ready' | 'error' | 'not_applicable'>('idle');
 
-  // Agent summary — all from persisted row state.
+  // Agent summary — all from CANONICAL persisted row state (lifecycle_state /
+  // approval_status / execution_status), never from display-string matching.
   const recommended = rows.length;
-  const awaitingApproval = rows.filter((r) => {
-    if (!r.requiresApproval) return false;
-    const s = r.status.toLowerCase();
-    return !s.includes('approved') && !s.includes('executed') && !s.includes('rejected');
-  }).length;
+  const awaitingApproval = rows.filter((r) => r.approvalStatus === 'pending').length;
   const readyForDryRun = rows.filter(isSimulateEligible).length;
-  const simulated = rows.filter((r) => r.simulated).length;
-  const readyForExecution = rows.filter((r) => {
-    const s = r.status.toLowerCase();
-    return s.includes('approved') && !s.includes('executed');
-  }).length;
-  const blocked = rows.filter((r) => {
-    const s = r.status.toLowerCase();
-    return s.includes('blocked') || s.includes('failed');
-  }).length;
+  const simulated = rows.filter((r) => r.simulationStatus === 'passed').length;
+  const readyForExecution = rows.filter((r) => r.lifecycleState === 'ready_to_execute').length;
+  const blocked = rows.filter(
+    (r) => r.lifecycleState === 'execution_failed' || r.lifecycleState === 'blocked',
+  ).length;
   const lastEval = rows
     .map((r) => r.createdAt)
     .filter(Boolean)

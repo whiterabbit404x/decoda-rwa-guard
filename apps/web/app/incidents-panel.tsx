@@ -127,6 +127,15 @@ type ResponseActionRow = {
   evidence_source?: string;
   mode?: string;
   record_type?: string;
+  // Canonical operator-facing fields (same backend source as Screen 8) so the
+  // Screen 7 response summary and Screen 8 never disagree.
+  display_title?: string;
+  lifecycle_state?: string;
+  lifecycle_label?: string;
+  approval_status?: string;
+  simulation_status?: string;
+  execution_status?: string;
+  provenance?: { primary_source_label?: string };
 };
 
 // Load lifecycle for the selected incident's canonical forensic investigation payload
@@ -1013,13 +1022,15 @@ function ResponseActionsTab({ actions, incidentId, onRecommend, recommending, re
   // state, plus a button that opens the Screen 8 Playbook Execution workspace
   // scoped to this incident. Screen 7 (investigation) and Screen 8 (mitigation)
   // stay separate routes.
-  const norm = (a: ResponseActionRow) => (a.status ?? '').toLowerCase();
+  // Counts derive from the SAME canonical backend state Screen 8 uses
+  // (approval_status / execution_status / lifecycle_state), so the two screens
+  // can never disagree — never from display-string matching.
   const recommendedN = actions.length;
-  const awaitingApprovalN = actions.filter(
-    (a) => a.requires_approval && !norm(a).includes('approved') && !norm(a).includes('executed'),
+  const awaitingApprovalN = actions.filter((a) => a.approval_status === 'pending').length;
+  const executedN = actions.filter((a) => a.execution_status === 'executed').length;
+  const failedN = actions.filter(
+    (a) => a.execution_status === 'failed' || a.lifecycle_state === 'execution_failed',
   ).length;
-  const executedN = actions.filter((a) => norm(a).includes('executed') || norm(a) === 'succeeded').length;
-  const failedN = actions.filter((a) => norm(a).includes('failed')).length;
   return (
     <div>
       <div
@@ -1050,14 +1061,15 @@ function ResponseActionsTab({ actions, incidentId, onRecommend, recommending, re
     <TableShell headers={RESPONSE_HEADERS} compact>
       {actions.map((action, i) => (
         <tr key={action.id ?? i}>
-          <td style={{ fontSize: '0.8rem', maxWidth: '100px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {action.action_type ?? action.type ?? '-'}
+          <td style={{ fontSize: '0.8rem', maxWidth: '130px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={action.display_title ?? action.action_type ?? ''}>
+            {/* Canonical display_title — never the raw snake_case action_type key. */}
+            {action.display_title ?? action.action_type ?? '-'}
           </td>
           <td><StatusPill label={action.mode ?? 'simulated'} variant="info" /></td>
-          <td><StatusPill label={action.status ?? 'pending'}
-            variant={action.status === 'succeeded' ? 'success' : action.status === 'failed' ? 'danger' : 'neutral'} /></td>
-          <td><StatusPill label={action.requires_approval ? 'Yes' : 'No'} variant={action.requires_approval ? 'warning' : 'neutral'} /></td>
-          <td style={{ fontSize: '0.75rem' }}>{action.evidence_source ?? '-'}</td>
+          <td><StatusPill label={action.lifecycle_label ?? action.status ?? 'Recommended'}
+            variant={action.lifecycle_state === 'executed' ? 'success' : action.lifecycle_state === 'execution_failed' ? 'danger' : action.lifecycle_state === 'awaiting_approval' ? 'warning' : 'neutral'} /></td>
+          <td><StatusPill label={action.approval_status === 'pending' ? 'Yes' : action.approval_status === 'approved' ? 'Approved' : 'No'} variant={action.approval_status === 'pending' ? 'warning' : 'neutral'} /></td>
+          <td style={{ fontSize: '0.75rem' }}>{action.provenance?.primary_source_label ?? action.evidence_source ?? '-'}</td>
           <td>
             <Link href={`/response-actions?incident_id=${encodeURIComponent(incidentId)}`} prefetch={false} className="btn btn-secondary" style={{ fontSize: '0.72rem', padding: '0.15rem 0.4rem' }}>
               View Response
