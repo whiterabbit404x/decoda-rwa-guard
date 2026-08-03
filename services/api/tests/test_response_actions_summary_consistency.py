@@ -519,3 +519,56 @@ def test_simulate_eligibility_excludes_already_simulated():
     eligible, reason = pilot._response_action_simulate_eligibility(
         {'action_type': 'freeze_wallet', 'mode': 'recommended', 'status': 'pending', 'execution_state': 'recommended'})
     assert eligible is True
+
+
+# ── Section 3 / 11 / 15.8-15.9: no raw enum is ever serialized as a display label ─
+
+# The persisted response_actions.status column has carried several legacy/current
+# spellings for an approval-pending record. Whatever the raw value, the canonical
+# lifecycle must resolve to the SAME awaiting-approval state + clean label so the
+# frontend never has to interpret a raw enum.
+@pytest.mark.parametrize('raw_status', [
+    'pending', 'pending_approval', 'PENDING_APPROVAL', 'Pending_approval', 'awaiting_approval',
+])
+def test_legacy_pending_status_variants_normalize_to_awaiting_approval(raw_status):
+    action = _policy('freeze_wallet', status=raw_status)  # freeze_wallet requires approval
+    assert action['lifecycle_state'] == 'awaiting_approval'
+    assert action['lifecycle_label'] == 'Awaiting Approval'
+    assert action['approval_status'] == 'pending'
+    # The raw enum is NEVER the operator-facing label.
+    assert action['lifecycle_label'] != raw_status
+    assert pilot.build_response_actions_summary([action])['pending_approval'] == 1
+
+
+def test_ai_review_pending_never_serializes_raw_pending_approval_as_label():
+    """The AI-review top-level status stays 'pending_approval' (its persisted enum),
+    but the operator-facing lifecycle label must be the humanized 'Awaiting Approval'
+    — a raw snake_case enum must never reach the UI (Section 11)."""
+    review = _ai_review(review_state='pending_review', requires_approval=True)
+    assert review['status'] == 'pending_approval'          # raw persisted enum (allowed here)
+    assert review['lifecycle_label'] == 'Awaiting Approval'  # canonical display label
+    assert review['lifecycle']['lifecycle_label'] == 'Awaiting Approval'
+    # No canonical label anywhere is a raw snake_case enum.
+    assert '_' not in review['lifecycle_label']
+
+
+def test_no_action_origin_ever_serializes_a_snake_case_lifecycle_label():
+    """Across every action origin, lifecycle state, and legacy status spelling, the
+    lifecycle_label the frontend renders must never be a raw snake_case enum."""
+    policy_types = ['freeze_wallet', 'notify_team', 'escalate_to_issuer', 'pause_mint_redeem',
+                    'generate_regulator_auditor_package']
+    statuses = ['pending', 'pending_approval', 'PENDING_APPROVAL', 'awaiting_approval',
+                'canceled', 'executed', 'failed']
+    labels: list[str] = []
+    for action_type in policy_types:
+        for status in statuses:
+            for mode, execution_state in (('recommended', 'recommended'), ('simulated', 'simulated')):
+                action = _policy(action_type, mode=mode, execution_state=execution_state, status=status)
+                labels.append(action['lifecycle_label'])
+    for review_state in ('pending_review', 'accepted', 'rejected'):
+        labels.append(_ai_review(review_state=review_state)['lifecycle_label'])
+
+    offenders = [label for label in labels if '_' in label or label != label.strip()]
+    assert offenders == [], f'raw/snake_case lifecycle labels leaked: {sorted(set(offenders))}'
+    # And the specific deployed offender is never a label.
+    assert not any(label.lower() == 'pending_approval' for label in labels)

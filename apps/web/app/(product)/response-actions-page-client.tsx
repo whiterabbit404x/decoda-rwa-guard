@@ -15,6 +15,12 @@ import {
 } from '../components/ui-primitives';
 import { resolveApiUrl } from '../dashboard-data';
 import { usePilotAuth } from '../pilot-auth-context';
+import {
+  canonicalLifecycleState,
+  deriveRowApproval,
+  lifecycleLabelFor,
+  reconcileCount,
+} from './response-actions-presentation';
 import { useRuntimeSummary } from '../runtime-summary-context';
 import RuntimeSummaryPanel from '../runtime-summary-panel';
 import { fetchRuntimeStatusDeduped } from '../runtime-status-client';
@@ -355,6 +361,20 @@ function normalizeActionRow(input: any, validIncidentIds: Set<string>): ActionRo
     playbook.priority || priorityFromRisk(riskLevel) || input?.impact || input?.severity || 'medium',
   );
 
+  // Canonical approval status + requires-approval derived TOGETHER from one source
+  // so the "Requires Approval" pill and the Pending Approval count can never
+  // contradict. Fails CLOSED on a legacy/partial payload (see deriveRowApproval).
+  const { approvalStatus: canonicalApproval, requiresApproval } = deriveRowApproval({
+    approvalStatus: lifecycle.approval_status ?? input?.approval_status,
+    rawStatus,
+    requiresApproval: input?.requires_approval,
+  });
+  // Canonical lifecycle state + label — legacy snake_case enums (pending_approval …)
+  // are mapped, never rendered raw.
+  const canonicalState = canonicalLifecycleState(
+    lifecycle.lifecycle_state || input?.lifecycle_state || rawStatus,
+  );
+
   return {
     id: String(input?.id || `${input?.action_type || 'action'}-${rawIncidentId || 'none'}`),
     action: displayAction,
@@ -368,11 +388,10 @@ function normalizeActionRow(input: any, validIncidentIds: Set<string>): ActionRo
     linkedIncident,
     linkedAlert,
     evidenceSource: String(input?.evidence_source || input?.source || 'runtime'),
-    requiresApproval: input?.requires_approval !== false,
+    requiresApproval,
     simulated,
     eta: input?.eta ?? input?.estimated_duration ?? input?.estimated_impact ?? null,
-    approvalState:
-      input?.approval_state ?? (input?.requires_approval === false ? 'not_required' : 'pending_approval'),
+    approvalState: input?.approval_state ?? canonicalApproval,
     createdAt: input?.created_at ?? input?.timestamp ?? null,
     recordType: input?.record_type ?? undefined,
     sourceType: input?.source_type ?? undefined,
@@ -399,13 +418,12 @@ function normalizeActionRow(input: any, validIncidentIds: Set<string>): ActionRo
     // Canonical operator-facing fields (single source of truth from the backend).
     actionKey: input?.action_key ?? input?.action_type ?? undefined,
     displayDescription: input?.display_description ?? undefined,
-    lifecycleState: String(lifecycle.lifecycle_state || input?.lifecycle_state || rawStatus),
-    lifecycleLabel: String(
-      lifecycle.lifecycle_label ||
-        input?.lifecycle_label ||
-        (rawStatus ? rawStatus.charAt(0).toUpperCase() + rawStatus.slice(1) : 'Recommended'),
+    lifecycleState: canonicalState,
+    lifecycleLabel: lifecycleLabelFor(
+      lifecycle.lifecycle_state || input?.lifecycle_state || rawStatus,
+      lifecycle.lifecycle_label || input?.lifecycle_label,
     ),
-    approvalStatus: String(lifecycle.approval_status || input?.approval_status || ''),
+    approvalStatus: canonicalApproval,
     simulationStatus,
     executionStatus: String(lifecycle.execution_status || input?.execution_status || 'not_started'),
     rollbackStatus: String(lifecycle.rollback_status || input?.rollback_status || 'not_available'),
@@ -424,7 +442,7 @@ function normalizeActionRow(input: any, validIncidentIds: Set<string>): ActionRo
         ? commands.required_approval_count
         : typeof input?.required_approval_count === 'number'
           ? input.required_approval_count
-          : lifecycle.requires_approval || input?.requires_approval !== false
+          : requiresApproval
             ? 1
             : 0,
     currentApprovalCount:
@@ -716,10 +734,14 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
   const rowSimulated = recommendedRows.filter((r) => r.simulationStatus === 'passed').length;
   const rowExecuted = recommendedRows.filter((r) => r.executionStatus === 'executed').length;
 
-  const recommendedCount = backendSummary?.recommended ?? rowRecommended;
-  const pendingApprovalCount = backendSummary?.pendingApproval ?? rowPendingApproval;
-  const simulatedCount = backendSummary?.simulated ?? rowSimulated;
-  const executedCount = backendSummary?.executed ?? rowExecuted;
+  // Reconcile the canonical backend summary with the row-derived counts. When they
+  // agree, the canonical backend value is used; when a stale/partial backend
+  // disagrees with the visible rows, we fail CLOSED to the row-derived truth so a
+  // card can never read 0 while the table shows actions awaiting approval.
+  const recommendedCount = reconcileCount(backendSummary?.recommended, rowRecommended);
+  const pendingApprovalCount = reconcileCount(backendSummary?.pendingApproval, rowPendingApproval);
+  const simulatedCount = reconcileCount(backendSummary?.simulated, rowSimulated);
+  const executedCount = reconcileCount(backendSummary?.executed, rowExecuted);
 
   // Dev-time invariant: the canonical backend summary must match the row-derived
   // counts. Surfacing a divergence here prevents the "cards say 0 while rows say
@@ -746,7 +768,10 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
   function actionNeedsApproval(r: ActionRow): boolean {
     return r.approvalStatus === 'pending';
   }
-  const approvalRequiredCount = backendSummary?.pendingApproval ?? recommendedRows.filter(actionNeedsApproval).length;
+  const approvalRequiredCount = reconcileCount(
+    backendSummary?.pendingApproval,
+    recommendedRows.filter(actionNeedsApproval).length,
+  );
 
   function getBlocker(): Blocker | null {
     // If actions already exist, never block the table — pipeline checks are only relevant
@@ -1802,7 +1827,12 @@ function PlaybookAgentPanel({
   // Agent summary — the SAME canonical backend summary the top cards use, so the
   // panel and the cards can never disagree. Row-derived values are the fallback.
   const recommended = summary?.recommended ?? rows.length;
-  const awaitingApproval = summary?.pendingApproval ?? rows.filter((r) => r.approvalStatus === 'pending').length;
+  // Reconciled against the visible rows so the panel can never disagree with the
+  // cards (or under-report while the table shows actions awaiting approval).
+  const awaitingApproval = reconcileCount(
+    summary?.pendingApproval,
+    rows.filter((r) => r.approvalStatus === 'pending').length,
+  );
   // Canonical simulation-eligibility breakdown (ONE backend predicate). The eligible
   // count, already-simulated count, and blocked reasons all come from the summary so
   // the panel truthfully explains WHY nothing is eligible. Row-derived counts remain
