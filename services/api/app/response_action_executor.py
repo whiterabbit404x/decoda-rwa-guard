@@ -35,6 +35,7 @@ LIVE_ACTION_EXECUTION_ENABLED_ENV = 'LIVE_ACTION_EXECUTION_ENABLED'
 RESPONSE_ACTION_EXECUTOR_ENV = 'RESPONSE_ACTION_EXECUTOR'
 
 CANONICAL_EXECUTION_STATES = frozenset({
+    'recommended',  # planning step: recommended but not yet simulated/executed
     'simulated',
     'proposal_created',
     'awaiting_approval',
