@@ -207,6 +207,7 @@ from services.api.app.pilot import (
     recommend_response_action_for_incident,
     list_response_action_capabilities,
     approve_enforcement_action,
+    reject_enforcement_action,
     execute_enforcement_action,
     list_enforcement_actions,
     rollback_enforcement_action,
@@ -5013,6 +5014,15 @@ def enforcement_actions_approve(action_id: str, request: Request) -> dict[str, A
 @app.post('/response/actions/{action_id}/approve', summary='Approve a planned response action')
 def response_actions_approve(action_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: _normalize_action_route_response(approve_enforcement_action(action_id, request)))
+
+
+@app.post('/enforcement/actions/{action_id}/reject', summary='Reject a planned enforcement action (reason required)')
+def enforcement_actions_reject(action_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: _normalize_action_route_response(reject_enforcement_action(action_id, payload, request)))
+
+@app.post('/response/actions/{action_id}/reject', summary='Reject a planned response action (reason required)')
+def response_actions_reject(action_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: _normalize_action_route_response(reject_enforcement_action(action_id, payload, request)))
 
 
 @app.post('/enforcement/actions/{action_id}/execute', summary='Execute an approved enforcement action')
