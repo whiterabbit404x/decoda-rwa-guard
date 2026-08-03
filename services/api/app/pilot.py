@@ -18910,20 +18910,35 @@ def _ai_recommendation_review_payload(row: dict[str, Any]) -> dict[str, Any]:
     }
     # Approve/reject for a review are the incident recommendation endpoints — the
     # frontend routes there. On Screen 8 the review is read-forward, so no
-    # policy-action command is offered, but the reason is truthful.
+    # policy-action command is offered, but the reason is truthful. A review is a
+    # human decision, never an executable/simulatable action — the canonical DTO
+    # shape matches a policy action so the frontend renders both uniformly.
+    required_ct = lifecycle['required_approval_count']
+    current_ct = lifecycle['current_approval_count']
     commands = {
         'allowed_commands': [],
-        'blocked_reasons': [{
+        'blocked_reasons': ([{
             'command': 'approve',
             'reason': 'Approve or reject this AI recommendation from the incident investigation.',
-        }] if lifecycle['approval_status'] == 'pending' else [],
+        }] if lifecycle['approval_status'] == 'pending' else []) + [{
+            'command': 'simulate',
+            'reason': _simulate_blocked_label('review_not_simulatable'),
+        }],
         'next_required_step': 'review_in_incident' if lifecycle['approval_status'] == 'pending' else 'none',
         'requires_confirmation': False,
         'live_execution_configured': False,
         'requires_approval': requires_approval,
-        'required_approval_count': lifecycle['required_approval_count'],
-        'current_approval_count': lifecycle['current_approval_count'],
+        'required_approval_count': required_ct,
+        'current_approval_count': current_ct,
+        'approval_progress_label': f'{current_ct} of {required_ct}' if required_ct > 0 else None,
+        'can_simulate': False,
+        'can_execute': False,
+        'can_roll_back': False,
+        'simulation_is_valid': False,
+        'simulation_expires_at': None,
+        'simulation_blocked_reason': _simulate_blocked_label('review_not_simulatable'),
         'can_current_user_approve': None,
+        'can_current_user_reject': None,
         'approval_permission_reason': None,
     }
     # Distinct target so repeated same-type recommendations (e.g. several "Notify
@@ -20026,6 +20041,65 @@ def response_action_provenance(action: dict[str, Any]) -> dict[str, Any]:
 _TERMINAL_ACTION_STATUSES = frozenset({'executed', 'failed', 'canceled', 'rejected'})
 
 
+# Canonical, human-readable reasons a response action is NOT eligible for a dry-run
+# simulation. Keyed by the reason code returned by _response_action_simulate_eligibility
+# so the agent panel can explain WHY nothing is eligible instead of a bare
+# "No Eligible Actions to Simulate". Never a raw enum, never fabricated.
+_SIMULATE_BLOCKED_LABELS: dict[str, str] = {
+    'already_simulated': 'A valid dry-run simulation already exists.',
+    'execution_in_progress': 'An execution is already in progress.',
+    'unsupported_action': 'This action type does not support dry-run simulation.',
+    'review_not_simulatable': 'AI recommendation reviews are human decisions, not executable actions — nothing to simulate.',
+    'terminal_status_executed': 'Action already executed — simulation no longer applies.',
+    'terminal_status_failed': 'Action execution failed — resolve before simulating.',
+    'terminal_status_canceled': 'Action was cancelled — simulation does not apply.',
+}
+
+
+def _simulate_blocked_label(reason_code: str | None) -> str:
+    """Humanize a simulate-eligibility reason code. Falls back to a safe generic
+    label for any unknown/terminal variant so a raw code is never surfaced."""
+    code = str(reason_code or '').strip()
+    if code in _SIMULATE_BLOCKED_LABELS:
+        return _SIMULATE_BLOCKED_LABELS[code]
+    if code.startswith('terminal_status_'):
+        return f'Action is in a terminal state ({code.rsplit("_", 1)[-1]}); simulation does not apply.'
+    return 'This action is not currently eligible for simulation.'
+
+
+def response_action_simulation_state(action: dict[str, Any]) -> dict[str, Any]:
+    """ONE canonical simulation-eligibility snapshot for a record.
+
+    Works for both policy response actions and AI recommendation reviews so the
+    per-action DTO and the aggregate summary use the SAME predicate
+    (_response_action_simulate_eligibility) and can never disagree. Reports whether
+    a currently-valid simulation exists, whether the action can be (re)simulated,
+    and a truthful blocked reason otherwise. There is no simulation-expiry policy
+    configured today, so a passed simulation stays valid and expires_at is null
+    rather than a fabricated timestamp.
+    """
+    record_type = str(action.get('record_type') or '')
+    if record_type == 'ai_recommendation_review':
+        return {
+            'can_simulate': False,
+            'is_valid': False,
+            'expires_at': None,
+            'blocked_reason_code': 'review_not_simulatable',
+            'blocked_reason_label': _simulate_blocked_label('review_not_simulatable'),
+        }
+    mode = str(action.get('mode') or '').strip().lower()
+    execution_state = str(action.get('execution_state') or '').strip().lower()
+    is_valid = mode == 'simulated' or execution_state == 'simulated'
+    eligible, reason = _response_action_simulate_eligibility(action)
+    return {
+        'can_simulate': bool(eligible),
+        'is_valid': bool(is_valid),
+        'expires_at': None,
+        'blocked_reason_code': None if eligible else reason,
+        'blocked_reason_label': None if eligible else _simulate_blocked_label(reason),
+    }
+
+
 def response_action_command_eligibility(
     action: dict[str, Any],
     *,
@@ -20064,12 +20138,17 @@ def response_action_command_eligibility(
     if approval_status == 'pending':
         allowed.extend(['approve', 'reject'])
 
-    # Simulate — mirrors the backend simulate eligibility.
+    # Simulate — mirrors the backend simulate eligibility (single predicate).
     eligible, sim_reason = _response_action_simulate_eligibility(action)
+    simulation_is_valid = simulation_status == 'passed'
     if eligible:
         allowed.append('simulate')
     elif sim_reason == 'already_simulated' and not terminal:
         allowed.append('retry_simulation')
+    # Surface a truthful, non-terminal simulate-blocked reason so the UI never has
+    # to guess why an action cannot be dry-run simulated.
+    if not eligible and sim_reason != 'already_simulated':
+        blocked.append({'command': 'simulate', 'reason': _simulate_blocked_label(sim_reason)})
 
     # Execute — blocked unless every prerequisite passes. Reasons are specific.
     if terminal:
@@ -20103,6 +20182,12 @@ def response_action_command_eligibility(
     else:
         next_step = 'review'
 
+    required_approval_count = int(lifecycle.get('required_approval_count') or 0)
+    current_approval_count = int(lifecycle.get('current_approval_count') or 0)
+    approval_progress_label = (
+        f'{current_approval_count} of {required_approval_count}'
+        if required_approval_count > 0 else None
+    )
     return {
         'allowed_commands': allowed,
         'blocked_reasons': blocked,
@@ -20110,12 +20195,25 @@ def response_action_command_eligibility(
         'requires_confirmation': action_type in DESTRUCTIVE_ACTION_TYPES,
         'live_execution_configured': bool(live_execution_configured),
         'requires_approval': bool(lifecycle['requires_approval']),
-        'required_approval_count': int(lifecycle.get('required_approval_count') or 0),
-        'current_approval_count': int(lifecycle.get('current_approval_count') or 0),
+        'required_approval_count': required_approval_count,
+        'current_approval_count': current_approval_count,
+        # Canonical quorum progress label (e.g. "0 of 1") so the UI renders the
+        # actual quorum instead of a vague "Pending".
+        'approval_progress_label': approval_progress_label,
+        # Explicit capability booleans derived from the SAME allowed_commands above,
+        # so the frontend never re-derives the state machine to decide button state.
+        'can_simulate': 'simulate' in allowed,
+        'can_execute': 'execute' in allowed,
+        'can_roll_back': 'roll_back' in allowed,
+        # Canonical simulation eligibility (single predicate) with a truthful reason.
+        'simulation_is_valid': bool(simulation_is_valid),
+        'simulation_expires_at': None,
+        'simulation_blocked_reason': None if eligible else _simulate_blocked_label(sim_reason),
         # Filled in per-request at the list/detail layer, which knows the caller's
         # role and the proposer (separation of duties). Defaults are conservative
         # so button visibility is never mistaken for authorization.
         'can_current_user_approve': None,
+        'can_current_user_reject': None,
         'approval_permission_reason': None,
     }
 
@@ -20126,22 +20224,25 @@ def response_action_approval_permission(
     workspace_context: dict[str, Any],
     current_user_id: str | None,
 ) -> dict[str, Any]:
-    """Resolve whether the CURRENT caller may approve this action.
+    """Resolve whether the CURRENT caller may approve OR reject this action.
 
     Enforced canonically by role (owner/admin) plus separation of duties (the
-    proposer can never approve their own action). Returns a truthful reason so
-    the UI can show a read-only explanation instead of silently hiding controls.
+    proposer can never approve their own action). Reject follows the same gate as
+    approve — an approver-role operator who is not the proposer may record either
+    decision. Returns a truthful reason so the UI can show a read-only explanation
+    instead of silently hiding controls.
     """
     role_str = str(workspace_context.get('role') or '').strip().lower()
     normalized_role = ROLE_CANONICAL_MAP.get(role_str, role_str)
     proposer_id = str(action.get('created_by_user_id') or '').strip()
     if normalized_role and normalized_role not in LIVE_ACTION_APPROVER_ROLES:
-        return {'can_current_user_approve': False,
+        return {'can_current_user_approve': False, 'can_current_user_reject': False,
                 'approval_permission_reason': 'Owner or admin role is required to approve response actions.'}
     if proposer_id and current_user_id and proposer_id == str(current_user_id):
-        return {'can_current_user_approve': False,
+        return {'can_current_user_approve': False, 'can_current_user_reject': False,
                 'approval_permission_reason': 'The action proposer cannot approve the same action (separation of duties).'}
-    return {'can_current_user_approve': True, 'approval_permission_reason': None}
+    return {'can_current_user_approve': True, 'can_current_user_reject': True,
+            'approval_permission_reason': None}
 
 
 # Lifecycle states in which a recommendation is no longer an ACTIVE recommendation.
@@ -20169,12 +20270,52 @@ def build_response_actions_summary(actions: list[dict[str, Any]]) -> dict[str, A
         lifecycle = action.get('lifecycle') if isinstance(action.get('lifecycle'), dict) else {}
         return str(lifecycle.get('simulation_status') or '').strip().lower()
 
-    recommended = sum(1 for a in actions if _summary_field(a, 'lifecycle_state') not in _INACTIVE_RECOMMENDATION_STATES)
+    def counts_as_recommended(action: dict[str, Any]) -> bool:
+        if _summary_field(action, 'lifecycle_state') in _INACTIVE_RECOMMENDATION_STATES:
+            return False
+        # A DECIDED AI recommendation review (accepted/rejected) is an immutable
+        # history record that leaves the active Recommended Actions list, so it must
+        # not inflate the Recommended card above the rows the operator can see.
+        if str(action.get('record_type') or '') == 'ai_recommendation_review' \
+                and _summary_field(action, 'approval_status') in {'approved', 'rejected'}:
+            return False
+        return True
+
+    recommended = sum(1 for a in actions if counts_as_recommended(a))
     pending_approval = sum(1 for a in actions if _summary_field(a, 'approval_status') == 'pending')
     simulated = sum(1 for a in actions if simulation_status(a) == 'passed')
     executed = sum(1 for a in actions if _summary_field(a, 'execution_status') == 'executed')
     ready_for_execution = sum(1 for a in actions if _summary_field(a, 'lifecycle_state') == 'ready_to_execute')
     blocked = sum(1 for a in actions if _summary_field(a, 'lifecycle_state') in {'execution_failed', 'blocked'})
+
+    # Canonical simulation-eligibility breakdown (ONE predicate, shared with the
+    # per-action DTO and Simulate All) so the agent panel can explain WHY nothing is
+    # eligible — "0 eligible · N already simulated · M blocked (reason)" — instead of
+    # a bare "No Eligible Actions to Simulate".
+    sim_eligible = 0
+    sim_already = 0
+    sim_blocked_total = 0
+    blocked_reason_counts: dict[str, dict[str, Any]] = {}
+    for a in actions:
+        sim_state = response_action_simulation_state(a)
+        if sim_state['can_simulate']:
+            sim_eligible += 1
+        elif sim_state['is_valid']:
+            sim_already += 1
+        else:
+            sim_blocked_total += 1
+            code = str(sim_state.get('blocked_reason_code') or 'ineligible')
+            entry = blocked_reason_counts.setdefault(
+                code, {'reason_code': code, 'label': sim_state['blocked_reason_label'], 'count': 0})
+            entry['count'] += 1
+    simulation_breakdown = {
+        'eligible': sim_eligible,
+        'already_simulated': sim_already,
+        'blocked_total': sim_blocked_total,
+        'blocked_reasons': sorted(blocked_reason_counts.values(), key=lambda e: (-e['count'], e['reason_code'])),
+        'total': len(actions),
+    }
+
     return {
         'recommended': recommended,
         'pending_approval': pending_approval,
@@ -20184,6 +20325,7 @@ def build_response_actions_summary(actions: list[dict[str, Any]]) -> dict[str, A
         'executed': executed,
         'ready_for_execution': ready_for_execution,
         'blocked': blocked,
+        'simulation': simulation_breakdown,
         'total': len(actions),
     }
 
