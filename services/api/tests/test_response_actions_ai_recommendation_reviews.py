@@ -39,12 +39,15 @@ class _Conn:
     workspace isolation and incident filtering are exercised, not assumed.
     """
 
-    def __init__(self, *, legacy_rows=None, ai_rows=None, schema_ready=True, audit_rows=None):
+    def __init__(self, *, legacy_rows=None, ai_rows=None, schema_ready=True, audit_rows=None, approval_rows=None):
         self.executed: list[tuple[str, object]] = []
         self._legacy_rows = legacy_rows or []
         self._ai_rows = ai_rows or []
         self._schema_ready = schema_ready
         self._audit_rows = audit_rows or []
+        # response_action_approvals rows (the SEPARATE approval domain), each a dict
+        # with subject_id / decision / approver_user_id / action_version / required_quorum.
+        self._approval_rows = approval_rows or []
 
     def execute(self, statement, params=None):
         n = ' '.join(str(statement).split())
@@ -71,6 +74,17 @@ class _Conn:
                 rows = [r for r in rows if str(r.get('incident_id')) == str(incident_id)]
             if action_id is not None:
                 rows = [r for r in rows if str(r.get('recommendation_id')) == str(action_id)]
+            return _Result(rows=rows)
+
+        if 'FROM response_action_approvals' in n and 'SELECT' in n:
+            # params: (workspace_id, subject_domain, subject_id, action_version)
+            ws, domain, subject_id, version = params[0], params[1], params[2], params[3]
+            rows = [
+                r for r in self._approval_rows
+                if str(r.get('subject_id')) == str(subject_id)
+                and str(r.get('subject_domain', 'ai_recommendation')) == str(domain)
+                and int(r.get('action_version', 1)) == int(version)
+            ]
             return _Result(rows=rows)
 
         if 'FROM audit_logs' in n:
@@ -309,18 +323,29 @@ def test_schema_absent_returns_only_legacy(monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# Status filter: an explicit pending filter keeps pending reviews and drops decided
-# ones; an executed filter drops all reviews (none are executed).
+# Status filter: an explicit pending filter keeps APPROVAL-pending actions and drops
+# ones decided in the approval domain. review_state is independent of approval — a
+# reviewed-but-unapproved recommendation is still approval-pending.
 # --------------------------------------------------------------------------
-def test_status_filter_pending_keeps_only_pending_reviews(monkeypatch):
-    conn = _Conn(ai_rows=[
-        _ai_row(recommendation_id='rec-p', review_state='pending_review'),
-        _ai_row(recommendation_id='rec-a', review_state='accepted'),
-    ])
+def test_status_filter_pending_keeps_only_approval_pending(monkeypatch):
+    conn = _Conn(
+        ai_rows=[
+            _ai_row(recommendation_id='rec-p', review_state='pending_review'),
+            _ai_row(recommendation_id='rec-a', review_state='accepted'),
+            _ai_row(recommendation_id='rec-approved', review_state='pending_review'),
+        ],
+        # rec-approved has reached approval quorum in the SEPARATE approval domain,
+        # so it drops out of the approval-pending bucket. review_state alone never does.
+        approval_rows=[{'subject_id': 'rec-approved', 'subject_domain': 'ai_recommendation',
+                        'action_version': 1, 'approver_user_id': 'user-9', 'decision': 'approved',
+                        'required_quorum': 1}],
+    )
     _bootstrap(monkeypatch, conn)
     actions = pilot.list_enforcement_actions(SimpleNamespace(headers={}), status_value='pending')['actions']
-    ai_ids = [a['id'] for a in actions if a.get('record_type') == 'ai_recommendation_review']
-    assert ai_ids == ['rec-p']
+    ai_ids = sorted(a['id'] for a in actions if a.get('record_type') == 'ai_recommendation_review')
+    # Both the pending-review AND the accepted-but-unapproved recommendation are
+    # approval-pending; only the approval-domain-approved one drops out.
+    assert ai_ids == ['rec-a', 'rec-p']
 
 
 def test_status_filter_executed_drops_all_reviews(monkeypatch):

@@ -47,7 +47,12 @@ def _policy(action_type: str, *, mode: str = 'recommended', execution_state: str
 
 
 def _ai_review(*, review_state: str = 'pending_review', requires_approval: bool = True,
-               reason: str = 'Page the on-call security team.', action_type: str = 'notify_security_team') -> dict:
+               reason: str = 'Page the on-call security team.', action_type: str = 'notify_security_team',
+               approval_summary: dict | None = None) -> dict:
+    # approval_summary models the SEPARATE response-action approval domain
+    # (response_action_approvals). When omitted, no approval decisions exist yet, so
+    # an approval-required recommendation is Awaiting Approval regardless of its
+    # (independent) review_state.
     return pilot._ai_recommendation_review_payload({
         'recommendation_id': f'rec-{review_state}-{reason[:6]}',
         'incident_id': 'inc-1',
@@ -59,7 +64,13 @@ def _ai_review(*, review_state: str = 'pending_review', requires_approval: bool 
         'evidence_refs': ['telemetry:x'],
         'triage_job_id': 'job-1',
         'triage_result_id': 'res-1',
-    })
+    }, approval_summary=approval_summary)
+
+
+def _approval(*, approved_count: int = 0, required_quorum: int = 1, rejected: bool = False) -> dict:
+    """A response-action approval-domain summary (see _action_approval_summary)."""
+    return {'required_quorum': required_quorum, 'approved_count': approved_count, 'rejected': rejected,
+            'current_user_decided': False, 'current_user_decision': None, 'approver_ids': []}
 
 
 # ── 12.1 Requires-approval action counts as Pending Approval ──────────────────
@@ -171,17 +182,42 @@ def test_ai_review_without_required_approval_is_not_pending():
     assert pilot.build_response_actions_summary([review])['pending_approval'] == 0
 
 
-# ── 12.8 Accepted/rejected AI review no longer pending ────────────────────────
+# ── 12.8 Approval is derived from the approval domain, NOT the review state ───
+# A recommendation review (accepted/rejected) is INDEPENDENT of the response-action
+# approval. Until a real approval decision exists, an approval-required action is
+# still Awaiting Approval — a prior review neither approves nor blocks it.
 
-def test_ai_review_accepted_is_approved_not_pending():
+def test_ai_review_accepted_but_not_yet_approved_is_still_pending():
+    # The AI recommendation was accepted in review, but no response-action approval
+    # decision exists yet -> still Awaiting Approval (review != approval).
     review = _ai_review(review_state='accepted')
+    assert review['approval_status'] == 'pending'
+    assert review['lifecycle_state'] == 'awaiting_approval'
+    assert review['current_approval_count'] == 0
+    assert pilot.build_response_actions_summary([review])['pending_approval'] == 1
+
+
+def test_ai_review_with_approval_quorum_is_approved():
+    # A real response-action approval decision (approval domain) reaches quorum and
+    # advances the action out of Pending Approval — regardless of review_state.
+    review = _ai_review(review_state='accepted', approval_summary=_approval(approved_count=1, required_quorum=1))
     assert review['approval_status'] == 'approved'
     assert review['lifecycle_state'] == 'approved'
+    assert review['current_approval_count'] == 1
     assert pilot.build_response_actions_summary([review])['pending_approval'] == 0
 
 
-def test_ai_review_rejected_is_not_pending():
+def test_ai_review_rejected_in_review_is_still_approval_pending():
+    # A review rejection does not record a response-action approval-domain rejection,
+    # so the action's APPROVAL state remains pending (the domains are separate).
     review = _ai_review(review_state='rejected')
+    assert review['approval_status'] == 'pending'
+    assert pilot.build_response_actions_summary([review])['pending_approval'] == 1
+
+
+def test_ai_action_rejected_in_approval_domain_is_not_pending():
+    # A response-action approval-domain rejection DOES drop it out of Pending Approval.
+    review = _ai_review(review_state='pending_review', approval_summary=_approval(rejected=True))
     assert review['approval_status'] == 'rejected'
     assert pilot.build_response_actions_summary([review])['pending_approval'] == 0
 
@@ -389,19 +425,25 @@ def test_ai_review_command_dto_matches_policy_shape():
 
 # ── Recommended count agrees with the visible Recommended tab (Section 13) ─────
 
-def test_decided_ai_review_excluded_from_recommended_count():
-    """An ACCEPTED AI review moves to Action History in the UI, so it must not inflate
-    the Recommended card above the rows the operator can see."""
+def test_decided_action_excluded_from_recommended_count():
+    """An action DECIDED in the response-action approval domain (approved/rejected)
+    moves to Action History in the UI, so it must not inflate the Recommended card.
+    A recommendation review alone (no approval decision) does NOT remove it — it is
+    still Awaiting Approval and remains a visible Recommended row."""
     actions = [
         _policy('notify_team', mode='simulated', execution_state='simulated'),
         _policy('escalate_to_issuer'),
-        _ai_review(review_state='accepted'),   # -> Action History, not Recommended
-        _ai_review(review_state='rejected'),   # -> excluded (inactive)
-        _ai_review(review_state='pending_review'),  # -> Recommended
+        # Approval-domain approved -> Action History, not Recommended.
+        _ai_review(review_state='accepted', approval_summary=_approval(approved_count=1, required_quorum=1)),
+        # Approval-domain rejected -> excluded (inactive).
+        _ai_review(review_state='pending_review', reason='b', approval_summary=_approval(rejected=True)),
+        # Reviewed but NOT yet approved -> still Awaiting Approval -> Recommended.
+        _ai_review(review_state='accepted', reason='c'),
+        _ai_review(review_state='pending_review', reason='d'),
     ]
     summary = pilot.build_response_actions_summary(actions)
-    # Only the 2 policy actions + 1 pending review remain in the Recommended list.
-    assert summary['recommended'] == 3
+    # 2 policy actions + 2 approval-pending recommendations remain in Recommended.
+    assert summary['recommended'] == 4
 
 
 # ── Reject endpoint: reason required, requires-approval, persistence ──────────

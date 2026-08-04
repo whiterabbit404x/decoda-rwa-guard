@@ -163,3 +163,56 @@ export function reconcileCount(backend: number | null | undefined, rowDerived: n
   if (typeof backend !== 'number' || !Number.isFinite(backend)) return rowDerived;
   return backend === rowDerived ? backend : rowDerived;
 }
+
+// ── Response-action APPROVAL domain (Screen 8) ────────────────────────────────
+// Screen 8 "Approve"/"Reject" is ALWAYS a RESPONSE-ACTION APPROVAL — a governed
+// decision that permits a mitigation action to proceed toward execution — for BOTH
+// policy actions AND AI-recommendation-backed actions. It is NEVER an AI
+// recommendation REVIEW. Routing an approval to the incident recommendation-review
+// endpoint (which is governed by review_state and returns "Recommendation has
+// already been reviewed") is the exact domain-collision bug these helpers pin shut.
+
+/**
+ * The dedicated response-action approval command endpoint for a Screen 8 row. It
+ * depends ONLY on the action id + decision — never on the record type — so an
+ * AI-recommendation-backed row can never be routed to the recommendation-review
+ * endpoint. `action.id` is the response_action id or the recommendation id; the
+ * backend resolves the subject and records the decision in the approval domain.
+ */
+export function responseActionApprovalEndpoint(actionId: string, decision: 'approve' | 'reject'): string {
+  return `/api/response/actions/${encodeURIComponent(actionId)}/${decision}`;
+}
+
+/**
+ * Whether a row has been DECIDED in the response-action approval domain (its quorum
+ * was reached, or it was rejected) and therefore leaves Recommended Actions for
+ * Action History. Derived from the canonical APPROVAL status ONLY — never from a
+ * recommendation's independent review_state — so a prior review never moves a row.
+ */
+export function isApprovalDecided(approvalStatus: unknown): boolean {
+  const s = canonicalApprovalStatus(approvalStatus);
+  return s === 'approved' || s === 'rejected';
+}
+
+/**
+ * Map a backend approval-command response (HTTP status + body) to the ONE canonical
+ * operator message. Guarantees an approval attempt NEVER surfaces "Recommendation
+ * has already been reviewed" — that string belongs to the recommendation-review
+ * domain and can only appear if an approval was wrongly routed there.
+ */
+export function approvalResultMessage(
+  ok: boolean,
+  body: { message?: unknown; detail?: unknown },
+  fallback = 'Approval was blocked by the backend.',
+): string {
+  if (ok && typeof body.message === 'string' && body.message.trim()) return body.message;
+  if (ok) return 'Approval recorded.';
+  const detail = body.detail;
+  if (typeof detail === 'string' && detail.trim()) return detail;
+  if (detail && typeof detail === 'object') {
+    const d = detail as { message?: string; error?: string };
+    if (d.message) return d.message;
+    if (d.error) return d.error;
+  }
+  return fallback;
+}

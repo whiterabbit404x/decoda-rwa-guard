@@ -18,23 +18,25 @@ function auditPanelSource(): string {
   return appSource('evidence-audit-panel.tsx');
 }
 
-// 1 & 2. Accepted and rejected AI reviews are routed into Action History.
-test('accepted/rejected AI reviews are routed to Action History via decidedAiReviews', () => {
+// 1 & 2. Actions DECIDED in the response-action approval domain (approved/rejected)
+//     are routed into Action History — based on the canonical APPROVAL status, NOT
+//     on the independent recommendation review_state.
+test('approval-decided AI actions are routed to Action History via decidedAiReviews', () => {
   const src = pageSource();
   expect(src).toContain('normalizeAiReviewHistoryRow');
   expect(src).toContain('decidedAiReviews');
-  // Decided = accepted OR rejected.
-  expect(src).toContain("String(item?.review_state || '') === 'accepted'");
-  expect(src).toContain("String(item?.review_state || '') === 'rejected'");
-  // Decided reviews are prepended to the history rows.
+  // Decided = approved OR rejected in the approval domain (isApprovalDecided), never review_state.
+  expect(src).toContain('isApprovalDecided(item?.approval_status');
+  expect(src).toContain('aiReviews.filter((item: any) => aiDecided(item))');
+  // Decided actions are prepended to the history rows.
   expect(src).toContain('decidedAiReviews.map(normalizeAiReviewHistoryRow)');
 });
 
-// 3. Pending AI reviews are routed into Recommended Actions (with legacy actions).
-test('pending AI reviews are routed to Recommended Actions', () => {
+// 3. Approval-pending AI actions are routed into Recommended Actions (with legacy actions).
+test('approval-pending AI actions are routed to Recommended Actions', () => {
   const src = pageSource();
   expect(src).toContain('pendingAiReviews');
-  expect(src).toContain("String(item?.review_state || 'pending_review') === 'pending_review'");
+  expect(src).toContain('aiReviews.filter((item: any) => !aiDecided(item))');
   expect(src).toContain('[...legacyActions, ...pendingAiReviews].map');
 });
 

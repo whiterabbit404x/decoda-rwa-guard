@@ -16,10 +16,13 @@ import {
 import { resolveApiUrl } from '../dashboard-data';
 import { usePilotAuth } from '../pilot-auth-context';
 import {
+  approvalResultMessage,
   canonicalLifecycleState,
   deriveRowApproval,
+  isApprovalDecided,
   lifecycleLabelFor,
   reconcileCount,
+  responseActionApprovalEndpoint,
 } from './response-actions-presentation';
 import { useRuntimeSummary } from '../runtime-summary-context';
 import RuntimeSummaryPanel from '../runtime-summary-panel';
@@ -483,12 +486,18 @@ function normalizeHistoryRow(input: any): HistoryRow {
 // not executed actions. They render in Action History with a truthful AI source, the
 // decision, executed=No, the reviewer, and links to the incident and its evidence.
 function normalizeAiReviewHistoryRow(input: any): HistoryRow {
-  const decision = String(input?.decision || input?.review_state || '').toLowerCase();
+  // The APPROVAL decision (response-action approval domain) is what moved this row
+  // into history; prefer it for the result. review_state is a separate record.
+  const approvalStatus = String(input?.approval_status || input?.lifecycle?.approval_status || '').toLowerCase();
+  const decision =
+    approvalStatus === 'approved' || approvalStatus === 'rejected'
+      ? approvalStatus.replace('approved', 'accepted')
+      : String(input?.decision || input?.review_state || '').toLowerCase();
   return {
     id: String(input?.recommendation_id || input?.id || '-'),
     action: String(input?.title || input?.action_type || 'AI recommendation'),
     type: 'AI recommendation review',
-    result: decision === 'accepted' ? 'Accepted' : decision === 'rejected' ? 'Rejected' : 'Reviewed',
+    result: decision === 'accepted' ? 'Approved' : decision === 'rejected' ? 'Rejected' : 'Reviewed',
     actorSystem: String(input?.reviewer_email || input?.reviewer_id || 'Reviewer'),
     time: input?.reviewed_at ?? input?.created_at ?? null,
     // AI investigation evidence — never simulator, never live-chain.
@@ -559,6 +568,12 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
   const [dataLoading, setDataLoading] = useState(false);
   const [liveExecutionAllowed, setLiveExecutionAllowed] = useState(false);
   const [message, setMessage] = useState('');
+  // Bumped after any command that mutates canonical state (approve, reject,
+  // simulate, execute) so the client re-fetches /api/response/actions and its
+  // summary — router.refresh() alone does not re-run this client data load, which
+  // is why Pending Approval / the banner / the row state appeared "stuck".
+  const [reloadKey, setReloadKey] = useState(0);
+  const reloadActions = () => setReloadKey((k) => k + 1);
 
   const workspaceEvidenceSource: string = summaryAny.evidence_source_summary ?? summaryAny.evidence_source ?? '';
   const telemetryOk = (counts?.telemetry_events ?? 0) > 0 || !!summaryAny.last_telemetry_at;
@@ -614,24 +629,21 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
         if (incidentIdFilter) validIncidentIds.add(incidentIdFilter);
 
         const allActions = Array.isArray(actionsPayload?.actions) ? actionsPayload.actions : [];
-        // AI recommendation reviews are returned in the same list but split by decision:
-        // pending reviews belong in Recommended Actions; accepted/rejected reviews are
-        // immutable history records and belong in Action History. Legacy policy-engine
-        // response_actions keep their existing behavior (all in Recommended Actions).
+        // AI-recommendation-backed actions are returned in the same list, split by the
+        // canonical APPROVAL status (from the response-action approval domain), NOT by
+        // review_state: an action still Awaiting Approval belongs in Recommended
+        // Actions; one decided in the approval domain (approved/rejected) is an
+        // immutable history record. A prior recommendation review never moves it.
+        const aiDecided = (item: any): boolean =>
+          isApprovalDecided(item?.approval_status ?? item?.lifecycle?.approval_status);
         const aiReviews = allActions.filter(
           (item: any) => String(item?.record_type || '') === 'ai_recommendation_review',
         );
         const legacyActions = allActions.filter(
           (item: any) => String(item?.record_type || '') !== 'ai_recommendation_review',
         );
-        const pendingAiReviews = aiReviews.filter(
-          (item: any) => String(item?.review_state || 'pending_review') === 'pending_review',
-        );
-        const decidedAiReviews = aiReviews.filter(
-          (item: any) =>
-            String(item?.review_state || '') === 'accepted' ||
-            String(item?.review_state || '') === 'rejected',
-        );
+        const pendingAiReviews = aiReviews.filter((item: any) => !aiDecided(item));
+        const decidedAiReviews = aiReviews.filter((item: any) => aiDecided(item));
 
         const recommended = [...legacyActions, ...pendingAiReviews].map((item: any) =>
           normalizeActionRow(item, validIncidentIds),
@@ -679,8 +691,10 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
       cancelled = true;
     };
   // selectedId intentionally omitted: it is set inside load() and must not re-trigger it.
+  // reloadKey is included so a completed command (approve/reject/simulate/execute)
+  // re-fetches the canonical actions + summary.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiUrl, authHeaders, runtimeLoading, incidentIdFilter, actionIdParam]);
+  }, [apiUrl, authHeaders, runtimeLoading, incidentIdFilter, actionIdParam, reloadKey]);
 
   const filteredRecommended = useMemo(() => {
     return recommendedRows.filter((row) => {
@@ -1131,6 +1145,7 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
                 apiUrl={apiUrl}
                 authHeaders={authHeaders}
                 onMessage={setMessage}
+                onDataChanged={reloadActions}
               />
               {selectedAction ? (
                 <ActionDetailPanel
@@ -1140,6 +1155,7 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
                   apiUrl={apiUrl}
                   authHeaders={authHeaders}
                   refreshCsrfToken={refreshCsrfToken}
+                  onDataChanged={reloadActions}
                 />
               ) : null}
             </div>
@@ -1163,6 +1179,7 @@ function ActionDetailPanel({
   apiUrl,
   authHeaders,
   refreshCsrfToken,
+  onDataChanged,
 }: {
   action: ActionRow;
   workspaceEvidenceSource: string;
@@ -1170,6 +1187,7 @@ function ActionDetailPanel({
   apiUrl: string;
   authHeaders: () => Record<string, string>;
   refreshCsrfToken: () => Promise<string | null>;
+  onDataChanged: () => void;
 }) {
   const router = useRouter();
   const st = lifecyclePill(action.lifecycleState, action.lifecycleLabel);
@@ -1189,35 +1207,38 @@ function ActionDetailPanel({
   const canSimulate = !isAiReview && (allowedCommands.includes('simulate') || allowedCommands.includes('retry_simulation'));
 
   const approvalBlocked = action.approvalStatus === 'pending';
-  // Approve / Reject visibility. For a policy action the backend's allowed_commands
-  // is the authority; for an AI recommendation review the decision is made in the
-  // incident investigation, so we route there. can_current_user_approve gates the
-  // controls: when the caller is not authorized we show the truthful reason instead
-  // of silently hiding the buttons. Button visibility is NEVER authorization — the
-  // backend re-checks role + separation of duties on every command.
+  // Approve / Reject visibility. Screen 8 "Approve" is a RESPONSE-ACTION APPROVAL
+  // for BOTH policy actions AND AI-recommendation-backed actions — it is NEVER an
+  // AI recommendation REVIEW. The backend's allowed_commands is the single
+  // authority (it re-checks role + separation of duties on every command; button
+  // visibility is never authorization). can_current_user_approve surfaces a
+  // truthful read-only reason when the caller is not authorized or has already
+  // recorded a decision for this action version.
   const approvalPending = action.approvalStatus === 'pending';
-  const policyCanApprove = !isAiReview && allowedCommands.includes('approve');
+  const commandAllowsApprove = allowedCommands.includes('approve');
   const userMayApprove = action.canCurrentUserApprove !== false;
-  const showPolicyApproval = policyCanApprove && userMayApprove;
-  const showAiReviewApproval = isAiReview && approvalPending && !!action.linkedIncident;
+  const showApproval = commandAllowsApprove && userMayApprove;
   const approvalDenominator = action.requiredApprovalCount ?? (action.requiresApproval ? 1 : 0);
   const approvalNumerator = action.currentApprovalCount ?? 0;
 
   async function approveAction() {
-    // Policy action -> response-action approve. AI review -> incident recommendation
-    // approve (the real, existing governed command). Both persist server-side.
-    const endpoint = isAiReview
-      ? `/api/incidents/${action.linkedIncident}/recommendations/${action.id}/approve`
-      : `/api/response/actions/${action.id}/approve`;
+    // ALWAYS the dedicated response-action approval command — never the AI
+    // recommendation-review endpoint. A prior recommendation review therefore
+    // cannot return "already reviewed" and cannot block this approval. The backend
+    // returns the canonical result message (recorded / quorum reached / still
+    // pending / already approved this version / not permitted / not approvable).
     onMessage('Submitting approval…');
     try {
-      const res = await fetch(endpoint, {
+      const res = await fetch(responseActionApprovalEndpoint(action.id, 'approve'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({}),
       });
-      const data = (await res.json().catch(() => ({}))) as { detail?: unknown };
-      onMessage(res.ok ? 'Approval recorded.' : _extractErrorMessage(data.detail, 'Approval was blocked by the backend.'));
+      const data = (await res.json().catch(() => ({}))) as { detail?: unknown; message?: string };
+      onMessage(approvalResultMessage(res.ok, data, 'Approval was blocked by the backend.'));
+      // Re-fetch the canonical actions + summary so Pending Approval, the banner,
+      // the row state, and the approval progress reflect the persisted quorum.
+      if (res.ok) onDataChanged();
       router.refresh();
     } catch {
       onMessage('Approval request failed. Check network connection.');
@@ -1226,24 +1247,27 @@ function ActionDetailPanel({
 
   async function rejectAction() {
     // Reject requires a reason (enforced by the backend too — the prompt is a
-    // convenience, not the authority).
+    // convenience, not the authority). ALWAYS the response-action approval domain,
+    // never the recommendation-review endpoint.
     const reason = typeof window !== 'undefined' ? window.prompt('Reason for rejecting this action (required):')?.trim() : '';
     if (!reason) {
       onMessage('Rejection cancelled — a reason is required.');
       return;
     }
-    const endpoint = isAiReview
-      ? `/api/incidents/${action.linkedIncident}/recommendations/${action.id}/reject`
-      : `/api/response/actions/${action.id}/reject`;
     onMessage('Submitting rejection…');
     try {
-      const res = await fetch(endpoint, {
+      const res = await fetch(responseActionApprovalEndpoint(action.id, 'reject'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ reason }),
       });
-      const data = (await res.json().catch(() => ({}))) as { detail?: unknown };
-      onMessage(res.ok ? 'Rejection recorded.' : _extractErrorMessage(data.detail, 'Rejection was blocked by the backend.'));
+      const data = (await res.json().catch(() => ({}))) as { detail?: unknown; message?: string };
+      onMessage(
+        res.ok
+          ? (typeof data.message === 'string' && data.message ? data.message : 'Rejection recorded.')
+          : _extractErrorMessage(data.detail, 'Rejection was blocked by the backend.'),
+      );
+      if (res.ok) onDataChanged();
       router.refresh();
     } catch {
       onMessage('Rejection request failed. Check network connection.');
@@ -1269,7 +1293,8 @@ function ActionDetailPanel({
       const data = (await res.json()) as { id?: string; status?: string; simulation_status?: string; simulated?: boolean; detail?: unknown };
       if (res.ok) {
         onMessage('Action marked as SIMULATED.');
-        // Reload the page to reflect the persisted simulated status.
+        // Re-fetch canonical actions + summary to reflect the persisted status.
+        onDataChanged();
         router.refresh();
       } else {
         onMessage(_extractErrorMessage(data.detail, 'Simulate failed.'));
@@ -1304,6 +1329,7 @@ function ActionDetailPanel({
       };
       if (res.ok) {
         onMessage(`Execution recorded: ${data.lifecycle_label ?? data.status ?? 'updated'}.`);
+        onDataChanged();
       } else {
         onMessage(_extractErrorMessage(data.detail, 'Execution was blocked by the backend.'));
       }
@@ -1504,7 +1530,25 @@ function ActionDetailPanel({
 
       {isAiReview ? (
         <div style={{ marginBottom: '0.5rem' }}>
-          <p className="tableMeta" style={{ marginBottom: '0.1rem' }}>Decision</p>
+          {/* Approval (response-action approval domain) is SEPARATE from the
+              recommendation Review below. Approval progress is the quorum toward
+              execution; the Review is the operator's judgement of the AI suggestion. */}
+          <p className="tableMeta" style={{ marginBottom: '0.1rem' }}>Approval</p>
+          <p style={{ fontSize: '0.8rem', margin: 0 }}>
+            {action.approvalStatus === 'approved'
+              ? 'Approved'
+              : action.approvalStatus === 'rejected'
+                ? 'Rejected'
+                : action.approvalStatus === 'pending'
+                  ? 'Awaiting approval'
+                  : 'Not required'}
+          </p>
+          {approvalDenominator > 0 ? (
+            <p className="muted" style={{ fontSize: '0.72rem', margin: '0.1rem 0 0' }}>
+              {approvalNumerator} of {approvalDenominator} approved
+            </p>
+          ) : null}
+          <p className="tableMeta" style={{ marginTop: '0.4rem', marginBottom: '0.1rem' }}>Recommendation Review</p>
           <p style={{ fontSize: '0.8rem', margin: 0 }}>
             {action.decision === 'accepted'
               ? 'Accepted · Not executed'
@@ -1636,13 +1680,20 @@ function ActionDetailPanel({
       </div>
 
       {isAiReview ? (
-        // AI recommendation reviews are decided (approve/reject) in the incident
-        // investigation — the same governed backend command Screen 7 uses. They are
-        // never simulated/executed here. When still awaiting a decision we surface
-        // Approve/Reject inline (routing to the incident endpoints); otherwise only
-        // neutral read links to the underlying evidence.
+        // An AI-recommendation-backed action is APPROVED here via the response-action
+        // approval domain (never simulated/executed on Screen 8). Approve/Reject
+        // route to the response-action approval command; the recommendation REVIEW
+        // (accepted/rejected) is shown separately in the Decision line and is decided
+        // in the incident investigation. When the caller is not authorized we show a
+        // truthful read-only reason instead of silently hiding the controls.
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-          {showAiReviewApproval ? (
+          {approvalPending && commandAllowsApprove && !userMayApprove ? (
+            <p className="muted" style={{ fontSize: '0.75rem', margin: '0 0 0.5rem', width: '100%' }}>
+              <strong style={{ color: 'var(--warning-fg)' }}>Approval required:</strong>{' '}
+              {action.approvalPermissionReason ?? 'You do not have permission to approve this action.'}
+            </p>
+          ) : null}
+          {showApproval ? (
             <>
               <button type="button" className="btn btn-primary" style={{ fontSize: '0.8rem' }} onClick={() => void approveAction()}>
                 Approve
@@ -1689,7 +1740,7 @@ function ActionDetailPanel({
           {/* Read-only approval permission explanation: when approval is pending but
               the current user is not authorized, we say WHY rather than hiding the
               controls with no reason. */}
-          {approvalPending && policyCanApprove && !userMayApprove ? (
+          {approvalPending && commandAllowsApprove && !userMayApprove ? (
             <p className="muted" style={{ fontSize: '0.75rem', margin: '0 0 0.5rem' }}>
               <strong style={{ color: 'var(--warning-fg)' }}>Approval required:</strong>{' '}
               {action.approvalPermissionReason ?? 'You do not have permission to approve this action.'}
@@ -1699,7 +1750,7 @@ function ActionDetailPanel({
             {/* Approve / Reject appear when the backend says approval is the next
                 step AND the caller is authorized. Reject requires a reason. Both
                 call real, permission-enforced backend commands. */}
-            {showPolicyApproval ? (
+            {showApproval ? (
               <>
                 <button type="button" className="btn btn-primary" style={{ fontSize: '0.8rem' }} onClick={() => void approveAction()}>
                   Approve
@@ -1718,11 +1769,11 @@ function ActionDetailPanel({
               >
                 Execute Action
               </button>
-            ) : canSimulate && !showPolicyApproval ? (
+            ) : canSimulate && !showApproval ? (
               <button type="button" className="btn btn-primary" style={{ fontSize: '0.8rem' }} onClick={() => void simulateAction()}>
                 {action.simulationStatus === 'passed' ? 'Retry Simulation' : 'Simulate Action'}
               </button>
-            ) : showPolicyApproval ? (
+            ) : showApproval ? (
               // Approve/Reject already shown above — don't duplicate a disabled pill.
               null
             ) : (
@@ -1809,6 +1860,7 @@ function PlaybookAgentPanel({
   apiUrl: _apiUrl,
   authHeaders,
   onMessage,
+  onDataChanged,
 }: {
   rows: ActionRow[];
   summary: ActionsSummary | null;
@@ -1818,6 +1870,7 @@ function PlaybookAgentPanel({
   apiUrl: string;
   authHeaders: () => Record<string, string>;
   onMessage: (msg: string) => void;
+  onDataChanged: () => void;
 }) {
   const router = useRouter();
   const [simulating, setSimulating] = useState(false);
@@ -1913,6 +1966,7 @@ function PlaybookAgentPanel({
             ? `Simulated ${n} eligible action${n === 1 ? '' : 's'}${skipped ? ` (${skipped} skipped)` : ''}.`
             : 'No eligible actions to simulate.',
         );
+        onDataChanged();
         router.refresh();
       } else {
         const detail = data.detail;
