@@ -1530,7 +1530,25 @@ function ActionDetailPanel({
 
       {isAiReview ? (
         <div style={{ marginBottom: '0.5rem' }}>
-          <p className="tableMeta" style={{ marginBottom: '0.1rem' }}>Decision</p>
+          {/* Approval (response-action approval domain) is SEPARATE from the
+              recommendation Review below. Approval progress is the quorum toward
+              execution; the Review is the operator's judgement of the AI suggestion. */}
+          <p className="tableMeta" style={{ marginBottom: '0.1rem' }}>Approval</p>
+          <p style={{ fontSize: '0.8rem', margin: 0 }}>
+            {action.approvalStatus === 'approved'
+              ? 'Approved'
+              : action.approvalStatus === 'rejected'
+                ? 'Rejected'
+                : action.approvalStatus === 'pending'
+                  ? 'Awaiting approval'
+                  : 'Not required'}
+          </p>
+          {approvalDenominator > 0 ? (
+            <p className="muted" style={{ fontSize: '0.72rem', margin: '0.1rem 0 0' }}>
+              {approvalNumerator} of {approvalDenominator} approved
+            </p>
+          ) : null}
+          <p className="tableMeta" style={{ marginTop: '0.4rem', marginBottom: '0.1rem' }}>Recommendation Review</p>
           <p style={{ fontSize: '0.8rem', margin: 0 }}>
             {action.decision === 'accepted'
               ? 'Accepted · Not executed'
