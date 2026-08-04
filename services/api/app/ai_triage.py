@@ -1724,13 +1724,37 @@ def _run_provider_and_persist(connection, *, claimed, job_id, workspace_id, inci
             ''',
             (str(uuid.uuid4()), workspace_id, incident_id, result_id, ref, ref_type, str(citation.get('description') or '')),
         )
+    # Idempotent recommendation upsert (migration 0138). The canonical dedup index
+    # on (workspace_id, incident_id, action_type, COALESCE(runbook_id, '')) guarantees
+    # a re-run / regenerate for the same incident can NEVER insert an unchanged
+    # duplicate: ON CONFLICT re-points the existing canonical row to THIS triage result
+    # and refreshes its content, while PRESERVING the row identity and any human
+    # review/approval state (id, review_state, reviewed_*, requires_human_approval). So
+    # an approval recorded against the recommendation is never dropped, and Screen 8
+    # never gains a duplicate "Notify security team" row. Falls back to a plain INSERT
+    # during the pre-0138 bootstrap window (no ON CONFLICT arbiter index yet); those
+    # rare bootstrap duplicates are collapsed by the 0138 repair.
+    conflict_clause = (
+        '''
+            ON CONFLICT (workspace_id, incident_id, action_type, COALESCE(runbook_id, ''))
+            WHERE superseded_at IS NULL
+            DO UPDATE SET
+                triage_result_id = EXCLUDED.triage_result_id,
+                reason = EXCLUDED.reason,
+                risk_level = EXCLUDED.risk_level,
+                evidence_refs = EXCLUDED.evidence_refs
+        '''
+        if pilot._ai_recommendations_dedup_ready(connection)
+        else ''
+    )
     for rec in recommendations:
         connection.execute(
-            '''
+            f'''
             INSERT INTO ai_recommendations (
                 id, workspace_id, incident_id, triage_result_id, action_type, runbook_id, reason,
                 risk_level, requires_human_approval, evidence_refs, review_state, created_at
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, 'pending_review', NOW())
+            {conflict_clause}
             ''',
             (
                 str(uuid.uuid4()), workspace_id, incident_id, result_id, rec['action_type'], rec.get('runbook_id'),
@@ -1881,11 +1905,18 @@ def get_triage(incident_id: str, request: Any) -> dict[str, Any]:
             payload['result'] = result.get('result_json')
             payload['result_hash'] = result.get('result_hash')
             payload['warnings'] = result.get('warnings') or []
+            # Show only CANONICAL (non-superseded) recommendations so Screen 7 never
+            # renders a duplicate collapsed by migration 0138. The idempotent upsert
+            # re-points the canonical row to the latest triage result, so the current
+            # result's recommendations remain visible here. Gated for the pre-0138
+            # bootstrap window (column may not exist yet).
+            recs_superseded_filter = 'AND superseded_at IS NULL' if pilot._ai_recommendations_dedup_ready(connection) else ''
             recs = connection.execute(
-                '''
+                f'''
                 SELECT id, action_type, runbook_id, reason, risk_level, requires_human_approval,
                        evidence_refs, review_state, reviewed_by_user_id, reviewed_at, review_reason
                 FROM ai_recommendations WHERE triage_result_id = %s AND workspace_id = %s
+                {recs_superseded_filter}
                 ORDER BY created_at ASC
                 ''',
                 (result['id'], workspace_id),

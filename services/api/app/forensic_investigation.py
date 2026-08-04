@@ -802,8 +802,12 @@ def _triage_status(connection: Any, *, workspace_id: str, incident_id: str) -> s
 def _recommendation_count(connection: Any, *, workspace_id: str, incident_id: str) -> int:
     if not ai_triage.ai_triage_schema_ready(connection):
         return 0
+    # Count only CANONICAL (non-superseded) recommendations so a re-run / regenerate
+    # that migration 0138 deduplicated never inflates the incident's recommendation
+    # count. Gated for the pre-0138 bootstrap window (column may not exist yet).
+    superseded_filter = 'AND superseded_at IS NULL' if pilot._ai_recommendations_dedup_ready(connection) else ''
     row = connection.execute(
-        'SELECT COUNT(*) AS n FROM ai_recommendations WHERE incident_id = %s AND workspace_id = %s',
+        f'SELECT COUNT(*) AS n FROM ai_recommendations WHERE incident_id = %s AND workspace_id = %s {superseded_filter}',
         (incident_id, workspace_id),
     ).fetchone()
     return int((row or {}).get('n') or 0)

@@ -19281,6 +19281,27 @@ def _ai_recommendation_review_schema_ready(connection: Any) -> bool:
         return False
 
 
+# The canonical dedup unique index added by migration 0138. Its presence is the
+# single readiness signal for recommendation IDEMPOTENCY: the supersession columns
+# (superseded_at / superseded_by_recommendation_id) are created in the same
+# migration, so when the index exists the columns exist too. Callers gate ON the
+# index so the fix degrades safely to legacy behavior during the pre-0138 bootstrap
+# window (no ON CONFLICT arbiter, no superseded column) instead of erroring.
+AI_RECOMMENDATION_DEDUP_INDEX = 'uq_ai_recommendations_canonical'
+
+
+def _ai_recommendations_dedup_ready(connection: Any) -> bool:
+    """True when the ai_recommendations canonical dedup index (0138) is present."""
+    try:
+        row = connection.execute(
+            'SELECT to_regclass(%s) IS NOT NULL AS present',
+            (f'public.{AI_RECOMMENDATION_DEDUP_INDEX}',),
+        ).fetchone()
+        return bool((row or {}).get('present'))
+    except Exception:  # pragma: no cover - any probe failure is treated as not-ready
+        return False
+
+
 def _recommendation_title(action_type: str | None, runbook_id: str | None) -> str:
     """Human title for a recommendation, preferring the canonical runbook name."""
     try:  # lazy import: ai_triage imports pilot, so avoid a module-level cycle.
@@ -19512,8 +19533,15 @@ def _list_ai_recommendation_reviews(
     """
     if not _ai_recommendation_review_schema_ready(connection):
         return []
+    # Surface only the CANONICAL (non-superseded) recommendations. Migration 0138
+    # collapses historical duplicate recommendations onto one canonical row per
+    # (workspace, incident, action_type, runbook) and marks the rest superseded, so
+    # a re-run / regenerate can never make the same logical recommendation appear
+    # twice on Screen 8. Gated on the dedup schema so the read degrades to legacy
+    # behavior (all rows) during the pre-0138 bootstrap window.
+    superseded_filter = 'AND r.superseded_at IS NULL' if _ai_recommendations_dedup_ready(connection) else ''
     rows = connection.execute(
-        '''
+        f'''
         SELECT r.id AS recommendation_id, r.incident_id, r.triage_result_id, r.action_type,
                r.runbook_id, r.reason, r.risk_level, r.requires_human_approval, r.evidence_refs,
                r.review_state, r.reviewed_by_user_id, r.reviewed_at, r.review_reason, r.created_at,
@@ -19529,6 +19557,7 @@ def _list_ai_recommendation_reviews(
         WHERE r.workspace_id = %s
           AND (%s::uuid IS NULL OR r.incident_id = %s::uuid)
           AND (%s::uuid IS NULL OR r.id = %s::uuid)
+          {superseded_filter}
         ORDER BY r.created_at DESC
         LIMIT %s
         ''',

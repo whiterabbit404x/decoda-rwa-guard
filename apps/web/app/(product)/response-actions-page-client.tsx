@@ -342,16 +342,28 @@ function normalizeActionRow(input: any, validIncidentIds: Set<string>): ActionRo
     ? String(input?.title || input?.display_title || 'AI recommendation')
     : String(input?.display_title || input?.action || titleCasedKey);
 
-  // Distinct target so same-title actions (e.g. Notify Security Team across
-  // different incidents) are disambiguated in the table.
+  // Distinct target so same-title actions (e.g. several "Notify security team"
+  // recommendations, now deduplicated by the backend) are disambiguated by a
+  // READABLE label — never by their raw UUID. Prefer the backend's canonical
+  // target_label (the recommendation's reason / recipient context), then an on-chain
+  // target, then the linked incident short id. After backend deduplication, any
+  // remaining same-title rows are legitimately different (different incident, target,
+  // or runbook) and this label is what tells them apart at a glance.
   const shortId = (value: string) => (value.length > 8 ? `${value.slice(0, 8)}…` : value);
-  const targetLabel = input?.target_wallet
-    ? String(input.target_wallet)
-    : input?.token_contract
-      ? String(input.token_contract)
-      : directIncidentId
-        ? `Incident ${shortId(directIncidentId)}`
-        : null;
+  const backendTargetLabel =
+    typeof input?.target_label === 'string' && input.target_label.trim()
+      ? String(input.target_label).trim()
+      : null;
+  const incidentForLabel = directIncidentId || linkedIncident;
+  const targetLabel = backendTargetLabel
+    ? backendTargetLabel
+    : input?.target_wallet
+      ? String(input.target_wallet)
+      : input?.token_contract
+        ? String(input.token_contract)
+        : incidentForLabel
+          ? `Incident ${shortId(incidentForLabel)}`
+          : null;
 
   const provenance = input?.provenance && typeof input.provenance === 'object' ? input.provenance : {};
   const commands = input?.commands && typeof input.commands === 'object' ? input.commands : {};
