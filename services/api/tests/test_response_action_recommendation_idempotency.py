@@ -166,6 +166,9 @@ def _patch_command(monkeypatch, conn, *, user_id='approver-1', role='admin'):
     monkeypatch.setattr(pilot, 'write_action_history', lambda *a, **k: None)
     monkeypatch.setattr(pilot, 'append_incident_timeline_event', lambda *a, **k: None)
     monkeypatch.setattr(pilot, 'log_audit', lambda *a, **k: None)
+    # Run these approval/rejection tests as an MFA-satisfied session; the session-MFA
+    # step-up is covered by its own tests, not the idempotency/domain checks here.
+    monkeypatch.setattr(pilot, '_session_mfa_satisfied', lambda *_a, **_k: True)
 
 
 def test_approving_action_creates_no_recommendation(monkeypatch):

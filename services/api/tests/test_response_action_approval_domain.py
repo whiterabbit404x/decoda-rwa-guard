@@ -132,6 +132,9 @@ def _patch(monkeypatch, conn, *, user_id='approver-1', role='admin'):
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
     monkeypatch.setattr(pilot, '_require_workspace_permission',
                         lambda *_a, **_k: ({'id': user_id}, {'workspace_id': 'ws-1', 'role': role}))
+    # These tests exercise the approval DOMAIN, not the session-MFA step-up: run them
+    # as an MFA-satisfied session so the (separately tested) gate is a no-op here.
+    monkeypatch.setattr(pilot, '_session_mfa_satisfied', lambda *_a, **_k: True)
     events = {'history': [], 'timeline': []}
     monkeypatch.setattr(pilot, 'write_action_history',
                         lambda *a, **k: events['history'].append(k.get('action_type')))

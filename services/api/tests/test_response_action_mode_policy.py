@@ -161,6 +161,8 @@ def test_live_approve_persists_approval_artifacts(monkeypatch):
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg(connection))
     monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-3', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_a, **_k: ({'id': 'admin-3', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
+    monkeypatch.setattr(pilot, '_session_mfa_satisfied', lambda *_a, **_k: True)
     monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
     monkeypatch.setattr(pilot, 'write_action_history', lambda *_a, **_k: None)
     monkeypatch.setattr(pilot, 'append_incident_timeline_event', lambda *_a, **_k: None)

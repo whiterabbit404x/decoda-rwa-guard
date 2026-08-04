@@ -483,6 +483,9 @@ def _patch_reject(monkeypatch, connection, *, role='admin', user_id='approver-1'
     monkeypatch.setattr(pilot, 'write_action_history', lambda *_a, **_k: None)
     monkeypatch.setattr(pilot, 'append_incident_timeline_event', lambda *_a, **_k: None)
     monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+    # Session-MFA step-up is enforced separately (its own tests); run the reject
+    # domain checks here as an MFA-satisfied session.
+    monkeypatch.setattr(pilot, '_session_mfa_satisfied', lambda *_a, **_k: True)
 
 
 def test_reject_requires_a_reason(monkeypatch):

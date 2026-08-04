@@ -4024,6 +4024,26 @@ def _require_recent_reauthentication(connection: Any, request: Request, minutes:
         )
 
 
+def _session_mfa_satisfied(connection: Any, request: Request) -> bool:
+    """Non-raising view of whether the CURRENT session satisfies the MFA step-up.
+
+    Mirrors ``_require_session_mfa`` exactly (a verified timestamp AND a
+    totp/recovery-code method recorded on the session), but returns a boolean the
+    read/DTO layer can consult without aborting the request. Fails CLOSED — returns
+    False whenever the session cannot be resolved — so an approval gate is never
+    reported satisfied on incomplete information.
+    """
+    try:
+        row = _current_session_security(connection, request)
+    except Exception:
+        # Fail CLOSED on any resolution error — a probe feeding a security gate must
+        # never report MFA satisfied on incomplete information, and must never break
+        # the read path it is called from.
+        return False
+    methods = row.get('authentication_methods') if isinstance(row.get('authentication_methods'), list) else []
+    return row.get('mfa_verified_at') is not None and bool({'totp', 'recovery_code'} & set(map(str, methods)))
+
+
 def _require_session_mfa(connection: Any, request: Request) -> None:
     row = _current_session_security(connection, request)
     methods = row.get('authentication_methods') if isinstance(row.get('authentication_methods'), list) else []
@@ -18248,6 +18268,13 @@ def _approve_ai_recommendation_backed_action(
         )
     action_version = _action_version_for('ai_recommendation', subject)
     required_quorum = _required_approval_quorum('ai_recommendation', subject)
+    # Session-MFA step-up: same hard gate as a policy action, contextual + audited.
+    _require_action_approval_session_mfa(
+        connection, request, user=user, workspace_context=workspace_context,
+        subject_domain='ai_recommendation', subject_id=recommendation_id,
+        action_type=str(subject.get('action_type') or ''), action_version=action_version,
+        operation='approve', incident_id=str(subject.get('incident_id') or '') or None,
+    )
     _record_action_approval_decision(
         connection,
         workspace_id=workspace_id,
@@ -18333,6 +18360,13 @@ def _reject_ai_recommendation_backed_action(
         )
     action_version = _action_version_for('ai_recommendation', subject)
     required_quorum = _required_approval_quorum('ai_recommendation', subject)
+    # Session-MFA step-up: same hard gate as approval, contextual + audited.
+    _require_action_approval_session_mfa(
+        connection, request, user=user, workspace_context=workspace_context,
+        subject_domain='ai_recommendation', subject_id=recommendation_id,
+        action_type=str(subject.get('action_type') or ''), action_version=action_version,
+        operation='reject', incident_id=str(subject.get('incident_id') or '') or None,
+    )
     _record_action_approval_decision(
         connection,
         workspace_id=workspace_id,
@@ -18378,8 +18412,10 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
+        # Permission + reauthentication here; the session-MFA step-up is enforced
+        # separately below (per action) so the block can be contextual + audited.
         user, workspace_context = _require_workspace_permission(
-            connection, request, 'response.approve', True, True
+            connection, request, 'response.approve', True, False
         )
         row = connection.execute(
             'SELECT id, status, incident_id, alert_id, action_type, mode, execution_state, execution_metadata, execution_artifacts, provider_receipts, safe_tx_hash, approved_at, failed_at, created_by_user_id FROM response_actions WHERE id = %s AND workspace_id = %s',
@@ -18424,6 +18460,15 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
         subject = _json_safe_value(dict(row))
         action_version = _action_version_for('response_action', subject)
         required_quorum = _required_approval_quorum('response_action', subject)
+        # Session-MFA step-up: enforced AFTER ownership/approvable checks so the block
+        # is contextual to THIS action and audited distinctly. Never weakened — no
+        # decision is recorded below unless the session satisfies MFA.
+        _require_action_approval_session_mfa(
+            connection, request, user=user, workspace_context=workspace_context,
+            subject_domain='response_action', subject_id=action_id,
+            action_type=str(row.get('action_type') or ''), action_version=action_version,
+            operation='approve', incident_id=str(row.get('incident_id') or '') or None,
+        )
         if _response_action_approvals_schema_ready(connection):
             _record_action_approval_decision(
                 connection,
@@ -18563,8 +18608,10 @@ def reject_enforcement_action(action_id: str, payload: dict[str, Any], request: 
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='A rejection reason is required.')
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
+        # Permission + reauthentication here; the session-MFA step-up is enforced
+        # per action below so a blocked rejection is contextual + audited too.
         user, workspace_context = _require_workspace_permission(
-            connection, request, 'response.approve', True, True
+            connection, request, 'response.approve', True, False
         )
         row = connection.execute(
             'SELECT id, status, incident_id, alert_id, action_type, mode, execution_state, execution_metadata, execution_artifacts, provider_receipts, safe_tx_hash, approved_at, created_by_user_id FROM response_actions WHERE id = %s AND workspace_id = %s',
@@ -18592,6 +18639,13 @@ def reject_enforcement_action(action_id: str, payload: dict[str, Any], request: 
         # approver) so it can never collide with a recommendation review.
         _reject_subject = _json_safe_value(dict(row))
         _reject_version = _action_version_for('response_action', _reject_subject)
+        # Session-MFA step-up (same gate as approval; workspace policy governs both).
+        _require_action_approval_session_mfa(
+            connection, request, user=user, workspace_context=workspace_context,
+            subject_domain='response_action', subject_id=action_id,
+            action_type=str(row.get('action_type') or ''), action_version=_reject_version,
+            operation='reject', incident_id=str(row.get('incident_id') or '') or None,
+        )
         if _response_action_approvals_schema_ready(connection):
             try:
                 _record_action_approval_decision(
@@ -19362,7 +19416,10 @@ def _ai_review_lifecycle(requires_approval: bool, approval_summary: dict[str, An
     }
 
 
-def _ai_recommendation_review_payload(row: dict[str, Any], *, approval_summary: dict[str, Any] | None = None) -> dict[str, Any]:
+def _ai_recommendation_review_payload(
+    row: dict[str, Any], *, approval_summary: dict[str, Any] | None = None,
+    approval_gate: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Normalize an ``ai_recommendations`` (+ triage job/result) row into an
     approvable Screen 8 action record.
 
@@ -19487,6 +19544,9 @@ def _ai_recommendation_review_payload(row: dict[str, Any], *, approval_summary: 
         'current_approval_count': lifecycle['current_approval_count'],
         'provenance': provenance,
         'commands': commands,
+        # Canonical approval gate (role + session-MFA step-up + quorum). Present only
+        # when resolved by the caller-aware list path; omitted for the plain payload.
+        'approval_gate': approval_gate,
         'target_label': target_label,
         # Provenance.
         'incident_id': incident_id,
@@ -19518,6 +19578,7 @@ def _list_ai_recommendation_reviews(
     limit: int,
     workspace_context: dict[str, Any] | None = None,
     current_user_id: str | None = None,
+    session_mfa_satisfied: bool = False,
 ) -> list[dict[str, Any]]:
     """Return workspace-scoped AI-recommendation-backed actions as normalized rows.
 
@@ -19578,13 +19639,25 @@ def _list_ai_recommendation_reviews(
         )
         # Resolve the caller's approval permission (role only — an AI recommendation
         # has no human proposer, so there is no self-approval separation-of-duties).
+        approval_gate: dict[str, Any] | None = None
         if requires_approval and workspace_context is not None:
             permission = response_action_approval_permission(
                 {'created_by_user_id': None}, workspace_context=workspace_context,
                 current_user_id=current_user_id,
             )
             approval = {**approval, **permission}
-        payload = _ai_recommendation_review_payload(row_dict, approval_summary=approval)
+            # Canonical approval gate (role + session MFA step-up + quorum). An AI
+            # recommendation is approvable only while it is still awaiting approval.
+            approvable = not bool(approval.get('rejected')) and int(approval.get('approved_count') or 0) < int(approval.get('required_quorum') or 1)
+            approval_gate = response_action_approval_gate(
+                action_type=str(row_dict.get('action_type') or ''), profile=None,
+                permission=permission, approval_summary=approval,
+                mfa_satisfied=session_mfa_satisfied, approvable=approvable,
+                risk_level=row_dict.get('risk_level'),
+            )
+        payload = _ai_recommendation_review_payload(
+            row_dict, approval_summary=approval, approval_gate=approval_gate,
+        )
         # Honor an explicit status filter using the canonical APPROVAL status (not the
         # review state): only approval-pending rows map onto the "pending" bucket.
         if status_value:
@@ -19613,6 +19686,10 @@ def list_enforcement_actions(
         user = authenticate_with_connection(connection, request)
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         workspace_id = workspace_context['workspace_id']
+        # Session-MFA state is a per-request fact (same for every row): resolve it
+        # once so each approvable action's canonical approval gate can report whether
+        # the CURRENT session may approve, and — when it may not — WHY (fail-closed).
+        session_mfa_satisfied = _session_mfa_satisfied(connection, request)
         rows = connection.execute(
             '''
             SELECT id, action_type, mode, status, result_status, execution_state, result_summary, operator_notes, created_at, approved_at, executed_at, failed_at, rolled_back_at, incident_id, alert_id, safe_tx_hash, tx_hash, execution_metadata, created_by_user_id
@@ -19649,6 +19726,22 @@ def list_enforcement_actions(
                     action, workspace_context=workspace_context, current_user_id=user['id'],
                 )
                 payload['commands'].update(permission)
+                # Canonical approval gate: role + separation of duties + the session
+                # MFA step-up + quorum, composed into one truthful DTO the UI renders
+                # WITHOUT re-deriving policy or string-matching the action title.
+                action_version = _action_version_for('response_action', action)
+                approval_summary = _action_approval_summary(
+                    connection, workspace_id=workspace_id, subject_domain='response_action',
+                    subject_id=str(action.get('id') or ''), action_version=action_version,
+                    required_quorum=_required_approval_quorum('response_action', action),
+                    current_user_id=user['id'],
+                )
+                payload['approval_gate'] = response_action_approval_gate(
+                    action_type=str(action.get('action_type') or ''),
+                    profile=action.get('playbook'), permission=permission,
+                    approval_summary=approval_summary, mfa_satisfied=session_mfa_satisfied,
+                    approvable=True, allowed_commands=payload['commands'].get('allowed_commands'),
+                )
             actions.append(payload)
         # Surface AI investigation recommendation reviews (immutable, never executed).
         # An alert_id filter is a legacy-action concept; AI reviews are incident-scoped,
@@ -19665,6 +19758,7 @@ def list_enforcement_actions(
                         limit=max_limit,
                         workspace_context=workspace_context,
                         current_user_id=user['id'],
+                        session_mfa_satisfied=session_mfa_satisfied,
                     )
                 )
             except Exception:  # pragma: no cover - never let the AI read break the legacy list
@@ -20780,6 +20874,203 @@ def response_action_approval_permission(
                 'approval_permission_reason': 'The action proposer cannot approve the same action (separation of duties).'}
     return {'can_current_user_approve': True, 'can_current_user_reject': True,
             'approval_permission_reason': None}
+
+
+# ── Session-MFA approval gate (Screen 8) ──────────────────────────────────────
+# Approving a response action is a step-up-protected command: it requires the
+# caller's SESSION to have completed an MFA challenge (enforced in
+# approve_enforcement_action via _require_action_approval_session_mfa). These
+# helpers expose that gate as canonical, contextual, fail-closed DTO facts so the
+# UI can show WHY approval is blocked — and offer the real security flow — instead
+# of surfacing a bare HTTP error, and so the "destructive action" wording is never
+# applied to a low-risk communication action.
+
+# Security classification tiers, keyed off the action's canonical risk PROFILE
+# (category / blast radius / reversibility) — NEVER a display-title string. This is
+# what keeps "Notify security team" out of the destructive tier while a contract
+# pause / credential rotation / fund movement stays in it.
+_APPROVAL_SECURITY_DESTRUCTIVE_CATEGORIES = frozenset({'containment', 'security'})
+_APPROVAL_SECURITY_DESTRUCTIVE_BLAST_RADII = frozenset({
+    'contract_wide', 'targeted_wallet', 'targeted_transaction', 'targeted_spender', 'integration',
+})
+_APPROVAL_SECURITY_CONFIG_CATEGORIES = frozenset({'detection'})
+_APPROVAL_SECURITY_CONFIG_BLAST_RADII = frozenset({'monitoring_source', 'monitoring_rule'})
+_APPROVAL_SECURITY_NOUNS = {
+    'destructive': 'destructive action',
+    'configuration_change': 'configuration-changing action',
+    'protected': 'protected response action',
+}
+
+
+def response_action_approval_security(
+    action_type: str | None,
+    *,
+    profile: dict[str, Any] | None = None,
+    risk_level: str | None = None,
+) -> dict[str, Any]:
+    """Classify the SESSION-MFA approval risk of a response action + its message.
+
+    Derived from the action's canonical playbook profile (category / blast radius /
+    reversibility), never its display title, so a communication action such as
+    'Notify security team' is never labelled 'destructive' and a contract pause,
+    credential rotation, or fund movement always is. Returns the stable
+    classification, its risk noun, and the operator-facing MFA message.
+    """
+    prof = profile if isinstance(profile, dict) else response_action_playbook_profile(action_type, risk_level=risk_level)
+    category = str(prof.get('category') or '').strip().lower()
+    blast_radius = str(prof.get('blast_radius') or '').strip().lower()
+    reversibility = str(prof.get('reversibility') or '').strip().lower()
+    if (category in _APPROVAL_SECURITY_DESTRUCTIVE_CATEGORIES
+            or blast_radius in _APPROVAL_SECURITY_DESTRUCTIVE_BLAST_RADII
+            or reversibility == 'irreversible'):
+        classification = 'destructive'
+    elif category in _APPROVAL_SECURITY_CONFIG_CATEGORIES or blast_radius in _APPROVAL_SECURITY_CONFIG_BLAST_RADII:
+        classification = 'configuration_change'
+    else:
+        classification = 'protected'
+    noun = _APPROVAL_SECURITY_NOUNS[classification]
+    return {
+        'approval_security_classification': classification,
+        'approval_security_noun': noun,
+        'approval_security_message': f'Complete MFA in this session before approving this {noun}.',
+    }
+
+
+def response_action_approval_gate(
+    *,
+    action_type: str | None,
+    profile: dict[str, Any] | None,
+    permission: dict[str, Any],
+    approval_summary: dict[str, Any],
+    mfa_satisfied: bool,
+    approvable: bool,
+    allowed_commands: list[str] | None = None,
+    risk_level: str | None = None,
+) -> dict[str, Any]:
+    """Compose the ONE canonical approval-gate DTO for a Screen 8 action.
+
+    Folds together, in a fixed precedence, the three independent gates that govern a
+    response-action approval — (1) role + separation-of-duties permission, (2) the
+    session-MFA step-up, and (3) quorum / duplicate state — into explicit, truthful
+    fields the frontend renders WITHOUT re-deriving policy. Session MFA is REQUIRED
+    to approve; ``mfa_satisfied`` never weakens that, it only explains the block and
+    points at the real security flow. Fails closed: any unmet gate yields
+    ``can_current_user_approve=False`` with a truthful, specific reason code.
+    """
+    security = response_action_approval_security(action_type, profile=profile, risk_level=risk_level)
+    required_ct = int(approval_summary.get('required_quorum') or (1 if approvable else 0))
+    current_ct = int(approval_summary.get('approved_count') or 0)
+    already_decided = bool(approval_summary.get('current_user_decided'))
+    has_permission = bool(permission.get('can_current_user_approve'))
+    permission_reason = permission.get('approval_permission_reason')
+    # response.approve always step-up-gates on session MFA (see the command path).
+    mfa_required = True
+    if not approvable:
+        code, reason, step = ('not_approvable', 'This action is no longer awaiting approval.',
+                              'No approval step is required.')
+    elif not has_permission:
+        code, reason, step = ('not_permitted',
+                              permission_reason or 'You do not have permission to approve this action.',
+                              'An owner or admin who did not propose this action must approve it.')
+    elif already_decided:
+        code, reason, step = ('already_decided',
+                              'You already recorded a decision for this action version.',
+                              'Another approver must satisfy the remaining quorum.'
+                              if current_ct < required_ct else 'No further approval is required.')
+    elif not mfa_satisfied:
+        code, reason, step = ('mfa_required', security['approval_security_message'],
+                              'Complete MFA in this session, then approve the action.')
+    else:
+        code, reason, step = (None, None, 'Approve the action to record your decision.')
+    can_approve = bool(approvable and has_permission and not already_decided and mfa_satisfied)
+    return {
+        'can_current_user_approve': can_approve,
+        # Role + separation-of-duties permission ALONE (independent of the MFA gate),
+        # so the UI can show a DISABLED approve control + MFA prompt for a permitted
+        # user, versus hiding controls entirely for an unauthorized role.
+        'has_approval_permission': has_permission,
+        'approval_permission_reason': permission_reason,
+        'approval_blocked_reason_code': code,
+        'approval_blocked_reason': reason,
+        'mfa_required': mfa_required,
+        'mfa_satisfied': bool(mfa_satisfied),
+        'required_approval_count': required_ct,
+        'current_approval_count': current_ct,
+        'approval_progress_label': f'{current_ct} of {required_ct}' if required_ct > 0 else None,
+        'allowed_commands': list(allowed_commands or (['approve'] if approvable else [])),
+        'next_required_step': step,
+        'approval_security_classification': security['approval_security_classification'],
+        'approval_security_message': security['approval_security_message'],
+    }
+
+
+def _require_action_approval_session_mfa(
+    connection: Any,
+    request: Request,
+    *,
+    user: dict[str, Any],
+    workspace_context: dict[str, Any],
+    subject_domain: str,
+    subject_id: str,
+    action_type: str | None,
+    action_version: int,
+    operation: str,
+    incident_id: str | None = None,
+) -> None:
+    """Session-MFA step-up gate for a response-action approval / rejection.
+
+    Approving or rejecting a response action requires the caller's SESSION to have
+    completed an MFA challenge — the SAME hard requirement as before, never weakened.
+    What is new: on a block it (a) raises a CONTEXTUAL reason whose wording matches
+    the action's real risk classification (not a blanket "destructive action") and
+    (b) records a DISTINCT 'approval attempt blocked' audit event that can never be
+    mistaken for a successful approval. No approval decision, quorum change, lifecycle
+    change, or success history/timeline event is produced on a block, and no
+    authentication secret is written to the audit record.
+    """
+    if _session_mfa_satisfied(connection, request):
+        return
+    security = response_action_approval_security(action_type)
+    verb = 'rejecting' if operation == 'reject' else 'approving'
+    message = f'Complete MFA in this session before {verb} this {security["approval_security_noun"]}.'
+    try:
+        write_action_history(
+            connection, workspace_id=workspace_context['workspace_id'], actor_type='user',
+            actor_id=user.get('id'), object_type='response_action', object_id=subject_id,
+            action_type='response_action.approval_attempt_blocked',
+            details={'operation': operation, 'result': 'mfa_required', 'subject_domain': subject_domain,
+                     'action_version': action_version,
+                     'approval_security_classification': security['approval_security_classification']},
+        )
+        if incident_id:
+            append_incident_timeline_event(
+                connection, workspace_id=workspace_context['workspace_id'], incident_id=incident_id,
+                event_type='response_action.approval_attempt_blocked',
+                message='Response-action approval attempt blocked: MFA required.',
+                actor_user_id=user.get('id'),
+                metadata={'response_action_id': subject_id, 'subject_domain': subject_domain,
+                          'operation': operation, 'reason_code': 'mfa_required'},
+            )
+        log_audit(connection, action='response.action.approval_blocked', entity_type=subject_domain,
+                  entity_id=subject_id, request=request, user_id=user.get('id'),
+                  workspace_id=workspace_context['workspace_id'],
+                  metadata={'operation': operation, 'reason_code': 'mfa_required', 'action_version': action_version})
+        connection.commit()
+    except Exception:  # pragma: no cover - auditing a block must never itself 500 the request
+        pass
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            'code': 'MFA_CHALLENGE_REQUIRED',
+            'reason_code': 'mfa_required',
+            'message': message,
+            'approval_security_classification': security['approval_security_classification'],
+            'approval_security_message': security['approval_security_message'],
+            'next_required_step': f'Complete MFA in this session, then {operation} the action.',
+            'mfa_required': True,
+            'mfa_satisfied': False,
+        },
+    )
 
 
 # Lifecycle states in which a recommendation is no longer an ACTIVE recommendation.
