@@ -196,6 +196,27 @@ def test_pending_ai_recommendation_present(monkeypatch):
     assert ai[0]['status'] == 'pending_approval'
 
 
+def test_pending_ai_recommendation_carries_canonical_approval_gate(monkeypatch):
+    # The list DTO attaches the canonical approval GATE: the session that made this
+    # request has not completed MFA (the fake session is not MFA-verified), so the
+    # gate reports the block truthfully and contextually — a communication action is
+    # `protected`, never `destructive` — WITHOUT the frontend re-deriving any policy.
+    conn = _Conn(ai_rows=[_ai_row(recommendation_id='rec-pending-1', review_state='accepted')])
+    _bootstrap(monkeypatch, conn)
+    actions = pilot.list_enforcement_actions(SimpleNamespace(headers={}))['actions']
+    gate = _find(actions, 'ai_recommendation_review')[0]['approval_gate']
+    assert gate is not None
+    assert gate['mfa_required'] is True
+    assert gate['mfa_satisfied'] is False
+    assert gate['can_current_user_approve'] is False
+    assert gate['approval_blocked_reason_code'] == 'mfa_required'
+    assert gate['approval_security_classification'] == 'protected'
+    assert 'destructive' not in gate['approval_security_message'].lower()
+    # Review is accepted; approval is still awaiting — the two gates stay separate.
+    assert _find(actions, 'ai_recommendation_review')[0]['review_state'] == 'accepted'
+    assert _find(actions, 'ai_recommendation_review')[0]['approval_status'] == 'pending'
+
+
 # --------------------------------------------------------------------------
 # 4-5. Accepted and rejected recommendations are NEVER executed.
 # --------------------------------------------------------------------------

@@ -216,3 +216,104 @@ export function approvalResultMessage(
   }
   return fallback;
 }
+
+// ── Canonical approval GATE (Screen 8 session-MFA step-up) ────────────────────
+// Approving a response action requires the caller's SESSION to have completed an
+// MFA challenge (workspace security policy). The backend composes that step-up —
+// together with role/separation-of-duties permission and quorum — into one
+// canonical `approval_gate` fact. The UI renders it verbatim: it never re-derives
+// the MFA requirement, and NEVER decides risk wording from the action title (a
+// communication action must never be called "destructive"). The reason code is the
+// single switch the panel uses to choose between "you lack permission",
+// "complete MFA", and "already decided".
+
+export type ApprovalBlockedReasonCode =
+  | 'mfa_required'
+  | 'not_permitted'
+  | 'already_decided'
+  | 'not_approvable'
+  | '';
+
+export type ApprovalGate = {
+  canApprove: boolean;
+  hasPermission: boolean;
+  blockedReasonCode: ApprovalBlockedReasonCode;
+  blockedReason: string | null;
+  mfaRequired: boolean;
+  mfaSatisfied: boolean;
+  requiredApprovalCount: number;
+  currentApprovalCount: number;
+  nextRequiredStep: string | null;
+  securityClassification: string | null;
+  securityMessage: string | null;
+};
+
+const APPROVAL_BLOCKED_CODES = new Set<string>([
+  'mfa_required',
+  'not_permitted',
+  'already_decided',
+  'not_approvable',
+]);
+
+/** Parse the backend `approval_gate` object into a typed, defaulted shape. Returns
+ *  null when absent so a legacy payload (no canonical gate) degrades to the older
+ *  permission-only rendering rather than fabricating a gate. */
+export function normalizeApprovalGate(input: unknown): ApprovalGate | null {
+  if (!input || typeof input !== 'object') return null;
+  const g = input as Record<string, unknown>;
+  const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+  const codeRaw = String(g.approval_blocked_reason_code ?? '').trim().toLowerCase();
+  const code = (APPROVAL_BLOCKED_CODES.has(codeRaw) ? codeRaw : '') as ApprovalBlockedReasonCode;
+  return {
+    canApprove: g.can_current_user_approve === true,
+    hasPermission: g.has_approval_permission === true,
+    blockedReasonCode: code,
+    blockedReason: typeof g.approval_blocked_reason === 'string' ? g.approval_blocked_reason : null,
+    mfaRequired: g.mfa_required === true,
+    mfaSatisfied: g.mfa_satisfied === true,
+    requiredApprovalCount: num(g.required_approval_count, 0),
+    currentApprovalCount: num(g.current_approval_count, 0),
+    nextRequiredStep: typeof g.next_required_step === 'string' ? g.next_required_step : null,
+    securityClassification:
+      typeof g.approval_security_classification === 'string' ? g.approval_security_classification : null,
+    securityMessage: typeof g.approval_security_message === 'string' ? g.approval_security_message : null,
+  };
+}
+
+/** Whether the selected action's approval is blocked specifically by the session-MFA
+ *  step-up (the caller HAS approval permission — only MFA is missing). This is the
+ *  case that renders a disabled Approve control + a Complete MFA call to action. */
+export function isMfaBlockedApproval(gate: ApprovalGate | null | undefined): boolean {
+  return !!gate && gate.blockedReasonCode === 'mfa_required' && gate.hasPermission && !gate.mfaSatisfied;
+}
+
+/** The internal Screen 8 URL that re-selects the SAME action and restores the
+ *  Review All approval filter + incident scope, so returning from the security flow
+ *  lands the operator exactly where they left off. */
+export function responseActionReturnHref(params: {
+  actionId?: string | null;
+  incidentId?: string | null;
+  approvalFilter?: string | null;
+  tab?: string | null;
+}): string {
+  const qs = new URLSearchParams();
+  if (params.actionId) qs.set('action_id', String(params.actionId));
+  if (params.incidentId) qs.set('incident_id', String(params.incidentId));
+  if (params.approvalFilter) qs.set('approval', String(params.approvalFilter));
+  if (params.tab) qs.set('tab', String(params.tab));
+  const query = qs.toString();
+  return query ? `/response-actions?${query}` : '/response-actions';
+}
+
+/** Link into the app's ESTABLISHED security flow (MFA enrollment / verification at
+ *  /settings/security) with a return_to back to the SAME Screen 8 response action —
+ *  never a bespoke MFA dialog. Preserves the selected action id, incident scope, and
+ *  Review All filter across the round trip. */
+export function completeMfaHref(params: {
+  actionId?: string | null;
+  incidentId?: string | null;
+  approvalFilter?: string | null;
+}): string {
+  const returnTo = responseActionReturnHref({ ...params, tab: 'recommended' });
+  return `/settings/security?return_to=${encodeURIComponent(returnTo)}`;
+}

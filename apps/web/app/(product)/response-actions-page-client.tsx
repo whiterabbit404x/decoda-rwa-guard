@@ -18,11 +18,15 @@ import { usePilotAuth } from '../pilot-auth-context';
 import {
   approvalResultMessage,
   canonicalLifecycleState,
+  completeMfaHref,
   deriveRowApproval,
   isApprovalDecided,
+  isMfaBlockedApproval,
   lifecycleLabelFor,
+  normalizeApprovalGate,
   reconcileCount,
   responseActionApprovalEndpoint,
+  type ApprovalGate,
 } from './response-actions-presentation';
 import { useRuntimeSummary } from '../runtime-summary-context';
 import RuntimeSummaryPanel from '../runtime-summary-panel';
@@ -92,6 +96,10 @@ type ActionRow = {
   currentApprovalCount?: number;
   canCurrentUserApprove?: boolean | null;
   approvalPermissionReason?: string | null;
+  // Canonical approval GATE: role + separation of duties + the session-MFA step-up +
+  // quorum, composed by the backend. Drives the contextual approval-blocked UI so
+  // the client never re-derives the MFA policy or the action's risk wording.
+  approvalGate?: ApprovalGate | null;
   // Distinct target so same-title actions across incidents are disambiguated.
   targetLabel?: string | null;
 };
@@ -471,6 +479,9 @@ function normalizeActionRow(input: any, validIncidentIds: Set<string>): ActionRo
     approvalPermissionReason: commands.approval_permission_reason
       ? String(commands.approval_permission_reason)
       : null,
+    // Canonical approval gate (backend authority). Read from the top-level payload;
+    // absent on legacy payloads, in which case the older permission-only path renders.
+    approvalGate: normalizeApprovalGate(input?.approval_gate),
     targetLabel,
   };
 }
@@ -576,7 +587,10 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
-  const [approvalFilter, setApprovalFilter] = useState('');
+  // Seed the approval (Review All) filter from the URL so returning from the security
+  // (MFA) flow restores the exact filter the operator left, alongside the selected
+  // action (action_id) and incident scope (incident_id).
+  const [approvalFilter, setApprovalFilter] = useState(searchParams.get('approval') ?? '');
   const [dataLoading, setDataLoading] = useState(false);
   const [liveExecutionAllowed, setLiveExecutionAllowed] = useState(false);
   const [message, setMessage] = useState('');
@@ -1163,6 +1177,7 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
                 <ActionDetailPanel
                   action={selectedAction}
                   workspaceEvidenceSource={workspaceEvidenceSource}
+                  reviewFilter={approvalFilter}
                   onMessage={setMessage}
                   apiUrl={apiUrl}
                   authHeaders={authHeaders}
@@ -1187,6 +1202,7 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
 function ActionDetailPanel({
   action,
   workspaceEvidenceSource,
+  reviewFilter,
   onMessage,
   apiUrl,
   authHeaders,
@@ -1195,6 +1211,7 @@ function ActionDetailPanel({
 }: {
   action: ActionRow;
   workspaceEvidenceSource: string;
+  reviewFilter?: string;
   onMessage: (msg: string) => void;
   apiUrl: string;
   authHeaders: () => Record<string, string>;
@@ -1229,9 +1246,89 @@ function ActionDetailPanel({
   const approvalPending = action.approvalStatus === 'pending';
   const commandAllowsApprove = allowedCommands.includes('approve');
   const userMayApprove = action.canCurrentUserApprove !== false;
-  const showApproval = commandAllowsApprove && userMayApprove;
-  const approvalDenominator = action.requiredApprovalCount ?? (action.requiresApproval ? 1 : 0);
-  const approvalNumerator = action.currentApprovalCount ?? 0;
+  // Canonical approval GATE (backend authority): role + separation of duties + the
+  // session-MFA step-up + quorum. It decides whether the caller can approve NOW; a
+  // legacy payload without a gate falls back to the permission-only signal so an
+  // older backend still renders Approve.
+  const gate = action.approvalGate ?? null;
+  const canApproveNow = gate ? gate.canApprove : userMayApprove;
+  // Approval is blocked specifically by the missing session-MFA step-up (the caller
+  // HAS approval permission). This renders a contextual "Approval blocked" panel
+  // with a DISABLED Approve control and a Complete MFA call to action — never a
+  // silent failure, and never generic "destructive" wording for a low-risk action.
+  const mfaBlocked = approvalPending && commandAllowsApprove && isMfaBlockedApproval(gate);
+  const showApproval = commandAllowsApprove && canApproveNow;
+  // A truthful read-only reason for the OTHER blocked cases (wrong role / already
+  // decided) — the operator always sees WHY, rather than a hidden control.
+  const approvalReadOnlyReason =
+    approvalPending && commandAllowsApprove && !canApproveNow && !mfaBlocked
+      ? gate?.blockedReason ?? action.approvalPermissionReason ?? 'You do not have permission to approve this action.'
+      : null;
+  // The app's ESTABLISHED security flow, preserving the selected action + Review All
+  // filter + incident scope so the operator returns to this exact action after MFA.
+  const mfaHref = completeMfaHref({
+    actionId: action.id,
+    incidentId: action.linkedIncident,
+    approvalFilter: reviewFilter || 'yes',
+  });
+  const approvalDenominator =
+    gate?.requiredApprovalCount ?? action.requiredApprovalCount ?? (action.requiresApproval ? 1 : 0);
+  const approvalNumerator = gate?.currentApprovalCount ?? action.currentApprovalCount ?? 0;
+
+  // Contextual "Approval blocked" panel rendered NEXT TO the approval controls (not
+  // only at the bottom of the page): the backend-composed reason (risk-classified,
+  // never title-string-matched), a disabled Approve control, and a Complete MFA CTA
+  // into the real security flow.
+  const mfaBlockedPanel = mfaBlocked ? (
+    <div
+      role="alert"
+      style={{
+        width: '100%',
+        border: '1px solid rgba(245, 158, 11, 0.5)',
+        background: 'rgba(245, 158, 11, 0.12)',
+        borderRadius: '10px',
+        padding: '0.75rem 0.85rem',
+        marginBottom: '0.5rem',
+      }}
+    >
+      <StatusPill label="Approval blocked" variant="warning" />
+      <p style={{ margin: '0.4rem 0 0.15rem', fontWeight: 700, color: 'var(--warning-fg)' }}>
+        🔒 Complete MFA to approve
+      </p>
+      <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+        {gate?.blockedReason ?? 'Complete MFA in this session before approving this response action.'}
+      </p>
+      {gate?.nextRequiredStep ? (
+        <p style={{ margin: '0.15rem 0 0', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+          Next step: {gate.nextRequiredStep}
+        </p>
+      ) : null}
+      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.6rem' }}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          style={{ fontSize: '0.8rem' }}
+          disabled
+          aria-disabled="true"
+          title="Complete MFA in this session to approve this action"
+        >
+          🔒 Approve
+        </button>
+        <Link href={mfaHref} prefetch={false} className="btn btn-primary" style={{ fontSize: '0.8rem' }}>
+          Complete MFA
+        </Link>
+        <Link href={mfaHref} prefetch={false} className="btn btn-secondary" style={{ fontSize: '0.8rem' }}>
+          Open Security Settings
+        </Link>
+      </div>
+    </div>
+  ) : null;
+
+  const approvalReadOnlyNotice = approvalReadOnlyReason ? (
+    <p className="muted" style={{ fontSize: '0.75rem', margin: '0 0 0.5rem', width: '100%' }}>
+      <strong style={{ color: 'var(--warning-fg)' }}>Approval required:</strong> {approvalReadOnlyReason}
+    </p>
+  ) : null;
 
   async function approveAction() {
     // ALWAYS the dedicated response-action approval command — never the AI
@@ -1542,32 +1639,40 @@ function ActionDetailPanel({
 
       {isAiReview ? (
         <div style={{ marginBottom: '0.5rem' }}>
-          {/* Approval (response-action approval domain) is SEPARATE from the
-              recommendation Review below. Approval progress is the quorum toward
-              execution; the Review is the operator's judgement of the AI suggestion. */}
-          <p className="tableMeta" style={{ marginBottom: '0.1rem' }}>Approval</p>
+          {/* Recommendation REVIEW and Action APPROVAL are two DIFFERENT gates, shown
+              as explicitly labelled rows so a green "Accepted" review is never read
+              as an approved response action. The Review is the operator's judgement
+              of the AI suggestion; the Approval is the governed quorum toward
+              execution; Execution is a third, separate state (never executed here). */}
+          <p className="tableMeta" style={{ marginBottom: '0.1rem' }}>Recommendation Review</p>
+          {action.decision === 'accepted' ? (
+            <StatusPill label="Accepted" variant="success" />
+          ) : action.decision === 'rejected' ? (
+            <StatusPill label="Rejected" variant="neutral" />
+          ) : (
+            <StatusPill label="Pending review" variant="warning" />
+          )}
+          <p className="tableMeta" style={{ marginTop: '0.4rem', marginBottom: '0.1rem' }}>Action Approval</p>
           <p style={{ fontSize: '0.8rem', margin: 0 }}>
             {action.approvalStatus === 'approved'
               ? 'Approved'
               : action.approvalStatus === 'rejected'
                 ? 'Rejected'
                 : action.approvalStatus === 'pending'
-                  ? 'Awaiting approval'
+                  ? 'Awaiting Approval'
                   : 'Not required'}
           </p>
           {approvalDenominator > 0 ? (
-            <p className="muted" style={{ fontSize: '0.72rem', margin: '0.1rem 0 0' }}>
-              {approvalNumerator} of {approvalDenominator} approved
-            </p>
+            <>
+              <p className="tableMeta" style={{ marginTop: '0.4rem', marginBottom: '0.1rem' }}>Approval Progress</p>
+              <p style={{ fontSize: '0.8rem', margin: 0 }}>
+                {approvalNumerator} of {approvalDenominator}
+                <span className="muted"> approved</span>
+              </p>
+            </>
           ) : null}
-          <p className="tableMeta" style={{ marginTop: '0.4rem', marginBottom: '0.1rem' }}>Recommendation Review</p>
-          <p style={{ fontSize: '0.8rem', margin: 0 }}>
-            {action.decision === 'accepted'
-              ? 'Accepted · Not executed'
-              : action.decision === 'rejected'
-                ? 'Rejected · Not executed'
-                : 'Pending review · Not executed'}
-          </p>
+          <p className="tableMeta" style={{ marginTop: '0.4rem', marginBottom: '0.1rem' }}>Execution</p>
+          <p style={{ fontSize: '0.8rem', margin: 0 }}>Not Executed</p>
           {action.reviewer ? (
             <>
               <p className="tableMeta" style={{ marginTop: '0.4rem', marginBottom: '0.1rem' }}>Reviewer</p>
@@ -1699,12 +1804,11 @@ function ActionDetailPanel({
         // in the incident investigation. When the caller is not authorized we show a
         // truthful read-only reason instead of silently hiding the controls.
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-          {approvalPending && commandAllowsApprove && !userMayApprove ? (
-            <p className="muted" style={{ fontSize: '0.75rem', margin: '0 0 0.5rem', width: '100%' }}>
-              <strong style={{ color: 'var(--warning-fg)' }}>Approval required:</strong>{' '}
-              {action.approvalPermissionReason ?? 'You do not have permission to approve this action.'}
-            </p>
-          ) : null}
+          {/* Session-MFA step-up missing: contextual blocked panel + disabled Approve
+              + Complete MFA CTA, shown NEXT TO the controls (not only at the bottom). */}
+          {mfaBlockedPanel}
+          {/* Other blocked cases (wrong role / already decided): truthful read-only. */}
+          {approvalReadOnlyNotice}
           {showApproval ? (
             <>
               <button type="button" className="btn btn-primary" style={{ fontSize: '0.8rem' }} onClick={() => void approveAction()}>
@@ -1749,19 +1853,16 @@ function ActionDetailPanel({
               <strong style={{ color: 'var(--warning-fg)' }}>Execution blocked:</strong> {executeBlockedReason}
             </p>
           ) : null}
-          {/* Read-only approval permission explanation: when approval is pending but
-              the current user is not authorized, we say WHY rather than hiding the
-              controls with no reason. */}
-          {approvalPending && commandAllowsApprove && !userMayApprove ? (
-            <p className="muted" style={{ fontSize: '0.75rem', margin: '0 0 0.5rem' }}>
-              <strong style={{ color: 'var(--warning-fg)' }}>Approval required:</strong>{' '}
-              {action.approvalPermissionReason ?? 'You do not have permission to approve this action.'}
-            </p>
-          ) : null}
+          {/* Session-MFA step-up missing: contextual blocked panel + disabled Approve
+              + Complete MFA CTA, shown NEXT TO the controls (not only at the bottom). */}
+          {mfaBlockedPanel}
+          {/* Read-only approval explanation for the OTHER blocked cases (wrong role /
+              already decided): say WHY rather than hiding the controls with no reason. */}
+          {approvalReadOnlyNotice}
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
             {/* Approve / Reject appear when the backend says approval is the next
-                step AND the caller is authorized. Reject requires a reason. Both
-                call real, permission-enforced backend commands. */}
+                step AND the full approval gate (role + MFA + quorum) is satisfied.
+                Reject requires a reason. Both call real, permission-enforced commands. */}
             {showApproval ? (
               <>
                 <button type="button" className="btn btn-primary" style={{ fontSize: '0.8rem' }} onClick={() => void approveAction()}>
@@ -1785,8 +1886,9 @@ function ActionDetailPanel({
               <button type="button" className="btn btn-primary" style={{ fontSize: '0.8rem' }} onClick={() => void simulateAction()}>
                 {action.simulationStatus === 'passed' ? 'Retry Simulation' : 'Simulate Action'}
               </button>
-            ) : showApproval ? (
-              // Approve/Reject already shown above — don't duplicate a disabled pill.
+            ) : showApproval || mfaBlocked ? (
+              // Approve control already rendered (enabled above, or disabled in the
+              // MFA-blocked panel) — don't duplicate another disabled pill.
               null
             ) : (
               <button type="button" className="btn btn-primary" style={{ fontSize: '0.8rem' }} disabled title={executeBlockedReason ?? 'No command available'}>

@@ -89,8 +89,12 @@ test('Reject requires a reason before it calls the backend', () => {
 test('an unauthorized approver sees a truthful read-only explanation, not a hidden control', () => {
   const src = pageSource();
   expect(src).toContain('const userMayApprove = action.canCurrentUserApprove !== false');
-  expect(src).toContain('approvalPending && commandAllowsApprove && !userMayApprove');
+  // The read-only "Approval required" reason is shown for the non-MFA blocked cases
+  // (wrong role / already decided) — never a hidden control with no explanation.
+  expect(src).toContain('const approvalReadOnlyReason');
+  expect(src).toContain('approvalPending && commandAllowsApprove && !canApproveNow && !mfaBlocked');
   expect(src).toContain('action.approvalPermissionReason');
+  expect(src).toContain('approvalReadOnlyNotice');
 });
 
 test('state-changing commands re-fetch canonical data (not just router.refresh)', () => {

@@ -1,12 +1,26 @@
 'use client';
 
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { useState } from 'react';
 
 import { usePilotAuth } from 'app/pilot-auth-context';
 
+// Only ever follow a SAME-ORIGIN internal path (starts with a single '/'), so a
+// crafted ?return_to= can never turn this into an open redirect off the app.
+function safeInternalReturnTo(raw: string | null): string | null {
+  if (!raw) return null;
+  if (!raw.startsWith('/') || raw.startsWith('//')) return null;
+  return raw;
+}
+
 export default function SecuritySettingsPageClient() {
   const { authHeaders, user, enrollMfa, confirmMfaEnrollment, disableMfa } = usePilotAuth();
+  const searchParams = useSearchParams();
+  // When Screen 8 sends the operator here to complete an MFA step-up, it passes a
+  // return_to back to the SAME response action (with the Review All filter + incident
+  // scope preserved). Surface a clear way back once MFA is satisfied.
+  const returnTo = safeInternalReturnTo(searchParams.get('return_to'));
   const resolvedWorkspace = user?.current_workspace ?? user?.memberships?.[0]?.workspace ?? null;
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -139,6 +153,17 @@ export default function SecuritySettingsPageClient() {
         <div className="buttonRow">
           <Link href="/settings" prefetch={false}>← Back to workspace settings</Link>
         </div>
+        {returnTo ? (
+          <article className="dataCard" style={{ marginTop: '0.75rem' }}>
+            <p className="muted" style={{ margin: '0 0 0.5rem' }}>
+              You were sent here to complete MFA before approving a response action.
+              {user?.mfa_enabled ? ' Once this session is MFA-verified you can return and approve it.' : ' Enroll MFA below, then return to approve it.'}
+            </p>
+            <div className="buttonRow">
+              <Link href={returnTo} prefetch={false} className="btn btn-primary">Return to the response action</Link>
+            </div>
+          </article>
+        ) : null}
       </section>
 
       <section className="featureSection">
