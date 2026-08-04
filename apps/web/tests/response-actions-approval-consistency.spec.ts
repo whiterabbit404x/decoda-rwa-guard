@@ -19,13 +19,16 @@ function routeSource(rel: string): string {
   return fs.readFileSync(path.join(__dirname, '..', 'app', 'api', rel), 'utf-8');
 }
 
-test('summary cards read from the canonical backend summary (not only row-derived)', () => {
+test('summary cards reconcile the canonical backend summary with the visible rows', () => {
   const src = pageSource();
   expect(src).toContain('normalizeSummary(actionsPayload?.summary)');
-  expect(src).toContain('const recommendedCount = backendSummary?.recommended ?? rowRecommended');
-  expect(src).toContain('const pendingApprovalCount = backendSummary?.pendingApproval ?? rowPendingApproval');
-  expect(src).toContain('const simulatedCount = backendSummary?.simulated ?? rowSimulated');
-  expect(src).toContain('const executedCount = backendSummary?.executed ?? rowExecuted');
+  // The displayed count reconciles the canonical backend value with the row-derived
+  // truth and fails CLOSED to the rows on disagreement — a stale/partial backend
+  // summary can never make a card read 0 while the table shows pending actions.
+  expect(src).toContain('const recommendedCount = reconcileCount(backendSummary?.recommended, rowRecommended)');
+  expect(src).toContain('const pendingApprovalCount = reconcileCount(backendSummary?.pendingApproval, rowPendingApproval)');
+  expect(src).toContain('const simulatedCount = reconcileCount(backendSummary?.simulated, rowSimulated)');
+  expect(src).toContain('const executedCount = reconcileCount(backendSummary?.executed, rowExecuted)');
 });
 
 test('a dev-time invariant asserts the summary and the rows agree', () => {
@@ -34,16 +37,16 @@ test('a dev-time invariant asserts the summary and the rows agree', () => {
   expect(src).toContain('backendSummary.pendingApproval !== rowPendingApproval');
 });
 
-test('the Playbook Execution Agent panel uses the same backend summary as the cards', () => {
+test('the Playbook Execution Agent panel reconciles the same count as the cards', () => {
   const src = pageSource();
   expect(src).toContain('summary={backendSummary}');
-  expect(src).toContain('const awaitingApproval = summary?.pendingApproval ??');
+  expect(src).toContain('reconcileCount(\n    summary?.pendingApproval,');
   expect(src).toContain('const simulated = summary?.simulated ??');
 });
 
 test('approval banner is gated on the canonical count and Review All applies the filter', () => {
   const src = pageSource();
-  expect(src).toContain('approvalRequiredCount = backendSummary?.pendingApproval ??');
+  expect(src).toContain('const approvalRequiredCount = reconcileCount(');
   expect(src).toContain('approvalRequiredCount > 0');
   // Review All must apply the approval-required filter, never auto-approve / no-op.
   expect(src).toContain("setApprovalFilter('yes')");
