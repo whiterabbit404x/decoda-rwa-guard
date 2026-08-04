@@ -63,17 +63,20 @@ test('primary lifecycle label is canonical and simulation is a SEPARATE pill (no
   expect(src).toContain('Simulation is shown as a SEPARATE secondary chip');
 });
 
-test('Approve and Reject controls exist and call real backend commands', () => {
+test('Approve and Reject controls exist and call the response-action approval domain', () => {
   const src = pageSource();
   expect(src).toContain('async function approveAction()');
   expect(src).toContain('async function rejectAction()');
-  // Policy action -> response-action commands; AI review -> incident recommendation.
-  expect(src).toContain('/api/response/actions/${action.id}/approve');
-  expect(src).toContain('/api/response/actions/${action.id}/reject');
-  expect(src).toContain('/api/incidents/${action.linkedIncident}/recommendations/${action.id}/approve');
+  // Approve/Reject ALWAYS call the dedicated response-action approval command — for
+  // BOTH policy actions and AI-recommendation-backed actions — never the AI
+  // recommendation-REVIEW endpoint (the domain-collision bug).
+  expect(src).toContain("responseActionApprovalEndpoint(action.id, 'approve')");
+  expect(src).toContain("responseActionApprovalEndpoint(action.id, 'reject')");
+  expect(src).not.toContain('/recommendations/${action.id}/approve');
+  expect(src).not.toContain('/recommendations/${action.id}/reject');
   // Both buttons are rendered.
-  expect(src).toContain('>\n                  Approve\n                </button>');
-  expect(src).toContain('>\n                  Reject\n                </button>');
+  expect(src).toContain('void approveAction()');
+  expect(src).toContain('void rejectAction()');
 });
 
 test('Reject requires a reason before it calls the backend', () => {
@@ -86,8 +89,17 @@ test('Reject requires a reason before it calls the backend', () => {
 test('an unauthorized approver sees a truthful read-only explanation, not a hidden control', () => {
   const src = pageSource();
   expect(src).toContain('const userMayApprove = action.canCurrentUserApprove !== false');
-  expect(src).toContain('approvalPending && policyCanApprove && !userMayApprove');
+  expect(src).toContain('approvalPending && commandAllowsApprove && !userMayApprove');
   expect(src).toContain('action.approvalPermissionReason');
+});
+
+test('state-changing commands re-fetch canonical data (not just router.refresh)', () => {
+  const src = pageSource();
+  // A completed approve/reject/simulate/execute bumps reloadKey so the client
+  // re-fetches /api/response/actions + summary — router.refresh() alone did not.
+  expect(src).toContain('const [reloadKey, setReloadKey] = useState(0)');
+  expect(src).toContain('const reloadActions = () => setReloadKey((k) => k + 1)');
+  expect(src).toContain('if (res.ok) onDataChanged()');
 });
 
 test('approval quorum progress (X of Y) is rendered from canonical counts', () => {

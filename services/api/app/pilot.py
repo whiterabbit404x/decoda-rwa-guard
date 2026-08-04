@@ -18018,6 +18018,362 @@ def recommend_response_action_for_incident(incident_id: str, request: Request) -
         }
 
 
+# ---------------------------------------------------------------------------
+# Response-action APPROVAL domain (Screen 8) — kept strictly separate from the AI
+# recommendation REVIEW domain (ai_recommendations.review_state). A response-action
+# approval is an authorized approver permitting a mitigation action to proceed
+# toward execution; a recommendation review is only an operator judging whether an
+# AI recommendation is useful. The two never share a record, a state column, or a
+# uniqueness constraint (see migration 0137). A prior recommendation review can
+# therefore never block — or be mistaken for — a response-action approval.
+# ---------------------------------------------------------------------------
+RESPONSE_ACTION_APPROVAL_TABLE = 'response_action_approvals'
+
+
+def _response_action_approvals_schema_ready(connection: Any) -> bool:
+    """True when the response-action approval table exists. Fail-closed on error."""
+    try:
+        row = connection.execute(
+            'SELECT to_regclass(%s) IS NOT NULL AS present',
+            (f'public.{RESPONSE_ACTION_APPROVAL_TABLE}',),
+        ).fetchone()
+        return bool((row or {}).get('present'))
+    except Exception:  # pragma: no cover - any probe failure is treated as not-ready
+        return False
+
+
+def _action_version_for(subject_domain: str, subject: dict[str, Any]) -> int:
+    """Canonical integer version of an approvable action.
+
+    A superseded / re-proposed action bumps its version so a stale approval cast
+    against an earlier version never counts toward the current quorum. Policy
+    response actions carry the version in ``execution_metadata.action_version``;
+    AI-recommendation-backed actions default to version 1 (they are immutable).
+    """
+    metadata = subject.get('execution_metadata') if isinstance(subject.get('execution_metadata'), dict) else {}
+    raw = subject.get('action_version')
+    if raw is None:
+        raw = metadata.get('action_version')
+    try:
+        version = int(raw)
+    except (TypeError, ValueError):
+        version = 1
+    return version if version >= 1 else 1
+
+
+def _required_approval_quorum(subject_domain: str, subject: dict[str, Any]) -> int:
+    """Required number of distinct approver decisions for an action.
+
+    Single-approver policy today (quorum of 1). The value is explicit and derived
+    in ONE place so a future multi-approver policy (e.g. from a workspace approval
+    group) changes only here — the command, the summary, and the tests all read it.
+    """
+    metadata = subject.get('execution_metadata') if isinstance(subject.get('execution_metadata'), dict) else {}
+    raw = metadata.get('required_approval_quorum') if isinstance(metadata, dict) else None
+    try:
+        quorum = int(raw)
+    except (TypeError, ValueError):
+        quorum = 1
+    return quorum if quorum >= 1 else 1
+
+
+def _action_approval_summary(
+    connection: Any,
+    *,
+    workspace_id: str,
+    subject_domain: str,
+    subject_id: str,
+    action_version: int,
+    required_quorum: int = 1,
+    current_user_id: str | None = None,
+) -> dict[str, Any]:
+    """Canonical response-action approval state for one action VERSION.
+
+    Reads ONLY the dedicated ``response_action_approvals`` table — never
+    ``ai_recommendations.review_state`` — so recommendation review and action
+    approval can never be conflated. Returns the recomputed quorum progress (count
+    of DISTINCT approvers whose decision is 'approved'), whether a rejection exists,
+    and whether the current caller already recorded a decision for THIS version.
+    """
+    empty = {
+        'required_quorum': max(1, int(required_quorum or 1)),
+        'approved_count': 0,
+        'rejected': False,
+        'current_user_decided': False,
+        'current_user_decision': None,
+        'approver_ids': [],
+    }
+    if not _response_action_approvals_schema_ready(connection):
+        return empty
+    try:
+        rows = connection.execute(
+            '''
+            SELECT approver_user_id, decision, required_quorum
+            FROM response_action_approvals
+            WHERE workspace_id = %s AND subject_domain = %s AND subject_id = %s::uuid
+              AND action_version = %s
+            ORDER BY created_at ASC
+            ''',
+            (workspace_id, subject_domain, subject_id, action_version),
+        ).fetchall()
+    except Exception:  # pragma: no cover - never let the approval read break the list
+        return empty
+    approved_ids: list[str] = []
+    rejected = False
+    stored_quorum = int(required_quorum or 1)
+    current_user_decision: str | None = None
+    for row in rows or []:
+        approver_id = str(row.get('approver_user_id') or '')
+        decision = str(row.get('decision') or '')
+        stored_quorum = max(stored_quorum, int(row.get('required_quorum') or 1))
+        if current_user_id and approver_id == str(current_user_id):
+            current_user_decision = decision
+        if decision == 'approved' and approver_id and approver_id not in approved_ids:
+            approved_ids.append(approver_id)
+        elif decision == 'rejected':
+            rejected = True
+    return {
+        'required_quorum': max(1, stored_quorum),
+        'approved_count': len(approved_ids),
+        'rejected': rejected,
+        'current_user_decided': current_user_decision is not None,
+        'current_user_decision': current_user_decision,
+        'approver_ids': approved_ids,
+    }
+
+
+def _record_action_approval_decision(
+    connection: Any,
+    *,
+    workspace_id: str,
+    subject_domain: str,
+    subject_id: str,
+    action_version: int,
+    approver_user_id: str,
+    approver_role: str | None,
+    decision: str,
+    note: str | None,
+    required_quorum: int,
+    policy: str | None,
+) -> None:
+    """Persist ONE response-action approval decision.
+
+    Idempotency / duplicate protection lives in the approval domain only, scoped to
+    (workspace, subject_domain, subject_id, action_version, approver). A duplicate
+    decision by the same approver for the same action version raises a truthful 409
+    — it never touches, and is never confused with, a recommendation review.
+    """
+    if not _response_action_approvals_schema_ready(connection):
+        # Fail closed and truthfully rather than writing to a missing table. In a
+        # normal deployment migration 0137 has already run; this only guards the
+        # brief bootstrap window before migrations complete.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={'code': 'APPROVAL_SCHEMA_UNAVAILABLE',
+                    'message': 'Response-action approval store is not available yet. Apply migration 0137 and retry.'},
+        )
+    existing = connection.execute(
+        '''
+        SELECT decision FROM response_action_approvals
+        WHERE workspace_id = %s AND subject_domain = %s AND subject_id = %s::uuid
+          AND action_version = %s AND approver_user_id = %s::uuid
+        ''',
+        (workspace_id, subject_domain, subject_id, action_version, approver_user_id),
+    ).fetchone()
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                'code': 'ACTION_VERSION_ALREADY_DECIDED',
+                'message': (
+                    'You already approved this action version.'
+                    if decision == 'approved'
+                    else 'You already recorded a decision for this action version.'
+                ),
+            },
+        )
+    connection.execute(
+        '''
+        INSERT INTO response_action_approvals (
+            id, workspace_id, subject_domain, subject_id, action_version,
+            approver_user_id, approver_role, decision, note, required_quorum, policy
+        ) VALUES (%s, %s, %s, %s::uuid, %s, %s::uuid, %s, %s, %s, %s, %s)
+        ''',
+        (
+            str(uuid.uuid4()), workspace_id, subject_domain, subject_id, action_version,
+            approver_user_id, approver_role, decision, note, required_quorum, policy,
+        ),
+    )
+
+
+def _approve_ai_recommendation_backed_action(
+    connection: Any,
+    *,
+    recommendation_id: str,
+    request: Request,
+    user: dict[str, Any],
+    workspace_context: dict[str, Any],
+) -> dict[str, Any]:
+    """Record a RESPONSE-ACTION APPROVAL against an AI-recommendation-backed action.
+
+    Screen 8 surfaces an approval-required AI recommendation as an approvable
+    action. Its "Approve" is a response-action approval — NOT a recommendation
+    review — so it is recorded in ``response_action_approvals`` and leaves
+    ``ai_recommendations.review_state`` untouched. A prior recommendation review
+    therefore never blocks it.
+    """
+    workspace_id = workspace_context['workspace_id']
+    rec = connection.execute(
+        '''
+        SELECT id, incident_id, action_type, runbook_id, review_state, requires_human_approval
+        FROM ai_recommendations
+        WHERE id = %s::uuid AND workspace_id = %s
+        ''',
+        (recommendation_id, workspace_id),
+    ).fetchone()
+    if rec is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Enforcement action not found.')
+    subject = _json_safe_value(dict(rec))
+    if not bool(subject.get('requires_human_approval', True)):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='This action does not require approval.')
+    # Role gate (owner/admin). AI recommendations have no human proposer, so there is
+    # no separation-of-duties self-approval to reject here.
+    permission = response_action_approval_permission(
+        {'created_by_user_id': None}, workspace_context=workspace_context, current_user_id=user['id'],
+    )
+    if not permission['can_current_user_approve']:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={'code': 'APPROVAL_NOT_PERMITTED', 'message': permission['approval_permission_reason']},
+        )
+    action_version = _action_version_for('ai_recommendation', subject)
+    required_quorum = _required_approval_quorum('ai_recommendation', subject)
+    _record_action_approval_decision(
+        connection,
+        workspace_id=workspace_id,
+        subject_domain='ai_recommendation',
+        subject_id=recommendation_id,
+        action_version=action_version,
+        approver_user_id=str(user['id']),
+        approver_role=str(workspace_context.get('role') or '') or None,
+        decision='approved',
+        note=None,
+        required_quorum=required_quorum,
+        policy='owner_admin_single_approver',
+    )
+    approval = _action_approval_summary(
+        connection, workspace_id=workspace_id, subject_domain='ai_recommendation',
+        subject_id=recommendation_id, action_version=action_version,
+        required_quorum=required_quorum, current_user_id=str(user['id']),
+    )
+    incident_id = str(subject.get('incident_id') or '')
+    write_action_history(
+        connection, workspace_id=workspace_id, actor_type='user', actor_id=user['id'],
+        object_type='response_action', object_id=recommendation_id,
+        action_type='response_action.approved',
+        details={'subject_domain': 'ai_recommendation', 'action_version': action_version,
+                 'approved_count': approval['approved_count'], 'required_quorum': approval['required_quorum']},
+    )
+    append_incident_timeline_event(
+        connection, workspace_id=workspace_id, incident_id=incident_id,
+        event_type='response_action.approved', message='Response action approved.',
+        actor_user_id=user['id'],
+        metadata={'response_action_id': recommendation_id, 'subject_domain': 'ai_recommendation',
+                  'action_type': subject.get('action_type'),
+                  'approved_count': approval['approved_count'], 'required_quorum': approval['required_quorum']},
+    )
+    log_audit(connection, action='response.action.approve', entity_type='ai_recommendation',
+              entity_id=recommendation_id, request=request, user_id=user['id'],
+              workspace_id=workspace_id, metadata={'action_version': action_version})
+    connection.commit()
+    payload = _ai_recommendation_review_payload(subject, approval_summary=approval)
+    payload['message'] = (
+        'Approval recorded. Approval quorum reached.'
+        if approval['approved_count'] >= approval['required_quorum']
+        else 'Approval recorded. Approval quorum still pending.'
+    )
+    return payload
+
+
+def _reject_ai_recommendation_backed_action(
+    connection: Any,
+    *,
+    recommendation_id: str,
+    reason: str,
+    request: Request,
+    user: dict[str, Any],
+    workspace_context: dict[str, Any],
+) -> dict[str, Any]:
+    """Record a RESPONSE-ACTION REJECTION against an AI-recommendation-backed action.
+
+    Uses the approval domain (``response_action_approvals``), not the recommendation
+    review table, so it can never return "already reviewed" for a prior review.
+    """
+    workspace_id = workspace_context['workspace_id']
+    rec = connection.execute(
+        '''
+        SELECT id, incident_id, action_type, runbook_id, review_state, requires_human_approval
+        FROM ai_recommendations
+        WHERE id = %s::uuid AND workspace_id = %s
+        ''',
+        (recommendation_id, workspace_id),
+    ).fetchone()
+    if rec is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Enforcement action not found.')
+    subject = _json_safe_value(dict(rec))
+    if not bool(subject.get('requires_human_approval', True)):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='This action does not require approval.')
+    permission = response_action_approval_permission(
+        {'created_by_user_id': None}, workspace_context=workspace_context, current_user_id=user['id'],
+    )
+    if not permission['can_current_user_reject']:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={'code': 'APPROVAL_NOT_PERMITTED', 'message': permission['approval_permission_reason']},
+        )
+    action_version = _action_version_for('ai_recommendation', subject)
+    required_quorum = _required_approval_quorum('ai_recommendation', subject)
+    _record_action_approval_decision(
+        connection,
+        workspace_id=workspace_id,
+        subject_domain='ai_recommendation',
+        subject_id=recommendation_id,
+        action_version=action_version,
+        approver_user_id=str(user['id']),
+        approver_role=str(workspace_context.get('role') or '') or None,
+        decision='rejected',
+        note=reason,
+        required_quorum=required_quorum,
+        policy='owner_admin_single_approver',
+    )
+    approval = _action_approval_summary(
+        connection, workspace_id=workspace_id, subject_domain='ai_recommendation',
+        subject_id=recommendation_id, action_version=action_version,
+        required_quorum=required_quorum, current_user_id=str(user['id']),
+    )
+    incident_id = str(subject.get('incident_id') or '')
+    write_action_history(
+        connection, workspace_id=workspace_id, actor_type='user', actor_id=user['id'],
+        object_type='response_action', object_id=recommendation_id,
+        action_type='response_action.rejected',
+        details={'subject_domain': 'ai_recommendation', 'action_version': action_version, 'reason': reason},
+    )
+    append_incident_timeline_event(
+        connection, workspace_id=workspace_id, incident_id=incident_id,
+        event_type='response_action.rejected', message='Response action rejected.',
+        actor_user_id=user['id'],
+        metadata={'response_action_id': recommendation_id, 'subject_domain': 'ai_recommendation',
+                  'action_type': subject.get('action_type'), 'reason': reason},
+    )
+    log_audit(connection, action='response.action.reject', entity_type='ai_recommendation',
+              entity_id=recommendation_id, request=request, user_id=user['id'],
+              workspace_id=workspace_id, metadata={'action_version': action_version, 'reason': reason})
+    connection.commit()
+    payload = _ai_recommendation_review_payload(subject, approval_summary=approval)
+    payload['message'] = 'Rejection recorded. This action will not proceed to execution.'
+    return payload
+
+
 def approve_enforcement_action(action_id: str, request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
@@ -18026,11 +18382,18 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
             connection, request, 'response.approve', True, True
         )
         row = connection.execute(
-            'SELECT id, status, incident_id, alert_id, action_type, mode, execution_state, execution_artifacts, provider_receipts, safe_tx_hash, approved_at, failed_at, created_by_user_id FROM response_actions WHERE id = %s AND workspace_id = %s',
+            'SELECT id, status, incident_id, alert_id, action_type, mode, execution_state, execution_metadata, execution_artifacts, provider_receipts, safe_tx_hash, approved_at, failed_at, created_by_user_id FROM response_actions WHERE id = %s AND workspace_id = %s',
             (action_id, workspace_context['workspace_id']),
         ).fetchone()
         if row is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Enforcement action not found.')
+            # Not a policy response_action id — it may be an AI-recommendation-backed
+            # approvable action surfaced on Screen 8. Its "Approve" is still a
+            # RESPONSE-ACTION APPROVAL (recorded in response_action_approvals), never a
+            # recommendation review, so a prior review can never block it.
+            return _approve_ai_recommendation_backed_action(
+                connection, recommendation_id=action_id, request=request,
+                user=user, workspace_context=workspace_context,
+            )
         mode = str(row.get('mode') or 'simulated')
         # Approval eligibility follows the CANONICAL lifecycle, not the raw mode: a
         # dry-run simulation does not clear the approval requirement, so a simulated
@@ -18052,6 +18415,70 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
         )
         if str(row.get('status')) not in {'pending', 'failed', 'planned'}:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Action cannot be approved from current status.')
+        # Record this approver's decision in the dedicated response-action APPROVAL
+        # domain (never the recommendation-review table). Duplicate protection is
+        # scoped to (action, version, approver) so the same approver cannot approve
+        # the same version twice, and a prior recommendation review can never collide.
+        # Degrades to the legacy single-approver behavior when migration 0137 has not
+        # been applied yet (bootstrap window), so approval is never stuck.
+        subject = _json_safe_value(dict(row))
+        action_version = _action_version_for('response_action', subject)
+        required_quorum = _required_approval_quorum('response_action', subject)
+        if _response_action_approvals_schema_ready(connection):
+            _record_action_approval_decision(
+                connection,
+                workspace_id=workspace_context['workspace_id'],
+                subject_domain='response_action',
+                subject_id=action_id,
+                action_version=action_version,
+                approver_user_id=str(user['id']),
+                approver_role=str(workspace_context.get('role') or '') or None,
+                decision='approved',
+                note=None,
+                required_quorum=required_quorum,
+                policy='owner_admin_single_approver',
+            )
+            approval = _action_approval_summary(
+                connection, workspace_id=workspace_context['workspace_id'],
+                subject_domain='response_action', subject_id=action_id,
+                action_version=action_version, required_quorum=required_quorum,
+                current_user_id=str(user['id']),
+            )
+        else:
+            approval = {'required_quorum': 1, 'approved_count': 1, 'rejected': False}
+        # Multi-approver quorum: until enough distinct approvers have approved THIS
+        # version, the action stays Awaiting Approval and its canonical status is not
+        # advanced. (Single-approver policy today, so one decision reaches quorum.)
+        if approval['approved_count'] < approval['required_quorum']:
+            write_action_history(
+                connection, workspace_id=workspace_context['workspace_id'], actor_type='user',
+                actor_id=user['id'], object_type='response_action', object_id=action_id,
+                action_type='response_action.approval_recorded',
+                details={'action_version': action_version, 'approved_count': approval['approved_count'],
+                         'required_quorum': approval['required_quorum']},
+            )
+            append_incident_timeline_event(
+                connection, workspace_id=workspace_context['workspace_id'],
+                incident_id=str(row.get('incident_id') or ''),
+                event_type='response_action.approval_recorded',
+                message='Response action approval recorded (quorum still pending).',
+                actor_user_id=user['id'],
+                metadata={'response_action_id': action_id, 'action_type': row.get('action_type'),
+                          'approved_count': approval['approved_count'], 'required_quorum': approval['required_quorum']},
+            )
+            log_audit(connection, action='enforcement.action.approve', entity_type='enforcement_action',
+                      entity_id=action_id, request=request, user_id=user['id'],
+                      workspace_id=workspace_context['workspace_id'],
+                      metadata={'action_version': action_version, 'quorum_reached': False})
+            connection.commit()
+            pending_payload = _response_action_payload(subject)
+            pending_payload['required_approval_count'] = approval['required_quorum']
+            pending_payload['current_approval_count'] = approval['approved_count']
+            if isinstance(pending_payload.get('lifecycle'), dict):
+                pending_payload['lifecycle']['required_approval_count'] = approval['required_quorum']
+                pending_payload['lifecycle']['current_approval_count'] = approval['approved_count']
+            pending_payload['message'] = 'Approval recorded. Approval quorum still pending.'
+            return pending_payload
         approved_at = utc_now_iso()
         artifacts = row.get('execution_artifacts') if isinstance(row.get('execution_artifacts'), dict) else {}
         artifacts = _append_status_transition(
@@ -18144,7 +18571,14 @@ def reject_enforcement_action(action_id: str, payload: dict[str, Any], request: 
             (action_id, workspace_context['workspace_id']),
         ).fetchone()
         if row is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Enforcement action not found.')
+            # Not a policy response_action id — reject the AI-recommendation-backed
+            # action through the same response-action APPROVAL domain (never the
+            # recommendation-review table), so a prior review cannot return
+            # "already reviewed" for the rejection.
+            return _reject_ai_recommendation_backed_action(
+                connection, recommendation_id=action_id, reason=reason, request=request,
+                user=user, workspace_context=workspace_context,
+            )
         metadata = row.get('execution_metadata') if isinstance(row.get('execution_metadata'), dict) else {}
         if metadata.get('rejected_at') or str(row.get('status') or '') == 'canceled':
             # Idempotent: already rejected/cancelled — return the canonical payload.
@@ -18153,6 +18587,31 @@ def reject_enforcement_action(action_id: str, payload: dict[str, Any], request: 
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='This action does not require approval.')
         if str(row.get('status')) not in {'pending', 'failed', 'planned'}:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Action cannot be rejected from current status.')
+        # Record the rejection in the dedicated response-action APPROVAL domain
+        # alongside the existing status transition, scoped to (action, version,
+        # approver) so it can never collide with a recommendation review.
+        _reject_subject = _json_safe_value(dict(row))
+        _reject_version = _action_version_for('response_action', _reject_subject)
+        if _response_action_approvals_schema_ready(connection):
+            try:
+                _record_action_approval_decision(
+                    connection,
+                    workspace_id=workspace_context['workspace_id'],
+                    subject_domain='response_action',
+                    subject_id=action_id,
+                    action_version=_reject_version,
+                    approver_user_id=str(user['id']),
+                    approver_role=str(workspace_context.get('role') or '') or None,
+                    decision='rejected',
+                    note=reason,
+                    required_quorum=_required_approval_quorum('response_action', _reject_subject),
+                    policy='owner_admin_single_approver',
+                )
+            except HTTPException as exc:
+                # A duplicate decision by the same approver is a no-op for rejection
+                # (the action is being canceled regardless); any other error propagates.
+                if not (isinstance(exc.detail, dict) and exc.detail.get('code') == 'ACTION_VERSION_ALREADY_DECIDED'):
+                    raise
         rejected_at = utc_now_iso()
         metadata = {
             **metadata,
@@ -18843,39 +19302,54 @@ def _ai_review_status(review_state: str | None) -> str:
     return 'pending_approval'
 
 
-def _ai_review_lifecycle(review_state: str, requires_approval: bool) -> dict[str, Any]:
-    """Canonical lifecycle for an AI recommendation review, shaped exactly like
-    response_action_lifecycle so Screen 8 treats reviews and policy actions the
-    same way. A ``pending_review`` recommendation that still requires human
-    approval IS awaiting approval — it must never read as "not required" and must
-    be counted in Pending Approval like any other approval-required action.
+def _ai_review_lifecycle(requires_approval: bool, approval_summary: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Canonical lifecycle for an AI-recommendation-backed action, shaped exactly
+    like response_action_lifecycle so Screen 8 treats it and policy actions the same
+    way.
+
+    The APPROVAL state is derived from the dedicated response-action approval domain
+    (``response_action_approvals`` via ``approval_summary``), NEVER from the
+    recommendation's ``review_state``. Approval and review are different gates: a
+    recommendation that was already reviewed still reads "awaiting approval" until a
+    real response-action approval quorum is met, and a prior review never advances
+    or blocks it. When no approval decisions exist yet, an approval-required action
+    is 'pending' (0 of quorum) so it is counted in Pending Approval like any other.
     """
-    state = str(review_state or 'pending_review').strip().lower()
-    if state == 'rejected':
-        primary, approval_status = 'rejected', 'rejected'
-    elif state == 'accepted':
-        primary, approval_status = 'approved', 'approved'
-    elif requires_approval:
-        primary, approval_status = 'awaiting_approval', 'pending'
+    summary = approval_summary or {}
+    required = int(summary.get('required_quorum') or (1 if requires_approval else 0))
+    approved_count = int(summary.get('approved_count') or 0)
+    rejected = bool(summary.get('rejected'))
+    if not requires_approval:
+        primary, approval_status, current = 'recommended', 'not_required', 0
+    elif rejected:
+        primary, approval_status, current = 'rejected', 'rejected', approved_count
+    elif required > 0 and approved_count >= required:
+        primary, approval_status, current = 'approved', 'approved', min(approved_count, required)
     else:
-        primary, approval_status = 'recommended', 'not_required'
-    approved = approval_status == 'approved'
+        primary, approval_status, current = 'awaiting_approval', 'pending', approved_count
     return {
         'lifecycle_state': primary,
         'lifecycle_label': RESPONSE_ACTION_LIFECYCLE_LABELS.get(primary, primary.replace('_', ' ').title()),
         'approval_status': approval_status,
-        # A recommendation review is a human decision, never a dry-run/execution.
+        # A recommendation-backed action is a human decision, never a dry-run/execution.
         'simulation_status': 'not_started',
         'execution_status': 'not_started',
         'rollback_status': 'not_available',
         'requires_approval': bool(requires_approval),
-        'required_approval_count': 1 if requires_approval else 0,
-        'current_approval_count': 1 if (requires_approval and approved) else 0,
+        'required_approval_count': required if requires_approval else 0,
+        'current_approval_count': current if requires_approval else 0,
     }
 
 
-def _ai_recommendation_review_payload(row: dict[str, Any]) -> dict[str, Any]:
-    """Normalize an ``ai_recommendations`` (+ triage job/result) row into a review record."""
+def _ai_recommendation_review_payload(row: dict[str, Any], *, approval_summary: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Normalize an ``ai_recommendations`` (+ triage job/result) row into an
+    approvable Screen 8 action record.
+
+    ``review_state`` is preserved as the (independent) recommendation REVIEW record
+    and shown in the Decision line. The APPROVAL state, however, is derived from
+    ``approval_summary`` (the response-action approval domain), so a prior review
+    never determines whether the action is approved for execution.
+    """
     safe = _json_safe_value(dict(row))
     review_state = str(safe.get('review_state') or 'pending_review')
     decision = review_state if review_state in {'accepted', 'rejected'} else None
@@ -18886,7 +19360,7 @@ def _ai_recommendation_review_payload(row: dict[str, Any]) -> dict[str, Any]:
     recommendation_id = str(safe.get('recommendation_id') or safe.get('id') or '')
     incident_id = str(safe['incident_id']) if safe.get('incident_id') else None
     requires_approval = bool(safe.get('requires_human_approval', True))
-    lifecycle = _ai_review_lifecycle(review_state, requires_approval)
+    lifecycle = _ai_review_lifecycle(requires_approval, approval_summary)
     # Structured, truthful provenance: an AI review is grounded in the incident
     # investigation + evidence snapshot, never simulator/fabricated evidence.
     evidence_snapshot_id = str(safe['evidence_snapshot_id']) if safe.get('evidence_snapshot_id') else None
@@ -18908,23 +19382,28 @@ def _ai_recommendation_review_payload(row: dict[str, Any]) -> dict[str, Any]:
         'detection_id': None,
         'evidence_snapshot_id': evidence_snapshot_id,
     }
-    # Approve/reject for a review are the incident recommendation endpoints — the
-    # frontend routes there. On Screen 8 the review is read-forward, so no
-    # policy-action command is offered, but the reason is truthful. A review is a
-    # human decision, never an executable/simulatable action — the canonical DTO
-    # shape matches a policy action so the frontend renders both uniformly.
+    # Approve/reject on Screen 8 are RESPONSE-ACTION APPROVAL commands (recorded in
+    # response_action_approvals), not recommendation-review commands. When approval
+    # is pending they are offered as allowed_commands so the frontend routes to the
+    # response-action approval endpoint — never to the incident recommendation
+    # review endpoint. Simulation/execution never apply to a recommendation-backed
+    # action. can_current_user_* comes from the caller's resolved permission (in
+    # ``approval_summary``); a duplicate approver decision is blocked truthfully.
+    approval_pending = lifecycle['approval_status'] == 'pending'
+    summary = approval_summary or {}
     required_ct = lifecycle['required_approval_count']
     current_ct = lifecycle['current_approval_count']
+    can_approve = summary.get('can_current_user_approve')
+    can_reject = summary.get('can_current_user_reject')
+    permission_reason = summary.get('approval_permission_reason')
+    already_decided = bool(summary.get('current_user_decided'))
     commands = {
-        'allowed_commands': [],
-        'blocked_reasons': ([{
-            'command': 'approve',
-            'reason': 'Approve or reject this AI recommendation from the incident investigation.',
-        }] if lifecycle['approval_status'] == 'pending' else []) + [{
+        'allowed_commands': ['approve'] if approval_pending else [],
+        'blocked_reasons': [{
             'command': 'simulate',
             'reason': _simulate_blocked_label('review_not_simulatable'),
         }],
-        'next_required_step': 'review_in_incident' if lifecycle['approval_status'] == 'pending' else 'none',
+        'next_required_step': 'approval' if approval_pending else 'none',
         'requires_confirmation': False,
         'live_execution_configured': False,
         'requires_approval': requires_approval,
@@ -18937,9 +19416,11 @@ def _ai_recommendation_review_payload(row: dict[str, Any]) -> dict[str, Any]:
         'simulation_is_valid': False,
         'simulation_expires_at': None,
         'simulation_blocked_reason': _simulate_blocked_label('review_not_simulatable'),
-        'can_current_user_approve': None,
-        'can_current_user_reject': None,
-        'approval_permission_reason': None,
+        'can_current_user_approve': (False if already_decided else can_approve),
+        'can_current_user_reject': (False if already_decided else can_reject),
+        'approval_permission_reason': (
+            'You already recorded a decision for this action version.' if already_decided else permission_reason
+        ),
     }
     # Distinct target so repeated same-type recommendations (e.g. several "Notify
     # security team" reviews) are disambiguated without opening every row.
@@ -19014,13 +19495,20 @@ def _list_ai_recommendation_reviews(
     action_id: str | None,
     status_value: str | None,
     limit: int,
+    workspace_context: dict[str, Any] | None = None,
+    current_user_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Return workspace-scoped AI recommendation-review records as normalized actions.
+    """Return workspace-scoped AI-recommendation-backed actions as normalized rows.
 
     Reads directly from the canonical ``ai_recommendations`` review table joined to
     its triage result/job for provider/model/evidence-snapshot linkage. Workspace
     isolation is enforced in the WHERE clause and on every join — ``incident_id``
     alone never bypasses the workspace check, so no cross-tenant record is returned.
+
+    The APPROVAL state of each row is computed from the dedicated response-action
+    approval domain (``response_action_approvals``), independent of the
+    recommendation's ``review_state`` — so a prior review never determines whether
+    the action is approved for execution.
     """
     if not _ai_recommendation_review_schema_ready(connection):
         return []
@@ -19048,12 +19536,30 @@ def _list_ai_recommendation_reviews(
     ).fetchall()
     reviews: list[dict[str, Any]] = []
     for row in rows:
-        payload = _ai_recommendation_review_payload(dict(row))
-        # Honor an explicit legacy status filter without ever mislabeling a review:
-        # only pending reviews map onto the "pending" bucket; accepted/rejected reviews
-        # are never "executed"/"failed"/"canceled", so they drop out of those filters.
+        row_dict = dict(row)
+        recommendation_id = str(row_dict.get('recommendation_id') or row_dict.get('id') or '')
+        requires_approval = bool(row_dict.get('requires_human_approval', True))
+        subject = {'execution_metadata': {}}
+        action_version = _action_version_for('ai_recommendation', subject)
+        required_quorum = _required_approval_quorum('ai_recommendation', subject)
+        approval = _action_approval_summary(
+            connection, workspace_id=workspace_id, subject_domain='ai_recommendation',
+            subject_id=recommendation_id, action_version=action_version,
+            required_quorum=required_quorum, current_user_id=current_user_id,
+        )
+        # Resolve the caller's approval permission (role only — an AI recommendation
+        # has no human proposer, so there is no self-approval separation-of-duties).
+        if requires_approval and workspace_context is not None:
+            permission = response_action_approval_permission(
+                {'created_by_user_id': None}, workspace_context=workspace_context,
+                current_user_id=current_user_id,
+            )
+            approval = {**approval, **permission}
+        payload = _ai_recommendation_review_payload(row_dict, approval_summary=approval)
+        # Honor an explicit status filter using the canonical APPROVAL status (not the
+        # review state): only approval-pending rows map onto the "pending" bucket.
         if status_value:
-            if status_value == 'pending' and payload['status'] != 'pending_approval':
+            if status_value == 'pending' and payload.get('approval_status') != 'pending':
                 continue
             if status_value != 'pending':
                 continue
@@ -19128,6 +19634,8 @@ def list_enforcement_actions(
                         action_id=action_id,
                         status_value=normalized_status,
                         limit=max_limit,
+                        workspace_context=workspace_context,
+                        current_user_id=user['id'],
                     )
                 )
             except Exception:  # pragma: no cover - never let the AI read break the legacy list
