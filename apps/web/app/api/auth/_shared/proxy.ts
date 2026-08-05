@@ -219,6 +219,17 @@ export async function proxyAuthRequest(request: Request, backendPath: string, me
     });
   }
 
+  // Forward the anti-CSRF header to the backend, exactly like the canonical
+  // mutation proxy (app/api/_shared/backend-proxy.ts). The double-submit check
+  // above (validateCsrf) only proves the browser presented a matching cookie+header
+  // pair to THIS proxy; the backend independently re-validates the HMAC-signed
+  // X-CSRF-Token on every authenticated mutation, so the header must be relayed or
+  // the backend (correctly) rejects the request with 403 CSRF_INVALID.
+  const csrfToken = request.headers.get('x-csrf-token');
+  if (csrfToken) {
+    headers.set('X-CSRF-Token', csrfToken);
+  }
+
   const init: RequestInit = {
     method,
     headers,

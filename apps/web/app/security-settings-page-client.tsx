@@ -2,28 +2,40 @@
 
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { usePilotAuth } from 'app/pilot-auth-context';
-
-// Only ever follow a SAME-ORIGIN internal path (starts with a single '/'), so a
-// crafted ?return_to= can never turn this into an open redirect off the app.
-function safeInternalReturnTo(raw: string | null): string | null {
-  if (!raw) return null;
-  if (!raw.startsWith('/') || raw.startsWith('//')) return null;
-  return raw;
-}
+import { safeInternalReturnTo } from 'app/safe-internal-return-to';
 
 export default function SecuritySettingsPageClient() {
-  const { authHeaders, user, enrollMfa, confirmMfaEnrollment, disableMfa } = usePilotAuth();
+  const {
+    authHeaders,
+    user,
+    enrollMfa,
+    confirmMfaEnrollment,
+    disableMfa,
+    csrfReady,
+    refreshCsrfToken,
+  } = usePilotAuth();
   const searchParams = useSearchParams();
   // When Screen 8 sends the operator here to complete an MFA step-up, it passes a
   // return_to back to the SAME response action (with the Review All filter + incident
   // scope preserved). Surface a clear way back once MFA is satisfied.
   const returnTo = safeInternalReturnTo(searchParams.get('return_to'));
   const resolvedWorkspace = user?.current_workspace ?? user?.memberships?.[0]?.workspace ?? null;
-  const [message, setMessage] = useState('');
+
   const [submitting, setSubmitting] = useState(false);
+  // Scoped status/error lines so a failure under one control is never echoed beneath an
+  // unrelated one (e.g. a sign-out error must never appear under MFA enrollment).
+  const [mfaStatus, setMfaStatus] = useState('');
+  const [mfaError, setMfaError] = useState('');
+  const [sessionStatus, setSessionStatus] = useState('');
+  const [sessionError, setSessionError] = useState('');
+  const [apiKeyStatus, setApiKeyStatus] = useState('');
+  // Secure-session (anti-CSRF) initialization failure, shown next to the commands it blocks.
+  const [secureSessionError, setSecureSessionError] = useState('');
+  const [retryingSecureSession, setRetryingSecureSession] = useState(false);
+
   const [mfaSetup, setMfaSetup] = useState<{ otpauth_uri: string; secret: string | null } | null>(null);
   const [mfaCode, setMfaCode] = useState('');
   const [disableCode, setDisableCode] = useState('');
@@ -34,6 +46,50 @@ export default function SecuritySettingsPageClient() {
   const [revealedSecret, setRevealedSecret] = useState('');
   const canManageApiKeys = ['owner', 'admin', 'workspace_owner', 'workspace_admin'].includes(String((user as any)?.role ?? user?.memberships?.[0]?.role ?? ''));
 
+  // A state-changing request is only safe to send once the anti-CSRF token has been
+  // bootstrapped; until then every command stays disabled (fail-closed) rather than
+  // firing a request the backend will (correctly) reject with a CSRF error.
+  const secureSessionReady = csrfReady;
+  const commandsDisabled = submitting || !secureSessionReady;
+
+  function isSecureSessionFailure(value: unknown): boolean {
+    const message = value instanceof Error ? value.message : String(value ?? '');
+    return /csrf|secure session/i.test(message);
+  }
+
+  // Confirm the anti-CSRF token is bootstrapped for this authenticated session before any
+  // mutation is possible. The provider fetches it on session restore; this one-shot backup
+  // surfaces a focused, retryable error if that initial bootstrap did not land, instead of
+  // leaving the operator on an indefinite "Preparing secure session" state with no recourse.
+  const bootstrapAttempted = useRef(false);
+  useEffect(() => {
+    if (!user || csrfReady || bootstrapAttempted.current) {
+      return;
+    }
+    bootstrapAttempted.current = true;
+    void (async () => {
+      const token = await refreshCsrfToken();
+      if (!token) {
+        setSecureSessionError('Could not initialize a secure session. Check your connection and retry.');
+      }
+    })();
+  }, [user, csrfReady, refreshCsrfToken]);
+
+  async function retrySecureSession() {
+    setRetryingSecureSession(true);
+    setSecureSessionError('');
+    try {
+      const token = await refreshCsrfToken();
+      if (!token) {
+        setSecureSessionError('Could not initialize a secure session. Check your connection and retry.');
+      }
+    } catch {
+      setSecureSessionError('Could not initialize a secure session. Check your connection and retry.');
+    } finally {
+      setRetryingSecureSession(false);
+    }
+  }
+
   async function loadApiKeys() {
     const response = await fetch('/api/workspace/api-keys', { headers: authHeaders() });
     if (!response.ok) return;
@@ -43,20 +99,45 @@ export default function SecuritySettingsPageClient() {
 
   async function signOutAllSessions() {
     setSubmitting(true);
-    const response = await fetch('/api/auth/signout-all', { method: 'POST', headers: authHeaders() });
-    setMessage(response.ok ? 'All active sessions were signed out.' : 'Unable to sign out all sessions.');
-    setSubmitting(false);
+    setSessionStatus('');
+    setSessionError('');
+    try {
+      const response = await fetch('/api/auth/signout-all', { method: 'POST', headers: authHeaders() });
+      if (response.ok) {
+        setSessionStatus('All active sessions were signed out.');
+      } else {
+        const payload = await response.json().catch(() => ({}));
+        if (isSecureSessionFailure(payload?.detail) || isSecureSessionFailure(payload?.code)) {
+          setSecureSessionError('Your secure session expired. Retry the secure session, then sign out all sessions again.');
+        } else {
+          setSessionError(typeof payload?.detail === 'string' ? payload.detail : 'Unable to sign out all sessions.');
+        }
+      }
+    } catch {
+      setSessionError('Unable to sign out all sessions.');
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   async function startMfaEnrollment() {
     setSubmitting(true);
-    setMessage('');
+    setMfaStatus('');
+    setMfaError('');
     try {
       const enrollment = await enrollMfa();
       setMfaSetup(enrollment);
       setRecoveryCodes([]);
+      setMfaStatus('Scan the setup key in your authenticator app, then enter a verification code to finish.');
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Unable to start MFA enrollment.');
+      // Keep the failure honest and specific: a blocked enrollment must never read as if
+      // a challenge/email was delivered, and a secure-session failure is distinct from an
+      // enrollment failure so the operator retries the right thing.
+      if (isSecureSessionFailure(error)) {
+        setSecureSessionError('Your secure session expired. Retry the secure session, then enroll MFA again.');
+      } else {
+        setMfaError(error instanceof Error ? `MFA enrollment failed: ${error.message}` : 'MFA enrollment failed.');
+      }
     } finally {
       setSubmitting(false);
     }
@@ -64,16 +145,21 @@ export default function SecuritySettingsPageClient() {
 
   async function confirmMfa() {
     setSubmitting(true);
-    setMessage('');
+    setMfaStatus('');
+    setMfaError('');
     try {
       const result = await confirmMfaEnrollment(mfaCode);
       setRecoveryCodes(result.recovery_codes);
       setRecoveryCodesAcknowledged(false);
       setMfaSetup(null);
       setMfaCode('');
-      setMessage('MFA enabled. Save your recovery codes now.');
+      setMfaStatus('MFA enabled. Save your recovery codes now.');
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Unable to confirm MFA enrollment.');
+      if (isSecureSessionFailure(error)) {
+        setSecureSessionError('Your secure session expired. Retry the secure session, then verify again.');
+      } else {
+        setMfaError(error instanceof Error ? `MFA verification failed: ${error.message}` : 'MFA verification failed.');
+      }
     } finally {
       setSubmitting(false);
     }
@@ -84,37 +170,59 @@ export default function SecuritySettingsPageClient() {
       return;
     }
     void navigator.clipboard.writeText(recoveryCodes.join('\n'));
-    setMessage('Recovery codes copied. Store them in a secure password vault.');
+    setMfaStatus('Recovery codes copied. Store them in a secure password vault.');
   }
 
   async function disableMfaFlow() {
     setSubmitting(true);
-    setMessage('');
+    setMfaStatus('');
+    setMfaError('');
     try {
       await disableMfa(disableCode);
       setDisableCode('');
       setRecoveryCodes([]);
-      setMessage('MFA disabled for this account.');
+      setMfaStatus('MFA disabled for this account.');
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Unable to disable MFA.');
+      if (isSecureSessionFailure(error)) {
+        setSecureSessionError('Your secure session expired. Retry the secure session, then disable MFA again.');
+      } else {
+        setMfaError(error instanceof Error ? `Unable to disable MFA: ${error.message}` : 'Unable to disable MFA.');
+      }
     } finally {
       setSubmitting(false);
     }
   }
+
   async function createApiKey() {
     setSubmitting(true);
-    setMessage('');
+    setApiKeyStatus('');
     const response = await fetch('/api/workspace/api-keys', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ label: apiKeyLabel }) });
-    const payload = await response.json();
-    if (!response.ok) setMessage(payload.detail ?? 'Unable to create API key.');
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) setApiKeyStatus(payload.detail ?? 'Unable to create API key.');
     else {
       setRevealedSecret(payload.secret ?? '');
       setApiKeyLabel('');
-      setMessage('API key created. Secret is shown once—copy it now.');
+      setApiKeyStatus('API key created. Secret is shown once—copy it now.');
       await loadApiKeys();
     }
     setSubmitting(false);
   }
+
+  // Rendered NEXT TO each set of commands so the secure-session state is always adjacent
+  // to the control it governs: a pending notice while the anti-CSRF token bootstraps, or a
+  // focused retry affordance if initialization failed.
+  const secureSessionNotice = secureSessionError ? (
+    <div role="alert">
+      <p className="statusLine">{secureSessionError}</p>
+      <div className="buttonRow">
+        <button type="button" onClick={() => void retrySecureSession()} disabled={retryingSecureSession}>
+          {retryingSecureSession ? 'Retrying…' : 'Retry secure session'}
+        </button>
+      </div>
+    </div>
+  ) : !secureSessionReady ? (
+    <p className="statusLine" role="status">Preparing secure session…</p>
+  ) : null;
 
   return (
     <main className="productPage">
@@ -126,15 +234,17 @@ export default function SecuritySettingsPageClient() {
             <>
               <div className="buttonRow">
                 <input placeholder="Key label" value={apiKeyLabel} onChange={(event) => setApiKeyLabel(event.target.value)} />
-                <button type="button" onClick={() => void createApiKey()} disabled={submitting || apiKeyLabel.trim().length < 2}>Create key</button>
+                <button type="button" onClick={() => void createApiKey()} disabled={commandsDisabled || apiKeyLabel.trim().length < 2}>Create key</button>
                 <button type="button" onClick={() => void loadApiKeys()} disabled={submitting}>Refresh</button>
               </div>
+              {secureSessionNotice}
               {revealedSecret ? <pre>{revealedSecret}</pre> : null}
+              {apiKeyStatus ? <p className="statusLine">{apiKeyStatus}</p> : null}
               <ul>{apiKeys.map((key) => (
                 <li key={key.id}>
                   <code>{key.secret_prefix}…</code> {key.label} {key.revoked_at ? '(revoked)' : ''}
-                  <button type="button" onClick={async () => { await fetch(`/api/workspace/api-keys/${key.id}/rotate`, { method: 'POST', headers: authHeaders() }); await loadApiKeys(); }}>Rotate</button>
-                  <button type="button" onClick={async () => { await fetch(`/api/workspace/api-keys/${key.id}`, { method: 'DELETE', headers: authHeaders() }); await loadApiKeys(); }}>Revoke</button>
+                  <button type="button" disabled={commandsDisabled} onClick={async () => { await fetch(`/api/workspace/api-keys/${key.id}/rotate`, { method: 'POST', headers: authHeaders() }); await loadApiKeys(); }}>Rotate</button>
+                  <button type="button" disabled={commandsDisabled} onClick={async () => { await fetch(`/api/workspace/api-keys/${key.id}`, { method: 'DELETE', headers: authHeaders() }); await loadApiKeys(); }}>Revoke</button>
                 </li>
               ))}</ul>
             </>
@@ -172,9 +282,10 @@ export default function SecuritySettingsPageClient() {
           <p className="muted">Status: {user?.mfa_enabled ? 'Enabled' : 'Disabled'}.</p>
           {!user?.mfa_enabled ? (
             <div className="buttonRow">
-              <button type="button" onClick={() => void startMfaEnrollment()} disabled={submitting}>Enroll MFA</button>
+              <button type="button" onClick={() => void startMfaEnrollment()} disabled={commandsDisabled}>Enroll MFA</button>
             </div>
           ) : null}
+          {secureSessionNotice}
           {mfaSetup ? (
             <div>
               <p className="muted">Scan this URI in your authenticator app:</p>
@@ -183,7 +294,7 @@ export default function SecuritySettingsPageClient() {
               <label className="label">Verification code</label>
               <input value={mfaCode} onChange={(event) => setMfaCode(event.target.value)} inputMode="numeric" />
               <div className="buttonRow">
-                <button type="button" onClick={() => void confirmMfa()} disabled={submitting || mfaCode.trim().length < 6}>Confirm MFA</button>
+                <button type="button" onClick={() => void confirmMfa()} disabled={commandsDisabled || mfaCode.trim().length < 6}>Confirm MFA</button>
               </div>
             </div>
           ) : null}
@@ -192,7 +303,7 @@ export default function SecuritySettingsPageClient() {
               <label className="label">Current TOTP code</label>
               <input value={disableCode} onChange={(event) => setDisableCode(event.target.value)} inputMode="numeric" />
               <div className="buttonRow">
-                <button type="button" onClick={() => void disableMfaFlow()} disabled={submitting || disableCode.trim().length < 6}>Disable MFA</button>
+                <button type="button" onClick={() => void disableMfaFlow()} disabled={commandsDisabled || disableCode.trim().length < 6}>Disable MFA</button>
               </div>
             </div>
           ) : null}
@@ -210,7 +321,8 @@ export default function SecuritySettingsPageClient() {
             </div>
           ) : null}
           {recoveryCodesAcknowledged ? <p className="statusLine">Recovery codes acknowledged and cleared from this screen.</p> : null}
-          {message ? <p className="statusLine">{message}</p> : null}
+          {mfaError ? <p className="statusLine" role="alert">{mfaError}</p> : null}
+          {mfaStatus ? <p className="statusLine">{mfaStatus}</p> : null}
         </article>
       </section>
 
@@ -238,11 +350,13 @@ export default function SecuritySettingsPageClient() {
         <article className="dataCard">
           <p className="muted">If credentials were rotated or a device was lost, sign out all active sessions for this account.</p>
           <div className="buttonRow">
-            <button type="button" onClick={() => void signOutAllSessions()} disabled={submitting}>
+            <button type="button" onClick={() => void signOutAllSessions()} disabled={commandsDisabled}>
               Sign out all sessions
             </button>
           </div>
-          {message ? <p className="statusLine">{message}</p> : null}
+          {secureSessionNotice}
+          {sessionError ? <p className="statusLine" role="alert">{sessionError}</p> : null}
+          {sessionStatus ? <p className="statusLine">{sessionStatus}</p> : null}
         </article>
       </section>
     </main>

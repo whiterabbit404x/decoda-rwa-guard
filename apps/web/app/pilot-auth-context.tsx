@@ -64,6 +64,11 @@ type PilotAuthContextValue = {
   runtimeConfigDiagnostic: string | null;
   runtimeConfigSource: RuntimeConfig['source'];
   isAuthenticated: boolean;
+  // True once an anti-CSRF token has been bootstrapped for this session. Mutation
+  // controls should stay disabled until this is true so a state-changing request is
+  // never sent without the X-CSRF-Token header the backend requires. The raw token is
+  // deliberately NOT exposed — only whether the secure session is ready.
+  csrfReady: boolean;
   mfaChallengeToken: string | null;
   signIn: (payload: { email: string; password: string }) => Promise<PilotUser>;
   completeMfaSignIn: (code: string) => Promise<PilotUser>;
@@ -602,6 +607,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     runtimeConfigDiagnostic: runtimeConfig.diagnostic,
     runtimeConfigSource: runtimeConfig.source,
     isAuthenticated: Boolean(user),
+    csrfReady: Boolean(csrfToken),
     mfaChallengeToken,
     signIn,
     completeMfaSignIn,
@@ -616,7 +622,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     selectWorkspace,
     authHeaders,
     setError,
-  }), [authHeaders, completeMfaSignIn, configLoading, confirmMfaEnrollment, createWorkspace, disableMfa, enrollMfa, error, fetchAndStoreCsrfToken, loading, mfaChallengeToken, refreshUser, runtimeConfig, selectWorkspace, signIn, signOut, signUp, user]);
+  }), [authHeaders, completeMfaSignIn, configLoading, confirmMfaEnrollment, createWorkspace, csrfToken, disableMfa, enrollMfa, error, fetchAndStoreCsrfToken, loading, mfaChallengeToken, refreshUser, runtimeConfig, selectWorkspace, signIn, signOut, signUp, user]);
 
   return <PilotAuthContext.Provider value={value}>{children}</PilotAuthContext.Provider>;
 }

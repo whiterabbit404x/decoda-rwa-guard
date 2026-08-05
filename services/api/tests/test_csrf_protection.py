@@ -184,3 +184,77 @@ def test_post_assets_with_uuid_csrf_fails_backend_validation(monkeypatch):
     )
     assert response.status_code == 403
     assert response.json()['code'] == 'CSRF_INVALID'
+
+
+# ---------------------------------------------------------------------------
+# Security Settings auth mutations enforce CSRF (Screen 8 MFA step-up + signout-all).
+#
+# These are the endpoints the Security Settings page drives (Enroll / Verify / Disable
+# MFA, Sign out all sessions). They must remain CSRF-protected: none is on the exempt
+# prefix list, so an authenticated POST without a valid HMAC X-CSRF-Token has to be
+# rejected. Regression guard against accidentally exempting the MFA/step-up flow.
+# ---------------------------------------------------------------------------
+
+# (path, json body). Body is irrelevant for the missing/mismatched-token cases because the
+# CSRF middleware runs before request-body validation, but confirm/disable expect a payload.
+_AUTH_MUTATION_ENDPOINTS = [
+    ('/auth/mfa/enroll', {}),
+    ('/auth/mfa/confirm', {'code': '123456'}),
+    ('/auth/mfa/disable', {'code': '123456'}),
+    ('/auth/signout-all', {}),
+]
+
+
+@pytest.mark.parametrize('path,body', _AUTH_MUTATION_ENDPOINTS)
+def test_auth_mutation_without_csrf_returns_403(monkeypatch, path, body):
+    monkeypatch.setenv('AUTH_TOKEN_SECRET', 'test-secret-for-csrf')
+    response = client.post(path, json=body, headers={'Authorization': 'Bearer fake-token'})
+    assert response.status_code == 403
+    assert response.json()['code'] == 'CSRF_INVALID'
+
+
+@pytest.mark.parametrize('path,body', _AUTH_MUTATION_ENDPOINTS)
+def test_auth_mutation_with_mismatched_csrf_returns_403(monkeypatch, path, body):
+    monkeypatch.setenv('AUTH_TOKEN_SECRET', 'test-secret-for-csrf')
+    # A UUID-shaped token (the shape the proxy USED to mint) is not a valid HMAC nonce.sig.
+    uuid_token = 'abc123def456789012345678901234ab'
+    response = client.post(
+        path,
+        json=body,
+        headers={'Authorization': 'Bearer fake-token', 'X-CSRF-Token': uuid_token},
+    )
+    assert response.status_code == 403
+    assert response.json()['code'] == 'CSRF_INVALID'
+
+
+@pytest.mark.parametrize('path,body', _AUTH_MUTATION_ENDPOINTS)
+def test_auth_mutation_with_valid_csrf_passes_csrf_gate(monkeypatch, path, body):
+    monkeypatch.setenv('AUTH_TOKEN_SECRET', 'test-secret-for-csrf')
+    # Neutralize rate limiting so confirm/disable reach the CSRF gate deterministically.
+    monkeypatch.setattr(api_main, 'enforce_auth_rate_limit', lambda req, action, identifier=None: None)
+    csrf = issue_csrf_token()
+    response = client.post(
+        path,
+        json=body,
+        headers={'Authorization': 'Bearer fake-token', 'X-CSRF-Token': csrf},
+    )
+    # The fake bearer token fails authentication downstream, but the request must clear the
+    # CSRF gate — i.e. it is never rejected specifically as CSRF_INVALID.
+    assert response.status_code != 403 or response.json().get('code') != 'CSRF_INVALID'
+
+
+def test_auth_mutation_accepts_token_minted_by_csrf_token_endpoint(monkeypatch):
+    """Production bootstrap path: a token minted by GET /auth/csrf-token — exactly what the
+    web proxy relays to the browser and then forwards back as X-CSRF-Token — clears the CSRF
+    gate on an authenticated mutation. This is the round trip that was failing when the auth
+    proxy dropped the header before reaching the backend."""
+    monkeypatch.setenv('AUTH_TOKEN_SECRET', 'test-secret-for-csrf')
+    monkeypatch.setattr(api_main, 'enforce_auth_rate_limit', lambda req, action, identifier=None: None)
+    minted = client.get('/auth/csrf-token')
+    assert minted.status_code == 200
+    token = minted.json()['csrf_token']
+    response = client.post(
+        '/auth/mfa/enroll',
+        headers={'Authorization': 'Bearer fake-token', 'X-CSRF-Token': token},
+    )
+    assert response.status_code != 403 or response.json().get('code') != 'CSRF_INVALID'
