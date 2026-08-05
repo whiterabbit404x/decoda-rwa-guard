@@ -72,8 +72,8 @@ type PilotAuthContextValue = {
   mfaChallengeToken: string | null;
   signIn: (payload: { email: string; password: string }) => Promise<PilotUser>;
   completeMfaSignIn: (code: string) => Promise<PilotUser>;
-  enrollMfa: () => Promise<{ otpauth_uri: string; secret: string | null }>;
-  confirmMfaEnrollment: (code: string) => Promise<{ recovery_codes: string[] }>;
+  enrollMfa: () => Promise<{ enrollment_id: string | null; otpauth_uri: string; secret: string | null; expires_at: string | null }>;
+  confirmMfaEnrollment: (code: string, enrollmentId?: string | null) => Promise<{ recovery_codes: string[] }>;
   disableMfa: (code: string) => Promise<void>;
   signUp: (payload: { email: string; password: string; full_name: string; workspace_name: string }) => Promise<{ user: PilotUser | null; verificationRequired: boolean }>;
   signOut: () => Promise<void>;
@@ -465,18 +465,25 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       method: 'POST',
       headers: authHeaders(),
     });
-    const data = await readApiResponse<{ otpauth_uri?: string; secret?: string | null; detail?: string }>(response);
+    const data = await readApiResponse<{ enrollment_id?: string | null; otpauth_uri?: string; secret?: string | null; expires_at?: string | null; detail?: string }>(response);
     if (!response.ok || !data.otpauth_uri) {
       throw new Error(data.detail ?? 'Unable to start MFA enrollment.');
     }
-    return { otpauth_uri: data.otpauth_uri, secret: data.secret ?? null };
+    return {
+      enrollment_id: data.enrollment_id ?? null,
+      otpauth_uri: data.otpauth_uri,
+      secret: data.secret ?? null,
+      expires_at: data.expires_at ?? null,
+    };
   }, [authHeaders]);
 
-  const confirmMfaEnrollment = useCallback(async (code: string) => {
+  const confirmMfaEnrollment = useCallback(async (code: string, enrollmentId?: string | null) => {
+    // Bind confirmation to the specific pending enrollment so a stale/replaced
+    // enrollment can never be activated with a mismatched code.
     const response = await fetch('/api/auth/mfa/confirm', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ code, enrollment_id: enrollmentId ?? undefined }),
     });
     const data = await readApiResponse<{ mfa_enabled?: boolean; recovery_codes?: string[]; detail?: string }>(response);
     if (!response.ok || !data.mfa_enabled) {
