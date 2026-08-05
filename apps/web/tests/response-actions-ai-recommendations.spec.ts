@@ -40,21 +40,24 @@ test('approval-pending AI actions are routed to Recommended Actions', () => {
   expect(src).toContain('[...legacyActions, ...pendingAiReviews].map');
 });
 
-// 4. Source shows AI Investigation (table + truthful evidence pill, never simulator/live).
+// 4. Source shows AI investigation (truthful evidence pill, never simulator/live).
 test('AI review rows show AI Investigation source and an AI evidence pill', () => {
   const src = pageSource();
-  expect(src).toContain("'AI Investigation'");
+  // The AI recommendation review row carries an AI-investigation evidence provenance.
+  expect(src).toContain("evidenceSourceLabel: 'AI investigation'");
   expect(src).toContain("raw === 'ai_investigation'");
   expect(src).toContain("{ label: 'AI investigation', variant: 'info' }");
+  // The row is tagged as an AI recommendation in the Action column.
+  expect(src).toContain('<StatusPill label="AI recommendation" variant="info" />');
 });
 
-// 5. Accepted record shows Executed: No, and is normalized as not executed.
+// 5. An AI review is a human-review record, not an execution: its Outcome is
+//    recommendation-specific ("Recommendation accepted/rejected"), and the detail panel
+//    shows a "Not executed" badge.
 test('AI review records are shown as not executed', () => {
   const src = pageSource();
-  // Executed column renders "No" for AI review rows.
-  expect(src).toContain('<StatusPill label="No" variant="neutral" />');
-  // Normalization hard-codes executed=false for review records.
-  expect(src).toContain('executed: false');
+  // The Outcome for a review row is recommendation-specific, never an execution result.
+  expect(src).toContain("historyOutcome({ recordType: 'ai_recommendation_review', decision })");
   // A "Not executed" badge is shown in the detail panel.
   expect(src).toContain('Not executed');
 });
@@ -87,13 +90,14 @@ test('incident_id filter is forwarded to the response actions API', () => {
   expect(src).toContain("actionsQsParams.set('incident_id', incidentIdFilter)");
 });
 
-// 9 & 10. View Incident / View Evidence links resolve to the linked incident.
+// 9 & 10. View Incident / View Evidence links resolve to the linked incident, via the
+//         canonical route fields the backend DTO supplies (never inline template literals).
 test('AI review history rows link to the incident and its evidence', () => {
   const src = pageSource();
   expect(src).toContain('View Incident');
   expect(src).toContain('View Evidence');
-  expect(src).toContain('href={`/incidents/${row.linkedIncident}`}');
-  expect(src).toContain('href={`/evidence?incident_id=${row.linkedIncident}`}');
+  expect(src).toContain('href={row.incidentRoute}');
+  expect(src).toContain('href={row.evidenceRoute}');
 });
 
 // 11. Empty-state blocker only appears when there are truly zero matching records

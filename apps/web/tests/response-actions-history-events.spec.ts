@@ -143,9 +143,8 @@ test('page assembles history newest-first and keeps review/approval domains sepa
   const src = pageSource();
   // Newest-first across both event streams.
   expect(src).toContain('.sort(compareHistoryRecency)');
-  // Approval-domain audit events are rendered richly via the shared helpers.
-  expect(src).toContain('isApprovalHistoryEvent(input)');
-  expect(src).toContain('approvalHistoryPresentation(input)');
+  // Rows are built from the canonical backend DTO (no React reconstruction).
+  expect(src).toContain('normalizeHistoryEventDto');
   // The review row's decision comes from review_state — NOT approval_status.
   expect(src).toContain("String(input?.review_state || input?.decision || '')");
   expect(src).not.toContain("approvalStatus === 'approved' || approvalStatus === 'rejected'");
@@ -153,14 +152,24 @@ test('page assembles history newest-first and keeps review/approval domains sepa
   expect(src).toContain("row.decision === 'accepted' || row.decision === 'rejected'");
 });
 
-// 9. The Approve pill exists for a successful response-action approval event.
+// 9. A successful approval renders its canonical decision pill + lifecycle transition +
+//    quorum progress, all from the canonical DTO fields (never a raw enum/UUID).
 test('a successful approval renders an Approved decision pill', () => {
   const src = pageSource();
-  expect(src).toContain('<StatusPill label="Approved" variant="success" />');
+  // The decision pill is driven by the canonical decision label from the DTO.
+  expect(src).toContain('label={row.decisionLabel}');
   // Previous -> new lifecycle and quorum progress are rendered for approval events.
-  expect(src).toContain('row.previousLifecycle');
-  expect(src).toContain('row.newLifecycle');
-  expect(src).toContain('row.progressLabel');
+  expect(src).toContain('row.previousStateLabel');
+  expect(src).toContain('row.newStateLabel');
+  expect(src).toContain('row.approvalProgressLabel');
+  // The event LABEL and the action TITLE are rendered as SEPARATE columns.
+  expect(src).toContain('{row.eventLabel}');
+  expect(src).toContain("{row.actionTitle ?? '—'}");
+  // The actor shows the account identity; the UUID is only a technical tooltip.
+  expect(src).toContain('{row.actorDisplay}');
+  expect(src).toContain('title={row.actorId ?? undefined}');
+  // The Outcome column replaces the meaningless Executed dash.
+  expect(src).toContain('{row.outcome}');
 });
 
 // 10. The "Requires Approval" filter is applied ONLY to Recommended Actions and never
