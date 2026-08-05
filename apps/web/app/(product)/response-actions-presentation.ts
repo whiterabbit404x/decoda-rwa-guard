@@ -355,3 +355,144 @@ export function completeMfaHref(params: {
   const returnTo = responseActionReturnHref({ ...params, tab: 'recommended' });
   return `/settings/security?return_to=${encodeURIComponent(returnTo)}`;
 }
+
+// ── Action History AUDIT event presentation ───────────────────────────────────
+// The Action History tab renders an immutable, newest-first stream of AUDIT events.
+// Two domains produce rows that must NEVER be conflated:
+//
+//   • recommendation_reviewed  → Type "AI Recommendation Review", Decision Accepted/
+//     Rejected, dated at the REVIEW time (ai_recommendations.review_state/reviewed_at).
+//   • response_action_approved → Type "Action Approval", Decision Approved, dated at
+//     the APPROVAL time (the response_action.approved action-history event).
+//
+// The deployed bug rendered the response-action APPROVAL as if it were the AI
+// recommendation REVIEW (reusing the stale review timestamp and the "Accepted"
+// decision), so no clearly-identifiable "Response Action Approved" event appeared.
+// These pure helpers classify an audit-history row and map it to a truthful,
+// self-describing Action History entry so the two events stay distinct and ordered
+// newest-first — even for a LEGACY sparse row that predates the enriched details.
+
+export type ActionHistoryEventKind =
+  | 'response_action_approved'
+  | 'response_action_rejected'
+  | 'response_action_approval_recorded'
+  | 'response_action_approval_blocked'
+  | 'other';
+
+// Canonical event_type (details_json) — the backend authority — for each approval
+// event. This is the single source the classifier trusts first.
+const APPROVAL_EVENT_LABELS: Record<Exclude<ActionHistoryEventKind, 'other'>, string> = {
+  response_action_approved: 'Response Action Approved',
+  response_action_rejected: 'Response Action Rejected',
+  response_action_approval_recorded: 'Approval Recorded',
+  response_action_approval_blocked: 'Approval Attempt Blocked',
+};
+
+// Legacy fallback: map the raw action_type enum onto the canonical kind, for rows
+// persisted before the enriched details carried an explicit event_type.
+const APPROVAL_ACTION_TYPES: Record<string, Exclude<ActionHistoryEventKind, 'other'>> = {
+  'response_action.approved': 'response_action_approved',
+  'response_action.rejected': 'response_action_rejected',
+  'response_action.approval_recorded': 'response_action_approval_recorded',
+  'response_action.approval_attempt_blocked': 'response_action_approval_blocked',
+};
+
+type RawHistoryRow = {
+  action_type?: unknown;
+  details_json?: Record<string, unknown> | null;
+};
+
+/** Classify an audit-history row. Trusts the backend canonical `event_type` first,
+ *  then the raw `action_type` enum (legacy rows), else `other`. */
+export function actionHistoryEventKind(row: RawHistoryRow): ActionHistoryEventKind {
+  const details = (row?.details_json && typeof row.details_json === 'object' ? row.details_json : {}) as Record<string, unknown>;
+  const eventType = String(details.event_type ?? '').trim().toLowerCase();
+  if (eventType && eventType in APPROVAL_EVENT_LABELS) return eventType as ActionHistoryEventKind;
+  const at = String(row?.action_type ?? '').trim().toLowerCase();
+  return APPROVAL_ACTION_TYPES[at] ?? 'other';
+}
+
+/** Whether a row is a response-action APPROVAL-domain audit event (approved / rejected /
+ *  recorded / blocked) — i.e. it must render as an "Action Approval", never as a review. */
+export function isApprovalHistoryEvent(row: RawHistoryRow): boolean {
+  return actionHistoryEventKind(row) !== 'other';
+}
+
+export type ApprovalHistoryPresentation = {
+  kind: ActionHistoryEventKind;
+  label: string; // "Response Action Approved"
+  typeLabel: string; // "Action Approval"
+  actionTitle: string | null; // human action title, if the backend stored one
+  result: string; // "Success" / "MFA Required"
+  decision: string | null; // "approved" / "rejected" / null
+  decisionLabel: string | null; // "Approved" / "Rejected"
+  previousLifecycle: string | null; // "Awaiting Approval"
+  newLifecycle: string | null; // "Approved"
+  progressLabel: string | null; // "1 of 1"
+  actor: string | null;
+  note: string | null;
+};
+
+const RESULT_FALLBACKS: Record<Exclude<ActionHistoryEventKind, 'other'>, string> = {
+  response_action_approved: 'Success',
+  response_action_rejected: 'Success',
+  response_action_approval_recorded: 'Recorded',
+  response_action_approval_blocked: 'Blocked',
+};
+
+function titleCase(raw: string): string {
+  return raw
+    .split(/[_\s]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
+/**
+ * Human, domain-truthful presentation for an approval-domain audit event. Reads the
+ * enriched `details_json` the backend persists; degrades gracefully for a legacy
+ * sparse row (only the canonical label + type are guaranteed). NEVER returns an AI
+ * recommendation-review shape — this row is always an "Action Approval".
+ */
+export function approvalHistoryPresentation(row: RawHistoryRow): ApprovalHistoryPresentation {
+  const kind = actionHistoryEventKind(row);
+  const details = (row?.details_json && typeof row.details_json === 'object' ? row.details_json : {}) as Record<string, unknown>;
+  const str = (v: unknown): string | null => {
+    const s = String(v ?? '').trim();
+    return s ? s : null;
+  };
+  const resolvedKind: Exclude<ActionHistoryEventKind, 'other'> =
+    kind === 'other' ? 'response_action_approved' : kind;
+  const label = str(details.display_label) || APPROVAL_EVENT_LABELS[resolvedKind];
+  const decision = str(details.decision);
+  const decisionLabel = decision ? titleCase(decision) : null;
+  return {
+    kind,
+    label,
+    typeLabel: str(details.type_label) || 'Action Approval',
+    actionTitle: str(details.action_title),
+    result: str(details.result_summary) || RESULT_FALLBACKS[resolvedKind],
+    decision,
+    decisionLabel,
+    previousLifecycle: str(details.previous_lifecycle),
+    newLifecycle: str(details.new_lifecycle),
+    progressLabel: str(details.approval_progress_label),
+    actor: str(details.actor),
+    note: str(details.note),
+  };
+}
+
+/** Newest-first comparator for Action History rows (by event time). Rows without a
+ *  parseable time sort LAST, deterministically, so the newest real event is always on
+ *  top — the response-action approval (its own timestamp) never sinks below an older
+ *  recommendation review. */
+export function compareHistoryRecency(
+  a: { time?: string | null },
+  b: { time?: string | null },
+): number {
+  const ta = a?.time ? Date.parse(String(a.time)) : NaN;
+  const tb = b?.time ? Date.parse(String(b.time)) : NaN;
+  const va = Number.isNaN(ta) ? -Infinity : ta;
+  const vb = Number.isNaN(tb) ? -Infinity : tb;
+  return vb - va;
+}
