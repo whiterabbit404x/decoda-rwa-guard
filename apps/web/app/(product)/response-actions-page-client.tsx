@@ -17,11 +17,14 @@ import { resolveApiUrl } from '../dashboard-data';
 import { usePilotAuth } from '../pilot-auth-context';
 import {
   approvalErrorRequiresStepUp,
+  approvalHistoryPresentation,
   approvalResultMessage,
   canonicalLifecycleState,
+  compareHistoryRecency,
   completeMfaHref,
   deriveRowApproval,
   isApprovalDecided,
+  isApprovalHistoryEvent,
   isSessionVerificationRequired,
   lifecycleLabelFor,
   normalizeApprovalGate,
@@ -180,6 +183,14 @@ type HistoryRow = {
   evidenceRefsCount?: number;
   provider?: string | null;
   model?: string | null;
+  // Response-action APPROVAL-domain audit event extensions (Action Approval rows).
+  // Present only for approved/rejected/recorded/blocked events; a review row leaves
+  // these undefined so the two domains never share a shape.
+  approvalEvent?: boolean;
+  decisionLabel?: string | null;
+  previousLifecycle?: string | null;
+  newLifecycle?: string | null;
+  progressLabel?: string | null;
 };
 
 const RECOMMENDED_HEADERS = [
@@ -493,14 +504,42 @@ function normalizeHistoryRow(input: any): HistoryRow {
   ).toLowerCase();
 
   const simulated = source === 'fallback' || source === 'simulator' || source === 'demo';
+  const time = input?.timestamp ?? input?.created_at ?? null;
+  const actorLabel = String(input?.details_json?.actor || input?.actor_id || input?.actor_type || input?.actor || 'system');
+
+  // Response-action APPROVAL-domain audit event (approved / rejected / recorded /
+  // blocked). Rendered as a clearly-identifiable "Action Approval" row from the
+  // backend's self-describing details — NEVER as an AI recommendation review — with
+  // the real event timestamp, the decision, the previous -> new lifecycle transition,
+  // and the quorum progress. This is the row that was missing/mislabelled before.
+  if (isApprovalHistoryEvent(input)) {
+    const p = approvalHistoryPresentation(input);
+    return {
+      id: String(input?.id || '-'),
+      action: p.label,
+      type: p.typeLabel,
+      result: p.result,
+      actorSystem: p.actor || actorLabel,
+      time,
+      evidenceSource: String(input?.details_json?.source || input?.evidence_source || input?.source || 'runtime'),
+      simulated,
+      decision: p.decision,
+      decisionLabel: p.decisionLabel,
+      previousLifecycle: p.previousLifecycle,
+      newLifecycle: p.newLifecycle,
+      progressLabel: p.progressLabel,
+      approvalEvent: true,
+      linkedIncident: input?.details_json?.incident_id ? String(input.details_json.incident_id) : null,
+    };
+  }
 
   return {
     id: String(input?.id || '-'),
     action: String(input?.action_type || input?.action || '-'),
     type: String(input?.object_type || input?.type || '-'),
     result: String(input?.details_json?.result_summary || input?.result || input?.status || 'recorded'),
-    actorSystem: String(input?.actor_type || input?.actor || 'system'),
-    time: input?.created_at ?? input?.timestamp ?? null,
+    actorSystem: actorLabel,
+    time,
     evidenceSource: String(input?.details_json?.source || input?.evidence_source || input?.source || 'runtime'),
     simulated,
   };
@@ -510,18 +549,19 @@ function normalizeHistoryRow(input: any): HistoryRow {
 // not executed actions. They render in Action History with a truthful AI source, the
 // decision, executed=No, the reviewer, and links to the incident and its evidence.
 function normalizeAiReviewHistoryRow(input: any): HistoryRow {
-  // The APPROVAL decision (response-action approval domain) is what moved this row
-  // into history; prefer it for the result. review_state is a separate record.
-  const approvalStatus = String(input?.approval_status || input?.lifecycle?.approval_status || '').toLowerCase();
+  // This is the RECOMMENDATION REVIEW event, kept strictly separate from the
+  // response-action APPROVAL event (an audit-history row rendered by
+  // normalizeHistoryRow). Its decision + timestamp come from the REVIEW domain
+  // (review_state / reviewed_at) — NEVER from approval_status — so an approval is
+  // never rendered here as an "Accepted" review, and the two events stay distinct.
+  const reviewState = String(input?.review_state || input?.decision || '').toLowerCase();
   const decision =
-    approvalStatus === 'approved' || approvalStatus === 'rejected'
-      ? approvalStatus.replace('approved', 'accepted')
-      : String(input?.decision || input?.review_state || '').toLowerCase();
+    reviewState === 'accepted' ? 'accepted' : reviewState === 'rejected' ? 'rejected' : null;
   return {
     id: String(input?.recommendation_id || input?.id || '-'),
     action: String(input?.title || input?.action_type || 'AI recommendation'),
     type: 'AI recommendation review',
-    result: decision === 'accepted' ? 'Approved' : decision === 'rejected' ? 'Rejected' : 'Reviewed',
+    result: decision === 'accepted' ? 'Accepted' : decision === 'rejected' ? 'Rejected' : 'Reviewed',
     actorSystem: String(input?.reviewer_email || input?.reviewer_id || 'Reviewer'),
     time: input?.reviewed_at ?? input?.created_at ?? null,
     // AI investigation evidence — never simulator, never live-chain.
@@ -683,8 +723,16 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
               String(item?.action_type || '').includes('response'),
           )
           .map(normalizeHistoryRow);
-        // Decided AI reviews first (most relevant), then legacy audit-derived history.
-        const history = [...decidedAiReviews.map(normalizeAiReviewHistoryRow), ...auditHistory];
+        // Recommendation REVIEW rows come from the decided AI actions, but ONLY when a
+        // genuine human review actually happened (review_state accepted/rejected). An
+        // approved-but-unreviewed action is represented solely by its response-action
+        // approval audit event (above) — never as a fabricated "review" row.
+        const reviewHistory = decidedAiReviews.map(normalizeAiReviewHistoryRow).filter((row: HistoryRow) => row.decision === 'accepted' || row.decision === 'rejected');
+        // ONE newest-first stream across BOTH domains — response-action APPROVAL audit
+        // events and recommendation REVIEW records — ordered by the ACTUAL event time.
+        // A just-completed approval (its own timestamp) therefore sorts ABOVE an older
+        // recommendation review, so the newest event is always visible first.
+        const history = [...reviewHistory, ...auditHistory].sort(compareHistoryRecency);
 
         if (!cancelled) {
           setRecommendedRows(recommended);
@@ -1104,11 +1152,21 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
                         <td style={{ fontFamily: 'monospace', fontSize: '0.75rem', whiteSpace: 'nowrap', maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis' }} title={row.id}>
                           {row.id}
                         </td>
-                        <td style={{ maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <td style={{ maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {row.action}
                           {isAiReview ? (
                             <div style={{ marginTop: '0.2rem' }}>
                               <StatusPill label="AI recommendation" variant="info" />
+                            </div>
+                          ) : null}
+                          {row.approvalEvent && (row.previousLifecycle || row.progressLabel) ? (
+                            <div className="muted" style={{ marginTop: '0.2rem', fontSize: '0.68rem', whiteSpace: 'normal' }}>
+                              {row.previousLifecycle && row.newLifecycle ? (
+                                <span>{row.previousLifecycle} → {row.newLifecycle}</span>
+                              ) : null}
+                              {row.progressLabel ? (
+                                <span>{row.previousLifecycle && row.newLifecycle ? ' · ' : ''}{row.progressLabel} approvals</span>
+                              ) : null}
                             </div>
                           ) : null}
                         </td>
@@ -1122,7 +1180,9 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
                         <td style={{ fontSize: '0.78rem', whiteSpace: 'nowrap' }}>{fmt(row.time)}</td>
                         <td><StatusPill label={evSrc.label} variant={evSrc.variant} /></td>
                         <td>
-                          {row.decision === 'accepted' ? (
+                          {row.decision === 'approved' ? (
+                            <StatusPill label="Approved" variant="success" />
+                          ) : row.decision === 'accepted' ? (
                             <StatusPill label="Accepted" variant="success" />
                           ) : row.decision === 'rejected' ? (
                             <StatusPill label="Rejected" variant="neutral" />
@@ -1138,7 +1198,7 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
                           )}
                         </td>
                         <td style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}>
-                          {isAiReview && row.linkedIncident ? (
+                          {(isAiReview || row.approvalEvent) && row.linkedIncident ? (
                             <span style={{ display: 'inline-flex', gap: '0.5rem' }}>
                               <Link href={`/incidents/${row.linkedIncident}`} prefetch={false} style={{ fontSize: '0.75rem' }}>
                                 View Incident

@@ -18366,6 +18366,77 @@ def _required_approval_quorum(subject_domain: str, subject: dict[str, Any]) -> i
     return quorum if quorum >= 1 else 1
 
 
+# Human title for a response-action APPROVAL history/timeline event. Prefers the
+# canonical runbook name for an AI-recommendation-backed action; otherwise humanizes
+# the action_type so a raw snake_case enum never reaches the audit trail.
+def _response_action_title(action_type: str | None, runbook_id: str | None = None) -> str:
+    title = _recommendation_title(action_type, runbook_id)
+    return title if title and title != 'AI recommendation' else 'Response action'
+
+
+def _response_action_approval_event_details(
+    *,
+    event_type: str,
+    display_label: str,
+    action_id: str,
+    action_title: str,
+    incident_id: str | None,
+    actor: str | None,
+    decision: str,
+    previous_lifecycle: str,
+    new_lifecycle: str,
+    approved_count: int,
+    required_quorum: int,
+    policy: str | None,
+    result_summary: str,
+    subject_domain: str,
+    action_version: int,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Build the RICH, self-describing details payload for a response-action approval
+    (or rejection / blocked attempt) ``action_history`` + incident-timeline event.
+
+    This is what makes the Action History entry a clearly-identifiable AUDIT record —
+    distinct from an AI recommendation REVIEW — without the frontend having to re-derive
+    anything: it carries the canonical event type, a human display label + type label,
+    the decision, the previous → new lifecycle transition, and the approval quorum
+    progress. The event ``timestamp`` itself is written as NOW() by ``write_action_history``,
+    so the real approval time is always used.
+    """
+    quorum = max(0, int(required_quorum or 0))
+    approved = max(0, int(approved_count or 0))
+    progress_label = f'{approved} of {quorum}' if quorum > 0 else None
+    return {
+        'event_type': event_type,
+        'display_label': display_label,
+        'type_label': 'Action Approval',
+        'action_id': str(action_id),
+        'action_title': action_title,
+        'incident_id': str(incident_id) if incident_id else None,
+        'actor': str(actor) if actor else None,
+        'decision': decision,
+        'previous_lifecycle': previous_lifecycle,
+        'new_lifecycle': new_lifecycle,
+        'approved_count': approved,
+        'required_quorum': quorum,
+        'approval_progress_label': progress_label,
+        'policy': policy,
+        'result_summary': result_summary,
+        'note': note,
+        # Continuity fields kept for existing consumers / cross-checks.
+        'subject_domain': subject_domain,
+        'action_version': int(action_version),
+    }
+
+
+def _action_approval_actor(user: dict[str, Any]) -> str | None:
+    """Truthful actor label for an approval event — the reviewer's email when known,
+    otherwise the user id. Never a fabricated display name."""
+    if not isinstance(user, dict):
+        return None
+    return str(user.get('email') or user.get('id') or '') or None
+
+
 def _action_approval_summary(
     connection: Any,
     *,
@@ -18563,20 +18634,40 @@ def _approve_ai_recommendation_backed_action(
         required_quorum=required_quorum, current_user_id=str(user['id']),
     )
     incident_id = str(subject.get('incident_id') or '')
+    quorum_reached = approval['approved_count'] >= approval['required_quorum']
+    action_title = _response_action_title(subject.get('action_type'), subject.get('runbook_id'))
+    # Quorum reached => the action moves to Approved; otherwise it stays Awaiting
+    # Approval and this is only a recorded partial approval. Either way the event is a
+    # RESPONSE-ACTION APPROVAL audit record, never a recommendation review.
+    approval_details = _response_action_approval_event_details(
+        event_type='response_action_approved' if quorum_reached else 'response_action_approval_recorded',
+        display_label='Response Action Approved' if quorum_reached else 'Approval Recorded (Quorum Pending)',
+        action_id=recommendation_id,
+        action_title=action_title,
+        incident_id=incident_id or None,
+        actor=_action_approval_actor(user),
+        decision='approved',
+        previous_lifecycle='Awaiting Approval',
+        new_lifecycle='Approved' if quorum_reached else 'Awaiting Approval',
+        approved_count=approval['approved_count'],
+        required_quorum=approval['required_quorum'],
+        policy='owner_admin_single_approver',
+        result_summary='Success',
+        subject_domain='ai_recommendation',
+        action_version=action_version,
+    )
     write_action_history(
         connection, workspace_id=workspace_id, actor_type='user', actor_id=user['id'],
         object_type='response_action', object_id=recommendation_id,
-        action_type='response_action.approved',
-        details={'subject_domain': 'ai_recommendation', 'action_version': action_version,
-                 'approved_count': approval['approved_count'], 'required_quorum': approval['required_quorum']},
+        action_type='response_action.approved' if quorum_reached else 'response_action.approval_recorded',
+        details=approval_details,
     )
     append_incident_timeline_event(
         connection, workspace_id=workspace_id, incident_id=incident_id,
-        event_type='response_action.approved', message='Response action approved.',
+        event_type='response_action.approved' if quorum_reached else 'response_action.approval_recorded',
+        message='Response action approved.' if quorum_reached else 'Response action approval recorded (quorum still pending).',
         actor_user_id=user['id'],
-        metadata={'response_action_id': recommendation_id, 'subject_domain': 'ai_recommendation',
-                  'action_type': subject.get('action_type'),
-                  'approved_count': approval['approved_count'], 'required_quorum': approval['required_quorum']},
+        metadata={'response_action_id': recommendation_id, 'action_type': subject.get('action_type'), **approval_details},
     )
     log_audit(connection, action='response.action.approve', entity_type='ai_recommendation',
               entity_id=recommendation_id, request=request, user_id=user['id'],
@@ -18655,18 +18746,37 @@ def _reject_ai_recommendation_backed_action(
         required_quorum=required_quorum, current_user_id=str(user['id']),
     )
     incident_id = str(subject.get('incident_id') or '')
+    reject_details = _response_action_approval_event_details(
+        event_type='response_action_rejected',
+        display_label='Response Action Rejected',
+        action_id=recommendation_id,
+        action_title=_response_action_title(subject.get('action_type'), subject.get('runbook_id')),
+        incident_id=incident_id or None,
+        actor=_action_approval_actor(user),
+        decision='rejected',
+        previous_lifecycle='Awaiting Approval',
+        new_lifecycle='Rejected',
+        approved_count=approval['approved_count'],
+        required_quorum=approval['required_quorum'],
+        policy='owner_admin_single_approver',
+        result_summary='Success',
+        subject_domain='ai_recommendation',
+        action_version=action_version,
+        note=reason,
+    )
+    # Preserve the legacy `reason` key alongside the canonical `note` for existing consumers.
+    reject_details['reason'] = reason
     write_action_history(
         connection, workspace_id=workspace_id, actor_type='user', actor_id=user['id'],
         object_type='response_action', object_id=recommendation_id,
         action_type='response_action.rejected',
-        details={'subject_domain': 'ai_recommendation', 'action_version': action_version, 'reason': reason},
+        details=reject_details,
     )
     append_incident_timeline_event(
         connection, workspace_id=workspace_id, incident_id=incident_id,
         event_type='response_action.rejected', message='Response action rejected.',
         actor_user_id=user['id'],
-        metadata={'response_action_id': recommendation_id, 'subject_domain': 'ai_recommendation',
-                  'action_type': subject.get('action_type'), 'reason': reason},
+        metadata={'response_action_id': recommendation_id, 'action_type': subject.get('action_type'), **reject_details},
     )
     log_audit(connection, action='response.action.reject', entity_type='ai_recommendation',
               entity_id=recommendation_id, request=request, user_id=user['id'],
@@ -18764,12 +18874,28 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
         # version, the action stays Awaiting Approval and its canonical status is not
         # advanced. (Single-approver policy today, so one decision reaches quorum.)
         if approval['approved_count'] < approval['required_quorum']:
+            recorded_details = _response_action_approval_event_details(
+                event_type='response_action_approval_recorded',
+                display_label='Approval Recorded (Quorum Pending)',
+                action_id=action_id,
+                action_title=_response_action_title(row.get('action_type')),
+                incident_id=str(row.get('incident_id') or '') or None,
+                actor=_action_approval_actor(user),
+                decision='approved',
+                previous_lifecycle='Awaiting Approval',
+                new_lifecycle='Awaiting Approval',
+                approved_count=approval['approved_count'],
+                required_quorum=approval['required_quorum'],
+                policy='owner_admin_single_approver',
+                result_summary='Success',
+                subject_domain='response_action',
+                action_version=action_version,
+            )
             write_action_history(
                 connection, workspace_id=workspace_context['workspace_id'], actor_type='user',
                 actor_id=user['id'], object_type='response_action', object_id=action_id,
                 action_type='response_action.approval_recorded',
-                details={'action_version': action_version, 'approved_count': approval['approved_count'],
-                         'required_quorum': approval['required_quorum']},
+                details=recorded_details,
             )
             append_incident_timeline_event(
                 connection, workspace_id=workspace_context['workspace_id'],
@@ -18777,8 +18903,7 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
                 event_type='response_action.approval_recorded',
                 message='Response action approval recorded (quorum still pending).',
                 actor_user_id=user['id'],
-                metadata={'response_action_id': action_id, 'action_type': row.get('action_type'),
-                          'approved_count': approval['approved_count'], 'required_quorum': approval['required_quorum']},
+                metadata={'response_action_id': action_id, 'action_type': row.get('action_type'), **recorded_details},
             )
             log_audit(connection, action='enforcement.action.approve', entity_type='enforcement_action',
                       entity_id=action_id, request=request, user_id=user['id'],
@@ -18817,6 +18942,23 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
             'UPDATE response_actions SET status = %s, approved_by_user_id = %s, approved_at = NOW(), execution_metadata = execution_metadata || %s::jsonb, execution_artifacts = %s::jsonb, error_code = NULL, error_reason = NULL, result_status = %s WHERE id = %s',
             ('pending', user['id'], _json_dumps({'approved_at': approved_at, 'approved_by_user_id': user['id'], 'approval_provider_id': approval_audit.get('provider_id')}), _json_dumps(artifacts), 'pending', action_id),
         )
+        approved_details = _response_action_approval_event_details(
+            event_type='response_action_approved',
+            display_label='Response Action Approved',
+            action_id=action_id,
+            action_title=_response_action_title(row.get('action_type')),
+            incident_id=str(row.get('incident_id') or '') or None,
+            actor=_action_approval_actor(user),
+            decision='approved',
+            previous_lifecycle='Awaiting Approval',
+            new_lifecycle='Approved',
+            approved_count=approval['approved_count'],
+            required_quorum=approval['required_quorum'],
+            policy='owner_admin_single_approver',
+            result_summary='Success',
+            subject_domain='response_action',
+            action_version=action_version,
+        )
         write_action_history(
             connection,
             workspace_id=workspace_context['workspace_id'],
@@ -18825,7 +18967,7 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
             object_type='response_action',
             object_id=action_id,
             action_type='response_action.approved',
-            details={},
+            details=approved_details,
         )
         append_incident_timeline_event(
             connection,
@@ -18836,9 +18978,9 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
             actor_user_id=user['id'],
             metadata={
                 'response_action_id': action_id,
-                'action_type': row.get('action_type'),
                 'mode': row.get('mode'),
                 'alert_id': row.get('alert_id'),
+                **approved_details,
             },
         )
         log_audit(connection, action='enforcement.action.approve', entity_type='enforcement_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
@@ -18955,6 +19097,26 @@ def reject_enforcement_action(action_id: str, payload: dict[str, Any], request: 
             'UPDATE response_actions SET status = %s, execution_metadata = execution_metadata || %s::jsonb, execution_artifacts = %s::jsonb, result_status = %s WHERE id = %s',
             ('canceled', _json_dumps({'rejected_at': rejected_at, 'rejected_by_user_id': str(user['id']), 'rejection_reason': reason}), _json_dumps(artifacts), 'canceled', action_id),
         )
+        policy_reject_details = _response_action_approval_event_details(
+            event_type='response_action_rejected',
+            display_label='Response Action Rejected',
+            action_id=action_id,
+            action_title=_response_action_title(row.get('action_type')),
+            incident_id=str(row.get('incident_id') or '') or None,
+            actor=_action_approval_actor(user),
+            decision='rejected',
+            previous_lifecycle='Awaiting Approval',
+            new_lifecycle='Rejected',
+            approved_count=0,
+            required_quorum=_required_approval_quorum('response_action', _reject_subject),
+            policy='owner_admin_single_approver',
+            result_summary='Success',
+            subject_domain='response_action',
+            action_version=_reject_version,
+            note=reason,
+        )
+        # Preserve the legacy `reason` key alongside the canonical `note`.
+        policy_reject_details['reason'] = reason
         write_action_history(
             connection,
             workspace_id=workspace_context['workspace_id'],
@@ -18963,7 +19125,7 @@ def reject_enforcement_action(action_id: str, payload: dict[str, Any], request: 
             object_type='response_action',
             object_id=action_id,
             action_type='response_action.rejected',
-            details={'reason': reason},
+            details=policy_reject_details,
         )
         append_incident_timeline_event(
             connection,
@@ -18972,7 +19134,7 @@ def reject_enforcement_action(action_id: str, payload: dict[str, Any], request: 
             event_type='response_action.rejected',
             message='Response action rejected.',
             actor_user_id=user['id'],
-            metadata={'response_action_id': action_id, 'action_type': row.get('action_type'), 'reason': reason},
+            metadata={'response_action_id': action_id, 'action_type': row.get('action_type'), **policy_reject_details},
         )
         log_audit(connection, action='enforcement.action.reject', entity_type='enforcement_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'reason': reason})
         connection.commit()
@@ -21308,13 +21470,32 @@ def _require_action_approval_session_mfa(
     verb = 'rejecting' if operation == 'reject' else 'approving'
     message = f'Complete MFA in this session before {verb} this {security["approval_security_noun"]}.'
     try:
+        blocked_details = _response_action_approval_event_details(
+            event_type='response_action_approval_blocked',
+            display_label='Approval Attempt Blocked',
+            action_id=subject_id,
+            action_title=_response_action_title(action_type),
+            incident_id=incident_id,
+            actor=_action_approval_actor(user),
+            decision='',
+            previous_lifecycle='Awaiting Approval',
+            new_lifecycle='Awaiting Approval',
+            approved_count=0,
+            required_quorum=1,
+            policy='owner_admin_single_approver',
+            result_summary='MFA Required',
+            subject_domain=subject_domain,
+            action_version=action_version,
+        )
+        # Preserve the legacy keys read by existing consumers/tests.
+        blocked_details['operation'] = operation
+        blocked_details['result'] = 'mfa_required'
+        blocked_details['approval_security_classification'] = security['approval_security_classification']
         write_action_history(
             connection, workspace_id=workspace_context['workspace_id'], actor_type='user',
             actor_id=user.get('id'), object_type='response_action', object_id=subject_id,
             action_type='response_action.approval_attempt_blocked',
-            details={'operation': operation, 'result': 'mfa_required', 'subject_domain': subject_domain,
-                     'action_version': action_version,
-                     'approval_security_classification': security['approval_security_classification']},
+            details=blocked_details,
         )
         if incident_id:
             append_incident_timeline_event(
