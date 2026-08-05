@@ -17223,14 +17223,467 @@ def list_incident_timeline(incident_id: str, request: Request) -> dict[str, Any]
         return {'incident_id': incident_id, 'timeline': [_json_safe_value(dict(row)) for row in rows]}
 
 
-def list_action_history(request: Request, *, object_type: str | None = None, object_id: str | None = None, limit: int = 200) -> dict[str, Any]:
+# ── Canonical Action History event DTO (Screen 8) ─────────────────────────────
+# The Action History tab renders an immutable, newest-first AUDIT stream. Every row
+# must reach the operator as a fully-formed, self-describing event: a human event
+# LABEL, a readable action TITLE, the RESOLVED actor identity (never a raw UUID), the
+# previous -> new lifecycle transition, the decision, quorum progress, and canonical
+# navigation ROUTES. The BACKEND is the single source of truth for that shape — React
+# must not reconstruct any of it from a raw event payload. The helpers below build ONE
+# canonical DTO per ``action_history`` row (identity resolved once, in batch).
+
+# Persisted (dotted) action_type -> canonical (snake) event_type. The enriched approval
+# events already carry an explicit ``event_type`` in details_json; this map canonicalises
+# every OTHER audit event so a raw dotted/snake key is never surfaced to the operator.
+_ACTION_HISTORY_EVENT_TYPE_BY_ACTION_TYPE: dict[str, str] = {
+    'response_action.created': 'response_action_created',
+    'response_action.approved': 'response_action_approved',
+    'response_action.approval_recorded': 'response_action_approval_recorded',
+    'response_action.rejected': 'response_action_rejected',
+    'response_action.approval_attempt_blocked': 'response_action_approval_blocked',
+    'response_action.simulated': 'response_action_simulation_passed',
+    'response_action.executed': 'response_action_executed',
+    'response_action.rolled_back': 'response_action_rolled_back',
+    'response_action.manual_required': 'response_action_manual_required',
+    'response_action.unsupported': 'response_action_unsupported',
+    'incident.response_action_created': 'incident_response_action_created',
+    'incident.response_action_executed': 'incident_response_action_executed',
+    'incident.response_plan_recommended': 'incident_response_plan_recommended',
+    'incident.created_from_alert': 'incident_created_from_alert',
+    'incident.action_recorded': 'incident_action_recorded',
+    'incident.linked_alert_updated': 'incident_linked_alert_updated',
+    'incident.timeline_note_added': 'incident_timeline_note_added',
+    'alert.response_action_created': 'alert_response_action_created',
+    'alert.response_action_executed': 'alert_response_action_executed',
+    'alert.escalated_to_incident': 'alert_escalated_to_incident',
+    'alert.linked_incident_updated': 'alert_linked_incident_updated',
+    'workspace.api_key.create': 'workspace_api_key_created',
+    'workspace.api_key.revoke': 'workspace_api_key_revoked',
+    'workspace.api_key.rotate': 'workspace_api_key_rotated',
+}
+
+# Canonical (snake) event_type -> operator-facing label. ONE backend mapping, so no
+# React component re-implements it and no snake_case/dotted event key is ever rendered.
+ACTION_HISTORY_EVENT_LABELS: dict[str, str] = {
+    'response_action_created': 'Response Action Created',
+    'response_action_approved': 'Response Action Approved',
+    'response_action_approval_recorded': 'Approval Recorded (Quorum Pending)',
+    'response_action_rejected': 'Response Action Rejected',
+    'response_action_approval_blocked': 'Approval Attempt Blocked',
+    'response_action_simulation_started': 'Simulation Started',
+    'response_action_simulation_passed': 'Simulation Passed',
+    'response_action_execution_started': 'Execution Started',
+    'response_action_executed': 'Response Action Executed',
+    'response_action_rolled_back': 'Response Action Rolled Back',
+    'response_action_manual_required': 'Manual Execution Required',
+    'response_action_unsupported': 'Live Action Unsupported',
+    'incident_response_action_created': 'Response Action Added to Incident',
+    'incident_response_action_executed': 'Response Action Executed on Incident',
+    'incident_response_plan_recommended': 'Response Plan Recommended',
+    'incident_created_from_alert': 'Incident Created from Alert',
+    'incident_action_recorded': 'Incident Action Recorded',
+    'incident_linked_alert_updated': 'Incident Linked Alert Updated',
+    'incident_timeline_note_added': 'Incident Note Added',
+    'alert_response_action_created': 'Response Action Added to Alert',
+    'alert_response_action_executed': 'Response Action Executed on Alert',
+    'alert_escalated_to_incident': 'Alert Escalated to Incident',
+    'alert_linked_incident_updated': 'Alert Linked Incident Updated',
+    'recommendation_reviewed': 'AI Recommendation Reviewed',
+    'workspace_api_key_created': 'API Key Created',
+    'workspace_api_key_revoked': 'API Key Revoked',
+    'workspace_api_key_rotated': 'API Key Rotated',
+}
+
+# Evidence provenance -> operator label. Never render a bare 'none'/'null'/'runtime'.
+_ACTION_HISTORY_EVIDENCE_LABELS: dict[str, str] = {
+    'live': 'Live provider',
+    'live_provider': 'Live provider',
+    'simulator': 'Simulator',
+    'demo': 'Simulator',
+    'fallback': 'Simulator',
+    'ai_investigation': 'AI investigation',
+    'ai_evidence_snapshot': 'AI investigation',
+    'evidence_package': 'Evidence Package',
+    'runtime': 'Runtime record',
+}
+
+# Sensitive keys that must NEVER reach operator-facing history metadata — recursively
+# stripped so no authentication secret (MFA/TOTP/session/token) is ever displayed even
+# if a future writer places one on an event's details.
+_ACTION_HISTORY_SENSITIVE_METADATA_KEYS: frozenset[str] = frozenset({
+    'mfa_totp_secret', 'totp_secret', 'mfa_secret', 'mfa_code', 'mfa_pending_secret',
+    'authenticator_code', 'otp', 'otp_code', 'secret', 'password', 'password_hash',
+    'session_token', 'session_secret', 'token', 'access_token', 'refresh_token',
+    'csrf_token', 'recovery_codes', 'backup_codes', 'private_key', 'api_key',
+})
+# Any key CONTAINING one of these fragments is also stripped (defence in depth).
+_ACTION_HISTORY_SENSITIVE_FRAGMENTS: tuple[str, ...] = (
+    'secret', 'password', 'totp', 'mfa_code', 'private_key', 'authenticator',
+)
+
+
+def _humanize_event_token(raw: Any) -> str:
+    """Title-case a snake_case/dotted token so no underscore/dot ever survives to UI."""
+    parts = [p for p in re.split(r'[_.\s]+', str(raw or '').strip()) if p]
+    return ' '.join(p[:1].upper() + p[1:] for p in parts) or 'Event'
+
+
+def _canonical_action_history_event_type(action_type: Any, details: dict[str, Any] | None) -> str:
+    """Canonical (snake) event_type for a history row. Trusts the enriched
+    ``details_json.event_type`` first, then the persisted dotted ``action_type``."""
+    explicit = str((details or {}).get('event_type') or '').strip().lower()
+    if explicit:
+        return explicit
+    at = str(action_type or '').strip().lower()
+    if at in _ACTION_HISTORY_EVENT_TYPE_BY_ACTION_TYPE:
+        return _ACTION_HISTORY_EVENT_TYPE_BY_ACTION_TYPE[at]
+    return at.replace('.', '_') if at else 'event'
+
+
+def _action_history_type_label(event_type: str, details: dict[str, Any] | None = None) -> str:
+    """Broad, operator-facing CATEGORY for the Type column. A backend-stored type_label
+    (e.g. 'Action Approval') is trusted when clean; otherwise the category is derived
+    from the canonical event_type so the column never shows a raw enum."""
+    stored = str((details or {}).get('type_label') or '').strip()
+    if stored and '_' not in stored and '.' not in stored:
+        return stored
+    et = str(event_type or '').lower()
+    if et in {'response_action_approved', 'response_action_approval_recorded',
+              'response_action_rejected', 'response_action_approval_blocked'}:
+        return 'Action Approval'
+    if et in {'response_action_executed', 'response_action_manual_required',
+              'response_action_unsupported', 'response_action_rolled_back',
+              'incident_response_action_executed', 'alert_response_action_executed'}:
+        return 'Action Execution'
+    if et in {'response_action_simulation_started', 'response_action_simulation_passed'}:
+        return 'Action Simulation'
+    if et in {'response_action_created', 'incident_response_action_created',
+              'alert_response_action_created', 'incident_response_plan_recommended'}:
+        return 'Action Lifecycle'
+    if et == 'recommendation_reviewed':
+        return 'AI Recommendation Review'
+    if et.startswith('incident_'):
+        return 'Incident Event'
+    if et.startswith('alert_'):
+        return 'Alert Event'
+    if et.startswith('workspace_api_key'):
+        return 'API Key'
+    return _humanize_event_token(event_type)
+
+
+def action_history_event_label(event_type: str, details: dict[str, Any] | None = None) -> str:
+    """Operator-facing label for a canonical event_type. A backend ``display_label`` is
+    trusted ONLY when it is not a raw enum (no underscore/dot); otherwise the canonical
+    map wins, and an unknown key is humanised — a raw key is never returned."""
+    provided = str((details or {}).get('display_label') or '').strip()
+    if provided and '_' not in provided and '.' not in provided:
+        return provided
+    if event_type in ACTION_HISTORY_EVENT_LABELS:
+        return ACTION_HISTORY_EVENT_LABELS[event_type]
+    return _humanize_event_token(event_type)
+
+
+def _lifecycle_state_from_label(label: Any) -> str | None:
+    """Canonical lifecycle STATE key for a human lifecycle LABEL (reverse of
+    RESPONSE_ACTION_LIFECYCLE_LABELS), e.g. 'Awaiting Approval' -> 'awaiting_approval'."""
+    text = str(label or '').strip()
+    if not text:
+        return None
+    reverse = {v.lower(): k for k, v in RESPONSE_ACTION_LIFECYCLE_LABELS.items()}
+    return reverse.get(text.lower()) or text.lower().replace(' ', '_')
+
+
+def _sanitize_history_metadata(value: Any) -> Any:
+    """Recursively drop sensitive keys so operator-facing event metadata can never
+    carry an authentication secret."""
+    if isinstance(value, dict):
+        safe: dict[str, Any] = {}
+        for key, inner in value.items():
+            lowered = str(key).strip().lower()
+            if lowered in _ACTION_HISTORY_SENSITIVE_METADATA_KEYS:
+                continue
+            if any(fragment in lowered for fragment in _ACTION_HISTORY_SENSITIVE_FRAGMENTS):
+                continue
+            safe[key] = _sanitize_history_metadata(inner)
+        return safe
+    if isinstance(value, list):
+        return [_sanitize_history_metadata(item) for item in value]
+    return value
+
+
+def _looks_like_uuid(value: Any) -> bool:
+    try:
+        uuid.UUID(str(value))
+        return True
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
+def _resolve_action_history_actors(connection: Any, workspace_id: str, actor_ids: set[str]) -> dict[str, dict[str, Any]]:
+    """Batch-resolve the ACTORS that appear in this workspace's history rows to their
+    account identity (email + full name). Scoped to ids already present in
+    workspace-scoped rows — never an unscoped cross-tenant scan — so a raw UUID never
+    has to be shown as the primary actor label."""
+    ids = [i for i in actor_ids if i and _looks_like_uuid(i)]
+    if not ids:
+        return {}
+    try:
+        rows = connection.execute(
+            'SELECT id, email, full_name FROM users WHERE id = ANY(%s)',
+            (ids,),
+        ).fetchall()
+    except Exception:  # pragma: no cover - identity resolution must never break history
+        return {}
+    resolved: dict[str, dict[str, Any]] = {}
+    for row in rows or []:
+        record = dict(row)
+        resolved[str(record['id'])] = {
+            'email': str(record.get('email') or '') or None,
+            'full_name': str(record.get('full_name') or '') or None,
+        }
+    return resolved
+
+
+def _resolve_action_history_action_types(connection: Any, workspace_id: str, action_ids: set[str]) -> dict[str, str]:
+    """Batch-resolve response-action / recommendation ids to their canonical
+    ``action_type`` (workspace-scoped) so a truthful, canonical action TITLE can be
+    rendered instead of a truncated generic label."""
+    ids = [i for i in action_ids if i and _looks_like_uuid(i)]
+    if not ids:
+        return {}
+    mapping: dict[str, str] = {}
+    for table in ('response_actions', 'ai_recommendations'):
+        try:
+            rows = connection.execute(
+                f'SELECT id, action_type FROM {table} WHERE workspace_id = %s AND id = ANY(%s)',
+                (workspace_id, ids),
+            ).fetchall()
+        except Exception:  # pragma: no cover - defensive; missing table/column
+            continue
+        for row in rows or []:
+            record = dict(row)
+            action_type = str(record.get('action_type') or '').strip()
+            if action_type:
+                mapping.setdefault(str(record['id']), action_type)
+    return mapping
+
+
+def build_action_history_event_dto(
+    row: dict[str, Any],
+    *,
+    actor_identities: dict[str, dict[str, Any]] | None = None,
+    action_types: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Assemble the ONE canonical, operator-ready DTO for an ``action_history`` row.
+
+    Returns every field the Action History table + event-details view need, so React
+    renders directly and never reconstructs anything from a raw event payload:
+    identity (resolved actor), human event LABEL + action TITLE, incident short id,
+    previous -> new lifecycle, decision, quorum progress, result, evidence provenance,
+    and canonical navigation routes. The original raw fields (id, action_type,
+    timestamp, details_json) are preserved for the technical/copyable view. Sensitive
+    authentication metadata is stripped from ``event_metadata``.
+    """
+    actor_identities = actor_identities or {}
+    action_types = action_types or {}
+    details = row.get('details_json') if isinstance(row.get('details_json'), dict) else {}
+    details = details or {}
+
+    event_id = str(row.get('id') or '')
+    event_type = _canonical_action_history_event_type(row.get('action_type'), details)
+    event_label = action_history_event_label(event_type, details)
+    type_label = _action_history_type_label(event_type, details)
+
+    # Action identity: prefer the details' action_id, else the object_id when the row is
+    # about a response action. The canonical TITLE comes from the resolved action_type
+    # (never a truncated generic label).
+    object_type = str(row.get('object_type') or '').strip().lower()
+    action_id = str(details.get('action_id') or '').strip() or None
+    if not action_id and 'response_action' in object_type:
+        action_id = str(row.get('object_id') or '').strip() or None
+    action_key = (
+        str(details.get('action_key') or details.get('action_type') or '').strip()
+        or (action_types.get(action_id) if action_id else None)
+        or None
+    )
+    action_title: str | None = None
+    if action_key:
+        presentation = response_action_presentation(action_key)
+        action_key = presentation['action_key']
+        action_title = presentation['display_title']
+    if not action_title:
+        stored_title = str(details.get('action_title') or '').strip()
+        # A stored title is trusted only when it is a real human title (no raw enum).
+        if stored_title and '_' not in stored_title:
+            action_title = stored_title
+
+    # Incident identity + readable short id (INC-xxxxxxxx), matching the app convention.
+    incident_id = str(details.get('incident_id') or '').strip() or None
+    if not incident_id and object_type == 'incident':
+        incident_id = str(row.get('object_id') or '').strip() or None
+    incident_short_id = f'INC-{incident_id[:8]}' if incident_id else None
+
+    # Actor identity — resolved to the account (email + display name). The raw UUID is
+    # kept only as actor_id (a technical/copyable field), never the primary label.
+    actor_id = str(row.get('actor_id') or '').strip() or None
+    actor_type = str(row.get('actor_type') or '').strip().lower() or 'system'
+    resolved_actor = actor_identities.get(actor_id or '', {})
+    actor_email = resolved_actor.get('email')
+    actor_display_name = resolved_actor.get('full_name')
+    details_actor = str(details.get('actor') or '').strip() or None
+    if not actor_email and details_actor and '@' in details_actor:
+        actor_email = details_actor
+    if not actor_display_name:
+        if actor_email:
+            actor_display_name = actor_email.split('@', 1)[0]
+        elif details_actor and details_actor != actor_id:
+            actor_display_name = details_actor
+        elif actor_type == 'system':
+            actor_display_name = 'System'
+        else:
+            actor_display_name = 'Operator'
+
+    occurred_at = _json_safe_value(row.get('timestamp')) or _json_safe_value(row.get('created_at'))
+
+    previous_state_label = str(details.get('previous_lifecycle') or '').strip() or None
+    new_state_label = str(details.get('new_lifecycle') or '').strip() or None
+    previous_state = _lifecycle_state_from_label(previous_state_label)
+    new_state = _lifecycle_state_from_label(new_state_label)
+
+    decision = str(details.get('decision') or '').strip().lower() or None
+    decision_label = _humanize_event_token(decision) if decision else None
+
+    result = str(details.get('result') or details.get('result_summary') or '').strip() or None
+    result_label = str(details.get('result_summary') or '').strip() or (
+        _humanize_event_token(result) if result else None
+    )
+
+    approval_count = details.get('approved_count')
+    approval_count = int(approval_count) if isinstance(approval_count, (int, float)) else None
+    required_approval_count = details.get('required_quorum')
+    required_approval_count = int(required_approval_count) if isinstance(required_approval_count, (int, float)) else None
+    approval_progress_label = str(details.get('approval_progress_label') or '').strip() or None
+
+    execution_reference = (
+        str(details.get('execution_reference') or details.get('safe_tx_hash')
+            or details.get('transaction_reference') or '').strip()
+        or None
+    )
+
+    evidence_source = str(details.get('evidence_source') or details.get('source') or '').strip().lower() or None
+    evidence_source_label = (
+        _ACTION_HISTORY_EVIDENCE_LABELS.get(evidence_source)
+        if evidence_source else None
+    ) or (_humanize_event_token(evidence_source) if evidence_source else None)
+
+    action_route = f'/response-actions?action_id={action_id}' if action_id else None
+    incident_route = f'/incidents/{incident_id}' if incident_id else None
+    evidence_route = f'/evidence?incident_id={incident_id}' if incident_id else None
+    audit_route = f'/history?event_id={event_id}' if event_id else None
+
+    dto = {
+        'event_id': event_id,
+        'event_type': event_type,
+        'event_label': event_label,
+        'type_label': type_label,
+        'action_id': action_id,
+        'action_title': action_title,
+        'action_key': action_key,
+        'incident_id': incident_id,
+        'incident_short_id': incident_short_id,
+        'actor_id': actor_id,
+        'actor_display_name': actor_display_name,
+        'actor_email': actor_email,
+        'actor_type': actor_type,
+        'occurred_at': occurred_at,
+        'previous_state': previous_state,
+        'previous_state_label': previous_state_label,
+        'new_state': new_state,
+        'new_state_label': new_state_label,
+        'decision': decision,
+        'decision_label': decision_label,
+        'result': result,
+        'result_label': result_label,
+        'approval_count': approval_count,
+        'required_approval_count': required_approval_count,
+        'approval_progress_label': approval_progress_label,
+        'execution_reference': execution_reference,
+        'evidence_source': evidence_source,
+        'evidence_source_label': evidence_source_label,
+        'approval_policy': str(details.get('policy') or '').strip() or None,
+        'note': str(details.get('note') or '').strip() or None,
+        'action_route': action_route,
+        'incident_route': incident_route,
+        'evidence_route': evidence_route,
+        'audit_route': audit_route,
+        'event_metadata': _sanitize_history_metadata(details),
+        # Raw persisted fields preserved for the technical / copyable event-details view
+        # (and for backward compatibility with existing consumers of the legacy shape —
+        # e.g. the Threat Operations panel matches on object_type/object_id and
+        # details_json.incident_id/alert_id). details_json is the SANITIZED details, so
+        # a consumer keeps its correlation fields but never receives an auth secret.
+        'id': event_id,
+        'actor_type': actor_type,
+        'actor_id': actor_id,
+        'action_type': str(row.get('action_type') or '') or None,
+        'object_type': str(row.get('object_type') or '') or None,
+        'object_id': str(row.get('object_id') or '') or None,
+        'timestamp': occurred_at,
+        'details_json': _sanitize_history_metadata(details),
+    }
+    return dto
+
+
+def list_action_history(
+    request: Request,
+    *,
+    object_type: str | None = None,
+    object_id: str | None = None,
+    limit: int = 200,
+    event_type: str | None = None,
+    actor: str | None = None,
+    result: str | None = None,
+    incident_id: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict[str, Any]:
+    """Workspace-scoped Action History AUDIT stream, newest-first, as canonical DTOs.
+
+    Ordering is by the PERSISTED event timestamp (never page-load time), with the event
+    id as a deterministic secondary key so identical-timestamp events keep a stable,
+    duplicate-free order across refreshes. The optional filters are HISTORY filters
+    (event_type, actor, result, incident, date range) — they NEVER inherit the
+    Recommended-Actions "requires approval" active-action predicate, so a completed
+    approval, a recommendation review, a blocked attempt, a simulation, or an execution
+    can never be hidden by them. Each row is enriched (once, in batch) into the single
+    canonical DTO the operator UI renders directly.
+    """
     require_live_mode()
     max_limit = max(1, min(limit, 500))
     normalized_type = str(object_type or '').strip().lower() or None
+    # History-specific filters. `incident_id` narrows by the linked incident (matched on
+    # object_id OR the details' incident_id). These are audit-stream filters only.
+    incident_filter = str(incident_id or '').strip() or None
+    actor_filter = str(actor or '').strip() or None
+    result_filter = str(result or '').strip().lower() or None
+    # `event_type` accepts the canonical snake key OR the persisted dotted action_type.
+    event_type_filter = str(event_type or '').strip().lower() or None
+    date_from_filter = str(date_from or '').strip() or None
+    date_to_filter = str(date_to or '').strip() or None
+    # The dotted persisted action_type(s) that map to the canonical event_type filter, so
+    # a row without an explicit details_json.event_type still matches in SQL.
+    event_type_action_candidates = (
+        [at for at, et in _ACTION_HISTORY_EVENT_TYPE_BY_ACTION_TYPE.items() if et == event_type_filter]
+        if event_type_filter else []
+    )
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        workspace_id = workspace_context['workspace_id']
+        # The HISTORY filters (event_type, result, incident) are pushed INTO the SQL WHERE
+        # clause so they apply BEFORE the LIMIT — a matching older audit row can never be
+        # hidden behind newer non-matching rows (fetch-then-filter would silently drop it).
         rows = connection.execute(
             '''
             SELECT id, actor_type, actor_id, object_type, object_id, action_type, timestamp, details_json
@@ -17238,12 +17691,74 @@ def list_action_history(request: Request, *, object_type: str | None = None, obj
             WHERE workspace_id = %s
               AND (%s::text IS NULL OR object_type = %s::text)
               AND (%s::text IS NULL OR object_id = %s::text)
-            ORDER BY timestamp DESC
+              AND (%s::text IS NULL OR actor_id::text = %s::text)
+              AND (%s::timestamptz IS NULL OR timestamp >= %s::timestamptz)
+              AND (%s::timestamptz IS NULL OR timestamp <= %s::timestamptz)
+              AND (%s::text IS NULL OR object_id = %s::text OR details_json->>'incident_id' = %s::text)
+              AND (%s::text IS NULL
+                   OR details_json->>'event_type' = %s::text
+                   OR action_type = %s::text
+                   OR action_type = ANY(%s::text[]))
+              AND (%s::text IS NULL
+                   OR LOWER(details_json->>'result') = %s::text
+                   OR LOWER(details_json->>'result_summary') = %s::text)
+            ORDER BY timestamp DESC, id DESC
             LIMIT %s
             ''',
-            (workspace_context['workspace_id'], normalized_type, normalized_type, object_id, object_id, max_limit),
+            (
+                workspace_id,
+                normalized_type, normalized_type,
+                object_id, object_id,
+                actor_filter, actor_filter,
+                date_from_filter, date_from_filter,
+                date_to_filter, date_to_filter,
+                incident_filter, incident_filter, incident_filter,
+                event_type_filter, event_type_filter, event_type_filter, event_type_action_candidates,
+                result_filter, result_filter, result_filter,
+                max_limit,
+            ),
         ).fetchall()
-        return {'history': [_json_safe_value(dict(row)) for row in rows]}
+        raw_rows = [_json_safe_value(dict(row)) for row in rows]
+
+        # Resolve actor identities + action_types once, in batch (never per-row queries).
+        actor_ids = {str(r.get('actor_id') or '') for r in raw_rows if r.get('actor_id')}
+        action_ids: set[str] = set()
+        for r in raw_rows:
+            details = r.get('details_json') if isinstance(r.get('details_json'), dict) else {}
+            candidate = str((details or {}).get('action_id') or '').strip()
+            if not candidate and 'response_action' in str(r.get('object_type') or '').lower():
+                candidate = str(r.get('object_id') or '').strip()
+            if candidate:
+                action_ids.add(candidate)
+        actor_identities = _resolve_action_history_actors(connection, workspace_id, actor_ids)
+        action_types = _resolve_action_history_action_types(connection, workspace_id, action_ids)
+
+        events = [
+            build_action_history_event_dto(r, actor_identities=actor_identities, action_types=action_types)
+            for r in raw_rows
+        ]
+        # Secondary post-enrichment guard, matched against the CANONICAL DTO fields. The
+        # SQL WHERE clause above is authoritative (it filters before LIMIT); this only
+        # re-checks the same predicates against the derived event_type/result so the
+        # canonical mapping (e.g. an action_type with no explicit details.event_type) is
+        # honored consistently. It never applies an active-action predicate.
+        if event_type_filter:
+            events = [
+                e for e in events
+                if e['event_type'] == event_type_filter
+                or str(e.get('action_type') or '').lower() == event_type_filter
+            ]
+        if incident_filter:
+            events = [e for e in events if e.get('incident_id') == incident_filter]
+        if result_filter:
+            events = [
+                e for e in events
+                if str(e.get('result') or '').lower() == result_filter
+                or str(e.get('result_label') or '').lower() == result_filter
+            ]
+        # `history` stays the response key for backward compatibility; each item is now
+        # the enriched canonical DTO (a superset of the legacy raw row).
+        return {'history': events, 'events': events}
 
 
 def append_incident_timeline_note(incident_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:

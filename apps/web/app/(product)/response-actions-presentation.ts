@@ -485,14 +485,281 @@ export function approvalHistoryPresentation(row: RawHistoryRow): ApprovalHistory
 /** Newest-first comparator for Action History rows (by event time). Rows without a
  *  parseable time sort LAST, deterministically, so the newest real event is always on
  *  top — the response-action approval (its own timestamp) never sinks below an older
- *  recommendation review. */
+ *  recommendation review. Ties break on the event id so identical-timestamp events keep
+ *  a stable order (matching the backend `timestamp DESC, id DESC`). */
 export function compareHistoryRecency(
-  a: { time?: string | null },
-  b: { time?: string | null },
+  a: { time?: string | null; id?: string | null },
+  b: { time?: string | null; id?: string | null },
 ): number {
   const ta = a?.time ? Date.parse(String(a.time)) : NaN;
   const tb = b?.time ? Date.parse(String(b.time)) : NaN;
   const va = Number.isNaN(ta) ? -Infinity : ta;
   const vb = Number.isNaN(tb) ? -Infinity : tb;
-  return vb - va;
+  if (vb !== va) return vb - va;
+  return String(b?.id ?? '').localeCompare(String(a?.id ?? ''));
+}
+
+// ── Canonical Action History DTO consumption (Screen 8) ───────────────────────
+// The BACKEND now returns each history row as a fully-formed, self-describing DTO
+// (event_label, action_title, resolved actor identity, previous -> new lifecycle,
+// decision, quorum progress, evidence provenance, canonical routes). These helpers
+// map that DTO onto the row the table renders, WITHOUT re-deriving anything — with a
+// graceful fallback to the legacy approval-presentation for a pre-DTO backend payload
+// so a mid-rollout deploy never regresses to a raw enum / UUID.
+
+export type HistoryEventDto = {
+  eventId: string;
+  eventType: string;
+  eventLabel: string;
+  typeLabel: string;
+  actionId: string | null;
+  actionTitle: string | null;
+  actionKey: string | null;
+  incidentId: string | null;
+  incidentShortId: string | null;
+  actorId: string | null;
+  actorDisplayName: string | null;
+  actorEmail: string | null;
+  actorType: string | null;
+  occurredAt: string | null;
+  previousStateLabel: string | null;
+  newStateLabel: string | null;
+  decision: string | null;
+  decisionLabel: string | null;
+  result: string | null;
+  resultLabel: string | null;
+  approvalCount: number | null;
+  requiredApprovalCount: number | null;
+  approvalProgressLabel: string | null;
+  executionReference: string | null;
+  evidenceSource: string | null;
+  evidenceSourceLabel: string | null;
+  approvalPolicy: string | null;
+  note: string | null;
+  actionRoute: string | null;
+  incidentRoute: string | null;
+  evidenceRoute: string | null;
+  auditRoute: string | null;
+  eventMetadata: Record<string, unknown>;
+};
+
+function strOrNull(v: unknown): string | null {
+  const s = String(v ?? '').trim();
+  return s ? s : null;
+}
+
+function numOrNull(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
+/** Whether a backend row already carries the canonical DTO shape (server-enriched).
+ *  Used to decide between direct consumption and the legacy fallback. */
+export function isCanonicalHistoryDto(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+  const r = raw as Record<string, unknown>;
+  return typeof r.event_label === 'string' && String(r.event_label).trim().length > 0;
+}
+
+/**
+ * Map a backend Action History row onto the canonical DTO the table renders. Trusts the
+ * server-enriched fields when present; otherwise reconstructs the minimum from the legacy
+ * approval presentation so a pre-DTO payload still renders a human label + action title +
+ * decision (never a raw enum or UUID).
+ */
+export function normalizeHistoryEventDto(raw: any): HistoryEventDto {
+  if (isCanonicalHistoryDto(raw)) {
+    const meta = raw.event_metadata && typeof raw.event_metadata === 'object' ? raw.event_metadata : {};
+    return {
+      eventId: String(raw.event_id ?? raw.id ?? ''),
+      eventType: String(raw.event_type ?? ''),
+      eventLabel: String(raw.event_label ?? ''),
+      typeLabel: String(raw.type_label ?? 'Action Approval'),
+      actionId: strOrNull(raw.action_id),
+      actionTitle: strOrNull(raw.action_title),
+      actionKey: strOrNull(raw.action_key),
+      incidentId: strOrNull(raw.incident_id),
+      incidentShortId: strOrNull(raw.incident_short_id),
+      actorId: strOrNull(raw.actor_id),
+      actorDisplayName: strOrNull(raw.actor_display_name),
+      actorEmail: strOrNull(raw.actor_email),
+      actorType: strOrNull(raw.actor_type),
+      occurredAt: strOrNull(raw.occurred_at) ?? strOrNull(raw.timestamp),
+      previousStateLabel: strOrNull(raw.previous_state_label),
+      newStateLabel: strOrNull(raw.new_state_label),
+      decision: strOrNull(raw.decision),
+      decisionLabel: strOrNull(raw.decision_label),
+      result: strOrNull(raw.result),
+      resultLabel: strOrNull(raw.result_label),
+      approvalCount: numOrNull(raw.approval_count),
+      requiredApprovalCount: numOrNull(raw.required_approval_count),
+      approvalProgressLabel: strOrNull(raw.approval_progress_label),
+      executionReference: strOrNull(raw.execution_reference),
+      evidenceSource: strOrNull(raw.evidence_source),
+      evidenceSourceLabel: strOrNull(raw.evidence_source_label),
+      approvalPolicy: strOrNull(raw.approval_policy),
+      note: strOrNull(raw.note),
+      actionRoute: strOrNull(raw.action_route),
+      incidentRoute: strOrNull(raw.incident_route),
+      evidenceRoute: strOrNull(raw.evidence_route),
+      auditRoute: strOrNull(raw.audit_route),
+      eventMetadata: meta as Record<string, unknown>,
+    };
+  }
+
+  // Legacy fallback (pre-DTO backend row). MUST branch on the event KIND first: the
+  // approval presentation maps an unknown kind to "Response Action Approved" / "Action
+  // Approval" / "Success", so routing a NON-approval audit row (e.g. a pre-DTO
+  // `response_action.created` / `response_action.executed`) through it would misrepresent
+  // a created/executed event as a successful approval. Only approval-domain rows use it;
+  // every other legacy row gets a truthful humanized label with no decision/lifecycle.
+  const details = (raw?.details_json && typeof raw.details_json === 'object' ? raw.details_json : {}) as Record<string, unknown>;
+  const eventId = String(raw?.id ?? '');
+  const actionId = strOrNull(details.action_id);
+  const incidentId = strOrNull(details.incident_id);
+  const eventTypeRaw =
+    String(details.event_type ?? '').trim() || String(raw?.action_type ?? '').trim();
+  const shared = {
+    eventId,
+    actionId,
+    incidentId,
+    incidentShortId: incidentId ? `INC-${incidentId.slice(0, 8)}` : null,
+    actorId: strOrNull(raw?.actor_id),
+    actorType: strOrNull(raw?.actor_type),
+    occurredAt: strOrNull(raw?.timestamp) ?? strOrNull(raw?.created_at),
+    evidenceSource: strOrNull(details.evidence_source ?? details.source),
+    evidenceSourceLabel: null,
+    executionReference: strOrNull(details.execution_reference ?? details.safe_tx_hash),
+    actionRoute: actionId ? `/response-actions?action_id=${actionId}` : null,
+    incidentRoute: incidentId ? `/incidents/${incidentId}` : null,
+    evidenceRoute: incidentId ? `/evidence?incident_id=${incidentId}` : null,
+    auditRoute: eventId ? `/history?event_id=${eventId}` : null,
+    eventMetadata: details,
+  };
+
+  if (isApprovalHistoryEvent(raw)) {
+    const p = approvalHistoryPresentation(raw);
+    return {
+      ...shared,
+      eventType: eventTypeRaw || String(actionHistoryEventKind(raw)),
+      eventLabel: p.label,
+      typeLabel: p.typeLabel,
+      actionTitle: p.actionTitle,
+      actionKey: null,
+      actorDisplayName: p.actor,
+      actorEmail: p.actor && p.actor.includes('@') ? p.actor : null,
+      previousStateLabel: p.previousLifecycle,
+      newStateLabel: p.newLifecycle,
+      decision: p.decision,
+      decisionLabel: p.decisionLabel,
+      result: p.result,
+      resultLabel: p.result,
+      approvalCount: numOrNull(details.approved_count),
+      requiredApprovalCount: numOrNull(details.required_quorum),
+      approvalProgressLabel: p.progressLabel,
+      approvalPolicy: strOrNull(details.policy),
+      note: p.note,
+    };
+  }
+
+  // Non-approval legacy audit row: a truthful, humanized label (never a raw enum, never
+  // "Approved"/"Success"), with no decision/lifecycle/quorum fields.
+  const detailsActor = strOrNull(details.actor);
+  const resultText = strOrNull(details.result_summary ?? details.result);
+  return {
+    ...shared,
+    eventType: eventTypeRaw,
+    eventLabel: humanizeEventKey(eventTypeRaw),
+    typeLabel: 'Audit Event',
+    actionTitle: strOrNull(details.action_title),
+    actionKey: null,
+    actorDisplayName: detailsActor && detailsActor !== shared.actorId ? detailsActor : null,
+    actorEmail: detailsActor && detailsActor.includes('@') ? detailsActor : null,
+    previousStateLabel: null,
+    newStateLabel: null,
+    decision: null,
+    decisionLabel: null,
+    result: resultText ?? 'Recorded',
+    resultLabel: resultText ?? 'Recorded',
+    approvalCount: null,
+    requiredApprovalCount: null,
+    approvalProgressLabel: null,
+    approvalPolicy: null,
+    note: strOrNull(details.note),
+  };
+}
+
+/** Humanize a snake_case/dotted event key into an operator label (rollout fallback only;
+ *  the backend DTO's event_label is authoritative in steady state). Never emits a raw
+ *  underscore/dot. */
+function humanizeEventKey(raw: string): string {
+  return (
+    raw
+      .split(/[_.\s]+/)
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ') || 'Audit Event'
+  );
+}
+
+/**
+ * The event-specific OUTCOME cell (the Executed column is meaningless for a
+ * non-execution event). An approval event is NOT an execution: it reads
+ * "Approval quorum reached"; a recommendation review reads "Recommendation
+ * accepted/rejected"; an execution reads "Executed successfully"; everything else is
+ * "Not applicable" — never a bare dash without context.
+ */
+export function historyOutcome(input: {
+  eventType?: string | null;
+  decision?: string | null;
+  resultLabel?: string | null;
+  recordType?: string | null;
+}): string {
+  const type = String(input.eventType ?? '').toLowerCase();
+  const decision = String(input.decision ?? '').toLowerCase();
+  if (input.recordType === 'ai_recommendation_review') {
+    if (decision === 'accepted') return 'Recommendation accepted';
+    if (decision === 'rejected') return 'Recommendation rejected';
+    return 'Recommendation reviewed';
+  }
+  if (type === 'response_action_approved') return 'Approval quorum reached';
+  if (type === 'response_action_approval_recorded') return 'Approval recorded (quorum pending)';
+  if (type === 'response_action_rejected') return 'Approval rejected';
+  if (type === 'response_action_approval_blocked') return input.resultLabel || 'Blocked — MFA required';
+  if (type === 'response_action_executed' || type === 'incident_response_action_executed') return 'Executed successfully';
+  if (type === 'response_action_simulation_passed') return 'Simulation passed';
+  if (type === 'response_action_rolled_back') return 'Rolled back';
+  return 'Not applicable';
+}
+
+/** A readable relative time for the table ("3h ago"). Exact time is exposed separately
+ *  (tooltip / accessible label / details view) — this never replaces the persisted
+ *  timestamp with the page-load time. */
+export function formatRelativeTime(value?: string | null, now: number = Date.now()): string {
+  if (!value) return '—';
+  const parsed = Date.parse(String(value));
+  if (Number.isNaN(parsed)) return '—';
+  const diff = now - parsed;
+  if (diff < 60_000) return `${Math.max(0, Math.floor(diff / 1000))}s ago`;
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  const days = Math.floor(diff / 86_400_000);
+  if (days < 30) return `${days}d ago`;
+  return new Date(parsed).toLocaleDateString();
+}
+
+/** The exact, human-readable timestamp for tooltip / accessible label / details view
+ *  (e.g. "August 5, 2026, 10:15:00 AM UTC"). Derived from the PERSISTED timestamp. */
+export function formatExactTimestamp(value?: string | null): string {
+  if (!value) return 'Unknown time';
+  const parsed = Date.parse(String(value));
+  if (Number.isNaN(parsed)) return 'Unknown time';
+  return new Date(parsed).toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+    timeZoneName: 'short',
+  });
 }

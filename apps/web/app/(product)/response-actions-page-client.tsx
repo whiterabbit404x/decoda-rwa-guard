@@ -3,7 +3,7 @@
 // fallback examples remain clearly marked as SIMULATED
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 import {
   EmptyStateBlocker,
@@ -17,17 +17,20 @@ import { resolveApiUrl } from '../dashboard-data';
 import { usePilotAuth } from '../pilot-auth-context';
 import {
   approvalErrorRequiresStepUp,
-  approvalHistoryPresentation,
   approvalResultMessage,
   canonicalLifecycleState,
   compareHistoryRecency,
   completeMfaHref,
   deriveRowApproval,
+  formatExactTimestamp,
+  formatRelativeTime,
+  historyOutcome,
   isApprovalDecided,
   isApprovalHistoryEvent,
   isSessionVerificationRequired,
   lifecycleLabelFor,
   normalizeApprovalGate,
+  normalizeHistoryEventDto,
   reconcileCount,
   responseActionApprovalEndpoint,
   type ApprovalGate,
@@ -164,33 +167,54 @@ function normalizeSummary(input: any): ActionsSummary | null {
   };
 }
 
+// Unified Action History row — a superset of the canonical backend DTO plus a few
+// UI-only flags. EVERY field is supplied by the backend DTO (or reconstructed once by
+// normalizeHistoryEventDto for a pre-DTO payload); the table + details view render
+// these directly and never re-derive a label, actor identity, or route from a raw
+// event payload.
 type HistoryRow = {
   id: string;
-  action: string;
-  type: string;
+  eventType: string;
+  // Operator-facing EVENT label ("Response Action Approved") — distinct from the
+  // action TITLE ("Notify Security Team"). Both are shown; neither is a raw enum.
+  eventLabel: string;
+  actionTitle: string | null;
+  actionKey: string | null;
+  typeLabel: string;
   result: string;
-  actorSystem: string;
+  outcome: string;
+  // Actor account identity for display (email / name). The raw UUID lives ONLY in
+  // actorId (a technical/copyable field), never as the primary label.
+  actorDisplay: string;
+  actorEmail: string | null;
+  actorId: string | null;
   time: string | null;
   evidenceSource: string;
+  evidenceSourceLabel: string | null;
   simulated: boolean;
-  // AI recommendation-review extensions. Legacy audit rows leave these undefined.
+  decision?: string | null;
+  decisionLabel?: string | null;
+  previousStateLabel?: string | null;
+  newStateLabel?: string | null;
+  approvalProgressLabel?: string | null;
+  approvalPolicy?: string | null;
+  executionReference?: string | null;
+  note?: string | null;
+  linkedIncident?: string | null;
+  incidentShortId?: string | null;
+  actionRoute?: string | null;
+  incidentRoute?: string | null;
+  evidenceRoute?: string | null;
+  auditRoute?: string | null;
+  eventMetadata?: Record<string, unknown>;
+  // AI recommendation-review extensions (record_type === 'ai_recommendation_review').
   recordType?: string;
   sourceType?: string;
-  decision?: string | null;
-  executed?: boolean;
-  linkedIncident?: string | null;
   evidenceSnapshotId?: string | null;
   evidenceRefsCount?: number;
   provider?: string | null;
   model?: string | null;
-  // Response-action APPROVAL-domain audit event extensions (Action Approval rows).
-  // Present only for approved/rejected/recorded/blocked events; a review row leaves
-  // these undefined so the two domains never share a shape.
   approvalEvent?: boolean;
-  decisionLabel?: string | null;
-  previousLifecycle?: string | null;
-  newLifecycle?: string | null;
-  progressLabel?: string | null;
 };
 
 const RECOMMENDED_HEADERS = [
@@ -207,15 +231,15 @@ const RECOMMENDED_HEADERS = [
 ];
 
 const HISTORY_HEADERS = [
-  'Action ID',
+  'Event',
   'Action',
   'Type',
   'Result',
-  'Actor/System',
+  'Actor',
   'Time',
   'Evidence Source',
   'Decision',
-  'Executed',
+  'Outcome',
   'Links',
 ];
 
@@ -498,50 +522,49 @@ function normalizeActionRow(input: any, validIncidentIds: Set<string>): ActionRo
   };
 }
 
+// Map a backend Action History row (the canonical DTO, or a pre-DTO legacy payload)
+// onto the unified HistoryRow. The heavy lifting — human EVENT label, canonical action
+// TITLE, resolved actor identity, previous -> new lifecycle, decision, quorum progress,
+// evidence provenance, and navigation routes — is done ONCE by normalizeHistoryEventDto
+// (backend-authoritative); this function never re-derives a label or actor from raw
+// event fields.
 function normalizeHistoryRow(input: any): HistoryRow {
-  const source = String(
-    input?.details_json?.source || input?.evidence_source || input?.source || '',
-  ).toLowerCase();
-
-  const simulated = source === 'fallback' || source === 'simulator' || source === 'demo';
-  const time = input?.timestamp ?? input?.created_at ?? null;
-  const actorLabel = String(input?.details_json?.actor || input?.actor_id || input?.actor_type || input?.actor || 'system');
-
-  // Response-action APPROVAL-domain audit event (approved / rejected / recorded /
-  // blocked). Rendered as a clearly-identifiable "Action Approval" row from the
-  // backend's self-describing details — NEVER as an AI recommendation review — with
-  // the real event timestamp, the decision, the previous -> new lifecycle transition,
-  // and the quorum progress. This is the row that was missing/mislabelled before.
-  if (isApprovalHistoryEvent(input)) {
-    const p = approvalHistoryPresentation(input);
-    return {
-      id: String(input?.id || '-'),
-      action: p.label,
-      type: p.typeLabel,
-      result: p.result,
-      actorSystem: p.actor || actorLabel,
-      time,
-      evidenceSource: String(input?.details_json?.source || input?.evidence_source || input?.source || 'runtime'),
-      simulated,
-      decision: p.decision,
-      decisionLabel: p.decisionLabel,
-      previousLifecycle: p.previousLifecycle,
-      newLifecycle: p.newLifecycle,
-      progressLabel: p.progressLabel,
-      approvalEvent: true,
-      linkedIncident: input?.details_json?.incident_id ? String(input.details_json.incident_id) : null,
-    };
-  }
-
+  const dto = normalizeHistoryEventDto(input);
+  const evidence = (dto.evidenceSource ?? '').toLowerCase();
+  const simulated = evidence === 'fallback' || evidence === 'simulator' || evidence === 'demo';
+  const approvalEvent = isApprovalHistoryEvent(input) || dto.eventType.startsWith('response_action_');
   return {
-    id: String(input?.id || '-'),
-    action: String(input?.action_type || input?.action || '-'),
-    type: String(input?.object_type || input?.type || '-'),
-    result: String(input?.details_json?.result_summary || input?.result || input?.status || 'recorded'),
-    actorSystem: actorLabel,
-    time,
-    evidenceSource: String(input?.details_json?.source || input?.evidence_source || input?.source || 'runtime'),
+    id: dto.eventId || '-',
+    eventType: dto.eventType,
+    eventLabel: dto.eventLabel,
+    actionTitle: dto.actionTitle,
+    actionKey: dto.actionKey,
+    typeLabel: dto.typeLabel || 'Action Approval',
+    result: dto.resultLabel || dto.result || 'Recorded',
+    outcome: historyOutcome({ eventType: dto.eventType, decision: dto.decision, resultLabel: dto.resultLabel }),
+    actorDisplay: dto.actorEmail || dto.actorDisplayName || 'System',
+    actorEmail: dto.actorEmail,
+    actorId: dto.actorId,
+    time: dto.occurredAt,
+    evidenceSource: dto.evidenceSource || 'runtime',
+    evidenceSourceLabel: dto.evidenceSourceLabel,
     simulated,
+    decision: dto.decision,
+    decisionLabel: dto.decisionLabel,
+    previousStateLabel: dto.previousStateLabel,
+    newStateLabel: dto.newStateLabel,
+    approvalProgressLabel: dto.approvalProgressLabel,
+    approvalPolicy: dto.approvalPolicy,
+    executionReference: dto.executionReference,
+    note: dto.note,
+    approvalEvent,
+    linkedIncident: dto.incidentId,
+    incidentShortId: dto.incidentShortId,
+    actionRoute: dto.actionRoute,
+    incidentRoute: dto.incidentRoute,
+    evidenceRoute: dto.evidenceRoute,
+    auditRoute: dto.auditRoute,
+    eventMetadata: dto.eventMetadata,
   };
 }
 
@@ -557,21 +580,37 @@ function normalizeAiReviewHistoryRow(input: any): HistoryRow {
   const reviewState = String(input?.review_state || input?.decision || '').toLowerCase();
   const decision =
     reviewState === 'accepted' ? 'accepted' : reviewState === 'rejected' ? 'rejected' : null;
+  const incidentId = input?.incident_id ? String(input.incident_id) : null;
+  const actionId = String(input?.recommendation_id || input?.id || '-');
+  const reviewer = String(input?.reviewer_email || input?.reviewer_id || 'Reviewer');
   return {
-    id: String(input?.recommendation_id || input?.id || '-'),
-    action: String(input?.title || input?.action_type || 'AI recommendation'),
-    type: 'AI recommendation review',
+    id: actionId,
+    eventType: 'recommendation_reviewed',
+    eventLabel: 'AI Recommendation Reviewed',
+    actionTitle: String(input?.title || input?.action_type || 'AI recommendation'),
+    actionKey: input?.action_type ? String(input.action_type) : null,
+    typeLabel: 'AI Recommendation Review',
     result: decision === 'accepted' ? 'Accepted' : decision === 'rejected' ? 'Rejected' : 'Reviewed',
-    actorSystem: String(input?.reviewer_email || input?.reviewer_id || 'Reviewer'),
+    outcome: historyOutcome({ recordType: 'ai_recommendation_review', decision }),
+    actorDisplay: reviewer,
+    actorEmail: reviewer.includes('@') ? reviewer : null,
+    actorId: input?.reviewer_id ? String(input.reviewer_id) : null,
     time: input?.reviewed_at ?? input?.created_at ?? null,
     // AI investigation evidence — never simulator, never live-chain.
     evidenceSource: String(input?.evidence_source || 'ai_investigation'),
+    evidenceSourceLabel: 'AI investigation',
     simulated: false,
     recordType: 'ai_recommendation_review',
     sourceType: String(input?.source_type || 'ai_investigation'),
-    decision: decision === 'accepted' ? 'accepted' : decision === 'rejected' ? 'rejected' : null,
-    executed: false,
-    linkedIncident: input?.incident_id ? String(input.incident_id) : null,
+    decision,
+    decisionLabel: decision === 'accepted' ? 'Accepted' : decision === 'rejected' ? 'Rejected' : null,
+    approvalEvent: false,
+    linkedIncident: incidentId,
+    incidentShortId: incidentId ? `INC-${incidentId.slice(0, 8)}` : null,
+    actionRoute: actionId && actionId !== '-' ? `/response-actions?action_id=${actionId}` : null,
+    incidentRoute: incidentId ? `/incidents/${incidentId}` : null,
+    evidenceRoute: incidentId ? `/evidence?incident_id=${incidentId}` : null,
+    auditRoute: actionId && actionId !== '-' ? `/history?event_id=${actionId}` : null,
     evidenceSnapshotId: input?.evidence_snapshot_id ? String(input.evidence_snapshot_id) : null,
     evidenceRefsCount:
       typeof input?.evidence_refs_count === 'number'
@@ -581,6 +620,13 @@ function normalizeAiReviewHistoryRow(input: any): HistoryRow {
           : 0,
     provider: input?.provider ?? null,
     model: input?.model ?? null,
+    eventMetadata: {
+      recommendation_id: actionId,
+      review_state: reviewState || null,
+      provider: input?.provider ?? null,
+      model: input?.model ?? null,
+      evidence_snapshot_id: input?.evidence_snapshot_id ?? null,
+    },
   };
 }
 
@@ -625,7 +671,15 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
   const [backendSummary, setBackendSummary] = useState<ActionsSummary | null>(null);
   const [historyRows, setHistoryRows] = useState<HistoryRow[]>([]);
   const [selectedId, setSelectedId] = useState(actionIdParam);
+  // The history row whose full event details are open (event-details view). Independent
+  // of the Recommended-Actions selection.
+  const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  // Dedicated Action History filters — SEPARATE from the Recommended-Actions filters, so
+  // an active-action predicate (Requires Approval / status) can never hide a completed
+  // approval, a recommendation review, a blocked attempt, a simulation, or an execution.
+  const [historyEventFilter, setHistoryEventFilter] = useState('');
+  const [historyResultFilter, setHistoryResultFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   // Seed the approval (Review All) filter from the URL so returning from the security
@@ -805,11 +859,30 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
   }, [recommendedRows, search, typeFilter, statusFilter, approvalFilter]);
 
   const filteredHistory = useMemo(() => {
+    // History filtering depends ONLY on the free-text search and the DEDICATED history
+    // filters (event type / result) — never on the Recommended-Actions active-action
+    // predicates — so Action History stays a complete, independent audit stream.
     return historyRows.filter((row) => {
       const q = search.toLowerCase();
-      return !q || row.action.toLowerCase().includes(q) || row.id.toLowerCase().includes(q);
+      const matchesSearch =
+        !q ||
+        row.eventLabel.toLowerCase().includes(q) ||
+        (row.actionTitle ?? '').toLowerCase().includes(q) ||
+        row.actorDisplay.toLowerCase().includes(q) ||
+        (row.incidentShortId ?? '').toLowerCase().includes(q) ||
+        row.id.toLowerCase().includes(q);
+      const matchesEvent = !historyEventFilter || row.eventType === historyEventFilter;
+      const matchesResult =
+        !historyResultFilter ||
+        row.result.toLowerCase().includes(historyResultFilter.toLowerCase());
+      return matchesSearch && matchesEvent && matchesResult;
     });
-  }, [historyRows, search]);
+  }, [historyRows, search, historyEventFilter, historyResultFilter]);
+
+  const selectedHistoryRow = useMemo(
+    () => historyRows.find((r) => r.id === selectedHistoryId) ?? null,
+    [historyRows, selectedHistoryId],
+  );
 
   const activeRows = tab === 'recommended' ? filteredRecommended : filteredHistory;
 
@@ -960,47 +1033,82 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
           }}
         >
           <input
-            placeholder="Search actions..."
+            placeholder={tab === 'history' ? 'Search history...' : 'Search actions...'}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             style={{ flex: '1 1 200px', minWidth: '180px' }}
-            aria-label="Search actions"
+            aria-label={tab === 'history' ? 'Search history' : 'Search actions'}
           />
 
-          <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} aria-label="Type filter">
-            <option value="">All Types</option>
-            <option value="freeze">Freeze Asset</option>
-            <option value="revoke">Revoke Access</option>
-            <option value="notify">Notify Stakeholders</option>
-            <option value="escalate">Escalate Incident</option>
-            <option value="compliance">Apply Compliance Rule</option>
-            <option value="rotate">Rotate Key</option>
-            <option value="pause">Pause Transfer</option>
-            <option value="simulate">Simulate Action</option>
-            <option value="other">Other</option>
-          </select>
+          {tab === 'recommended' ? (
+            <>
+              <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} aria-label="Type filter">
+                <option value="">All Types</option>
+                <option value="freeze">Freeze Asset</option>
+                <option value="revoke">Revoke Access</option>
+                <option value="notify">Notify Stakeholders</option>
+                <option value="escalate">Escalate Incident</option>
+                <option value="compliance">Apply Compliance Rule</option>
+                <option value="rotate">Rotate Key</option>
+                <option value="pause">Pause Transfer</option>
+                <option value="simulate">Simulate Action</option>
+                <option value="other">Other</option>
+              </select>
 
-          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Status filter">
-            <option value="">All Statuses</option>
-            <option value="recommended">Recommended</option>
-            <option value="awaiting_approval">Awaiting Approval</option>
-            <option value="ready_to_execute">Ready to Execute</option>
-            <option value="simulation_passed">Simulation Passed</option>
-            <option value="executed">Executed</option>
-            <option value="execution_failed">Execution Failed</option>
-            <option value="cancelled">Cancelled</option>
-            <option value="rolled_back">Rolled Back</option>
-          </select>
+              <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Status filter">
+                <option value="">All Statuses</option>
+                <option value="recommended">Recommended</option>
+                <option value="awaiting_approval">Awaiting Approval</option>
+                <option value="ready_to_execute">Ready to Execute</option>
+                <option value="simulation_passed">Simulation Passed</option>
+                <option value="executed">Executed</option>
+                <option value="execution_failed">Execution Failed</option>
+                <option value="cancelled">Cancelled</option>
+                <option value="rolled_back">Rolled Back</option>
+              </select>
 
-          <select
-            value={approvalFilter}
-            onChange={(e) => setApprovalFilter(e.target.value)}
-            aria-label="Approval filter"
-          >
-            <option value="">All Approvals</option>
-            <option value="yes">Requires Approval</option>
-            <option value="no">No Approval Required</option>
-          </select>
+              <select
+                value={approvalFilter}
+                onChange={(e) => setApprovalFilter(e.target.value)}
+                aria-label="Approval filter"
+              >
+                <option value="">All Approvals</option>
+                <option value="yes">Requires Approval</option>
+                <option value="no">No Approval Required</option>
+              </select>
+            </>
+          ) : (
+            // DEDICATED Action History filters — event type + result. These NEVER include
+            // the Requires Approval / status active-action predicates, so no completed
+            // approval, review, blocked attempt, simulation, or execution is ever hidden.
+            <>
+              <select
+                value={historyEventFilter}
+                onChange={(e) => setHistoryEventFilter(e.target.value)}
+                aria-label="History event type filter"
+              >
+                <option value="">All Events</option>
+                <option value="response_action_approved">Response Action Approved</option>
+                <option value="response_action_approval_recorded">Approval Recorded</option>
+                <option value="response_action_rejected">Response Action Rejected</option>
+                <option value="response_action_approval_blocked">Approval Attempt Blocked</option>
+                <option value="response_action_executed">Response Action Executed</option>
+                <option value="recommendation_reviewed">AI Recommendation Reviewed</option>
+              </select>
+
+              <select
+                value={historyResultFilter}
+                onChange={(e) => setHistoryResultFilter(e.target.value)}
+                aria-label="History result filter"
+              >
+                <option value="">All Results</option>
+                <option value="Success">Success</option>
+                <option value="MFA Required">MFA Required</option>
+                <option value="Accepted">Accepted</option>
+                <option value="Rejected">Rejected</option>
+              </select>
+            </>
+          )}
         </div>
 
         <div
@@ -1153,82 +1261,119 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
               ) : (
                 <TableShell headers={HISTORY_HEADERS}>
                   {filteredHistory.map((row) => {
-                    const evSrc = evidenceSourcePill(row.evidenceSource, workspaceEvidenceSource);
+                    const evSrc = evidenceSourcePill(
+                      row.evidenceSource,
+                      workspaceEvidenceSource,
+                      row.evidenceSourceLabel,
+                    );
                     const isAiReview = row.recordType === 'ai_recommendation_review';
+                    const exactTime = formatExactTimestamp(row.time);
+                    const isSelected = row.id === selectedHistoryId;
 
                     return (
-                      <tr key={row.id}>
-                        <td style={{ fontFamily: 'monospace', fontSize: '0.75rem', whiteSpace: 'nowrap', maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis' }} title={row.id}>
-                          {row.id}
+                      <tr
+                        key={row.id}
+                        onClick={() => setSelectedHistoryId(isSelected ? null : row.id)}
+                        style={{ cursor: 'pointer', background: isSelected ? 'rgba(59,130,246,0.08)' : undefined }}
+                      >
+                        {/* EVENT — the operator-facing event label (never a raw enum), with
+                            the previous -> new lifecycle transition + quorum progress. */}
+                        <td style={{ maxWidth: '190px' }}>
+                          <div style={{ fontWeight: 600, fontSize: '0.82rem' }}>{row.eventLabel}</div>
+                          {row.previousStateLabel && row.newStateLabel ? (
+                            <div className="muted" style={{ marginTop: '0.15rem', fontSize: '0.68rem' }}>
+                              {row.previousStateLabel} → {row.newStateLabel}
+                            </div>
+                          ) : null}
+                          {row.approvalProgressLabel ? (
+                            <div className="muted" style={{ fontSize: '0.68rem' }}>
+                              {row.approvalProgressLabel} approvals
+                            </div>
+                          ) : null}
                         </td>
-                        <td style={{ maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {row.action}
+                        {/* ACTION — the human action TITLE ("Notify Security Team"). */}
+                        <td style={{ maxWidth: '170px' }}>
+                          <span style={{ fontSize: '0.82rem' }}>{row.actionTitle ?? '—'}</span>
                           {isAiReview ? (
                             <div style={{ marginTop: '0.2rem' }}>
                               <StatusPill label="AI recommendation" variant="info" />
                             </div>
                           ) : null}
-                          {row.approvalEvent && (row.previousLifecycle || row.progressLabel) ? (
-                            <div className="muted" style={{ marginTop: '0.2rem', fontSize: '0.68rem', whiteSpace: 'normal' }}>
-                              {row.previousLifecycle && row.newLifecycle ? (
-                                <span>{row.previousLifecycle} → {row.newLifecycle}</span>
-                              ) : null}
-                              {row.progressLabel ? (
-                                <span>{row.previousLifecycle && row.newLifecycle ? ' · ' : ''}{row.progressLabel} approvals</span>
-                              ) : null}
-                            </div>
-                          ) : null}
                         </td>
-                        <td style={{ fontSize: '0.8rem' }}>
-                          {isAiReview ? 'AI Investigation' : row.type}
-                        </td>
-                        <td style={{ fontSize: '0.8rem', maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <td style={{ fontSize: '0.8rem' }}>{row.typeLabel}</td>
+                        <td style={{ fontSize: '0.8rem', maxWidth: '130px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {row.result}
                         </td>
-                        <td style={{ fontSize: '0.8rem' }}>{row.actorSystem}</td>
-                        <td style={{ fontSize: '0.78rem', whiteSpace: 'nowrap' }}>{fmt(row.time)}</td>
+                        {/* ACTOR — account identity (email/name). The raw UUID is only a
+                            tooltip/technical hint, never the primary label. */}
+                        <td style={{ fontSize: '0.8rem' }} title={row.actorId ?? undefined}>
+                          {row.actorDisplay}
+                        </td>
+                        {/* TIME — readable relative time in the table; the EXACT persisted
+                            timestamp is on hover + as the accessible label. */}
+                        <td style={{ fontSize: '0.78rem', whiteSpace: 'nowrap' }}>
+                          <time dateTime={row.time ?? undefined} title={exactTime} aria-label={exactTime}>
+                            {formatRelativeTime(row.time)}
+                          </time>
+                        </td>
                         <td><StatusPill label={evSrc.label} variant={evSrc.variant} /></td>
                         <td>
-                          {row.decision === 'approved' ? (
-                            <StatusPill label="Approved" variant="success" />
-                          ) : row.decision === 'accepted' ? (
-                            <StatusPill label="Accepted" variant="success" />
-                          ) : row.decision === 'rejected' ? (
-                            <StatusPill label="Rejected" variant="neutral" />
+                          {row.decisionLabel ? (
+                            <StatusPill
+                              label={row.decisionLabel}
+                              variant={
+                                row.decision === 'approved' || row.decision === 'accepted'
+                                  ? 'success'
+                                  : row.decision === 'rejected'
+                                    ? 'neutral'
+                                    : 'info'
+                              }
+                            />
                           ) : (
-                            <span className="muted" style={{ fontSize: '0.78rem' }}>—</span>
+                            <span className="muted" style={{ fontSize: '0.78rem' }}>Not applicable</span>
                           )}
                         </td>
-                        <td>
-                          {isAiReview ? (
-                            <StatusPill label="No" variant="neutral" />
-                          ) : (
-                            <span className="muted" style={{ fontSize: '0.78rem' }}>—</span>
-                          )}
-                        </td>
-                        <td style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}>
-                          {(isAiReview || row.approvalEvent) && row.linkedIncident ? (
-                            <span style={{ display: 'inline-flex', gap: '0.5rem' }}>
-                              <Link href={`/incidents/${row.linkedIncident}`} prefetch={false} style={{ fontSize: '0.75rem' }}>
+                        {/* OUTCOME — event-specific, never a bare context-free dash. An
+                            approval reads "Approval quorum reached", not an execution. */}
+                        <td style={{ fontSize: '0.78rem', maxWidth: '150px' }}>{row.outcome}</td>
+                        <td style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }} onClick={(e) => e.stopPropagation()}>
+                          <span style={{ display: 'inline-flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                            {row.actionRoute ? (
+                              <Link href={row.actionRoute} prefetch={false} style={{ fontSize: '0.75rem' }}>
+                                View Action
+                              </Link>
+                            ) : null}
+                            {row.incidentRoute ? (
+                              <Link href={row.incidentRoute} prefetch={false} style={{ fontSize: '0.75rem' }}>
                                 View Incident
                               </Link>
-                              <Link
-                                href={`/evidence?incident_id=${row.linkedIncident}`}
-                                prefetch={false}
-                                style={{ fontSize: '0.75rem' }}
-                              >
-                                View Evidence
+                            ) : null}
+                            {row.auditRoute ? (
+                              <Link href={row.auditRoute} prefetch={false} style={{ fontSize: '0.75rem' }}>
+                                View Audit Event
                               </Link>
-                            </span>
-                          ) : (
-                            <span className="muted" style={{ fontSize: '0.78rem' }}>—</span>
-                          )}
+                            ) : null}
+                            <button
+                              type="button"
+                              onClick={() => setSelectedHistoryId(isSelected ? null : row.id)}
+                              style={{ background: 'none', border: 'none', padding: 0, color: 'var(--accent, #3b82f6)', cursor: 'pointer', fontSize: '0.75rem' }}
+                            >
+                              {isSelected ? 'Hide details' : 'View details'}
+                            </button>
+                          </span>
                         </td>
                       </tr>
                     );
                   })}
                 </TableShell>
               )}
+              {tab === 'history' && selectedHistoryRow ? (
+                <HistoryEventDetails
+                  row={selectedHistoryRow}
+                  workspaceEvidenceSource={workspaceEvidenceSource}
+                  onClose={() => setSelectedHistoryId(null)}
+                />
+              ) : null}
             </div>
 
             <div style={{ display: 'grid', gap: '1rem' }}>
@@ -1267,6 +1412,137 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
       </section>
     </main>
   );
+}
+
+// Event-details view for a selected Action History row. Renders the FULL canonical
+// event from the backend DTO fields the row already carries — the human event label,
+// action title + id, incident, actor account identity (with the raw UUID kept as a
+// separate copyable technical field), the exact persisted timestamp, previous -> new
+// lifecycle, decision, approval progress, result, approval policy, evidence provenance,
+// audit event id, a safe event explanation, and the related links. Sensitive
+// authentication metadata is never present (the backend strips it from event_metadata).
+function HistoryEventDetails({
+  row,
+  workspaceEvidenceSource,
+  onClose,
+}: {
+  row: HistoryRow;
+  workspaceEvidenceSource: string;
+  onClose: () => void;
+}) {
+  const evSrc = evidenceSourcePill(row.evidenceSource, workspaceEvidenceSource, row.evidenceSourceLabel);
+  const rows: Array<{ label: string; value: ReactNode }> = [
+    { label: 'Event', value: row.eventLabel },
+    { label: 'Type', value: row.typeLabel },
+    { label: 'Action', value: row.actionTitle ?? '—' },
+    {
+      label: 'Action ID',
+      value: (() => {
+        const raw = row.eventMetadata?.action_id;
+        return typeof raw === 'string' && raw ? <code style={{ fontSize: '0.72rem' }}>{raw}</code> : '—';
+      })(),
+    },
+    { label: 'Incident', value: row.incidentShortId ?? '—' },
+    { label: 'Actor', value: row.actorEmail ?? row.actorDisplay },
+    {
+      label: 'Actor ID (technical)',
+      value: row.actorId ? <code style={{ fontSize: '0.72rem' }}>{row.actorId}</code> : '—',
+    },
+    { label: 'Exact timestamp', value: formatExactTimestamp(row.time) },
+    { label: 'Previous state', value: row.previousStateLabel ?? '—' },
+    { label: 'New state', value: row.newStateLabel ?? '—' },
+    { label: 'Decision', value: row.decisionLabel ?? 'Not applicable' },
+    { label: 'Approval progress', value: row.approvalProgressLabel ? `${row.approvalProgressLabel} approvals` : '—' },
+    { label: 'Result', value: row.result },
+    { label: 'Outcome', value: row.outcome },
+    { label: 'Approval policy', value: row.approvalPolicy ? humanizeApprovalPolicy(row.approvalPolicy) : '—' },
+    { label: 'Evidence provenance', value: <StatusPill label={evSrc.label} variant={evSrc.variant} /> },
+    { label: 'Execution reference', value: row.executionReference ? <code style={{ fontSize: '0.72rem' }}>{row.executionReference}</code> : '—' },
+    { label: 'Audit event ID', value: <code style={{ fontSize: '0.72rem' }}>{row.id}</code> },
+  ];
+
+  return (
+    <div
+      style={{
+        marginTop: '1rem',
+        border: '1px solid var(--border, #e5e7eb)',
+        borderRadius: '0.5rem',
+        padding: '1rem',
+        background: 'var(--panel, rgba(0,0,0,0.02))',
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+        <h3 style={{ margin: 0, fontSize: '0.95rem' }}>{row.eventLabel}</h3>
+        <button
+          type="button"
+          onClick={onClose}
+          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted, #6b7280)', fontSize: '0.85rem' }}
+          aria-label="Close event details"
+        >
+          Close
+        </button>
+      </div>
+      <p className="muted" style={{ marginTop: 0, fontSize: '0.8rem' }}>
+        {historyEventExplanation(row)}
+      </p>
+      <dl style={{ display: 'grid', gridTemplateColumns: 'minmax(140px, max-content) 1fr', gap: '0.35rem 1rem', margin: 0, fontSize: '0.82rem' }}>
+        {rows.map((item) => (
+          <Fragment key={item.label}>
+            <dt className="muted" style={{ fontWeight: 500 }}>{item.label}</dt>
+            <dd style={{ margin: 0 }}>{item.value}</dd>
+          </Fragment>
+        ))}
+      </dl>
+      {row.note ? (
+        <p style={{ marginTop: '0.6rem', fontSize: '0.8rem' }}>
+          <span className="muted" style={{ fontWeight: 500 }}>Note: </span>
+          {row.note}
+        </p>
+      ) : null}
+      <div style={{ marginTop: '0.75rem', display: 'inline-flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+        {row.actionRoute ? (
+          <Link href={row.actionRoute} prefetch={false} style={{ fontSize: '0.8rem' }}>View Action</Link>
+        ) : null}
+        {row.incidentRoute ? (
+          <Link href={row.incidentRoute} prefetch={false} style={{ fontSize: '0.8rem' }}>View Incident</Link>
+        ) : null}
+        {row.evidenceRoute ? (
+          <Link href={row.evidenceRoute} prefetch={false} style={{ fontSize: '0.8rem' }}>View Evidence</Link>
+        ) : null}
+        {row.auditRoute ? (
+          <Link href={row.auditRoute} prefetch={false} style={{ fontSize: '0.8rem' }}>View Audit Event</Link>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+// A safe, human explanation of what an event means — no secrets, no raw metadata.
+function historyEventExplanation(row: HistoryRow): string {
+  switch (row.eventType) {
+    case 'response_action_approved':
+      return 'A governed response-action approval reached quorum and the action is cleared to proceed toward execution.';
+    case 'response_action_approval_recorded':
+      return 'An approval decision was recorded, but the required approval quorum has not yet been met.';
+    case 'response_action_rejected':
+      return 'A governed response-action approval was rejected; the action will not proceed.';
+    case 'response_action_approval_blocked':
+      return 'An approval attempt was blocked because the session had not completed the required MFA step-up.';
+    case 'response_action_executed':
+      return 'The approved response action was executed.';
+    case 'recommendation_reviewed':
+      return 'An AI-generated recommendation was reviewed by an operator. This is a review record, separate from a response-action approval.';
+    default:
+      return `${row.eventLabel} — a workspace audit event.`;
+  }
+}
+
+function humanizeApprovalPolicy(policy: string): string {
+  return policy
+    .split(/[_\s]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
 }
 
 function ActionDetailPanel({

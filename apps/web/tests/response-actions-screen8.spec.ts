@@ -68,13 +68,18 @@ test('Recommended Actions table uses exact columns array', () => {
 
 test('Action History table uses exact columns array', () => {
   const src = pageSource();
-  expect(src).toContain("'Action ID'");
-  expect(src).toContain("'Action'");
-  expect(src).toContain("'Type'");
-  expect(src).toContain("'Result'");
-  expect(src).toContain("'Actor/System'");
-  expect(src).toContain("'Time'");
-  expect(src).toContain("'Evidence Source'");
+  // Canonical Action History columns: the EVENT label and the action TITLE are separate,
+  // the actor shows the account identity (not a raw UUID column), and the meaningless
+  // "Executed" dash is replaced by an event-specific "Outcome" column.
+  const headers = src.slice(src.indexOf('const HISTORY_HEADERS'));
+  const headersBlock = headers.slice(0, headers.indexOf('];'));
+  ["'Event'", "'Action'", "'Type'", "'Result'", "'Actor'", "'Time'", "'Evidence Source'", "'Outcome'", "'Links'"].forEach(
+    (label) => expect(headersBlock).toContain(label),
+  );
+  // The old raw-UUID and always-dash columns are gone from the history headers.
+  expect(headersBlock).not.toContain("'Actor/System'");
+  expect(headersBlock).not.toContain("'Executed'");
+  expect(headersBlock).not.toContain("'Action ID'");
 });
 
 test('action detail panel exists with aria-label "Action detail panel"', () => {

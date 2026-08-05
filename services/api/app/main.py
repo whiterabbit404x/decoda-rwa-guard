@@ -4985,8 +4985,32 @@ def incidents_timeline_create(incident_id: str, payload: dict[str, Any], request
 
 
 @app.get('/history/actions', summary='List action history for alert/incident workflows')
-def history_actions(request: Request, object_type: str | None = None, object_id: str | None = None, limit: int = 200) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: list_action_history(request, object_type=object_type, object_id=object_id, limit=limit))
+def history_actions(
+    request: Request,
+    object_type: str | None = None,
+    object_id: str | None = None,
+    limit: int = 200,
+    event_type: str | None = None,
+    actor: str | None = None,
+    result: str | None = None,
+    incident_id: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: list_action_history(
+            request,
+            object_type=object_type,
+            object_id=object_id,
+            limit=limit,
+            event_type=event_type,
+            actor=actor,
+            result=result,
+            incident_id=incident_id,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    )
 
 
 @app.post('/history/actions', summary='Create an action history entry')
