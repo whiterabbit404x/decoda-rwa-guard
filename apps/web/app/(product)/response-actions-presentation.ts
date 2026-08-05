@@ -606,47 +606,99 @@ export function normalizeHistoryEventDto(raw: any): HistoryEventDto {
     };
   }
 
-  // Legacy fallback: reconstruct from the approval presentation (pre-DTO backend).
-  const p = approvalHistoryPresentation(raw);
+  // Legacy fallback (pre-DTO backend row). MUST branch on the event KIND first: the
+  // approval presentation maps an unknown kind to "Response Action Approved" / "Action
+  // Approval" / "Success", so routing a NON-approval audit row (e.g. a pre-DTO
+  // `response_action.created` / `response_action.executed`) through it would misrepresent
+  // a created/executed event as a successful approval. Only approval-domain rows use it;
+  // every other legacy row gets a truthful humanized label with no decision/lifecycle.
   const details = (raw?.details_json && typeof raw.details_json === 'object' ? raw.details_json : {}) as Record<string, unknown>;
   const eventId = String(raw?.id ?? '');
   const actionId = strOrNull(details.action_id);
   const incidentId = strOrNull(details.incident_id);
-  return {
+  const eventTypeRaw =
+    String(details.event_type ?? '').trim() || String(raw?.action_type ?? '').trim();
+  const shared = {
     eventId,
-    eventType: String(details.event_type ?? actionHistoryEventKind(raw)),
-    eventLabel: p.label,
-    typeLabel: p.typeLabel,
     actionId,
-    actionTitle: p.actionTitle,
-    actionKey: null,
     incidentId,
     incidentShortId: incidentId ? `INC-${incidentId.slice(0, 8)}` : null,
     actorId: strOrNull(raw?.actor_id),
-    actorDisplayName: p.actor,
-    actorEmail: p.actor && p.actor.includes('@') ? p.actor : null,
     actorType: strOrNull(raw?.actor_type),
     occurredAt: strOrNull(raw?.timestamp) ?? strOrNull(raw?.created_at),
-    previousStateLabel: p.previousLifecycle,
-    newStateLabel: p.newLifecycle,
-    decision: p.decision,
-    decisionLabel: p.decisionLabel,
-    result: p.result,
-    resultLabel: p.result,
-    approvalCount: numOrNull(details.approved_count),
-    requiredApprovalCount: numOrNull(details.required_quorum),
-    approvalProgressLabel: p.progressLabel,
-    executionReference: strOrNull(details.execution_reference ?? details.safe_tx_hash),
     evidenceSource: strOrNull(details.evidence_source ?? details.source),
     evidenceSourceLabel: null,
-    approvalPolicy: strOrNull(details.policy),
-    note: p.note,
+    executionReference: strOrNull(details.execution_reference ?? details.safe_tx_hash),
     actionRoute: actionId ? `/response-actions?action_id=${actionId}` : null,
     incidentRoute: incidentId ? `/incidents/${incidentId}` : null,
     evidenceRoute: incidentId ? `/evidence?incident_id=${incidentId}` : null,
     auditRoute: eventId ? `/history?event_id=${eventId}` : null,
     eventMetadata: details,
   };
+
+  if (isApprovalHistoryEvent(raw)) {
+    const p = approvalHistoryPresentation(raw);
+    return {
+      ...shared,
+      eventType: eventTypeRaw || String(actionHistoryEventKind(raw)),
+      eventLabel: p.label,
+      typeLabel: p.typeLabel,
+      actionTitle: p.actionTitle,
+      actionKey: null,
+      actorDisplayName: p.actor,
+      actorEmail: p.actor && p.actor.includes('@') ? p.actor : null,
+      previousStateLabel: p.previousLifecycle,
+      newStateLabel: p.newLifecycle,
+      decision: p.decision,
+      decisionLabel: p.decisionLabel,
+      result: p.result,
+      resultLabel: p.result,
+      approvalCount: numOrNull(details.approved_count),
+      requiredApprovalCount: numOrNull(details.required_quorum),
+      approvalProgressLabel: p.progressLabel,
+      approvalPolicy: strOrNull(details.policy),
+      note: p.note,
+    };
+  }
+
+  // Non-approval legacy audit row: a truthful, humanized label (never a raw enum, never
+  // "Approved"/"Success"), with no decision/lifecycle/quorum fields.
+  const detailsActor = strOrNull(details.actor);
+  const resultText = strOrNull(details.result_summary ?? details.result);
+  return {
+    ...shared,
+    eventType: eventTypeRaw,
+    eventLabel: humanizeEventKey(eventTypeRaw),
+    typeLabel: 'Audit Event',
+    actionTitle: strOrNull(details.action_title),
+    actionKey: null,
+    actorDisplayName: detailsActor && detailsActor !== shared.actorId ? detailsActor : null,
+    actorEmail: detailsActor && detailsActor.includes('@') ? detailsActor : null,
+    previousStateLabel: null,
+    newStateLabel: null,
+    decision: null,
+    decisionLabel: null,
+    result: resultText ?? 'Recorded',
+    resultLabel: resultText ?? 'Recorded',
+    approvalCount: null,
+    requiredApprovalCount: null,
+    approvalProgressLabel: null,
+    approvalPolicy: null,
+    note: strOrNull(details.note),
+  };
+}
+
+/** Humanize a snake_case/dotted event key into an operator label (rollout fallback only;
+ *  the backend DTO's event_label is authoritative in steady state). Never emits a raw
+ *  underscore/dot. */
+function humanizeEventKey(raw: string): string {
+  return (
+    raw
+      .split(/[_.\s]+/)
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ') || 'Audit Event'
+  );
 }
 
 /**

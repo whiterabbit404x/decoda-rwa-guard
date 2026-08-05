@@ -221,3 +221,43 @@ test('legacy fallback never surfaces a raw enum as the actor label', () => {
   // The captured email is used, never the bare UUID.
   expect(dto.actorEmail).toBe('ops@example.com');
 });
+
+// The legacy fallback MUST branch on event kind: a pre-DTO NON-approval audit row (e.g.
+// a created / executed event) must NEVER be misrepresented as "Response Action Approved"
+// with a "Success" result — that would corrupt the audit stream during a rollout.
+test('legacy fallback does not render a non-approval event as an approval', () => {
+  const created = normalizeHistoryEventDto({
+    id: 'legacy-created-1',
+    action_type: 'response_action.created',
+    object_type: 'response_action',
+    timestamp: '2026-08-05T09:00:00+00:00',
+    details_json: {}, // pre-DTO: no event_type / display_label
+  });
+  expect(created.eventLabel).toBe('Response Action Created');
+  expect(created.eventLabel).not.toBe('Response Action Approved');
+  expect(created.typeLabel).not.toBe('Action Approval');
+  expect(created.decision).toBeNull();
+  expect(created.result).not.toBe('Success');
+
+  const executed = normalizeHistoryEventDto({
+    id: 'legacy-exec-1',
+    action_type: 'response_action.executed',
+    object_type: 'response_action',
+    timestamp: '2026-08-05T09:05:00+00:00',
+    details_json: {},
+  });
+  expect(executed.eventLabel).toBe('Response Action Executed');
+  expect(executed.eventLabel).not.toBe('Response Action Approved');
+  expect(executed.decision).toBeNull();
+
+  // An approval-domain legacy row still maps to the approval presentation.
+  const approved = normalizeHistoryEventDto({
+    id: 'legacy-approve-1',
+    action_type: 'response_action.approved',
+    object_type: 'response_action',
+    timestamp: '2026-08-05T09:10:00+00:00',
+    details_json: {},
+  });
+  expect(approved.eventLabel).toBe('Response Action Approved');
+  expect(approved.typeLabel).toBe('Action Approval');
+});

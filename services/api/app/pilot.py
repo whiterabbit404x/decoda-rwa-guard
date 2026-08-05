@@ -17670,11 +17670,20 @@ def list_action_history(
     event_type_filter = str(event_type or '').strip().lower() or None
     date_from_filter = str(date_from or '').strip() or None
     date_to_filter = str(date_to or '').strip() or None
+    # The dotted persisted action_type(s) that map to the canonical event_type filter, so
+    # a row without an explicit details_json.event_type still matches in SQL.
+    event_type_action_candidates = (
+        [at for at, et in _ACTION_HISTORY_EVENT_TYPE_BY_ACTION_TYPE.items() if et == event_type_filter]
+        if event_type_filter else []
+    )
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         workspace_id = workspace_context['workspace_id']
+        # The HISTORY filters (event_type, result, incident) are pushed INTO the SQL WHERE
+        # clause so they apply BEFORE the LIMIT — a matching older audit row can never be
+        # hidden behind newer non-matching rows (fetch-then-filter would silently drop it).
         rows = connection.execute(
             '''
             SELECT id, actor_type, actor_id, object_type, object_id, action_type, timestamp, details_json
@@ -17685,6 +17694,14 @@ def list_action_history(
               AND (%s::text IS NULL OR actor_id::text = %s::text)
               AND (%s::timestamptz IS NULL OR timestamp >= %s::timestamptz)
               AND (%s::timestamptz IS NULL OR timestamp <= %s::timestamptz)
+              AND (%s::text IS NULL OR object_id = %s::text OR details_json->>'incident_id' = %s::text)
+              AND (%s::text IS NULL
+                   OR details_json->>'event_type' = %s::text
+                   OR action_type = %s::text
+                   OR action_type = ANY(%s::text[]))
+              AND (%s::text IS NULL
+                   OR LOWER(details_json->>'result') = %s::text
+                   OR LOWER(details_json->>'result_summary') = %s::text)
             ORDER BY timestamp DESC, id DESC
             LIMIT %s
             ''',
@@ -17695,6 +17712,9 @@ def list_action_history(
                 actor_filter, actor_filter,
                 date_from_filter, date_from_filter,
                 date_to_filter, date_to_filter,
+                incident_filter, incident_filter, incident_filter,
+                event_type_filter, event_type_filter, event_type_filter, event_type_action_candidates,
+                result_filter, result_filter, result_filter,
                 max_limit,
             ),
         ).fetchall()
@@ -17717,9 +17737,11 @@ def list_action_history(
             build_action_history_event_dto(r, actor_identities=actor_identities, action_types=action_types)
             for r in raw_rows
         ]
-        # Post-enrichment HISTORY filters (matched against the CANONICAL DTO fields so an
-        # operator can filter by the same labels/ids they see — never by active-action
-        # predicates).
+        # Secondary post-enrichment guard, matched against the CANONICAL DTO fields. The
+        # SQL WHERE clause above is authoritative (it filters before LIMIT); this only
+        # re-checks the same predicates against the derived event_type/result so the
+        # canonical mapping (e.g. an action_type with no explicit details.event_type) is
+        # honored consistently. It never applies an active-action predicate.
         if event_type_filter:
             events = [
                 e for e in events

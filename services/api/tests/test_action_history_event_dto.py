@@ -326,6 +326,26 @@ def test_history_enforces_workspace_isolation(monkeypatch):
     assert 'workspace_id = %s' in at_sql
 
 
+# 9.9b — the history filters are pushed INTO the SQL WHERE clause (before LIMIT), so a
+#        matching older audit row can never be hidden behind newer non-matching rows.
+def test_history_filters_are_applied_in_sql_before_limit(monkeypatch):
+    conn = _HistoryConn(history_rows=[_approval_row()])
+    _patch_list(monkeypatch, conn)
+    pilot.list_action_history(
+        _req(), event_type='response_action_approved', result='Success', incident_id=INCIDENT,
+    )
+    history_sql = next(sql for sql, _ in conn.executed if 'FROM action_history' in sql)
+    # The filter predicates live in the WHERE clause, ahead of the LIMIT.
+    where = history_sql[: history_sql.index('LIMIT')]
+    assert "details_json->>'incident_id'" in where
+    assert "details_json->>'event_type'" in where
+    assert "details_json->>'result'" in where or "details_json->>'result_summary'" in where
+    assert 'ORDER BY timestamp DESC, id DESC' in history_sql
+    # The event_type filter also matches by the mapped dotted action_type candidates.
+    params_for_history = next(p for sql, p in conn.executed if 'FROM action_history' in sql)
+    assert 'response_action.approved' in list(params_for_history[17])
+
+
 # 9.11b — an incident filter narrows to the matching incident only.
 def test_history_incident_filter(monkeypatch):
     other = _approval_row(id='evt-2', details_json={
