@@ -36,7 +36,14 @@ export default function SecuritySettingsPageClient() {
   const [secureSessionError, setSecureSessionError] = useState('');
   const [retryingSecureSession, setRetryingSecureSession] = useState(false);
 
-  const [mfaSetup, setMfaSetup] = useState<{ otpauth_uri: string; secret: string | null } | null>(null);
+  const [mfaSetup, setMfaSetup] = useState<{ enrollment_id: string | null; otpauth_uri: string; secret: string | null; expires_at: string | null } | null>(null);
+  // The manual setup key is only rendered when the operator deliberately reveals it,
+  // so a plaintext TOTP secret is never left sitting on the page longer than needed.
+  const [revealSetupKey, setRevealSetupKey] = useState(false);
+  // Guards against a double-fire of Enroll (rapid double-click / duplicate handler)
+  // creating a second pending enrollment and rotating the secret out from under the
+  // one the operator just scanned.
+  const enrollInFlight = useRef(false);
   const [mfaCode, setMfaCode] = useState('');
   const [disableCode, setDisableCode] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
@@ -120,15 +127,25 @@ export default function SecuritySettingsPageClient() {
     }
   }
 
-  async function startMfaEnrollment() {
+  async function startMfaEnrollment(options?: { regenerate?: boolean }) {
+    // Single-flight: never send a second Enroll while one is in flight. A duplicate
+    // request would mint a new pending secret and invalidate the one being scanned.
+    if (enrollInFlight.current) {
+      return;
+    }
+    enrollInFlight.current = true;
     setSubmitting(true);
     setMfaStatus('');
     setMfaError('');
     try {
       const enrollment = await enrollMfa();
       setMfaSetup(enrollment);
+      setRevealSetupKey(false);
+      setMfaCode('');
       setRecoveryCodes([]);
-      setMfaStatus('Scan the setup key in your authenticator app, then enter a verification code to finish.');
+      setMfaStatus(options?.regenerate
+        ? 'A new setup key was generated. Your previous authenticator entry no longer works — remove it and scan this new key, then enter a verification code to finish.'
+        : 'Scan the setup key in your authenticator app, then enter a verification code to finish.');
     } catch (error) {
       // Keep the failure honest and specific: a blocked enrollment must never read as if
       // a challenge/email was delivered, and a secure-session failure is distinct from an
@@ -139,6 +156,7 @@ export default function SecuritySettingsPageClient() {
         setMfaError(error instanceof Error ? `MFA enrollment failed: ${error.message}` : 'MFA enrollment failed.');
       }
     } finally {
+      enrollInFlight.current = false;
       setSubmitting(false);
     }
   }
@@ -148,16 +166,19 @@ export default function SecuritySettingsPageClient() {
     setMfaStatus('');
     setMfaError('');
     try {
-      const result = await confirmMfaEnrollment(mfaCode);
+      const result = await confirmMfaEnrollment(mfaCode, mfaSetup?.enrollment_id ?? null);
       setRecoveryCodes(result.recovery_codes);
       setRecoveryCodesAcknowledged(false);
+      // Clear every trace of the pending secret from client state on success.
       setMfaSetup(null);
+      setRevealSetupKey(false);
       setMfaCode('');
       setMfaStatus('MFA enabled. Save your recovery codes now.');
     } catch (error) {
       if (isSecureSessionFailure(error)) {
         setSecureSessionError('Your secure session expired. Retry the secure session, then verify again.');
       } else {
+        // The backend returns a generic message; never surface secret/verification internals.
         setMfaError(error instanceof Error ? `MFA verification failed: ${error.message}` : 'MFA verification failed.');
       }
     } finally {
@@ -288,14 +309,26 @@ export default function SecuritySettingsPageClient() {
           {secureSessionNotice}
           {mfaSetup ? (
             <div>
-              <p className="muted">Scan this URI in your authenticator app:</p>
-              <pre>{mfaSetup.otpauth_uri}</pre>
-              {mfaSetup.secret ? <p className="muted">Secret: <code>{mfaSetup.secret}</code></p> : null}
+              <p className="muted">
+                Add this account to your authenticator app, then enter the 6-digit code it shows to finish.
+                The full setup URI is not kept on the page — use the button to open it, or reveal the manual key only if you need to type it.
+              </p>
+              <div className="buttonRow">
+                <a className="btn" href={mfaSetup.otpauth_uri}>Open in authenticator app</a>
+                <button type="button" onClick={() => setRevealSetupKey((value) => !value)}>
+                  {revealSetupKey ? 'Hide manual setup key' : 'Reveal manual setup key'}
+                </button>
+              </div>
+              {revealSetupKey && mfaSetup.secret ? (
+                <p className="muted">Manual setup key: <code data-testid="mfa-manual-key">{mfaSetup.secret}</code></p>
+              ) : null}
               <label className="label">Verification code</label>
               <input value={mfaCode} onChange={(event) => setMfaCode(event.target.value)} inputMode="numeric" />
               <div className="buttonRow">
                 <button type="button" onClick={() => void confirmMfa()} disabled={commandsDisabled || mfaCode.trim().length < 6}>Confirm MFA</button>
+                <button type="button" onClick={() => void startMfaEnrollment({ regenerate: true })} disabled={commandsDisabled}>Regenerate setup key</button>
               </div>
+              <p className="muted">Regenerating creates a new secret and invalidates the previous authenticator entry, so you must remove the old one and scan the new key.</p>
             </div>
           ) : null}
           {user?.mfa_enabled ? (

@@ -38,7 +38,7 @@ from services.api.app.db_failure import (
     extract_db_host_from_dsn,
     normalize_db_error_snippet,
 )
-from services.api.app.secret_crypto import decrypt_secret, encrypt_secret, read_encrypted_env, validate_encryption_bootstrap
+from services.api.app.secret_crypto import SECRET_SCHEME_V1, SECRET_SCHEME_V2, decrypt_secret, encrypt_secret, read_encrypted_env, validate_encryption_bootstrap
 from services.api.app.managed_keys import (
     load_managed_key,
     rotate_managed_key,
@@ -120,6 +120,23 @@ EMAIL_VERIFICATION_TTL_MINUTES = 60 * 24
 PASSWORD_RESET_TTL_MINUTES = 30
 SESSION_TTL_HOURS = 24
 MFA_RECOVERY_CODE_COUNT = 10
+# A pending TOTP enrollment is short-lived: the operator scans the setup key and
+# confirms a code within a few minutes. Bounding the lifetime means an exposed or
+# abandoned pending secret cannot be activated later, and forces a fresh secret if
+# the operator comes back after the window closes.
+MFA_ENROLLMENT_TTL_SECONDS = 10 * 60
+# Internal, non-sensitive reason codes for a rejected MFA confirmation. These are
+# logged and attached to audit metadata for diagnostics; the client always receives
+# the same generic message so verification internals are never revealed. A raw TOTP
+# secret or submitted OTP must never appear here or in any log line.
+MFA_CONFIRM_REASON_NOT_FOUND = 'pending_enrollment_not_found'
+MFA_CONFIRM_REASON_REPLACED = 'pending_enrollment_replaced'
+MFA_CONFIRM_REASON_EXPIRED = 'pending_enrollment_expired'
+MFA_CONFIRM_REASON_CODE_INVALID = 'totp_code_invalid'
+MFA_CONFIRM_REASON_CLOCK_WINDOW_MISS = 'totp_clock_window_miss'
+MFA_CONFIRM_REASON_ALREADY_CONSUMED = 'enrollment_already_consumed'
+# Generic, safe message returned for every confirmation failure.
+MFA_CONFIRM_GENERIC_MESSAGE = 'Invalid or expired verification code. Wait for a new code and try again.'
 REAUTHENTICATION_DEFAULT_MINUTES = 15
 WORKSPACE_PERMISSIONS = {
     'monitoring.configure',
@@ -3656,12 +3673,26 @@ def _totp_code(secret: str, at_time: datetime | None = None, digits: int = 6, pe
     return str(binary % (10 ** digits)).zfill(digits)
 
 
-def _verify_totp(secret: str, code: str) -> bool:
+# Verification tolerates the current 30-second step plus one adjacent step on each
+# side (RFC 6238 §5.2) to absorb small clock skew and the seconds the operator
+# spends typing. It is deliberately NOT wider: a large window weakens the factor.
+_TOTP_PERIOD_SECONDS = 30
+_TOTP_ALLOWED_DRIFTS = (-_TOTP_PERIOD_SECONDS, 0, _TOTP_PERIOD_SECONDS)
+# A bounded scan (±10 steps) used ONLY to classify a rejection for internal reason
+# codes — never to accept a code. If a rejected code matches out here, the server
+# or device clock is skewed beyond the allowed window rather than the code being
+# wrong.
+_TOTP_DIAGNOSTIC_DRIFTS = tuple(range(-10 * _TOTP_PERIOD_SECONDS, 10 * _TOTP_PERIOD_SECONDS + 1, _TOTP_PERIOD_SECONDS))
+
+
+def _normalize_totp_code(code: str) -> str | None:
     candidate = re.sub(r'\s+', '', code or '')
-    if not re.fullmatch(r'\d{6}', candidate):
-        return False
+    return candidate if re.fullmatch(r'\d{6}', candidate) else None
+
+
+def _totp_code_matches(secret: str, candidate: str, drifts: tuple[int, ...]) -> bool:
     now = utc_now()
-    for drift in (-30, 0, 30):
+    for drift in drifts:
         candidate_time = now + timedelta(seconds=drift)
         if candidate_time.timestamp() < 0:
             continue
@@ -3670,15 +3701,56 @@ def _verify_totp(secret: str, code: str) -> bool:
     return False
 
 
+def _verify_totp(secret: str, code: str) -> bool:
+    candidate = _normalize_totp_code(code)
+    if candidate is None:
+        return False
+    return _totp_code_matches(secret, candidate, _TOTP_ALLOWED_DRIFTS)
+
+
+def _diagnose_totp_failure(secret: str, code: str) -> str:
+    """Return an internal reason code for an already-rejected code (never accepts).
+
+    Distinguishes a clock-window miss from a genuinely invalid code so the failure
+    can be logged safely. The submitted code and secret are never logged.
+    """
+    candidate = _normalize_totp_code(code)
+    if candidate is None:
+        return MFA_CONFIRM_REASON_CODE_INVALID
+    if _totp_code_matches(secret, candidate, _TOTP_DIAGNOSTIC_DRIFTS):
+        return MFA_CONFIRM_REASON_CLOCK_WINDOW_MISS
+    return MFA_CONFIRM_REASON_CODE_INVALID
+
+
+def _reject_mfa_confirmation(user_id: str | None, reason: str) -> HTTPException:
+    """Build the generic confirmation error while recording a safe reason code.
+
+    The client always receives the same generic message; the distinguishing reason
+    code is only logged (with no secret or OTP) for internal diagnostics.
+    """
+    logger.info('mfa_confirm_rejected reason=%s user_id=%s', reason, user_id)
+    return HTTPException(status_code=400, detail=MFA_CONFIRM_GENERIC_MESSAGE)
+
+
 def _encrypt_mfa_secret(user_id: str, secret: str) -> str:
     return encrypt_secret(secret, aad=f'user:{user_id}:totp')
+
+
+# Every scheme prefix that encrypt_secret() may emit. This MUST stay in lockstep
+# with secret_crypto: when the module rotated from v1 to v2, this guard was not
+# updated, so a v2-encrypted pending secret fell through to the "unencrypted"
+# branch and was handed to the TOTP verifier as raw ciphertext — making every
+# confirmation fail with "Invalid MFA code" in any environment with a real
+# encryption key. Deriving the prefixes from the scheme constants prevents that
+# class of drift from recurring.
+_ENCRYPTED_SECRET_PREFIXES = (f'{SECRET_SCHEME_V1}:', f'{SECRET_SCHEME_V2}:', 'legacy_b64:')
 
 
 def _decrypt_mfa_secret(user_id: str, stored_secret: str | None) -> str:
     value = str(stored_secret or '')
     if not value:
         return ''
-    if value.startswith(('aes256gcm:v1:', 'legacy_b64:')):
+    if value.startswith(_ENCRYPTED_SECRET_PREFIXES):
         return decrypt_secret(value, aad=f'user:{user_id}:totp')
     # Compatibility for pre-0092 unencrypted enrollment values.
     return value
@@ -3700,48 +3772,99 @@ def _replace_recovery_codes(connection: Any, user_id: str) -> list[str]:
     return recovery_codes
 
 
+def _totp_provisioning_uri(secret: str, issuer: str, email: str) -> str:
+    # Advertise exactly the parameters the verifier uses (SHA1 / 6 digits / 30s):
+    # the URI and _totp_code() must never diverge, or a valid-looking code from the
+    # authenticator would be rejected. The label is display-only and plays no part
+    # in verification.
+    label = f'{issuer}:{email}'
+    query = urlencode({'secret': secret, 'issuer': issuer, 'algorithm': 'SHA1', 'digits': 6, 'period': _TOTP_PERIOD_SECONDS})
+    return f'otpauth://totp/{urlencode({"label": label})[6:]}?{query}'
+
+
 def mfa_begin_enrollment(request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
+        # One pending enrollment per user. Writing a fresh id + secret here EXPLICITLY
+        # replaces (invalidates) any previous pending enrollment: confirmation is bound
+        # to this enrollment_id, so a stale authenticator entry from an earlier attempt
+        # can no longer be activated.
+        enrollment_id = str(uuid.uuid4())
+        expires_at = utc_now() + timedelta(seconds=MFA_ENROLLMENT_TTL_SECONDS)
         secret = base64.b32encode(secrets.token_bytes(20)).decode('ascii').rstrip('=')
         connection.execute(
-            'UPDATE users SET mfa_pending_secret = %s, updated_at = NOW() WHERE id = %s',
-            (_encrypt_mfa_secret(user['id'], secret), user['id']),
+            'UPDATE users SET mfa_pending_secret = %s, mfa_pending_enrollment_id = %s, '
+            'mfa_pending_created_at = NOW(), mfa_pending_expires_at = %s, updated_at = NOW() WHERE id = %s',
+            (_encrypt_mfa_secret(user['id'], secret), enrollment_id, expires_at, user['id']),
         )
         issuer = os.getenv('MFA_ISSUER', 'Decoda RWA Guard').strip() or 'Decoda RWA Guard'
-        label = f'{issuer}:{user["email"]}'
-        uri = f'otpauth://totp/{urlencode({"label": label})[6:]}?{urlencode({"secret": secret, "issuer": issuer, "algorithm": "SHA1", "digits": 6, "period": 30})}'
-        log_audit(connection, action='auth.mfa_enrollment_started', entity_type='user', entity_id=user['id'], request=request, user_id=user['id'], workspace_id=user.get('current_workspace_id'), metadata={})
+        uri = _totp_provisioning_uri(secret, issuer, user['email'])
+        # Audit metadata carries the non-sensitive enrollment_id only — never the secret.
+        log_audit(connection, action='auth.mfa_enrollment_started', entity_type='user', entity_id=user['id'], request=request, user_id=user['id'], workspace_id=user.get('current_workspace_id'), metadata={'enrollment_id': enrollment_id})
         connection.commit()
-        return {'secret': secret, 'otpauth_uri': uri, 'algorithm': 'SHA1', 'digits': 6, 'period': 30}
+        return {
+            'enrollment_id': enrollment_id,
+            'secret': secret,
+            'otpauth_uri': uri,
+            'expires_at': expires_at.isoformat(),
+            'algorithm': 'SHA1',
+            'digits': 6,
+            'period': _TOTP_PERIOD_SECONDS,
+        }
 
 
 def mfa_confirm_enrollment(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
-    code = str(payload.get('code', '')).strip()
-    if not code:
-        raise HTTPException(status_code=400, detail='MFA code is required.')
+    # Accept either `code` (current client) or the documented `verification_code`.
+    code = str(payload.get('code') or payload.get('verification_code') or '').strip()
+    provided_enrollment_id = str(payload.get('enrollment_id') or '').strip()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
-        row = connection.execute('SELECT mfa_pending_secret FROM users WHERE id = %s', (user['id'],)).fetchone()
-        secret = _decrypt_mfa_secret(user['id'], row['mfa_pending_secret'] if row else None)
+        row = connection.execute(
+            'SELECT mfa_pending_secret, mfa_pending_enrollment_id, mfa_pending_expires_at, mfa_enabled_at '
+            'FROM users WHERE id = %s',
+            (user['id'],),
+        ).fetchone()
+
+        stored_pending = row['mfa_pending_secret'] if row else None
+        if not stored_pending:
+            # No pending secret: either it was already activated/consumed or never began.
+            reason = MFA_CONFIRM_REASON_ALREADY_CONSUMED if (row and row.get('mfa_enabled_at')) else MFA_CONFIRM_REASON_NOT_FOUND
+            raise _reject_mfa_confirmation(user['id'], reason)
+
+        # Bind confirmation to the specific pending enrollment. A mismatch means the
+        # pending enrollment was replaced by a newer Enroll request (or a stale QR is
+        # being confirmed) — reject rather than confirm the wrong secret.
+        stored_enrollment_id = str(row.get('mfa_pending_enrollment_id') or '').strip()
+        if provided_enrollment_id and stored_enrollment_id and provided_enrollment_id.lower() != stored_enrollment_id.lower():
+            raise _reject_mfa_confirmation(user['id'], MFA_CONFIRM_REASON_REPLACED)
+
+        expires_at = row.get('mfa_pending_expires_at') if row else None
+        if expires_at is not None and utc_now() > expires_at:
+            raise _reject_mfa_confirmation(user['id'], MFA_CONFIRM_REASON_EXPIRED)
+
+        secret = _decrypt_mfa_secret(user['id'], stored_pending)
+        if not code or not _normalize_totp_code(code):
+            raise _reject_mfa_confirmation(user['id'], MFA_CONFIRM_REASON_CODE_INVALID)
         if not secret or not _verify_totp(secret, code):
-            raise HTTPException(status_code=400, detail='Invalid MFA code.')
+            raise _reject_mfa_confirmation(user['id'], _diagnose_totp_failure(secret, code) if secret else MFA_CONFIRM_REASON_NOT_FOUND)
+
         recovery_codes = _replace_recovery_codes(connection, user['id'])
         connection.execute(
-            'UPDATE users SET mfa_totp_secret = %s, mfa_pending_secret = NULL, mfa_enabled_at = NOW(), updated_at = NOW() WHERE id = %s',
+            'UPDATE users SET mfa_totp_secret = %s, mfa_pending_secret = NULL, mfa_pending_enrollment_id = NULL, '
+            'mfa_pending_created_at = NULL, mfa_pending_expires_at = NULL, mfa_enabled_at = NOW(), updated_at = NOW() WHERE id = %s',
             (_encrypt_mfa_secret(user['id'], secret), user['id']),
         )
         connection.execute(
             "UPDATE auth_sessions SET mfa_verified_at = NOW(), authentication_methods = '[\"password\",\"totp\"]'::jsonb, updated_at = NOW() WHERE session_token_hash = %s",
             (_current_session_hash(request),),
         )
-        log_audit(connection, action='auth.mfa_enabled', entity_type='user', entity_id=user['id'], request=request, user_id=user['id'], workspace_id=user.get('current_workspace_id'), metadata={})
+        log_audit(connection, action='auth.mfa_enabled', entity_type='user', entity_id=user['id'], request=request, user_id=user['id'], workspace_id=user.get('current_workspace_id'), metadata={'enrollment_id': stored_enrollment_id or None})
         connection.commit()
-        return {'mfa_enabled': True, 'recovery_codes': recovery_codes}
+        return {'mfa_enabled': True, 'recovery_codes': recovery_codes, 'enrollment_id': stored_enrollment_id or None}
 
 
 def mfa_regenerate_recovery_codes(payload: dict[str, Any], request: Request) -> dict[str, Any]:
