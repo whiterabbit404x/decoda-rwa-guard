@@ -664,11 +664,20 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
         if (incidentIdFilter) actionsQsParams.set('incident_id', incidentIdFilter);
         if (actionIdParam) actionsQsParams.set('action_id', actionIdParam);
         const actionsQs = `?${actionsQsParams.toString()}`;
+        // Every customer-facing read goes through the SAME-ORIGIN /api proxy. A direct
+        // `${apiUrl}/…` browser fetch silently fails in this deployment because only
+        // NEXT_PUBLIC_API_URL is exposed client-side and it is unset, so `apiUrl` is ''
+        // and the request hits the Next server (no such route) instead of the backend.
+        // That is why the persisted response-action approval audit event never reached
+        // Action History: the /history/actions read failed and the client rendered an
+        // empty audit stream, leaving only the recommendation-review row (derived from
+        // the already-proxied /api/response/actions payload). The Action History,
+        // Alerts and Incidents reads must use the proxy transport, like runtime-status.
         const [actionsRes, historyRes, alertsRes, incidentsRes, runtimePayload] = await Promise.all([
           fetch(`/api/response/actions${actionsQs}`, { headers, cache: 'no-store' }).catch(() => null),
-          fetch(`${apiUrl}/history/actions?limit=50`, { headers, cache: 'no-store' }).catch(() => null),
-          fetch(`${apiUrl}/alerts?limit=50`, { headers, cache: 'no-store' }).catch(() => null),
-          fetch(`${apiUrl}/incidents?limit=50`, { headers, cache: 'no-store' }).catch(() => null),
+          fetch(`/api/history/actions?limit=50`, { headers, cache: 'no-store' }).catch(() => null),
+          fetch(`/api/alerts?limit=50`, { headers, cache: 'no-store' }).catch(() => null),
+          fetch(`/api/incidents?limit=50`, { headers, cache: 'no-store' }).catch(() => null),
           fetchRuntimeStatusDeduped(headers).catch(() => null),
         ]);
 
