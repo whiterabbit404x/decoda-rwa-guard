@@ -178,6 +178,7 @@ type HistoryRow = {
   // Operator-facing EVENT label ("Response Action Approved") — distinct from the
   // action TITLE ("Notify Security Team"). Both are shown; neither is a raw enum.
   eventLabel: string;
+  actionId: string | null;
   actionTitle: string | null;
   actionKey: string | null;
   typeLabel: string;
@@ -198,6 +199,7 @@ type HistoryRow = {
   newStateLabel?: string | null;
   approvalProgressLabel?: string | null;
   approvalPolicy?: string | null;
+  approvalPolicyLabel?: string | null;
   executionReference?: string | null;
   note?: string | null;
   linkedIncident?: string | null;
@@ -537,6 +539,7 @@ function normalizeHistoryRow(input: any): HistoryRow {
     id: dto.eventId || '-',
     eventType: dto.eventType,
     eventLabel: dto.eventLabel,
+    actionId: dto.actionId,
     actionTitle: dto.actionTitle,
     actionKey: dto.actionKey,
     typeLabel: dto.typeLabel || 'Action Approval',
@@ -555,6 +558,7 @@ function normalizeHistoryRow(input: any): HistoryRow {
     newStateLabel: dto.newStateLabel,
     approvalProgressLabel: dto.approvalProgressLabel,
     approvalPolicy: dto.approvalPolicy,
+    approvalPolicyLabel: dto.approvalPolicyLabel,
     executionReference: dto.executionReference,
     note: dto.note,
     approvalEvent,
@@ -587,6 +591,7 @@ function normalizeAiReviewHistoryRow(input: any): HistoryRow {
     id: actionId,
     eventType: 'recommendation_reviewed',
     eventLabel: 'AI Recommendation Reviewed',
+    actionId: actionId && actionId !== '-' ? actionId : null,
     actionTitle: String(input?.title || input?.action_type || 'AI recommendation'),
     actionKey: input?.action_type ? String(input.action_type) : null,
     typeLabel: 'AI Recommendation Review',
@@ -1438,8 +1443,13 @@ function HistoryEventDetails({
     {
       label: 'Action ID',
       value: (() => {
-        const raw = row.eventMetadata?.action_id;
-        return typeof raw === 'string' && raw ? <code style={{ fontSize: '0.72rem' }}>{raw}</code> : '—';
+        // Prefer the backend-RESOLVED action id (the canonical DTO field), falling back
+        // to the raw persisted metadata for a legacy row. This is why an approval event
+        // whose sparse details lacked action_id still shows the real id once the read
+        // path resolves it from the object id.
+        const rawMeta = row.eventMetadata?.action_id;
+        const actionId = row.actionId || (typeof rawMeta === 'string' ? rawMeta : '');
+        return actionId ? <code style={{ fontSize: '0.72rem' }}>{actionId}</code> : '—';
       })(),
     },
     { label: 'Incident', value: row.incidentShortId ?? '—' },
@@ -1449,13 +1459,19 @@ function HistoryEventDetails({
       value: row.actorId ? <code style={{ fontSize: '0.72rem' }}>{row.actorId}</code> : '—',
     },
     { label: 'Exact timestamp', value: formatExactTimestamp(row.time) },
-    { label: 'Previous state', value: row.previousStateLabel ?? '—' },
-    { label: 'New state', value: row.newStateLabel ?? '—' },
+    // For an approval event the lifecycle transition is a domain invariant the backend
+    // always supplies; only a genuinely unrecoverable state shows a truthful "unavailable"
+    // (never a bare dash presented as if nothing happened).
+    { label: 'Previous state', value: row.previousStateLabel ?? (row.approvalEvent ? 'Previous state unavailable' : '—') },
+    { label: 'New state', value: row.newStateLabel ?? (row.approvalEvent ? 'New state unavailable' : '—') },
     { label: 'Decision', value: row.decisionLabel ?? 'Not applicable' },
     { label: 'Approval progress', value: row.approvalProgressLabel ? `${row.approvalProgressLabel} approvals` : '—' },
     { label: 'Result', value: row.result },
     { label: 'Outcome', value: row.outcome },
-    { label: 'Approval policy', value: row.approvalPolicy ? humanizeApprovalPolicy(row.approvalPolicy) : '—' },
+    {
+      label: 'Approval policy',
+      value: row.approvalPolicyLabel ?? (row.approvalPolicy ? humanizeApprovalPolicy(row.approvalPolicy) : '—'),
+    },
     { label: 'Evidence provenance', value: <StatusPill label={evSrc.label} variant={evSrc.variant} /> },
     { label: 'Execution reference', value: row.executionReference ? <code style={{ fontSize: '0.72rem' }}>{row.executionReference}</code> : '—' },
     { label: 'Audit event ID', value: <code style={{ fontSize: '0.72rem' }}>{row.id}</code> },
