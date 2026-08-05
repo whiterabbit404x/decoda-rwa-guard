@@ -16,12 +16,13 @@ import {
 import { resolveApiUrl } from '../dashboard-data';
 import { usePilotAuth } from '../pilot-auth-context';
 import {
+  approvalErrorRequiresStepUp,
   approvalResultMessage,
   canonicalLifecycleState,
   completeMfaHref,
   deriveRowApproval,
   isApprovalDecided,
-  isMfaBlockedApproval,
+  isSessionVerificationRequired,
   lifecycleLabelFor,
   normalizeApprovalGate,
   reconcileCount,
@@ -1219,6 +1220,16 @@ function ActionDetailPanel({
   onDataChanged: () => void;
 }) {
   const router = useRouter();
+  // Session step-up (Screen 8 approval reauthentication). `user.mfa_enabled` decides
+  // between the inline Verify Session flow (already enrolled — the reported case) and
+  // the enrollment fallback (not yet enrolled). Enrollment and session reauthentication
+  // are SEPARATE workflows, so an enrolled operator is never sent back through enrollment.
+  const { user, verifySessionStepUp } = usePilotAuth();
+  const mfaEnrolled = user?.mfa_enabled === true;
+  const [stepUpOpen, setStepUpOpen] = useState(false);
+  const [stepUpCode, setStepUpCode] = useState('');
+  const [stepUpError, setStepUpError] = useState<string | null>(null);
+  const [stepUpBusy, setStepUpBusy] = useState(false);
   const st = lifecyclePill(action.lifecycleState, action.lifecycleLabel);
   const imp = impactPill(action.impact);
   const evSrc = evidenceSourcePill(action.evidenceSource, workspaceEvidenceSource, action.provenanceLabel);
@@ -1256,7 +1267,7 @@ function ActionDetailPanel({
   // HAS approval permission). This renders a contextual "Approval blocked" panel
   // with a DISABLED Approve control and a Complete MFA call to action — never a
   // silent failure, and never generic "destructive" wording for a low-risk action.
-  const mfaBlocked = approvalPending && commandAllowsApprove && isMfaBlockedApproval(gate);
+  const mfaBlocked = approvalPending && commandAllowsApprove && isSessionVerificationRequired(gate);
   const showApproval = commandAllowsApprove && canApproveNow;
   // A truthful read-only reason for the OTHER blocked cases (wrong role / already
   // decided) — the operator always sees WHY, rather than a hidden control.
@@ -1275,10 +1286,42 @@ function ActionDetailPanel({
     gate?.requiredApprovalCount ?? action.requiredApprovalCount ?? (action.requiresApproval ? 1 : 0);
   const approvalNumerator = gate?.currentApprovalCount ?? action.currentApprovalCount ?? 0;
 
-  // Contextual "Approval blocked" panel rendered NEXT TO the approval controls (not
-  // only at the bottom of the page): the backend-composed reason (risk-classified,
-  // never title-string-matched), a disabled Approve control, and a Complete MFA CTA
-  // into the real security flow.
+  async function handleVerifySession() {
+    // Submit ONLY the current authenticator code to the dedicated, CSRF-protected
+    // session step-up endpoint (never the enrollment endpoint). On success the session
+    // is marked freshly MFA-verified, so we refresh the selected action DTO to flip the
+    // gate to approvable and keep the operator on the SAME action — the selected action,
+    // Review All filter, incident scope, and return URL are all preserved because
+    // nothing navigates away.
+    const code = stepUpCode.trim();
+    if (!/^\d{6}$/.test(code)) {
+      setStepUpError('Enter the 6-digit code from your authenticator app.');
+      return;
+    }
+    setStepUpBusy(true);
+    setStepUpError(null);
+    try {
+      await verifySessionStepUp(code);
+      setStepUpOpen(false);
+      setStepUpCode('');
+      onMessage('Session verified. You can now approve this action.');
+      // Re-fetch the canonical action DTO so the approval gate reflects the fresh
+      // step-up and the Approve control becomes enabled.
+      onDataChanged();
+      router.refresh();
+    } catch (err) {
+      setStepUpError(err instanceof Error ? err.message : 'Session verification failed. Enter a fresh code and try again.');
+    } finally {
+      setStepUpBusy(false);
+    }
+  }
+
+  // Contextual "Session verification required" panel rendered NEXT TO the approval
+  // controls (not only at the bottom of the page): the backend-composed reason
+  // (risk-classified, never title-string-matched), a disabled Approve control, and a
+  // Verify Session control that opens an inline TOTP step-up form. Enrollment and
+  // session reauthentication are SEPARATE — an already-enrolled operator verifies their
+  // session here; only a not-yet-enrolled operator is routed to the enrollment flow.
   const mfaBlockedPanel = mfaBlocked ? (
     <div
       role="alert"
@@ -1291,12 +1334,17 @@ function ActionDetailPanel({
         marginBottom: '0.5rem',
       }}
     >
-      <StatusPill label="Approval blocked" variant="warning" />
+      <StatusPill label="Session verification required" variant="warning" />
       <p style={{ margin: '0.4rem 0 0.15rem', fontWeight: 700, color: 'var(--warning-fg)' }}>
-        🔒 Complete MFA to approve
+        🔒 {mfaEnrolled ? 'Verify your session to approve' : 'Enable MFA to approve'}
       </p>
       <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-        {gate?.blockedReason ?? 'Complete MFA in this session before approving this response action.'}
+        {mfaEnrolled
+          ? 'Enter your current authenticator code to approve this action.'
+          : 'Enroll multi-factor authentication before approving this response action.'}
+      </p>
+      <p style={{ margin: '0.15rem 0 0', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+        {gate?.blockedReason ?? 'Complete a session verification before approving this response action.'}
       </p>
       {gate?.nextRequiredStep ? (
         <p style={{ margin: '0.15rem 0 0', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
@@ -1310,18 +1358,89 @@ function ActionDetailPanel({
           style={{ fontSize: '0.8rem' }}
           disabled
           aria-disabled="true"
-          title="Complete MFA in this session to approve this action"
+          title="Verify your session to approve this action"
         >
           🔒 Approve
         </button>
-        <Link href={mfaHref} prefetch={false} className="btn btn-primary" style={{ fontSize: '0.8rem' }}>
-          Complete MFA
-        </Link>
-        <Link href={mfaHref} prefetch={false} className="btn btn-secondary" style={{ fontSize: '0.8rem' }}>
-          Open Security Settings
-        </Link>
+        {mfaEnrolled ? (
+          <button
+            type="button"
+            className="btn btn-primary"
+            style={{ fontSize: '0.8rem' }}
+            aria-expanded={stepUpOpen}
+            onClick={() => { setStepUpError(null); setStepUpOpen(true); }}
+          >
+            Verify Session
+          </button>
+        ) : (
+          <>
+            <Link href={mfaHref} prefetch={false} className="btn btn-primary" style={{ fontSize: '0.8rem' }}>
+              Enroll MFA
+            </Link>
+            <Link href={mfaHref} prefetch={false} className="btn btn-secondary" style={{ fontSize: '0.8rem' }}>
+              Open Security Settings
+            </Link>
+          </>
+        )}
       </div>
     </div>
+  ) : null;
+
+  // The focused session step-up form (inline). Rendered whenever step-up is open AND
+  // the operator is enrolled — driven either by the Verify Session button above or by
+  // an approval command that came back needing a fresh step-up (assurance lapsed).
+  const stepUpForm = stepUpOpen && mfaEnrolled ? (
+    <form
+      role="dialog"
+      aria-label="Session verification"
+      onSubmit={(event) => { event.preventDefault(); void handleVerifySession(); }}
+      style={{
+        width: '100%',
+        border: '1px solid rgba(148, 163, 184, 0.35)',
+        background: 'rgba(15, 23, 42, 0.04)',
+        borderRadius: '10px',
+        padding: '0.75rem 0.85rem',
+        marginBottom: '0.5rem',
+      }}
+    >
+      <p style={{ margin: '0 0 0.15rem', fontWeight: 700, fontSize: '0.85rem' }}>Session verification</p>
+      <label htmlFor={`stepup-code-${action.id}`} className="label" style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.25rem' }}>
+        Current 6-digit authenticator code
+      </label>
+      <input
+        id={`stepup-code-${action.id}`}
+        name="stepup-code"
+        value={stepUpCode}
+        onChange={(event) => { setStepUpCode(event.target.value.replace(/\D/g, '').slice(0, 6)); setStepUpError(null); }}
+        inputMode="numeric"
+        autoComplete="one-time-code"
+        maxLength={6}
+        placeholder="123456"
+        aria-invalid={stepUpError ? true : undefined}
+        aria-describedby={stepUpError ? `stepup-error-${action.id}` : undefined}
+        disabled={stepUpBusy}
+        style={{ width: '100%', maxWidth: '9rem', letterSpacing: '0.2em', fontSize: '1rem', padding: '0.4rem 0.5rem' }}
+      />
+      {stepUpError ? (
+        <p id={`stepup-error-${action.id}`} role="alert" style={{ color: 'var(--danger-fg, #dc2626)', fontSize: '0.75rem', margin: '0.4rem 0 0' }}>
+          {stepUpError}
+        </p>
+      ) : null}
+      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.6rem' }}>
+        <button type="submit" className="btn btn-primary" style={{ fontSize: '0.8rem' }} disabled={stepUpBusy || stepUpCode.length !== 6}>
+          {stepUpBusy ? 'Verifying…' : 'Verify'}
+        </button>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          style={{ fontSize: '0.8rem' }}
+          disabled={stepUpBusy}
+          onClick={() => { setStepUpOpen(false); setStepUpError(null); setStepUpCode(''); }}
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
   ) : null;
 
   const approvalReadOnlyNotice = approvalReadOnlyReason ? (
@@ -1343,7 +1462,17 @@ function ActionDetailPanel({
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({}),
       });
-      const data = (await res.json().catch(() => ({}))) as { detail?: unknown; message?: string };
+      const data = (await res.json().catch(() => ({}))) as { detail?: unknown; message?: string; code?: unknown };
+      // If the session's step-up assurance lapsed between loading this action and
+      // clicking Approve, the command fails closed with a reauth/MFA requirement.
+      // Surface the Verify Session form (for an enrolled operator) instead of a bare,
+      // un-actionable backend error — no approval is retried automatically.
+      if (!res.ok && mfaEnrolled && approvalErrorRequiresStepUp(res.status, data)) {
+        setStepUpError(null);
+        setStepUpOpen(true);
+        onMessage('Verify your session to approve this action, then click Approve again.');
+        return;
+      }
       onMessage(approvalResultMessage(res.ok, data, 'Approval was blocked by the backend.'));
       // Re-fetch the canonical actions + summary so Pending Approval, the banner,
       // the row state, and the approval progress reflect the persisted quorum.
@@ -1804,9 +1933,11 @@ function ActionDetailPanel({
         // in the incident investigation. When the caller is not authorized we show a
         // truthful read-only reason instead of silently hiding the controls.
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-          {/* Session-MFA step-up missing: contextual blocked panel + disabled Approve
-              + Complete MFA CTA, shown NEXT TO the controls (not only at the bottom). */}
+          {/* Session step-up missing: contextual panel + disabled Approve + Verify
+              Session control, shown NEXT TO the controls (not only at the bottom). */}
           {mfaBlockedPanel}
+          {/* The inline TOTP step-up form (opened from Verify Session or an assurance lapse). */}
+          {stepUpForm}
           {/* Other blocked cases (wrong role / already decided): truthful read-only. */}
           {approvalReadOnlyNotice}
           {showApproval ? (
@@ -1853,9 +1984,11 @@ function ActionDetailPanel({
               <strong style={{ color: 'var(--warning-fg)' }}>Execution blocked:</strong> {executeBlockedReason}
             </p>
           ) : null}
-          {/* Session-MFA step-up missing: contextual blocked panel + disabled Approve
-              + Complete MFA CTA, shown NEXT TO the controls (not only at the bottom). */}
+          {/* Session step-up missing: contextual panel + disabled Approve + Verify
+              Session control, shown NEXT TO the controls (not only at the bottom). */}
           {mfaBlockedPanel}
+          {/* The inline TOTP step-up form (opened from Verify Session or an assurance lapse). */}
+          {stepUpForm}
           {/* Read-only approval explanation for the OTHER blocked cases (wrong role /
               already decided): say WHY rather than hiding the controls with no reason. */}
           {approvalReadOnlyNotice}

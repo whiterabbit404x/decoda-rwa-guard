@@ -98,6 +98,7 @@ from services.api.app.pilot import (
     mfa_disable,
     mfa_regenerate_recovery_codes,
     reauthenticate_user,
+    verify_session_step_up,
     get_workspace_access_control,
     update_workspace_auth_policy,
     get_workspace_oidc_config,
@@ -2842,6 +2843,16 @@ def auth_mfa_recovery_codes_regenerate(payload: dict[str, Any], request: Request
 def auth_reauthenticate(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     enforce_auth_rate_limit(request, 'reauthenticate')
     return with_auth_schema_json(lambda: reauthenticate_user(payload, request))
+
+
+@app.post('/auth/session/step-up', summary='Verify current session with a TOTP code (MFA step-up)')
+def auth_session_step_up(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    # Dedicated, CSRF-protected session step-up: the caller re-enters the current TOTP
+    # code from their already-enrolled authenticator to raise this session's assurance so
+    # sensitive commands (e.g. Screen 8 response-action approval) can proceed. NOT on the
+    # CSRF-exempt list, so it is CSRF-enforced like every other authenticated mutation.
+    enforce_auth_rate_limit(request, 'session_step_up')
+    return with_auth_schema_json(lambda: verify_session_step_up(payload, request))
 
 
 @app.post('/ops/jobs/run', summary='Run queued background jobs (operator)')

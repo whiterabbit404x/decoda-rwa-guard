@@ -201,6 +201,9 @@ _AUTH_MUTATION_ENDPOINTS = [
     ('/auth/mfa/enroll', {}),
     ('/auth/mfa/confirm', {'code': '123456'}),
     ('/auth/mfa/disable', {'code': '123456'}),
+    # Screen 8 response-action approval step-up: the dedicated session verification
+    # endpoint must stay CSRF-protected like every other authenticated auth mutation.
+    ('/auth/session/step-up', {'code': '123456'}),
     ('/auth/signout-all', {}),
 ]
 

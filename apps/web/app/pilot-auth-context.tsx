@@ -75,6 +75,10 @@ type PilotAuthContextValue = {
   enrollMfa: () => Promise<{ enrollment_id: string | null; otpauth_uri: string; secret: string | null; expires_at: string | null }>;
   confirmMfaEnrollment: (code: string, enrollmentId?: string | null) => Promise<{ recovery_codes: string[] }>;
   disableMfa: (code: string) => Promise<void>;
+  // Session MFA step-up (Screen 8 response-action approval): re-verify the CURRENT
+  // session with the current authenticator code. SEPARATE from enrollment — it never
+  // rotates a secret or returns recovery codes; it only raises this session's assurance.
+  verifySessionStepUp: (code: string) => Promise<{ verified: boolean; assurance_expires_at: string | null; valid_for_minutes: number | null }>;
   signUp: (payload: { email: string; password: string; full_name: string; workspace_name: string }) => Promise<{ user: PilotUser | null; verificationRequired: boolean }>;
   signOut: () => Promise<void>;
   refreshUser: () => Promise<PilotUser | null>;
@@ -506,6 +510,54 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     await refreshUser();
   }, [authHeaders, refreshUser]);
 
+  const verifySessionStepUp = useCallback(async (code: string) => {
+    type StepUpResponse = {
+      verified?: boolean;
+      assurance_expires_at?: string | null;
+      valid_for_minutes?: number | null;
+      detail?: unknown;
+      code?: string;
+    };
+    const post = async (headers: Record<string, string>) => {
+      const response = await fetch('/api/auth/session/step-up', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({ code }),
+      });
+      const data = await readApiResponse<StepUpResponse>(response).catch((): ApiResponsePayload<StepUpResponse> => ({
+        detail: 'Session verification failed. Please try again.',
+      }));
+      return { response, data };
+    };
+    let { response, data } = await post(authHeaders());
+    // On a CSRF rejection, mint a fresh token and retry ONCE — the same self-healing
+    // path the other Screen 8 mutations use — so a stale token never blocks step-up.
+    // Match the proxy's `csrf_invalid` AND the backend's `CSRF_INVALID` case-insensitively.
+    const csrfRejected = response.status === 403
+      && (String(data.code ?? '').toLowerCase().includes('csrf')
+        || (typeof data.detail === 'string' && data.detail.toLowerCase().includes('csrf')));
+    if (csrfRejected) {
+      const freshToken = await fetchAndStoreCsrfToken();
+      if (freshToken) {
+        ({ response, data } = await post({ ...authHeaders(), 'X-CSRF-Token': freshToken }));
+      }
+    }
+    if (!response.ok || !data.verified) {
+      const detail = data.detail;
+      const message = typeof detail === 'string'
+        ? detail
+        : detail && typeof detail === 'object'
+          ? (detail as { message?: string; error?: string }).message ?? (detail as { error?: string }).error
+          : undefined;
+      throw new Error(message ?? 'Session verification failed. Please try again.');
+    }
+    return {
+      verified: true,
+      assurance_expires_at: data.assurance_expires_at ?? null,
+      valid_for_minutes: data.valid_for_minutes ?? null,
+    };
+  }, [authHeaders, fetchAndStoreCsrfToken]);
+
   const signUp = useCallback(async (payload: { email: string; password: string; full_name: string; workspace_name: string }) => {
     const proxyUrl = '/api/auth/signup';
     let response: Response;
@@ -621,6 +673,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     enrollMfa,
     confirmMfaEnrollment,
     disableMfa,
+    verifySessionStepUp,
     signUp,
     signOut,
     refreshUser,
@@ -629,7 +682,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     selectWorkspace,
     authHeaders,
     setError,
-  }), [authHeaders, completeMfaSignIn, configLoading, confirmMfaEnrollment, createWorkspace, csrfToken, disableMfa, enrollMfa, error, fetchAndStoreCsrfToken, loading, mfaChallengeToken, refreshUser, runtimeConfig, selectWorkspace, signIn, signOut, signUp, user]);
+  }), [authHeaders, completeMfaSignIn, configLoading, confirmMfaEnrollment, createWorkspace, csrfToken, disableMfa, enrollMfa, error, fetchAndStoreCsrfToken, loading, mfaChallengeToken, refreshUser, runtimeConfig, selectWorkspace, signIn, signOut, signUp, user, verifySessionStepUp]);
 
   return <PilotAuthContext.Provider value={value}>{children}</PilotAuthContext.Provider>;
 }

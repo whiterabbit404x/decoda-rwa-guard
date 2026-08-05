@@ -282,9 +282,47 @@ export function normalizeApprovalGate(input: unknown): ApprovalGate | null {
 
 /** Whether the selected action's approval is blocked specifically by the session-MFA
  *  step-up (the caller HAS approval permission — only MFA is missing). This is the
- *  case that renders a disabled Approve control + a Complete MFA call to action. */
+ *  case that renders a disabled Approve control + a Verify Session call to action. */
 export function isMfaBlockedApproval(gate: ApprovalGate | null | undefined): boolean {
   return !!gate && gate.blockedReasonCode === 'mfa_required' && gate.hasPermission && !gate.mfaSatisfied;
+}
+
+/** Canonical name for the same condition: the approval needs a fresh SESSION
+ *  verification (recent MFA step-up). The caller is permitted; only the session
+ *  assurance is missing, so the UI shows the "Session verification required" panel
+ *  with a Verify Session control rather than hiding the approve control. */
+export function isSessionVerificationRequired(gate: ApprovalGate | null | undefined): boolean {
+  return isMfaBlockedApproval(gate);
+}
+
+/** The dedicated, CSRF-protected backend endpoint (via the same-origin auth proxy) for
+ *  session MFA step-up verification. It is SEPARATE from MFA enrollment — submitting the
+ *  current authenticator code here raises the session's assurance so an approval can
+ *  proceed, and never re-runs enrollment. */
+export function sessionStepUpEndpoint(): string {
+  return '/api/auth/session/step-up';
+}
+
+/** Whether a failed approval-command response means the caller must complete a session
+ *  step-up first (recent MFA verification / reauthentication). Used to re-open the
+ *  Verify Session panel if the assurance lapses between loading the action and clicking
+ *  Approve, instead of surfacing a bare, un-actionable backend error. */
+export function approvalErrorRequiresStepUp(
+  status: number,
+  body: { detail?: unknown; code?: unknown },
+): boolean {
+  if (status !== 403) return false;
+  const codes = new Set(['mfa_challenge_required', 'reauthentication_required', 'mfa_required']);
+  const topCode = String(body.code ?? '').trim().toLowerCase();
+  if (codes.has(topCode)) return true;
+  const detail = body.detail;
+  if (detail && typeof detail === 'object') {
+    const d = detail as { code?: unknown; reason_code?: unknown };
+    if (codes.has(String(d.code ?? '').trim().toLowerCase())) return true;
+    if (codes.has(String(d.reason_code ?? '').trim().toLowerCase())) return true;
+  }
+  const text = typeof detail === 'string' ? detail.toLowerCase() : '';
+  return text.includes('reauthenticate') || text.includes('mfa');
 }
 
 /** The internal Screen 8 URL that re-selects the SAME action and restores the
