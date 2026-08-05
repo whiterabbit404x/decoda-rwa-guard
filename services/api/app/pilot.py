@@ -3933,6 +3933,104 @@ def reauthenticate_user(payload: dict[str, Any], request: Request) -> dict[str, 
         return {'reauthenticated': True, 'valid_for_minutes': REAUTHENTICATION_DEFAULT_MINUTES, 'methods': methods}
 
 
+def _reject_session_step_up(user_id: str | None, reason: str) -> HTTPException:
+    """Build the generic session step-up error while recording a safe reason code.
+
+    Like ``_reject_mfa_confirmation``: the client always receives the same generic
+    message so a clock-window miss can never be distinguished from a wrong code, and
+    the submitted OTP / TOTP secret are NEVER logged — only the internal reason code is.
+    """
+    logger.info('session_step_up_rejected reason=%s user_id=%s', reason, user_id)
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail={'code': 'INVALID_MFA_CODE', 'message': MFA_CONFIRM_GENERIC_MESSAGE},
+    )
+
+
+def verify_session_step_up(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Session MFA step-up verification (Screen 8 approval reauthentication).
+
+    A dedicated, CSRF-protected command that raises the CURRENT session's assurance to
+    "MFA-satisfied and freshly stepped up" by validating the caller's current TOTP code
+    — and NOTHING else. It is deliberately SEPARATE from MFA enrollment: it never mints
+    or rotates a secret, never returns recovery codes, and must never be reachable by an
+    account that has not already enrolled MFA (the caller re-enters the code from the
+    authenticator they already registered). On success it stamps ``mfa_verified_at`` and
+    ``reauthenticated_at`` on the session row so BOTH approval gates
+    (``_require_action_approval_session_mfa`` and the recent-reauthentication gate) pass,
+    and reports the assurance window so the UI can reflect when the step-up expires.
+
+    Security invariants: the authenticated user is verified; MFA must already be enrolled;
+    the TOTP code is validated with the standard drift window; and neither the TOTP secret
+    nor the submitted code is ever returned or logged (only a generic error + a non-secret
+    internal reason code on failure).
+    """
+    require_live_mode()
+    # Accept either `code` (current client) or the documented `verification_code`.
+    code = str(payload.get('code') or payload.get('verification_code') or '').strip()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        row = connection.execute(
+            'SELECT mfa_totp_secret, mfa_enabled_at FROM users WHERE id = %s',
+            (user['id'],),
+        ).fetchone()
+        # Enrollment and session reauthentication are separate workflows: never push an
+        # un-enrolled caller into enrollment from here — tell them to enable MFA first.
+        if row is None or not row['mfa_enabled_at']:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={'code': 'MFA_NOT_ENROLLED', 'message': 'Enable MFA before verifying your session.'},
+            )
+        if not code or not _normalize_totp_code(code):
+            raise _reject_session_step_up(user['id'], MFA_CONFIRM_REASON_CODE_INVALID)
+        secret = _decrypt_mfa_secret(user['id'], row['mfa_totp_secret'])
+        if not secret or not _verify_totp(secret, code):
+            raise _reject_session_step_up(
+                user['id'], _diagnose_totp_failure(secret, code) if secret else MFA_CONFIRM_REASON_CODE_INVALID)
+
+        # Resolve the workspace step-up window so the assurance expiry we report matches
+        # exactly what the approval gate will honor. Default when it cannot be resolved.
+        workspace_id = user.get('current_workspace_id')
+        try:
+            workspace_id = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))['workspace_id']
+        except Exception:
+            workspace_id = user.get('current_workspace_id')
+        minutes = REAUTHENTICATION_DEFAULT_MINUTES
+        if workspace_id:
+            try:
+                minutes = int(_workspace_auth_policy(connection, workspace_id).get('reauthentication_minutes') or REAUTHENTICATION_DEFAULT_MINUTES)
+            except Exception:
+                minutes = REAUTHENTICATION_DEFAULT_MINUTES
+
+        # Mark the CURRENT session MFA-satisfied AND freshly stepped up. Recording both
+        # timestamps is what lets the operator return to Screen 8 and approve without a
+        # bare "Reauthenticate before performing this sensitive action" block.
+        connection.execute(
+            "UPDATE auth_sessions SET mfa_verified_at = NOW(), reauthenticated_at = NOW(), "
+            "authentication_methods = '[\"password\",\"totp\"]'::jsonb, updated_at = NOW() "
+            "WHERE session_token_hash = %s AND revoked_at IS NULL",
+            (_current_session_hash(request),),
+        )
+        verified_at = utc_now()
+        assurance_expires_at = verified_at + timedelta(minutes=max(1, minutes))
+        # Audit records the fact and the window only — never the secret or the code.
+        log_audit(
+            connection, action='auth.session_step_up_verified', entity_type='user', entity_id=user['id'],
+            request=request, user_id=user['id'], workspace_id=workspace_id,
+            metadata={'methods': ['password', 'totp'], 'valid_for_minutes': minutes},
+        )
+        connection.commit()
+        return {
+            'verified': True,
+            'mfa_satisfied': True,
+            'verified_at': verified_at.isoformat().replace('+00:00', 'Z'),
+            'assurance_expires_at': assurance_expires_at.isoformat().replace('+00:00', 'Z'),
+            'valid_for_minutes': minutes,
+            'methods': ['password', 'totp'],
+        }
+
+
 def request_email_verification(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
     email = _normalize_email(str(payload.get('email', '')))
@@ -4147,6 +4245,27 @@ def _require_recent_reauthentication(connection: Any, request: Request, minutes:
         )
 
 
+def _session_reauthentication_recent(connection: Any, request: Request, minutes: int) -> bool:
+    """Non-raising view of whether the CURRENT session's step-up assurance is still
+    fresh — i.e. it was (re)authenticated within ``minutes``.
+
+    Mirrors ``_require_recent_reauthentication`` exactly (the session must carry a
+    ``reauthenticated_at`` — refreshed by the dedicated session step-up — or, failing
+    that, an ``authenticated_at`` from a recent full sign-in, within the window), but
+    returns a boolean the read/gate layer can consult without aborting the request.
+    Fails CLOSED — returns False whenever the session cannot be resolved — so an
+    approval gate is never reported satisfied on incomplete information.
+    """
+    try:
+        row = _current_session_security(connection, request)
+    except Exception:
+        return False
+    reauthenticated_at = row.get('reauthenticated_at') or row.get('authenticated_at')
+    if reauthenticated_at is None:
+        return False
+    return reauthenticated_at >= utc_now() - timedelta(minutes=max(1, minutes))
+
+
 def _session_mfa_satisfied(connection: Any, request: Request) -> bool:
     """Non-raising view of whether the CURRENT session satisfies the MFA step-up.
 
@@ -4165,6 +4284,33 @@ def _session_mfa_satisfied(connection: Any, request: Request) -> bool:
         return False
     methods = row.get('authentication_methods') if isinstance(row.get('authentication_methods'), list) else []
     return row.get('mfa_verified_at') is not None and bool({'totp', 'recovery_code'} & set(map(str, methods)))
+
+
+def _session_approval_stepup_satisfied(connection: Any, request: Request, workspace_id: str) -> bool:
+    """Whether the CURRENT session may approve a response action RIGHT NOW.
+
+    Approving (or rejecting) a response action is a step-up-protected command: it
+    requires the caller's session to (1) have completed an MFA challenge AND (2) have
+    done so RECENTLY — within the workspace's reauthentication window. Enrollment alone
+    is NOT enough: confirming MFA enrollment marks ``mfa_verified_at`` but never sets a
+    fresh step-up (``reauthenticated_at``), so a long-lived session that merely enrolled
+    must still complete a session step-up before it can approve. Both halves are exactly
+    the two gates the approval COMMAND enforces (``require_reauthentication`` +
+    ``_require_action_approval_session_mfa``), so this read-side probe keeps the Approve
+    control's enabled/disabled state truthful and consistent with the command.
+
+    Fails CLOSED: any unresolved session or missing factor yields False, so the gate is
+    never reported satisfied on incomplete information. Short-circuits on the MFA factor
+    so a session that has never verified MFA needs no workspace-policy lookup.
+    """
+    if not _session_mfa_satisfied(connection, request):
+        return False
+    minutes = REAUTHENTICATION_DEFAULT_MINUTES
+    try:
+        minutes = int(_workspace_auth_policy(connection, workspace_id).get('reauthentication_minutes') or REAUTHENTICATION_DEFAULT_MINUTES)
+    except Exception:
+        minutes = REAUTHENTICATION_DEFAULT_MINUTES
+    return _session_reauthentication_recent(connection, request, minutes)
 
 
 def _require_session_mfa(connection: Any, request: Request) -> None:
@@ -19809,10 +19955,15 @@ def list_enforcement_actions(
         user = authenticate_with_connection(connection, request)
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         workspace_id = workspace_context['workspace_id']
-        # Session-MFA state is a per-request fact (same for every row): resolve it
+        # Session step-up state is a per-request fact (same for every row): resolve it
         # once so each approvable action's canonical approval gate can report whether
         # the CURRENT session may approve, and — when it may not — WHY (fail-closed).
-        session_mfa_satisfied = _session_mfa_satisfied(connection, request)
+        # This is the SAME composite the approval command enforces: a completed MFA
+        # challenge that is still RECENT (within the workspace step-up window). A session
+        # that merely enrolled MFA (verified but not recently stepped up) is therefore
+        # correctly shown a disabled Approve + a "verify session" prompt, never an
+        # enabled control that the command would then reject with a bare reauth error.
+        session_mfa_satisfied = _session_approval_stepup_satisfied(connection, request, workspace_id)
         rows = connection.execute(
             '''
             SELECT id, action_type, mode, status, result_status, execution_state, result_summary, operator_notes, created_at, approved_at, executed_at, failed_at, rolled_back_at, incident_id, alert_id, safe_tx_hash, tx_hash, execution_metadata, created_by_user_id
