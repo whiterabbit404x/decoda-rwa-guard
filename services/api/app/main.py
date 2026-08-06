@@ -224,6 +224,8 @@ from services.api.app.pilot import (
     list_audit_events,
     get_export,
     get_export_artifact_content,
+    get_evidence_package_manifest,
+    verify_evidence_package,
     get_history_item,
     list_templates,
     apply_template,
@@ -5219,6 +5221,17 @@ def exports_download(export_id: str, request: Request) -> Response:
     content, filename = with_auth_schema_json(lambda: get_export_artifact_content(export_id, request))
     media_type = 'application/json' if filename.endswith('.json') else 'text/csv'
     return Response(content=content, media_type=media_type, headers={'Content-Disposition': f'attachment; filename={filename}'})
+
+
+@app.get('/exports/{export_id}/manifest', summary='Download evidence package manifest')
+def exports_manifest(export_id: str, request: Request) -> Response:
+    content, filename = with_auth_schema_json(lambda: get_evidence_package_manifest(export_id, request))
+    return Response(content=content, media_type='application/json', headers={'Content-Disposition': f'attachment; filename={filename}'})
+
+
+@app.post('/exports/{export_id}/verify', summary='Verify evidence package integrity (recompute SHA-256)')
+def exports_verify(export_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: verify_evidence_package(export_id, request))
 
 
 @app.get('/metrics', include_in_schema=False)

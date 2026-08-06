@@ -24017,6 +24017,55 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                     for item in evidence_rows
                 ],
             }
+            # Deterministic evidence-completeness scoring (Crypto-Auditing Clerk).
+            # Computed from the canonical facts already collected above — never an
+            # LLM guess. files_hashed counts the bundle files that will receive a
+            # SHA-256 in the manifest (manifest.json/seal.json are added after).
+            from services.api.app.evidence_completeness import (
+                compute_evidence_completeness as _compute_completeness,
+                derive_integrity_status as _derive_integrity_status,
+            )
+            _chain_metadata_present = any(
+                isinstance(item.get('evidence'), dict)
+                and any(
+                    item['evidence'].get(_k)
+                    for _k in ('tx_hash', 'transaction_hash', 'block_number', 'block_hash', 'chain_id', 'contract_address')
+                )
+                for item in evidence_rows
+            )
+            _executed_actions = [a for a in action_rows if str(a.get('status') or '').lower() == 'executed']
+            _rejected_actions = [a for a in action_rows if str(a.get('status') or '').lower() in {'rejected', 'canceled', 'cancelled'}]
+            _requires_approval = any(str(a.get('action_type') or '') in DESTRUCTIVE_ACTION_TYPES for a in action_rows)
+            _completeness = _compute_completeness({
+                'incident_status': incident_dict.get('status'),
+                'evidence_source_type': evidence_source_type,
+                'has_incident': True,
+                'has_alert': bool(alert_rows),
+                'has_detection': bool(detection_rows),
+                'has_telemetry': bool(evidence_rows),
+                'has_asset': bool(incident_dict.get('asset_id') or (alert_rows and alert_rows[0].get('target_id'))),
+                'has_audit_events': bool(audit_log_rows),
+                'has_investigation_timeline': bool(audit_log_rows or detection_rows),
+                'has_chain_metadata': _chain_metadata_present,
+                'has_manifest': True,
+                'files_hashed': len(_bundle_data),
+                'response_action_count': len(action_rows),
+                'executed_action_count': len(_executed_actions),
+                'rejected_action_count': len(_rejected_actions),
+                'requires_approval': _requires_approval,
+                'approval_present': bool(_executed_actions),
+                'has_execution_result': bool(_executed_actions),
+                'manifest_verified': None,
+            })
+            summary['completeness'] = _completeness
+            _integrity_status = _derive_integrity_status(
+                job_status='completed', verification=None, completeness=_completeness,
+            )
+            artifact_meta['completeness_score'] = _completeness['score']
+            artifact_meta['completeness_status'] = _completeness['status']
+            artifact_meta['completeness'] = _completeness
+            artifact_meta['integrity_status'] = _integrity_status
+            artifact_meta['files_hashed'] = len(_bundle_data)
             _redacted_bundle, _any_redacted = _redact_secret_fields(_bundle_data)
             if _any_redacted:
                 _redacted_bundle['summary.json']['redactions_applied'] = True
@@ -24172,11 +24221,16 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
         # missing_sections) back into the filters JSONB so list_exports can return it
         # without re-deriving it from raw data.
         _artifact_filters_patch: dict[str, Any] = {}
-        for _mf_key in ('evidence_source_type', 'export_status'):
+        for _mf_key in ('evidence_source_type', 'export_status', 'completeness_score', 'integrity_status', 'files_hashed'):
             if artifact_meta.get(_mf_key) is not None:
                 _artifact_filters_patch[_mf_key] = artifact_meta[_mf_key]
         if isinstance(artifact_meta.get('missing_sections'), list):
             _artifact_filters_patch['missing_sections'] = artifact_meta['missing_sections']
+        # Persist the manifest SHA-256 as the package integrity hash so list/detail
+        # can display it without reading the artifact. This IS the real hash — the
+        # UI truncates it for display but keeps the full value available.
+        if _signing_meta.get('manifest_sha256'):
+            _artifact_filters_patch['integrity_hash'] = _signing_meta['manifest_sha256']
         connection.execute(
             "UPDATE export_jobs SET status = 'completed', error_message = NULL, storage_backend = %s, storage_object_key = %s, signing_key_id = %s, signing_key_version = %s, size_bytes = %s, filters = filters || %s::jsonb, updated_at = NOW() WHERE id = %s",
             (storage.backend_name, object_key, _signing_meta.get('key_id'), _signing_meta.get('key_version'), _content_size, _json_dumps(_artifact_filters_patch), export_id),
@@ -24232,19 +24286,57 @@ def list_exports(request: Request) -> dict[str, Any]:
             ''',
             tuple(params),
         ).fetchall()
+        from services.api.app.evidence_completeness import derive_integrity_status as _derive_integrity_status
+        # First pass: index the latest proof_bundle per incident so we can flag
+        # superseded packages (an older bundle for the same incident).
+        _latest_created_by_incident: dict[str, Any] = {}
+        for row in rows:
+            _f = row.get('filters') if isinstance(row.get('filters'), dict) else {}
+            _inc = str((_f or {}).get('incident_id') or '').strip()
+            if _inc and str(row.get('export_type') or '') == 'proof_bundle':
+                _created = row.get('created_at')
+                _prev = _latest_created_by_incident.get(_inc)
+                if _prev is None or (_created is not None and _created > _prev[1]):
+                    _latest_created_by_incident[_inc] = (str(row.get('id')), _created)
+
         exports = []
         for row in rows:
             item = _json_safe_value(dict(row))
             item['download_url'] = f"/exports/{item['id']}/download" if item.get('status') == 'completed' else None
+            item['manifest_download_url'] = f"/exports/{item['id']}/manifest" if item.get('status') == 'completed' else None
             item['storage_key'] = item.get('storage_object_key')
             filters_val = item.pop('filters', None) or {}
+            _verification = None
+            _completeness_score = None
             if isinstance(filters_val, dict):
                 item['incident_id'] = filters_val.get('incident_id')
                 item['response_action_id'] = filters_val.get('response_action_id')
+                _verification = filters_val.get('verification') if isinstance(filters_val.get('verification'), dict) else None
+                _completeness_score = filters_val.get('completeness_score')
                 if str(item.get('export_type') or '') == 'proof_bundle':
-                    for _mf in ('export_status', 'evidence_source_type', 'missing_sections', 'unavailable_sections', 'warnings', 'chain_complete'):
+                    for _mf in ('export_status', 'evidence_source_type', 'missing_sections', 'unavailable_sections', 'warnings', 'chain_complete', 'completeness_score', 'verified_at', 'files_hashed', 'integrity_hash'):
                         if _mf in filters_val:
                             item[_mf] = filters_val[_mf]
+            # Superseded when a newer bundle exists for the same incident.
+            _inc = str((filters_val or {}).get('incident_id') or '').strip()
+            _superseded = bool(
+                _inc
+                and str(item.get('export_type') or '') == 'proof_bundle'
+                and _latest_created_by_incident.get(_inc)
+                and _latest_created_by_incident[_inc][0] != str(item.get('id'))
+            )
+            item['superseded'] = _superseded
+            _comp_for_integrity = {'score': _completeness_score} if _completeness_score is not None else None
+            item['integrity_status'] = (
+                filters_val.get('integrity_status') if isinstance(filters_val, dict) and filters_val.get('integrity_status') and not _superseded and not _verification
+                else _derive_integrity_status(
+                    job_status=str(item.get('status') or ''),
+                    verification=_verification,
+                    completeness=_comp_for_integrity,
+                    superseded=_superseded,
+                )
+            )
+            item['completeness_score'] = _completeness_score
             exports.append(item)
         # Lazy-backfill size_bytes for completed packages created before the
         # size_bytes column existed.  Uses get_object_size (a read-only metadata
@@ -24271,8 +24363,22 @@ def list_exports(request: Request) -> dict[str, Any]:
                         pass
             except Exception:
                 pass
+        # Workspace-level evidence metrics for the Crypto-Auditing Clerk sidebar
+        # when no single package is selected. All derived from the returned rows.
+        _incidents_covered = {str(e.get('incident_id')) for e in exports if e.get('incident_id')}
+        _scores = [int(e['completeness_score']) for e in exports if isinstance(e.get('completeness_score'), (int, float))]
+        metrics = {
+            'total_packages': len(exports),
+            'total_size_bytes': sum(int(e.get('size_bytes') or 0) for e in exports),
+            'verified': sum(1 for e in exports if e.get('integrity_status') == 'verified'),
+            'integrity_failures': sum(1 for e in exports if e.get('integrity_status') == 'integrity_failed'),
+            'incidents_covered': len(_incidents_covered),
+            'files_hashed': sum(int(e.get('files_hashed') or 0) for e in exports),
+            'ready': sum(1 for e in exports if e.get('status') == 'completed'),
+            'average_completeness': round(sum(_scores) / len(_scores)) if _scores else None,
+        }
         logger.info('evidence_packages_list_returned_count count=%d', len(exports))
-        return {'exports': exports}
+        return {'exports': exports, 'metrics': metrics}
 
 
 def _resolve_audit_evidence_source(action: Any, metadata: Any) -> str | None:
@@ -24333,20 +24439,184 @@ def list_audit_events(request: Request) -> dict[str, Any]:
         return {'events': events}
 
 
+_PACKAGE_FILE_SOURCE_TYPES: dict[str, str] = {
+    'summary.json': 'package_summary',
+    'alerts.json': 'alert',
+    'incidents.json': 'incident',
+    'detections.json': 'detection',
+    'response_actions.json': 'response_action',
+    'audit_log.json': 'audit_event',
+    'evidence.json': 'telemetry_evidence',
+    'detection_metrics.json': 'detection_metric',
+    'manifest.json': 'manifest',
+    'seal.json': 'signature_seal',
+}
+
+
+def _extract_chain_evidence(file_values: dict[str, Any]) -> list[dict[str, Any]]:
+    """Pull on-chain metadata out of the collected telemetry/detection evidence.
+
+    Deterministic and source-backed — every field comes from a stored evidence
+    record. Returns [] when the incident has no on-chain component.
+    """
+    chain: list[dict[str, Any]] = []
+    candidates: list[Any] = []
+    for key in ('detection_metrics.json', 'evidence.json'):
+        val = file_values.get(key)
+        if isinstance(val, list):
+            candidates.extend(val)
+    for item in candidates:
+        ev = item.get('evidence') if isinstance(item, dict) else None
+        if not isinstance(ev, dict):
+            ev = item if isinstance(item, dict) else None
+        if not isinstance(ev, dict):
+            continue
+        tx_hash = ev.get('tx_hash') or ev.get('transaction_hash')
+        if not any(ev.get(k) for k in ('tx_hash', 'transaction_hash', 'block_number', 'block_hash', 'contract_address', 'chain_id')):
+            continue
+        chain.append({
+            'chain_id': ev.get('chain_id') or ev.get('chain') or ev.get('network'),
+            'transaction_hash': tx_hash,
+            'block_number': ev.get('block_number'),
+            'block_timestamp': ev.get('block_timestamp') or ev.get('block_time'),
+            'contract_address': ev.get('contract_address') or ev.get('address'),
+            'event_signature': ev.get('event_signature') or ev.get('event_type') or ev.get('log_topic'),
+            'provider_source': ev.get('provider') or ev.get('provider_source') or ev.get('source'),
+            'confirmations': ev.get('confirmations') or ev.get('finality'),
+        })
+    return chain
+
+
 def get_export(export_id: str, request: Request) -> dict[str, Any]:
-    require_live_mode()
+    # No require_live_mode() — the detail view must be available wherever the
+    # list view and package creation succeed (see list_exports).
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        workspace_id = workspace_context['workspace_id']
         row = connection.execute(
             'SELECT * FROM export_jobs WHERE id = %s AND workspace_id = %s',
-            (export_id, workspace_context['workspace_id']),
+            (export_id, workspace_id),
         ).fetchone()
         if row is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Export not found.')
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={'error': 'PACKAGE_NOT_FOUND', 'message': 'Evidence package not found.'})
         item = _json_safe_value(dict(row))
+        filters_val = item.pop('filters', None) or {}
+        if not isinstance(filters_val, dict):
+            filters_val = {}
         item['download_url'] = f'/exports/{export_id}/download' if item.get('status') == 'completed' else None
+        item['manifest_download_url'] = f'/exports/{export_id}/manifest' if item.get('status') == 'completed' else None
+        item['storage_key'] = item.get('storage_object_key')
+        item['incident_id'] = filters_val.get('incident_id')
+        item['response_action_id'] = filters_val.get('response_action_id')
+        item['alert_id'] = filters_val.get('alert_id')
+        item['evidence_source_type'] = filters_val.get('evidence_source_type')
+        item['export_status'] = filters_val.get('export_status')
+        item['missing_sections'] = filters_val.get('missing_sections')
+        item['integrity_hash'] = filters_val.get('integrity_hash')
+        verification = filters_val.get('verification') if isinstance(filters_val.get('verification'), dict) else None
+        item['verification'] = verification
+
+        from services.api.app.evidence_completeness import derive_integrity_status as _derive_integrity_status
+
+        # Superseded when a newer proof_bundle exists for the same incident.
+        superseded = False
+        incident_id = str(filters_val.get('incident_id') or '').strip()
+        if incident_id and str(item.get('export_type') or '') == 'proof_bundle':
+            newer = connection.execute(
+                '''SELECT 1 FROM export_jobs
+                   WHERE workspace_id = %s AND export_type = 'proof_bundle'
+                     AND filters->>'incident_id' = %s AND id <> %s::uuid
+                     AND created_at > %s
+                   LIMIT 1''',
+                (workspace_id, incident_id, export_id, row.get('created_at')),
+            ).fetchone()
+            superseded = newer is not None
+
+        # Read the stored artifact for files / completeness / chain evidence.
+        files: list[dict[str, Any]] = []
+        completeness: dict[str, Any] | None = None
+        chain_evidence: list[dict[str, Any]] = []
+        incident_trace: dict[str, Any] = {}
+        storage_error: str | None = None
+        summary: dict[str, Any] | None = None
+        if item.get('status') == 'completed':
+            parts = _read_stored_package_bundle(item)
+            storage_error = parts['storage_error']
+            manifest = parts['manifest']
+            summary = parts['summary'] if isinstance(parts['summary'], dict) else None
+            file_values = parts['file_values']
+            if isinstance(manifest, dict) and isinstance(manifest.get('files'), list):
+                file_verif = {}
+                if verification:
+                    for p in (verification.get('files_failed') or []):
+                        file_verif[p] = 'failed'
+                    for p in (verification.get('missing_files') or []):
+                        file_verif[p] = 'missing'
+                for entry in manifest['files']:
+                    path = str(entry.get('path') or '')
+                    files.append({
+                        'logical_path': path,
+                        'media_type': 'application/json',
+                        'size_bytes': entry.get('size_bytes'),
+                        'sha256': entry.get('sha256'),
+                        'source_record_type': _PACKAGE_FILE_SOURCE_TYPES.get(path, 'evidence'),
+                        'verification_status': file_verif.get(path, ('verified' if verification and verification.get('valid') else 'hash_generated')),
+                    })
+            if summary and isinstance(summary.get('completeness'), dict):
+                completeness = summary['completeness']
+            chain_evidence = _extract_chain_evidence(file_values)
+            if summary:
+                incident_trace = {
+                    'alert_id': summary.get('alert_id'),
+                    'incident_id': summary.get('incident_id'),
+                    'detection_id': summary.get('detection_id'),
+                    'response_action_id': summary.get('response_action_id'),
+                    'export_status': summary.get('export_status'),
+                    'package_status': summary.get('package_status'),
+                    'evidence_source_type': summary.get('evidence_source_type'),
+                    'available_sections': summary.get('available_sections'),
+                    'missing_sections': summary.get('missing_sections'),
+                }
+
+        if completeness is None and filters_val.get('completeness_score') is not None:
+            completeness = {'score': filters_val.get('completeness_score')}
+        item['completeness'] = completeness
+        item['files'] = files
+        item['chain_evidence'] = chain_evidence
+        item['incident_trace'] = incident_trace
+        item['storage_available'] = storage_error is None
+        item['storage_status'] = storage_error or 'ok'
+
+        integrity_status = _derive_integrity_status(
+            job_status=str(item.get('status') or ''),
+            verification=verification,
+            completeness=completeness,
+            superseded=superseded,
+        )
+        item['integrity_status'] = integrity_status
+        item['superseded'] = superseded
+
+        # Agent findings — every statement references package records, never invented.
+        findings: list[dict[str, Any]] = []
+        missing_codes = (completeness or {}).get('missing_codes') or []
+        for code in missing_codes:
+            findings.append({'type': 'missing_evidence', 'code': code, 'message': f'Required evidence missing: {code}.'})
+        if verification and verification.get('valid') is False:
+            findings.append({
+                'type': 'integrity_warning',
+                'message': f"Integrity verification failed: {len(verification.get('files_failed') or [])} file(s) failed, "
+                           f"{len(verification.get('missing_files') or [])} missing, manifest_ok={verification.get('manifest_ok')}.",
+            })
+        for warn in (summary or {}).get('warnings', []) if isinstance(summary, dict) else []:
+            findings.append({'type': 'source_warning', 'message': str(warn)})
+        if integrity_status == 'hash_generated':
+            findings.append({'type': 'recommended_action', 'message': 'Hashes generated. Run Verify Integrity to confirm the package has not changed since generation.'})
+        elif integrity_status == 'needs_evidence':
+            findings.append({'type': 'recommended_action', 'message': 'Collect the missing required evidence, then regenerate the package.'})
+        item['agent_findings'] = findings
+
         return {'export': item}
 
 
@@ -24371,6 +24641,194 @@ def get_export_artifact_content(export_id: str, request: Request) -> tuple[bytes
                 detail={'error': 'evidence_object_not_found', 'detail': 'Export artifact not found in storage.'},
             ) from exc
         return content, f"{row['id']}.{row['format']}"
+
+
+# ---------------------------------------------------------------------------
+# Evidence package verification, manifest download, and detail enrichment
+# (Screen 9 — Evidence & Audit). These reuse the canonical hashing/serialization
+# in evidence_signing.py and the deterministic completeness engine in
+# evidence_completeness.py. Nothing here recomputes hashes through an LLM or
+# fabricates a verification result.
+# ---------------------------------------------------------------------------
+
+def _read_stored_package_bundle(row: dict[str, Any]) -> dict[str, Any]:
+    """Read a completed package's stored artifact and split it into its parts.
+
+    Returns a dict with keys: bundle, manifest, seal, summary, file_values and
+    storage_error (None on success). Never raises for a missing object — callers
+    decide how to surface storage unavailability so metadata stays queryable.
+    """
+    result: dict[str, Any] = {
+        'bundle': {}, 'manifest': None, 'seal': None, 'summary': None,
+        'file_values': {}, 'storage_error': None,
+    }
+    object_key = str(row.get('storage_object_key') or f"{row['workspace_id']}/{row['id']}.{row.get('format') or 'json'}")
+    try:
+        storage = load_export_storage()
+        content = storage.read_bytes(object_key=object_key)
+    except FileNotFoundError:
+        result['storage_error'] = 'object_not_found'
+        return result
+    except RuntimeError:
+        result['storage_error'] = 'storage_unavailable'
+        return result
+    except Exception:
+        result['storage_error'] = 'storage_unavailable'
+        return result
+    try:
+        data = json.loads(content)
+    except Exception:
+        result['storage_error'] = 'unreadable'
+        return result
+    rows = data.get('rows') if isinstance(data, dict) else None
+    bundle = rows[0] if isinstance(rows, list) and rows and isinstance(rows[0], dict) else {}
+    result['bundle'] = bundle
+    result['manifest'] = bundle.get('manifest.json') if isinstance(bundle, dict) else None
+    result['seal'] = bundle.get('seal.json') if isinstance(bundle, dict) else None
+    result['summary'] = bundle.get('summary.json') if isinstance(bundle, dict) else None
+    result['file_values'] = {k: v for k, v in bundle.items() if k not in ('manifest.json', 'seal.json')} if isinstance(bundle, dict) else {}
+    return result
+
+
+def verify_evidence_package(export_id: str, request: Request) -> dict[str, Any]:
+    """Recalculate every file's SHA-256 and the manifest hash, compare against the
+    stored manifest, persist the result, and record an append-only audit event.
+
+    A package is reported verified only when every manifest file exists, every
+    recalculated SHA-256 and byte count matches, and the manifest hash matches.
+    The HMAC seal is reported as a separate signal and never fabricated.
+    """
+    from services.api.app.evidence_signing import verify_bundle as _vb
+    from services.api.app.evidence_completeness import (
+        INTEGRITY_VERIFIED, INTEGRITY_INTEGRITY_FAILED, verify_files_and_manifest as _verify_files,
+    )
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(connection, request, 'evidence.export')
+        workspace_id = workspace_context['workspace_id']
+        row = connection.execute(
+            'SELECT id, workspace_id, export_type, format, status, storage_object_key, filters FROM export_jobs WHERE id = %s AND workspace_id = %s',
+            (export_id, workspace_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={'error': 'PACKAGE_NOT_FOUND', 'message': 'Evidence package not found.'})
+        if str(row['status']) != 'completed':
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={'error': 'PACKAGE_NOT_READY', 'message': 'Package is not ready for verification.'})
+        parts = _read_stored_package_bundle(_json_safe_value(dict(row)))
+        if parts['storage_error'] == 'storage_unavailable':
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail={'error': 'PACKAGE_STORAGE_UNAVAILABLE', 'message': 'Evidence storage is unavailable. Package metadata remains queryable.'})
+        if parts['storage_error'] == 'object_not_found':
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={'error': 'PACKAGE_STORAGE_UNAVAILABLE', 'message': 'Package artifact not found in storage.'})
+        manifest = parts['manifest']
+        if not isinstance(manifest, dict) or not manifest.get('files'):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={'error': 'PACKAGE_NOT_READY', 'message': 'Package has no manifest to verify.'})
+        file_values = parts['file_values']
+
+        _hashcheck = _verify_files(file_values, manifest)
+        files_verified = _hashcheck['files_verified']
+        files_failed = _hashcheck['files_failed']
+        missing_files = _hashcheck['missing_files']
+        manifest_ok = _hashcheck['manifest_ok']
+        valid = _hashcheck['valid']
+
+        # HMAC seal is an additional signal; a missing dev signing secret must not
+        # be reported as tampering — it is 'unverifiable', not 'invalid'.
+        seal_status = 'absent'
+        seal = parts['seal']
+        if isinstance(seal, dict):
+            vb = _vb(file_values, manifest, seal)
+            if 'hmac_signature_invalid' in vb['errors']:
+                seal_status = 'invalid'
+            elif 'signing_secret_not_available' in vb['errors']:
+                seal_status = 'unverifiable'
+            else:
+                seal_status = 'valid'
+
+        verified_at = utc_now_iso()
+        verification = {
+            'valid': valid,
+            'verified_at': verified_at,
+            'files_total': len(manifest.get('files', [])),
+            'files_verified': files_verified,
+            'files_failed': files_failed,
+            'missing_files': missing_files,
+            'manifest_ok': manifest_ok,
+            'seal_status': seal_status,
+            'verified_by_user_id': str(user['id']),
+        }
+        integrity_status = INTEGRITY_VERIFIED if valid else INTEGRITY_INTEGRITY_FAILED
+        patch = {'verification': verification, 'integrity_status': integrity_status, 'verified_at': verified_at}
+        connection.execute(
+            'UPDATE export_jobs SET filters = filters || %s::jsonb, updated_at = NOW() WHERE id = %s AND workspace_id = %s',
+            (_json_dumps(patch), export_id, workspace_id),
+        )
+        log_audit(
+            connection,
+            action='evidence_package_verification_passed' if valid else 'evidence_package_verification_failed',
+            entity_type='export_job',
+            entity_id=export_id,
+            request=request,
+            user_id=user['id'],
+            workspace_id=workspace_id,
+            metadata={
+                'event_type': 'evidence_package_verification_passed' if valid else 'evidence_package_verification_failed',
+                'result': 'success' if valid else 'failed',
+                'files_verified': files_verified,
+                'files_failed': len(files_failed),
+                'missing_files': len(missing_files),
+                'manifest_ok': manifest_ok,
+                'seal_status': seal_status,
+            },
+        )
+        connection.commit()
+        logger.info(
+            'evidence_package_verified package_id=%s valid=%s files_verified=%d files_failed=%d manifest_ok=%s',
+            export_id, valid, files_verified, len(files_failed), manifest_ok,
+        )
+        return {
+            'package_id': export_id,
+            'integrity_status': integrity_status,
+            'verification': verification,
+        }
+
+
+def get_evidence_package_manifest(export_id: str, request: Request) -> tuple[bytes, str]:
+    """Return the package manifest as downloadable canonical bytes and audit it."""
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        workspace_id = workspace_context['workspace_id']
+        row = connection.execute(
+            'SELECT id, workspace_id, format, status, storage_object_key FROM export_jobs WHERE id = %s AND workspace_id = %s',
+            (export_id, workspace_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={'error': 'PACKAGE_NOT_FOUND', 'message': 'Evidence package not found.'})
+        if str(row['status']) != 'completed':
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={'error': 'PACKAGE_NOT_READY', 'message': 'Package is not ready.'})
+        parts = _read_stored_package_bundle(_json_safe_value(dict(row)))
+        if parts['storage_error'] == 'storage_unavailable':
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail={'error': 'PACKAGE_STORAGE_UNAVAILABLE', 'message': 'Evidence storage is unavailable.'})
+        if parts['storage_error']:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={'error': 'PACKAGE_STORAGE_UNAVAILABLE', 'message': 'Package artifact not found in storage.'})
+        manifest = parts['manifest']
+        if not isinstance(manifest, dict) or not manifest.get('files'):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={'error': 'PACKAGE_NOT_READY', 'message': 'Package has no manifest.'})
+        manifest_bytes = json.dumps(manifest, indent=2, sort_keys=True).encode('utf-8')
+        log_audit(
+            connection,
+            action='evidence_manifest_downloaded',
+            entity_type='export_job',
+            entity_id=export_id,
+            request=request,
+            user_id=user['id'],
+            workspace_id=workspace_id,
+            metadata={'event_type': 'evidence_manifest_downloaded', 'result': 'success'},
+        )
+        connection.commit()
+        logger.info('evidence_manifest_downloaded package_id=%s files=%d', export_id, len(manifest.get('files', [])))
+        return manifest_bytes, f'evidence-manifest-{export_id}.json'
 
 
 def get_history_item(history_id: str, request: Request) -> dict[str, Any]:

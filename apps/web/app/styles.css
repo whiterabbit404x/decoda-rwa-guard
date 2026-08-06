@@ -7738,6 +7738,20 @@ a.mktTrustBadge:hover {
 @keyframes onbShimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .skeletonRow { animation: none; } }
 
+/* Screen-reader-only utility — keeps hash/status text available to assistive tech
+   without showing it visually (used by the Evidence & Audit package table). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* Responsive */
 @media (max-width: 1024px) {
   .onbGrid { grid-template-columns: minmax(0, 1fr); }
