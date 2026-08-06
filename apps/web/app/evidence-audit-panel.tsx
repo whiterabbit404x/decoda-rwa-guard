@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 
 import {
   EmptyStateBlocker,
@@ -377,6 +377,18 @@ function fmtBytesTotal(bytes?: number): string {
   return `${(bytes / 1_048_576).toFixed(1)} MB`;
 }
 
+// Renders a backend error into a safe, human-readable string. FastAPI permission and
+// validation errors arrive as `detail` objects ({code, message, …}); we surface only the
+// message, never the raw object or an internal stack trace.
+function safeErrorMessage(detail: unknown, fallback: string): string {
+  if (typeof detail === 'string' && detail.trim()) return detail;
+  if (detail && typeof detail === 'object') {
+    const message = (detail as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) return message;
+  }
+  return fallback;
+}
+
 async function copyToClipboard(text: string): Promise<boolean> {
   try {
     if (navigator?.clipboard?.writeText) {
@@ -422,10 +434,15 @@ export default function EvidenceAuditPanel() {
   const [reloadKey, setReloadKey] = useState(0);
   // Backend-authoritative summary state (never derived from raw rows in React).
   const [retentionStatus, setRetentionStatus] = useState<string>('Unknown');
-  const [canExport, setCanExport] = useState(false);
+  // Tri-state permission: undefined = not yet known / field absent from the API
+  // response, true/false = the backend's explicit decision. Only an explicit `false`
+  // denies the action — an absent field must never permanently lock out an authorized
+  // user, because the POST is still enforced server-side (evidence.export).
+  const [canExport, setCanExport] = useState<boolean | undefined>(undefined);
   const [auditTotal, setAuditTotal] = useState<number | null>(null);
   const [auditCapped, setAuditCapped] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [showCreateModal, setShowCreateModal] = useState(false);
   const [openMenuId, setOpenMenuId] = useState('');
 
   const counts = runtime?.counts as Record<string, number> | undefined;
@@ -439,11 +456,40 @@ export default function EvidenceAuditPanel() {
     summary.active_incidents_count > 0 || (counts?.open_incidents ?? 0) > 0;
   const responseActionOk = responseActionsCount !== null ? responseActionsCount > 0 : false;
   const packageExists = packages.length > 0;
-  // The Create button requires the evidence.export permission (backend-authoritative)
-  // and a real incident + response action to package. `creating` guards against
-  // accidental duplicate submissions.
-  const chainReadyForPackage = incidentOk && responseActionOk && !dataLoading && !runtimeLoading;
-  const canCreatePackage = canExport && chainReadyForPackage && !creating;
+  // NOTE: the old incident/response-action readiness gate has been removed from the
+  // Create button entirely. Incident availability is a concern of the creation modal
+  // (which shows a truthful empty state), never of whether the primary button can be
+  // pressed. `incidentOk`/`responseActionOk` remain in use by getBlocker() below.
+
+  /* ── Create-permission resolution (backend-authoritative) ────────
+   * The permission is a tri-state. We deliberately distinguish four button states so a
+   * faded button always has one truthful cause:
+   *   - resolving   : still fetching runtime/exports; show a short loading state, never
+   *                   a "denied" state, for an as-yet-unknown can_export.
+   *   - undetermined: the exports request failed, so permission could not be read; block
+   *                   submission behind the retry/error state (never call the user denied).
+   *   - denied      : the backend explicitly returned can_export === false.
+   *   - granted     : can_export === true, OR a successful response that simply omitted
+   *                   the field (an absent field must not permanently deny an authorized
+   *                   user — the POST is still enforced server-side and fails closed).
+   */
+  const permissionResolving = runtimeLoading || dataLoading;
+  const permissionUndetermined = !permissionResolving && Boolean(loadError);
+  const permissionDenied = !permissionResolving && !loadError && canExport === false;
+  const createDisabled = creating || permissionResolving || permissionUndetermined || permissionDenied;
+
+  // Focus returns to the Create button whenever the modal closes (cancel, Escape,
+  // backdrop, success, or failure-then-cancel), satisfying the dialog focus contract.
+  const createButtonRef = useRef<HTMLButtonElement>(null);
+  const modalWasOpenRef = useRef(false);
+  useEffect(() => {
+    if (showCreateModal) {
+      modalWasOpenRef.current = true;
+    } else if (modalWasOpenRef.current) {
+      modalWasOpenRef.current = false;
+      createButtonRef.current?.focus();
+    }
+  }, [showCreateModal]);
 
   /* ── Data loading ────────────────────────────────────────────── */
   useEffect(() => {
@@ -478,7 +524,10 @@ export default function EvidenceAuditPanel() {
           setMetrics(p.metrics ?? null);
           // Retention + permission are backend-authoritative — never hardcoded.
           setRetentionStatus(p.retention_status ?? p.metrics?.retention_status ?? 'Unknown');
-          setCanExport(Boolean(p.can_export));
+          // Preserve the tri-state: only an explicit boolean is a decision. An absent
+          // field stays `undefined` so an authorized user is never permanently denied
+          // by a missing key (the POST is still enforced server-side).
+          setCanExport(typeof p.can_export === 'boolean' ? p.can_export : undefined);
           setLoadError('');
           setLastRefreshAt(new Date().toISOString());
           // Auto-select package from URL params
@@ -647,46 +696,57 @@ export default function EvidenceAuditPanel() {
     }
   }
 
-  async function createPackage() {
-    // Guard against accidental duplicate submissions; the backend export is
-    // idempotent for the same incident+scope, but we also disable re-entry here.
-    if (creating || !canExport) return;
+  async function createPackage(incidentId?: string) {
+    // Guard against accidental duplicate submissions and against an explicitly
+    // denied user. The backend export is idempotent for the same incident+scope,
+    // but we also disable re-entry here. `permissionDenied` is strict (=== false),
+    // so an unknown/undefined permission does not block the attempt here — the POST
+    // is still authorized server-side and fails closed if the user truly lacks it.
+    if (creating || permissionDenied) return;
     setMessage('');
     setCreating(true);
     try {
-      const linkedIncidentId =
-        packages.find((pkg) => pkg.incident_id)?.incident_id ??
-        ((runtime as Record<string, unknown> | undefined)?.latest_incident_id as string | undefined) ??
-        ((summary as Record<string, unknown> | undefined)?.latest_incident_id as string | undefined) ??
+      const resolvedIncidentId =
+        incidentId ||
+        packages.find((pkg) => pkg.incident_id)?.incident_id ||
+        ((runtime as Record<string, unknown> | undefined)?.latest_incident_id as string | undefined) ||
+        ((summary as Record<string, unknown> | undefined)?.latest_incident_id as string | undefined) ||
         ((summary as Record<string, unknown> | undefined)?.last_incident_id as string | undefined);
 
-      let incidentId = linkedIncidentId;
-      if (!incidentId) {
-        const incidentRes = await fetch(`${apiUrl}/incidents`, { headers: authHeaders(), cache: 'no-store' });
-        if (incidentRes.ok) {
-          const incidentsPayload = (await incidentRes.json()) as { incidents?: Array<{ id?: string }> };
-          incidentId = incidentsPayload.incidents?.[0]?.id;
-        }
-      }
-
-      if (!incidentId) {
-        setMessage('Cannot create an evidence package yet: no incident is linked.');
+      if (!resolvedIncidentId) {
+        // Truthful: nothing to package. The modal already surfaces this empty state;
+        // this guards the direct-call path so we never POST without an incident.
+        setMessage('No incidents are currently available for evidence packaging.');
         return;
       }
 
+      // Exactly the supported proof-bundle contract: the incident's internal id plus the
+      // include_raw_events flag. No browser-generated ids, hashes, completeness, or
+      // client-asserted authorization — the backend owns all of that.
       const res = await fetch(`${apiUrl}/exports/proof-bundle`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ incident_id: incidentId, include_raw_events: true }),
+        body: JSON.stringify({ incident_id: resolvedIncidentId, include_raw_events: true }),
       });
-      const payload = (await res.json().catch(() => ({}))) as { status?: string; detail?: string };
-      setMessage(
-        res.ok
-          ? `Evidence package ${payload.status ?? 'queued'}.`
-          : (payload.detail ?? 'Export failed.'),
-      );
-      // Full reload so metrics, retention, and integrity all refresh from the backend.
-      if (res.ok) setReloadKey((k) => k + 1);
+      const payload = (await res.json().catch(() => ({}))) as {
+        status?: string;
+        export_job_id?: string;
+        detail?: unknown;
+        error_message?: string;
+      };
+      if (res.ok) {
+        setMessage(`Evidence package ${payload.status ?? 'queued'}.`);
+        setShowCreateModal(false);
+        // Select the created — or existing idempotent — package by the id the backend
+        // returned. We never synthesize a row; the reload re-fetches the canonical list,
+        // so an idempotent response cannot produce a duplicate row.
+        if (payload.export_job_id) setSelectedPkgId(payload.export_job_id);
+        // Full reload so metrics, retention, and integrity all refresh from the backend.
+        setReloadKey((k) => k + 1);
+      } else {
+        // Surface a backend-safe message only — never a raw object or stack trace.
+        setMessage(safeErrorMessage(payload.detail ?? payload.error_message, 'Export failed.'));
+      }
     } catch {
       setMessage('Evidence package creation failed: network error.');
     } finally {
@@ -875,27 +935,32 @@ export default function EvidenceAuditPanel() {
             Generate tamper-evident incident packages, verify file integrity, and review workspace audit activity.
           </p>
         </div>
-        {/* Create is hidden entirely for users without evidence.export; authorized
-            users see it gated on a real incident + response action, with a loading
-            state that also blocks duplicate submissions. */}
-        {canExport ? (
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={!canCreatePackage}
-            aria-busy={creating}
-            title={
-              creating
-                ? 'Creating evidence package…'
-                : !chainReadyForPackage
-                  ? 'Requires an incident and a response action before creating a package'
-                  : undefined
-            }
-            onClick={() => void createPackage()}
-          >
-            {creating ? 'Creating…' : 'Create Evidence Package'}
-          </button>
-        ) : null}
+        {/* Always rendered so a faded button can always explain itself. It disables ONLY
+            for an explicit permission denial, an unresolved/failed permission read, or an
+            in-flight submission — never for an empty incident list. Clicking opens the
+            creation flow, which surfaces a truthful empty state when no incidents are
+            available for packaging. */}
+        <button
+          ref={createButtonRef}
+          type="button"
+          className="btn btn-primary"
+          disabled={createDisabled}
+          aria-busy={creating || permissionResolving}
+          title={
+            permissionDenied
+              ? 'You do not have permission to create evidence packages.'
+              : creating
+                ? 'Creating…'
+                : permissionResolving
+                  ? 'Checking your permissions…'
+                  : permissionUndetermined
+                    ? 'Evidence service is unavailable. Retry to continue.'
+                    : undefined
+          }
+          onClick={() => setShowCreateModal(true)}
+        >
+          {creating ? 'Creating…' : 'Create Evidence Package'}
+        </button>
       </div>
 
       {/* ── Metric row ──────────────────────────────────────────── */}
@@ -1249,7 +1314,377 @@ export default function EvidenceAuditPanel() {
           )}
         </div>
       )}
+
+      {/* ── Create Evidence Package flow ─────────────────────────── */}
+      {showCreateModal && (
+        <EvidencePackageCreateModal
+          authHeaders={authHeaders}
+          permissionDenied={permissionDenied}
+          creating={creating}
+          preselectIncidentId={
+            packages.find((pkg) => pkg.incident_id)?.incident_id ?? urlIncidentId ?? ''
+          }
+          onCreate={(incidentId) => createPackage(incidentId)}
+          onClose={() => setShowCreateModal(false)}
+        />
+      )}
     </section>
+  );
+}
+
+/* ── Create Evidence Package modal ───────────────────────────────── */
+
+type CreateModalIncident = {
+  id: string;
+  title?: string | null;
+  summary?: string | null;
+  status?: string | null;
+  workflow_status?: string | null;
+  severity?: string | null;
+  created_at?: string | null;
+  // Human-readable identifiers when the API provides them; the modal falls back to the
+  // same INC-<uuid8> short id the backend derives elsewhere so labels stay consistent.
+  incident_number?: string | null;
+  incident_short_id?: string | null;
+};
+
+// The proof-bundle endpoint always bundles every currently-available evidence category
+// for the incident — there is no server-side category selection — so the modal states
+// that truthfully instead of offering a fake per-category picker.
+const PROOF_BUNDLE_EVIDENCE_CATEGORIES = REQUIRED_ARTIFACTS;
+
+// Best available human-readable incident identity. Prefers a canonical number, then a
+// backend short id, then the same INC-<first 8 of uuid> fallback the API uses. The raw
+// UUID is only ever the submitted API identifier, never the label.
+function incidentIdentity(incident: CreateModalIncident): string {
+  return (
+    incident.incident_number?.trim() ||
+    incident.incident_short_id?.trim() ||
+    `INC-${incident.id.slice(0, 8)}`
+  );
+}
+
+function incidentOptionLabel(incident: CreateModalIncident): string {
+  const parts = [incidentIdentity(incident)];
+  const title = incident.title?.trim() || incident.summary?.trim();
+  if (title) parts.push(title);
+  if (incident.severity) parts.push(String(incident.severity).toUpperCase());
+  if (incident.status) parts.push(String(incident.status));
+  return parts.join(' · ');
+}
+
+// Normalizes the /api/incidents envelope. The list endpoint returns { incidents: [...] },
+// but we defensively accept the other known shapes (items / raw array) rather than
+// silently dropping valid data — while still rejecting a malformed body.
+function normalizeIncidentsPayload(body: unknown): CreateModalIncident[] | null {
+  const raw = Array.isArray(body)
+    ? body
+    : Array.isArray((body as { incidents?: unknown })?.incidents)
+      ? (body as { incidents: unknown[] }).incidents
+      : Array.isArray((body as { items?: unknown })?.items)
+        ? (body as { items: unknown[] }).items
+        : null;
+  if (raw === null) return null; // malformed — caller surfaces an error, never a false empty state
+  return raw.filter(
+    (i): i is CreateModalIncident => Boolean(i) && typeof (i as { id?: unknown }).id === 'string',
+  );
+}
+
+// The creation flow always opens (the primary button never gates on incident
+// availability). It fetches the workspace's real incidents and, when none are
+// eligible, shows a truthful empty state rather than pretending a package can be
+// built. Actual authorization is still enforced by the backend POST.
+function EvidencePackageCreateModal({
+  authHeaders,
+  permissionDenied,
+  creating,
+  preselectIncidentId,
+  onCreate,
+  onClose,
+}: {
+  authHeaders: () => Record<string, string>;
+  permissionDenied: boolean;
+  creating: boolean;
+  preselectIncidentId: string;
+  onCreate: (incidentId: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [incidents, setIncidents] = useState<CreateModalIncident[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [selectedId, setSelectedId] = useState(preselectIncidentId);
+  const [reloadKey, setReloadKey] = useState(0);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const selectRef = useRef<HTMLSelectElement>(null);
+
+  // Escape closes (unless a submission is in flight, which we must not abandon) and Tab is
+  // trapped so keyboard focus can never leave the open dialog.
+  const closeIfIdle = () => {
+    if (!creating) onClose();
+  };
+  function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key === 'Escape') {
+      event.stopPropagation();
+      closeIfIdle();
+      return;
+    }
+    if (event.key !== 'Tab' || !dialogRef.current) return;
+    const focusable = dialogRef.current.querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), select:not([disabled]), input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const active = document.activeElement;
+    if (event.shiftKey && active === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  // Move focus into the dialog when it opens so keyboard + screen-reader users start
+  // inside it. (Focus is returned to the Create button by the parent on close.)
+  useEffect(() => {
+    dialogRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError('');
+    (async () => {
+      try {
+        const res = await fetch('/api/incidents?limit=50', {
+          headers: authHeaders(),
+          cache: 'no-store',
+        });
+        if (cancelled) return;
+        if (res.ok) {
+          const rows = normalizeIncidentsPayload(await res.json().catch(() => null));
+          if (rows === null) {
+            setError('Incidents could not be loaded.');
+            return;
+          }
+          setIncidents(rows);
+          // Preselect the linked incident if it is present, otherwise the first row.
+          setSelectedId((cur) => (cur && rows.some((r) => r.id === cur) ? cur : rows[0]?.id ?? ''));
+        } else {
+          setError('Incidents could not be loaded.');
+        }
+      } catch {
+        if (!cancelled) setError('Incidents could not be loaded.');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authHeaders, reloadKey]);
+
+  const hasIncidents = incidents.length > 0;
+  // When the selector appears, move focus to it — but only if the user has not already
+  // tabbed elsewhere in the dialog (focus is still on the dialog container).
+  useEffect(() => {
+    if (!loading && !error && hasIncidents && document.activeElement === dialogRef.current) {
+      selectRef.current?.focus();
+    }
+  }, [loading, error, hasIncidents]);
+
+  const selectedIncident = incidents.find((i) => i.id === selectedId) ?? null;
+  // Only an EXPLICIT denial blocks submission here; the backend is the real gate.
+  const canSubmit = !permissionDenied && !creating && !loading && !error && !!selectedId;
+
+  return (
+    <div className="modalOverlay" onClick={closeIfIdle} onKeyDown={handleKeyDown}>
+      <section
+        ref={dialogRef}
+        className="modalCard"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-evidence-package-title"
+        aria-describedby="create-evidence-package-desc"
+        tabIndex={-1}
+        style={{ maxWidth: '480px', outline: 'none' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.75rem' }}>
+          <div>
+            <p className="sectionEyebrow" style={{ marginBottom: '0.15rem' }}>
+              Evidence &amp; Audit
+            </p>
+            <h2 id="create-evidence-package-title" style={{ margin: 0, fontSize: '1.15rem' }}>
+              Create Evidence Package
+            </h2>
+          </div>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            aria-label="Close create evidence package dialog"
+            onClick={closeIfIdle}
+          >
+            ✕
+          </button>
+        </div>
+
+        <p id="create-evidence-package-desc" className="muted" style={{ margin: '0.5rem 0 1rem', fontSize: '0.85rem' }}>
+          Select an incident and generate a tamper-evident package containing its available
+          investigation and response evidence.
+        </p>
+
+        {/* Live region so loading/empty/error transitions are announced. */}
+        <div aria-live="polite">
+          {permissionDenied ? (
+            <p className="statusLine" role="alert" style={{ fontSize: '0.85rem' }}>
+              You do not have permission to create evidence packages.
+            </p>
+          ) : loading ? (
+            <div aria-busy="true">
+              <p className="muted" style={{ fontSize: '0.82rem', marginBottom: '0.5rem' }}>
+                Loading incidents…
+              </p>
+              {[0, 1, 2].map((i) => (
+                <span
+                  key={i}
+                  className="skeletonRow"
+                  aria-hidden="true"
+                  style={{ display: 'block', height: '1.1rem', marginBottom: '0.4rem' }}
+                />
+              ))}
+            </div>
+          ) : error ? (
+            <div role="alert">
+              <p className="fieldError" style={{ marginBottom: '0.6rem' }}>
+                {error}
+              </p>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ fontSize: '0.8rem' }}
+                onClick={() => setReloadKey((k) => k + 1)}
+              >
+                Retry
+              </button>
+            </div>
+          ) : !hasIncidents ? (
+            // Truthful empty state — the flow opened, but there is genuinely nothing to
+            // package yet. Never present this as a package or as an error.
+            <div>
+              <h3 style={{ margin: '0 0 0.4rem', fontSize: '0.98rem' }}>No incidents available</h3>
+              <p className="muted" style={{ fontSize: '0.85rem', marginBottom: '0.9rem' }}>
+                No incidents are currently available for evidence packaging. Create or open an
+                incident first, then return here to generate its evidence package.
+              </p>
+              <Link href="/incidents" prefetch={false} className="btn btn-secondary" style={{ fontSize: '0.8rem' }}>
+                View Incidents
+              </Link>
+            </div>
+          ) : (
+            <div className="formField">
+              <label htmlFor="create-evidence-incident">Incident to package</label>
+              <select
+                id="create-evidence-incident"
+                ref={selectRef}
+                value={selectedId}
+                onChange={(e) => setSelectedId(e.target.value)}
+              >
+                {incidents.map((incident) => (
+                  <option key={incident.id} value={incident.id}>
+                    {incidentOptionLabel(incident)}
+                  </option>
+                ))}
+              </select>
+
+              {/* Selected-incident identity, shown as labelled fields (a native <option>
+                  can only render plain text). Severity/status/created are canonical
+                  backend values, never re-derived here. */}
+              {selectedIncident ? (
+                <div
+                  className="drawerMetaGrid"
+                  style={{ marginTop: '0.9rem', gridTemplateColumns: '1fr 1fr' }}
+                >
+                  <div>
+                    <p className="tableMeta" style={{ margin: 0 }}>Incident</p>
+                    <p style={{ margin: 0, fontSize: '0.82rem', fontFamily: 'monospace' }}>
+                      {incidentIdentity(selectedIncident)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="tableMeta" style={{ margin: 0 }}>Severity</p>
+                    <p style={{ margin: 0, fontSize: '0.82rem' }}>
+                      {selectedIncident.severity ? String(selectedIncident.severity).toUpperCase() : '—'}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="tableMeta" style={{ margin: 0 }}>Status</p>
+                    <p style={{ margin: 0, fontSize: '0.82rem' }}>
+                      {selectedIncident.status ?? selectedIncident.workflow_status ?? '—'}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="tableMeta" style={{ margin: 0 }}>Created</p>
+                    <p style={{ margin: 0, fontSize: '0.82rem' }}>{fmt(selectedIncident.created_at)}</p>
+                  </div>
+                </div>
+              ) : null}
+
+              {/* Truthful category statement — the endpoint bundles all available
+                  categories; there is no per-category selection to offer. */}
+              <div style={{ marginTop: '0.9rem' }}>
+                <p className="tableMeta" style={{ marginBottom: '0.3rem' }}>
+                  This package will include all currently available evidence associated with the
+                  selected incident.
+                </p>
+                <ul style={{ margin: 0, paddingLeft: '1.1rem', fontSize: '0.78rem', color: 'var(--color-muted, #94a3b8)' }}>
+                  {PROOF_BUNDLE_EVIDENCE_CATEGORIES.map((category) => (
+                    <li key={category}>{category}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="buttonRow" style={{ justifyContent: 'flex-end', gap: '0.5rem', marginTop: '1.25rem' }}>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            style={{ fontSize: '0.82rem' }}
+            disabled={creating}
+            onClick={closeIfIdle}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            style={{ fontSize: '0.82rem' }}
+            disabled={!canSubmit}
+            aria-busy={creating}
+            title={
+              permissionDenied
+                ? 'You do not have permission to create evidence packages.'
+                : creating
+                  ? 'Creating…'
+                  : !hasIncidents
+                    ? 'No incidents are currently available for evidence packaging.'
+                    : !selectedId
+                      ? 'Select an incident to package.'
+                      : undefined
+            }
+            onClick={() => {
+              if (!canSubmit) return;
+              void onCreate(selectedId);
+            }}
+          >
+            {creating ? 'Creating…' : 'Create Package'}
+          </button>
+        </div>
+      </section>
+    </div>
   );
 }
 

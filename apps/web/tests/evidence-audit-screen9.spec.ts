@@ -51,10 +51,19 @@ test('4a: Create Evidence Package button exists', () => {
   expect(source).toContain('Create Evidence Package');
 });
 
-test('4b: button is disabled when chain is not ready (canCreatePackage guard)', () => {
+test('4b: button disables only for explicit denial / unresolved permission / submitting — never for an empty chain', () => {
   const source = read(PANEL);
-  expect(source).toContain('canCreatePackage');
-  expect(source).toContain('disabled={!canCreatePackage}');
+  // The Create button gate is driven by the permission-resolution model, not by the
+  // old chain-readiness guard. The removed `canCreatePackage` gate must be gone.
+  expect(source).toContain('disabled={createDisabled}');
+  expect(source).not.toContain('disabled={!canCreatePackage}');
+  expect(source).not.toContain('const canCreatePackage');
+  // createDisabled is composed only of permission/submission states.
+  expect(source).toContain('const createDisabled = creating || permissionResolving || permissionUndetermined || permissionDenied');
+  // Denial is an EXPLICIT can_export === false, never a truthy coercion of an absent field.
+  expect(source).toContain('canExport === false');
+  // The button's disabled condition must not reference incident/chain readiness.
+  expect(source).not.toContain('disabled={!chainReadyForPackage}');
 });
 
 /* ── 5. Top metric cards ────────────────────────────────────────── */
@@ -249,9 +258,16 @@ test('chain: package detail links to linked incident when incident_id present', 
   expect(source).toContain("href=\"/incidents\"");
 });
 
-test('chain: canCreatePackage requires both incidentOk and responseActionOk', () => {
+test('chain: the header Create button is no longer gated by chain readiness', () => {
   const source = read(PANEL);
-  expect(source).toContain('incidentOk && responseActionOk');
+  // The removed `chainReadyForPackage` variable must not exist, and the header button
+  // must not depend on incident/response-action readiness — an empty chain opens the
+  // modal to a truthful empty state instead of disabling the primary button.
+  expect(source).not.toContain('const chainReadyForPackage');
+  expect(source).not.toContain('canCreatePackage');
+  // incidentOk / responseActionOk survive only for the table empty-state blocker.
+  expect(source).toContain('if (!responseActionOk)');
+  expect(source).toContain('if (!incidentOk)');
 });
 
 /* ── Audit logs detail panel ────────────────────────────────────── */
@@ -393,15 +409,19 @@ test('no-fake: panel never injects hardcoded mock packages into the packages arr
 
 /* ── Screen 9 truthfulness contract (consistency pass) ──────────────────────── */
 
-test('truthful: Create Evidence Package is permission-aware (canExport from backend)', () => {
+test('truthful: Create Evidence Package is permission-aware (canExport from backend, tri-state)', () => {
   const source = read(PANEL);
   expect(source).toContain('Create Evidence Package');
-  // Button only renders for users the backend says can export.
-  expect(source).toContain('setCanExport(');
-  expect(source).toContain('canExport ? (');
-  // Submission is guarded against duplicates with a creating state.
+  // Permission is backend-authoritative and kept as a tri-state — an absent field stays
+  // undefined rather than being coerced to a denial.
+  expect(source).toContain('setCanExport(typeof p.can_export === \'boolean\' ? p.can_export : undefined)');
+  // Denial is explicit; loading/undetermined are separate, truthful states.
+  expect(source).toContain('const permissionDenied = !permissionResolving && !loadError && canExport === false');
+  expect(source).toContain('const permissionResolving = runtimeLoading || dataLoading');
+  expect(source).toContain('const permissionUndetermined = !permissionResolving && Boolean(loadError)');
+  // Submission is guarded against duplicates and against an explicit denial.
   expect(source).toContain('setCreating(true)');
-  expect(source).toContain('if (creating || !canExport) return');
+  expect(source).toContain('if (creating || permissionDenied) return');
 });
 
 test('truthful: table shows human-readable package + incident numbers, not raw UUIDs', () => {
