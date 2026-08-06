@@ -13,11 +13,12 @@ test('evidence page uses Evidence & Audit terminology with expected tabs and hea
   expect(source).toContain("label: 'Evidence Packages'");
   expect(source).toContain("label: 'Audit Logs'");
   expect(source).toContain("'Package ID'");
-  expect(source).toContain("'Incident'");
-  expect(source).toContain("'Date Created'");
+  expect(source).toContain("'Incident / Scope'");
+  expect(source).toContain("'Created'");
   expect(source).toContain("'Includes'");
   expect(source).toContain("'Size'");
-  expect(source).toContain("'Evidence Source'");
+  expect(source).toContain("'SHA-256'");
+  expect(source).toContain("'Integrity'");
   expect(source).toContain("'Actions'");
 });
 

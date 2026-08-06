@@ -120,7 +120,7 @@ def test_evidence_audit_panel_uses_proof_bundle_endpoint_and_customer_labels() -
     panel_source = (REPO_ROOT / 'apps/web/app/evidence-audit-panel.tsx').read_text(encoding='utf-8')
     assert '/exports/proof-bundle' in panel_source
     assert '/exports/history' not in panel_source
-    assert 'Cannot create proof bundle yet: no incident is linked.' in panel_source
+    assert 'Cannot create an evidence package yet: no incident is linked.' in panel_source
     assert 'Live evidence' in panel_source
     assert 'Simulator/test evidence' in panel_source
     assert 'Evidence unavailable' in panel_source

@@ -22,7 +22,18 @@ test('clerk: agent sidebar renders with title and primary report action', () => 
   expect(source).toContain('Crypto-Auditing Clerk');
   expect(source).toContain('CryptoAuditingClerkPanel');
   expect(source).toContain('View Full Package Report');
-  expect(source).toContain('AI Evidence Completeness');
+  // The label is corrected from the misleading "AI Evidence Completeness".
+  expect(source).toContain('Evidence Completeness');
+  expect(source).not.toContain('AI Evidence Completeness');
+});
+
+test('clerk: package mode shows real per-package evidence counts', () => {
+  const source = read(PANEL);
+  // Package-scoped metrics come from the backend completeness + verification result.
+  expect(source).toContain('completeness.present_count');
+  expect(source).toContain('completeness.missing_count');
+  expect(source).toContain('completeness.unverifiable_count');
+  expect(source).toContain('detail?.verification?.files_verified');
 });
 
 test('clerk: evidence metrics section lists the required tiles', () => {
@@ -63,9 +74,9 @@ test('clerk: verification checklist is computed from real package data', () => {
 
 /* ── Hash (SHA-256) column ──────────────────────────────────────── */
 
-test('hash: table has a Hash (SHA-256) column with truncation and copy', () => {
+test('hash: table has a SHA-256 column with truncation and copy', () => {
   const source = read(PANEL);
-  expect(source).toContain("'Hash (SHA-256)'");
+  expect(source).toContain("'SHA-256'");
   expect(source).toContain('truncHash');
   expect(source).toContain('copyHash');
   // Full hash remains available to screen readers and in a title tooltip.
@@ -91,12 +102,17 @@ test('integrity: table has an Integrity column with backend-driven pill', () => 
 
 test('integrity: verified and integrity-failed states are distinctly mapped', () => {
   const source = read(PANEL);
-  expect(source).toContain("label: 'Verified'");
-  expect(source).toContain("label: 'Integrity Failed'");
-  expect(source).toContain("label: 'Needs Evidence'");
-  expect(source).toContain("label: 'Superseded'");
-  // "Hash generated" is deliberately distinct from "Verified" (truthfulness).
-  expect(source).toContain("label: 'Hash generated'");
+  // Labels are backend-authoritative (integrity_label); the client maps status to a
+  // colour variant. "Hash Generated" is a distinct state from "Verified", and a
+  // legacy/unhashed export is never either.
+  expect(source).toContain('INTEGRITY_VARIANTS');
+  expect(source).toContain('verified:');
+  expect(source).toContain('hash_generated:');
+  expect(source).toContain('integrity_failed:');
+  expect(source).toContain('needs_evidence:');
+  expect(source).toContain('superseded:');
+  expect(source).toContain('legacy_export:');
+  expect(source).toContain('pkg.integrity_label');
 });
 
 test('integrity: integrity-failed package shows a high-visibility warning, not a verified download', () => {
