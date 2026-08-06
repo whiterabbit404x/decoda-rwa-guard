@@ -33,7 +33,9 @@ _STATUS_BANDS: tuple[tuple[int, str, str], ...] = (
 )
 
 # ── Canonical integrity states ────────────────────────────────────────────────
+INTEGRITY_DRAFT = 'draft'
 INTEGRITY_BUILDING = 'building'
+INTEGRITY_HASHING = 'hashing'
 INTEGRITY_FAILED = 'failed'
 INTEGRITY_NEEDS_EVIDENCE = 'needs_evidence'
 INTEGRITY_HASH_GENERATED = 'hash_generated'
@@ -41,6 +43,55 @@ INTEGRITY_VERIFYING = 'verifying'
 INTEGRITY_VERIFIED = 'verified'
 INTEGRITY_INTEGRITY_FAILED = 'integrity_failed'
 INTEGRITY_SUPERSEDED = 'superseded'
+# A completed export that never produced a tamper-evident manifest or file
+# hashes (legacy JSON exports created before Screen 9 packaging, or non-package
+# export types). It must NEVER be shown as "hash_generated" or "verified".
+INTEGRITY_LEGACY_EXPORT = 'legacy_export'
+
+# Hash-column display states (kept separate from integrity so the two columns
+# can never contradict each other — a package with no stored hash is
+# "not_generated", never "Pending" next to a "Hash generated" integrity pill).
+HASH_STATE_NONE = 'not_generated'
+HASH_STATE_GENERATING = 'generating'
+HASH_STATE_PRESENT = 'present'
+
+# Canonical, human-readable label for each integrity state. Authoritative so the
+# table pill, the details view and the filter dropdown all show the same wording.
+INTEGRITY_LABELS: dict[str, str] = {
+    INTEGRITY_DRAFT: 'Draft',
+    INTEGRITY_BUILDING: 'Building',
+    INTEGRITY_HASHING: 'Hashing',
+    INTEGRITY_HASH_GENERATED: 'Hash Generated',
+    INTEGRITY_VERIFYING: 'Verifying',
+    INTEGRITY_VERIFIED: 'Verified',
+    INTEGRITY_NEEDS_EVIDENCE: 'Needs Evidence',
+    INTEGRITY_INTEGRITY_FAILED: 'Integrity Failed',
+    INTEGRITY_FAILED: 'Failed',
+    INTEGRITY_SUPERSEDED: 'Superseded',
+    INTEGRITY_LEGACY_EXPORT: 'Legacy Export',
+}
+
+
+def integrity_status_label(status: str | None) -> str:
+    """Canonical display label for an integrity state (falls back to a titleized
+    form for any unknown value so the UI never shows a raw enum)."""
+    key = str(status or '').lower()
+    if key in INTEGRITY_LABELS:
+        return INTEGRITY_LABELS[key]
+    return key.replace('_', ' ').title() if key else 'Unknown'
+
+
+# Integrity states in which a completed package is not a usable evidence artifact
+# and must not be counted toward export-readiness.
+_NON_EXPORTABLE_INTEGRITY = frozenset({
+    INTEGRITY_DRAFT,
+    INTEGRITY_BUILDING,
+    INTEGRITY_HASHING,
+    INTEGRITY_FAILED,
+    INTEGRITY_INTEGRITY_FAILED,
+    INTEGRITY_LEGACY_EXPORT,
+    INTEGRITY_SUPERSEDED,
+})
 
 
 def _status_for_score(score: int) -> tuple[str, str]:
@@ -315,16 +366,46 @@ def verify_files_and_manifest(file_values: dict[str, Any], manifest: dict[str, A
     }
 
 
+def _completeness_indicates_hashes(completeness: dict[str, Any] | None) -> bool:
+    """Best-effort inference of whether a package actually carries file hashes.
+
+    Used only when the caller does not pass an explicit ``has_hashes`` signal
+    (e.g. unit tests that build a full completeness result). A completed export
+    with no completeness facts at all is treated as having no hashes — it is a
+    legacy/non-package export, not a hashed evidence package.
+    """
+    if not completeness:
+        return False
+    categories = completeness.get('categories')
+    if isinstance(categories, list):
+        for category in categories:
+            if category.get('code') == 'file_hashes':
+                return category.get('status') == 'present'
+    # A minimal completeness dict ({'score': N}) still implies a real generated
+    # package — a score is only computed for packages that were built.
+    return completeness.get('score') is not None
+
+
 def derive_integrity_status(
     *,
     job_status: str,
     verification: dict[str, Any] | None,
     completeness: dict[str, Any] | None,
     superseded: bool = False,
+    has_hashes: bool | None = None,
 ) -> str:
     """Map export-job lifecycle + recorded verification onto a Screen 9 integrity state.
 
-    Never returns 'verified' unless a recorded verification actually passed.
+    ``has_hashes`` is the authoritative signal for whether the package carries a
+    real manifest/file SHA-256 set (from the stored ``integrity_hash`` or
+    ``files_hashed`` count). When it is ``None`` the presence of hashes is
+    inferred from ``completeness`` — so callers that have the canonical facts
+    (list/detail views) should always pass it explicitly.
+
+    Never returns 'verified' unless a recorded verification actually passed, and
+    never returns 'hash_generated' for a completed export that has no hashes —
+    that is reported as 'legacy_export' so the hash and integrity columns cannot
+    contradict each other.
     """
     status = str(job_status or '').lower()
     if superseded:
@@ -345,10 +426,9 @@ def derive_integrity_status(
             return INTEGRITY_INTEGRITY_FAILED
 
     # No verification recorded yet. If core required evidence is missing the
-    # package still needs evidence; otherwise hashes are generated and a
-    # verification is pending.
+    # package still needs evidence (checked first so a hashed-but-incomplete
+    # package is reported truthfully).
     if completeness is not None:
-        missing = completeness.get('missing_count') or 0
         present = completeness.get('present_count') or 0
         required = completeness.get('required_count') or 0
         core_missing = any(
@@ -357,4 +437,197 @@ def derive_integrity_status(
         )
         if core_missing or (required and present < required and (completeness.get('score') or 0) < 60):
             return INTEGRITY_NEEDS_EVIDENCE
+
+    # A completed export with no stored hashes is a legacy/non-package export.
+    resolved_has_hashes = has_hashes if has_hashes is not None else _completeness_indicates_hashes(completeness)
+    if not resolved_has_hashes:
+        return INTEGRITY_LEGACY_EXPORT
     return INTEGRITY_HASH_GENERATED
+
+
+# ── Canonical package-state selectors (Screen 9) ──────────────────────────────
+# These operate on the plain package dict shape produced by the exports list /
+# detail endpoints. Every summary card, table row, agent card, and action menu
+# consumes these — the truthfulness rules are defined once, here, and never
+# re-derived independently in a React component.
+
+def _package_files_hashed(package: dict[str, Any]) -> int:
+    """Number of files that carry a stored SHA-256 for this package.
+
+    Prefers the persisted ``files_hashed`` count; falls back to counting
+    manifest file entries that actually have a sha256 when a manifest is loaded.
+    """
+    try:
+        stored = int(package.get('files_hashed') or 0)
+    except (TypeError, ValueError):
+        stored = 0
+    if stored > 0:
+        return stored
+    files = package.get('files')
+    if isinstance(files, list):
+        return sum(1 for f in files if isinstance(f, dict) and f.get('sha256'))
+    return 0
+
+
+def _package_has_hashes(package: dict[str, Any]) -> bool:
+    """True when the package carries a real manifest/integrity hash or file hashes."""
+    if str(package.get('integrity_hash') or '').strip():
+        return True
+    return _package_files_hashed(package) > 0
+
+
+def _package_completeness_for_integrity(package: dict[str, Any]) -> dict[str, Any] | None:
+    completeness = package.get('completeness')
+    if isinstance(completeness, dict):
+        return completeness
+    score = package.get('completeness_score')
+    if score is not None:
+        return {'score': score}
+    return None
+
+
+def get_evidence_package_display_state(package: dict[str, Any]) -> dict[str, Any]:
+    """Single source of truth for a package's Screen 9 display state.
+
+    Returns the canonical ``integrity_status``, the hash-column ``hash_state``,
+    the real ``files_hashed`` count, and the download/export-ready booleans.
+    """
+    status = str(package.get('status') or '').lower()
+    verification = package.get('verification') if isinstance(package.get('verification'), dict) else None
+    superseded = bool(package.get('superseded'))
+    has_hashes = _package_has_hashes(package)
+    integrity_status = derive_integrity_status(
+        job_status=status,
+        verification=verification,
+        completeness=_package_completeness_for_integrity(package),
+        superseded=superseded,
+        has_hashes=has_hashes,
+    )
+    if has_hashes:
+        hash_state = HASH_STATE_PRESENT
+    elif status in {'queued', 'pending', 'building', 'running'}:
+        hash_state = HASH_STATE_GENERATING
+    else:
+        hash_state = HASH_STATE_NONE
+
+    storage_available = package.get('storage_available')
+    storage_ok = storage_available is not False  # unknown (None) is treated as available
+    downloadable = status == 'completed' and storage_ok
+    # A completed export can always have its raw artifact downloaded, but only a
+    # hashed package is a usable *evidence* artifact (manifest/verify available).
+    is_evidence_artifact = integrity_status not in _NON_EXPORTABLE_INTEGRITY
+    is_export_ready = downloadable and integrity_status == INTEGRITY_VERIFIED
+    return {
+        'integrity_status': integrity_status,
+        'hash_state': hash_state,
+        'files_hashed': _package_files_hashed(package),
+        'has_hashes': has_hashes,
+        'is_legacy_export': integrity_status == INTEGRITY_LEGACY_EXPORT,
+        'is_downloadable': downloadable,
+        'is_evidence_artifact': is_evidence_artifact,
+        'is_export_ready': is_export_ready,
+        'ready_for_verification': downloadable and integrity_status == INTEGRITY_HASH_GENERATED,
+    }
+
+
+def is_evidence_package_export_ready(package: dict[str, Any]) -> bool:
+    """A package is fully export-ready only when it has been deterministically
+    verified and its artifact is retrievable. Draft/building/failed/integrity-
+    failed/legacy/superseded packages are never export-ready. Metadata existing
+    is not enough."""
+    return bool(get_evidence_package_display_state(package)['is_export_ready'])
+
+
+def get_evidence_package_integrity_summary(package: dict[str, Any]) -> dict[str, Any]:
+    """Compact, truthful integrity summary for a single package."""
+    state = get_evidence_package_display_state(package)
+    verification = package.get('verification') if isinstance(package.get('verification'), dict) else None
+    return {
+        'integrity_status': state['integrity_status'],
+        'hash_state': state['hash_state'],
+        'files_hashed': state['files_hashed'],
+        'integrity_hash': package.get('integrity_hash') or None,
+        'verified': state['integrity_status'] == INTEGRITY_VERIFIED,
+        'verified_at': (verification or {}).get('verified_at') or package.get('verified_at'),
+        'is_legacy_export': state['is_legacy_export'],
+        'is_export_ready': state['is_export_ready'],
+    }
+
+
+def get_workspace_evidence_metrics(packages: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate canonical evidence metrics for the workspace sidebar.
+
+    Every field is derived from the same per-package display state used by the
+    table rows, so the agent card and the table can never disagree. Completeness
+    only averages packages that actually have a calculable score; when none do
+    the average is ``None`` (the UI shows "Not calculated", never "Unknown").
+    """
+    total = len(packages)
+    verified = 0
+    integrity_failures = 0
+    files_hashed = 0
+    export_ready = 0
+    ready_for_verification = 0
+    legacy_exports = 0
+    total_size = 0
+    incidents: set[str] = set()
+    scores: list[int] = []
+    for package in packages:
+        state = get_evidence_package_display_state(package)
+        if state['integrity_status'] == INTEGRITY_VERIFIED:
+            verified += 1
+        if state['integrity_status'] == INTEGRITY_INTEGRITY_FAILED:
+            integrity_failures += 1
+        if state['is_legacy_export']:
+            legacy_exports += 1
+        if state['is_export_ready']:
+            export_ready += 1
+        if state['ready_for_verification']:
+            ready_for_verification += 1
+        files_hashed += state['files_hashed']
+        try:
+            total_size += int(package.get('size_bytes') or 0)
+        except (TypeError, ValueError):
+            pass
+        incident_id = package.get('incident_id')
+        if incident_id:
+            incidents.add(str(incident_id))
+        score = package.get('completeness_score')
+        if isinstance(score, (int, float)):
+            scores.append(int(score))
+    return {
+        'total_packages': total,
+        'total_size_bytes': total_size,
+        'verified': verified,
+        'integrity_failures': integrity_failures,
+        'incidents_covered': len(incidents),
+        'files_hashed': files_hashed,
+        'export_ready': export_ready,
+        'ready_for_verification': ready_for_verification,
+        'legacy_exports': legacy_exports,
+        'average_completeness': round(sum(scores) / len(scores)) if scores else None,
+    }
+
+
+def get_package_allowed_actions(
+    package: dict[str, Any],
+    *,
+    can_export: bool,
+) -> dict[str, bool]:
+    """Which Screen 9 actions are valid for this package and this user.
+
+    ``can_export`` is the caller's ``evidence.export`` permission. Actions that
+    are cryptographically meaningless for the package (verify/manifest on a
+    legacy export with no manifest) are disabled regardless of permission.
+    """
+    state = get_evidence_package_display_state(package)
+    has_manifest = state['has_hashes'] and not state['is_legacy_export']
+    completed = str(package.get('status') or '').lower() == 'completed'
+    downloadable = state['is_downloadable']
+    return {
+        'view': True,
+        'download': completed and downloadable and can_export,
+        'download_manifest': completed and downloadable and has_manifest and can_export,
+        'verify': completed and downloadable and has_manifest and can_export,
+        'copy_hash': bool(str(package.get('integrity_hash') or '').strip()),
+    }

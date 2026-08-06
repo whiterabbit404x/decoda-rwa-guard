@@ -24058,8 +24058,11 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 'manifest_verified': None,
             })
             summary['completeness'] = _completeness
+            # A proof bundle always builds a signed manifest over its files, so
+            # hashes are present by construction — never a legacy export.
             _integrity_status = _derive_integrity_status(
                 job_status='completed', verification=None, completeness=_completeness,
+                has_hashes=True,
             )
             artifact_meta['completeness_score'] = _completeness['score']
             artifact_meta['completeness_status'] = _completeness['status']
@@ -24242,7 +24245,103 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             str(exc),
         )
         connection.execute("UPDATE export_jobs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s", (str(exc), export_id))
+
+    # Assign a human-readable package number (EV-YYYY-NNN) to completed evidence
+    # packages. Backend-generated (never derived in the client) and done in a
+    # separate, non-fatal step so a rare numbering collision can never fail the
+    # export — the read path applies a display fallback when the number is absent.
+    if export_type_val in {'proof_bundle', 'incident_report'}:
+        try:
+            _completed_row = connection.execute(
+                'SELECT status, package_number FROM export_jobs WHERE id = %s', (export_id,)
+            ).fetchone()
+            if (
+                _completed_row
+                and str(_completed_row.get('status')) == 'completed'
+                and not str(_completed_row.get('package_number') or '').strip()
+            ):
+                _num = _next_evidence_package_number(connection, workspace_id)
+                if _num:
+                    connection.execute(
+                        'UPDATE export_jobs SET package_number = %s WHERE id = %s AND package_number IS NULL',
+                        (_num, export_id),
+                    )
+                    artifact_meta['package_number'] = _num
+        except Exception:
+            # Numbering is best-effort; the read-time EV-<short> fallback covers it.
+            pass
     return artifact_meta
+
+
+def _next_evidence_package_number(connection: Any, workspace_id: str) -> str | None:
+    """Next human-readable evidence package number (EV-YYYY-NNN).
+
+    Scoped per workspace and calendar year, generated on the backend so the
+    sequence is never derived in the client. Allocation is serialized with a
+    per-(workspace, year) transaction advisory lock — the project's existing
+    concurrency convention (see pg_advisory_xact_lock usage) — so two concurrent
+    package creations can never compute the same number. The partial unique index
+    on (workspace_id, package_number) is an additional hard backstop. Returns
+    None when it cannot be computed, in which case a display fallback is used at
+    read time.
+    """
+    try:
+        year = utc_now_iso()[:4]
+        # Serialize number allocation for this workspace+year until the
+        # surrounding export transaction commits. This removes the COUNT()+1 race
+        # under concurrent creation without a dedicated counter table.
+        connection.execute(
+            'SELECT pg_advisory_xact_lock(hashtext(%s))',
+            (f'evidence_package_number:{workspace_id}:{year}',),
+        )
+        # Highest existing suffix for this workspace+year, so a number is never
+        # reused even if an earlier package was deleted (numbers are stable).
+        row = connection.execute(
+            '''SELECT COALESCE(MAX(NULLIF(regexp_replace(package_number, %s, ''), '')::int), 0) AS max_seq
+               FROM export_jobs
+               WHERE workspace_id = %s AND package_number LIKE %s''',
+            (f'^EV-{year}-', workspace_id, f'EV-{year}-%'),
+        ).fetchone()
+        seq = (int(row['max_seq']) if row and row.get('max_seq') is not None else 0) + 1
+        return f'EV-{year}-{seq:03d}'
+    except Exception:
+        return None
+
+
+def _workspace_evidence_retention_status(connection: Any, workspace_id: str) -> str:
+    """Truthful retention status for the Screen 9 summary card.
+
+    Derived from the workspace's actual retention-policy configuration — never
+    hardcoded. Returns one of: 'Compliant', 'Attention Required',
+    'Not Configured', 'Unknown'. Package existence alone never implies
+    regulatory compliance.
+    """
+    try:
+        rows = connection.execute(
+            'SELECT data_class, retention_days, enabled FROM workspace_retention_policies WHERE workspace_id = %s',
+            (workspace_id,),
+        ).fetchall()
+    except Exception:
+        # Retention support not available in this environment / query failed.
+        return 'Unknown'
+    relevant = [
+        r for r in (rows or [])
+        if isinstance(r, dict) and str(r.get('data_class') or '') in ('exports', 'audit_logs')
+    ]
+    if not relevant:
+        return 'Not Configured'
+    try:
+        all_enabled = all(bool(r.get('enabled')) and int(r.get('retention_days') or 0) > 0 for r in relevant)
+    except (TypeError, ValueError):
+        return 'Unknown'
+    # Evidence and audit retention are the two data classes that matter for an
+    # evidence-package retention claim; require both to be configured.
+    configured_classes = {str(r.get('data_class')) for r in relevant}
+    if all_enabled and {'exports', 'audit_logs'}.issubset(configured_classes):
+        return 'Compliant'
+    if all_enabled:
+        return 'Attention Required'
+    return 'Attention Required'
 
 
 def list_exports(request: Request) -> dict[str, Any]:
@@ -24263,6 +24362,15 @@ def list_exports(request: Request) -> dict[str, Any]:
             filter_action_id or 'none',
             filter_incident_id or 'none',
         )
+        # Retention status + export permission are resolved before the main query so
+        # the exports SELECT remains the final statement (stable for callers/tests)
+        # and so the summary card and Create button reflect real backend facts.
+        retention_status = _workspace_evidence_retention_status(connection, workspace_id)
+        _role = _normalize_workspace_role(str(workspace_context.get('role') or 'viewer'))
+        try:
+            can_export = _workspace_permission_granted(connection, workspace_id, _role, 'evidence.export')
+        except Exception:
+            can_export = 'evidence.export' in DEFAULT_ROLE_PERMISSIONS.get(_role, frozenset())
         # Build dynamic WHERE clause based on optional URL filters
         where_clauses = ['workspace_id = %s']
         params: list[Any] = [workspace_id]
@@ -24278,7 +24386,7 @@ def list_exports(request: Request) -> dict[str, Any]:
         where_sql = ' AND '.join(where_clauses)
         rows = connection.execute(
             f'''
-            SELECT id, workspace_id, export_type, format, status, output_path, storage_backend, storage_object_key, error_message, filters, size_bytes, created_at, updated_at
+            SELECT id, workspace_id, export_type, format, status, output_path, storage_backend, storage_object_key, error_message, filters, size_bytes, package_number, created_at, updated_at
             FROM export_jobs
             WHERE {where_sql}
             ORDER BY created_at DESC
@@ -24286,14 +24394,22 @@ def list_exports(request: Request) -> dict[str, Any]:
             ''',
             tuple(params),
         ).fetchall()
-        from services.api.app.evidence_completeness import derive_integrity_status as _derive_integrity_status
-        # First pass: index the latest proof_bundle per incident so we can flag
-        # superseded packages (an older bundle for the same incident).
+        from services.api.app.evidence_completeness import (
+            get_evidence_package_display_state as _display_state,
+            get_workspace_evidence_metrics as _workspace_metrics,
+            get_package_allowed_actions as _allowed_actions,
+            integrity_status_label as _integrity_label,
+        )
+        # Evidence-package export types build a signed manifest; the same type set
+        # defines what "superseded" means (a newer package for the same incident).
+        _EVIDENCE_EXPORT_TYPES = ('proof_bundle', 'incident_report')
+        # First pass: index the latest evidence package per incident so we can flag
+        # superseded packages (an older package for the same incident).
         _latest_created_by_incident: dict[str, Any] = {}
         for row in rows:
             _f = row.get('filters') if isinstance(row.get('filters'), dict) else {}
             _inc = str((_f or {}).get('incident_id') or '').strip()
-            if _inc and str(row.get('export_type') or '') == 'proof_bundle':
+            if _inc and str(row.get('export_type') or '') in _EVIDENCE_EXPORT_TYPES:
                 _created = row.get('created_at')
                 _prev = _latest_created_by_incident.get(_inc)
                 if _prev is None or (_created is not None and _created > _prev[1]):
@@ -24302,41 +24418,68 @@ def list_exports(request: Request) -> dict[str, Any]:
         exports = []
         for row in rows:
             item = _json_safe_value(dict(row))
-            item['download_url'] = f"/exports/{item['id']}/download" if item.get('status') == 'completed' else None
-            item['manifest_download_url'] = f"/exports/{item['id']}/manifest" if item.get('status') == 'completed' else None
+            _rid = str(item.get('id'))
+            item['download_url'] = f"/exports/{_rid}/download" if item.get('status') == 'completed' else None
+            item['manifest_download_url'] = f"/exports/{_rid}/manifest" if item.get('status') == 'completed' else None
             item['storage_key'] = item.get('storage_object_key')
             filters_val = item.pop('filters', None) or {}
-            _verification = None
-            _completeness_score = None
-            if isinstance(filters_val, dict):
-                item['incident_id'] = filters_val.get('incident_id')
-                item['response_action_id'] = filters_val.get('response_action_id')
-                _verification = filters_val.get('verification') if isinstance(filters_val.get('verification'), dict) else None
-                _completeness_score = filters_val.get('completeness_score')
-                if str(item.get('export_type') or '') == 'proof_bundle':
-                    for _mf in ('export_status', 'evidence_source_type', 'missing_sections', 'unavailable_sections', 'warnings', 'chain_complete', 'completeness_score', 'verified_at', 'files_hashed', 'integrity_hash'):
-                        if _mf in filters_val:
-                            item[_mf] = filters_val[_mf]
-            # Superseded when a newer bundle exists for the same incident.
-            _inc = str((filters_val or {}).get('incident_id') or '').strip()
-            _superseded = bool(
-                _inc
-                and str(item.get('export_type') or '') == 'proof_bundle'
-                and _latest_created_by_incident.get(_inc)
-                and _latest_created_by_incident[_inc][0] != str(item.get('id'))
+            if not isinstance(filters_val, dict):
+                filters_val = {}
+            item['incident_id'] = filters_val.get('incident_id')
+            item['response_action_id'] = filters_val.get('response_action_id')
+            _incident_id = str(filters_val.get('incident_id') or '').strip()
+            # Human-readable incident label (INC-xxxxxxxx), matching the app convention,
+            # so the table never shows a raw incident UUID as the primary label.
+            item['incident_short_id'] = f'INC-{_incident_id[:8]}' if _incident_id else None
+            # Backend-generated human-readable package number; fall back to a stable,
+            # non-sequential display id for rows predating the package_number column.
+            item['package_number'] = str(item.get('package_number') or '').strip() or f'EV-{_rid[:8].upper()}'
+            _verification = filters_val.get('verification') if isinstance(filters_val.get('verification'), dict) else None
+            item['verification'] = _verification
+            # Copy canonical evidence metadata out of filters for every evidence export
+            # type (proof_bundle + incident_report both build a signed manifest). Legacy
+            # export types simply have none of these keys, which the display-state
+            # selector then reports truthfully as a legacy export.
+            for _mf in ('export_status', 'evidence_source_type', 'missing_sections', 'unavailable_sections',
+                        'warnings', 'chain_complete', 'completeness_score', 'verified_at', 'files_hashed', 'integrity_hash'):
+                if _mf in filters_val:
+                    item[_mf] = filters_val[_mf]
+            item['completeness_score'] = filters_val.get('completeness_score')
+            # Superseded when a newer evidence package exists for the same incident.
+            item['superseded'] = bool(
+                _incident_id
+                and str(item.get('export_type') or '') in _EVIDENCE_EXPORT_TYPES
+                and _latest_created_by_incident.get(_incident_id)
+                and _latest_created_by_incident[_incident_id][0] != _rid
             )
-            item['superseded'] = _superseded
-            _comp_for_integrity = {'score': _completeness_score} if _completeness_score is not None else None
-            item['integrity_status'] = (
-                filters_val.get('integrity_status') if isinstance(filters_val, dict) and filters_val.get('integrity_status') and not _superseded and not _verification
-                else _derive_integrity_status(
-                    job_status=str(item.get('status') or ''),
-                    verification=_verification,
-                    completeness=_comp_for_integrity,
-                    superseded=_superseded,
-                )
-            )
-            item['completeness_score'] = _completeness_score
+            # Canonical, backend-authoritative display state. The hash column, the
+            # integrity pill, files_hashed and export-readiness all come from here so
+            # they can never contradict each other in the UI.
+            _state = _display_state(item)
+            item['integrity_status'] = _state['integrity_status']
+            item['integrity_label'] = _integrity_label(_state['integrity_status'])
+            item['hash_state'] = _state['hash_state']
+            item['hash_display_state'] = _state['hash_state']
+            item['files_hashed'] = _state['files_hashed']
+            item['export_ready'] = _state['is_export_ready']
+            item['is_export_ready'] = _state['is_export_ready']
+            item['is_downloadable'] = _state['is_downloadable']
+            item['is_legacy_export'] = _state['is_legacy_export']
+            item['ready_for_verification'] = _state['ready_for_verification']
+            # Backend-authoritative action gating consumed by the row overflow menu.
+            item['allowed_actions'] = _allowed_actions(item, can_export=can_export)
+            # Scope descriptors so the table can label incident vs. response-action
+            # vs. workspace scope without inferring it from raw ids in React.
+            if item.get('incident_id'):
+                item['scope_type'] = 'incident'
+                item['scope_label'] = item.get('incident_short_id')
+            elif item.get('response_action_id'):
+                item['scope_type'] = 'response_action'
+                item['scope_label'] = 'Response action'
+            else:
+                item['scope_type'] = 'workspace'
+                item['scope_label'] = 'Workspace export'
+            item['incident_number'] = item.get('incident_short_id')
             exports.append(item)
         # Lazy-backfill size_bytes for completed packages created before the
         # size_bytes column existed.  Uses get_object_size (a read-only metadata
@@ -24363,22 +24506,23 @@ def list_exports(request: Request) -> dict[str, Any]:
                         pass
             except Exception:
                 pass
-        # Workspace-level evidence metrics for the Crypto-Auditing Clerk sidebar
-        # when no single package is selected. All derived from the returned rows.
-        _incidents_covered = {str(e.get('incident_id')) for e in exports if e.get('incident_id')}
-        _scores = [int(e['completeness_score']) for e in exports if isinstance(e.get('completeness_score'), (int, float))]
-        metrics = {
-            'total_packages': len(exports),
-            'total_size_bytes': sum(int(e.get('size_bytes') or 0) for e in exports),
-            'verified': sum(1 for e in exports if e.get('integrity_status') == 'verified'),
-            'integrity_failures': sum(1 for e in exports if e.get('integrity_status') == 'integrity_failed'),
-            'incidents_covered': len(_incidents_covered),
-            'files_hashed': sum(int(e.get('files_hashed') or 0) for e in exports),
-            'ready': sum(1 for e in exports if e.get('status') == 'completed'),
-            'average_completeness': round(sum(_scores) / len(_scores)) if _scores else None,
-        }
+        # Workspace-level evidence metrics for the Crypto-Auditing Clerk sidebar.
+        # Canonical: every field is derived by the same per-package display state
+        # used for the table rows, so the agent card and the table cannot disagree.
+        metrics = _workspace_metrics(exports)
+        # Backward-compatible alias: older callers/tests read metrics['ready'] as the
+        # number of completed packages; keep it but count only real evidence
+        # artifacts (never legacy/failed rows).
+        metrics['ready'] = metrics['export_ready'] + metrics['ready_for_verification']
+        metrics['retention_status'] = retention_status
+        metrics['last_calculated'] = utc_now_iso()
         logger.info('evidence_packages_list_returned_count count=%d', len(exports))
-        return {'exports': exports, 'metrics': metrics}
+        return {
+            'exports': exports,
+            'metrics': metrics,
+            'retention_status': retention_status,
+            'can_export': can_export,
+        }
 
 
 def _resolve_audit_evidence_source(action: Any, metadata: Any) -> str | None:
@@ -24407,6 +24551,7 @@ def list_audit_events(request: Request) -> dict[str, Any]:
         user = authenticate_with_connection(connection, request)
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         workspace_id = workspace_context['workspace_id']
+        _audit_page_limit = 500
         rows = connection.execute(
             '''
             SELECT id, action, entity_type, entity_id, user_id, ip_address, metadata, created_at
@@ -24417,6 +24562,20 @@ def list_audit_events(request: Request) -> dict[str, Any]:
             ''',
             (workspace_id,),
         ).fetchall()
+        # Truthful lifetime total so the summary card never presents the 500-row
+        # page cap as the exact number of audit events. The response reports both
+        # the returned page and the real total (capped=true when they differ).
+        _audit_total: int | None
+        try:
+            _count_row = connection.execute(
+                'SELECT COUNT(*) AS total FROM audit_logs WHERE workspace_id = %s',
+                (workspace_id,),
+            ).fetchone()
+            _audit_total = int(_count_row['total']) if _count_row and _count_row.get('total') is not None else None
+        except Exception:
+            _audit_total = None
+        if _audit_total is None:
+            _audit_total = len(rows)
         events = []
         for row in rows:
             item = _json_safe_value(dict(row))
@@ -24436,7 +24595,13 @@ def list_audit_events(request: Request) -> dict[str, Any]:
                 item['evidence_source_type'] = resolved_source
                 item['evidence_source'] = resolved_source
             events.append(item)
-        return {'events': events}
+        return {
+            'events': events,
+            'total': _audit_total,
+            'returned': len(events),
+            'limit': _audit_page_limit,
+            'capped': _audit_total > len(events),
+        }
 
 
 _PACKAGE_FILE_SOURCE_TYPES: dict[str, str] = {
@@ -24515,6 +24680,11 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
         item['export_status'] = filters_val.get('export_status')
         item['missing_sections'] = filters_val.get('missing_sections')
         item['integrity_hash'] = filters_val.get('integrity_hash')
+        item['completeness_score'] = filters_val.get('completeness_score')
+        item['files_hashed'] = filters_val.get('files_hashed')
+        _detail_incident_id = str(filters_val.get('incident_id') or '').strip()
+        item['incident_short_id'] = f'INC-{_detail_incident_id[:8]}' if _detail_incident_id else None
+        item['package_number'] = str(item.get('package_number') or '').strip() or f"EV-{str(export_id)[:8].upper()}"
         verification = filters_val.get('verification') if isinstance(filters_val.get('verification'), dict) else None
         item['verification'] = verification
 
@@ -24589,14 +24759,47 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
         item['storage_available'] = storage_error is None
         item['storage_status'] = storage_error or 'ok'
 
+        # Authoritative hash presence: a real manifest/integrity hash, or manifest
+        # files that actually carry a SHA-256. A completed export with neither is a
+        # legacy export and must not be shown as "hash_generated".
+        _detail_has_hashes = bool(str(item.get('integrity_hash') or '').strip()) or any(
+            isinstance(f, dict) and f.get('sha256') for f in files
+        )
         integrity_status = _derive_integrity_status(
             job_status=str(item.get('status') or ''),
             verification=verification,
             completeness=completeness,
             superseded=superseded,
+            has_hashes=_detail_has_hashes,
+        )
+        from services.api.app.evidence_completeness import (
+            integrity_status_label as _integrity_label,
+            get_package_allowed_actions as _allowed_actions,
         )
         item['integrity_status'] = integrity_status
+        item['integrity_label'] = _integrity_label(integrity_status)
+        _detail_hash_state = (
+            'present' if _detail_has_hashes
+            else ('generating' if str(item.get('status') or '').lower() in {'queued', 'pending', 'building', 'running'} else 'not_generated')
+        )
+        item['hash_state'] = _detail_hash_state
+        item['hash_display_state'] = _detail_hash_state
+        item['files_hashed'] = int(item.get('files_hashed') or 0) or sum(1 for f in files if isinstance(f, dict) and f.get('sha256'))
         item['superseded'] = superseded
+        _detail_export_ready = (str(item.get('status') or '').lower() == 'completed'
+                                and storage_error is None
+                                and integrity_status == 'verified')
+        item['export_ready'] = _detail_export_ready
+        item['is_export_ready'] = _detail_export_ready
+        item['is_legacy_export'] = integrity_status == 'legacy_export'
+        # Permission-aware action gating for the details view / agent card.
+        _detail_role = _normalize_workspace_role(str(workspace_context.get('role') or 'viewer'))
+        try:
+            _detail_can_export = _workspace_permission_granted(connection, workspace_id, _detail_role, 'evidence.export')
+        except Exception:
+            _detail_can_export = 'evidence.export' in DEFAULT_ROLE_PERMISSIONS.get(_detail_role, frozenset())
+        item['allowed_actions'] = _allowed_actions(item, can_export=_detail_can_export)
+        item['can_export'] = _detail_can_export
 
         # Agent findings — every statement references package records, never invented.
         findings: list[dict[str, Any]] = []

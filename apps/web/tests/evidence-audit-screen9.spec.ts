@@ -39,7 +39,9 @@ test('2: page title "Evidence & Audit" exists', () => {
 
 test('3: subtitle text exists', () => {
   const source = read(PANEL);
-  expect(source).toContain('Export incident evidence packages and review audit activity.');
+  expect(source).toContain(
+    'Generate tamper-evident incident packages, verify file integrity, and review workspace audit activity.',
+  );
 });
 
 /* ── 4. Create Evidence Package button ──────────────────────────── */
@@ -81,12 +83,25 @@ test('6: tabs are exactly Evidence Packages and Audit Logs', () => {
 test('7: Evidence Packages table has exactly the required columns', () => {
   const source = read(PANEL);
   expect(source).toContain("'Package ID'");
-  expect(source).toContain("'Incident'");
-  expect(source).toContain("'Date Created'");
+  expect(source).toContain("'Incident / Scope'");
+  expect(source).toContain("'Created'");
   expect(source).toContain("'Includes'");
   expect(source).toContain("'Size'");
-  expect(source).toContain("'Evidence Source'");
+  expect(source).toContain("'SHA-256'");
+  expect(source).toContain("'Integrity'");
   expect(source).toContain("'Actions'");
+});
+
+test('7b: the raw Evidence Source column is removed from the package table headers', () => {
+  const source = read(PANEL);
+  // Evidence source now lives in package details/tooltip, not a dedicated
+  // package-table column that duplicated the included-evidence data.
+  expect(source).toContain('PKG_TABLE_HEADERS');
+  const headerBlock = source.slice(
+    source.indexOf('PKG_TABLE_HEADERS'),
+    source.indexOf('INTEGRITY_FILTER_OPTIONS'),
+  );
+  expect(headerBlock).not.toContain("'Evidence Source'");
 });
 
 /* ── 8. Audit Logs table columns ────────────────────────────────── */
@@ -148,49 +163,51 @@ test('12: shows response blocker when incident exists but no response action', (
   expect(source).toContain("ctaLabel: 'Recommend Response'");
 });
 
-/* ── 13. Export Ready gated on package existence ────────────────── */
+/* ── 13. Export Ready is canonical (verified), not "every completed row" ── */
 
-test('13: Export Ready metric uses isPackageReady guard and does not show ready unless package ready', () => {
+test('13: Export Ready metric uses the canonical backend predicate, not all completed rows', () => {
   const source = read(PANEL);
-  // exportReadyCount is derived from packages filtered by isPackageReady
+  // exportReadyCount prefers the backend metrics.export_ready (verified + retrievable).
   expect(source).toContain('exportReadyCount');
-  expect(source).toContain('isPackageReady');
-  // The function checks package_ready, download_url, or Ready/Exported status
-  expect(source).toContain('pkg.package_ready');
-  expect(source).toContain('pkg.download_url');
+  expect(source).toContain('metrics?.export_ready');
+  // The per-row fallback uses the backend canonical flag, never "any completed".
+  expect(source).toContain('is_export_ready');
 });
 
-/* ── 14. Download JSON button ───────────────────────────────────── */
+/* ── 14. Download actions (primary View + overflow menu) ─────────── */
 
-test('14a: single Download JSON button is disabled when package is not ready', () => {
+test('14a: primary row action is View Package with an overflow action menu', () => {
   const source = read(PANEL);
-  expect(source).toContain('disabled={!ready}');
-  expect(source).toContain('Download JSON');
+  expect(source).toContain('View Package');
+  expect(source).toContain('RowActionMenu');
+  expect(source).toContain('aria-haspopup="menu"');
 });
 
-test('14b: button label is "Download JSON" not a bare "Download" that could imply ZIP', () => {
+test('14b: overflow menu offers Download Package and Download Manifest as distinct actions', () => {
   const source = read(PANEL);
-  // No button should be labelled just "Download" — that would imply a ZIP bundle
-  // which is not currently produced. Only "Download JSON" is permitted.
+  expect(source).toContain('Download Package');
+  expect(source).toContain('Download Manifest');
+  // "Download JSON" is renamed to "Download Package"; the ambiguous label is gone.
+  expect(source).not.toContain('Download JSON');
+  // No button labelled just "Download" (which would imply a ZIP bundle).
   const buttonDownloadOnly = />\s*Download\s*<\/button>/.test(source);
   expect(buttonDownloadOnly).toBe(false);
 });
 
-test('14c: download filename extension matches button label (both JSON)', () => {
+test('14c: Download Package and Download Manifest call different backend endpoints', () => {
   const source = read(PANEL);
-  // The button says "Download JSON" and the anchor download attr must end in .json
-  expect(source).toContain('Download JSON');
-  expect(source).toMatch(/a\.download\s*=\s*`[^`]*\.json`/);
+  // Package artifact vs. deterministic manifest are separate downloads.
+  expect(source).toContain('/download');
+  expect(source).toContain('/manifest');
+  expect(source).toMatch(/a\.download\s*=\s*`evidence-package-\$\{pkg\.id\}\.json`/);
+  expect(source).toMatch(/a\.download\s*=\s*`evidence-manifest-\$\{pkg\.id\}\.json`/);
 });
 
-test('14d: there is exactly one Download JSON action per table row (no duplicate button)', () => {
+test('14d: row actions are gated by backend allowed_actions', () => {
   const source = read(PANEL);
-  // Ensure the old duplicate "Export JSON" / "Download" pair is gone
+  expect(source).toContain('allowed_actions');
+  // The old "Export JSON" duplicate pair is gone.
   expect(source).not.toContain('Export JSON');
-  // And there is at most one download handler per row — the marginRight removal
-  // from the old pair is a reliable structural signal.
-  const exportJsonCount = (source.match(/Export JSON/g) ?? []).length;
-  expect(exportJsonCount).toBe(0);
 });
 
 /* ── 15. Simulator evidence not labeled as live_provider ─────────── */
@@ -331,25 +348,37 @@ test('url-params: blocker is suppressed when packageExists is true', () => {
 
 /* ── Summary cards ─────────────────────────────────────────────────────────── */
 
-test('summary: Evidence Packages card counts packages.length (all returned rows)', () => {
+test('summary: Evidence Packages card counts server-authoritative total', () => {
   const source = read(PANEL);
-  // The metric tile value must be packages.length — not a hard-coded number.
-  expect(source).toContain('label="Evidence Packages" value={packages.length}');
+  // The metric tile value must come from the backend metrics (or packages.length
+  // fallback) — never a hard-coded number.
+  expect(source).toContain('label="Evidence Packages"');
+  expect(source).toContain('metrics?.total_packages ?? packages.length');
 });
 
-test('summary: Export Ready card counts isPackageReady rows (completed packages with download_url)', () => {
+test('summary: Export Ready card counts canonical export-ready packages, not all rows', () => {
   const source = read(PANEL);
   expect(source).toContain('label="Export Ready"');
   expect(source).toContain('value={exportReadyCount}');
-  // exportReadyCount is derived from packages filtered by isPackageReady
-  expect(source).toContain('packages.filter(isPackageReady).length');
+  // exportReadyCount prefers the backend canonical predicate, not "any completed".
+  expect(source).toContain('metrics?.export_ready');
 });
 
-test('summary: Retention Status is not "No packages" when a completed package exists', () => {
+test('summary: Retention Status is backend-derived, never hardcoded to Compliant', () => {
   const source = read(PANEL);
-  // retentionStatus logic: 'No packages' only when packages.length === 0
-  expect(source).toContain("'No packages'");
-  expect(source).toContain('packages.length > 0');
+  // Retention comes from the API response; the old package-existence heuristic is gone.
+  expect(source).toContain('setRetentionStatus(');
+  expect(source).toContain('p.retention_status');
+  expect(source).toContain('label="Retention Status" value={retentionStatus}');
+  // Never derives "Compliant" from package existence in the client.
+  expect(source).not.toContain("exportReadyCount > 0 ? 'Compliant'");
+});
+
+test('summary: Audit Events card shows truthful capped semantics (500+/Latest 500 shown)', () => {
+  const source = read(PANEL);
+  expect(source).toContain('auditEventsDisplay');
+  expect(source).toContain('auditCapped');
+  expect(source).toContain('Latest 500 shown');
 });
 
 /* ── No fake evidence ───────────────────────────────────────────────────────── */
@@ -360,4 +389,69 @@ test('no-fake: panel never injects hardcoded mock packages into the packages arr
   expect(source).toContain('setPackages(loaded)');
   // There must be no literal fake package objects pushed into state
   expect(source).not.toMatch(/setPackages\s*\(\s*\[.*id.*package/s);
+});
+
+/* ── Screen 9 truthfulness contract (consistency pass) ──────────────────────── */
+
+test('truthful: Create Evidence Package is permission-aware (canExport from backend)', () => {
+  const source = read(PANEL);
+  expect(source).toContain('Create Evidence Package');
+  // Button only renders for users the backend says can export.
+  expect(source).toContain('setCanExport(');
+  expect(source).toContain('canExport ? (');
+  // Submission is guarded against duplicates with a creating state.
+  expect(source).toContain('setCreating(true)');
+  expect(source).toContain('if (creating || !canExport) return');
+});
+
+test('truthful: table shows human-readable package + incident numbers, not raw UUIDs', () => {
+  const source = read(PANEL);
+  expect(source).toContain('pkg.package_number');
+  expect(source).toContain('pkg.incident_short_id');
+  // The internal UUID is available as a tooltip / sr-only for diagnostics only.
+  expect(source).toContain('Internal ID');
+});
+
+test('truthful: hash column state cannot contradict the integrity pill', () => {
+  const source = read(PANEL);
+  // Hash cell is driven by the backend hash_state, never a bare "Pending".
+  expect(source).toContain('HashCell');
+  expect(source).toContain('hash_display_state');
+  expect(source).toContain('Not generated');
+  expect(source).toContain('Generating…');
+  // The old contradictory "Pending" hash literal is gone from the hash cell.
+  const hashCellBlock = source.slice(source.indexOf('function HashCell'), source.indexOf('function RowActionMenu'));
+  expect(hashCellBlock).not.toContain('Pending');
+});
+
+test('truthful: integrity pill uses the backend label + canonical variant map', () => {
+  const source = read(PANEL);
+  expect(source).toContain('INTEGRITY_VARIANTS');
+  expect(source).toContain('pkg.integrity_label');
+  // Legacy exports are a first-class truthful state (never shown as verified).
+  expect(source).toContain('legacy_export');
+  expect(source).toContain("{ value: 'legacy_export', label: 'Legacy Export' }");
+});
+
+test('truthful: row selection drives the Crypto-Auditing Clerk card', () => {
+  const source = read(PANEL);
+  // The agent card receives the selected package + its detail.
+  expect(source).toContain('<CryptoAuditingClerkPanel');
+  expect(source).toContain('selectedPkg={selectedPkg}');
+  // View Package selects the row (opens its report).
+  expect(source).toContain('onView={() => setSelectedPkgId(pkg.id)}');
+});
+
+test('truthful: filtering clears a selection it has hidden', () => {
+  const source = read(PANEL);
+  expect(source).toContain('inPackages && !inFiltered');
+  expect(source).toContain('setSelectedPkgId(\'\')');
+});
+
+test('truthful: agent card never shows "Unknown" completeness; uses "Not calculated"', () => {
+  const source = read(PANEL);
+  expect(source).toContain("label: 'Not calculated'");
+  expect(source).not.toContain("label: 'Unknown', variant: 'neutral' };\n  if (score >= 95)");
+  // Workspace mode explains the absence rather than showing a bare dash.
+  expect(source).toContain('No package has a calculable completeness score yet.');
 });

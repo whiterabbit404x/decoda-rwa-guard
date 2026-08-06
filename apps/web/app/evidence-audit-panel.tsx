@@ -29,26 +29,30 @@ const REQUIRED_ARTIFACTS = [
 
 const PKG_TABLE_HEADERS = [
   'Package ID',
-  'Incident',
-  'Date Created',
+  'Incident / Scope',
+  'Created',
   'Includes',
   'Size',
-  'Evidence Source',
-  'Hash (SHA-256)',
+  'SHA-256',
   'Integrity',
   'Actions',
 ] as const;
 
-// Integrity-status filter options. Values map to the backend integrity_status enum.
+// Integrity-status filter options. Values map to the backend integrity_status enum
+// (the single canonical set of states — no AI badge on this ordinary data filter).
 const INTEGRITY_FILTER_OPTIONS = [
   { value: '', label: 'All integrity states' },
-  { value: 'verified', label: 'Verified' },
-  { value: 'hash_generated', label: 'Hash generated' },
-  { value: 'needs_evidence', label: 'Needs evidence' },
-  { value: 'integrity_failed', label: 'Integrity failed' },
+  { value: 'draft', label: 'Draft' },
   { value: 'building', label: 'Building' },
+  { value: 'hashing', label: 'Hashing' },
+  { value: 'hash_generated', label: 'Hash Generated' },
+  { value: 'verifying', label: 'Verifying' },
+  { value: 'verified', label: 'Verified' },
+  { value: 'needs_evidence', label: 'Needs Evidence' },
+  { value: 'integrity_failed', label: 'Integrity Failed' },
   { value: 'failed', label: 'Failed' },
   { value: 'superseded', label: 'Superseded' },
+  { value: 'legacy_export', label: 'Legacy Export' },
 ] as const;
 
 const AUDIT_TABLE_HEADERS = [
@@ -95,11 +99,33 @@ type EvidencePackage = {
   unavailable_sections?: string[];
   // Screen 9 integrity / completeness (backend-authoritative — never computed here)
   integrity_status?: string;
+  integrity_label?: string;
+  hash_state?: string;
+  hash_display_state?: string;
   completeness_score?: number | null;
   manifest_download_url?: string | null;
   verified_at?: string | null;
   superseded?: boolean;
   files_hashed?: number;
+  // Human-readable, backend-generated identifiers (raw UUIDs stay internal).
+  package_number?: string;
+  incident_short_id?: string | null;
+  incident_number?: string | null;
+  scope_type?: string;
+  scope_label?: string | null;
+  // Canonical export/action state — the UI never re-derives these.
+  export_ready?: boolean;
+  is_export_ready?: boolean;
+  is_downloadable?: boolean;
+  is_legacy_export?: boolean;
+  ready_for_verification?: boolean;
+  allowed_actions?: {
+    view?: boolean;
+    download?: boolean;
+    download_manifest?: boolean;
+    verify?: boolean;
+    copy_hash?: boolean;
+  };
 };
 
 // Full package report returned by GET /api/exports/{id}
@@ -150,7 +176,12 @@ type EvidenceMetrics = {
   incidents_covered?: number;
   files_hashed?: number;
   ready?: number;
+  export_ready?: number;
+  ready_for_verification?: number;
+  legacy_exports?: number;
   average_completeness?: number | null;
+  retention_status?: string;
+  last_calculated?: string;
 };
 
 type AuditRow = {
@@ -274,7 +305,10 @@ function includesLabel(pkg: EvidencePackage): string {
   return items.length > 3 ? `${preview} +${items.length - 3}` : preview;
 }
 
+// Whether the package artifact can be downloaded. Prefers the backend-authoritative
+// is_downloadable flag; falls back to legacy signals only for older API responses.
 function isPackageReady(pkg: EvidencePackage): boolean {
+  if (typeof pkg.is_downloadable === 'boolean') return pkg.is_downloadable;
   return (
     !!pkg.package_ready ||
     !!pkg.download_url ||
@@ -286,29 +320,31 @@ function isPackageReady(pkg: EvidencePackage): boolean {
 // Integrity status is authoritative on the backend. This only maps the canonical
 // enum to a truthful pill — it never invents a "Verified" state the backend
 // didn't report. "Hash generated" is deliberately distinct from "Verified".
-function integrityPill(status?: string): { label: string; variant: PillVariant } {
-  switch ((status ?? '').toLowerCase()) {
-    case 'verified':
-      return { label: 'Verified', variant: 'success' };
-    case 'hash_generated':
-      return { label: 'Hash generated', variant: 'info' };
-    case 'verifying':
-      return { label: 'Verifying', variant: 'warning' };
-    case 'building':
-      return { label: 'Building', variant: 'warning' };
-    case 'needs_evidence':
-      return { label: 'Needs Evidence', variant: 'warning' };
-    case 'integrity_failed':
-      return { label: 'Integrity Failed', variant: 'danger' };
-    case 'failed':
-      return { label: 'Failed', variant: 'danger' };
-    case 'superseded':
-      return { label: 'Superseded', variant: 'neutral' };
-    case 'draft':
-      return { label: 'Draft', variant: 'neutral' };
-    default:
-      return { label: 'Pending', variant: 'neutral' };
-  }
+// Maps the canonical integrity_status to a pill variant. The label is taken from
+// the backend integrity_label when present so wording stays authoritative; this
+// only decides the colour. "Hash Generated" is deliberately distinct from
+// "Verified", and a legacy/unhashed export is never shown as either.
+const INTEGRITY_VARIANTS: Record<string, PillVariant> = {
+  verified: 'success',
+  hash_generated: 'info',
+  verifying: 'warning',
+  hashing: 'warning',
+  building: 'warning',
+  needs_evidence: 'warning',
+  integrity_failed: 'danger',
+  failed: 'danger',
+  superseded: 'neutral',
+  draft: 'neutral',
+  legacy_export: 'warning',
+};
+
+function integrityPill(pkg: EvidencePackage): { label: string; variant: PillVariant } {
+  const status = (pkg.integrity_status ?? '').toLowerCase();
+  const variant = INTEGRITY_VARIANTS[status] ?? 'neutral';
+  const label =
+    pkg.integrity_label ??
+    (status ? status.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : 'Unknown');
+  return { label, variant };
 }
 
 // Full SHA-256 stays available for copy/tooltip; the table shows a truncated form.
@@ -323,9 +359,11 @@ function truncHash(hash?: string | null): string {
   return `${clean.slice(0, 10)}…${clean.slice(-6)}`;
 }
 
-// 95-100 Excellent · 80-94 Good · 60-79 Incomplete · <60 Critical
+// 95-100 Excellent · 80-94 Good · 60-79 Incomplete · <60 Critical · none → Not calculated.
+// Never returns "Unknown": an absent score means the value has not been calculated,
+// which is stated truthfully rather than implying an unknown-but-existing state.
 function completenessStatusLabel(score?: number | null): { label: string; variant: PillVariant } {
-  if (typeof score !== 'number') return { label: 'Unknown', variant: 'neutral' };
+  if (typeof score !== 'number') return { label: 'Not calculated', variant: 'neutral' };
   if (score >= 95) return { label: 'Excellent', variant: 'success' };
   if (score >= 80) return { label: 'Good', variant: 'success' };
   if (score >= 60) return { label: 'Incomplete', variant: 'warning' };
@@ -382,6 +420,13 @@ export default function EvidenceAuditPanel() {
   const [lastRefreshAt, setLastRefreshAt] = useState<string>('');
   const [copiedHash, setCopiedHash] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
+  // Backend-authoritative summary state (never derived from raw rows in React).
+  const [retentionStatus, setRetentionStatus] = useState<string>('Unknown');
+  const [canExport, setCanExport] = useState(false);
+  const [auditTotal, setAuditTotal] = useState<number | null>(null);
+  const [auditCapped, setAuditCapped] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [openMenuId, setOpenMenuId] = useState('');
 
   const counts = runtime?.counts as Record<string, number> | undefined;
   const workspaceEvidenceSource: string = summary.evidence_source_summary ?? '';
@@ -394,7 +439,11 @@ export default function EvidenceAuditPanel() {
     summary.active_incidents_count > 0 || (counts?.open_incidents ?? 0) > 0;
   const responseActionOk = responseActionsCount !== null ? responseActionsCount > 0 : false;
   const packageExists = packages.length > 0;
-  const canCreatePackage = incidentOk && responseActionOk && !dataLoading && !runtimeLoading;
+  // The Create button requires the evidence.export permission (backend-authoritative)
+  // and a real incident + response action to package. `creating` guards against
+  // accidental duplicate submissions.
+  const chainReadyForPackage = incidentOk && responseActionOk && !dataLoading && !runtimeLoading;
+  const canCreatePackage = canExport && chainReadyForPackage && !creating;
 
   /* ── Data loading ────────────────────────────────────────────── */
   useEffect(() => {
@@ -418,10 +467,18 @@ export default function EvidenceAuditPanel() {
         ]);
 
         if (pkgRes.status === 'fulfilled' && pkgRes.value.ok) {
-          const p = (await pkgRes.value.json()) as { exports?: EvidencePackage[]; metrics?: EvidenceMetrics };
+          const p = (await pkgRes.value.json()) as {
+            exports?: EvidencePackage[];
+            metrics?: EvidenceMetrics;
+            retention_status?: string;
+            can_export?: boolean;
+          };
           const loaded = p.exports ?? [];
           setPackages(loaded);
           setMetrics(p.metrics ?? null);
+          // Retention + permission are backend-authoritative — never hardcoded.
+          setRetentionStatus(p.retention_status ?? p.metrics?.retention_status ?? 'Unknown');
+          setCanExport(Boolean(p.can_export));
           setLoadError('');
           setLastRefreshAt(new Date().toISOString());
           // Auto-select package from URL params
@@ -444,8 +501,15 @@ export default function EvidenceAuditPanel() {
           const a = (await auditRes.value.json()) as {
             events?: AuditRow[];
             audit_logs?: AuditRow[];
+            total?: number;
+            capped?: boolean;
           };
-          setAuditRows(a.events ?? a.audit_logs ?? []);
+          const rows = a.events ?? a.audit_logs ?? [];
+          setAuditRows(rows);
+          // Truthful lifetime total + capped flag from the backend so the summary
+          // card never presents a 500-row page cap as the exact total.
+          setAuditTotal(typeof a.total === 'number' ? a.total : rows.length);
+          setAuditCapped(Boolean(a.capped));
           setAuditUnavailable('');
         } else {
           setAuditUnavailable('Audit log feed unavailable from current workspace endpoint.');
@@ -584,47 +648,49 @@ export default function EvidenceAuditPanel() {
   }
 
   async function createPackage() {
+    // Guard against accidental duplicate submissions; the backend export is
+    // idempotent for the same incident+scope, but we also disable re-entry here.
+    if (creating || !canExport) return;
     setMessage('');
-    const linkedIncidentId =
-      packages.find((pkg) => pkg.incident_id)?.incident_id ??
-      ((runtime as Record<string, unknown> | undefined)?.latest_incident_id as string | undefined) ??
-      ((summary as Record<string, unknown> | undefined)?.latest_incident_id as string | undefined) ??
-      ((summary as Record<string, unknown> | undefined)?.last_incident_id as string | undefined);
+    setCreating(true);
+    try {
+      const linkedIncidentId =
+        packages.find((pkg) => pkg.incident_id)?.incident_id ??
+        ((runtime as Record<string, unknown> | undefined)?.latest_incident_id as string | undefined) ??
+        ((summary as Record<string, unknown> | undefined)?.latest_incident_id as string | undefined) ??
+        ((summary as Record<string, unknown> | undefined)?.last_incident_id as string | undefined);
 
-    let incidentId = linkedIncidentId;
-    if (!incidentId) {
-      const incidentRes = await fetch(`${apiUrl}/incidents`, { headers: authHeaders(), cache: 'no-store' });
-      if (incidentRes.ok) {
-        const incidentsPayload = (await incidentRes.json()) as { incidents?: Array<{ id?: string }> };
-        incidentId = incidentsPayload.incidents?.[0]?.id;
+      let incidentId = linkedIncidentId;
+      if (!incidentId) {
+        const incidentRes = await fetch(`${apiUrl}/incidents`, { headers: authHeaders(), cache: 'no-store' });
+        if (incidentRes.ok) {
+          const incidentsPayload = (await incidentRes.json()) as { incidents?: Array<{ id?: string }> };
+          incidentId = incidentsPayload.incidents?.[0]?.id;
+        }
       }
-    }
 
-    if (!incidentId) {
-      setMessage('Cannot create proof bundle yet: no incident is linked.');
-      return;
-    }
+      if (!incidentId) {
+        setMessage('Cannot create an evidence package yet: no incident is linked.');
+        return;
+      }
 
-    const res = await fetch(`${apiUrl}/exports/proof-bundle`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ incident_id: incidentId, include_raw_events: true }),
-    });
-    const payload = (await res.json()) as { status?: string; detail?: string };
-    setMessage(
-      res.ok
-        ? `Evidence package ${payload.status ?? 'queued'}.`
-        : (payload.detail ?? 'Export failed.'),
-    );
-    if (res.ok) {
-      const pkgRes = await fetch('/api/exports', {
-        headers: authHeaders(),
-        cache: 'no-store',
+      const res = await fetch(`${apiUrl}/exports/proof-bundle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ incident_id: incidentId, include_raw_events: true }),
       });
-      if (pkgRes.ok) {
-        const p = (await pkgRes.json()) as { exports?: EvidencePackage[] };
-        setPackages(p.exports ?? []);
-      }
+      const payload = (await res.json().catch(() => ({}))) as { status?: string; detail?: string };
+      setMessage(
+        res.ok
+          ? `Evidence package ${payload.status ?? 'queued'}.`
+          : (payload.detail ?? 'Export failed.'),
+      );
+      // Full reload so metrics, retention, and integrity all refresh from the backend.
+      if (res.ok) setReloadKey((k) => k + 1);
+    } catch {
+      setMessage('Evidence package creation failed: network error.');
+    } finally {
+      setCreating(false);
     }
   }
 
@@ -658,11 +724,18 @@ export default function EvidenceAuditPanel() {
     URL.revokeObjectURL(blobUrl);
   }
 
-  /* ── Derived metrics ─────────────────────────────────────────── */
-  const exportReadyCount = packages.filter(isPackageReady).length;
-  const retentionStatus = packages.length > 0
-    ? (exportReadyCount > 0 ? 'Compliant' : 'Pending')
-    : 'No packages';
+  /* ── Derived metrics (backend-authoritative) ─────────────────── */
+  // Export Ready counts only canonically export-ready (verified + retrievable)
+  // packages — never every completed row. Falls back to the per-row canonical
+  // flag if the metrics block is unavailable.
+  const exportReadyCount =
+    metrics?.export_ready ??
+    packages.filter((p) => Boolean(p.is_export_ready ?? p.export_ready)).length;
+  const readyForVerificationCount =
+    metrics?.ready_for_verification ??
+    packages.filter((p) => Boolean(p.ready_for_verification)).length;
+  const auditEventsDisplay =
+    auditCapped ? `${auditTotal ?? auditRows.length}+` : String(auditTotal ?? auditRows.length);
 
   /* ── Search + integrity filtering (client-side over API rows) ── */
   const filteredPackages = useMemo(() => {
@@ -670,7 +743,15 @@ export default function EvidenceAuditPanel() {
     return packages.filter((pkg) => {
       if (integrityFilter && (pkg.integrity_status ?? '') !== integrityFilter) return false;
       if (!q) return true;
-      const haystack = [pkg.id, pkg.incident_id, pkg.integrity_hash, pkg.integrity_status]
+      const haystack = [
+        pkg.package_number,
+        pkg.id,
+        pkg.incident_short_id,
+        pkg.incident_id,
+        pkg.scope_label,
+        pkg.integrity_hash,
+        pkg.integrity_status,
+      ]
         .filter(Boolean)
         .join(' ')
         .toLowerCase();
@@ -688,6 +769,17 @@ export default function EvidenceAuditPanel() {
     () => auditRows.find((r, i) => (r.id ?? String(i)) === selectedAuditId) ?? null,
     [auditRows, selectedAuditId],
   );
+
+  // Never keep a selection for a package the active filters have hidden from the
+  // table. If the package still exists but is filtered out, drop the selection so
+  // the agent card and detail panel don't describe an off-screen row. (A package
+  // that no longer exists at all leaves selection to resolve to null naturally.)
+  useEffect(() => {
+    if (!selectedPkgId) return;
+    const inPackages = packages.some((p) => p.id === selectedPkgId);
+    const inFiltered = filteredPackages.some((p) => p.id === selectedPkgId);
+    if (inPackages && !inFiltered) setSelectedPkgId('');
+  }, [filteredPackages, packages, selectedPkgId]);
 
   /* ── Empty state / blocker ───────────────────────────────────── */
   type Blocker = {
@@ -780,22 +872,30 @@ export default function EvidenceAuditPanel() {
         <div>
           <h1 style={{ margin: 0, marginBottom: '0.25rem' }}>Evidence &amp; Audit</h1>
           <p className="muted" style={{ margin: 0 }}>
-            Export incident evidence packages and review audit activity.
+            Generate tamper-evident incident packages, verify file integrity, and review workspace audit activity.
           </p>
         </div>
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={!canCreatePackage}
-          title={
-            !canCreatePackage
-              ? 'Requires an incident and a response action before creating a package'
-              : undefined
-          }
-          onClick={() => void createPackage()}
-        >
-          Create Evidence Package
-        </button>
+        {/* Create is hidden entirely for users without evidence.export; authorized
+            users see it gated on a real incident + response action, with a loading
+            state that also blocks duplicate submissions. */}
+        {canExport ? (
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={!canCreatePackage}
+            aria-busy={creating}
+            title={
+              creating
+                ? 'Creating evidence package…'
+                : !chainReadyForPackage
+                  ? 'Requires an incident and a response action before creating a package'
+                  : undefined
+            }
+            onClick={() => void createPackage()}
+          >
+            {creating ? 'Creating…' : 'Create Evidence Package'}
+          </button>
+        ) : null}
       </div>
 
       {/* ── Metric row ──────────────────────────────────────────── */}
@@ -807,12 +907,22 @@ export default function EvidenceAuditPanel() {
           marginBottom: '1.5rem',
         }}
       >
-        <MetricTile label="Evidence Packages" value={packages.length} />
-        <MetricTile label="Audit Events" value={auditRows.length} />
+        <MetricTile label="Evidence Packages" value={metrics?.total_packages ?? packages.length} />
+        <MetricTile
+          label="Audit Events"
+          value={auditEventsDisplay}
+          meta={auditCapped ? 'Latest 500 shown' : 'total events'}
+        />
         <MetricTile
           label="Export Ready"
           value={exportReadyCount}
-          meta={exportReadyCount > 0 ? 'packages ready' : 'none ready'}
+          meta={
+            readyForVerificationCount > 0
+              ? `${readyForVerificationCount} awaiting verification`
+              : exportReadyCount > 0
+                ? 'verified packages'
+                : 'none verified'
+          }
         />
         <MetricTile label="Retention Status" value={retentionStatus} />
       </div>
@@ -869,7 +979,7 @@ export default function EvidenceAuditPanel() {
                 <input
                   type="search"
                   aria-label="Search evidence packages"
-                  placeholder="Search package ID, incident, or hash"
+                  placeholder="Search package ID, incident, scope, or SHA-256"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   className="input"
@@ -940,14 +1050,12 @@ export default function EvidenceAuditPanel() {
                   </tr>
                 ) : (
                   filteredPackages.map((pkg) => {
-                    const evSrc = evidenceSourcePill(resolvePackageEvidenceSource(pkg), workspaceEvidenceSource);
-                    const ready = isPackageReady(pkg);
                     const isSelected = pkg.id === selectedPkgId;
-                    const integ = integrityPill(pkg.integrity_status);
-                    const hash = packageHash(pkg);
+                    const integ = integrityPill(pkg);
                     return (
                       <tr
                         key={pkg.id}
+                        aria-selected={isSelected}
                         onClick={() => setSelectedPkgId(isSelected ? '' : pkg.id)}
                         tabIndex={0}
                         onKeyDown={(e) => {
@@ -958,23 +1066,22 @@ export default function EvidenceAuditPanel() {
                         }}
                         style={{
                           cursor: 'pointer',
-                          background: isSelected ? 'rgba(59,130,246,0.08)' : undefined,
+                          background: isSelected ? 'rgba(59,130,246,0.12)' : undefined,
+                          boxShadow: isSelected ? 'inset 3px 0 0 #3b82f6' : undefined,
                         }}
                       >
+                        {/* Package ID — human-readable number; UUID stays in the tooltip */}
                         <td
-                          style={{
-                            fontFamily: 'monospace',
-                            fontSize: '0.75rem',
-                            whiteSpace: 'nowrap',
-                            maxWidth: '130px',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                          }}
-                          title={pkg.id}
+                          style={{ fontFamily: 'monospace', fontSize: '0.78rem', whiteSpace: 'nowrap', fontWeight: 600 }}
+                          title={`Internal ID ${pkg.id}`}
                         >
-                          {pkg.id}
+                          {pkg.package_number ?? '-'}
+                          <span className="sr-only"> (internal id {pkg.id})</span>
                         </td>
-                        <td style={{ fontSize: '0.8rem' }}>{pkg.incident_id ?? '-'}</td>
+                        {/* Incident / Scope — readable incident number, not a raw UUID */}
+                        <td style={{ fontSize: '0.8rem', whiteSpace: 'nowrap' }} title={pkg.incident_id ?? undefined}>
+                          {pkg.incident_short_id ?? pkg.scope_label ?? '-'}
+                        </td>
                         <td style={{ fontSize: '0.78rem', whiteSpace: 'nowrap' }}>
                           {fmt(pkg.created_at)}
                         </td>
@@ -992,78 +1099,33 @@ export default function EvidenceAuditPanel() {
                         <td style={{ fontSize: '0.78rem', whiteSpace: 'nowrap' }}>
                           {fmtSize(pkg.size_bytes)}
                         </td>
-                        <td>
-                          <StatusPill label={evSrc.label} variant={evSrc.variant} />
-                        </td>
-                        {/* Hash (SHA-256): truncated display, full value in title + copy */}
+                        {/* SHA-256 — truthful hash state; never "Pending" beside a hash pill */}
                         <td style={{ fontSize: '0.72rem', whiteSpace: 'nowrap' }}>
-                          {hash ? (
-                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
-                              <span style={{ fontFamily: 'monospace' }} title={hash}>
-                                {truncHash(hash)}
-                              </span>
-                              <span className="sr-only">Full SHA-256 hash {hash}</span>
-                              <button
-                                type="button"
-                                className="btn btn-secondary"
-                                aria-label={`Copy full SHA-256 hash for package ${pkg.id}`}
-                                style={{ fontSize: '0.65rem', padding: '0.05rem 0.35rem' }}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  void copyHash(pkg);
-                                }}
-                              >
-                                {copiedHash === pkg.id ? 'Copied' : 'Copy'}
-                              </button>
-                            </span>
-                          ) : (
-                            <span className="muted">Pending</span>
-                          )}
+                          <HashCell
+                            pkg={pkg}
+                            copied={copiedHash === pkg.id}
+                            onCopy={() => void copyHash(pkg)}
+                          />
                         </td>
                         {/* Integrity status */}
                         <td>
                           <StatusPill label={integ.label} variant={integ.variant} />
                         </td>
-                        {/* Actions — permission/readiness-aware */}
+                        {/* Actions — primary View + overflow menu, gated by allowed_actions */}
                         <td>
-                          <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
-                            <button
-                              type="button"
-                              disabled={!ready}
-                              className="btn btn-secondary"
-                              style={{ fontSize: '0.72rem', padding: '0.15rem 0.45rem' }}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                void downloadPackage(pkg);
-                              }}
-                            >
-                              Download JSON
-                            </button>
-                            <button
-                              type="button"
-                              disabled={!ready || verifyingId === pkg.id}
-                              className="btn btn-secondary"
-                              style={{ fontSize: '0.72rem', padding: '0.15rem 0.45rem' }}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                void verifyPackage(pkg);
-                              }}
-                            >
-                              {verifyingId === pkg.id ? 'Verifying…' : 'Verify Integrity'}
-                            </button>
-                            <button
-                              type="button"
-                              disabled={!ready}
-                              className="btn btn-secondary"
-                              style={{ fontSize: '0.72rem', padding: '0.15rem 0.45rem' }}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                void downloadManifest(pkg);
-                              }}
-                            >
-                              Download Manifest
-                            </button>
-                          </div>
+                          <RowActionMenu
+                            pkg={pkg}
+                            open={openMenuId === pkg.id}
+                            verifying={verifyingId === pkg.id}
+                            copied={copiedHash === pkg.id}
+                            onToggle={() => setOpenMenuId((cur) => (cur === pkg.id ? '' : pkg.id))}
+                            onClose={() => setOpenMenuId('')}
+                            onView={() => setSelectedPkgId(pkg.id)}
+                            onDownload={() => void downloadPackage(pkg)}
+                            onManifest={() => void downloadManifest(pkg)}
+                            onVerify={() => void verifyPackage(pkg)}
+                            onCopyHash={() => void copyHash(pkg)}
+                          />
                         </td>
                       </tr>
                     );
@@ -1191,6 +1253,203 @@ export default function EvidenceAuditPanel() {
   );
 }
 
+/* ── SHA-256 hash cell (truthful, never contradicts the integrity pill) ── */
+
+function HashCell({
+  pkg,
+  copied,
+  onCopy,
+}: {
+  pkg: EvidencePackage;
+  copied: boolean;
+  onCopy: () => void;
+}) {
+  const hash = pkg.integrity_hash ?? null;
+  const state = pkg.hash_display_state ?? pkg.hash_state ?? (hash ? 'present' : 'not_generated');
+  if (hash) {
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
+        <span style={{ fontFamily: 'monospace' }} title={`SHA-256 ${hash}`}>
+          {truncHash(hash)}
+        </span>
+        <span className="sr-only">Full SHA-256 hash {hash}</span>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          aria-label={`Copy full SHA-256 hash for package ${pkg.package_number ?? pkg.id}`}
+          style={{ fontSize: '0.65rem', padding: '0.05rem 0.35rem' }}
+          onClick={(e) => {
+            e.stopPropagation();
+            onCopy();
+          }}
+        >
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </span>
+    );
+  }
+  if (state === 'generating') {
+    return <span className="muted">Generating…</span>;
+  }
+  return <span className="muted">Not generated</span>;
+}
+
+/* ── Row action menu (primary View + overflow, gated by allowed_actions) ── */
+
+function RowActionMenu({
+  pkg,
+  open,
+  verifying,
+  copied,
+  onToggle,
+  onClose,
+  onView,
+  onDownload,
+  onManifest,
+  onVerify,
+  onCopyHash,
+}: {
+  pkg: EvidencePackage;
+  open: boolean;
+  verifying: boolean;
+  copied: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+  onView: () => void;
+  onDownload: () => void;
+  onManifest: () => void;
+  onVerify: () => void;
+  onCopyHash: () => void;
+}) {
+  const aa = pkg.allowed_actions ?? {};
+  const ready = isPackageReady(pkg);
+  // Prefer backend-authoritative gating; fall back to readiness for older responses.
+  const canDownload = aa.download ?? ready;
+  const canManifest = aa.download_manifest ?? (ready && !pkg.is_legacy_export);
+  const canVerify = aa.verify ?? (ready && !pkg.is_legacy_export);
+  const canCopy = aa.copy_hash ?? Boolean(pkg.integrity_hash);
+
+  type Item = { label: string; onClick: () => void; disabled: boolean; title?: string };
+  const items: Item[] = [
+    {
+      label: 'Download Package',
+      onClick: onDownload,
+      disabled: !canDownload,
+      title: canDownload ? undefined : 'Package artifact is not available for download.',
+    },
+    {
+      label: 'Download Manifest',
+      onClick: onManifest,
+      disabled: !canManifest,
+      title: canManifest ? undefined : 'No signed manifest exists for this package.',
+    },
+    {
+      label: verifying ? 'Verifying…' : 'Verify Integrity',
+      onClick: onVerify,
+      disabled: !canVerify || verifying,
+      title: canVerify ? undefined : 'Verification requires a signed manifest.',
+    },
+    {
+      label: copied ? 'Hash Copied' : 'Copy Package Hash',
+      onClick: onCopyHash,
+      disabled: !canCopy,
+      title: canCopy ? undefined : 'No authoritative hash to copy yet.',
+    },
+  ];
+
+  return (
+    <div style={{ position: 'relative', display: 'inline-flex', gap: '0.3rem', alignItems: 'center' }}>
+      <button
+        type="button"
+        className="btn btn-secondary"
+        style={{ fontSize: '0.72rem', padding: '0.15rem 0.5rem' }}
+        onClick={(e) => {
+          e.stopPropagation();
+          onView();
+        }}
+      >
+        View Package
+      </button>
+      <button
+        type="button"
+        className="btn btn-secondary"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`More actions for package ${pkg.package_number ?? pkg.id}`}
+        style={{ fontSize: '0.85rem', padding: '0.1rem 0.4rem', lineHeight: 1 }}
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggle();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onClose();
+        }}
+      >
+        ⋯
+      </button>
+      {open ? (
+        <>
+          {/* Click-away backdrop */}
+          <div
+            aria-hidden="true"
+            onClick={(e) => {
+              e.stopPropagation();
+              onClose();
+            }}
+            style={{ position: 'fixed', inset: 0, zIndex: 40 }}
+          />
+          <div
+            role="menu"
+            aria-label="Package actions"
+            style={{
+              position: 'absolute',
+              top: 'calc(100% + 4px)',
+              right: 0,
+              zIndex: 41,
+              minWidth: '180px',
+              background: '#0f172a',
+              border: '1px solid rgba(148,163,184,0.25)',
+              borderRadius: '8px',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+              padding: '0.25rem',
+            }}
+          >
+            {items.map((item) => (
+              <button
+                key={item.label}
+                type="button"
+                role="menuitem"
+                disabled={item.disabled}
+                title={item.title}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (item.disabled) return;
+                  item.onClick();
+                  onClose();
+                }}
+                style={{
+                  display: 'block',
+                  width: '100%',
+                  textAlign: 'left',
+                  padding: '0.4rem 0.6rem',
+                  fontSize: '0.76rem',
+                  background: 'transparent',
+                  border: 'none',
+                  borderRadius: '5px',
+                  color: item.disabled ? '#64748b' : '#e2e8f0',
+                  cursor: item.disabled ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 /* ── Package detail panel ───────────────────────────────────────── */
 
 function PackageDetailPanel({
@@ -1216,7 +1475,7 @@ function PackageDetailPanel({
   const st = packageStatusPill(pkg.status);
   const ready = isPackageReady(pkg);
   // Detail is loaded from GET /exports/{id}; fall back to the list row while loading.
-  const integ = integrityPill(detail?.integrity_status ?? pkg.integrity_status);
+  const integ = integrityPill(detail ?? pkg);
   const verification = detail?.verification ?? null;
   const completeness = detail?.completeness ?? null;
   const files = detail?.files ?? [];
@@ -1245,14 +1504,18 @@ function PackageDetailPanel({
       </p>
       <h4
         style={{
-          marginBottom: '0.75rem',
-          fontSize: '0.88rem',
+          marginBottom: '0.15rem',
+          fontSize: '0.95rem',
           fontFamily: 'monospace',
           wordBreak: 'break-all',
         }}
       >
-        {pkg.id}
+        {pkg.package_number ?? pkg.id}
       </h4>
+      {/* Internal UUID kept available for diagnostics/routing, not as the label. */}
+      <p className="tableMeta" style={{ marginBottom: '0.75rem', fontSize: '0.66rem', wordBreak: 'break-all' }}>
+        Internal ID {pkg.id}
+      </p>
 
       {/* ── Integrity summary (backend-authoritative) ─────────────── */}
       <div style={{ marginBottom: '0.75rem' }}>
@@ -1675,7 +1938,7 @@ function PackageDetailPanel({
           style={{ fontSize: '0.75rem' }}
           onClick={() => void onDownload(pkg)}
         >
-          Download JSON
+          Download Package
         </button>
         {onVerify ? (
           <button
@@ -1790,7 +2053,7 @@ function CryptoAuditingClerkPanel({
       </div>
 
       <p className="tableMeta" style={{ marginBottom: '0.5rem' }}>
-        {packageScope ? 'Package evidence completeness' : 'AI Evidence Completeness'}
+        {packageScope ? 'Package evidence completeness' : 'Evidence Completeness'}
       </p>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
@@ -1800,15 +2063,49 @@ function CryptoAuditingClerkPanel({
           <p className="tableMeta" style={{ margin: '0.35rem 0 0', fontSize: '0.7rem' }}>
             {packageScope
               ? (detailLoading ? 'Calculating…' : 'For selected package')
-              : `Workspace average across ${metrics?.total_packages ?? 0} package(s)`}
+              : typeof score === 'number'
+                ? `Workspace average across ${metrics?.total_packages ?? 0} package(s)`
+                : 'No package has a calculable completeness score yet.'}
           </p>
-          {lastRefreshAt ? (
+          {(metrics?.last_calculated || lastRefreshAt) ? (
             <p className="tableMeta" style={{ margin: '0.15rem 0 0', fontSize: '0.68rem' }}>
-              Last calculated {fmt(lastRefreshAt)}
+              Last calculated {fmt(metrics?.last_calculated || lastRefreshAt)}
             </p>
           ) : null}
         </div>
       </div>
+
+      {/* Package-mode evidence breakdown — real backend counts, never hardcoded. */}
+      {packageScope && completeness ? (
+        <div style={{ marginBottom: '0.75rem' }}>
+          <p className="sectionEyebrow" style={{ marginBottom: '0.4rem' }}>
+            Selected Package
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem 0.75rem' }}>
+            <ClerkMetric label="Package" value={selectedPkg?.package_number ?? '-'} />
+            <ClerkMetric label="Required" value={completeness.required_count ?? 0} />
+            <ClerkMetric label="Present" value={completeness.present_count ?? 0} />
+            <ClerkMetric label="Missing" value={completeness.missing_count ?? 0} />
+            <ClerkMetric label="Unverifiable" value={completeness.unverifiable_count ?? 0} />
+            <ClerkMetric label="Files Hashed" value={selectedPkg?.files_hashed ?? 0} />
+            <ClerkMetric label="Files Verified" value={detail?.verification?.files_verified ?? 0} />
+            <ClerkMetric
+              label="Integrity Failures"
+              value={detail?.verification?.files_failed?.length ?? 0}
+              danger={(detail?.verification?.files_failed?.length ?? 0) > 0}
+            />
+          </div>
+          {detail?.verification?.verified_at ? (
+            <p className="tableMeta" style={{ margin: '0.35rem 0 0', fontSize: '0.68rem' }}>
+              Last verified {fmt(detail.verification.verified_at)}
+            </p>
+          ) : (
+            <p className="tableMeta" style={{ margin: '0.35rem 0 0', fontSize: '0.68rem' }}>
+              Not yet verified — run Verify Integrity.
+            </p>
+          )}
+        </div>
+      ) : null}
 
       {/* Verification checklist — only when a package is selected (real values). */}
       {packageScope && checklist.length > 0 && (

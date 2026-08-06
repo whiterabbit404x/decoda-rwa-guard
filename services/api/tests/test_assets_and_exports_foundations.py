@@ -383,7 +383,9 @@ def test_list_exports_exposes_proof_bundle_metadata(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(pilot, 'pg_connection', _pg)
 
-    payload = pilot.list_exports(Request({'type': 'http', 'headers': []}))
+    # A valid ASGI http scope always includes query_string; include it so
+    # request.query_params works under strict Starlette versions.
+    payload = pilot.list_exports(Request({'type': 'http', 'headers': [], 'query_string': b''}))
     item = payload['exports'][0]
     assert item['export_status'] == 'partial'
     assert item['evidence_source_type'] == 'simulator'
