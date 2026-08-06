@@ -17545,12 +17545,30 @@ def build_action_history_event_dto(
 
     occurred_at = _json_safe_value(row.get('timestamp')) or _json_safe_value(row.get('created_at'))
 
-    previous_state_label = str(details.get('previous_lifecycle') or '').strip() or None
-    new_state_label = str(details.get('new_lifecycle') or '').strip() or None
+    # An APPROVAL event carries a canonical, PROVABLE lifecycle transition + decision even
+    # when a legacy/pre-enrichment row stored only the raw counts. The transition is a
+    # domain invariant — an action can only be approved / rejected FROM Awaiting Approval —
+    # so deriving it here is a truthful RECOVERY, never a fabrication, and it is applied
+    # ONLY to approval events. A non-approval event's previous state stays genuinely
+    # unknown (None) so the operator sees a truthful fallback, not an invented state.
+    is_approval_event = event_type in _APPROVAL_EVENT_TRANSITIONS
+    canon_previous, canon_new, canon_decision = _canonical_approval_transition(event_type)
+
+    previous_state_label = (
+        str(details.get('previous_lifecycle') or '').strip()
+        or (canon_previous if is_approval_event else None)
+    )
+    new_state_label = (
+        str(details.get('new_lifecycle') or '').strip()
+        or (canon_new if is_approval_event else None)
+    )
     previous_state = _lifecycle_state_from_label(previous_state_label)
     new_state = _lifecycle_state_from_label(new_state_label)
 
-    decision = str(details.get('decision') or '').strip().lower() or None
+    decision = (
+        str(details.get('decision') or '').strip().lower()
+        or (canon_decision if is_approval_event else None)
+    )
     decision_label = _humanize_event_token(decision) if decision else None
 
     result = str(details.get('result') or details.get('result_summary') or '').strip() or None
@@ -17562,7 +17580,21 @@ def build_action_history_event_dto(
     approval_count = int(approval_count) if isinstance(approval_count, (int, float)) else None
     required_approval_count = details.get('required_quorum')
     required_approval_count = int(required_approval_count) if isinstance(required_approval_count, (int, float)) else None
-    approval_progress_label = str(details.get('approval_progress_label') or '').strip() or None
+    # Prefer the stored label; otherwise recompose it from the REAL persisted counts so a
+    # pre-enrichment row that carried only approved_count/required_quorum still reads
+    # "<n> of <m>" (never a bare dash) — and a multi-approver quorum stays accurate.
+    approval_progress_label = (
+        str(details.get('approval_progress_label') or '').strip()
+        or _approval_progress_label(approval_count, required_approval_count)
+    )
+
+    # Approval policy as BOTH id and operator-facing label. `approval_policy` is kept for
+    # back-compat; the id/label pair is what the details view renders.
+    approval_policy_id = str(details.get('approval_policy_id') or details.get('policy') or '').strip() or None
+    approval_policy_label = (
+        str(details.get('approval_policy_label') or '').strip()
+        or _approval_policy_label(approval_policy_id)
+    )
 
     execution_reference = (
         str(details.get('execution_reference') or details.get('safe_tx_hash')
@@ -17610,7 +17642,9 @@ def build_action_history_event_dto(
         'execution_reference': execution_reference,
         'evidence_source': evidence_source,
         'evidence_source_label': evidence_source_label,
-        'approval_policy': str(details.get('policy') or '').strip() or None,
+        'approval_policy': approval_policy_id,
+        'approval_policy_id': approval_policy_id,
+        'approval_policy_label': approval_policy_label,
         'note': str(details.get('note') or '').strip() or None,
         'action_route': action_route,
         'incident_route': incident_route,
@@ -17632,6 +17666,220 @@ def build_action_history_event_dto(
         'details_json': _sanitize_history_metadata(details),
     }
     return dto
+
+
+# The details keys that a fully-enriched approval event ALWAYS carries. A row whose
+# details contain all of them was written by the enriched forward path OR by a prior
+# repair, so the repair skips it — this is what makes the repair idempotent (running it
+# again on an already-repaired row is a no-op) and keeps it from ever re-writing.
+_APPROVAL_HISTORY_ENRICHED_KEYS: frozenset[str] = frozenset({
+    'event_type', 'type_label', 'previous_lifecycle', 'new_lifecycle',
+    'approval_progress_label', 'result_summary', 'decision',
+})
+
+
+def _lookup_approval_subject(
+    connection: Any, workspace_id: str, subject_id: str | None, subject_domain: str | None,
+) -> dict[str, Any] | None:
+    """Canonical subject record for an approval event — the response_action (or the
+    AI-recommendation-backed action) the decision was cast against. Returns its
+    incident_id + action_type (+ runbook_id) so a legacy sparse event can recover its
+    incident link and readable title. Workspace-scoped; tolerant (None on any miss)."""
+    if not subject_id or not _looks_like_uuid(subject_id):
+        return None
+    domains = [subject_domain] if subject_domain in {'response_action', 'ai_recommendation'} else ['response_action', 'ai_recommendation']
+    for domain in domains:
+        table = 'response_actions' if domain == 'response_action' else 'ai_recommendations'
+        runbook_col = 'runbook_id' if domain == 'ai_recommendation' else 'NULL::text AS runbook_id'
+        try:
+            record = connection.execute(
+                f'SELECT id, incident_id, action_type, {runbook_col} FROM {table} '
+                'WHERE id = %s::uuid AND workspace_id = %s',
+                (subject_id, workspace_id),
+            ).fetchone()
+        except Exception:  # pragma: no cover - defensive; missing table/column
+            record = None
+        if record is not None:
+            data = dict(record)
+            return {
+                'subject_domain': domain,
+                'incident_id': str(data.get('incident_id') or '').strip() or None,
+                'action_type': str(data.get('action_type') or '').strip() or None,
+                'runbook_id': str(data.get('runbook_id') or '').strip() or None,
+            }
+    return None
+
+
+def _lookup_winning_approval_decision(
+    connection: Any, workspace_id: str, subject_id: str | None,
+    subject_domain: str | None, action_version: Any, decision_kind: str | None,
+) -> dict[str, Any] | None:
+    """The canonical approval-decision facts for one action VERSION, read ONLY from the
+    dedicated ``response_action_approvals`` table: the policy in force, a representative
+    decision id (preferring one matching the event's decision), the DISTINCT approved
+    count, and the recorded required quorum. Returns None when nothing can be proven."""
+    if not subject_id or not _looks_like_uuid(subject_id) or subject_domain not in {'response_action', 'ai_recommendation'}:
+        return None
+    try:
+        version = int(action_version)
+    except (TypeError, ValueError):
+        return None
+    try:
+        rows = connection.execute(
+            '''
+            SELECT id, decision, policy, required_quorum, approver_user_id
+            FROM response_action_approvals
+            WHERE workspace_id = %s AND subject_domain = %s AND subject_id = %s::uuid
+              AND action_version = %s
+            ORDER BY created_at ASC
+            ''',
+            (workspace_id, subject_domain, subject_id, version),
+        ).fetchall()
+    except Exception:  # pragma: no cover - never let the repair read break the list
+        return None
+    rows = [dict(r) for r in (rows or [])]
+    if not rows:
+        return None
+    approved_ids: list[str] = []
+    rejected = False
+    stored_quorum = 1
+    policy: str | None = None
+    decision_id: str | None = None
+    for r in rows:
+        approver = str(r.get('approver_user_id') or '')
+        decision = str(r.get('decision') or '')
+        stored_quorum = max(stored_quorum, int(r.get('required_quorum') or 1))
+        policy = policy or (str(r.get('policy') or '').strip() or None)
+        if decision == 'approved' and approver and approver not in approved_ids:
+            approved_ids.append(approver)
+        elif decision == 'rejected':
+            rejected = True
+        # Prefer a decision id whose kind matches the event (approved vs rejected).
+        if decision_kind and decision == decision_kind and not decision_id:
+            decision_id = str(r.get('id') or '') or None
+    if not decision_id:
+        decision_id = str(rows[-1].get('id') or '') or None
+    return {
+        'policy': policy,
+        'approval_decision_id': decision_id,
+        'approved_count': len(approved_ids),
+        'required_quorum': max(1, stored_quorum),
+        'rejected': rejected,
+    }
+
+
+def _enriched_approval_details_for_repair(
+    connection: Any, workspace_id: str, row: dict[str, Any],
+    details: dict[str, Any], event_type: str,
+) -> dict[str, Any]:
+    """Build the enriched details for a sparse approval event from CANONICAL related
+    records — never fabricated. Existing non-null values always win (idempotent + safe);
+    a field that cannot be proven is left absent so the read path shows a truthful
+    fallback ("Previous state unavailable", "—") rather than an invented value."""
+    enriched = dict(details)
+
+    def _fill(key: str, value: Any) -> None:
+        # Only fill a MISSING/empty field — never overwrite an operator-visible value.
+        if value not in (None, '') and not str(enriched.get(key) or '').strip():
+            enriched[key] = value
+
+    canon_previous, canon_new, canon_decision = _canonical_approval_transition(event_type)
+    subject_id = str(details.get('action_id') or row.get('object_id') or '').strip() or None
+    subject_domain = str(details.get('subject_domain') or '').strip() or None
+
+    enriched['event_type'] = event_type
+    enriched['display_label'] = action_history_event_label(event_type, details)
+    enriched['type_label'] = 'Action Approval'
+    _fill('action_id', subject_id)
+    # Canonical, PROVABLE transition + decision for the event kind (domain invariant).
+    if canon_previous:
+        _fill('previous_lifecycle', canon_previous)
+    if canon_new:
+        _fill('new_lifecycle', canon_new)
+    if canon_decision:
+        _fill('decision', canon_decision)
+    elif 'decision' not in enriched:
+        enriched['decision'] = ''  # blocked attempt — nothing was decided
+    # Recompose progress + result from REAL persisted counts (never invented).
+    progress = _approval_progress_label(details.get('approved_count'), details.get('required_quorum'))
+    if progress:
+        _fill('approval_progress_label', progress)
+    _fill('result_summary', 'MFA Required' if event_type == 'response_action_approval_blocked' else 'Success')
+    _fill('result', str(enriched.get('result_summary') or '').lower().replace(' ', '_') or None)
+    outcome = _approval_outcome_for_event(event_type)
+    if outcome:
+        _fill('outcome', outcome)
+
+    # Canonical subject record → incident link + readable title/key.
+    subject = _lookup_approval_subject(connection, workspace_id, subject_id, subject_domain)
+    if subject is not None:
+        subject_domain = subject_domain or subject.get('subject_domain')
+        _fill('subject_domain', subject.get('subject_domain'))
+        _fill('incident_id', subject.get('incident_id'))
+        action_type = subject.get('action_type')
+        if action_type:
+            _fill('action_key', _normalize_response_action_type(action_type))
+            _fill('action_title', _response_action_title(action_type, subject.get('runbook_id')))
+
+    # Canonical approval decision → policy (id + label), decision id, recomputed counts.
+    decision_kind = 'rejected' if event_type == 'response_action_rejected' else ('approved' if canon_decision == 'approved' else None)
+    decision_facts = _lookup_winning_approval_decision(
+        connection, workspace_id, subject_id, subject_domain, details.get('action_version'), decision_kind,
+    )
+    if decision_facts is not None:
+        policy_id = decision_facts.get('policy')
+        if policy_id:
+            _fill('policy', policy_id)
+            _fill('approval_policy_id', policy_id)
+            _fill('approval_policy_label', _approval_policy_label(policy_id))
+        _fill('approval_decision_id', decision_facts.get('approval_decision_id'))
+        # Prefer the canonical recomputed counts when the sparse row lacked them.
+        if 'approved_count' not in enriched and decision_facts.get('approved_count') is not None:
+            enriched['approved_count'] = decision_facts['approved_count']
+        if 'required_quorum' not in enriched and decision_facts.get('required_quorum') is not None:
+            enriched['required_quorum'] = decision_facts['required_quorum']
+        recomputed = _approval_progress_label(enriched.get('approved_count'), enriched.get('required_quorum'))
+        if recomputed:
+            _fill('approval_progress_label', recomputed)
+    return enriched
+
+
+def _repair_incomplete_approval_history_events(
+    connection: Any, workspace_id: str, raw_rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Self-healing, IDEMPOTENT repair of pre-enrichment (sparse) response-action APPROVAL
+    history rows. Enriches each incomplete row IN PLACE — an UPDATE of the existing
+    ``action_history`` row's ``details_json`` — from its canonical approval decision,
+    response action / recommendation, incident, and policy. It NEVER inserts a row, so it
+    can never create a duplicate approval event, and it re-writes only when something
+    actually changed (a second run is a no-op). Best-effort per row: a repair failure is
+    swallowed so it can never break the read path. Returns the (possibly enriched) rows
+    and the number repaired (so the caller commits only when work was done)."""
+    repaired = 0
+    for row in raw_rows:
+        details = row.get('details_json') if isinstance(row.get('details_json'), dict) else {}
+        event_type = _canonical_action_history_event_type(row.get('action_type'), details)
+        if event_type not in _APPROVAL_EVENT_TRANSITIONS:
+            continue
+        # Idempotent skip: a row already carrying the full enriched shape is left untouched.
+        if _APPROVAL_HISTORY_ENRICHED_KEYS.issubset(details.keys()):
+            continue
+        try:
+            enriched = _enriched_approval_details_for_repair(connection, workspace_id, row, details, event_type)
+        except Exception:  # pragma: no cover - repair must never break the read path
+            continue
+        if enriched == details:
+            continue
+        try:
+            connection.execute(
+                'UPDATE action_history SET details_json = %s::jsonb WHERE id = %s AND workspace_id = %s',
+                (_json_dumps(enriched), str(row.get('id')), workspace_id),
+            )
+        except Exception:  # pragma: no cover - defensive; never break the read
+            continue
+        row['details_json'] = enriched
+        repaired += 1
+    return raw_rows, repaired
 
 
 def list_action_history(
@@ -17719,6 +17967,19 @@ def list_action_history(
             ),
         ).fetchall()
         raw_rows = [_json_safe_value(dict(row)) for row in rows]
+
+        # Self-healing repair: enrich any pre-enrichment (sparse) response-action APPROVAL
+        # rows IN PLACE from canonical related records, so a legacy "Response Action
+        # Approved" event that was persisted before the enriched writer still shows its
+        # action id, incident, lifecycle transition, decision, quorum progress, and policy.
+        # Idempotent and duplicate-free (UPDATE only, never INSERT); committed separately so
+        # a subsequent refresh reads the now-complete row. Best-effort — never breaks read.
+        try:
+            raw_rows, _repaired = _repair_incomplete_approval_history_events(connection, workspace_id, raw_rows)
+            if _repaired:
+                connection.commit()
+        except Exception:  # pragma: no cover - the repair must never break history listing
+            pass
 
         # Resolve actor identities + action_types once, in batch (never per-row queries).
         actor_ids = {str(r.get('actor_id') or '') for r in raw_rows if r.get('actor_id')}
@@ -18889,6 +19150,75 @@ def _response_action_title(action_type: str | None, runbook_id: str | None = Non
     return title if title and title != 'AI recommendation' else 'Response action'
 
 
+# Canonical approval POLICY id -> operator-facing label. The stored policy is an id
+# (e.g. 'owner_admin_single_approver'); the label is what the operator reads. One
+# backend map so a future multi-approver policy adds a row here, not a UI string.
+_APPROVAL_POLICY_LABELS: dict[str, str] = {
+    'owner_admin_single_approver': 'Owner/Admin single approver',
+}
+
+
+def _approval_policy_label(policy_id: str | None) -> str | None:
+    """Operator-facing label for a stored approval-policy id. Falls back to a humanised
+    form (never a raw snake_case id) so an unknown/future policy still reads cleanly."""
+    key = str(policy_id or '').strip()
+    if not key:
+        return None
+    return _APPROVAL_POLICY_LABELS.get(key) or _humanize_event_token(key)
+
+
+# Canonical event_type -> (previous lifecycle label, new lifecycle label, decision) for a
+# response-action APPROVAL event. This encodes the IMMEDIATE, provable transition an
+# approval decision causes — an action can only be approved / rejected FROM Awaiting
+# Approval, so the previous state is a domain invariant, not a fabrication. A later policy
+# evaluation (e.g. Approved -> Blocked) is recorded as its OWN separate event and is never
+# collapsed into this one.
+_APPROVAL_EVENT_TRANSITIONS: dict[str, tuple[str, str, str | None]] = {
+    'response_action_approved': ('Awaiting Approval', 'Approved', 'approved'),
+    'response_action_approval_recorded': ('Awaiting Approval', 'Awaiting Approval', 'approved'),
+    'response_action_rejected': ('Awaiting Approval', 'Rejected', 'rejected'),
+    # A blocked attempt never transitions the action; it stays Awaiting Approval and
+    # carries no decision (nothing was decided).
+    'response_action_approval_blocked': ('Awaiting Approval', 'Awaiting Approval', None),
+}
+
+
+def _canonical_approval_transition(event_type: str | None) -> tuple[str | None, str | None, str | None]:
+    """The canonical (previous_label, new_label, decision) for an approval event_type, or
+    (None, None, None) when the event is not a response-action approval event."""
+    return _APPROVAL_EVENT_TRANSITIONS.get(str(event_type or '').strip().lower(), (None, None, None))
+
+
+# Canonical event_type -> approval OUTCOME token (the event-specific result of the
+# approval transaction). Distinct from the generic result_summary so an operator sees
+# WHAT the approval achieved, not just that it succeeded.
+_APPROVAL_EVENT_OUTCOMES: dict[str, str] = {
+    'response_action_approved': 'approval_quorum_reached',
+    'response_action_approval_recorded': 'approval_recorded_quorum_pending',
+    'response_action_rejected': 'approval_rejected',
+    'response_action_approval_blocked': 'approval_blocked',
+}
+
+
+def _approval_outcome_for_event(event_type: str | None) -> str | None:
+    """Canonical approval-outcome token for an approval event_type (None otherwise)."""
+    return _APPROVAL_EVENT_OUTCOMES.get(str(event_type or '').strip().lower())
+
+
+def _approval_progress_label(approved_count: Any, required_quorum: Any) -> str | None:
+    """The '<approved> of <required>' quorum progress label, from REAL counts. None when
+    the required quorum is unknown/zero so a bare/incorrect label is never shown."""
+    try:
+        approved = max(0, int(approved_count))
+    except (TypeError, ValueError):
+        approved = 0
+    try:
+        quorum = int(required_quorum)
+    except (TypeError, ValueError):
+        quorum = 0
+    return f'{approved} of {quorum}' if quorum > 0 else None
+
+
 def _response_action_approval_event_details(
     *,
     event_type: str,
@@ -18907,6 +19237,8 @@ def _response_action_approval_event_details(
     subject_domain: str,
     action_version: int,
     note: str | None = None,
+    action_key: str | None = None,
+    approval_decision_id: str | None = None,
 ) -> dict[str, Any]:
     """Build the RICH, self-describing details payload for a response-action approval
     (or rejection / blocked attempt) ``action_history`` + incident-timeline event.
@@ -18920,12 +19252,14 @@ def _response_action_approval_event_details(
     """
     quorum = max(0, int(required_quorum or 0))
     approved = max(0, int(approved_count or 0))
-    progress_label = f'{approved} of {quorum}' if quorum > 0 else None
+    progress_label = _approval_progress_label(approved, quorum)
+    policy_id = str(policy).strip() if policy else None
     return {
         'event_type': event_type,
         'display_label': display_label,
         'type_label': 'Action Approval',
         'action_id': str(action_id),
+        'action_key': str(action_key).strip() if action_key else None,
         'action_title': action_title,
         'incident_id': str(incident_id) if incident_id else None,
         'actor': str(actor) if actor else None,
@@ -18935,8 +19269,18 @@ def _response_action_approval_event_details(
         'approved_count': approved,
         'required_quorum': quorum,
         'approval_progress_label': progress_label,
-        'policy': policy,
+        # Policy stored as BOTH the canonical id and the operator-facing label. `policy`
+        # is kept for existing consumers; the id/label pair is what the DTO surfaces.
+        'policy': policy_id,
+        'approval_policy_id': policy_id,
+        'approval_policy_label': _approval_policy_label(policy_id),
+        # The generic result AND the event-specific approval outcome. `result` mirrors the
+        # summary as a canonical lowercase token so the read path never falls back to a
+        # bare 'Recorded'; `outcome` says WHAT the approval achieved (quorum reached, etc.).
         'result_summary': result_summary,
+        'result': str(result_summary).strip().lower().replace(' ', '_') if result_summary else None,
+        'outcome': _approval_outcome_for_event(event_type),
+        'approval_decision_id': str(approval_decision_id) if approval_decision_id else None,
         'note': note,
         # Continuity fields kept for existing consumers / cross-checks.
         'subject_domain': subject_domain,
@@ -19030,8 +19374,8 @@ def _record_action_approval_decision(
     note: str | None,
     required_quorum: int,
     policy: str | None,
-) -> None:
-    """Persist ONE response-action approval decision.
+) -> str:
+    """Persist ONE response-action approval decision and return its id.
 
     Idempotency / duplicate protection lives in the approval domain only, scoped to
     (workspace, subject_domain, subject_id, action_version, approver). A duplicate
@@ -19067,6 +19411,7 @@ def _record_action_approval_decision(
                 ),
             },
         )
+    decision_id = str(uuid.uuid4())
     connection.execute(
         '''
         INSERT INTO response_action_approvals (
@@ -19075,10 +19420,11 @@ def _record_action_approval_decision(
         ) VALUES (%s, %s, %s, %s::uuid, %s, %s::uuid, %s, %s, %s, %s, %s)
         ''',
         (
-            str(uuid.uuid4()), workspace_id, subject_domain, subject_id, action_version,
+            decision_id, workspace_id, subject_domain, subject_id, action_version,
             approver_user_id, approver_role, decision, note, required_quorum, policy,
         ),
     )
+    return decision_id
 
 
 def _approve_ai_recommendation_backed_action(
@@ -19130,7 +19476,7 @@ def _approve_ai_recommendation_backed_action(
         action_type=str(subject.get('action_type') or ''), action_version=action_version,
         operation='approve', incident_id=str(subject.get('incident_id') or '') or None,
     )
-    _record_action_approval_decision(
+    approval_decision_id = _record_action_approval_decision(
         connection,
         workspace_id=workspace_id,
         subject_domain='ai_recommendation',
@@ -19158,6 +19504,7 @@ def _approve_ai_recommendation_backed_action(
         event_type='response_action_approved' if quorum_reached else 'response_action_approval_recorded',
         display_label='Response Action Approved' if quorum_reached else 'Approval Recorded (Quorum Pending)',
         action_id=recommendation_id,
+        action_key=_normalize_response_action_type(subject.get('action_type')),
         action_title=action_title,
         incident_id=incident_id or None,
         actor=_action_approval_actor(user),
@@ -19170,6 +19517,7 @@ def _approve_ai_recommendation_backed_action(
         result_summary='Success',
         subject_domain='ai_recommendation',
         action_version=action_version,
+        approval_decision_id=approval_decision_id,
     )
     write_action_history(
         connection, workspace_id=workspace_id, actor_type='user', actor_id=user['id'],
@@ -19242,7 +19590,7 @@ def _reject_ai_recommendation_backed_action(
         action_type=str(subject.get('action_type') or ''), action_version=action_version,
         operation='reject', incident_id=str(subject.get('incident_id') or '') or None,
     )
-    _record_action_approval_decision(
+    approval_decision_id = _record_action_approval_decision(
         connection,
         workspace_id=workspace_id,
         subject_domain='ai_recommendation',
@@ -19265,6 +19613,7 @@ def _reject_ai_recommendation_backed_action(
         event_type='response_action_rejected',
         display_label='Response Action Rejected',
         action_id=recommendation_id,
+        action_key=_normalize_response_action_type(subject.get('action_type')),
         action_title=_response_action_title(subject.get('action_type'), subject.get('runbook_id')),
         incident_id=incident_id or None,
         actor=_action_approval_actor(user),
@@ -19278,6 +19627,7 @@ def _reject_ai_recommendation_backed_action(
         subject_domain='ai_recommendation',
         action_version=action_version,
         note=reason,
+        approval_decision_id=approval_decision_id,
     )
     # Preserve the legacy `reason` key alongside the canonical `note` for existing consumers.
     reject_details['reason'] = reason
@@ -19363,8 +19713,9 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
             action_type=str(row.get('action_type') or ''), action_version=action_version,
             operation='approve', incident_id=str(row.get('incident_id') or '') or None,
         )
+        approval_decision_id: str | None = None
         if _response_action_approvals_schema_ready(connection):
-            _record_action_approval_decision(
+            approval_decision_id = _record_action_approval_decision(
                 connection,
                 workspace_id=workspace_context['workspace_id'],
                 subject_domain='response_action',
@@ -19393,6 +19744,7 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
                 event_type='response_action_approval_recorded',
                 display_label='Approval Recorded (Quorum Pending)',
                 action_id=action_id,
+                action_key=_normalize_response_action_type(row.get('action_type')),
                 action_title=_response_action_title(row.get('action_type')),
                 incident_id=str(row.get('incident_id') or '') or None,
                 actor=_action_approval_actor(user),
@@ -19405,6 +19757,7 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
                 result_summary='Success',
                 subject_domain='response_action',
                 action_version=action_version,
+                approval_decision_id=approval_decision_id,
             )
             write_action_history(
                 connection, workspace_id=workspace_context['workspace_id'], actor_type='user',
@@ -19461,6 +19814,7 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
             event_type='response_action_approved',
             display_label='Response Action Approved',
             action_id=action_id,
+            action_key=_normalize_response_action_type(row.get('action_type')),
             action_title=_response_action_title(row.get('action_type')),
             incident_id=str(row.get('incident_id') or '') or None,
             actor=_action_approval_actor(user),
@@ -19473,6 +19827,7 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
             result_summary='Success',
             subject_domain='response_action',
             action_version=action_version,
+            approval_decision_id=approval_decision_id,
         )
         write_action_history(
             connection,
@@ -19572,9 +19927,10 @@ def reject_enforcement_action(action_id: str, payload: dict[str, Any], request: 
             action_type=str(row.get('action_type') or ''), action_version=_reject_version,
             operation='reject', incident_id=str(row.get('incident_id') or '') or None,
         )
+        _reject_decision_id: str | None = None
         if _response_action_approvals_schema_ready(connection):
             try:
-                _record_action_approval_decision(
+                _reject_decision_id = _record_action_approval_decision(
                     connection,
                     workspace_id=workspace_context['workspace_id'],
                     subject_domain='response_action',
@@ -19616,6 +19972,7 @@ def reject_enforcement_action(action_id: str, payload: dict[str, Any], request: 
             event_type='response_action_rejected',
             display_label='Response Action Rejected',
             action_id=action_id,
+            action_key=_normalize_response_action_type(row.get('action_type')),
             action_title=_response_action_title(row.get('action_type')),
             incident_id=str(row.get('incident_id') or '') or None,
             actor=_action_approval_actor(user),
@@ -19629,6 +19986,7 @@ def reject_enforcement_action(action_id: str, payload: dict[str, Any], request: 
             subject_domain='response_action',
             action_version=_reject_version,
             note=reason,
+            approval_decision_id=_reject_decision_id,
         )
         # Preserve the legacy `reason` key alongside the canonical `note`.
         policy_reject_details['reason'] = reason
@@ -21989,6 +22347,7 @@ def _require_action_approval_session_mfa(
             event_type='response_action_approval_blocked',
             display_label='Approval Attempt Blocked',
             action_id=subject_id,
+            action_key=_normalize_response_action_type(action_type),
             action_title=_response_action_title(action_type),
             incident_id=incident_id,
             actor=_action_approval_actor(user),

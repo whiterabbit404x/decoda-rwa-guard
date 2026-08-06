@@ -535,6 +535,8 @@ export type HistoryEventDto = {
   evidenceSource: string | null;
   evidenceSourceLabel: string | null;
   approvalPolicy: string | null;
+  approvalPolicyId: string | null;
+  approvalPolicyLabel: string | null;
   note: string | null;
   actionRoute: string | null;
   incidentRoute: string | null;
@@ -596,7 +598,9 @@ export function normalizeHistoryEventDto(raw: any): HistoryEventDto {
       executionReference: strOrNull(raw.execution_reference),
       evidenceSource: strOrNull(raw.evidence_source),
       evidenceSourceLabel: strOrNull(raw.evidence_source_label),
-      approvalPolicy: strOrNull(raw.approval_policy),
+      approvalPolicy: strOrNull(raw.approval_policy_id) ?? strOrNull(raw.approval_policy),
+      approvalPolicyId: strOrNull(raw.approval_policy_id) ?? strOrNull(raw.approval_policy),
+      approvalPolicyLabel: strOrNull(raw.approval_policy_label),
       note: strOrNull(raw.note),
       actionRoute: strOrNull(raw.action_route),
       incidentRoute: strOrNull(raw.incident_route),
@@ -656,7 +660,9 @@ export function normalizeHistoryEventDto(raw: any): HistoryEventDto {
       approvalCount: numOrNull(details.approved_count),
       requiredApprovalCount: numOrNull(details.required_quorum),
       approvalProgressLabel: p.progressLabel,
-      approvalPolicy: strOrNull(details.policy),
+      approvalPolicy: strOrNull(details.approval_policy_id) ?? strOrNull(details.policy),
+      approvalPolicyId: strOrNull(details.approval_policy_id) ?? strOrNull(details.policy),
+      approvalPolicyLabel: strOrNull(details.approval_policy_label),
       note: p.note,
     };
   }
@@ -684,6 +690,8 @@ export function normalizeHistoryEventDto(raw: any): HistoryEventDto {
     requiredApprovalCount: null,
     approvalProgressLabel: null,
     approvalPolicy: null,
+    approvalPolicyId: null,
+    approvalPolicyLabel: null,
     note: strOrNull(details.note),
   };
 }

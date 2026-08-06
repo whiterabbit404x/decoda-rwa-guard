@@ -222,6 +222,22 @@ def test_event_carries_identity_and_actor(monkeypatch):
     assert details['policy'] == 'owner_admin_single_approver'
 
 
+# 6b. The enriched event ALSO stores the canonical policy id + label, the approval outcome,
+#     the canonical result token, the action key, and the linked approval-decision id — so
+#     the audit record is fully self-describing (no field left to a read-time guess).
+def test_event_stores_policy_outcome_and_decision_linkage(monkeypatch):
+    conn = _ApprovalConn(ai_rows=[_ai_rec()])
+    captured = _patch(monkeypatch, conn)
+    pilot.approve_enforcement_action(REC_ID, _req())
+    d = _events(captured, 'response_action.approved')[0]['details']
+    assert d['approval_policy_id'] == 'owner_admin_single_approver'
+    assert d['approval_policy_label'] == 'Owner/Admin single approver'
+    assert d['outcome'] == 'approval_quorum_reached'
+    assert d['result'] == 'success'
+    assert d['action_key'] == 'increase_monitoring'   # canonical action key (from _ai_rec)
+    assert d['approval_decision_id']                   # links the event to the recorded decision
+
+
 # 7. The incident timeline receives the corresponding approval event.
 def test_incident_timeline_gets_the_approval_event(monkeypatch):
     conn = _ApprovalConn(ai_rows=[_ai_rec()])

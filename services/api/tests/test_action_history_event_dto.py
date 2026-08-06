@@ -88,6 +88,35 @@ def test_dto_includes_decision_approved():
     assert dto['decision_label'] == 'Approved'
 
 
+# 9.3b — a PRE-ENRICHMENT sparse approval row (only counts persisted) still projects a
+#        truthful decision + previous->new transition + progress. An Action Approval event
+#        NEVER reads "Not applicable" for its decision — it is a domain invariant, recovered
+#        canonically at projection time, not fabricated.
+def test_dto_derives_canonical_approval_fields_for_sparse_row():
+    dto = _dto(_approval_row(details_json={
+        'subject_domain': 'ai_recommendation', 'action_version': 1,
+        'approved_count': 1, 'required_quorum': 1,
+    }))
+    assert dto['decision'] == 'approved'
+    assert dto['decision_label'] == 'Approved'
+    assert dto['previous_state_label'] == 'Awaiting Approval'
+    assert dto['new_state_label'] == 'Approved'
+    assert dto['approval_progress_label'] == '1 of 1'
+    # action_id falls back to the object id (a response_action row) so the row stays navigable.
+    assert dto['action_id'] == ACTION_ID
+
+
+# 9.3c — the approval policy is surfaced as BOTH a stored id and an operator-facing label.
+def test_dto_exposes_policy_id_and_label():
+    dto = _dto(_approval_row())
+    assert dto['approval_policy_id'] == 'owner_admin_single_approver'
+    assert dto['approval_policy_label'] == 'Owner/Admin single approver'
+    # A non-approval / unknown-policy row never invents a policy.
+    bare = _dto(_approval_row(details_json={'event_type': 'response_action_approved'}))
+    assert bare['approval_policy_id'] is None
+    assert bare['approval_policy_label'] is None
+
+
 # 9.4 — the approval event carries progress 1 of 1.
 def test_dto_includes_progress_one_of_one():
     dto = _dto(_approval_row())
