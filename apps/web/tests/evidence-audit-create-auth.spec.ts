@@ -64,7 +64,11 @@ test('permission: submitting shows "Creating…" and blocks duplicate submission
   const source = read(PANEL);
   expect(source).toContain('setCreating(true)');
   expect(source).toContain('if (creating || permissionDenied) return');
-  expect(source).toMatch(/\{creating \? 'Creating…' : 'Create Evidence Package'\}/);
+  // The label is a three-way state: resolving → "Checking permission…", submitting →
+  // "Creating…", otherwise the authorized "Create Evidence Package".
+  expect(source).toContain(
+    "permissionResolving ? 'Checking permission…' : creating ? 'Creating…' : 'Create Evidence Package'",
+  );
 });
 
 /* ── Header button is never gated by chain / incident availability ───────────── */

@@ -1115,27 +1115,51 @@ export default function EvidenceAuditPanel() {
             in-flight submission — never for an empty incident list. Clicking opens the
             creation flow, which surfaces a truthful empty state when no incidents are
             available for packaging. */}
-        <button
-          ref={createButtonRef}
-          type="button"
-          className="btn btn-primary"
-          disabled={createDisabled}
-          aria-busy={creating || permissionResolving}
-          title={
-            permissionDenied
-              ? 'You do not have permission to create evidence packages.'
-              : creating
-                ? 'Creating…'
-                : permissionResolving
-                  ? 'Checking your permissions…'
-                  : permissionUndetermined
-                    ? 'Evidence service is unavailable. Retry to continue.'
-                    : undefined
-          }
-          onClick={() => setShowCreateModal(true)}
-        >
-          {creating ? 'Creating…' : 'Create Evidence Package'}
-        </button>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.4rem' }}>
+          <button
+            ref={createButtonRef}
+            type="button"
+            className="btn btn-primary"
+            disabled={createDisabled}
+            aria-busy={creating || permissionResolving}
+            title={
+              permissionDenied
+                ? 'You do not have permission to create evidence packages.'
+                : creating
+                  ? 'Creating…'
+                  : permissionResolving
+                    ? 'Checking your permissions…'
+                    : permissionUndetermined
+                      ? 'Evidence service is unavailable. Retry to continue.'
+                      : undefined
+            }
+            onClick={() => setShowCreateModal(true)}
+          >
+            {permissionResolving ? 'Checking permission…' : creating ? 'Creating…' : 'Create Evidence Package'}
+          </button>
+          {/* Permission/API error is a state distinct from a denial: the backend never
+              returned can_export === false — the permission simply could not be READ
+              (exports request failed / service unreachable). It must be surfaced as an
+              explicit, RECOVERABLE condition with a Retry, never rendered as a confirmed
+              denial that permanently fades the button for an authorized admin. */}
+          {permissionUndetermined ? (
+            <div
+              role="status"
+              aria-live="polite"
+              style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem' }}
+            >
+              <span style={{ color: '#fbbf24' }}>Permission could not be verified.</span>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ padding: '0.15rem 0.6rem', fontSize: '0.78rem' }}
+                onClick={() => setReloadKey((k) => k + 1)}
+              >
+                Retry
+              </button>
+            </div>
+          ) : null}
+        </div>
       </div>
 
       {/* ── Metric row ──────────────────────────────────────────── */}
