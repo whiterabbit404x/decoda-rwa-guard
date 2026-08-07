@@ -317,6 +317,27 @@ test('proxy: /api/events route file exists and uses proxyJsonToBackend', () => {
   expect(source).toContain("method: 'GET'");
 });
 
+test('proxy: /api/exports/proof-bundle POST route exists and forwards the body to the backend', () => {
+  // The Create Evidence Package POST must have a same-origin proxy route so it
+  // reaches the server-resolved backend (API_URL) — the SAME backend the list
+  // GET reads from — instead of the browser NEXT_PUBLIC_API_URL directly.
+  const source = read('app/api/exports/proof-bundle/route.ts');
+  expect(source).toContain('proxyJsonToBackend');
+  expect(source).toContain("backendPath: '/exports/proof-bundle'");
+  expect(source).toContain("method: 'POST'");
+  expect(source).toContain('forwardBody: true');
+  expect(source).toContain('export async function POST');
+});
+
+test('proxy: panel creates packages via /api/exports/proof-bundle, never a direct backend URL', () => {
+  const source = read(PANEL);
+  expect(source).toContain("'/api/exports/proof-bundle'");
+  // The create POST must not bypass the proxy with the browser-exposed base URL.
+  expect(source).not.toContain('`${apiUrl}/exports/proof-bundle`');
+  // resolveApiUrl / apiUrl are no longer needed in the panel at all.
+  expect(source).not.toContain('resolveApiUrl');
+});
+
 test('proxy: panel fetches exports via /api/exports not direct backend URL', () => {
   const source = read(PANEL);
   // Must use same-origin proxy so listing works when NEXT_PUBLIC_API_URL is unset
@@ -331,6 +352,47 @@ test('proxy: panel fetches audit events via /api/events not direct backend URL',
   const source = read(PANEL);
   expect(source).toContain("'/api/events'");
   expect(source).not.toContain('`${apiUrl}/events`');
+});
+
+/* ── Asynchronous-progress polling (truthful, bounded, visibility-aware) ────── */
+
+test('poll: only runs while a package is in a non-terminal generation state', () => {
+  const source = read(PANEL);
+  // Terminal-vs-in-progress is a canonical predicate over backend status/integrity.
+  expect(source).toContain('function isPackageInProgress');
+  expect(source).toContain("IN_PROGRESS_JOB_STATUSES = new Set(['queued', 'pending', 'building', 'running'])");
+  expect(source).toContain("IN_PROGRESS_INTEGRITY_STATES = new Set(['building', 'hashing', 'verifying'])");
+  expect(source).toContain('packages.some(isPackageInProgress)');
+  // The effect bails immediately (stops) when nothing is in progress.
+  expect(source).toContain('if (!hasInFlightPackage) return');
+});
+
+test('poll: pauses while the tab is hidden, uses a bounded interval, and never overlaps requests', () => {
+  const source = read(PANEL);
+  expect(source).toContain('document.hidden');
+  expect(source).toContain('const POLL_MS = 5000');
+  expect(source).toContain('window.setInterval');
+  expect(source).toContain('window.clearInterval');
+  // An in-flight guard prevents a slow refresh from overlapping the next tick.
+  expect(source).toContain('let inFlight = false');
+  expect(source).toContain('if (cancelled || inFlight ||');
+  // Each tick refreshes from the canonical backend list, updating last-refreshed.
+  expect(source).toContain('await loadExportsOnce()');
+});
+
+test('refresh: a single canonical exports refresh is reused by create-confirm and polling', () => {
+  const source = read(PANEL);
+  expect(source).toContain('const loadExportsOnce = useCallback');
+  // It reads the same-origin proxy and applies backend-authoritative state.
+  expect(source).toContain("const url = qs ? `/api/exports?${qs}` : '/api/exports'");
+  expect(source).toContain('setPackages(loaded)');
+  expect(source).toContain('setLastRefreshAt(new Date().toISOString())');
+});
+
+test('refresh: last refreshed time is shown from real refresh timestamps', () => {
+  const source = read(PANEL);
+  expect(source).toContain('Last refreshed');
+  expect(source).toContain('lastRefreshAt');
 });
 
 /* ── URL search param handling ──────────────────────────────────────────────── */

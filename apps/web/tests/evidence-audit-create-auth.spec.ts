@@ -196,9 +196,14 @@ test('modal: states truthful evidence-category coverage (no fake per-category pi
 
 /* ── Create request contract + result handling ───────────────────────────────── */
 
-test('create: submits exactly the supported proof-bundle contract with the incident id', () => {
+test('create: submits the proof-bundle contract through the same-origin proxy (not a direct backend URL)', () => {
   const source = read(PANEL);
-  expect(source).toContain('`${apiUrl}/exports/proof-bundle`');
+  // Must go through the same-origin /api proxy — the SAME transport the list GET
+  // uses — so the created package lands in the backend/workspace the list reads
+  // from. A direct `${apiUrl}/exports/proof-bundle` (browser NEXT_PUBLIC_API_URL,
+  // possibly unset or a different deployment) is the bug this locks out.
+  expect(source).toContain("'/api/exports/proof-bundle'");
+  expect(source).not.toContain('`${apiUrl}/exports/proof-bundle`');
   expect(source).toContain("method: 'POST'");
   expect(source).toContain('JSON.stringify({ incident_id: resolvedIncidentId, include_raw_events: true })');
   // No browser-generated ids / hashes / completeness / authorization in the body.
@@ -210,21 +215,60 @@ test('create: success closes the modal, refreshes, and selects the returned pack
   const source = read(PANEL);
   expect(source).toContain('setShowCreateModal(false)');
   expect(source).toContain('setReloadKey((k) => k + 1)');
-  // Select the created — or existing idempotent — package by the backend-returned id.
-  expect(source).toContain('if (payload.export_job_id) setSelectedPkgId(payload.export_job_id)');
+  // Select the created — or existing idempotent — package by the canonical
+  // backend id (package_id, with export_job_id / id as compatibility aliases).
+  expect(source).toContain('const newId = payload.package_id ?? payload.export_job_id ?? payload.id ??');
+  expect(source).toContain('if (newId) setSelectedPkgId(newId)');
   // The list is the single source of rows — no synthetic row is pushed on success.
   expect(source).toContain('setPackages(loaded)');
 });
 
+test('create: status-specific truthful messages (created / already exists / accepted-but-unloaded)', () => {
+  const source = read(PANEL);
+  // A freshly generated, synchronously completed package.
+  expect(source).toContain('Evidence package created.');
+  // An idempotent response must NOT read as a new "queued" job.
+  expect(source).toContain('An evidence package already exists for this incident and evidence scope.');
+  expect(source).toContain('payload.created === false');
+  // Asynchronous (queued/building) generation.
+  expect(source).toContain('Evidence package queued.');
+  // Accepted but the row could not be confirmed yet — never a silent success toast.
+  expect(source).toContain(
+    'Evidence package was accepted, but its status could not yet be loaded. Refresh to check its progress.',
+  );
+  // A persisted-but-failed row is reported truthfully, never as success.
+  expect(source).toContain('Evidence package generation failed.');
+});
+
+test('create: reliably confirms the returned id landed with bounded backoff (no infinite loop, no fake row)', () => {
+  const source = read(PANEL);
+  expect(source).toContain('const confirmPackageVisible = useCallback');
+  // Bounded, growing delays — not an unbounded poll.
+  expect(source).toContain('const delaysMs = [0, 300, 600, 1200, 2400]');
+  // Confirms presence in the canonical list, with a direct-by-id fallback fetch.
+  expect(source).toContain('loaded.some((pkg) => pkg.id === newId)');
+  expect(source).toContain('`/api/exports/${encodeURIComponent(newId)}`');
+  // The confirmation is invoked from the create flow.
+  expect(source).toContain('await confirmPackageVisible(newId)');
+});
+
+test('create: worker/storage unavailability (503) shows a truthful warning, never a success toast', () => {
+  const source = read(PANEL);
+  expect(source).toContain('res.status === 503');
+  expect(source).toContain('Package generation is waiting for an available worker.');
+});
+
 test('create: failure keeps the modal open, preserves selection, shows a safe message', () => {
   const source = read(PANEL);
-  // Only the success branch closes the modal; the error branch keeps it open.
+  // The error branch surfaces a safe message and never a raw object / stack trace.
   expect(source).toContain('setMessage(safeErrorMessage(payload.detail ?? payload.error_message');
-  // safeErrorMessage never renders a raw object / stack trace.
   expect(source).toContain('function safeErrorMessage(detail: unknown, fallback: string): string');
   const createFn = source.slice(source.indexOf('async function createPackage'), source.indexOf('async function downloadPackage'));
-  // The failure path must not close the modal.
-  const elseIdx = createFn.indexOf('} else {');
-  expect(elseIdx).toBeGreaterThan(-1);
-  expect(createFn.slice(elseIdx)).not.toContain('setShowCreateModal(false)');
+  // The non-ok failure branch must bail (return) WITHOUT closing the modal, so a
+  // failed create keeps the modal open with its selection intact.
+  const failIdx = createFn.indexOf('if (!res.ok) {');
+  expect(failIdx).toBeGreaterThan(-1);
+  const failBranch = createFn.slice(failIdx, createFn.indexOf('return;', failIdx) + 'return;'.length);
+  expect(failBranch).not.toContain('setShowCreateModal(false)');
+  expect(failBranch).toContain('return;');
 });
