@@ -48,6 +48,7 @@ const INTEGRITY_FILTER_OPTIONS = [
   { value: 'verifying', label: 'Verifying' },
   { value: 'verified', label: 'Verified' },
   { value: 'needs_evidence', label: 'Needs Evidence' },
+  { value: 'manifest_missing', label: 'Manifest Missing' },
   { value: 'integrity_failed', label: 'Integrity Failed' },
   { value: 'failed', label: 'Failed' },
   { value: 'superseded', label: 'Superseded' },
@@ -101,6 +102,18 @@ type EvidencePackage = {
   integrity_label?: string;
   hash_state?: string;
   hash_display_state?: string;
+  // Canonical manifest SHA-256 (== integrity_hash). Used by the SHA-256 column so
+  // it never disagrees with the integrity pill about whether a manifest exists.
+  manifest_sha256?: string | null;
+  manifest_reference?: {
+    exists?: boolean;
+    retrievable?: boolean;
+    sha256?: string | null;
+    size_bytes?: number | null;
+    file_count?: number | null;
+    media_type?: string;
+    source?: string;
+  } | null;
   completeness_score?: number | null;
   manifest_download_url?: string | null;
   verified_at?: string | null;
@@ -117,6 +130,7 @@ type EvidencePackage = {
   is_export_ready?: boolean;
   is_downloadable?: boolean;
   is_legacy_export?: boolean;
+  is_manifest_missing?: boolean;
   ready_for_verification?: boolean;
   allowed_actions?: {
     view?: boolean;
@@ -343,6 +357,7 @@ const INTEGRITY_VARIANTS: Record<string, PillVariant> = {
   hashing: 'warning',
   building: 'warning',
   needs_evidence: 'warning',
+  manifest_missing: 'danger',
   integrity_failed: 'danger',
   failed: 'danger',
   superseded: 'neutral',
@@ -360,8 +375,10 @@ function integrityPill(pkg: EvidencePackage): { label: string; variant: PillVari
 }
 
 // Full SHA-256 stays available for copy/tooltip; the table shows a truncated form.
+// The manifest SHA-256 IS the integrity hash — one canonical field feeds both the
+// SHA-256 column and the integrity pill so they can never disagree.
 function packageHash(pkg: EvidencePackage): string | null {
-  return pkg.integrity_hash ?? null;
+  return pkg.integrity_hash ?? pkg.manifest_sha256 ?? pkg.manifest_reference?.sha256 ?? null;
 }
 
 function truncHash(hash?: string | null): string {
@@ -401,6 +418,37 @@ function safeErrorMessage(detail: unknown, fallback: string): string {
   return fallback;
 }
 
+// Friendly, customer-facing rendering of a manifest/verify error. The raw
+// backend envelope ({"error":"PACKAGE_NOT_READY",...}) is NEVER shown as text;
+// the technical code is surfaced only in an expandable diagnostics disclosure.
+const VERIFY_ERROR_COPY: Record<string, string> = {
+  PACKAGE_NOT_READY:
+    'Package is not ready for verification. This package does not have a retrievable manifest yet.',
+  PACKAGE_STORAGE_UNAVAILABLE:
+    'Evidence storage is temporarily unavailable. Package metadata is still available — please try again shortly.',
+  PACKAGE_NOT_FOUND: 'This evidence package could not be found.',
+};
+
+function friendlyPackageError(
+  body: unknown,
+  fallback: string,
+): { message: string; code: string | null } {
+  const envelope = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+  const detail =
+    envelope.detail && typeof envelope.detail === 'object'
+      ? (envelope.detail as Record<string, unknown>)
+      : envelope;
+  const code =
+    (typeof detail.error === 'string' && detail.error) ||
+    (typeof envelope.error === 'string' && envelope.error) ||
+    null;
+  if (code && VERIFY_ERROR_COPY[code]) {
+    return { message: VERIFY_ERROR_COPY[code], code };
+  }
+  // Unknown code: show the backend-safe message text only, never the raw object.
+  return { message: safeErrorMessage(detail, fallback), code };
+}
+
 async function copyToClipboard(text: string): Promise<boolean> {
   try {
     if (navigator?.clipboard?.writeText) {
@@ -430,6 +478,9 @@ export default function EvidenceAuditPanel() {
   const [selectedPkgId, setSelectedPkgId] = useState(urlPackageId);
   const [selectedAuditId, setSelectedAuditId] = useState('');
   const [message, setMessage] = useState('');
+  // Technical error code shown only inside an expandable diagnostics disclosure,
+  // never inline as raw JSON in the customer-facing status line.
+  const [diagnostics, setDiagnostics] = useState<string | null>(null);
   const [dataLoading, setDataLoading] = useState(false);
   const [auditUnavailable, setAuditUnavailable] = useState('');
   const [responseActionsCount, setResponseActionsCount] = useState<number | null>(null);
@@ -707,6 +758,7 @@ export default function EvidenceAuditPanel() {
   async function verifyPackage(pkg: EvidencePackage) {
     if (!pkg.id) return;
     setMessage('');
+    setDiagnostics(null);
     setVerifyingId(pkg.id);
     try {
       const res = await fetch(`/api/exports/${encodeURIComponent(pkg.id)}/verify`, {
@@ -729,11 +781,14 @@ export default function EvidenceAuditPanel() {
         // Reload so the persisted integrity_status and metrics refresh from the backend.
         setReloadKey((k) => k + 1);
       } else {
-        const detail = typeof body.detail === 'object' ? JSON.stringify(body.detail) : String(body.detail ?? 'Verification failed.');
-        setMessage(`Verification failed: ${detail}`);
+        // Never surface the raw {"error":...} envelope — friendly text + a
+        // technical code kept in the expandable diagnostics disclosure.
+        const view = friendlyPackageError(body, 'Verification could not be completed.');
+        setMessage(view.message);
+        setDiagnostics(view.code);
       }
     } catch {
-      setMessage('Verification failed: network error.');
+      setMessage('Verification could not be completed: network error.');
     } finally {
       setVerifyingId('');
     }
@@ -742,6 +797,7 @@ export default function EvidenceAuditPanel() {
   async function downloadManifest(pkg: EvidencePackage) {
     if (!pkg.id) return;
     setMessage('');
+    setDiagnostics(null);
     let resp: Response;
     try {
       resp = await fetch(`/api/exports/${encodeURIComponent(pkg.id)}/manifest`, {
@@ -749,12 +805,14 @@ export default function EvidenceAuditPanel() {
         cache: 'no-store',
       });
     } catch {
-      setMessage('Manifest download failed: network error.');
+      setMessage('Manifest download could not be completed: network error.');
       return;
     }
     if (!resp.ok) {
       const errBody = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
-      setMessage(`Manifest download failed: ${String(errBody.detail ?? errBody.message ?? 'error')}`);
+      const view = friendlyPackageError(errBody, 'Manifest download could not be completed.');
+      setMessage(view.message);
+      setDiagnostics(view.code);
       return;
     }
     const blob = await resp.blob();
@@ -1202,9 +1260,17 @@ export default function EvidenceAuditPanel() {
       />
 
       {message ? (
-        <p className="statusLine" style={{ marginBottom: '1rem' }}>
+        <p className="statusLine" style={{ marginBottom: diagnostics ? '0.35rem' : '1rem' }}>
           {message}
         </p>
+      ) : null}
+      {diagnostics ? (
+        <details style={{ marginBottom: '1rem' }}>
+          <summary style={{ cursor: 'pointer', fontSize: '0.72rem', color: '#94a3b8' }}>
+            Technical details
+          </summary>
+          <code style={{ fontSize: '0.72rem', color: '#94a3b8' }}>{diagnostics}</code>
+        </details>
       ) : null}
 
       {/* ── Evidence Packages tab ────────────────────────────────── */}
@@ -1898,7 +1964,7 @@ function HashCell({
   copied: boolean;
   onCopy: () => void;
 }) {
-  const hash = pkg.integrity_hash ?? null;
+  const hash = packageHash(pkg);
   const state = pkg.hash_display_state ?? pkg.hash_state ?? (hash ? 'present' : 'not_generated');
   if (hash) {
     return (
@@ -2110,6 +2176,16 @@ function PackageDetailPanel({
   const ready = isPackageReady(pkg);
   // Detail is loaded from GET /exports/{id}; fall back to the list row while loading.
   const integ = integrityPill(detail ?? pkg);
+  const integrityStatus = (detail?.integrity_status ?? pkg.integrity_status ?? '').toLowerCase();
+  const manifestMissing =
+    integrityStatus === 'manifest_missing' ||
+    (detail?.is_manifest_missing ?? pkg.is_manifest_missing ?? false);
+  // Backend-authoritative action gating for the detail drawer. Falls back to
+  // readiness (minus a missing manifest) only for older responses without
+  // allowed_actions, so the drawer never independently claims Verify/Manifest.
+  const detailActions = (detail ?? pkg).allowed_actions ?? {};
+  const detailCanVerify = detailActions.verify ?? (isPackageReady(pkg) && !manifestMissing);
+  const detailCanManifest = detailActions.download_manifest ?? (isPackageReady(pkg) && !manifestMissing);
   const verification = detail?.verification ?? null;
   const completeness = detail?.completeness ?? null;
   const files = detail?.files ?? [];
@@ -2179,6 +2255,22 @@ function PackageDetailPanel({
             ) : null}
           </div>
         )}
+        {manifestMissing && (
+          <div
+            role="alert"
+            style={{
+              marginTop: '0.5rem',
+              padding: '0.5rem 0.6rem',
+              background: 'rgba(239,68,68,0.08)',
+              borderRadius: '4px',
+              borderLeft: '3px solid #ef4444',
+              fontSize: '0.75rem',
+              color: '#fca5a5',
+            }}
+          >
+            &#9888; Manifest Missing — this package does not have a retrievable manifest, so it cannot be verified or exported as evidence. Generate a new package for this incident to supersede it.
+          </div>
+        )}
         {verification ? (
           <div className="tableMeta" style={{ marginTop: '0.4rem', fontSize: '0.72rem' }}>
             {verification.valid
@@ -2187,7 +2279,7 @@ function PackageDetailPanel({
             {verification.verified_at ? ` · ${fmt(verification.verified_at)}` : ''}
             {verification.seal_status ? ` · seal ${verification.seal_status}` : ''}
           </div>
-        ) : (
+        ) : manifestMissing ? null : (
           <p className="tableMeta" style={{ marginTop: '0.3rem', fontSize: '0.72rem' }}>
             Hashes generated. Run Verify Integrity to confirm content matches the generated package.
           </p>
@@ -2578,7 +2670,10 @@ function PackageDetailPanel({
           <button
             type="button"
             className="btn btn-secondary"
-            disabled={!ready || !!verifying}
+            // Backend-authoritative: Verify is offered only when the canonical
+            // manifest resolver reports a retrievable manifest — never guessed here.
+            disabled={!detailCanVerify || !!verifying}
+            title={detailCanVerify ? undefined : 'Verification requires a retrievable signed manifest.'}
             style={{ fontSize: '0.75rem' }}
             onClick={() => void onVerify(pkg)}
           >
@@ -2589,7 +2684,8 @@ function PackageDetailPanel({
           <button
             type="button"
             className="btn btn-secondary"
-            disabled={!ready}
+            disabled={!detailCanManifest}
+            title={detailCanManifest ? undefined : 'No retrievable manifest exists for this package.'}
             style={{ fontSize: '0.75rem' }}
             onClick={() => void onDownloadManifest(pkg)}
           >
