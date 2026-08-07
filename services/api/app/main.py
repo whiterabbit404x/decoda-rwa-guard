@@ -225,6 +225,7 @@ from services.api.app.pilot import (
     get_export,
     get_export_artifact_content,
     get_evidence_package_manifest,
+    generate_evidence_package_manifest,
     verify_evidence_package,
     get_history_item,
     list_templates,
@@ -5227,6 +5228,11 @@ def exports_download(export_id: str, request: Request) -> Response:
 def exports_manifest(export_id: str, request: Request) -> Response:
     content, filename = with_auth_schema_json(lambda: get_evidence_package_manifest(export_id, request))
     return Response(content=content, media_type='application/json', headers={'Content-Disposition': f'attachment; filename={filename}'})
+
+
+@app.post('/exports/{export_id}/manifest', summary='Generate a retrievable integrity manifest for a Manifest-Missing package')
+def exports_manifest_generate(export_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: generate_evidence_package_manifest(export_id, request))
 
 
 @app.post('/exports/{export_id}/verify', summary='Verify evidence package integrity (recompute SHA-256)')

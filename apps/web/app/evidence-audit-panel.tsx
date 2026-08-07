@@ -138,6 +138,8 @@ type EvidencePackage = {
     download_manifest?: boolean;
     verify?: boolean;
     copy_hash?: boolean;
+    // Recovery action for a Manifest-Missing package (no retrievable manifest).
+    generate_manifest?: boolean;
   };
 };
 
@@ -374,6 +376,62 @@ function integrityPill(pkg: EvidencePackage): { label: string; variant: PillVari
   return { label, variant };
 }
 
+// The package details panel shows three explicit, non-overlapping states instead
+// of one ambiguous "Integrity Status": Generation Status (did the bundle build),
+// Hash Verification (its cryptographic state), and Evidence Completeness (score).
+// Each is derived from backend-authoritative fields only.
+
+// Generation Status — describes only whether the package artifact was produced,
+// and whether it is a partial/incomplete bundle. Completeness and hashing are
+// reported separately, so this never says "Verified" or "Manifest Missing".
+function generationStatus(pkg: EvidencePackage): { label: string; variant: PillVariant } {
+  const status = (pkg.status ?? '').toLowerCase();
+  if (status === 'failed') return { label: 'Failed', variant: 'danger' };
+  if (['queued', 'pending', 'building', 'running'].includes(status)) {
+    return { label: 'Generating…', variant: 'warning' };
+  }
+  if (status !== 'completed') {
+    return { label: status ? status.replace(/\b\w/g, (c) => c.toUpperCase()) : 'Unknown', variant: 'neutral' };
+  }
+  const packaging = (pkg.export_status ?? pkg.package_status ?? '').toLowerCase();
+  if (pkg.superseded) return { label: 'Generated (Superseded)', variant: 'neutral' };
+  if (['incomplete', 'blocked'].includes(packaging)) {
+    return { label: 'Generated / Incomplete Package', variant: 'warning' };
+  }
+  if (['partial', 'degraded_diagnostic'].includes(packaging)) {
+    return { label: 'Generated / Partial Package', variant: 'warning' };
+  }
+  return { label: 'Generated', variant: 'success' };
+}
+
+// Hash Verification — the cryptographic state of the package. It NEVER shows
+// "Needs Evidence" (a completeness concern surfaced in its own field); a package
+// with no retrievable manifest reads as "Manifest Missing", not as safe.
+const HASH_VERIFICATION_STATES: Record<string, { label: string; variant: PillVariant }> = {
+  verified: { label: 'Verified', variant: 'success' },
+  verifying: { label: 'Verifying', variant: 'warning' },
+  hash_generated: { label: 'Hash Generated', variant: 'info' },
+  hashing: { label: 'Generating…', variant: 'warning' },
+  building: { label: 'Generating…', variant: 'warning' },
+  integrity_failed: { label: 'Integrity Failed', variant: 'danger' },
+  manifest_missing: { label: 'Manifest Missing', variant: 'danger' },
+  legacy_export: { label: 'No Manifest', variant: 'warning' },
+  superseded: { label: 'Superseded', variant: 'neutral' },
+};
+function hashVerification(pkg: EvidencePackage): { label: string; variant: PillVariant } {
+  const status = (pkg.integrity_status ?? '').toLowerCase();
+  const mapped = HASH_VERIFICATION_STATES[status];
+  if (mapped) return mapped;
+  // Unknown / needs_evidence / draft: report only the manifest/hash truth, never
+  // "Needs Evidence". Fail closed — an absent manifest is "Manifest Missing".
+  const hashState = (pkg.hash_state ?? pkg.hash_display_state ?? '').toLowerCase();
+  if (hashState === 'generating') return { label: 'Generating…', variant: 'warning' };
+  const hasManifest = pkg.manifest_reference?.retrievable ?? Boolean(packageHash(pkg));
+  if (hasManifest) return { label: 'Hash Generated', variant: 'info' };
+  if (pkg.is_manifest_missing) return { label: 'Manifest Missing', variant: 'danger' };
+  return { label: 'Not Generated', variant: 'neutral' };
+}
+
 // Full SHA-256 stays available for copy/tooltip; the table shows a truncated form.
 // The manifest SHA-256 IS the integrity hash — one canonical field feeds both the
 // SHA-256 column and the integrity pill so they can never disagree.
@@ -427,6 +485,13 @@ const VERIFY_ERROR_COPY: Record<string, string> = {
   PACKAGE_STORAGE_UNAVAILABLE:
     'Evidence storage is temporarily unavailable. Package metadata is still available — please try again shortly.',
   PACKAGE_NOT_FOUND: 'This evidence package could not be found.',
+  // Manifest-recovery failures — always customer-safe, never raw JSON.
+  MANIFEST_GENERATION_FAILED: 'Manifest could not be generated. Please try again.',
+  MANIFEST_UNRECOVERABLE:
+    'This package cannot be recovered in place because its stored files are unavailable. Regenerate the package to supersede it.',
+  MANIFEST_RECOVERY_NOT_APPLICABLE: 'This package is not eligible for manifest recovery.',
+  PACKAGE_MANIFEST_IMMUTABLE:
+    'This package already has a manifest and cannot be regenerated in place. Create a superseding package instead.',
 };
 
 function friendlyPackageError(
@@ -490,6 +555,10 @@ export default function EvidenceAuditPanel() {
   const [selectedDetail, setSelectedDetail] = useState<PackageDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [verifyingId, setVerifyingId] = useState('');
+  // Manifest-recovery (Generate Manifest) in-flight id + last per-package outcome,
+  // so the recovery card can show Generating… / success / failure with a Retry.
+  const [generatingId, setGeneratingId] = useState('');
+  const [recovery, setRecovery] = useState<{ id: string; phase: 'success' | 'error'; message: string } | null>(null);
   const [loadError, setLoadError] = useState('');
   const [lastRefreshAt, setLastRefreshAt] = useState<string>('');
   const [copiedHash, setCopiedHash] = useState('');
@@ -759,6 +828,7 @@ export default function EvidenceAuditPanel() {
     if (!pkg.id) return;
     setMessage('');
     setDiagnostics(null);
+    setRecovery(null);
     setVerifyingId(pkg.id);
     try {
       const res = await fetch(`/api/exports/${encodeURIComponent(pkg.id)}/verify`, {
@@ -798,6 +868,7 @@ export default function EvidenceAuditPanel() {
     if (!pkg.id) return;
     setMessage('');
     setDiagnostics(null);
+    setRecovery(null);
     let resp: Response;
     try {
       resp = await fetch(`/api/exports/${encodeURIComponent(pkg.id)}/manifest`, {
@@ -824,6 +895,46 @@ export default function EvidenceAuditPanel() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(blobUrl);
+  }
+
+  // Recovery flow for a Manifest-Missing package. The backend rebuilds a
+  // retrievable manifest from the package's exact stored bytes, persists it, and
+  // returns the canonical state; we then reload so every state (Hash Verification,
+  // SHA-256, Verify/Download gating) refreshes from the backend, never guessed here.
+  async function generateManifest(pkg: EvidencePackage) {
+    if (!pkg.id) return;
+    setMessage('');
+    setDiagnostics(null);
+    setRecovery(null);
+    setGeneratingId(pkg.id);
+    try {
+      const res = await fetch(`/api/exports/${encodeURIComponent(pkg.id)}/manifest`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        cache: 'no-store',
+      });
+      const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      if (res.ok) {
+        setRecovery({
+          id: pkg.id,
+          phase: 'success',
+          message: 'Manifest generated. This package is ready for integrity verification.',
+        });
+        setMessage('Manifest generated. This package is ready for integrity verification.');
+        // Reload so the persisted manifest reference / integrity state refresh.
+        setReloadKey((k) => k + 1);
+      } else {
+        const view = friendlyPackageError(body, 'Manifest could not be generated.');
+        setRecovery({ id: pkg.id, phase: 'error', message: 'Manifest could not be generated.' });
+        setMessage(view.message);
+        setDiagnostics(view.code);
+      }
+    } catch {
+      setRecovery({ id: pkg.id, phase: 'error', message: 'Manifest could not be generated.' });
+      setMessage('Manifest could not be generated: network error.');
+    } finally {
+      setGeneratingId('');
+    }
   }
 
   async function copyHash(pkg: EvidencePackage) {
@@ -1447,12 +1558,14 @@ export default function EvidenceAuditPanel() {
                             pkg={pkg}
                             open={openMenuId === pkg.id}
                             verifying={verifyingId === pkg.id}
+                            generating={generatingId === pkg.id}
                             copied={copiedHash === pkg.id}
                             onToggle={() => setOpenMenuId((cur) => (cur === pkg.id ? '' : pkg.id))}
                             onClose={() => setOpenMenuId('')}
                             onView={() => setSelectedPkgId(pkg.id)}
                             onDownload={() => void downloadPackage(pkg)}
                             onManifest={() => void downloadManifest(pkg)}
+                            onGenerateManifest={() => void generateManifest(pkg)}
                             onVerify={() => void verifyPackage(pkg)}
                             onCopyHash={() => void copyHash(pkg)}
                           />
@@ -1472,8 +1585,11 @@ export default function EvidenceAuditPanel() {
                     workspaceEvidenceSource={workspaceEvidenceSource}
                     onDownload={downloadPackage}
                     onDownloadManifest={downloadManifest}
+                    onGenerateManifest={generateManifest}
                     onVerify={verifyPackage}
                     verifying={verifyingId === selectedPkg.id}
+                    generating={generatingId === selectedPkg.id}
+                    recovery={recovery && recovery.id === selectedPkg.id ? recovery : null}
                   />
                 </div>
               )}
@@ -2000,24 +2116,28 @@ function RowActionMenu({
   pkg,
   open,
   verifying,
+  generating,
   copied,
   onToggle,
   onClose,
   onView,
   onDownload,
   onManifest,
+  onGenerateManifest,
   onVerify,
   onCopyHash,
 }: {
   pkg: EvidencePackage;
   open: boolean;
   verifying: boolean;
+  generating: boolean;
   copied: boolean;
   onToggle: () => void;
   onClose: () => void;
   onView: () => void;
   onDownload: () => void;
   onManifest: () => void;
+  onGenerateManifest: () => void;
   onVerify: () => void;
   onCopyHash: () => void;
 }) {
@@ -2028,14 +2148,24 @@ function RowActionMenu({
   const canManifest = aa.download_manifest ?? (ready && !pkg.is_legacy_export);
   const canVerify = aa.verify ?? (ready && !pkg.is_legacy_export);
   const canCopy = aa.copy_hash ?? Boolean(pkg.integrity_hash);
+  // Recovery is backend-authoritative: offered only for a Manifest-Missing package.
+  const canGenerate = aa.generate_manifest ?? (ready && Boolean(pkg.is_manifest_missing));
 
-  type Item = { label: string; onClick: () => void; disabled: boolean; title?: string };
+  type Item = { label: string; onClick: () => void; disabled: boolean; title?: string; hidden?: boolean };
   const items: Item[] = [
     {
       label: 'Download Package',
       onClick: onDownload,
       disabled: !canDownload,
       title: canDownload ? undefined : 'Package artifact is not available for download.',
+    },
+    {
+      // Recovery entry point — only shown for a Manifest-Missing package.
+      label: generating ? 'Generating manifest…' : 'Generate Manifest',
+      onClick: onGenerateManifest,
+      disabled: !canGenerate || generating,
+      hidden: !canGenerate,
+      title: 'Rebuild a retrievable integrity manifest from this package’s stored bytes.',
     },
     {
       label: 'Download Manifest',
@@ -2047,7 +2177,11 @@ function RowActionMenu({
       label: verifying ? 'Verifying…' : 'Verify Integrity',
       onClick: onVerify,
       disabled: !canVerify || verifying,
-      title: canVerify ? undefined : 'Verification requires a signed manifest.',
+      title: canVerify
+        ? undefined
+        : pkg.is_manifest_missing
+          ? 'This package has no retrievable manifest. Generate a manifest before verifying integrity.'
+          : 'Verification requires a signed manifest.',
     },
     {
       label: copied ? 'Hash Copied' : 'Copy Package Hash',
@@ -2055,7 +2189,7 @@ function RowActionMenu({
       disabled: !canCopy,
       title: canCopy ? undefined : 'No authoritative hash to copy yet.',
     },
-  ];
+  ].filter((item) => !item.hidden);
 
   return (
     <div style={{ position: 'relative', display: 'inline-flex', gap: '0.3rem', alignItems: 'center' }}>
@@ -2159,8 +2293,11 @@ function PackageDetailPanel({
   workspaceEvidenceSource,
   onDownload,
   onDownloadManifest,
+  onGenerateManifest,
   onVerify,
   verifying,
+  generating,
+  recovery,
 }: {
   pkg: EvidencePackage;
   detail?: PackageDetail | null;
@@ -2168,14 +2305,19 @@ function PackageDetailPanel({
   workspaceEvidenceSource: string;
   onDownload: (pkg: EvidencePackage) => Promise<void>;
   onDownloadManifest?: (pkg: EvidencePackage) => Promise<void>;
+  onGenerateManifest?: (pkg: EvidencePackage) => Promise<void>;
   onVerify?: (pkg: EvidencePackage) => Promise<void>;
   verifying?: boolean;
+  generating?: boolean;
+  recovery?: { id: string; phase: 'success' | 'error'; message: string } | null;
 }) {
   const evSrc = evidenceSourcePill(resolvePackageEvidenceSource(pkg), workspaceEvidenceSource);
   const st = packageStatusPill(pkg.status);
   const ready = isPackageReady(pkg);
   // Detail is loaded from GET /exports/{id}; fall back to the list row while loading.
-  const integ = integrityPill(detail ?? pkg);
+  const source = detail ?? pkg;
+  const genStatus = generationStatus(source);
+  const hashStatus = hashVerification(source);
   const integrityStatus = (detail?.integrity_status ?? pkg.integrity_status ?? '').toLowerCase();
   const manifestMissing =
     integrityStatus === 'manifest_missing' ||
@@ -2186,6 +2328,9 @@ function PackageDetailPanel({
   const detailActions = (detail ?? pkg).allowed_actions ?? {};
   const detailCanVerify = detailActions.verify ?? (isPackageReady(pkg) && !manifestMissing);
   const detailCanManifest = detailActions.download_manifest ?? (isPackageReady(pkg) && !manifestMissing);
+  // Recovery action is backend-authoritative; fall back to the Manifest-Missing flag.
+  const detailCanGenerate = detailActions.generate_manifest ?? (isPackageReady(pkg) && manifestMissing);
+  const detailCompletenessScore = detail?.completeness?.score ?? pkg.completeness_score ?? null;
   const verification = detail?.verification ?? null;
   const completeness = detail?.completeness ?? null;
   const files = detail?.files ?? [];
@@ -2227,64 +2372,156 @@ function PackageDetailPanel({
         Internal ID {pkg.id}
       </p>
 
-      {/* ── Integrity summary (backend-authoritative) ─────────────── */}
-      <div style={{ marginBottom: '0.75rem' }}>
-        <p className="tableMeta" style={{ marginBottom: '0.2rem' }}>
-          Integrity Status
-        </p>
-        <StatusPill label={integ.label} variant={integ.variant} />
-        {(detail?.integrity_status ?? pkg.integrity_status) === 'integrity_failed' && (
-          <div
-            role="alert"
-            style={{
-              marginTop: '0.5rem',
-              padding: '0.5rem 0.6rem',
-              background: 'rgba(239,68,68,0.08)',
-              borderRadius: '4px',
-              borderLeft: '3px solid #ef4444',
-              fontSize: '0.75rem',
-              color: '#fca5a5',
-            }}
-          >
-            &#9888; Integrity Failed — this package content changed after generation. It is not verified and must not be presented as proof.
-            {verification ? (
-              <div style={{ marginTop: '0.25rem' }}>
-                {(verification.files_failed?.length ?? 0)} file(s) failed,{' '}
-                {(verification.missing_files?.length ?? 0)} missing.
-              </div>
-            ) : null}
-          </div>
-        )}
-        {manifestMissing && (
-          <div
-            role="alert"
-            style={{
-              marginTop: '0.5rem',
-              padding: '0.5rem 0.6rem',
-              background: 'rgba(239,68,68,0.08)',
-              borderRadius: '4px',
-              borderLeft: '3px solid #ef4444',
-              fontSize: '0.75rem',
-              color: '#fca5a5',
-            }}
-          >
-            &#9888; Manifest Missing — this package does not have a retrievable manifest, so it cannot be verified or exported as evidence. Generate a new package for this incident to supersede it.
-          </div>
-        )}
-        {verification ? (
-          <div className="tableMeta" style={{ marginTop: '0.4rem', fontSize: '0.72rem' }}>
-            {verification.valid
-              ? `Integrity verified · ${verification.files_verified ?? 0}/${verification.files_total ?? 0} files matched`
-              : 'Verification did not pass'}
-            {verification.verified_at ? ` · ${fmt(verification.verified_at)}` : ''}
-            {verification.seal_status ? ` · seal ${verification.seal_status}` : ''}
-          </div>
-        ) : manifestMissing ? null : (
-          <p className="tableMeta" style={{ marginTop: '0.3rem', fontSize: '0.72rem' }}>
-            Hashes generated. Run Verify Integrity to confirm content matches the generated package.
-          </p>
-        )}
+      {/* ── Integrity summary (three explicit, backend-authoritative states) ──
+          Replaces the old ambiguous single "Integrity Status": Generation Status
+          (did the artifact build), Hash Verification (its cryptographic state),
+          and Evidence Completeness (score). They never contradict each other. */}
+      <div
+        role="group"
+        aria-label="Package integrity states"
+        style={{
+          marginBottom: '0.75rem',
+          display: 'grid',
+          gridTemplateColumns: '1fr',
+          gap: '0.5rem',
+          padding: '0.6rem 0.7rem',
+          background: 'rgba(148,163,184,0.05)',
+          borderRadius: '6px',
+          border: '1px solid rgba(148,163,184,0.12)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
+          <span className="tableMeta">Generation Status</span>
+          <StatusPill label={genStatus.label} variant={genStatus.variant} />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
+          <span className="tableMeta">Hash Verification</span>
+          <StatusPill label={hashStatus.label} variant={hashStatus.variant} />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
+          <span className="tableMeta">Evidence Completeness</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+            <strong style={{ fontSize: '0.82rem' }}>
+              {typeof detailCompletenessScore === 'number' ? `${detailCompletenessScore}%` : '—'}
+            </strong>
+            <StatusPill
+              label={completenessStatusLabel(detailCompletenessScore).label}
+              variant={completenessStatusLabel(detailCompletenessScore).variant}
+            />
+          </span>
+        </div>
       </div>
+
+      {(detail?.integrity_status ?? pkg.integrity_status) === 'integrity_failed' && (
+        <div
+          role="alert"
+          style={{
+            marginBottom: '0.75rem',
+            padding: '0.5rem 0.6rem',
+            background: 'rgba(239,68,68,0.08)',
+            borderRadius: '4px',
+            borderLeft: '3px solid #ef4444',
+            fontSize: '0.75rem',
+            color: '#fca5a5',
+          }}
+        >
+          &#9888; Integrity Failed — this package content changed after generation. It is not verified and must not be presented as proof.
+          {verification ? (
+            <div style={{ marginTop: '0.25rem' }}>
+              {(verification.files_failed?.length ?? 0)} file(s) failed,{' '}
+              {(verification.missing_files?.length ?? 0)} missing.
+            </div>
+          ) : null}
+        </div>
+      )}
+
+      {/* ── Manifest recovery (friendly, customer-facing) ─────────────
+          Shown for a Manifest-Missing package. The primary action rebuilds a
+          retrievable manifest from the package's exact stored bytes — the original
+          package is preserved (only manifest.json is added). Verify Integrity is
+          never enabled until a real manifest exists. */}
+      {manifestMissing && (
+        <div
+          role="group"
+          aria-label="Manifest recovery"
+          style={{
+            marginBottom: '0.75rem',
+            padding: '0.65rem 0.7rem',
+            background: 'rgba(239,68,68,0.07)',
+            borderRadius: '6px',
+            borderLeft: '3px solid #ef4444',
+          }}
+        >
+          <p style={{ margin: 0, fontSize: '0.82rem', fontWeight: 700, color: '#fca5a5' }}>
+            Manifest required
+          </p>
+          <p style={{ margin: '0.25rem 0 0.5rem', fontSize: '0.75rem', color: '#e2e8f0' }}>
+            This package was generated without a retrievable integrity manifest. Generate a
+            manifest before verifying its contents. Your original package is preserved — only
+            the integrity manifest is added.
+          </p>
+          {onGenerateManifest ? (
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={!detailCanGenerate || !!generating}
+              title={
+                detailCanGenerate
+                  ? 'Rebuild a retrievable integrity manifest from this package’s stored bytes.'
+                  : 'Manifest recovery is not available for this package.'
+              }
+              style={{ fontSize: '0.75rem' }}
+              onClick={() => void onGenerateManifest(pkg)}
+            >
+              {generating
+                ? 'Generating manifest…'
+                : recovery?.phase === 'error'
+                  ? 'Retry'
+                  : 'Generate Manifest'}
+            </button>
+          ) : null}
+          {generating ? (
+            <p style={{ margin: '0.4rem 0 0', fontSize: '0.72rem', color: '#cbd5e1' }} aria-live="polite">
+              Generating manifest…
+            </p>
+          ) : recovery?.phase === 'error' ? (
+            <p style={{ margin: '0.4rem 0 0', fontSize: '0.72rem', color: '#fca5a5' }} role="alert">
+              Manifest could not be generated.
+            </p>
+          ) : null}
+        </div>
+      )}
+
+      {recovery?.phase === 'success' && !manifestMissing ? (
+        <div
+          style={{
+            marginBottom: '0.75rem',
+            padding: '0.5rem 0.6rem',
+            background: 'rgba(34,197,94,0.08)',
+            borderRadius: '4px',
+            borderLeft: '3px solid #22c55e',
+            fontSize: '0.75rem',
+            color: '#86efac',
+          }}
+          aria-live="polite"
+        >
+          Manifest generated. This package is ready for integrity verification.
+        </div>
+      ) : null}
+
+      {verification ? (
+        <div className="tableMeta" style={{ marginBottom: '0.75rem', fontSize: '0.72rem' }}>
+          {verification.valid
+            ? `Integrity verified · ${verification.files_verified ?? 0}/${verification.files_total ?? 0} files matched`
+            : 'Verification did not pass'}
+          {verification.verified_at ? ` · ${fmt(verification.verified_at)}` : ''}
+          {verification.seal_status ? ` · seal ${verification.seal_status}` : ''}
+        </div>
+      ) : manifestMissing ? null : integrityStatus === 'hash_generated' ? (
+        <p className="tableMeta" style={{ marginBottom: '0.75rem', fontSize: '0.72rem' }}>
+          Hashes generated. Run Verify Integrity to confirm content matches the generated package.
+        </p>
+      ) : null}
 
       {detail?.storage_available === false && (
         <div
@@ -2666,6 +2903,24 @@ function PackageDetailPanel({
         >
           Download Package
         </button>
+        {onGenerateManifest && (manifestMissing || detailCanGenerate) ? (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            // Recovery: rebuild a retrievable manifest from the package's stored
+            // bytes. Disappears once a manifest exists (gated by the backend).
+            disabled={!detailCanGenerate || !!generating}
+            title={
+              detailCanGenerate
+                ? 'Rebuild a retrievable integrity manifest from this package’s stored bytes.'
+                : 'Manifest recovery is not available for this package.'
+            }
+            style={{ fontSize: '0.75rem' }}
+            onClick={() => void onGenerateManifest(pkg)}
+          >
+            {generating ? 'Generating manifest…' : 'Generate Manifest'}
+          </button>
+        ) : null}
         {onVerify ? (
           <button
             type="button"
@@ -2673,7 +2928,13 @@ function PackageDetailPanel({
             // Backend-authoritative: Verify is offered only when the canonical
             // manifest resolver reports a retrievable manifest — never guessed here.
             disabled={!detailCanVerify || !!verifying}
-            title={detailCanVerify ? undefined : 'Verification requires a retrievable signed manifest.'}
+            title={
+              detailCanVerify
+                ? undefined
+                : manifestMissing
+                  ? 'This package has no retrievable manifest. Generate a manifest before verifying integrity.'
+                  : 'Verification requires a retrievable signed manifest.'
+            }
             style={{ fontSize: '0.75rem' }}
             onClick={() => void onVerify(pkg)}
           >

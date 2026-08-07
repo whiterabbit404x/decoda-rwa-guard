@@ -1,3 +1,4 @@
+import { proxyJsonToBackend } from 'app/api/_shared/backend-proxy';
 import { normalizeApiBaseUrl } from 'app/api-config';
 import { FetchTimeoutError, fetchWithTimeout } from 'app/fetch-with-timeout';
 import { getRuntimeConfig } from 'app/runtime-config';
@@ -86,5 +87,21 @@ export async function GET(
       'Content-Disposition': contentDisposition,
       'Cache-Control': 'no-store',
     },
+  });
+}
+
+// Proxy POST /api/exports/[packageId]/manifest → backend POST /exports/{packageId}/manifest.
+// The backend reconstructs a retrievable integrity manifest for a Manifest-Missing
+// package from its exact stored bytes, persists it, and returns the canonical
+// package state. Recovery is authoritative on the backend — the browser only
+// triggers it and displays the result.
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ packageId: string }> },
+): Promise<Response> {
+  const { packageId } = await params;
+  return proxyJsonToBackend(request, {
+    backendPath: `/exports/${encodeURIComponent(packageId)}/manifest`,
+    method: 'POST',
   });
 }
