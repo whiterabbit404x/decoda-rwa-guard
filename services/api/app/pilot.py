@@ -24384,6 +24384,13 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             rows[0]['seal.json'] = _seal
             _signing_meta = _signing_metadata_fn(_manifest, _seal)
             artifact_meta.update({'signing': _signing_meta})
+            # Canonical manifest-reference facts, captured only when the manifest is
+            # actually built and sealed, so list/detail can describe the manifest
+            # without re-reading storage — and never claim one that was not embedded.
+            from services.api.app.evidence_signing import canonical_json as _canon_json
+            artifact_meta['manifest_file_count'] = len(_manifest.get('files') or [])
+            artifact_meta['manifest_size_bytes'] = len(_canon_json(_manifest))
+            artifact_meta['manifest_generated_at'] = _manifest.get('generated_at')
         except RuntimeError as _sign_exc:
             # Fail closed in production when signing secret is missing
             connection.execute("UPDATE export_jobs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s", (str(_sign_exc), export_id))
@@ -24435,9 +24442,16 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             _artifact_filters_patch['missing_sections'] = artifact_meta['missing_sections']
         # Persist the manifest SHA-256 as the package integrity hash so list/detail
         # can display it without reading the artifact. This IS the real hash — the
-        # UI truncates it for display but keeps the full value available.
+        # UI truncates it for display but keeps the full value available. The
+        # manifest-reference fields (hash + file count + size + generated_at) are
+        # persisted together and ONLY when the manifest was actually embedded and
+        # sealed, so a recorded reference always corresponds to a real manifest.
         if _signing_meta.get('manifest_sha256'):
             _artifact_filters_patch['integrity_hash'] = _signing_meta['manifest_sha256']
+            _artifact_filters_patch['manifest_sha256'] = _signing_meta['manifest_sha256']
+            for _rk in ('manifest_file_count', 'manifest_size_bytes', 'manifest_generated_at'):
+                if artifact_meta.get(_rk) is not None:
+                    _artifact_filters_patch[_rk] = artifact_meta[_rk]
         connection.execute(
             "UPDATE export_jobs SET status = 'completed', error_message = NULL, storage_backend = %s, storage_object_key = %s, signing_key_id = %s, signing_key_version = %s, size_bytes = %s, filters = filters || %s::jsonb, updated_at = NOW() WHERE id = %s",
             (storage.backend_name, object_key, _signing_meta.get('key_id'), _signing_meta.get('key_version'), _content_size, _json_dumps(_artifact_filters_patch), export_id),
@@ -24645,7 +24659,8 @@ def list_exports(request: Request) -> dict[str, Any]:
             # export types simply have none of these keys, which the display-state
             # selector then reports truthfully as a legacy export.
             for _mf in ('export_status', 'evidence_source_type', 'missing_sections', 'unavailable_sections',
-                        'warnings', 'chain_complete', 'completeness_score', 'verified_at', 'files_hashed', 'integrity_hash'):
+                        'warnings', 'chain_complete', 'completeness_score', 'verified_at', 'files_hashed', 'integrity_hash',
+                        'manifest_sha256', 'manifest_file_count', 'manifest_size_bytes', 'manifest_generated_at'):
                 if _mf in filters_val:
                     item[_mf] = filters_val[_mf]
             item['completeness_score'] = filters_val.get('completeness_score')
@@ -24658,7 +24673,9 @@ def list_exports(request: Request) -> dict[str, Any]:
             )
             # Canonical, backend-authoritative display state. The hash column, the
             # integrity pill, files_hashed and export-readiness all come from here so
-            # they can never contradict each other in the UI.
+            # they can never contradict each other in the UI. The list uses the
+            # metadata-level manifest reference (a recorded manifest SHA-256); the
+            # detail/verify/download paths confirm retrievability against storage.
             _state = _display_state(item)
             item['integrity_status'] = _state['integrity_status']
             item['integrity_label'] = _integrity_label(_state['integrity_status'])
@@ -24669,6 +24686,8 @@ def list_exports(request: Request) -> dict[str, Any]:
             item['is_export_ready'] = _state['is_export_ready']
             item['is_downloadable'] = _state['is_downloadable']
             item['is_legacy_export'] = _state['is_legacy_export']
+            item['is_manifest_missing'] = _state['is_manifest_missing']
+            item['manifest_reference'] = _state['manifest_reference']
             item['ready_for_verification'] = _state['ready_for_verification']
             # Backend-authoritative action gating consumed by the row overflow menu.
             item['allowed_actions'] = _allowed_actions(item, can_export=can_export)
@@ -24892,8 +24911,6 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
         verification = filters_val.get('verification') if isinstance(filters_val.get('verification'), dict) else None
         item['verification'] = verification
 
-        from services.api.app.evidence_completeness import derive_integrity_status as _derive_integrity_status
-
         # Superseded when a newer proof_bundle exists for the same incident.
         superseded = False
         incident_id = str(filters_val.get('incident_id') or '').strip()
@@ -24915,8 +24932,10 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
         incident_trace: dict[str, Any] = {}
         storage_error: str | None = None
         summary: dict[str, Any] | None = None
+        manifest_parts: dict[str, Any] | None = None
         if item.get('status') == 'completed':
             parts = _read_stored_package_bundle(item)
+            manifest_parts = parts
             storage_error = parts['storage_error']
             manifest = parts['manifest']
             summary = parts['summary'] if isinstance(parts['summary'], dict) else None
@@ -24963,46 +24982,43 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
         item['storage_available'] = storage_error is None
         item['storage_status'] = storage_error or 'ok'
 
-        # Authoritative hash presence: a real manifest/integrity hash, or manifest
-        # files that actually carry a SHA-256. A completed export with neither is a
-        # legacy export and must not be shown as "hash_generated".
-        _detail_has_hashes = bool(str(item.get('integrity_hash') or '').strip()) or any(
-            isinstance(f, dict) and f.get('sha256') for f in files
-        )
-        integrity_status = _derive_integrity_status(
-            job_status=str(item.get('status') or ''),
-            verification=verification,
-            completeness=completeness,
-            superseded=superseded,
-            has_hashes=_detail_has_hashes,
-        )
+        # Canonical, storage-authoritative manifest reference. The artifact was
+        # read above (manifest_parts), so retrievability is confirmed against real
+        # bytes — not inferred from a persisted integrity_hash. Manifest existence,
+        # the integrity pill, the SHA-256 hash column, files-hashed and the action
+        # gating all resolve through this ONE reference, so the detail view can
+        # never claim a manifest that Verify Integrity / Download Manifest cannot
+        # actually produce.
         from services.api.app.evidence_completeness import (
+            resolve_manifest_reference as _resolve_manifest_ref,
+            get_evidence_package_display_state as _display_state,
             integrity_status_label as _integrity_label,
             get_package_allowed_actions as _allowed_actions,
         )
+        item['superseded'] = superseded
+        _manifest_ref = _resolve_manifest_ref(item, bundle_parts=manifest_parts)
+        _state = _display_state(item, manifest_reference=_manifest_ref)
+        integrity_status = _state['integrity_status']
         item['integrity_status'] = integrity_status
         item['integrity_label'] = _integrity_label(integrity_status)
-        _detail_hash_state = (
-            'present' if _detail_has_hashes
-            else ('generating' if str(item.get('status') or '').lower() in {'queued', 'pending', 'building', 'running'} else 'not_generated')
-        )
-        item['hash_state'] = _detail_hash_state
-        item['hash_display_state'] = _detail_hash_state
-        item['files_hashed'] = int(item.get('files_hashed') or 0) or sum(1 for f in files if isinstance(f, dict) and f.get('sha256'))
-        item['superseded'] = superseded
-        _detail_export_ready = (str(item.get('status') or '').lower() == 'completed'
-                                and storage_error is None
-                                and integrity_status == 'verified')
-        item['export_ready'] = _detail_export_ready
-        item['is_export_ready'] = _detail_export_ready
-        item['is_legacy_export'] = integrity_status == 'legacy_export'
+        item['hash_state'] = _state['hash_state']
+        item['hash_display_state'] = _state['hash_state']
+        item['files_hashed'] = _state['files_hashed']
+        item['manifest_reference'] = _manifest_ref.as_dict()
+        # Authoritative SHA-256 for the hash column: the manifest's own hash when a
+        # manifest is retrievable, else the recorded hash; never a stale value.
+        item['manifest_sha256'] = _manifest_ref.sha256 if _manifest_ref.retrievable else None
+        item['export_ready'] = _state['is_export_ready']
+        item['is_export_ready'] = _state['is_export_ready']
+        item['is_legacy_export'] = _state['is_legacy_export']
+        item['is_manifest_missing'] = _state['is_manifest_missing']
         # Permission-aware action gating for the details view / agent card.
         _detail_role = _normalize_workspace_role(str(workspace_context.get('role') or 'viewer'))
         try:
             _detail_can_export = _workspace_permission_granted(connection, workspace_id, _detail_role, 'evidence.export')
         except Exception:
             _detail_can_export = 'evidence.export' in DEFAULT_ROLE_PERMISSIONS.get(_detail_role, frozenset())
-        item['allowed_actions'] = _allowed_actions(item, can_export=_detail_can_export)
+        item['allowed_actions'] = _allowed_actions(item, can_export=_detail_can_export, manifest_reference=_manifest_ref)
         item['can_export'] = _detail_can_export
 
         # Agent findings — every statement references package records, never invented.
@@ -25020,6 +25036,8 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
             findings.append({'type': 'source_warning', 'message': str(warn)})
         if integrity_status == 'hash_generated':
             findings.append({'type': 'recommended_action', 'message': 'Hashes generated. Run Verify Integrity to confirm the package has not changed since generation.'})
+        elif integrity_status == 'manifest_missing':
+            findings.append({'type': 'integrity_warning', 'message': 'This package has no retrievable manifest, so it cannot be verified or exported as evidence. Generate a new package for this incident to supersede it.'})
         elif integrity_status == 'needs_evidence':
             findings.append({'type': 'recommended_action', 'message': 'Collect the missing required evidence, then regenerate the package.'})
         item['agent_findings'] = findings
@@ -25097,6 +25115,50 @@ def _read_stored_package_bundle(row: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _canonical_manifest_bytes(manifest: dict[str, Any]) -> bytes:
+    """The single canonical byte representation of a package manifest.
+
+    Both Download Manifest and Verify Integrity derive their manifest from this,
+    so a downloaded manifest is byte-for-byte the manifest that verification
+    checks. Deterministic (sorted keys) and human-readable (indented).
+    """
+    return json.dumps(manifest, indent=2, sort_keys=True).encode('utf-8')
+
+
+def _resolve_package_manifest(row: dict[str, Any]) -> dict[str, Any]:
+    """Canonical manifest resolver shared by Verify Integrity, Download Manifest
+    and the detail view.
+
+    Reads the stored artifact ONCE and returns the canonical
+    ``EvidenceManifestReference`` together with the exact manifest object, its
+    canonical downloadable bytes, the file values and the seal. No subsystem
+    infers manifest existence a different way, and no path reconstructs a manifest
+    from live DB state — the persisted bytes are the source of truth.
+    """
+    from services.api.app.evidence_completeness import resolve_manifest_reference
+    safe_row = _json_safe_value(dict(row))
+    parts = _read_stored_package_bundle(safe_row)
+    filters_val = safe_row.get('filters') if isinstance(safe_row.get('filters'), dict) else {}
+    package_meta = {
+        'export_type': safe_row.get('export_type'),
+        'storage_object_key': safe_row.get('storage_object_key'),
+        'integrity_hash': (filters_val or {}).get('integrity_hash'),
+        'manifest_sha256': (filters_val or {}).get('manifest_sha256'),
+    }
+    reference = resolve_manifest_reference(package_meta, bundle_parts=parts)
+    manifest = parts['manifest']
+    manifest_bytes = _canonical_manifest_bytes(manifest) if reference.retrievable and isinstance(manifest, dict) else None
+    return {
+        'reference': reference,
+        'manifest': manifest,
+        'manifest_bytes': manifest_bytes,
+        'file_values': parts['file_values'],
+        'seal': parts['seal'],
+        'summary': parts['summary'],
+        'storage_error': parts['storage_error'],
+    }
+
+
 def verify_evidence_package(export_id: str, request: Request) -> dict[str, Any]:
     """Recalculate every file's SHA-256 and the manifest hash, compare against the
     stored manifest, persist the result, and record an append-only audit event.
@@ -25121,15 +25183,17 @@ def verify_evidence_package(export_id: str, request: Request) -> dict[str, Any]:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={'error': 'PACKAGE_NOT_FOUND', 'message': 'Evidence package not found.'})
         if str(row['status']) != 'completed':
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={'error': 'PACKAGE_NOT_READY', 'message': 'Package is not ready for verification.'})
-        parts = _read_stored_package_bundle(_json_safe_value(dict(row)))
-        if parts['storage_error'] == 'storage_unavailable':
+        resolved = _resolve_package_manifest(dict(row))
+        if resolved['storage_error'] == 'storage_unavailable':
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail={'error': 'PACKAGE_STORAGE_UNAVAILABLE', 'message': 'Evidence storage is unavailable. Package metadata remains queryable.'})
-        if parts['storage_error'] == 'object_not_found':
+        if resolved['storage_error'] == 'object_not_found':
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={'error': 'PACKAGE_STORAGE_UNAVAILABLE', 'message': 'Package artifact not found in storage.'})
-        manifest = parts['manifest']
-        if not isinstance(manifest, dict) or not manifest.get('files'):
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={'error': 'PACKAGE_NOT_READY', 'message': 'Package has no manifest to verify.'})
-        file_values = parts['file_values']
+        # Canonical gate: the SAME resolver Download Manifest uses. Verify only
+        # when the persisted manifest bytes are retrievable — never reconstructed.
+        if not resolved['reference'].retrievable:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={'error': 'PACKAGE_NOT_READY', 'message': 'This package does not have a retrievable manifest yet.'})
+        manifest = resolved['manifest']
+        file_values = resolved['file_values']
 
         _hashcheck = _verify_files(file_values, manifest)
         files_verified = _hashcheck['files_verified']
@@ -25141,7 +25205,7 @@ def verify_evidence_package(export_id: str, request: Request) -> dict[str, Any]:
         # HMAC seal is an additional signal; a missing dev signing secret must not
         # be reported as tampering — it is 'unverifiable', not 'invalid'.
         seal_status = 'absent'
-        seal = parts['seal']
+        seal = resolved['seal']
         if isinstance(seal, dict):
             vb = _vb(file_values, manifest, seal)
             if 'hmac_signature_invalid' in vb['errors']:
@@ -25161,6 +25225,9 @@ def verify_evidence_package(export_id: str, request: Request) -> dict[str, Any]:
             'missing_files': missing_files,
             'manifest_ok': manifest_ok,
             'seal_status': seal_status,
+            # The manifest that was verified — identical to the Download Manifest
+            # bytes. Persisted so the detail view can prove the two agree.
+            'manifest_sha256': str(manifest.get('manifest_sha256') or '') or None,
             'verified_by_user_id': str(user['id']),
         }
         integrity_status = INTEGRITY_VERIFIED if valid else INTEGRITY_INTEGRITY_FAILED
@@ -25207,22 +25274,23 @@ def get_evidence_package_manifest(export_id: str, request: Request) -> tuple[byt
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         workspace_id = workspace_context['workspace_id']
         row = connection.execute(
-            'SELECT id, workspace_id, format, status, storage_object_key FROM export_jobs WHERE id = %s AND workspace_id = %s',
+            'SELECT id, workspace_id, export_type, format, status, storage_object_key, filters FROM export_jobs WHERE id = %s AND workspace_id = %s',
             (export_id, workspace_id),
         ).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={'error': 'PACKAGE_NOT_FOUND', 'message': 'Evidence package not found.'})
         if str(row['status']) != 'completed':
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={'error': 'PACKAGE_NOT_READY', 'message': 'Package is not ready.'})
-        parts = _read_stored_package_bundle(_json_safe_value(dict(row)))
-        if parts['storage_error'] == 'storage_unavailable':
+        resolved = _resolve_package_manifest(dict(row))
+        if resolved['storage_error'] == 'storage_unavailable':
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail={'error': 'PACKAGE_STORAGE_UNAVAILABLE', 'message': 'Evidence storage is unavailable.'})
-        if parts['storage_error']:
+        if resolved['storage_error']:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={'error': 'PACKAGE_STORAGE_UNAVAILABLE', 'message': 'Package artifact not found in storage.'})
-        manifest = parts['manifest']
-        if not isinstance(manifest, dict) or not manifest.get('files'):
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={'error': 'PACKAGE_NOT_READY', 'message': 'Package has no manifest.'})
-        manifest_bytes = json.dumps(manifest, indent=2, sort_keys=True).encode('utf-8')
+        if not resolved['reference'].retrievable or resolved['manifest_bytes'] is None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={'error': 'PACKAGE_NOT_READY', 'message': 'This package does not have a retrievable manifest yet.'})
+        manifest = resolved['manifest']
+        # Exact persisted manifest bytes — identical to what Verify Integrity checks.
+        manifest_bytes = resolved['manifest_bytes']
         log_audit(
             connection,
             action='evidence_manifest_downloaded',

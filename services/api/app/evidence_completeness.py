@@ -21,6 +21,7 @@ claims "verified" unless a deterministic verification actually passed.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 # ── Status thresholds (documented in the product spec) ────────────────────────
@@ -47,6 +48,13 @@ INTEGRITY_SUPERSEDED = 'superseded'
 # hashes (legacy JSON exports created before Screen 9 packaging, or non-package
 # export types). It must NEVER be shown as "hash_generated" or "verified".
 INTEGRITY_LEGACY_EXPORT = 'legacy_export'
+# A completed evidence-type package that WAS built as a signed proof bundle
+# (it carries packaging metadata — a completeness score, a files-hashed count, an
+# export status) but whose canonical manifest is not retrievable from storage.
+# Distinct from legacy_export (which never had a manifest at all): this package
+# was supposed to have one and does not, so Verify/Download Manifest are
+# cryptographically impossible and must be disabled with a truthful label.
+INTEGRITY_MANIFEST_MISSING = 'manifest_missing'
 
 # Hash-column display states (kept separate from integrity so the two columns
 # can never contradict each other — a package with no stored hash is
@@ -69,6 +77,7 @@ INTEGRITY_LABELS: dict[str, str] = {
     INTEGRITY_FAILED: 'Failed',
     INTEGRITY_SUPERSEDED: 'Superseded',
     INTEGRITY_LEGACY_EXPORT: 'Legacy Export',
+    INTEGRITY_MANIFEST_MISSING: 'Manifest Missing',
 }
 
 
@@ -90,8 +99,14 @@ _NON_EXPORTABLE_INTEGRITY = frozenset({
     INTEGRITY_FAILED,
     INTEGRITY_INTEGRITY_FAILED,
     INTEGRITY_LEGACY_EXPORT,
+    INTEGRITY_MANIFEST_MISSING,
     INTEGRITY_SUPERSEDED,
 })
+
+# Evidence-package export types build a signed manifest by construction. Only
+# these can meaningfully be in the manifest_missing state; any other completed
+# export with no hashes is simply a legacy_export.
+EVIDENCE_EXPORT_TYPES = frozenset({'proof_bundle', 'incident_report'})
 
 
 def _status_for_score(score: int) -> tuple[str, str]:
@@ -429,20 +444,189 @@ def derive_integrity_status(
     # package still needs evidence (checked first so a hashed-but-incomplete
     # package is reported truthfully).
     if completeness is not None:
-        present = completeness.get('present_count') or 0
-        required = completeness.get('required_count') or 0
         core_missing = any(
             code in {'incident_identity', 'original_alert', 'detection_provenance', 'file_hashes', 'manifest_hash'}
             for code in (completeness.get('missing_codes') or [])
         )
-        if core_missing or (required and present < required and (completeness.get('score') or 0) < 60):
+        if core_missing:
             return INTEGRITY_NEEDS_EVIDENCE
 
-    # A completed export with no stored hashes is a legacy/non-package export.
+    # A completed export with no retrievable manifest is not a verifiable evidence
+    # artifact. It is reported as legacy_export here; the display-state selector
+    # promotes it to manifest_missing when the package WAS built as an evidence
+    # bundle (so Verify/Download stay disabled with a truthful, specific label).
+    # A low completeness score does NOT downgrade a properly-manifested package —
+    # partial completeness is reported separately by the completeness score, and a
+    # 40% package with a real manifest can still be hashed and then verified.
     resolved_has_hashes = has_hashes if has_hashes is not None else _completeness_indicates_hashes(completeness)
     if not resolved_has_hashes:
         return INTEGRITY_LEGACY_EXPORT
     return INTEGRITY_HASH_GENERATED
+
+
+# ── Canonical evidence-manifest reference (Screen 9) ──────────────────────────
+# ONE structure describes whether a package has a real, retrievable manifest.
+# Package generation, the list API, the detail API, Download Manifest, Verify
+# Integrity, allowed_actions, the agent card and the SHA-256 table column all
+# resolve manifest existence through this — never by each inferring it from a
+# different field (a files-hashed count, a raw integrity_hash, or the presence of
+# an artifact object). A manifest is only "retrievable" when its bytes can
+# actually be read back; a persisted hash alone is not proof the manifest exists.
+
+_MANIFEST_MEDIA_TYPE = 'application/json'
+
+
+@dataclass(frozen=True)
+class EvidenceManifestReference:
+    """Canonical description of a package's evidence manifest.
+
+    ``exists``     — a manifest was built for this package (a manifest SHA-256 is
+                     recorded, or a manifest object is present).
+    ``retrievable``— the manifest bytes can actually be read back and parsed with
+                     a non-empty file list. Verify/Download require this.
+    The remaining fields describe the manifest for display and are never invented.
+    ``source``     — 'storage' when confirmed against the stored artifact,
+                     'metadata' when derived from persisted package facts only,
+                     'storage_unavailable' when storage could not be read.
+    """
+    exists: bool
+    retrievable: bool
+    storage_key: str | None
+    sha256: str | None
+    size_bytes: int | None
+    media_type: str
+    file_count: int | None
+    generated_at: str | None
+    source: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            'exists': self.exists,
+            'retrievable': self.retrievable,
+            'storage_key': self.storage_key,
+            'sha256': self.sha256,
+            'size_bytes': self.size_bytes,
+            'media_type': self.media_type,
+            'file_count': self.file_count,
+            'generated_at': self.generated_at,
+            'source': self.source,
+        }
+
+
+def _recorded_manifest_sha256(package: dict[str, Any]) -> str | None:
+    """The manifest hash a package persisted at build time, if any.
+
+    ``integrity_hash`` IS the manifest SHA-256 (see _generate_export_artifact),
+    so it is the canonical recorded-manifest signal. ``manifest_sha256`` is
+    accepted as an explicit alias.
+    """
+    for key in ('manifest_sha256', 'integrity_hash'):
+        value = str(package.get(key) or '').strip()
+        if value:
+            return value
+    return None
+
+
+def resolve_manifest_reference(
+    package: dict[str, Any],
+    *,
+    bundle_parts: dict[str, Any] | None = None,
+) -> EvidenceManifestReference:
+    """Single source of truth for a package's manifest.
+
+    When ``bundle_parts`` (the output of the stored-artifact reader) is supplied
+    the reference is storage-authoritative: ``retrievable`` reflects whether the
+    manifest bytes were actually read back with a non-empty file list. Without
+    it the reference is metadata-only (used by the list projection), where a
+    recorded manifest SHA-256 is treated as an existing manifest.
+    """
+    storage_key = str(
+        package.get('storage_object_key') or package.get('storage_key') or ''
+    ).strip() or None
+    recorded_sha = _recorded_manifest_sha256(package)
+
+    if bundle_parts is not None:
+        storage_error = bundle_parts.get('storage_error')
+        manifest = bundle_parts.get('manifest')
+        if storage_error:
+            # The artifact could not be read — we cannot confirm retrievability.
+            return EvidenceManifestReference(
+                exists=bool(recorded_sha), retrievable=False, storage_key=storage_key,
+                sha256=recorded_sha, size_bytes=None, media_type=_MANIFEST_MEDIA_TYPE,
+                file_count=None, generated_at=None, source='storage_unavailable',
+            )
+        files = manifest.get('files') if isinstance(manifest, dict) else None
+        if isinstance(manifest, dict) and isinstance(files, list) and files:
+            # Every referenced file must carry a SHA-256 for the manifest to be a
+            # usable evidence manifest — a file entry without one is not verifiable.
+            all_hashed = all(isinstance(f, dict) and str(f.get('sha256') or '').strip() for f in files)
+            try:
+                from services.api.app.evidence_signing import canonical_json
+                size_bytes: int | None = len(canonical_json(manifest))
+            except Exception:
+                size_bytes = None
+            return EvidenceManifestReference(
+                exists=True, retrievable=all_hashed, storage_key=storage_key,
+                sha256=str(manifest.get('manifest_sha256') or '') or recorded_sha,
+                size_bytes=size_bytes, media_type=_MANIFEST_MEDIA_TYPE,
+                file_count=len(files),
+                generated_at=str(manifest.get('generated_at') or '') or None,
+                source='storage',
+            )
+        # Artifact read fine but carries no usable manifest.
+        return EvidenceManifestReference(
+            exists=bool(recorded_sha), retrievable=False, storage_key=storage_key,
+            sha256=recorded_sha, size_bytes=None, media_type=_MANIFEST_MEDIA_TYPE,
+            file_count=None, generated_at=None, source='storage',
+        )
+
+    # Metadata-only (list projection): a recorded manifest hash means a manifest
+    # was built. Retrievability is not re-checked per row for performance; the
+    # detail/verify/download paths confirm it against storage.
+    file_count = package.get('manifest_file_count')
+    try:
+        file_count = int(file_count) if file_count is not None else None
+    except (TypeError, ValueError):
+        file_count = None
+    size_bytes = package.get('manifest_size_bytes')
+    try:
+        size_bytes = int(size_bytes) if size_bytes is not None else None
+    except (TypeError, ValueError):
+        size_bytes = None
+    exists = bool(recorded_sha)
+    return EvidenceManifestReference(
+        exists=exists, retrievable=exists, storage_key=storage_key,
+        sha256=recorded_sha, size_bytes=size_bytes, media_type=_MANIFEST_MEDIA_TYPE,
+        file_count=file_count,
+        generated_at=str(package.get('manifest_generated_at') or '') or None,
+        source='metadata',
+    )
+
+
+def _is_evidence_export_type(package: dict[str, Any]) -> bool:
+    return str(package.get('export_type') or '').strip().lower() in EVIDENCE_EXPORT_TYPES
+
+
+def _has_packaging_metadata(package: dict[str, Any]) -> bool:
+    """True when a package was built as a real evidence bundle (so a missing
+    manifest is a fault, not a plain legacy export).
+
+    Distinguishes EV-2026-004-style packages (a completeness score / files-hashed
+    count / export status were recorded) from bare pre-Screen-9 exports that never
+    attempted a manifest.
+    """
+    if _recorded_manifest_sha256(package):
+        return True
+    if package.get('completeness_score') is not None or isinstance(package.get('completeness'), dict):
+        return True
+    if package.get('export_status') or package.get('evidence_source_type'):
+        return True
+    try:
+        if int(package.get('files_hashed') or 0) > 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
 
 
 # ── Canonical package-state selectors (Screen 9) ──────────────────────────────
@@ -470,10 +654,15 @@ def _package_files_hashed(package: dict[str, Any]) -> int:
 
 
 def _package_has_hashes(package: dict[str, Any]) -> bool:
-    """True when the package carries a real manifest/integrity hash or file hashes."""
-    if str(package.get('integrity_hash') or '').strip():
-        return True
-    return _package_files_hashed(package) > 0
+    """True when the package has a real evidence manifest.
+
+    Keyed on the canonical manifest reference — a recorded manifest SHA-256 (the
+    ``integrity_hash``) or a manifest object present in storage. A files-hashed
+    count on its own is NOT proof of a manifest: EV-2026-004 carried
+    ``files_hashed=8`` while its manifest was never retrievable, which is exactly
+    the contradiction this must not reproduce.
+    """
+    return resolve_manifest_reference(package).exists
 
 
 def _package_completeness_for_integrity(package: dict[str, Any]) -> dict[str, Any] | None:
@@ -486,24 +675,50 @@ def _package_completeness_for_integrity(package: dict[str, Any]) -> dict[str, An
     return None
 
 
-def get_evidence_package_display_state(package: dict[str, Any]) -> dict[str, Any]:
+def get_evidence_package_display_state(
+    package: dict[str, Any],
+    *,
+    manifest_reference: EvidenceManifestReference | None = None,
+) -> dict[str, Any]:
     """Single source of truth for a package's Screen 9 display state.
 
     Returns the canonical ``integrity_status``, the hash-column ``hash_state``,
     the real ``files_hashed`` count, and the download/export-ready booleans.
+
+    ``manifest_reference`` is the storage-authoritative reference resolved by the
+    detail/verify/download paths (they have already read the artifact). When it
+    is omitted the metadata-only reference is used — the list projection cannot
+    afford a storage read per row, and confirms retrievability only when a row is
+    opened. Either way, manifest existence is resolved in exactly ONE place.
     """
     status = str(package.get('status') or '').lower()
     verification = package.get('verification') if isinstance(package.get('verification'), dict) else None
     superseded = bool(package.get('superseded'))
-    has_hashes = _package_has_hashes(package)
+    ref = manifest_reference if manifest_reference is not None else resolve_manifest_reference(package)
+    # "Has a usable manifest" means the manifest is retrievable. At the list level
+    # (metadata source) retrievable == exists; the detail level confirms bytes.
+    has_manifest = ref.retrievable
     integrity_status = derive_integrity_status(
         job_status=status,
         verification=verification,
         completeness=_package_completeness_for_integrity(package),
         superseded=superseded,
-        has_hashes=has_hashes,
+        has_hashes=has_manifest,
     )
-    if has_hashes:
+    # A completed evidence-type package that was built as a proof bundle but has no
+    # retrievable manifest is reported specifically as manifest_missing (never as a
+    # plain legacy_export, and never as hash_generated). This is the EV-2026-004
+    # state: it must not claim a manifest it cannot produce.
+    if (
+        integrity_status == INTEGRITY_LEGACY_EXPORT
+        and status == 'completed'
+        and not superseded
+        and _is_evidence_export_type(package)
+        and _has_packaging_metadata(package)
+    ):
+        integrity_status = INTEGRITY_MANIFEST_MISSING
+
+    if has_manifest:
         hash_state = HASH_STATE_PRESENT
     elif status in {'queued', 'pending', 'building', 'running'}:
         hash_state = HASH_STATE_GENERATING
@@ -514,15 +729,21 @@ def get_evidence_package_display_state(package: dict[str, Any]) -> dict[str, Any
     storage_ok = storage_available is not False  # unknown (None) is treated as available
     downloadable = status == 'completed' and storage_ok
     # A completed export can always have its raw artifact downloaded, but only a
-    # hashed package is a usable *evidence* artifact (manifest/verify available).
+    # package with a retrievable manifest is a usable *evidence* artifact
+    # (manifest/verify available). Files-hashed is shown only when the manifest is
+    # real, so "Files Hashed: 8" can never sit beside a missing manifest.
     is_evidence_artifact = integrity_status not in _NON_EXPORTABLE_INTEGRITY
     is_export_ready = downloadable and integrity_status == INTEGRITY_VERIFIED
+    files_hashed = (ref.file_count if ref.file_count is not None else _package_files_hashed(package)) if has_manifest else 0
     return {
         'integrity_status': integrity_status,
         'hash_state': hash_state,
-        'files_hashed': _package_files_hashed(package),
-        'has_hashes': has_hashes,
+        'files_hashed': files_hashed,
+        'has_hashes': has_manifest,
+        'manifest_retrievable': ref.retrievable,
+        'manifest_reference': ref.as_dict(),
         'is_legacy_export': integrity_status == INTEGRITY_LEGACY_EXPORT,
+        'is_manifest_missing': integrity_status == INTEGRITY_MANIFEST_MISSING,
         'is_downloadable': downloadable,
         'is_evidence_artifact': is_evidence_artifact,
         'is_export_ready': is_export_ready,
@@ -569,6 +790,7 @@ def get_workspace_evidence_metrics(packages: list[dict[str, Any]]) -> dict[str, 
     export_ready = 0
     ready_for_verification = 0
     legacy_exports = 0
+    manifest_missing = 0
     total_size = 0
     incidents: set[str] = set()
     scores: list[int] = []
@@ -580,6 +802,8 @@ def get_workspace_evidence_metrics(packages: list[dict[str, Any]]) -> dict[str, 
             integrity_failures += 1
         if state['is_legacy_export']:
             legacy_exports += 1
+        if state.get('is_manifest_missing'):
+            manifest_missing += 1
         if state['is_export_ready']:
             export_ready += 1
         if state['ready_for_verification']:
@@ -605,6 +829,7 @@ def get_workspace_evidence_metrics(packages: list[dict[str, Any]]) -> dict[str, 
         'export_ready': export_ready,
         'ready_for_verification': ready_for_verification,
         'legacy_exports': legacy_exports,
+        'manifest_missing': manifest_missing,
         'average_completeness': round(sum(scores) / len(scores)) if scores else None,
     }
 
@@ -613,15 +838,18 @@ def get_package_allowed_actions(
     package: dict[str, Any],
     *,
     can_export: bool,
+    manifest_reference: EvidenceManifestReference | None = None,
 ) -> dict[str, bool]:
     """Which Screen 9 actions are valid for this package and this user.
 
-    ``can_export`` is the caller's ``evidence.export`` permission. Actions that
-    are cryptographically meaningless for the package (verify/manifest on a
-    legacy export with no manifest) are disabled regardless of permission.
+    ``can_export`` is the caller's ``evidence.export`` permission. Verify Integrity
+    and Download Manifest are returned only when the canonical manifest resolver
+    reports the manifest is retrievable — never inferred independently. A legacy
+    export or a manifest_missing package (no retrievable manifest) has both
+    disabled regardless of permission, so the frontend never guesses.
     """
-    state = get_evidence_package_display_state(package)
-    has_manifest = state['has_hashes'] and not state['is_legacy_export']
+    state = get_evidence_package_display_state(package, manifest_reference=manifest_reference)
+    has_manifest = bool(state['manifest_retrievable'])
     completed = str(package.get('status') or '').lower() == 'completed'
     downloadable = state['is_downloadable']
     return {
@@ -629,5 +857,5 @@ def get_package_allowed_actions(
         'download': completed and downloadable and can_export,
         'download_manifest': completed and downloadable and has_manifest and can_export,
         'verify': completed and downloadable and has_manifest and can_export,
-        'copy_hash': bool(str(package.get('integrity_hash') or '').strip()),
+        'copy_hash': bool(_recorded_manifest_sha256(package)),
     }
