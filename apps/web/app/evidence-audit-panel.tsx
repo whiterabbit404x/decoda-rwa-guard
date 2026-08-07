@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 
 import {
   EmptyStateBlocker,
@@ -12,7 +12,6 @@ import {
   TabStrip,
   type PillVariant,
 } from './components/ui-primitives';
-import { resolveApiUrl } from './dashboard-data';
 import { usePilotAuth } from './pilot-auth-context';
 import { useRuntimeSummary } from './runtime-summary-context';
 
@@ -317,6 +316,19 @@ function isPackageReady(pkg: EvidencePackage): boolean {
   );
 }
 
+// A package is "in progress" while its generation lifecycle has not reached a
+// terminal state. Job-level queued/pending/building/running and the integrity
+// states Building/Hashing/Verifying are non-terminal; everything else (verified,
+// hash_generated, integrity_failed, failed, legacy_export, superseded,
+// needs_evidence) is a resting state the async poller must stop at.
+const IN_PROGRESS_JOB_STATUSES = new Set(['queued', 'pending', 'building', 'running']);
+const IN_PROGRESS_INTEGRITY_STATES = new Set(['building', 'hashing', 'verifying']);
+function isPackageInProgress(pkg: EvidencePackage): boolean {
+  const jobStatus = String(pkg.status ?? '').toLowerCase();
+  const integrity = String(pkg.integrity_status ?? '').toLowerCase();
+  return IN_PROGRESS_JOB_STATUSES.has(jobStatus) || IN_PROGRESS_INTEGRITY_STATES.has(integrity);
+}
+
 // Integrity status is authoritative on the backend. This only maps the canonical
 // enum to a truthful pill — it never invents a "Verified" state the backend
 // didn't report. "Hash generated" is deliberately distinct from "Verified".
@@ -406,7 +418,6 @@ async function copyToClipboard(text: string): Promise<boolean> {
 export default function EvidenceAuditPanel() {
   const { summary, runtime, loading: runtimeLoading } = useRuntimeSummary();
   const { authHeaders } = usePilotAuth();
-  const apiUrl = resolveApiUrl();
   const searchParams = useSearchParams();
 
   const urlPackageId = searchParams.get('package_id') ?? '';
@@ -490,6 +501,42 @@ export default function EvidenceAuditPanel() {
       createButtonRef.current?.focus();
     }
   }, [showCreateModal]);
+
+  /* ── Canonical exports refresh (single source of package rows) ──
+   * One place that fetches the same-origin /api/exports proxy, applies the
+   * backend-authoritative package rows + metrics + retention + permission, and
+   * returns the loaded rows. Used by the create-confirm loop and the async
+   * progress poller so both always reflect the real backend, never a synthetic
+   * row. Fails soft (returns null) so callers can retry with bounded backoff. */
+  const loadExportsOnce = useCallback(async (): Promise<EvidencePackage[] | null> => {
+    const exportsParams = new URLSearchParams();
+    if (urlPackageId) exportsParams.set('package_id', urlPackageId);
+    if (urlActionId) exportsParams.set('action_id', urlActionId);
+    if (urlIncidentId) exportsParams.set('incident_id', urlIncidentId);
+    const qs = exportsParams.toString();
+    const url = qs ? `/api/exports?${qs}` : '/api/exports';
+    let res: Response;
+    try {
+      res = await fetch(url, { headers: authHeaders(), cache: 'no-store' });
+    } catch {
+      return null;
+    }
+    if (!res.ok) return null;
+    const p = (await res.json().catch(() => ({}))) as {
+      exports?: EvidencePackage[];
+      metrics?: EvidenceMetrics;
+      retention_status?: string;
+      can_export?: boolean;
+    };
+    const loaded = p.exports ?? [];
+    setPackages(loaded);
+    setMetrics(p.metrics ?? null);
+    setRetentionStatus(p.retention_status ?? p.metrics?.retention_status ?? 'Unknown');
+    setCanExport(typeof p.can_export === 'boolean' ? p.can_export : undefined);
+    setLoadError('');
+    setLastRefreshAt(new Date().toISOString());
+    return loaded;
+  }, [authHeaders, urlPackageId, urlActionId, urlIncidentId]);
 
   /* ── Data loading ────────────────────────────────────────────── */
   useEffect(() => {
@@ -588,7 +635,7 @@ export default function EvidenceAuditPanel() {
     }
 
     void loadAll();
-  }, [apiUrl, authHeaders, runtimeLoading, urlPackageId, urlActionId, urlIncidentId, reloadKey]);
+  }, [authHeaders, runtimeLoading, urlPackageId, urlActionId, urlIncidentId, reloadKey]);
 
   // Fetch the full package report for the selected package so the agent card can
   // show its real completeness checklist, files, and integrity — all backend values.
@@ -621,6 +668,41 @@ export default function EvidenceAuditPanel() {
       cancelled = true;
     };
   }, [selectedPkgId, authHeaders, reloadKey]);
+
+  /* ── Asynchronous-progress polling ───────────────────────────────
+   * Only runs while at least one package is still in a non-terminal generation
+   * state (Queued/Building/Hashing/Verifying). The current backend generates
+   * synchronously, so freshly created packages arrive terminal and this stays
+   * dormant — but if a worker ever leaves a row in-progress, the row, metrics,
+   * selected-package card and last-refreshed time advance truthfully instead of
+   * going stale. Ticks pause while the tab is hidden and stop the moment every
+   * package reaches a terminal state — never an unbounded-frequency loop. */
+  const hasInFlightPackage = useMemo(
+    () => packages.some(isPackageInProgress),
+    [packages],
+  );
+  useEffect(() => {
+    if (!hasInFlightPackage) return;
+    let cancelled = false;
+    let inFlight = false; // never overlap a refresh with the next tick
+    const POLL_MS = 5000;
+    const tick = async () => {
+      if (cancelled || inFlight || (typeof document !== 'undefined' && document.hidden)) return;
+      inFlight = true;
+      try {
+        await loadExportsOnce();
+      } finally {
+        inFlight = false;
+      }
+    };
+    const intervalId = window.setInterval(() => {
+      void tick();
+    }, POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [hasInFlightPackage, loadExportsOnce]);
 
   async function verifyPackage(pkg: EvidencePackage) {
     if (!pkg.id) return;
@@ -696,6 +778,40 @@ export default function EvidenceAuditPanel() {
     }
   }
 
+  // Confirm a freshly created/returned package id is actually present in the
+  // canonical list (or directly fetchable by id) before we rely on the toast.
+  // Bounded backoff absorbs read-replica / transaction-visibility / deployment
+  // latency without an infinite poll: at most a handful of tries with growing
+  // delays, then it gives up so the caller can show a truthful "accepted but not
+  // yet loaded" message. Never synthesizes a row.
+  const confirmPackageVisible = useCallback(
+    async (newId: string): Promise<boolean> => {
+      if (!newId) return false;
+      const delaysMs = [0, 300, 600, 1200, 2400];
+      for (const delay of delaysMs) {
+        if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+        const loaded = await loadExportsOnce();
+        if (loaded && loaded.some((pkg) => pkg.id === newId)) return true;
+        // Fallback: fetch the package directly by id — it is visible even if the
+        // list projection lags behind the just-committed row.
+        try {
+          const res = await fetch(`/api/exports/${encodeURIComponent(newId)}`, {
+            headers: authHeaders(),
+            cache: 'no-store',
+          });
+          if (res.ok) {
+            const body = (await res.json().catch(() => ({}))) as { export?: PackageDetail };
+            if (body.export?.id === newId) return true;
+          }
+        } catch {
+          // keep retrying within the bounded loop
+        }
+      }
+      return false;
+    },
+    [authHeaders, loadExportsOnce],
+  );
+
   async function createPackage(incidentId?: string) {
     // Guard against accidental duplicate submissions and against an explicitly
     // denied user. The backend export is idempotent for the same incident+scope,
@@ -720,35 +836,94 @@ export default function EvidenceAuditPanel() {
         return;
       }
 
-      // Exactly the supported proof-bundle contract: the incident's internal id plus the
-      // include_raw_events flag. No browser-generated ids, hashes, completeness, or
-      // client-asserted authorization — the backend owns all of that.
-      const res = await fetch(`${apiUrl}/exports/proof-bundle`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ incident_id: resolvedIncidentId, include_raw_events: true }),
-      });
+      // Route through the same-origin /api/exports proxy — the SAME transport the
+      // list GET uses — so the created package is persisted in the backend and
+      // workspace the list reads from (not a browser-exposed NEXT_PUBLIC_API_URL
+      // that may be unset or a different deployment). Exactly the supported
+      // proof-bundle contract: the incident id + include_raw_events. No
+      // browser-generated ids, hashes, completeness, or client-asserted authz.
+      let res: Response;
+      try {
+        res = await fetch('/api/exports/proof-bundle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ incident_id: resolvedIncidentId, include_raw_events: true }),
+          cache: 'no-store',
+        });
+      } catch {
+        setMessage('Evidence package creation failed: network error.');
+        return;
+      }
       const payload = (await res.json().catch(() => ({}))) as {
-        status?: string;
+        package_id?: string;
         export_job_id?: string;
+        id?: string;
+        status?: string;
+        created?: boolean;
         detail?: unknown;
         error_message?: string;
+        error?: string;
+        code?: string;
       };
-      if (res.ok) {
-        setMessage(`Evidence package ${payload.status ?? 'queued'}.`);
-        setShowCreateModal(false);
-        // Select the created — or existing idempotent — package by the id the backend
-        // returned. We never synthesize a row; the reload re-fetches the canonical list,
-        // so an idempotent response cannot produce a duplicate row.
-        if (payload.export_job_id) setSelectedPkgId(payload.export_job_id);
-        // Full reload so metrics, retention, and integrity all refresh from the backend.
-        setReloadKey((k) => k + 1);
-      } else {
-        // Surface a backend-safe message only — never a raw object or stack trace.
-        setMessage(safeErrorMessage(payload.detail ?? payload.error_message, 'Export failed.'));
+
+      if (!res.ok) {
+        // Fail-closed messaging. A 503 means the generation subsystem (worker /
+        // storage) is unavailable and NOTHING was persisted — never a success
+        // toast, and never a claim that a package is export-ready.
+        if (res.status === 503) {
+          setMessage(
+            'Package generation is waiting for an available worker. No evidence package was created yet — please retry shortly.',
+          );
+        } else {
+          // Surface a backend-safe message only — never a raw object or stack trace.
+          setMessage(safeErrorMessage(payload.detail ?? payload.error_message, 'Export failed.'));
+        }
+        return;
       }
-    } catch {
-      setMessage('Evidence package creation failed: network error.');
+
+      // Canonical identity: the real persisted package/export-job id. We never
+      // synthesize a row — the list re-fetch is the single source of truth, so an
+      // idempotent response cannot produce a duplicate.
+      const newId = payload.package_id ?? payload.export_job_id ?? payload.id ?? '';
+      const backendStatus = String(payload.status ?? '').toLowerCase();
+
+      // A persisted-but-failed row is visible in the list, but must never read as
+      // success. Show it truthfully and still select it so the user can inspect.
+      if (backendStatus === 'failed') {
+        setMessage('Evidence package generation failed. It is recorded as Failed — open it for details or retry.');
+        setShowCreateModal(false);
+        if (newId) setSelectedPkgId(newId);
+        await confirmPackageVisible(newId);
+        setReloadKey((k) => k + 1);
+        return;
+      }
+
+      // Status-specific truthful success messages.
+      if (payload.created === false) {
+        setMessage('An evidence package already exists for this incident and evidence scope.');
+      } else if (backendStatus === 'completed') {
+        setMessage('Evidence package created.');
+      } else {
+        // Asynchronous generation (queued/building/hashing/verifying).
+        setMessage('Evidence package queued.');
+      }
+      setShowCreateModal(false);
+      // Select the created — or existing idempotent — package by the backend id.
+      if (newId) setSelectedPkgId(newId);
+
+      // Reliable refresh: confirm the returned id actually landed in the canonical
+      // list (with a bounded direct-by-id fallback). If it genuinely cannot be
+      // loaded yet, downgrade to a truthful "accepted but not loaded" message
+      // rather than leaving a success toast with no visible row.
+      const appeared = await confirmPackageVisible(newId);
+      if (!appeared) {
+        setMessage(
+          'Evidence package was accepted, but its status could not yet be loaded. Refresh to check its progress.',
+        );
+      }
+      // Full reload so the audit feed, response-action count, metrics, retention
+      // and integrity all re-sync from the backend.
+      setReloadKey((k) => k + 1);
     } finally {
       setCreating(false);
     }

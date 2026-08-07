@@ -21322,25 +21322,229 @@ def get_mttd_metrics(request: Request, *, window_days: int = 7) -> dict[str, Any
         }
 
 
-def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    export_payload = {
-        'format': 'json',
-        'filters': {
-            'incident_id': payload.get('incident_id'),
-            'include_raw_events': bool(payload.get('include_raw_events', True)),
-        },
-    }
-    result = create_export_job('proof_bundle', export_payload, request)
+def _proof_bundle_response(
+    pkg_id: str,
+    *,
+    incident_id: str | None,
+    status_value: str,
+    created: bool,
+    package_number: Any = None,
+    artifact_meta: dict[str, Any] | None = None,
+    error_message: Any = None,
+) -> dict[str, Any]:
+    """Canonical, list-consistent Screen 9 evidence-package creation response.
+
+    Always carries the real persisted ``package_id`` (with ``export_job_id`` /
+    ``id`` aliases for older clients), the incident it belongs to, the assigned
+    ``package_number``, the truthful ``status``, and a ``created`` flag so the UI
+    can distinguish a freshly created package from an idempotently returned one.
+    """
+    meta = artifact_meta or {}
     return {
-        'export_job_id': result['job_id'],
-        'download_link': result.get('download_url'),
-        'status': result.get('status'),
-        'export_status': result.get('export_status'),
-        'evidence_source_type': result.get('evidence_source_type'),
-        'missing_sections': result.get('missing_sections'),
-        'warnings': result.get('warnings'),
-        'error_message': result.get('error_message'),
+        'package_id': pkg_id,
+        'export_job_id': pkg_id,  # backward-compatible alias
+        'id': pkg_id,
+        'incident_id': incident_id,
+        'package_number': str(package_number).strip() if package_number else None,
+        'status': status_value,
+        'created': bool(created),
+        'download_link': f'/exports/{pkg_id}/download' if status_value == 'completed' else None,
+        'export_status': meta.get('export_status'),
+        'evidence_source_type': meta.get('evidence_source_type'),
+        'missing_sections': meta.get('missing_sections'),
+        'warnings': meta.get('warnings'),
+        'error_message': error_message,
     }
+
+
+def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Create (or idempotently return) an incident evidence package (Screen 9).
+
+    Persists a real ``export_jobs`` row in the SAME request that returns success
+    — never a browser-only placeholder — and returns the canonical package
+    identity so the frontend can select and display the row immediately. It is
+    idempotent per (workspace, incident, incident-scope): a second click for the
+    same incident reuses the existing completed+retrievable package instead of
+    creating a duplicate. Every step emits a structured diagnostic keyed by a
+    request/job correlation id so the request → persist → generate lifecycle is
+    traceable, and an append-only ``evidence_package_requested`` audit event is
+    recorded at request time (never gated on generation completing).
+
+    Fail-closed: if the generation subsystem (storage / signing) is unavailable,
+    ``_generate_export_artifact`` raises and the transaction rolls back — no fake
+    "export ready" row and no success is ever returned. A row whose artifact
+    upload fails is persisted as ``failed`` (visible in the list) and returned
+    with ``status='failed'`` so the UI reports it truthfully rather than as a
+    success.
+    """
+    require_live_mode()
+    incident_id = str(payload.get('incident_id') or '').strip() or None
+    include_raw_events = bool(payload.get('include_raw_events', True))
+    request_id = str(uuid.uuid4())
+    _t0 = monotonic()
+    if not incident_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='incident_id is required to create an evidence package.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(connection, request, 'evidence.export')
+        workspace_id = workspace_context['workspace_id']
+        logger.info(
+            'evidence_package_requested request_id=%s workspace_id=%s incident_id=%s actor=%s',
+            request_id, workspace_id, incident_id, user['id'],
+        )
+
+        entitlements = _workspace_plan(connection, workspace_id)
+        if not bool(entitlements.get('exports_enabled')):
+            raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail='Exports are not available on this plan.')
+
+        # Append-only request event — recorded up front, independent of whether
+        # generation ultimately succeeds (never gated on completion).
+        log_audit(
+            connection,
+            action='evidence_package_requested',
+            entity_type='export_job',
+            entity_id=request_id,
+            request=request,
+            user_id=user['id'],
+            workspace_id=workspace_id,
+            metadata={
+                'event_type': 'evidence_package_requested',
+                'incident_id': incident_id,
+                'request_id': request_id,
+                'scope': 'incident',
+                'result': 'requested',
+            },
+        )
+
+        # Concurrency-safe idempotency: serialize the check-and-insert for this
+        # (workspace, incident, incident-scope) with a per-key transaction advisory
+        # lock — the project's existing convention (see _next_evidence_package_number).
+        # It is held until this transaction commits, so two concurrent equivalent
+        # requests can never both pass the reuse check and insert a duplicate: the
+        # first inserts + commits, the second blocks, then finds the committed row
+        # and returns it idempotently. A hard unique index is deliberately NOT used
+        # because the product allows multiple (superseding) packages per incident
+        # over time; the lock guards the narrow create-or-reuse decision instead.
+        connection.execute(
+            'SELECT pg_advisory_xact_lock(hashtext(%s))',
+            (f'evidence_package_incident:{workspace_id}:{incident_id}',),
+        )
+
+        # Idempotency: reuse an existing incident-scoped proof_bundle for this
+        # incident (never a response-action-scoped one) that completed AND whose
+        # artifact is still retrievable. Any other state (missing key, stale
+        # object, failed) regenerates into the same row id below.
+        existing = connection.execute(
+            """SELECT id, status, storage_object_key, package_number, filters FROM export_jobs
+               WHERE workspace_id = %s
+                 AND export_type = 'proof_bundle'
+                 AND filters->>'incident_id' = %s
+                 AND (filters->>'response_action_id') IS NULL
+               ORDER BY created_at DESC LIMIT 1""",
+            (workspace_id, incident_id),
+        ).fetchone()
+        if existing:
+            existing_pkg_id = str(existing['id'])
+            existing_status = str(existing.get('status') or '')
+            existing_key = str(existing.get('storage_object_key') or '').strip()
+            if existing_status == 'completed' and existing_key:
+                retrievable = False
+                try:
+                    storage = load_export_storage()
+                    storage.read_bytes(object_key=existing_key)
+                    retrievable = True
+                except RuntimeError:
+                    retrievable = False  # storage backend unconfigured — regenerate path raises cleanly
+                except Exception:
+                    retrievable = False  # object gone / unreadable — must regenerate
+                if retrievable:
+                    logger.info(
+                        'evidence_package_reused request_id=%s job_id=%s incident_id=%s created=false duration_ms=%.0f',
+                        request_id, existing_pkg_id, incident_id, (monotonic() - _t0) * 1000.0,
+                    )
+                    connection.commit()  # persist the append-only request event
+                    return _proof_bundle_response(
+                        existing_pkg_id,
+                        incident_id=incident_id,
+                        status_value='completed',
+                        created=False,
+                        package_number=existing.get('package_number'),
+                    )
+
+        # Fresh create, or regenerate a stale/missing/failed prior row into the
+        # SAME id so repeated clicks can never spawn duplicates.
+        pkg_id = str(existing['id']) if existing else str(uuid.uuid4())
+        output_path = f'{workspace_id}/{pkg_id}.json'
+        filters = {'incident_id': incident_id, 'include_raw_events': include_raw_events}
+        if existing:
+            connection.execute(
+                "UPDATE export_jobs SET filters = %s::jsonb, status = 'queued', error_message = NULL, updated_at = NOW() WHERE id = %s AND workspace_id = %s",
+                (_json_dumps(filters), pkg_id, workspace_id),
+            )
+        else:
+            connection.execute(
+                """INSERT INTO export_jobs (id, workspace_id, requested_by_user_id, export_type, format, filters, status, output_path, storage_backend, storage_object_key)
+                   VALUES (%s, %s, %s, 'proof_bundle', 'json', %s::jsonb, 'queued', %s, %s, %s)""",
+                (pkg_id, workspace_id, user['id'], _json_dumps(filters), output_path, 'pending', output_path),
+            )
+        logger.info(
+            'evidence_package_job_persisted request_id=%s job_id=%s workspace_id=%s incident_id=%s status=queued',
+            request_id, pkg_id, workspace_id, incident_id,
+        )
+        # Synchronous generation today, so enqueue and generation-start are the
+        # same instant; both are logged so a future worker split stays traceable.
+        logger.info('evidence_package_enqueued request_id=%s job_id=%s', request_id, pkg_id)
+        logger.info('evidence_package_generation_started request_id=%s job_id=%s', request_id, pkg_id)
+
+        artifact_meta = _generate_export_artifact(connection, workspace_id=workspace_id, export_id=pkg_id)
+
+        pkg_row = connection.execute(
+            'SELECT status, error_message, package_number FROM export_jobs WHERE id = %s', (pkg_id,)
+        ).fetchone()
+        final_status = str((pkg_row or {}).get('status') or '') or 'failed'
+        final_error = (pkg_row or {}).get('error_message')
+        final_number = (pkg_row or {}).get('package_number')
+
+        log_audit(
+            connection,
+            action='export.generate',
+            entity_type='export_job',
+            entity_id=pkg_id,
+            request=request,
+            user_id=user['id'],
+            workspace_id=workspace_id,
+            metadata={
+                'event_type': 'evidence_package_created',
+                'export_type': 'proof_bundle',
+                'incident_id': incident_id,
+                'request_id': request_id,
+                'status': final_status,
+                'result': 'success' if final_status == 'completed' else 'failed',
+            },
+        )
+        connection.commit()  # persist the row (queued → completed/failed) BEFORE returning success
+
+        _duration_ms = (monotonic() - _t0) * 1000.0
+        if final_status == 'completed':
+            logger.info(
+                'evidence_package_generation_completed request_id=%s job_id=%s status=%s duration_ms=%.0f',
+                request_id, pkg_id, final_status, _duration_ms,
+            )
+        else:
+            logger.error(
+                'evidence_package_generation_failed request_id=%s job_id=%s status=%s error=%s duration_ms=%.0f',
+                request_id, pkg_id, final_status, str(final_error or ''), _duration_ms,
+            )
+
+        return _proof_bundle_response(
+            pkg_id,
+            incident_id=incident_id,
+            status_value=final_status,
+            created=True,
+            package_number=final_number,
+            artifact_meta=artifact_meta,
+            error_message=final_error,
+        )
 
 
 def simulate_response_action(action_id: str, request: Request) -> dict[str, Any]:

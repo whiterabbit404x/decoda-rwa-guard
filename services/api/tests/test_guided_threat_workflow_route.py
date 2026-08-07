@@ -120,7 +120,10 @@ def test_evidence_audit_panel_uses_proof_bundle_endpoint_and_customer_labels() -
     panel_source = (REPO_ROOT / 'apps/web/app/evidence-audit-panel.tsx').read_text(encoding='utf-8')
     assert '/exports/proof-bundle' in panel_source
     assert '/exports/history' not in panel_source
-    assert 'Cannot create an evidence package yet: no incident is linked.' in panel_source
+    # The Create button is no longer gated on a linked incident (a prior Screen 9
+    # pass removed that chain-readiness message); the truthful no-incident label
+    # now lives in the creation flow's empty state.
+    assert 'No incidents are currently available for evidence packaging.' in panel_source
     assert 'Live evidence' in panel_source
     assert 'Simulator/test evidence' in panel_source
     assert 'Evidence unavailable' in panel_source
