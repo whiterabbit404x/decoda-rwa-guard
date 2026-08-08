@@ -25306,6 +25306,228 @@ def get_evidence_package_manifest(export_id: str, request: Request) -> tuple[byt
         return manifest_bytes, f'evidence-manifest-{export_id}.json'
 
 
+def _manifest_recovery_response(
+    export_id: str,
+    row: dict[str, Any],
+    export_type: str,
+    object_key: str,
+    reference: Any,
+    verification: dict[str, Any] | None,
+    *,
+    generated: bool,
+) -> dict[str, Any]:
+    """Canonical package state returned by the manifest-recovery endpoint.
+
+    Built from the storage-authoritative manifest reference so it is identical
+    whether a manifest was just generated or already existed (idempotent path).
+    The completeness score is carried through untouched — recovery never changes it.
+    """
+    from services.api.app.evidence_completeness import (
+        get_evidence_package_display_state as _display_state,
+        get_package_allowed_actions as _allowed_actions,
+        integrity_status_label as _integrity_label,
+    )
+    filters_val = row.get('filters') if isinstance(row.get('filters'), dict) else {}
+    package_for_state = {
+        'status': 'completed',
+        'export_type': export_type,
+        'storage_object_key': object_key,
+        'integrity_hash': reference.sha256,
+        'manifest_sha256': reference.sha256,
+        'manifest_file_count': reference.file_count,
+        'manifest_size_bytes': reference.size_bytes,
+        'completeness_score': filters_val.get('completeness_score'),
+        'verification': verification,
+        'superseded': bool(row.get('superseded')),
+        'storage_available': True,
+    }
+    state = _display_state(package_for_state, manifest_reference=reference)
+    return {
+        'package_id': export_id,
+        'generated': generated,
+        'integrity_status': state['integrity_status'],
+        'integrity_label': _integrity_label(state['integrity_status']),
+        'hash_state': state['hash_state'],
+        'files_hashed': state['files_hashed'],
+        'manifest_sha256': reference.sha256,
+        'manifest_reference': reference.as_dict(),
+        'allowed_actions': _allowed_actions(package_for_state, can_export=True, manifest_reference=reference),
+    }
+
+
+def generate_evidence_package_manifest(export_id: str, request: Request) -> dict[str, Any]:
+    """Recover a retrievable integrity manifest for a Manifest-Missing package.
+
+    This is the Screen 9 recovery flow for a completed evidence package that was
+    built as a proof bundle but whose canonical manifest was never persisted
+    (the EV-2026-004 state: Hash Verification = Manifest Missing, Verify Integrity
+    disabled). It reads the EXACT stored evidence bytes, computes a SHA-256 for
+    each file, builds a deterministic manifest over those bytes, seals it, writes
+    it back into the stored artifact WITHOUT changing any evidence file, reads it
+    back to confirm, and only then persists the canonical manifest reference so
+    Verify Integrity / Download Manifest become available.
+
+    It never mutates the evidence contents, never reconstructs evidence from live
+    DB state, and never touches the completeness score. It is idempotent: once a
+    retrievable manifest exists it is returned unchanged, and a package that
+    already carries a manifest is never rewritten (verified historical packages
+    stay immutable).
+    """
+    from services.api.app.evidence_signing import (
+        build_recovery_manifest as _build_recovery,
+        seal_manifest as _seal_manifest,
+        canonical_json as _canon,
+    )
+    from services.api.app.evidence_completeness import (
+        get_evidence_package_display_state as _display_state,
+    )
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(connection, request, 'evidence.export')
+        workspace_id = workspace_context['workspace_id']
+        request_id = str(request.headers.get('x-request-id') or '').strip() or None
+
+        # Cross-workspace access is denied by the workspace-scoped lookup (a package
+        # in another workspace simply resolves to None → 404).
+        row = connection.execute(
+            'SELECT * FROM export_jobs WHERE id = %s AND workspace_id = %s',
+            (export_id, workspace_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={'error': 'PACKAGE_NOT_FOUND', 'message': 'Evidence package not found.'})
+        row = _json_safe_value(dict(row))
+        if str(row.get('status')) != 'completed':
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={'error': 'PACKAGE_NOT_READY', 'message': 'Package is not ready for manifest generation.'})
+
+        filters_val = row.get('filters') if isinstance(row.get('filters'), dict) else {}
+        incident_id = str(filters_val.get('incident_id') or '').strip() or None
+        verification = filters_val.get('verification') if isinstance(filters_val.get('verification'), dict) else None
+        export_type = str(row.get('export_type') or '')
+        object_key = str(row.get('storage_object_key') or f"{workspace_id}/{export_id}.{row.get('format') or 'json'}")
+        # Flatten the canonical evidence facts (persisted inside the filters JSONB)
+        # onto a package-shaped dict, exactly as the list/detail projections do, so
+        # the display-state selector can classify manifest_missing correctly.
+        package_facts = {k: v for k, v in row.items() if k != 'filters'}
+        for _fk, _fv in filters_val.items():
+            package_facts.setdefault(_fk, _fv)
+
+        # Read the current artifact ONCE through the canonical resolver.
+        resolved = _resolve_package_manifest(row)
+        if resolved['storage_error'] == 'storage_unavailable':
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail={'error': 'PACKAGE_STORAGE_UNAVAILABLE', 'message': 'Evidence storage is unavailable. Package metadata remains queryable.'})
+        if resolved['storage_error'] in ('object_not_found', 'unreadable'):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={'error': 'PACKAGE_STORAGE_UNAVAILABLE', 'message': 'Package artifact not found in storage.'})
+
+        existing_manifest = resolved['manifest']
+        # Idempotent + immutable. A package that already carries a manifest is never
+        # rewritten: a retrievable one returns the current canonical state; a
+        # present-but-unusable one is preserved (a superseding package is required,
+        # never an in-place mutation of a historical artifact).
+        if isinstance(existing_manifest, dict):
+            if resolved['reference'].retrievable:
+                return _manifest_recovery_response(export_id, row, export_type, object_key, resolved['reference'], verification, generated=False)
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={'error': 'PACKAGE_MANIFEST_IMMUTABLE', 'message': 'This package already carries a manifest that cannot be regenerated in place. Create a superseding package instead.'})
+
+        # Only a manifest_missing evidence package (built as a proof bundle, no
+        # retrievable manifest) is eligible for in-place recovery.
+        if not _display_state(package_facts, manifest_reference=resolved['reference']).get('is_manifest_missing'):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={'error': 'MANIFEST_RECOVERY_NOT_APPLICABLE', 'message': 'This package is not eligible for manifest recovery.'})
+
+        _audit_meta = {'incident_id': incident_id, 'request_id': request_id}
+        log_audit(connection, action='evidence_manifest_generation_requested', entity_type='export_job', entity_id=export_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'event_type': 'evidence_manifest_generation_requested', **_audit_meta})
+
+        file_values = resolved['file_values'] if isinstance(resolved['file_values'], dict) else {}
+        if not file_values:
+            # The stored artifact cannot be deterministically reconstructed — preserve
+            # the package as Manifest Missing and require a superseding regeneration.
+            log_audit(connection, action='evidence_manifest_generation_failed', entity_type='export_job', entity_id=export_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'event_type': 'evidence_manifest_generation_failed', 'reason': 'no_source_bytes', **_audit_meta})
+            connection.commit()
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={'error': 'MANIFEST_UNRECOVERABLE', 'message': 'This package has no retrievable source files to build a manifest from. Regenerate the package to supersede it.'})
+
+        log_audit(connection, action='evidence_manifest_generation_started', entity_type='export_job', entity_id=export_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'event_type': 'evidence_manifest_generation_started', 'file_count': len(file_values), **_audit_meta})
+        started = monotonic()
+        try:
+            storage = load_export_storage()
+            # Deterministic inputs from stored package facts (never wall-clock), so the
+            # same stored bytes always produce the same manifest and hash.
+            generated_at = str(row.get('created_at') or '').strip() or utc_now_iso()
+            summary = resolved['summary'] if isinstance(resolved['summary'], dict) else {}
+            completeness = summary.get('completeness') if isinstance(summary.get('completeness'), dict) else {}
+            completeness_score = completeness.get('score', filters_val.get('completeness_score'))
+            missing_codes = list(completeness.get('missing_codes') or [])
+            unverifiable_codes = [
+                str(c.get('code')) for c in (completeness.get('categories') or [])
+                if isinstance(c, dict) and c.get('status') == 'unverifiable' and c.get('code')
+            ]
+            manifest, _ = _build_recovery(
+                export_id=export_id,
+                export_type=export_type or 'proof_bundle',
+                workspace_id=workspace_id,
+                generated_at=generated_at,
+                generated_by_user_id=str(row.get('requested_by_user_id') or '') or None,
+                incident_id=str(incident_id or export_id),
+                storage_backend=storage.backend_name,
+                file_values=file_values,
+                package_number=str(row.get('package_number') or '') or None,
+                file_source_types=_PACKAGE_FILE_SOURCE_TYPES,
+                completeness_score=completeness_score,
+                missing_evidence_codes=missing_codes,
+                unverifiable_evidence_codes=unverifiable_codes,
+                evidence_window={'cutoff_at': generated_at, 'source': 'package_creation'},
+            )
+            seal = _seal_manifest(manifest)
+            # Re-store the artifact with the manifest + seal added. The evidence files
+            # are written back byte-for-byte identical — only manifest.json/seal.json
+            # are added, so the hashes describe exactly the bytes that were already final.
+            new_bundle = dict(file_values)
+            new_bundle['manifest.json'] = manifest
+            new_bundle['seal.json'] = seal
+            content = json.dumps({'rows': [new_bundle]}, indent=2).encode('utf-8')
+            storage.write_bytes(object_key=object_key, content=content)
+
+            # Read the manifest back from storage and confirm its SHA-256 before we
+            # persist any canonical reference. If the read-back does not match, nothing
+            # is persisted and the package stays Manifest Missing.
+            readback = _resolve_package_manifest(row)
+            rb_manifest = readback['manifest']
+            if (
+                not readback['reference'].retrievable
+                or not isinstance(rb_manifest, dict)
+                or str(rb_manifest.get('manifest_sha256') or '') != manifest['manifest_sha256']
+            ):
+                raise RuntimeError('manifest_readback_mismatch')
+        except HTTPException:
+            raise
+        except Exception as exc:
+            log_audit(connection, action='evidence_manifest_generation_failed', entity_type='export_job', entity_id=export_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'event_type': 'evidence_manifest_generation_failed', 'reason': type(exc).__name__, **_audit_meta})
+            connection.commit()
+            logger.warning('evidence_manifest_generation_failed package_id=%s reason=%s', export_id, type(exc).__name__)
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail={'error': 'MANIFEST_GENERATION_FAILED', 'message': 'The manifest could not be generated. Please try again.'})
+
+        manifest_sha = manifest['manifest_sha256']
+        file_count = len(manifest.get('files') or [])
+        # Persist the canonical manifest reference ONLY (hash + file count + size +
+        # generated_at). The completeness score is deliberately NOT written — a
+        # recovered manifest never increases evidence completeness.
+        patch = {
+            'integrity_hash': manifest_sha,
+            'manifest_sha256': manifest_sha,
+            'manifest_file_count': file_count,
+            'manifest_size_bytes': len(_canon(manifest)),
+            'manifest_generated_at': manifest.get('generated_at'),
+            'manifest_recovered': True,
+        }
+        connection.execute(
+            'UPDATE export_jobs SET filters = filters || %s::jsonb, updated_at = NOW() WHERE id = %s AND workspace_id = %s',
+            (_json_dumps(patch), export_id, workspace_id),
+        )
+        duration_ms = int((monotonic() - started) * 1000)
+        log_audit(connection, action='evidence_manifest_generated', entity_type='export_job', entity_id=export_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'event_type': 'evidence_manifest_generated', 'file_count': file_count, 'manifest_sha256': manifest_sha, 'duration_ms': duration_ms, **_audit_meta})
+        connection.commit()
+        logger.info('evidence_manifest_generated package_id=%s files=%d sha=%s duration_ms=%d', export_id, file_count, manifest_sha[:12], duration_ms)
+        return _manifest_recovery_response(export_id, row, export_type, object_key, readback['reference'], verification, generated=True)
+
+
 def get_history_item(history_id: str, request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:

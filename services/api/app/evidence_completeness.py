@@ -847,6 +847,13 @@ def get_package_allowed_actions(
     reports the manifest is retrievable — never inferred independently. A legacy
     export or a manifest_missing package (no retrievable manifest) has both
     disabled regardless of permission, so the frontend never guesses.
+
+    ``generate_manifest`` is the recovery action: it is offered ONLY for a
+    completed, storage-available evidence package that is currently
+    manifest_missing (built as a proof bundle but with no retrievable manifest —
+    the EV-2026-004 state) and only to a user with export permission. It disappears
+    the moment a retrievable manifest exists, so Verify Integrity is never enabled
+    before a real manifest and Generate Manifest is never offered once one exists.
     """
     state = get_evidence_package_display_state(package, manifest_reference=manifest_reference)
     has_manifest = bool(state['manifest_retrievable'])
@@ -858,4 +865,14 @@ def get_package_allowed_actions(
         'download_manifest': completed and downloadable and has_manifest and can_export,
         'verify': completed and downloadable and has_manifest and can_export,
         'copy_hash': bool(_recorded_manifest_sha256(package)),
+        # Recovery: only a manifest_missing evidence package (no retrievable
+        # manifest) whose bytes are readable from storage can have a manifest
+        # generated in place.
+        'generate_manifest': (
+            completed
+            and downloadable
+            and not has_manifest
+            and bool(state.get('is_manifest_missing'))
+            and can_export
+        ),
     }

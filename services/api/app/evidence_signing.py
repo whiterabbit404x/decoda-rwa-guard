@@ -206,6 +206,91 @@ def build_evidence_manifest(
     return manifest, file_bytes_map
 
 
+def build_recovery_manifest(
+    *,
+    export_id: str,
+    export_type: str,
+    workspace_id: str,
+    generated_at: str,
+    generated_by_user_id: str | None,
+    incident_id: str,
+    storage_backend: str,
+    file_values: dict[str, Any],
+    package_number: str | None = None,
+    file_source_types: dict[str, str] | None = None,
+    completeness_score: Any | None = None,
+    missing_evidence_codes: list[str] | None = None,
+    unverifiable_evidence_codes: list[str] | None = None,
+    evidence_window: dict[str, Any] | None = None,
+    app_version: str | None = None,
+) -> tuple[dict[str, Any], dict[str, bytes]]:
+    """Build an enriched, deterministic recovery manifest over EXACT stored file bytes.
+
+    Used by the Manifest-Missing recovery flow to reconstruct a tamper-evident
+    manifest for a package whose original manifest was never persisted (the
+    EV-2026-004 state). File SHA-256 hashes are computed from the exact stored
+    ``file_values`` bytes — never regenerated from live DB state — so the
+    recovered manifest describes the package exactly as it is stored.
+
+    Superset of :func:`build_evidence_manifest`: it keeps the same verifiable core
+    (a ``files`` list with per-file ``sha256``/``size_bytes`` and a canonical
+    ``manifest_sha256``) so the existing verify/download paths work unchanged, and
+    adds the canonical descriptive fields the recovery manifest must carry:
+    ``schema_version``, ``package_id``/``package_number``, ``incident_id``,
+    ``created_at``, ``evidence_window``, ``completeness_score``,
+    ``missing_evidence_codes``/``unverifiable_evidence_codes`` and, per file, a
+    ``media_type`` and ``source_record_type``.
+
+    Given identical inputs (exact same stored bytes and package facts) this returns
+    an identical manifest and hash — ``generated_at`` must therefore be a stable
+    package fact (e.g. the package's ``created_at``), not a wall-clock read. The
+    manifest hash is computed over the canonical serialized body WITHOUT its own
+    ``manifest_sha256`` field, so it never recursively hashes its own hash.
+    """
+    manifest, file_bytes_map = build_evidence_manifest(
+        export_id=export_id,
+        export_type=export_type,
+        workspace_id=workspace_id,
+        generated_at=generated_at,
+        generated_by_user_id=generated_by_user_id,
+        source_resource_type='incident',
+        source_resource_id=incident_id,
+        storage_backend=storage_backend,
+        file_values=file_values,
+        app_version=app_version,
+    )
+    # The core hash is recomputed after enrichment, so drop it first.
+    manifest.pop('manifest_sha256', None)
+
+    source_types = file_source_types or {}
+    for entry in manifest['files']:
+        path = str(entry.get('path') or '')
+        # Every included file carries its media type and the source-record type it
+        # was collected from — never the file contents themselves.
+        entry['media_type'] = 'application/json'
+        entry['source_record_type'] = source_types.get(path, 'evidence')
+
+    manifest['schema_version'] = manifest.get('manifest_version', '1.0')
+    manifest['package_id'] = export_id
+    if package_number:
+        manifest['package_number'] = package_number
+    manifest['incident_id'] = incident_id
+    manifest['created_at'] = generated_at
+    # Truthful provenance: this manifest was reconstructed after the fact, not
+    # embedded at original package creation. It hashes the exact stored bytes.
+    manifest['manifest_origin'] = 'recovery'
+    if completeness_score is not None:
+        manifest['completeness_score'] = completeness_score
+    manifest['missing_evidence_codes'] = list(missing_evidence_codes or [])
+    manifest['unverifiable_evidence_codes'] = list(unverifiable_evidence_codes or [])
+    if evidence_window:
+        manifest['evidence_window'] = evidence_window
+
+    # Canonical hash over the enriched body (still excluding manifest_sha256 itself).
+    manifest['manifest_sha256'] = _sha256_hex(canonical_json(manifest))
+    return manifest, file_bytes_map
+
+
 def seal_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     """
     Compute HMAC-SHA256 over the canonical manifest JSON (which includes manifest_sha256).
