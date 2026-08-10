@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 
 import {
   EmptyStateBlocker,
@@ -14,6 +14,14 @@ import {
 } from './components/ui-primitives';
 import { usePilotAuth } from './pilot-auth-context';
 import { resolveEvidenceActionState } from './evidence-recovery-actions';
+import {
+  evidenceDetailReducer,
+  initEvidenceDetailState,
+  isEvidenceProgressPollingState,
+  selectAuthoritativeDetail,
+  type EvidenceDetailEvent,
+  type EvidenceDetailState,
+} from './evidence-detail-state';
 import { useRuntimeSummary } from './runtime-summary-context';
 
 /* ── Constants ──────────────────────────────────────────────────── */
@@ -340,13 +348,12 @@ function isPackageReady(pkg: EvidencePackage): boolean {
 // terminal state. Job-level queued/pending/building/running and the integrity
 // states Building/Hashing/Verifying are non-terminal; everything else (verified,
 // hash_generated, integrity_failed, failed, legacy_export, superseded,
-// needs_evidence) is a resting state the async poller must stop at.
-const IN_PROGRESS_JOB_STATUSES = new Set(['queued', 'pending', 'building', 'running']);
-const IN_PROGRESS_INTEGRITY_STATES = new Set(['building', 'hashing', 'verifying']);
+// needs_evidence AND manifest_missing) is a resting state the async poller must
+// stop at. The predicate lives in evidence-detail-state as the ONE canonical,
+// unit-tested definition so a Manifest-Missing package is never polled as though
+// generation were still running (which would refetch and replace its detail).
 function isPackageInProgress(pkg: EvidencePackage): boolean {
-  const jobStatus = String(pkg.status ?? '').toLowerCase();
-  const integrity = String(pkg.integrity_status ?? '').toLowerCase();
-  return IN_PROGRESS_JOB_STATUSES.has(jobStatus) || IN_PROGRESS_INTEGRITY_STATES.has(integrity);
+  return isEvidenceProgressPollingState(pkg);
 }
 
 // Integrity status is authoritative on the backend. This only maps the canonical
@@ -561,8 +568,25 @@ export default function EvidenceAuditPanel() {
   const [metrics, setMetrics] = useState<EvidenceMetrics | null>(null);
   const [search, setSearch] = useState('');
   const [integrityFilter, setIntegrityFilter] = useState('');
-  const [selectedDetail, setSelectedDetail] = useState<PackageDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
+  // Selected-package DETAIL is a stale-while-refresh state machine (see
+  // evidence-detail-state). The authoritative detail is retained across every
+  // refresh and is NEVER overwritten by a list-row summary — the mixing of the
+  // two models is what made "Generate Manifest" appear then vanish for a
+  // Manifest-Missing package (EV-2026-004) whenever detail was briefly absent.
+  const [detailState, dispatchDetail] = useReducer(
+    evidenceDetailReducer as (
+      s: EvidenceDetailState<PackageDetail>,
+      e: EvidenceDetailEvent<PackageDetail>,
+    ) => EvidenceDetailState<PackageDetail>,
+    initEvidenceDetailState<PackageDetail>(urlPackageId),
+  );
+  const selectedDetail = selectAuthoritativeDetail(detailState);
+  const detailRefreshing = detailState.refreshing;
+  const detailError = detailState.error;
+  // First-load spinner semantics preserved: "loading" means there is nothing
+  // authoritative to show yet. During a stale refresh we keep the last detail,
+  // so the checklist/metrics never blink back to "Calculating…".
+  const detailLoading = detailState.refreshing && selectedDetail == null;
   const [verifyingId, setVerifyingId] = useState('');
   // Manifest-recovery (Generate Manifest) in-flight id + last per-package outcome,
   // so the recovery card can show Generating… / success / failure with a Retry.
@@ -771,29 +795,38 @@ export default function EvidenceAuditPanel() {
 
   // Fetch the full package report for the selected package so the agent card can
   // show its real completeness checklist, files, and integrity — all backend values.
+  //
+  // Stale-while-refresh: this effect re-runs whenever `authHeaders` changes (its
+  // identity flips as the async CSRF/session tokens resolve ~1s after mount) or a
+  // recovery action bumps `reloadKey`. It must NOT clear the authoritative detail
+  // on those refreshes — the reducer keeps the last detail visible and only drops
+  // it when the SELECTED package actually changes. A failed refresh keeps the
+  // last-known detail (+ a warning) rather than nulling valid recovery actions.
   useEffect(() => {
-    if (!selectedPkgId) {
-      setSelectedDetail(null);
-      return;
-    }
+    const id = selectedPkgId;
+    // Reconcile the reducer's selection identity. A no-op when `id` is unchanged
+    // (an `authHeaders`/`reloadKey`-driven re-run), so the detail is preserved.
+    dispatchDetail({ type: 'select', id });
+    if (!id) return;
     let cancelled = false;
-    setDetailLoading(true);
+    dispatchDetail({ type: 'refreshStart', id });
     (async () => {
       try {
-        const res = await fetch(`/api/exports/${encodeURIComponent(selectedPkgId)}`, {
+        const res = await fetch(`/api/exports/${encodeURIComponent(id)}`, {
           headers: authHeaders(),
           cache: 'no-store',
         });
-        if (!cancelled && res.ok) {
+        if (cancelled) return;
+        if (res.ok) {
           const body = (await res.json()) as { export?: PackageDetail };
-          setSelectedDetail(body.export ?? null);
-        } else if (!cancelled) {
-          setSelectedDetail(null);
+          dispatchDetail({ type: 'refreshSuccess', id, detail: body.export ?? null });
+        } else {
+          dispatchDetail({ type: 'refreshError', id, message: 'Package status could not be refreshed.' });
         }
       } catch {
-        if (!cancelled) setSelectedDetail(null);
-      } finally {
-        if (!cancelled) setDetailLoading(false);
+        if (!cancelled) {
+          dispatchDetail({ type: 'refreshError', id, message: 'Package status could not be refreshed.' });
+        }
       }
     })();
     return () => {
@@ -1656,6 +1689,8 @@ export default function EvidenceAuditPanel() {
                     pkg={selectedPkg}
                     detail={selectedDetail}
                     detailLoading={detailLoading}
+                    detailRefreshing={detailRefreshing}
+                    detailError={detailError}
                     workspaceEvidenceSource={workspaceEvidenceSource}
                     onDownload={downloadPackage}
                     onDownloadManifest={downloadManifest}
@@ -2366,6 +2401,8 @@ function PackageDetailPanel({
   pkg,
   detail,
   detailLoading,
+  detailRefreshing,
+  detailError,
   workspaceEvidenceSource,
   onDownload,
   onDownloadManifest,
@@ -2380,6 +2417,10 @@ function PackageDetailPanel({
   pkg: EvidencePackage;
   detail?: PackageDetail | null;
   detailLoading?: boolean;
+  /** A detail refresh is in flight while an authoritative detail is still shown. */
+  detailRefreshing?: boolean;
+  /** Last detail refresh failed; the detail on screen is the retained, stale one. */
+  detailError?: string | null;
   workspaceEvidenceSource: string;
   onDownload: (pkg: EvidencePackage) => Promise<void>;
   onDownloadManifest?: (pkg: EvidencePackage) => Promise<void>;
@@ -2394,21 +2435,30 @@ function PackageDetailPanel({
   const evSrc = evidenceSourcePill(resolvePackageEvidenceSource(pkg), workspaceEvidenceSource);
   const st = packageStatusPill(pkg.status);
   const ready = isPackageReady(pkg);
-  // Detail is loaded from GET /exports/{id}; fall back to the list row while loading.
+  // Detail is loaded from GET /exports/{id}; fall back to the list row for
+  // DISPLAY-only fields (generation/hash pills, files, completeness) while the
+  // detail loads. The ACTION gate below never uses this fallback.
   const source = detail ?? pkg;
   const genStatus = generationStatus(source);
   const hashStatus = hashVerification(source);
   const integrityStatus = (detail?.integrity_status ?? pkg.integrity_status ?? '').toLowerCase();
-  const detailActions = (detail ?? pkg).allowed_actions ?? {};
-  // Backend-authoritative action gating for the detail drawer, resolved through
-  // the ONE canonical evidence-action gate (evidence-recovery-actions) that the
-  // regression test drives directly — the drawer never independently re-derives
-  // Manifest-Missing, Verify, Download Manifest, or recovery visibility. The
-  // gate falls back to readiness only for older responses without allowed_actions.
+  // Whether the selected package's own storage-authoritative detail has loaded.
+  // Until it has, the manifest/recovery/verify state is PENDING (refreshing), not
+  // an authoritative denial — we never derive it from the list-row summary.
+  const detailAvailable = detail != null;
+  const detailActions = detail?.allowed_actions ?? {};
+  // Detail-AUTHORITATIVE action gating (EV-2026-004 flicker fix). Manifest,
+  // recovery, Verify and Download-Manifest visibility is governed ONLY by the
+  // storage-authoritative DETAIL model — never the list-row summary, whose
+  // manifest state is metadata-derived and legitimately differs (list:
+  // hash_generated / not-missing; detail: manifest_missing / recoverable).
+  // Mixing them via `detail ?? pkg` is what made Generate Manifest appear then
+  // vanish whenever detail was briefly absent. Resolved through the ONE canonical
+  // gate (evidence-recovery-actions) the regression tests drive directly.
   const actionGate = resolveEvidenceActionState(
     {
-      integrity_status: detail?.integrity_status ?? pkg.integrity_status,
-      is_manifest_missing: detail?.is_manifest_missing ?? pkg.is_manifest_missing,
+      integrity_status: detail?.integrity_status,
+      is_manifest_missing: detail?.is_manifest_missing,
       allowed_actions: detailActions,
     },
     isPackageReady(pkg),
@@ -2530,6 +2580,27 @@ function PackageDetailPanel({
           retrievable manifest from the package's exact stored bytes — the original
           package is preserved (only manifest.json is added). Verify Integrity is
           never enabled until a real manifest exists. */}
+      {/* Detail-authoritative gating: until the selected package's own detail has
+          loaded, its manifest/recovery state is PENDING — show a neutral,
+          layout-stable placeholder instead of deriving a (false) "healthy" state
+          from the list-row summary. This is why Generate Manifest no longer pops
+          in and out during the first load / a background refresh. */}
+      {!detailAvailable && (detailLoading || detailRefreshing) && (
+        <div
+          role="status"
+          style={{
+            marginBottom: '0.75rem',
+            padding: '0.6rem 0.7rem',
+            background: 'rgba(148,163,184,0.06)',
+            borderRadius: '6px',
+            border: '1px solid rgba(148,163,184,0.15)',
+            fontSize: '0.75rem',
+            color: '#94a3b8',
+          }}
+        >
+          Refreshing package status…
+        </div>
+      )}
       {manifestMissing && (
         <div
           role="group"
@@ -2550,6 +2621,18 @@ function PackageDetailPanel({
             manifest before verifying its contents. Your original package is preserved — only
             the integrity manifest is added.
           </p>
+          {/* Stale-while-refresh affordances: the recovery action stays put; we
+              only annotate that a refresh is happening, or that the last refresh
+              failed and the shown status is the retained last-known one. */}
+          {detailError ? (
+            <p role="status" style={{ margin: '0 0 0.5rem', fontSize: '0.72rem', color: '#fbbf24' }}>
+              Couldn’t refresh package status — showing last known state.
+            </p>
+          ) : detailRefreshing ? (
+            <p role="status" style={{ margin: '0 0 0.5rem', fontSize: '0.72rem', color: '#94a3b8' }}>
+              Refreshing package status…
+            </p>
+          ) : null}
           <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center' }}>
             {onGenerateManifest ? (
               <button

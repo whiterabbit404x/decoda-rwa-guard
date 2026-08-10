@@ -163,9 +163,10 @@ test('authority: metrics + integrity + completeness all come from the API payloa
   const source = read(PANEL);
   // metrics come from the list response, not fabricated.
   expect(source).toContain('setMetrics(p.metrics');
-  // detail (files/completeness/verification) comes from GET /api/exports/{id}.
-  expect(source).toContain('setSelectedDetail');
-  expect(source).toContain('/api/exports/${encodeURIComponent(selectedPkgId)}');
+  // detail (files/completeness/verification) comes from GET /api/exports/{id} and
+  // is stored via the stale-while-refresh reducer (never overwritten by the list).
+  expect(source).toContain("dispatchDetail({ type: 'refreshSuccess'");
+  expect(source).toContain('/api/exports/${encodeURIComponent(id)}');
 });
 
 /* ── Proxy routes ───────────────────────────────────────────────── */
