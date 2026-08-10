@@ -13,11 +13,11 @@ import {
   type PillVariant,
 } from './components/ui-primitives';
 import { usePilotAuth } from './pilot-auth-context';
-import { resolveEvidenceActionState } from './evidence-recovery-actions';
 import {
   evidenceDetailReducer,
   initEvidenceDetailState,
   isEvidenceProgressPollingState,
+  resolveDetailActionState,
   selectAuthoritativeDetail,
   type EvidenceDetailEvent,
   type EvidenceDetailState,
@@ -2446,23 +2446,21 @@ function PackageDetailPanel({
   // Until it has, the manifest/recovery/verify state is PENDING (refreshing), not
   // an authoritative denial — we never derive it from the list-row summary.
   const detailAvailable = detail != null;
-  const detailActions = detail?.allowed_actions ?? {};
-  // Detail-AUTHORITATIVE action gating (EV-2026-004 flicker fix). Manifest,
-  // recovery, Verify and Download-Manifest visibility is governed ONLY by the
-  // storage-authoritative DETAIL model — never the list-row summary, whose
-  // manifest state is metadata-derived and legitimately differs (list:
-  // hash_generated / not-missing; detail: manifest_missing / recoverable).
-  // Mixing them via `detail ?? pkg` is what made Generate Manifest appear then
-  // vanish whenever detail was briefly absent. Resolved through the ONE canonical
-  // gate (evidence-recovery-actions) the regression tests drive directly.
-  const actionGate = resolveEvidenceActionState(
-    {
-      integrity_status: detail?.integrity_status,
-      is_manifest_missing: detail?.is_manifest_missing,
-      allowed_actions: detailActions,
-    },
-    isPackageReady(pkg),
-  );
+  // The ONE authoritative action source (EV-2026-004 flicker fix, section 5): the
+  // storage-authoritative DETAIL's allowed_actions — NEVER the list-row summary,
+  // whose manifest state is metadata-derived and legitimately differs (list:
+  // hash_generated / not-missing / no generate_manifest; detail: manifest_missing /
+  // generate_manifest:true). Mixing the two via `detail ?? pkg` is what made
+  // Generate Manifest appear then vanish whenever detail was briefly absent.
+  const detailActions = detail?.allowed_actions;
+  // Detail-AUTHORITATIVE, PENDING-aware action gate. `resolveDetailActionState`
+  // treats a not-yet-loaded detail (null) as PENDING — every action withheld —
+  // instead of coercing an ABSENT field into a summary-shaped decision. That is why
+  // Verify Integrity / Download Manifest never blink enabled on first load, and
+  // Generate Manifest never pops in from a summary row before the detail arrives.
+  // Resolved through the ONE canonical gate (evidence-detail-state →
+  // evidence-recovery-actions) the regression tests drive directly.
+  const actionGate = resolveDetailActionState(detail ?? null, isPackageReady(pkg));
   const manifestMissing = actionGate.manifestMissing;
   const detailCanVerify = actionGate.canVerify;
   const detailCanManifest = actionGate.canDownloadManifest;
@@ -2470,6 +2468,32 @@ function PackageDetailPanel({
   // Manifest-Missing flag only for older responses without allowed_actions.
   const detailCanGenerate = actionGate.canGenerate;
   const detailCanRegenerate = actionGate.canRegenerate;
+  // Button VISIBILITY comes from the SAME canonical gate, so the presence of the
+  // recovery buttons and their enabled/disabled state can never diverge. Generate
+  // Manifest is shown while the authoritative DETAIL still offers recovery — the
+  // package is manifest_missing, OR it explicitly permits generation
+  // (allowed_actions.generate_manifest === true). It is removed ONLY when a NEW
+  // authoritative detail says otherwise (never on a background list/detail refresh).
+  const showGenerateManifest = actionGate.showGenerate;
+  const showRegeneratePackage = actionGate.showRegenerate;
+  // Development-only guard (EV-2026-004): the recovery button MUST stay visible
+  // while the authoritative DETAIL permits generation. If it is ever hidden while
+  // detail says generate_manifest:true, a summary/pending value has leaked into the
+  // gate — the exact flicker regression. Never ships to production logs.
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'production') return;
+    if (
+      detail?.integrity_status === 'manifest_missing' &&
+      detailActions?.generate_manifest === true &&
+      !showGenerateManifest
+    ) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[EV-2026-004] authoritative detail permits generate_manifest but the recovery button is hidden — a summary/pending value leaked into the action gate.',
+        { id: pkg.id, integrity_status: detail?.integrity_status, allowed_actions: detailActions },
+      );
+    }
+  }, [detail, detailActions, showGenerateManifest, pkg.id]);
   const detailCompletenessScore = detail?.completeness?.score ?? pkg.completeness_score ?? null;
   const verification = detail?.verification ?? null;
   const completeness = detail?.completeness ?? null;
@@ -3105,7 +3129,7 @@ function PackageDetailPanel({
         >
           Download Package
         </button>
-        {onGenerateManifest && (manifestMissing || detailCanGenerate) ? (
+        {onGenerateManifest && showGenerateManifest ? (
           <button
             type="button"
             className="btn btn-secondary"
@@ -3123,7 +3147,7 @@ function PackageDetailPanel({
             {generating ? 'Generating manifest…' : 'Generate Manifest'}
           </button>
         ) : null}
-        {onRegeneratePackage && (manifestMissing || detailCanRegenerate) ? (
+        {onRegeneratePackage && showRegeneratePackage ? (
           <button
             type="button"
             className="btn btn-secondary"

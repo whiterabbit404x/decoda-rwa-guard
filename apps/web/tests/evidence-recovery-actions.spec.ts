@@ -140,16 +140,25 @@ test('allowed_actions is authoritative: backend false overrides the ready+manife
 
 /* ── 6. Source-contract guard: the panel footer is governed by this gate ────── */
 
-test('panel routes the detail drawer through resolveEvidenceActionState and gates the footer on it', () => {
+test('panel routes the detail drawer through the canonical PENDING-aware gate and gates the footer on it', () => {
   const source = read(PANEL);
-  // The panel imports and uses the canonical gate.
-  expect(source).toContain("from './evidence-recovery-actions'");
-  expect(source).toContain('resolveEvidenceActionState(');
-  // The footer Generate/Regenerate buttons are shown from the gate-derived values.
+  // The panel resolves actions through the ONE canonical, PENDING-aware gate
+  // (evidence-detail-state → resolveDetailActionState, which delegates to
+  // resolveEvidenceActionState). A not-yet-loaded detail is PENDING, never a
+  // summary-derived decision.
+  expect(source).toContain('resolveDetailActionState(detail ?? null');
+  // The footer Generate/Regenerate buttons are shown AND enabled from the gate.
   expect(source).toContain('const detailCanGenerate = actionGate.canGenerate');
   expect(source).toContain('const detailCanRegenerate = actionGate.canRegenerate');
   expect(source).toContain('const manifestMissing = actionGate.manifestMissing');
-  expect(source).toContain('(manifestMissing || detailCanGenerate)');
+  // Button VISIBILITY flows from the SAME gate, so presence and enabled state can
+  // never diverge — the second action bar gates on showGenerate/showRegenerate.
+  expect(source).toContain('const showGenerateManifest = actionGate.showGenerate');
+  expect(source).toContain('const showRegeneratePackage = actionGate.showRegenerate');
+  expect(source).toContain('onGenerateManifest && showGenerateManifest');
+  expect(source).toContain('onRegeneratePackage && showRegeneratePackage');
+  // The two models are never mixed for the action gate (no summary fallback).
+  expect(source).not.toContain('(manifestMissing || detailCanGenerate)');
   // Verify Integrity / Download Manifest disabled state also flows from the gate.
   expect(source).toContain('const detailCanVerify = actionGate.canVerify');
   expect(source).toContain('const detailCanManifest = actionGate.canDownloadManifest');
