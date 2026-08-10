@@ -246,11 +246,16 @@ test('panel gates the detail drawer on the DETAIL model only and uses the stale-
   expect(source).toContain("dispatchDetail({ type: 'refreshSuccess'");
   expect(source).toContain("dispatchDetail({ type: 'refreshError'");
   expect(source).not.toContain('setSelectedDetail(null)');
-  // The action gate is DETAIL-authoritative: it reads detail-only fields and must
-  // NOT fall back to the list row (`detail ?? pkg`) for manifest/recovery gating.
-  expect(source).toContain('integrity_status: detail?.integrity_status,');
+  // The action gate is DETAIL-authoritative and PENDING-aware: it is resolved from
+  // the detail model only (null → PENDING, every action withheld), never from a
+  // list-row summary fallback (`detail ?? pkg`).
+  expect(source).toContain('resolveDetailActionState(detail ?? null');
   expect(source).not.toContain('integrity_status: detail?.integrity_status ?? pkg.integrity_status');
   expect(source).not.toContain('const detailActions = (detail ?? pkg).allowed_actions');
+  // Section 5: exactly one authoritative action source — the detail's allowed_actions.
+  expect(source).toContain('const detailActions = detail?.allowed_actions;');
+  // Development-only assertion guards the flicker invariant (section 10).
+  expect(source).toContain("'[EV-2026-004]");
   // Polling terminality routes through the single shared predicate.
   expect(source).toContain('isEvidenceProgressPollingState');
 });
