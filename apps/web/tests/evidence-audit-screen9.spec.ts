@@ -219,6 +219,22 @@ test('14d: row actions are gated by backend allowed_actions', () => {
   expect(source).not.toContain('Export JSON');
 });
 
+test('14e: Manifest-Missing recovery offers Generate Manifest (primary) and Regenerate Package (fallback)', () => {
+  const source = read(PANEL);
+  // Primary recovery action (in-place manifest generation).
+  expect(source).toContain('Generate Manifest');
+  expect(source).toContain('generate_manifest');
+  // Fallback recovery action — superseding regeneration that preserves the original.
+  expect(source).toContain('Regenerate Package');
+  expect(source).toContain('regenerate_package');
+  // Wired to a dedicated backend endpoint (not the Download Package artifact path).
+  expect(source).toContain('/regenerate');
+  // Truthful copy: the original package is preserved, never rewritten.
+  expect(source).toMatch(/superseding|preserved as historical evidence/);
+  // Both recovery actions are backend-authoritative (allowed_actions gated).
+  expect(source).toContain('detailCanRegenerate');
+});
+
 /* ── 15. Simulator evidence not labeled as live_provider ─────────── */
 
 test('15: simulator evidence is labeled simulator, not live_provider', () => {

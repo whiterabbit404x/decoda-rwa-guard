@@ -140,6 +140,9 @@ type EvidencePackage = {
     copy_hash?: boolean;
     // Recovery action for a Manifest-Missing package (no retrievable manifest).
     generate_manifest?: boolean;
+    // Fallback recovery: regenerate a superseding package (preserves the original)
+    // when an in-place manifest cannot safely be generated.
+    regenerate_package?: boolean;
   };
 };
 
@@ -492,6 +495,11 @@ const VERIFY_ERROR_COPY: Record<string, string> = {
   MANIFEST_RECOVERY_NOT_APPLICABLE: 'This package is not eligible for manifest recovery.',
   PACKAGE_MANIFEST_IMMUTABLE:
     'This package already has a manifest and cannot be regenerated in place. Create a superseding package instead.',
+  // Regenerate (superseding) recovery failures — customer-safe copy.
+  PACKAGE_NOT_ELIGIBLE:
+    'This package already has a usable manifest and cannot be regenerated. Verified evidence stays immutable.',
+  PACKAGE_SUPERSEDED: 'This package has already been superseded by a newer package.',
+  PACKAGE_NOT_INCIDENT_SCOPED: 'Only incident-scoped packages can be regenerated.',
 };
 
 function friendlyPackageError(
@@ -558,6 +566,9 @@ export default function EvidenceAuditPanel() {
   // Manifest-recovery (Generate Manifest) in-flight id + last per-package outcome,
   // so the recovery card can show Generating… / success / failure with a Retry.
   const [generatingId, setGeneratingId] = useState('');
+  // "Regenerate Package" (fallback recovery) in-flight id — creates a superseding
+  // package and leaves the Manifest-Missing original untouched.
+  const [regeneratingId, setRegeneratingId] = useState('');
   const [recovery, setRecovery] = useState<{ id: string; phase: 'success' | 'error'; message: string } | null>(null);
   const [loadError, setLoadError] = useState('');
   const [lastRefreshAt, setLastRefreshAt] = useState<string>('');
@@ -1098,6 +1109,68 @@ export default function EvidenceAuditPanel() {
     }
   }
 
+  // Fallback recovery for a Manifest-Missing package: create a NEW superseding
+  // package for the same incident when an in-place manifest cannot safely be
+  // generated. The original package is preserved untouched (it becomes superseded)
+  // — historical evidence is never rewritten. Backend-authoritative: the browser
+  // only triggers it, then selects and reloads the resulting package.
+  async function regeneratePackage(pkg: EvidencePackage) {
+    if (!pkg.id) return;
+    setMessage('');
+    setDiagnostics(null);
+    setRecovery(null);
+    setRegeneratingId(pkg.id);
+    try {
+      let res: Response;
+      try {
+        res = await fetch(`/api/exports/${encodeURIComponent(pkg.id)}/regenerate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          cache: 'no-store',
+        });
+      } catch {
+        setMessage('Package could not be regenerated: network error.');
+        return;
+      }
+      const body = (await res.json().catch(() => ({}))) as {
+        package_id?: string;
+        export_job_id?: string;
+        id?: string;
+        status?: string;
+        superseded_package_id?: string;
+        detail?: unknown;
+        error_message?: string;
+        error?: string;
+        code?: string;
+      };
+      if (!res.ok) {
+        const view = friendlyPackageError(body, 'Package could not be regenerated.');
+        setMessage(view.message);
+        setDiagnostics(view.code);
+        return;
+      }
+      const newId = body.package_id ?? body.export_job_id ?? body.id ?? '';
+      const backendStatus = String(body.status ?? '').toLowerCase();
+      if (backendStatus === 'failed') {
+        setMessage('Regenerated package generation failed. It is recorded as Failed — open it for details or retry.');
+        if (newId) setSelectedPkgId(newId);
+        await confirmPackageVisible(newId);
+        setReloadKey((k) => k + 1);
+        return;
+      }
+      // Truthful success: a new superseding package now exists; the original is kept.
+      setMessage('Superseding evidence package created. The original package is preserved as historical evidence.');
+      if (newId) setSelectedPkgId(newId);
+      const appeared = await confirmPackageVisible(newId);
+      if (!appeared) {
+        setMessage('Regeneration was accepted, but the new package could not yet be loaded. Refresh to check its progress.');
+      }
+      setReloadKey((k) => k + 1);
+    } finally {
+      setRegeneratingId('');
+    }
+  }
+
   async function downloadPackage(pkg: EvidencePackage) {
     setMessage('');
     if (!pkg.id) return;
@@ -1586,9 +1659,11 @@ export default function EvidenceAuditPanel() {
                     onDownload={downloadPackage}
                     onDownloadManifest={downloadManifest}
                     onGenerateManifest={generateManifest}
+                    onRegeneratePackage={regeneratePackage}
                     onVerify={verifyPackage}
                     verifying={verifyingId === selectedPkg.id}
                     generating={generatingId === selectedPkg.id}
+                    regenerating={regeneratingId === selectedPkg.id}
                     recovery={recovery && recovery.id === selectedPkg.id ? recovery : null}
                   />
                 </div>
@@ -2294,9 +2369,11 @@ function PackageDetailPanel({
   onDownload,
   onDownloadManifest,
   onGenerateManifest,
+  onRegeneratePackage,
   onVerify,
   verifying,
   generating,
+  regenerating,
   recovery,
 }: {
   pkg: EvidencePackage;
@@ -2306,9 +2383,11 @@ function PackageDetailPanel({
   onDownload: (pkg: EvidencePackage) => Promise<void>;
   onDownloadManifest?: (pkg: EvidencePackage) => Promise<void>;
   onGenerateManifest?: (pkg: EvidencePackage) => Promise<void>;
+  onRegeneratePackage?: (pkg: EvidencePackage) => Promise<void>;
   onVerify?: (pkg: EvidencePackage) => Promise<void>;
   verifying?: boolean;
   generating?: boolean;
+  regenerating?: boolean;
   recovery?: { id: string; phase: 'success' | 'error'; message: string } | null;
 }) {
   const evSrc = evidenceSourcePill(resolvePackageEvidenceSource(pkg), workspaceEvidenceSource);
@@ -2330,6 +2409,10 @@ function PackageDetailPanel({
   const detailCanManifest = detailActions.download_manifest ?? (isPackageReady(pkg) && !manifestMissing);
   // Recovery action is backend-authoritative; fall back to the Manifest-Missing flag.
   const detailCanGenerate = detailActions.generate_manifest ?? (isPackageReady(pkg) && manifestMissing);
+  // Fallback recovery (Regenerate Package): backend-authoritative, else the
+  // Manifest-Missing flag. Offered alongside Generate Manifest and highlighted as
+  // the recommended next step once an in-place generation attempt has failed.
+  const detailCanRegenerate = detailActions.regenerate_package ?? (isPackageReady(pkg) && manifestMissing);
   const detailCompletenessScore = detail?.completeness?.score ?? pkg.completeness_score ?? null;
   const verification = detail?.verification ?? null;
   const completeness = detail?.completeness ?? null;
@@ -2460,33 +2543,62 @@ function PackageDetailPanel({
             manifest before verifying its contents. Your original package is preserved — only
             the integrity manifest is added.
           </p>
-          {onGenerateManifest ? (
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={!detailCanGenerate || !!generating}
-              title={
-                detailCanGenerate
-                  ? 'Rebuild a retrievable integrity manifest from this package’s stored bytes.'
-                  : 'Manifest recovery is not available for this package.'
-              }
-              style={{ fontSize: '0.75rem' }}
-              onClick={() => void onGenerateManifest(pkg)}
-            >
-              {generating
-                ? 'Generating manifest…'
-                : recovery?.phase === 'error'
-                  ? 'Retry'
-                  : 'Generate Manifest'}
-            </button>
-          ) : null}
+          <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            {onGenerateManifest ? (
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={!detailCanGenerate || !!generating || !!regenerating}
+                title={
+                  detailCanGenerate
+                    ? 'Rebuild a retrievable integrity manifest from this package’s stored bytes.'
+                    : 'Manifest recovery is not available for this package.'
+                }
+                style={{ fontSize: '0.75rem' }}
+                onClick={() => void onGenerateManifest(pkg)}
+              >
+                {generating
+                  ? 'Generating manifest…'
+                  : recovery?.phase === 'error'
+                    ? 'Retry'
+                    : 'Generate Manifest'}
+              </button>
+            ) : null}
+            {onRegeneratePackage ? (
+              <button
+                type="button"
+                className="btn btn-secondary"
+                // Fallback recovery: create a superseding package when an in-place
+                // manifest cannot be generated. Never rewrites the original.
+                disabled={!detailCanRegenerate || !!regenerating || !!generating}
+                title={
+                  detailCanRegenerate
+                    ? 'Create a new superseding package for this incident. The original package is preserved unchanged.'
+                    : 'Regeneration is not available for this package.'
+                }
+                style={{ fontSize: '0.75rem' }}
+                onClick={() => void onRegeneratePackage(pkg)}
+              >
+                {regenerating ? 'Regenerating package…' : 'Regenerate Package'}
+              </button>
+            ) : null}
+          </div>
+          <p style={{ margin: '0.4rem 0 0', fontSize: '0.7rem', color: '#94a3b8' }}>
+            If a manifest can’t be generated from the stored artifact, Regenerate Package
+            creates a new superseding package for this incident and preserves this one as
+            historical evidence.
+          </p>
           {generating ? (
             <p style={{ margin: '0.4rem 0 0', fontSize: '0.72rem', color: '#cbd5e1' }} aria-live="polite">
               Generating manifest…
             </p>
+          ) : regenerating ? (
+            <p style={{ margin: '0.4rem 0 0', fontSize: '0.72rem', color: '#cbd5e1' }} aria-live="polite">
+              Regenerating package…
+            </p>
           ) : recovery?.phase === 'error' ? (
             <p style={{ margin: '0.4rem 0 0', fontSize: '0.72rem', color: '#fca5a5' }} role="alert">
-              Manifest could not be generated.
+              Manifest could not be generated. You can Regenerate Package to create a superseding package instead.
             </p>
           ) : null}
         </div>
@@ -2919,6 +3031,24 @@ function PackageDetailPanel({
             onClick={() => void onGenerateManifest(pkg)}
           >
             {generating ? 'Generating manifest…' : 'Generate Manifest'}
+          </button>
+        ) : null}
+        {onRegeneratePackage && (manifestMissing || detailCanRegenerate) ? (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            // Fallback recovery: create a superseding package (the original is
+            // preserved). Backend-gated to the Manifest-Missing state.
+            disabled={!detailCanRegenerate || !!regenerating || !!generating}
+            title={
+              detailCanRegenerate
+                ? 'Create a new superseding package for this incident. The original package is preserved unchanged.'
+                : 'Regeneration is not available for this package.'
+            }
+            style={{ fontSize: '0.75rem' }}
+            onClick={() => void onRegeneratePackage(pkg)}
+          >
+            {regenerating ? 'Regenerating package…' : 'Regenerate Package'}
           </button>
         ) : null}
         {onVerify ? (

@@ -21380,6 +21380,14 @@ def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dic
     require_live_mode()
     incident_id = str(payload.get('incident_id') or '').strip() or None
     include_raw_events = bool(payload.get('include_raw_events', True))
+    # Supersede (regenerate) mode: force a brand-new package for this incident even
+    # when a prior one exists, instead of reusing or rewriting it. This is the
+    # Screen 9 "Regenerate Package" recovery fallback for a Manifest-Missing package
+    # whose stored artifact cannot safely receive an in-place manifest — the prior
+    # package is preserved (it becomes superseded) and historical evidence is never
+    # silently rewritten.
+    supersede = bool(payload.get('supersede') or payload.get('regenerate'))
+    superseded_from = str(payload.get('superseded_from') or '').strip() or None
     request_id = str(uuid.uuid4())
     _t0 = monotonic()
     if not incident_id:
@@ -21443,7 +21451,10 @@ def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dic
                ORDER BY created_at DESC LIMIT 1""",
             (workspace_id, incident_id),
         ).fetchone()
-        if existing:
+        # In supersede (regenerate) mode the reuse/rewrite paths are skipped entirely
+        # so the prior package is never returned or overwritten — a brand-new row is
+        # always created below.
+        if existing and not supersede:
             existing_pkg_id = str(existing['id'])
             existing_status = str(existing.get('status') or '')
             existing_key = str(existing.get('storage_object_key') or '').strip()
@@ -21472,11 +21483,18 @@ def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dic
                     )
 
         # Fresh create, or regenerate a stale/missing/failed prior row into the
-        # SAME id so repeated clicks can never spawn duplicates.
-        pkg_id = str(existing['id']) if existing else str(uuid.uuid4())
+        # SAME id so repeated clicks can never spawn duplicates. In supersede mode a
+        # NEW id is always minted so the prior (Manifest-Missing) package is left
+        # untouched and becomes superseded — historical evidence is never rewritten.
+        reuse_existing = bool(existing) and not supersede
+        pkg_id = str(existing['id']) if reuse_existing else str(uuid.uuid4())
         output_path = f'{workspace_id}/{pkg_id}.json'
         filters = {'incident_id': incident_id, 'include_raw_events': include_raw_events}
-        if existing:
+        if supersede:
+            filters['regenerated'] = True
+            if superseded_from:
+                filters['superseded_from'] = superseded_from
+        if reuse_existing:
             connection.execute(
                 "UPDATE export_jobs SET filters = %s::jsonb, status = 'queued', error_message = NULL, updated_at = NOW() WHERE id = %s AND workspace_id = %s",
                 (_json_dumps(filters), pkg_id, workspace_id),
@@ -21518,6 +21536,8 @@ def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dic
                 'export_type': 'proof_bundle',
                 'incident_id': incident_id,
                 'request_id': request_id,
+                'regenerated': supersede,
+                'superseded_from': superseded_from,
                 'status': final_status,
                 'result': 'success' if final_status == 'completed' else 'failed',
             },
@@ -25526,6 +25546,90 @@ def generate_evidence_package_manifest(export_id: str, request: Request) -> dict
         connection.commit()
         logger.info('evidence_manifest_generated package_id=%s files=%d sha=%s duration_ms=%d', export_id, file_count, manifest_sha[:12], duration_ms)
         return _manifest_recovery_response(export_id, row, export_type, object_key, readback['reference'], verification, generated=True)
+
+
+def regenerate_evidence_package(export_id: str, request: Request) -> dict[str, Any]:
+    """Regenerate a Manifest-Missing evidence package as a NEW superseding package.
+
+    This is the Screen 9 "Regenerate Package" recovery fallback: when a completed
+    evidence package is Manifest Missing and an in-place manifest cannot safely be
+    generated against its exact stored artifact (see generate_evidence_package_manifest),
+    a brand-new proof bundle is created for the same incident. The original package
+    (``export_id``) is PRESERVED untouched — it simply becomes superseded once the
+    newer package exists — so historical evidence is never silently rewritten.
+
+    Fail-closed and workspace-scoped: cross-workspace access resolves to 404, a
+    verified/usable package is refused (it needs no recovery and stays immutable),
+    an already-superseded package is a no-op, and export permission is required. The
+    actual generation is delegated to create_proof_bundle_export in supersede mode,
+    which mints a fresh package id (never reusing or overwriting the original).
+    """
+    from services.api.app.evidence_completeness import (
+        get_evidence_package_display_state as _display_state,
+    )
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(connection, request, 'evidence.export')
+        workspace_id = workspace_context['workspace_id']
+        request_id = str(request.headers.get('x-request-id') or '').strip() or None
+
+        # Cross-workspace access is denied by the workspace-scoped lookup (a package
+        # in another workspace simply resolves to None → 404).
+        row = connection.execute(
+            'SELECT * FROM export_jobs WHERE id = %s AND workspace_id = %s',
+            (export_id, workspace_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={'error': 'PACKAGE_NOT_FOUND', 'message': 'Evidence package not found.'})
+        row = _json_safe_value(dict(row))
+        if str(row.get('status')) != 'completed':
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={'error': 'PACKAGE_NOT_READY', 'message': 'Package is not ready for regeneration.'})
+
+        filters_val = row.get('filters') if isinstance(row.get('filters'), dict) else {}
+        incident_id = str(filters_val.get('incident_id') or '').strip() or None
+        if not incident_id:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={'error': 'PACKAGE_NOT_INCIDENT_SCOPED', 'message': 'Only incident-scoped packages can be regenerated.'})
+
+        # A package already superseded by a newer proof bundle needs no regeneration.
+        superseded_row = connection.execute(
+            '''SELECT 1 FROM export_jobs
+               WHERE workspace_id = %s AND export_type = 'proof_bundle'
+                 AND filters->>'incident_id' = %s AND id <> %s::uuid
+                 AND created_at > %s
+               LIMIT 1''',
+            (workspace_id, incident_id, export_id, row.get('created_at')),
+        ).fetchone()
+        if superseded_row is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={'error': 'PACKAGE_SUPERSEDED', 'message': 'This package has already been superseded by a newer package.'})
+
+        # Classify against the canonical, storage-authoritative manifest reference.
+        # Only a Manifest-Missing package (no retrievable manifest) is eligible — a
+        # verified or otherwise usable package must not be mutated or duplicated.
+        package_facts = {k: v for k, v in row.items() if k != 'filters'}
+        for _fk, _fv in filters_val.items():
+            package_facts.setdefault(_fk, _fv)
+        resolved = _resolve_package_manifest(row)
+        if not _display_state(package_facts, manifest_reference=resolved['reference']).get('is_manifest_missing'):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={'error': 'PACKAGE_NOT_ELIGIBLE', 'message': 'This package already has a usable manifest and cannot be regenerated. Verified evidence stays immutable.'})
+
+        log_audit(connection, action='evidence_package_regeneration_requested', entity_type='export_job', entity_id=export_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'event_type': 'evidence_package_regeneration_requested', 'incident_id': incident_id, 'request_id': request_id})
+        connection.commit()
+
+    # Delegate to the canonical create flow in supersede mode: a NEW package id is
+    # minted for the incident and the original (this export_id) is left untouched
+    # (it becomes superseded). create_proof_bundle_export runs its own connection,
+    # live-mode gate, permission check and generation — never a browser placeholder.
+    result = create_proof_bundle_export(
+        {
+            'incident_id': incident_id,
+            'include_raw_events': bool(filters_val.get('include_raw_events', True)),
+            'supersede': True,
+            'superseded_from': export_id,
+        },
+        request,
+    )
+    result['superseded_package_id'] = export_id
+    return result
 
 
 def get_history_item(history_id: str, request: Request) -> dict[str, Any]:

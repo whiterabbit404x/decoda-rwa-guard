@@ -554,3 +554,203 @@ def test_panel_exposes_friendly_recovery_ui():
     assert 'MANIFEST_GENERATION_FAILED' in panel
     # The recovery action is wired to the backend endpoint.
     assert 'generate_manifest' in panel
+    # Fallback recovery (Regenerate Package) copy + wiring (section 5).
+    assert 'Regenerate Package' in panel
+    assert 'regenerate_package' in panel
+    assert '/regenerate' in panel
+    assert 'superseding' in panel or 'preserved as historical evidence' in panel
+
+
+# ── 18. Regenerate Package (fallback recovery) allowed-action gating ──────────
+
+def test_manifest_missing_exposes_regenerate_package():
+    actions = ec.get_package_allowed_actions(_ev_package(), can_export=True)
+    assert actions['regenerate_package'] is True
+
+
+def test_regenerate_requires_export_permission():
+    actions = ec.get_package_allowed_actions(_ev_package(), can_export=False)
+    assert actions['regenerate_package'] is False
+
+
+def test_regenerate_not_offered_once_manifest_exists():
+    manifest, _ = build_evidence_manifest(
+        export_id=PKG_ID, export_type='proof_bundle', workspace_id=WS_ID,
+        generated_at='2026-01-01T00:00:00Z', generated_by_user_id=USER_ID,
+        source_resource_type='incident', source_resource_id='inc-1',
+        storage_backend='local', file_values=_PARTIAL_FILES,
+    )
+    pkg = {'export_type': 'proof_bundle', 'status': 'completed', **_persisted_ok(manifest)}
+    actions = ec.get_package_allowed_actions(pkg, can_export=True)
+    assert actions['regenerate_package'] is False
+    # A usable manifest means Verify is enabled instead — no recovery is offered.
+    assert actions['verify'] is True
+
+
+def test_regenerate_not_offered_when_superseded():
+    pkg = {**_ev_package(), 'superseded': True}
+    actions = ec.get_package_allowed_actions(pkg, can_export=True)
+    # A superseded package needs no recovery — neither recovery action is offered.
+    assert actions['regenerate_package'] is False
+    assert actions['generate_manifest'] is False
+
+
+# ── 19. Regenerate endpoint: supersede, preserve original, deny cross-workspace ─
+
+def test_regenerate_creates_superseding_package_preserving_original(monkeypatch):
+    conn = _RecoveryConn(filters=dict(_PERSISTED_EV_2026_004))
+    _bootstrap(monkeypatch, conn, _seed_missing_storage())
+
+    captured: dict = {}
+
+    def _fake_create(payload, request):
+        captured['payload'] = payload
+        return {
+            'package_id': 'pkg-regenerated-2', 'export_job_id': 'pkg-regenerated-2',
+            'id': 'pkg-regenerated-2', 'incident_id': payload.get('incident_id'),
+            'status': 'completed', 'created': True, 'package_number': 'EV-2026-005',
+        }
+
+    monkeypatch.setattr(pilot, 'create_proof_bundle_export', _fake_create)
+
+    result = pilot.regenerate_evidence_package(PKG_ID, _Req())
+    # Delegates in supersede mode for the SAME incident, tagging the source package.
+    assert captured['payload']['supersede'] is True
+    assert captured['payload']['superseded_from'] == PKG_ID
+    assert captured['payload']['incident_id'] == 'inc-1'
+    # A NEW package id is returned; the original is referenced, never rewritten.
+    assert result['package_id'] == 'pkg-regenerated-2'
+    assert result['superseded_package_id'] == PKG_ID
+    # The source row's stored evidence facts were never mutated by regeneration.
+    assert conn.filter_patches == []
+
+
+def test_regenerate_verified_package_denied(monkeypatch):
+    # A package that already carries a retrievable manifest is not eligible for
+    # regeneration — verified/usable evidence stays immutable and is not duplicated.
+    manifest, _ = build_evidence_manifest(
+        export_id=PKG_ID, export_type='proof_bundle', workspace_id=WS_ID,
+        generated_at='2026-01-01T00:00:00Z', generated_by_user_id=USER_ID,
+        source_resource_type='incident', source_resource_id='inc-1',
+        storage_backend='local', file_values=_PARTIAL_FILES,
+    )
+    verified_filters = {
+        **_persisted_ok(manifest),
+        'verification': {'valid': True, 'verified_at': '2026-02-01T00:00:00Z'},
+    }
+    storage = _RWStorage({OBJECT_KEY: _bundle_bytes(_PARTIAL_FILES, include_manifest=True)})
+    _bootstrap(monkeypatch, _RecoveryConn(filters=verified_filters), storage)
+    monkeypatch.setattr(pilot, 'create_proof_bundle_export',
+                        lambda *a, **k: pytest.fail('a usable package must never be regenerated'))
+    with pytest.raises(pilot.HTTPException) as exc:
+        pilot.regenerate_evidence_package(PKG_ID, _Req())
+    assert exc.value.status_code == 409
+    assert exc.value.detail['error'] == 'PACKAGE_NOT_ELIGIBLE'
+
+
+def test_cross_workspace_regenerate_denied(monkeypatch):
+    conn = _RecoveryConn(filters=dict(_PERSISTED_EV_2026_004), found=False)
+    _bootstrap(monkeypatch, conn, _seed_missing_storage())
+    monkeypatch.setattr(pilot, 'create_proof_bundle_export',
+                        lambda *a, **k: pytest.fail('cross-workspace regeneration must not delegate'))
+    with pytest.raises(pilot.HTTPException) as exc:
+        pilot.regenerate_evidence_package(PKG_ID, _Req())
+    assert exc.value.status_code == 404
+    assert exc.value.detail['error'] == 'PACKAGE_NOT_FOUND'
+
+
+def test_regenerate_rejects_non_completed_package(monkeypatch):
+    conn = _RecoveryConn(filters=dict(_PERSISTED_EV_2026_004), status='building')
+    _bootstrap(monkeypatch, conn, _seed_missing_storage())
+    monkeypatch.setattr(pilot, 'create_proof_bundle_export',
+                        lambda *a, **k: pytest.fail('a non-completed package must not regenerate'))
+    with pytest.raises(pilot.HTTPException) as exc:
+        pilot.regenerate_evidence_package(PKG_ID, _Req())
+    assert exc.value.status_code == 409
+    assert exc.value.detail['error'] == 'PACKAGE_NOT_READY'
+
+
+# ── 20. create_proof_bundle_export supersede flag: new row, original preserved ──
+
+class _CreateConn:
+    """export_jobs connection for create_proof_bundle_export, recording whether a
+    NEW row was inserted or an existing row was rewritten in place."""
+
+    def __init__(self, existing_id=PKG_ID, existing_status='completed'):
+        self._existing_id = existing_id
+        self._existing_status = existing_status
+        self.inserted_ids: list = []
+        self.inserted_filters: list = []
+        self.updated_ids: list = []
+
+    def execute(self, statement, params=None):
+        n = ' '.join(str(statement).split())
+        if 'pg_advisory_xact_lock' in n:
+            return _Result(None)
+        if 'SELECT id, status, storage_object_key, package_number, filters FROM export_jobs' in n:
+            return _Result({
+                'id': self._existing_id, 'status': self._existing_status,
+                'storage_object_key': OBJECT_KEY, 'package_number': 'EV-2026-004',
+                'filters': {'incident_id': 'inc-1'},
+            })
+        if 'INSERT INTO export_jobs' in n:
+            self.inserted_ids.append(params[0])
+            self.inserted_filters.append(params[3])
+            return _Result(None)
+        if 'UPDATE export_jobs SET filters' in n and "status = 'queued'" in n:
+            self.updated_ids.append(params[1])
+            return _Result(None)
+        if 'SELECT status, error_message, package_number FROM export_jobs' in n:
+            return _Result({'status': 'completed', 'error_message': None, 'package_number': 'EV-2026-005'})
+        return _Result(None)
+
+    def commit(self):
+        pass
+
+
+def _bootstrap_create(monkeypatch, conn, storage):
+    @contextmanager
+    def _fake_pg():
+        yield conn
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda *_a, **_k: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(pilot, '_require_workspace_permission',
+                        lambda *_a, **_k: ({'id': USER_ID}, {'workspace_id': WS_ID}))
+    monkeypatch.setattr(pilot, '_workspace_plan', lambda *_a, **_k: {'exports_enabled': True})
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: storage)
+    monkeypatch.setattr(pilot, 'log_audit', lambda *a, **k: None)
+    monkeypatch.setattr(pilot, '_generate_export_artifact', lambda *a, **k: {})
+
+
+def test_supersede_flag_creates_new_row_preserving_original(monkeypatch):
+    conn = _CreateConn(existing_id=PKG_ID)
+    _bootstrap_create(monkeypatch, conn, _seed_missing_storage())
+
+    result = pilot.create_proof_bundle_export(
+        {'incident_id': 'inc-1', 'supersede': True, 'superseded_from': PKG_ID}, _Req())
+
+    # A brand-new row was inserted; the original (Manifest-Missing) row was never
+    # reused or rewritten — historical evidence is preserved.
+    assert len(conn.inserted_ids) == 1
+    assert conn.inserted_ids[0] != PKG_ID
+    assert conn.updated_ids == []
+    assert result['created'] is True
+    assert result['package_id'] == conn.inserted_ids[0]
+    # The new row records its regeneration lineage.
+    new_filters = json.loads(conn.inserted_filters[0])
+    assert new_filters['regenerated'] is True
+    assert new_filters['superseded_from'] == PKG_ID
+
+
+def test_create_without_supersede_reuses_existing(monkeypatch):
+    # Contrast: a normal create reuses the completed+retrievable existing package
+    # rather than minting a new row (the pre-existing idempotent behavior).
+    conn = _CreateConn(existing_id=PKG_ID)
+    _bootstrap_create(monkeypatch, conn, _seed_missing_storage())
+
+    result = pilot.create_proof_bundle_export({'incident_id': 'inc-1'}, _Req())
+    assert result['created'] is False
+    assert conn.inserted_ids == []
+    assert conn.updated_ids == []
