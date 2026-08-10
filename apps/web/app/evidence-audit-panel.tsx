@@ -13,6 +13,7 @@ import {
   type PillVariant,
 } from './components/ui-primitives';
 import { usePilotAuth } from './pilot-auth-context';
+import { resolveEvidenceActionState } from './evidence-recovery-actions';
 import { useRuntimeSummary } from './runtime-summary-context';
 
 /* ── Constants ──────────────────────────────────────────────────── */
@@ -2398,21 +2399,27 @@ function PackageDetailPanel({
   const genStatus = generationStatus(source);
   const hashStatus = hashVerification(source);
   const integrityStatus = (detail?.integrity_status ?? pkg.integrity_status ?? '').toLowerCase();
-  const manifestMissing =
-    integrityStatus === 'manifest_missing' ||
-    (detail?.is_manifest_missing ?? pkg.is_manifest_missing ?? false);
-  // Backend-authoritative action gating for the detail drawer. Falls back to
-  // readiness (minus a missing manifest) only for older responses without
-  // allowed_actions, so the drawer never independently claims Verify/Manifest.
   const detailActions = (detail ?? pkg).allowed_actions ?? {};
-  const detailCanVerify = detailActions.verify ?? (isPackageReady(pkg) && !manifestMissing);
-  const detailCanManifest = detailActions.download_manifest ?? (isPackageReady(pkg) && !manifestMissing);
-  // Recovery action is backend-authoritative; fall back to the Manifest-Missing flag.
-  const detailCanGenerate = detailActions.generate_manifest ?? (isPackageReady(pkg) && manifestMissing);
-  // Fallback recovery (Regenerate Package): backend-authoritative, else the
-  // Manifest-Missing flag. Offered alongside Generate Manifest and highlighted as
-  // the recommended next step once an in-place generation attempt has failed.
-  const detailCanRegenerate = detailActions.regenerate_package ?? (isPackageReady(pkg) && manifestMissing);
+  // Backend-authoritative action gating for the detail drawer, resolved through
+  // the ONE canonical evidence-action gate (evidence-recovery-actions) that the
+  // regression test drives directly — the drawer never independently re-derives
+  // Manifest-Missing, Verify, Download Manifest, or recovery visibility. The
+  // gate falls back to readiness only for older responses without allowed_actions.
+  const actionGate = resolveEvidenceActionState(
+    {
+      integrity_status: detail?.integrity_status ?? pkg.integrity_status,
+      is_manifest_missing: detail?.is_manifest_missing ?? pkg.is_manifest_missing,
+      allowed_actions: detailActions,
+    },
+    isPackageReady(pkg),
+  );
+  const manifestMissing = actionGate.manifestMissing;
+  const detailCanVerify = actionGate.canVerify;
+  const detailCanManifest = actionGate.canDownloadManifest;
+  // Recovery actions are backend-authoritative; the gate falls back to the
+  // Manifest-Missing flag only for older responses without allowed_actions.
+  const detailCanGenerate = actionGate.canGenerate;
+  const detailCanRegenerate = actionGate.canRegenerate;
   const detailCompletenessScore = detail?.completeness?.score ?? pkg.completeness_score ?? null;
   const verification = detail?.verification ?? null;
   const completeness = detail?.completeness ?? null;
