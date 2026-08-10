@@ -848,17 +848,27 @@ def get_package_allowed_actions(
     export or a manifest_missing package (no retrievable manifest) has both
     disabled regardless of permission, so the frontend never guesses.
 
-    ``generate_manifest`` is the recovery action: it is offered ONLY for a
+    ``generate_manifest`` is the primary recovery action: it is offered ONLY for a
     completed, storage-available evidence package that is currently
     manifest_missing (built as a proof bundle but with no retrievable manifest —
     the EV-2026-004 state) and only to a user with export permission. It disappears
     the moment a retrievable manifest exists, so Verify Integrity is never enabled
     before a real manifest and Generate Manifest is never offered once one exists.
+
+    ``regenerate_package`` is the fallback recovery action for the same
+    manifest_missing state: when generating a manifest against the exact stored
+    artifact is unsafe or impossible, the package can be superseded by a freshly
+    regenerated one. The original artifact is preserved and never rewritten (a new
+    package is created for the same incident), so historical evidence stays intact.
+    It is never offered for a superseded package, a verified package, or once a
+    retrievable manifest exists.
     """
     state = get_evidence_package_display_state(package, manifest_reference=manifest_reference)
     has_manifest = bool(state['manifest_retrievable'])
     completed = str(package.get('status') or '').lower() == 'completed'
     downloadable = state['is_downloadable']
+    manifest_missing = bool(state.get('is_manifest_missing'))
+    superseded = bool(package.get('superseded'))
     return {
         'view': True,
         'download': completed and downloadable and can_export,
@@ -872,7 +882,18 @@ def get_package_allowed_actions(
             completed
             and downloadable
             and not has_manifest
-            and bool(state.get('is_manifest_missing'))
+            and manifest_missing
+            and can_export
+        ),
+        # Fallback recovery: supersede a manifest_missing package with a freshly
+        # regenerated one, preserving the original. Unlike in-place generation it
+        # does not require the stored artifact to be readable (it rebuilds from the
+        # incident), so it stays available even when Generate Manifest cannot run.
+        'regenerate_package': (
+            completed
+            and not has_manifest
+            and manifest_missing
+            and not superseded
             and can_export
         ),
     }
