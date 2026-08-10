@@ -375,12 +375,19 @@ test('proxy: panel fetches audit events via /api/events not direct backend URL',
 test('poll: only runs while a package is in a non-terminal generation state', () => {
   const source = read(PANEL);
   // Terminal-vs-in-progress is a canonical predicate over backend status/integrity.
+  // It is now defined once in evidence-detail-state (so it is unit-testable and a
+  // Manifest-Missing package is provably terminal) and delegated to by the panel.
   expect(source).toContain('function isPackageInProgress');
-  expect(source).toContain("IN_PROGRESS_JOB_STATUSES = new Set(['queued', 'pending', 'building', 'running'])");
-  expect(source).toContain("IN_PROGRESS_INTEGRITY_STATES = new Set(['building', 'hashing', 'verifying'])");
+  expect(source).toContain('isEvidenceProgressPollingState');
   expect(source).toContain('packages.some(isPackageInProgress)');
   // The effect bails immediately (stops) when nothing is in progress.
   expect(source).toContain('if (!hasInFlightPackage) return');
+
+  // The canonical predicate: only real generation-lifecycle states are in-progress;
+  // manifest_missing (and hash_generated) are absent, i.e. terminal.
+  const detailState = read('app/evidence-detail-state.ts');
+  expect(detailState).toContain("IN_PROGRESS_JOB_STATUSES = new Set(['queued', 'pending', 'building', 'running'])");
+  expect(detailState).toContain("IN_PROGRESS_INTEGRITY_STATES = new Set(['building', 'hashing', 'verifying'])");
 });
 
 test('poll: pauses while the tab is hidden, uses a bounded interval, and never overlaps requests', () => {
