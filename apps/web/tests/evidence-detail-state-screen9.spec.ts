@@ -259,3 +259,48 @@ test('panel gates the detail drawer on the DETAIL model only and uses the stale-
   // Polling terminality routes through the single shared predicate.
   expect(source).toContain('isEvidenceProgressPollingState');
 });
+
+/* ── Section 5 — the detail-fetch effect keys on the STABLE id, not the object ─ */
+
+test('detail-fetch effect keys on selectedPkgId (stable), never the selectedPkg OBJECT identity', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'app/evidence-audit-panel.tsx'),
+    'utf-8',
+  );
+  // The effect resolves the id from the stable string identifier and reconciles the
+  // reducer selection with it — a same-id re-run is a no-op that retains the detail.
+  expect(source).toContain('const id = selectedPkgId;');
+  expect(source).toContain("dispatchDetail({ type: 'select', id });");
+  // Its dependency array is the stable id (+ auth/reload), NEVER the selectedPkg
+  // object. `selectedPkg` is re-derived (`packages.find(...)`) on every list/poll
+  // refresh, so a NEW object identity is minted every few seconds; keying the
+  // detail-fetch effect on it would tear down and refetch the detail on every
+  // background refresh — the churn that (paired with any detail-clearing) removed
+  // "Generate Manifest" with no user action. Lock the effect onto the id only.
+  expect(source).toContain('}, [selectedPkgId, authHeaders, reloadKey]);');
+  expect(source).not.toContain('[selectedPkg,');
+  expect(source).not.toContain(', selectedPkg,');
+  expect(source).not.toContain(', selectedPkg]');
+});
+
+/* ── Section 6 — a list refresh never overwrites the authoritative detail ─────── */
+
+test('the canonical list-refresh path (loadExportsOnce) updates rows/metrics only, never the selected detail', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'app/evidence-audit-panel.tsx'),
+    'utf-8',
+  );
+  // Isolate the shared list-refresh callback used by the create loop and the async
+  // progress poller. It must feed the LIST/SUMMARY models (packages/metrics) only —
+  // there is NO reducer path from a summary row to `detail`, so a background list
+  // refresh cannot replace the storage-authoritative detail with a metadata summary.
+  const start = source.indexOf('const loadExportsOnce = useCallback');
+  expect(start).toBeGreaterThan(-1);
+  const end = source.indexOf('}, [authHeaders, urlPackageId, urlActionId, urlIncidentId]);', start);
+  expect(end).toBeGreaterThan(start);
+  const loadExportsOnce = source.slice(start, end);
+  expect(loadExportsOnce).toContain('setPackages(');
+  // The summary path must not touch the detail state machine at all.
+  expect(loadExportsOnce).not.toContain('dispatchDetail');
+  expect(loadExportsOnce).not.toContain('setSelectedDetail');
+});
