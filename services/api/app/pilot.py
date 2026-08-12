@@ -25097,6 +25097,19 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
             manifest_verified=bool(verification and verification.get('valid') is True),
         )
         item['completeness'] = completeness
+        # Canonical completeness is authoritative. The top-level `completeness_score`
+        # was seeded above from the stored (build-time) `filters.completeness_score`,
+        # which is computed once with has_manifest=True / files_hashed=N and never
+        # reflects the reconciled read-time state — so for a manifest-missing package it
+        # disagreed with the reconciled `completeness.score` (EV-2026-004: top-level 40
+        # vs canonical 20). Normalize the stale scalar onto the canonical score so the
+        # two can never contradict; the UI reads `completeness.score`. When there is no
+        # canonical completeness object at all, drop the stale scalar rather than emit a
+        # score with nothing to back it.
+        if isinstance(completeness, dict) and completeness.get('score') is not None:
+            item['completeness_score'] = completeness['score']
+        elif not isinstance(completeness, dict):
+            item['completeness_score'] = None
         # Refresh the completeness axis from the RECONCILED snapshot so it reflects the
         # corrected score/status (with the false hash evidence removed) instead of the
         # stale build-time value — e.g. EV-2026-004 correctly reads 'critical'.

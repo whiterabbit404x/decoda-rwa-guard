@@ -2457,14 +2457,19 @@ function PackageDetailPanel({
   // Until it has, the manifest/recovery/verify state is PENDING (refreshing), not
   // an authoritative denial — we never derive it from the list-row summary.
   const detailAvailable = detail != null;
-  // While the selected package's own detail is still loading, the detail-gated
+  // While the selected package's own detail is not yet available, the detail-gated
   // actions (Verify / Download Manifest / Generate Manifest / Regenerate Package)
   // are PENDING. Rather than render a half-resolved (disabled) button set that
   // then changes the instant the authoritative detail arrives — the EV-2026-004
   // "Generate Manifest appears then disappears" flicker — the action bar shows a
   // neutral "Loading package actions…" affordance and renders the authoritative
   // actions exactly once, from the detail response's allowed_actions (section 8).
-  const actionsPending = !detailAvailable && (detailLoading || detailRefreshing);
+  // Keyed on detail-not-available (NOT on the refreshing flag): on the very first
+  // render the reducer's `refreshing` is briefly false while `detail` is still null,
+  // and gating on refreshing there would let an optimistic button set flash for one
+  // frame. `!detailError` keeps a first-fetch failure out of the perpetual-loading
+  // state so it can surface its own message instead.
+  const actionsPending = !detailAvailable && !detailError;
   // The ONE authoritative action source (EV-2026-004 flicker fix, section 5): the
   // storage-authoritative DETAIL's allowed_actions — NEVER the list-row summary,
   // whose manifest state is metadata-derived and legitimately differs (list:
@@ -2493,24 +2498,36 @@ function PackageDetailPanel({
   // Manifest-Missing flag only for older responses without allowed_actions.
   const detailCanGenerate = actionGate.canGenerate;
   const detailCanRegenerate = actionGate.canRegenerate;
-  // Button VISIBILITY comes from the SAME canonical gate, so the presence of the
-  // recovery buttons and their enabled/disabled state can never diverge. Generate
-  // Manifest is shown while the authoritative DETAIL still offers recovery — the
-  // package is manifest_missing, OR it explicitly permits generation
-  // (allowed_actions.generate_manifest === true). It is removed ONLY when a NEW
-  // authoritative detail says otherwise (never on a background list/detail refresh).
+  // Button VISIBILITY comes STRICTLY from the authoritative detail's allowed_actions
+  // (via the canonical gate) — NEVER inferred from manifest_missing. Generate Manifest
+  // is shown iff allowed_actions.generate_manifest === true; Regenerate Package iff
+  // allowed_actions.regenerate_package === true. Because the PENDING gate returns both
+  // false until the detail loads, neither button can pop in from a list-row summary
+  // before the authoritative detail arrives (the EV-2026-004 flicker).
   const showGenerateManifest = actionGate.showGenerate;
   const showRegeneratePackage = actionGate.showRegenerate;
-  // Recovery POLICY axis (backend-authoritative). When recovery is BLOCKED — the
-  // required source evidence must be collected first, or the user lacks permission —
-  // the recovery panel shows a stable "Recovery required" message + a next action
-  // (View Incident / Collect Evidence) rather than dead-end disabled buttons. The
-  // reason text is backend-supplied so it is always customer-safe.
+  // Recovery POLICY axis (backend-authoritative). recovery_required is the backend
+  // fact that the package needs recovery; when it is true but NEITHER recovery action
+  // is permitted, the surface shows a stable "Recovery required" blocker with the
+  // backend's customer-safe reason + a next action (View Incident) rather than a
+  // dead-end disabled button. The reason text is backend-supplied.
+  const recoveryRequired = actionGate.recoveryRequired;
   const recoveryBlocked = actionGate.recoveryBlocked;
   const recoveryState = actionGate.recoveryState;
   const recoveryBlockedReason =
     actionGate.recoveryBlockedReason ??
     (detail?.recovery_blocked_reason ?? null);
+  // The recovery blocker renders only when recovery is required/blocked AND neither
+  // recovery button is shown (requirement: both actions false + recovery_required).
+  // Either backend signal (recovery_required, or the recovery_state-derived
+  // recoveryBlocked) triggers it — fail-closed, so a package that needs recovery but
+  // exposes no action never leaves the surface silently empty. Buttons win if somehow
+  // both were signalled, so the blocker and the action card are mutually exclusive.
+  const showRecoveryBlocker =
+    detailAvailable &&
+    (recoveryRequired || recoveryBlocked) &&
+    !showGenerateManifest &&
+    !showRegeneratePackage;
   // Development-only guard (EV-2026-004): the recovery button MUST stay visible
   // while the authoritative DETAIL permits generation. If it is ever hidden while
   // detail says generate_manifest:true, a summary/pending value has leaked into the
@@ -2634,17 +2651,24 @@ function PackageDetailPanel({
         </div>
       )}
 
-      {/* ── Manifest recovery (friendly, customer-facing) ─────────────
-          Shown for a Manifest-Missing package. The primary action rebuilds a
-          retrievable manifest from the package's exact stored bytes — the original
-          package is preserved (only manifest.json is added). Verify Integrity is
-          never enabled until a real manifest exists. */}
-      {/* Detail-authoritative gating: until the selected package's own detail has
-          loaded, its manifest/recovery state is PENDING — show a neutral,
-          layout-stable placeholder instead of deriving a (false) "healthy" state
-          from the list-row summary. This is why Generate Manifest no longer pops
-          in and out during the first load / a background refresh. */}
-      {!detailAvailable && (detailLoading || detailRefreshing) && (
+      {/* ── Recovery surface (customer-facing) ─────────────────────────
+          Exactly ONE of three mutually-exclusive states, ALL resolved from the
+          storage-authoritative DETAIL response (never the list-row summary):
+
+            1. PENDING (detail not loaded): a neutral "Loading recovery options…"
+               placeholder — NEVER an optimistic Generate Manifest button. This is
+               the flicker fix: recovery visibility is unknown until the detail
+               arrives, so nothing recovery-shaped renders before it does.
+            2. BLOCKED (recovery_required, neither action permitted): a stable
+               "Recovery required" panel with the backend's customer-safe reason and
+               a next action (View Incident) — never a dead-end disabled button.
+            3. ACTIONABLE (generate_manifest / regenerate_package permitted): the
+               recovery card with the permitted button(s).
+
+          The primary action rebuilds a retrievable manifest from the package's exact
+          stored bytes — the original package is preserved (only manifest.json is
+          added). Verify Integrity is never enabled until a real manifest exists. */}
+      {actionsPending && (
         <div
           role="status"
           style={{
@@ -2660,14 +2684,31 @@ function PackageDetailPanel({
           Loading recovery options…
         </div>
       )}
-      {/* Recovery is BLOCKED (backend recovery_state = evidence_required /
-          permission_required): neither an in-place manifest nor a regeneration is a
-          valid recovery yet, so we show a STABLE "Recovery required" panel with the
-          backend's customer-safe reason and a clear next action — View Incident /
-          Collect Evidence — instead of dead-end disabled Generate/Regenerate buttons.
-          This is why the recovery surface never flickers a Generate Manifest button
-          for a degraded diagnostic package whose evidence is still missing. */}
-      {manifestMissing && recoveryBlocked && (
+      {!detailAvailable && detailError && (
+        <div
+          role="status"
+          style={{
+            marginBottom: '0.75rem',
+            padding: '0.6rem 0.7rem',
+            background: 'rgba(251,191,36,0.08)',
+            borderRadius: '6px',
+            border: '1px solid rgba(251,191,36,0.25)',
+            fontSize: '0.75rem',
+            color: '#fbbf24',
+          }}
+        >
+          Couldn’t load recovery options. Retry to see the recovery status for this package.
+        </div>
+      )}
+      {/* BLOCKED: recovery is required but neither an in-place manifest nor a
+          regeneration is permitted (the required source evidence must be collected
+          first, or the user lacks permission). Show a STABLE "Recovery required" panel
+          with the backend's customer-safe reason and a clear next action — View
+          Incident — instead of dead-end disabled Generate/Regenerate buttons. The
+          gate is backend recovery_required + both recovery actions false, so a
+          degraded diagnostic package whose evidence is still missing never flickers a
+          Generate Manifest button. */}
+      {showRecoveryBlocker && (
         <div
           role="group"
           aria-label="Recovery required"
@@ -2695,12 +2736,12 @@ function PackageDetailPanel({
               className="btn btn-primary"
               style={{ fontSize: '0.75rem' }}
             >
-              View Incident / Collect Evidence
+              View Incident
             </Link>
           ) : null}
         </div>
       )}
-      {manifestMissing && !recoveryBlocked && (
+      {detailAvailable && (showGenerateManifest || showRegeneratePackage) && (
         <div
           role="group"
           aria-label="Manifest recovery"
@@ -2733,16 +2774,16 @@ function PackageDetailPanel({
             </p>
           ) : null}
           <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center' }}>
-            {onGenerateManifest ? (
+            {/* Each recovery button renders ONLY when its own allowed_actions flag is
+                true (backend-authoritative). Because visibility already implies
+                permission, `detailCanGenerate` / `detailCanRegenerate` only ever gate
+                the in-flight (generating/regenerating) disabled state here. */}
+            {onGenerateManifest && showGenerateManifest ? (
               <button
                 type="button"
                 className="btn btn-primary"
                 disabled={!detailCanGenerate || !!generating || !!regenerating}
-                title={
-                  detailCanGenerate
-                    ? 'Rebuild a retrievable integrity manifest from this package’s stored bytes.'
-                    : 'Manifest recovery is not available for this package.'
-                }
+                title="Rebuild a retrievable integrity manifest from this package’s stored bytes."
                 style={{ fontSize: '0.75rem' }}
                 onClick={() => void onGenerateManifest(pkg)}
               >
@@ -2753,18 +2794,14 @@ function PackageDetailPanel({
                     : 'Generate Manifest'}
               </button>
             ) : null}
-            {onRegeneratePackage ? (
+            {onRegeneratePackage && showRegeneratePackage ? (
               <button
                 type="button"
                 className="btn btn-secondary"
                 // Fallback recovery: create a superseding package when an in-place
                 // manifest cannot be generated. Never rewrites the original.
                 disabled={!detailCanRegenerate || !!regenerating || !!generating}
-                title={
-                  detailCanRegenerate
-                    ? 'Create a new superseding package for this incident. The original package is preserved unchanged.'
-                    : 'Regeneration is not available for this package.'
-                }
+                title="Create a new superseding package for this incident. The original package is preserved unchanged."
                 style={{ fontSize: '0.75rem' }}
                 onClick={() => void onRegeneratePackage(pkg)}
               >

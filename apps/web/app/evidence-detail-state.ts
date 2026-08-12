@@ -211,8 +211,9 @@ export function resolveDetailActionState(
       showRegenerate: false,
       // PENDING: recovery options are not known until the authoritative detail
       // loads — the caller shows "Loading recovery options…", never a resolved
-      // recovery panel derived from the list-row summary.
+      // recovery panel (buttons OR blocker) derived from the list-row summary.
       recoveryState: 'none',
+      recoveryRequired: false,
       recoveryBlockedReason: null,
       recoveryBlocked: false,
       detailAvailable: false,
