@@ -404,9 +404,18 @@ def _assert_no_hash_contradictions(export: dict) -> None:
         problems.append('manifest not retrievable but verify allowed')
     if export['manifest_sha256'] is None and export['allowed_actions']['copy_hash']:
         problems.append('manifest_sha256 null but copy_hash allowed')
-    if export['is_manifest_missing'] and export['can_export'] and not (
-        export['allowed_actions']['generate_manifest'] or export['allowed_actions']['regenerate_package']
-    ):
-        problems.append('manifest_missing + can_export but no recovery path exposed')
+    # No silent dead end: a manifest_missing package the user can export must expose
+    # a recovery outcome — an in-place manifest, a superseding regeneration, OR a
+    # structured recovery_blocked_reason explaining what to do next (e.g. collect the
+    # missing evidence first). A blocked reason is a legitimate third outcome, and it
+    # is mutually exclusive with an offered action (a blocked package offers neither).
+    if export['is_manifest_missing'] and export['can_export']:
+        generate = bool(export['allowed_actions']['generate_manifest'])
+        regenerate = bool(export['allowed_actions']['regenerate_package'])
+        blocked = bool(export.get('recovery_blocked_reason'))
+        if not (generate or regenerate or blocked):
+            problems.append('manifest_missing + can_export but no recovery path exposed')
+        if blocked and (generate or regenerate):
+            problems.append('recovery_blocked_reason present alongside an offered recovery action')
 
     assert not problems, 'detail response contradictions: ' + '; '.join(problems)

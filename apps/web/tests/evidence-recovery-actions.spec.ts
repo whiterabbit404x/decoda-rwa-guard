@@ -138,6 +138,80 @@ test('allowed_actions is authoritative: backend false overrides the ready+manife
   expect(legacyFallback.canGenerate).toBe(true);
 });
 
+/* ── 5b. EV-2026-004 degraded: recovery BLOCKED (evidence_required) ─────────── */
+
+test('recovery_state:evidence_required → blocked, Generate/Regenerate withheld, reason surfaced', () => {
+  // The exact current EV-2026-004 detail response: manifest is factually missing,
+  // integrity_status is needs_evidence (a SEPARATE axis), and the single recovery
+  // outcome is the structured evidence_required blocker.
+  const state = resolveEvidenceActionState(
+    {
+      integrity_status: 'needs_evidence',
+      is_manifest_missing: true,
+      recovery_state: 'evidence_required',
+      recovery_blocked_reason:
+        'Collect the missing required evidence before regenerating this package.',
+      allowed_actions: {
+        generate_manifest: false,
+        regenerate_package: false,
+        verify: false,
+        download_manifest: false,
+      },
+    },
+    true,
+  );
+
+  expect(state.manifestMissing).toBe(true);
+  expect(state.recoveryState).toBe('evidence_required');
+  expect(state.recoveryBlocked).toBe(true);
+  // The Generate/Regenerate buttons are WITHHELD — replaced by the stable panel —
+  // never shown disabled as a dead end.
+  expect(state.showGenerate).toBe(false);
+  expect(state.showRegenerate).toBe(false);
+  expect(state.canGenerate).toBe(false);
+  expect(state.canRegenerate).toBe(false);
+  expect(state.recoveryBlockedReason).toContain('evidence');
+});
+
+test('recovery_state:permission_required → blocked with reason, recovery buttons withheld', () => {
+  const state = resolveEvidenceActionState(
+    {
+      integrity_status: 'needs_evidence',
+      is_manifest_missing: true,
+      recovery_state: 'permission_required',
+      recovery_blocked_reason:
+        'You do not have permission to recover this package. Ask a workspace administrator for evidence export access.',
+      allowed_actions: { generate_manifest: false, regenerate_package: false },
+    },
+    true,
+  );
+  expect(state.recoveryBlocked).toBe(true);
+  expect(state.showGenerate).toBe(false);
+  expect(state.showRegenerate).toBe(false);
+  expect(state.recoveryBlockedReason).toContain('permission');
+});
+
+test('recovery_state:generate_manifest → NOT blocked, Generate Manifest shown & enabled', () => {
+  const state = resolveEvidenceActionState(
+    {
+      integrity_status: 'manifest_missing',
+      is_manifest_missing: true,
+      recovery_state: 'generate_manifest',
+      allowed_actions: {
+        generate_manifest: true,
+        regenerate_package: true,
+        verify: false,
+        download_manifest: false,
+      },
+    },
+    true,
+  );
+  expect(state.recoveryBlocked).toBe(false);
+  expect(state.showGenerate).toBe(true);
+  expect(state.canGenerate).toBe(true);
+  expect(state.recoveryState).toBe('generate_manifest');
+});
+
 /* ── 6. Source-contract guard: the panel footer is governed by this gate ────── */
 
 test('panel routes the detail drawer through the canonical PENDING-aware gate and gates the footer on it', () => {
@@ -162,4 +236,21 @@ test('panel routes the detail drawer through the canonical PENDING-aware gate an
   // Verify Integrity / Download Manifest disabled state also flows from the gate.
   expect(source).toContain('const detailCanVerify = actionGate.canVerify');
   expect(source).toContain('const detailCanManifest = actionGate.canDownloadManifest');
+});
+
+/* ── 7. Source-contract guard: blocked-recovery panel + pending copy ─────────── */
+
+test('panel renders a stable Recovery-required panel (View Incident) gated on the canonical blocked flag', () => {
+  const source = read(PANEL);
+  // The blocked flag comes from the SAME canonical gate as the buttons.
+  expect(source).toContain('const recoveryBlocked = actionGate.recoveryBlocked');
+  // A blocked, manifest-missing package shows a stable "Recovery required" panel
+  // with a next action — never dead-end disabled Generate/Regenerate buttons.
+  expect(source).toContain('manifestMissing && recoveryBlocked');
+  expect(source).toContain('Recovery required');
+  expect(source).toContain('View Incident / Collect Evidence');
+  // The Generate/Regenerate action card renders ONLY when recovery is not blocked.
+  expect(source).toContain('manifestMissing && !recoveryBlocked');
+  // While the authoritative detail is loading, the recovery surface is PENDING.
+  expect(source).toContain('Loading recovery options…');
 });

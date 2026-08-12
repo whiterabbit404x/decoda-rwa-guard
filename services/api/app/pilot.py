@@ -25016,8 +25016,15 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
             get_evidence_package_display_state as _display_state,
             integrity_status_label as _integrity_label,
             get_package_allowed_actions as _allowed_actions,
+            get_package_recovery_model as _recovery_model,
         )
         item['superseded'] = superseded
+        # package_status is not persisted to filters (unlike evidence_source_type /
+        # export_status), so recover it from the stored summary. The recovery selector
+        # and the detail UI need the canonical degraded_diagnostic / blocked signal to
+        # decide whether an existing artifact may safely be sealed with a manifest.
+        if isinstance(summary, dict) and summary.get('package_status') and not item.get('package_status'):
+            item['package_status'] = summary.get('package_status')
         _manifest_ref = _resolve_manifest_ref(item, bundle_parts=manifest_parts)
         _state = _display_state(item, manifest_reference=_manifest_ref)
         integrity_status = _state['integrity_status']
@@ -25040,6 +25047,14 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
         item['is_export_ready'] = _state['is_export_ready']
         item['is_legacy_export'] = _state['is_legacy_export']
         item['is_manifest_missing'] = _state['is_manifest_missing']
+        # Four independent canonical status axes. Manifest availability and evidence
+        # completeness are SEPARATE concerns: a package can be Critical / Needs-Evidence
+        # AND Manifest-Missing at the same time, so the recovery UI never infers manifest
+        # presence from the completeness-driven integrity_status (the EV-2026-004 bug).
+        item['generation_status'] = _state['generation_status']
+        item['manifest_status'] = _state['manifest_status']
+        item['verification_status'] = _state['verification_status']
+        item['evidence_completeness_status'] = _state['evidence_completeness_status']
         # Permission-aware action gating for the details view / agent card.
         _detail_role = _normalize_workspace_role(str(workspace_context.get('role') or 'viewer'))
         try:
@@ -25048,6 +25063,17 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
             _detail_can_export = 'evidence.export' in DEFAULT_ROLE_PERMISSIONS.get(_detail_role, frozenset())
         item['allowed_actions'] = _allowed_actions(item, can_export=_detail_can_export, manifest_reference=_manifest_ref)
         item['can_export'] = _detail_can_export
+        # Canonical recovery model. Recovery POLICY is decided from independent facts in
+        # ONE place; the two recovery booleans in allowed_actions come from the SAME
+        # selector, so a manifest-missing package always exposes exactly one recovery
+        # outcome — generate_manifest, regenerate_package, or a non-empty
+        # recovery_blocked_reason — and never a silent dead end. When both actions are
+        # withheld (evidence must be collected first, or no export permission) the
+        # structured reason tells the UI what to do next (e.g. View Incident).
+        _recovery = _recovery_model(item, can_export=_detail_can_export, display_state=_state)
+        item['recovery_required'] = _recovery['recovery_required']
+        item['recovery_state'] = _recovery['recovery_state']
+        item['recovery_blocked_reason'] = _recovery['recovery_blocked_reason']
 
         # Reconcile the stored (build-time) completeness snapshot's HASH evidence with
         # the canonical manifest state resolved above. The snapshot is written with
@@ -25071,6 +25097,11 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
             manifest_verified=bool(verification and verification.get('valid') is True),
         )
         item['completeness'] = completeness
+        # Refresh the completeness axis from the RECONCILED snapshot so it reflects the
+        # corrected score/status (with the false hash evidence removed) instead of the
+        # stale build-time value — e.g. EV-2026-004 correctly reads 'critical'.
+        if isinstance(completeness, dict) and completeness.get('status'):
+            item['evidence_completeness_status'] = str(completeness['status'])
 
         # Agent findings — every statement references package records, never invented.
         findings: list[dict[str, Any]] = []
@@ -25085,10 +25116,24 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
             })
         for warn in (summary or {}).get('warnings', []) if isinstance(summary, dict) else []:
             findings.append({'type': 'source_warning', 'message': str(warn)})
-        if integrity_status == 'hash_generated':
+        # Recovery guidance is driven by the FACTUAL manifest-missing state + the
+        # canonical recovery model, never by integrity_status alone: EV-2026-004 is
+        # manifest_missing while its integrity_status is 'needs_evidence', so keying the
+        # message off integrity_status would contradict the recovery action. The message
+        # always matches the single recovery outcome the response actually exposes.
+        if item['is_manifest_missing']:
+            if _recovery['recovery_state'] == 'evidence_required':
+                findings.append({'type': 'recommended_action', 'message': _recovery['recovery_blocked_reason']})
+            elif _recovery['generate_manifest']:
+                findings.append({'type': 'recommended_action', 'message': 'This package has no retrievable integrity manifest. Generate a manifest for the existing package to enable Verify Integrity — the original package is preserved.'})
+            elif _recovery['regenerate_package']:
+                findings.append({'type': 'recommended_action', 'message': 'This package has no retrievable integrity manifest. Regenerate the package to produce a verifiable superseding copy; the original is preserved as historical evidence.'})
+            elif _recovery['recovery_state'] == 'permission_required':
+                findings.append({'type': 'integrity_warning', 'message': _recovery['recovery_blocked_reason']})
+            else:
+                findings.append({'type': 'integrity_warning', 'message': 'This package has no retrievable manifest, so it cannot be verified or exported as evidence.'})
+        elif integrity_status == 'hash_generated':
             findings.append({'type': 'recommended_action', 'message': 'Hashes generated. Run Verify Integrity to confirm the package has not changed since generation.'})
-        elif integrity_status == 'manifest_missing':
-            findings.append({'type': 'integrity_warning', 'message': 'This package has no retrievable manifest, so it cannot be verified or exported as evidence. Generate a new package for this incident to supersede it.'})
         elif integrity_status == 'needs_evidence':
             findings.append({'type': 'recommended_action', 'message': 'Collect the missing required evidence, then regenerate the package.'})
         item['agent_findings'] = findings

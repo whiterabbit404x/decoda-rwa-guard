@@ -826,6 +826,119 @@ def _package_completeness_for_integrity(package: dict[str, Any]) -> dict[str, An
     return None
 
 
+# ── Canonical status axes (Screen 9) ──────────────────────────────────────────
+# Manifest availability and evidence completeness are SEPARATE concerns. A package
+# may be Critical / Needs-Evidence (evidence_completeness_status) AND Manifest
+# Missing (manifest_status) at the same time. These four axes are reported
+# independently so the recovery UI never has to infer one from another (in
+# particular it must never read manifest presence off the completeness-driven
+# integrity_status).
+
+# manifest_status
+MANIFEST_STATUS_PRESENT = 'present'
+MANIFEST_STATUS_MISSING = 'missing'
+MANIFEST_STATUS_PENDING = 'pending'
+MANIFEST_STATUS_NOT_APPLICABLE = 'not_applicable'
+
+# generation_status
+GENERATION_STATUS_BUILDING = 'building'
+GENERATION_STATUS_GENERATED = 'generated'
+GENERATION_STATUS_GENERATED_PARTIAL = 'generated_partial'
+GENERATION_STATUS_FAILED = 'failed'
+GENERATION_STATUS_UNKNOWN = 'unknown'
+
+# verification_status
+VERIFICATION_STATUS_VERIFIED = 'verified'
+VERIFICATION_STATUS_FAILED = 'failed'
+VERIFICATION_STATUS_READY = 'ready'
+VERIFICATION_STATUS_NOT_READY = 'not_ready'
+
+# Canonical fact sets used by the generation/recovery classifiers. A package is a
+# "degraded diagnostic" when its evidence is not trustworthy live/simulator/fixture
+# data; sealing an integrity manifest around such an artifact would present degraded
+# or fallback data as verifiable customer evidence, so it is never offered.
+_DEGRADED_PACKAGE_STATUSES = frozenset({'degraded_diagnostic', 'blocked'})
+_MISSING_EVIDENCE_SOURCES = frozenset({'missing', 'unavailable', 'unknown'})
+_INCOMPLETE_EXPORT_STATUSES = frozenset({'partial', 'incomplete', 'degraded'})
+
+_IN_PROGRESS_JOB_STATUSES = frozenset({'queued', 'pending', 'building', 'running'})
+
+
+def _resolve_manifest_status(job_status: str, has_manifest: bool, is_manifest_missing: bool) -> str:
+    """Canonical manifest-presence axis, independent of integrity_status.
+
+    ``present``        — a manifest is retrievable from storage.
+    ``missing``        — the package SHOULD have a manifest (a completed evidence
+                         proof bundle built as a real package) but none is
+                         retrievable — the EV-2026-004 state.
+    ``pending``        — the package is still generating; a manifest may yet appear.
+    ``not_applicable`` — a legacy / non-evidence export that never had a manifest.
+    """
+    if has_manifest:
+        return MANIFEST_STATUS_PRESENT
+    if is_manifest_missing:
+        return MANIFEST_STATUS_MISSING
+    if str(job_status or '').lower() in _IN_PROGRESS_JOB_STATUSES:
+        return MANIFEST_STATUS_PENDING
+    return MANIFEST_STATUS_NOT_APPLICABLE
+
+
+def _resolve_generation_status(package: dict[str, Any], job_status: str) -> str:
+    """How the package was generated (distinct from its manifest/verification state).
+
+    A completed package built from partial / degraded evidence is
+    ``generated_partial`` — it exists, but not as a complete live-evidence bundle.
+    """
+    status = str(job_status or '').lower()
+    if status in _IN_PROGRESS_JOB_STATUSES:
+        return GENERATION_STATUS_BUILDING
+    if status == 'failed':
+        return GENERATION_STATUS_FAILED
+    if status != 'completed':
+        return GENERATION_STATUS_UNKNOWN
+    export_status = str(package.get('export_status') or '').strip().lower()
+    package_status = str(package.get('package_status') or '').strip().lower()
+    if export_status in _INCOMPLETE_EXPORT_STATUSES or package_status in _DEGRADED_PACKAGE_STATUSES:
+        return GENERATION_STATUS_GENERATED_PARTIAL
+    return GENERATION_STATUS_GENERATED
+
+
+def _resolve_verification_status(integrity_status: str, has_manifest: bool) -> str:
+    """Cryptographic-verification axis.
+
+    ``not_ready`` when there is no retrievable manifest to verify against (the
+    package can never be Verify-able until a manifest exists), regardless of how
+    complete its evidence is.
+    """
+    if integrity_status == INTEGRITY_VERIFIED:
+        return VERIFICATION_STATUS_VERIFIED
+    if integrity_status == INTEGRITY_INTEGRITY_FAILED:
+        return VERIFICATION_STATUS_FAILED
+    if has_manifest and integrity_status == INTEGRITY_HASH_GENERATED:
+        return VERIFICATION_STATUS_READY
+    return VERIFICATION_STATUS_NOT_READY
+
+
+def _resolve_evidence_completeness_status(package: dict[str, Any]) -> str:
+    """Evidence-completeness band ('excellent'/'good'/'incomplete'/'critical').
+
+    Derived from the package's completeness snapshot / score — never from manifest
+    availability. Returns 'unknown' when no score has been computed.
+    """
+    completeness = package.get('completeness')
+    if isinstance(completeness, dict):
+        status = completeness.get('status')
+        if status:
+            return str(status)
+        score = completeness.get('score')
+        if isinstance(score, (int, float)):
+            return _status_for_score(int(score))[0]
+    score = package.get('completeness_score')
+    if isinstance(score, (int, float)):
+        return _status_for_score(int(score))[0]
+    return 'unknown'
+
+
 def get_evidence_package_display_state(
     package: dict[str, Any],
     *,
@@ -876,6 +989,25 @@ def get_evidence_package_display_state(
     else:
         hash_state = HASH_STATE_NONE
 
+    # Manifest presence is a FACT about storage, resolved independently of the
+    # completeness-driven integrity_status. A completed evidence proof bundle that
+    # was built as a real package (packaging metadata present) but has no retrievable
+    # manifest IS manifest-missing — even when integrity_status is 'needs_evidence'
+    # because required evidence is ALSO incomplete. Evidence completeness and manifest
+    # availability are separate axes (a package can be Critical / Needs-Evidence AND
+    # Manifest-Missing at once), so this is NEVER gated on
+    # ``integrity_status == manifest_missing`` — doing so let a needs_evidence package
+    # hide its missing manifest (and its recovery action), the EV-2026-004 regression.
+    verification_recorded = verification is not None and verification.get('valid') is not None
+    is_manifest_missing = (
+        status == 'completed'
+        and not superseded
+        and not verification_recorded
+        and not has_manifest
+        and _is_evidence_export_type(package)
+        and _has_packaging_metadata(package)
+    )
+
     storage_available = package.get('storage_available')
     storage_ok = storage_available is not False  # unknown (None) is treated as available
     downloadable = status == 'completed' and storage_ok
@@ -883,18 +1015,23 @@ def get_evidence_package_display_state(
     # package with a retrievable manifest is a usable *evidence* artifact
     # (manifest/verify available). Files-hashed is shown only when the manifest is
     # real, so "Files Hashed: 8" can never sit beside a missing manifest.
-    is_evidence_artifact = integrity_status not in _NON_EXPORTABLE_INTEGRITY
+    is_evidence_artifact = integrity_status not in _NON_EXPORTABLE_INTEGRITY and not is_manifest_missing
     is_export_ready = downloadable and integrity_status == INTEGRITY_VERIFIED
     files_hashed = (ref.file_count if ref.file_count is not None else _package_files_hashed(package)) if has_manifest else 0
     return {
         'integrity_status': integrity_status,
         'hash_state': hash_state,
+        # Four independent canonical status axes (never derived from one another).
+        'generation_status': _resolve_generation_status(package, status),
+        'manifest_status': _resolve_manifest_status(status, has_manifest, is_manifest_missing),
+        'verification_status': _resolve_verification_status(integrity_status, has_manifest),
+        'evidence_completeness_status': _resolve_evidence_completeness_status(package),
         'files_hashed': files_hashed,
         'has_hashes': has_manifest,
         'manifest_retrievable': ref.retrievable,
         'manifest_reference': ref.as_dict(),
         'is_legacy_export': integrity_status == INTEGRITY_LEGACY_EXPORT,
-        'is_manifest_missing': integrity_status == INTEGRITY_MANIFEST_MISSING,
+        'is_manifest_missing': is_manifest_missing,
         'is_downloadable': downloadable,
         'is_evidence_artifact': is_evidence_artifact,
         'is_export_ready': is_export_ready,
@@ -985,6 +1122,119 @@ def get_workspace_evidence_metrics(packages: list[dict[str, Any]]) -> dict[str, 
     }
 
 
+# ── Canonical manifest-recovery policy (Screen 9) ─────────────────────────────
+# Recovery POLICY is a decision SEPARATE from manifest PRESENCE. A package's
+# manifest is factually missing (``is_manifest_missing``) regardless of which
+# recovery action — if any — is currently permitted. This selector resolves the
+# single actionable recovery outcome for a manifest-missing package and NEVER
+# leaves it in a silent dead end.
+RECOVERY_NONE = 'none'
+RECOVERY_GENERATE_MANIFEST = 'generate_manifest'
+RECOVERY_REGENERATE_PACKAGE = 'regenerate_package'
+RECOVERY_EVIDENCE_REQUIRED = 'evidence_required'
+RECOVERY_PERMISSION_REQUIRED = 'permission_required'
+
+_RECOVERY_EVIDENCE_REQUIRED_REASON = (
+    'Collect the missing required evidence before regenerating this package.'
+)
+_RECOVERY_PERMISSION_REASON = (
+    'You do not have permission to recover this package. Ask a workspace administrator '
+    'for evidence export access.'
+)
+
+
+def get_package_recovery_model(
+    package: dict[str, Any],
+    *,
+    can_export: bool,
+    manifest_reference: EvidenceManifestReference | None = None,
+    display_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Resolve the ONE actionable recovery outcome for a manifest-missing package.
+
+    Manifest presence is factual (``is_manifest_missing``); this decides recovery
+    POLICY from independent canonical facts and guarantees exactly one outcome —
+    ``generate_manifest``, ``regenerate_package``, or a non-empty
+    ``recovery_blocked_reason`` — is present. Recovery is never a silent dead end.
+
+    Only a completed, non-superseded, non-verified evidence package with no
+    retrievable manifest is recoverable. For such a package:
+
+      * generate_manifest — seal an integrity manifest around the EXISTING stored
+        artifact. Offered only when that is safe: the package is NOT a degraded
+        diagnostic and its source evidence is present. Sealing a degraded / fallback
+        artifact would present it as verifiable customer evidence, so it is withheld.
+      * regenerate_package — supersede the package with a freshly rebuilt one when
+        in-place sealing is unsafe but the incident's source evidence is available
+        to rebuild from (the original package is preserved, never rewritten).
+      * evidence_required (blocked) — when the required source evidence is missing /
+        unavailable, regenerating would only reproduce the degraded package. The
+        evidence must be collected first; ``recovery_blocked_reason`` says so and the
+        UI routes the user to the incident to collect it.
+
+    ``can_export`` gates the actions; without it recovery is ``permission_required``
+    (both actions withheld, but the state stays legible with a reason).
+    """
+    state = display_state if display_state is not None else get_evidence_package_display_state(
+        package, manifest_reference=manifest_reference)
+    result: dict[str, Any] = {
+        'recovery_required': False,
+        'recovery_state': RECOVERY_NONE,
+        'recovery_blocked_reason': None,
+        'generate_manifest': False,
+        'regenerate_package': False,
+    }
+    completed = str(package.get('status') or '').lower() == 'completed'
+    has_manifest = bool(state['manifest_retrievable'])
+    superseded = bool(package.get('superseded'))
+    manifest_missing = bool(state.get('is_manifest_missing'))
+    if not (manifest_missing and completed and not has_manifest and not superseded):
+        return result
+
+    result['recovery_required'] = True
+    if not can_export:
+        result['recovery_state'] = RECOVERY_PERMISSION_REQUIRED
+        result['recovery_blocked_reason'] = _RECOVERY_PERMISSION_REASON
+        return result
+
+    downloadable = bool(state['is_downloadable'])
+    evidence_source = str(
+        package.get('evidence_source_type') or package.get('evidence_source') or ''
+    ).strip().lower()
+    package_status = str(package.get('package_status') or '').strip().lower()
+
+    # Sealing an integrity manifest around the existing artifact is unsafe for a
+    # degraded diagnostic package, or one built from missing / unavailable source
+    # evidence — it must never present degraded or fallback data as verifiable
+    # customer evidence.
+    manifest_unsafe = (
+        package_status in _DEGRADED_PACKAGE_STATUSES
+        or evidence_source in _MISSING_EVIDENCE_SOURCES
+    )
+    # Regeneration only yields a trustworthy package when the incident's source
+    # evidence is actually present. If it is missing / unavailable, regenerating just
+    # reproduces the degraded package — the evidence must be collected first.
+    regeneration_blocked = (
+        evidence_source in _MISSING_EVIDENCE_SOURCES
+        or package_status == 'blocked'
+    )
+    safe_to_manifest_existing_artifact = downloadable and not manifest_unsafe
+    safe_to_regenerate = not regeneration_blocked
+
+    if safe_to_manifest_existing_artifact:
+        result['recovery_state'] = RECOVERY_GENERATE_MANIFEST
+        result['generate_manifest'] = True
+        # Regeneration remains the fallback recovery when it, too, is safe.
+        result['regenerate_package'] = safe_to_regenerate
+    elif safe_to_regenerate:
+        result['recovery_state'] = RECOVERY_REGENERATE_PACKAGE
+        result['regenerate_package'] = True
+    else:
+        result['recovery_state'] = RECOVERY_EVIDENCE_REQUIRED
+        result['recovery_blocked_reason'] = _RECOVERY_EVIDENCE_REQUIRED_REASON
+    return result
+
+
 def get_package_allowed_actions(
     package: dict[str, Any],
     *,
@@ -1013,38 +1263,26 @@ def get_package_allowed_actions(
     package is created for the same incident), so historical evidence stays intact.
     It is never offered for a superseded package, a verified package, or once a
     retrievable manifest exists.
+
+    The two recovery booleans come from the canonical ``get_package_recovery_model``
+    selector so recovery POLICY (which action, if any) is resolved from independent
+    facts in ONE place — never re-derived from ``integrity_status`` here. A
+    manifest-missing package with no permitted action still exposes a structured
+    ``recovery_blocked_reason`` via ``get_package_recovery_model`` (surfaced by the
+    detail endpoint), so recovery is never a silent dead end.
     """
     state = get_evidence_package_display_state(package, manifest_reference=manifest_reference)
     has_manifest = bool(state['manifest_retrievable'])
     completed = str(package.get('status') or '').lower() == 'completed'
     downloadable = state['is_downloadable']
-    manifest_missing = bool(state.get('is_manifest_missing'))
-    superseded = bool(package.get('superseded'))
+    recovery = get_package_recovery_model(package, can_export=can_export, display_state=state)
     return {
         'view': True,
         'download': completed and downloadable and can_export,
         'download_manifest': completed and downloadable and has_manifest and can_export,
         'verify': completed and downloadable and has_manifest and can_export,
         'copy_hash': bool(_recorded_manifest_sha256(package)),
-        # Recovery: only a manifest_missing evidence package (no retrievable
-        # manifest) whose bytes are readable from storage can have a manifest
-        # generated in place.
-        'generate_manifest': (
-            completed
-            and downloadable
-            and not has_manifest
-            and manifest_missing
-            and can_export
-        ),
-        # Fallback recovery: supersede a manifest_missing package with a freshly
-        # regenerated one, preserving the original. Unlike in-place generation it
-        # does not require the stored artifact to be readable (it rebuilds from the
-        # incident), so it stays available even when Generate Manifest cannot run.
-        'regenerate_package': (
-            completed
-            and not has_manifest
-            and manifest_missing
-            and not superseded
-            and can_export
-        ),
+        # Recovery booleans are resolved by the canonical recovery-policy selector.
+        'generate_manifest': bool(recovery['generate_manifest']),
+        'regenerate_package': bool(recovery['regenerate_package']),
     }

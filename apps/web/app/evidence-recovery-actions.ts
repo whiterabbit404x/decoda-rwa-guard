@@ -38,6 +38,20 @@ export type EvidenceAllowedActions = {
 };
 
 /**
+ * Canonical recovery state emitted by the backend recovery selector. Manifest
+ * PRESENCE (`is_manifest_missing`) is a fact; recovery POLICY (which action, if
+ * any) is this separate axis. `evidence_required` / `permission_required` mean
+ * neither recovery action is available and a structured reason says what to do
+ * next — the UI shows a stable "Recovery required" panel, never a disabled button.
+ */
+export type EvidenceRecoveryState =
+  | 'none'
+  | 'generate_manifest'
+  | 'regenerate_package'
+  | 'evidence_required'
+  | 'permission_required';
+
+/**
  * Minimal package shape the gate needs. This mirrors the canonical fields the
  * exports list/detail endpoints return; the ticket refers to `hash_verification`
  * and `verify_integrity`, which map onto the wire contract fields
@@ -47,6 +61,10 @@ export type EvidenceActionSource = {
   integrity_status?: string | null;
   is_manifest_missing?: boolean;
   allowed_actions?: EvidenceAllowedActions;
+  /** Canonical recovery state (backend-authoritative when present). */
+  recovery_state?: string | null;
+  /** Why recovery is blocked, when it is — a customer-safe next-step message. */
+  recovery_blocked_reason?: string | null;
 };
 
 export type EvidenceActionState = {
@@ -62,12 +80,25 @@ export type EvidenceActionState = {
   canRegenerate: boolean;
   /**
    * Whether the detail-drawer footer renders the Generate Manifest button at
-   * all. A Manifest-Missing package always renders it (possibly disabled) so the
-   * recovery state is never silently hidden.
+   * all. A Manifest-Missing package renders it (possibly disabled) so the recovery
+   * state is never silently hidden — UNLESS recovery is blocked (evidence must be
+   * collected first / no permission), in which case the panel shows a stable
+   * "Recovery required" message + next action instead of a dead-end disabled button.
    */
   showGenerate: boolean;
   /** Whether the footer renders the Regenerate Package fallback button at all. */
   showRegenerate: boolean;
+  /** Canonical recovery state (backend value wins; else inferred from the actions). */
+  recoveryState: EvidenceRecoveryState;
+  /** Customer-safe reason recovery is blocked, when it is (else null). */
+  recoveryBlockedReason: string | null;
+  /**
+   * Recovery is blocked: neither in-place manifest generation nor regeneration is
+   * available (the source evidence must first be collected, or the user lacks
+   * permission). The panel shows a "Recovery required" message with a next action
+   * (View Incident / Collect Evidence) rather than the Generate/Regenerate buttons.
+   */
+  recoveryBlocked: boolean;
 };
 
 /**
@@ -92,15 +123,44 @@ export function resolveEvidenceActionState(
   const canGenerate = aa.generate_manifest ?? (ready && manifestMissing);
   const canRegenerate = aa.regenerate_package ?? (ready && manifestMissing);
 
+  // Recovery state: the backend value is authoritative; older responses without it
+  // are inferred from the (possibly fallback) action booleans. A blocked state
+  // (evidence must be collected first, or no permission) is never inferred from
+  // absent actions — it only ever comes from the backend, so an old response can
+  // never masquerade as blocked.
+  const rawRecoveryState = String(source.recovery_state ?? '').toLowerCase();
+  const recoveryState: EvidenceRecoveryState =
+    rawRecoveryState === 'evidence_required'
+      ? 'evidence_required'
+      : rawRecoveryState === 'permission_required'
+        ? 'permission_required'
+        : rawRecoveryState === 'generate_manifest'
+          ? 'generate_manifest'
+          : rawRecoveryState === 'regenerate_package'
+            ? 'regenerate_package'
+            : canGenerate
+              ? 'generate_manifest'
+              : canRegenerate
+                ? 'regenerate_package'
+                : 'none';
+  const recoveryBlocked =
+    recoveryState === 'evidence_required' || recoveryState === 'permission_required';
+  const recoveryBlockedReason = source.recovery_blocked_reason ?? null;
+
   return {
     manifestMissing,
     canVerify,
     canDownloadManifest,
     canGenerate,
     canRegenerate,
-    // A Manifest-Missing package always shows the recovery buttons so the state
-    // is legible; a healthy package shows them only if the backend permits.
-    showGenerate: manifestMissing || canGenerate,
-    showRegenerate: manifestMissing || canRegenerate,
+    // A Manifest-Missing package shows the recovery buttons so the state is legible;
+    // a healthy package shows them only if the backend permits. When recovery is
+    // BLOCKED the buttons are withheld and the panel shows a stable "Recovery
+    // required" message + next action instead — never a dead-end disabled button.
+    showGenerate: (manifestMissing || canGenerate) && !recoveryBlocked,
+    showRegenerate: (manifestMissing || canRegenerate) && !recoveryBlocked,
+    recoveryState,
+    recoveryBlockedReason,
+    recoveryBlocked,
   };
 }
