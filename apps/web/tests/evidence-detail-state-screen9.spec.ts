@@ -254,6 +254,13 @@ test('panel gates the detail drawer on the DETAIL model only and uses the stale-
   expect(source).not.toContain('const detailActions = (detail ?? pkg).allowed_actions');
   // Section 5: exactly one authoritative action source — the detail's allowed_actions.
   expect(source).toContain('const detailActions = detail?.allowed_actions;');
+  // The gate's readiness fallback is detail-derived too — the action gate never
+  // reads isPackageReady(pkg) (the list-row summary). This keeps recovery
+  // visibility 100% detail-authoritative: no summary field, not even `ready`, can
+  // influence whether Generate Manifest is shown.
+  expect(source).toContain(
+    'resolveDetailActionState(detail ?? null, detail ? isPackageReady(detail) : false)',
+  );
   // Development-only assertion guards the flicker invariant (section 10).
   expect(source).toContain("'[EV-2026-004]");
   // Polling terminality routes through the single shared predicate.

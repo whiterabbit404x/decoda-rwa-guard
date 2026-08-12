@@ -2460,7 +2460,13 @@ function PackageDetailPanel({
   // Generate Manifest never pops in from a summary row before the detail arrives.
   // Resolved through the ONE canonical gate (evidence-detail-state →
   // evidence-recovery-actions) the regression tests drive directly.
-  const actionGate = resolveDetailActionState(detail ?? null, isPackageReady(pkg));
+  //
+  // The readiness fallback is DETAIL-derived too (never isPackageReady(pkg)): the
+  // gate must read the DETAIL model ONLY, so no list-row/summary field — not even
+  // `ready` — can influence recovery visibility. `ready` is consulted solely for
+  // pre-`allowed_actions` responses; when detail is null the gate is PENDING and
+  // `ready` is unused, so this can never fall back to the selectedPkg summary.
+  const actionGate = resolveDetailActionState(detail ?? null, detail ? isPackageReady(detail) : false);
   const manifestMissing = actionGate.manifestMissing;
   const detailCanVerify = actionGate.canVerify;
   const detailCanManifest = actionGate.canDownloadManifest;
