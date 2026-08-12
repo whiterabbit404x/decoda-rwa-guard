@@ -2446,6 +2446,14 @@ function PackageDetailPanel({
   // Until it has, the manifest/recovery/verify state is PENDING (refreshing), not
   // an authoritative denial — we never derive it from the list-row summary.
   const detailAvailable = detail != null;
+  // While the selected package's own detail is still loading, the detail-gated
+  // actions (Verify / Download Manifest / Generate Manifest / Regenerate Package)
+  // are PENDING. Rather than render a half-resolved (disabled) button set that
+  // then changes the instant the authoritative detail arrives — the EV-2026-004
+  // "Generate Manifest appears then disappears" flicker — the action bar shows a
+  // neutral "Loading package actions…" affordance and renders the authoritative
+  // actions exactly once, from the detail response's allowed_actions (section 8).
+  const actionsPending = !detailAvailable && (detailLoading || detailRefreshing);
   // The ONE authoritative action source (EV-2026-004 flicker fix, section 5): the
   // storage-authoritative DETAIL's allowed_actions — NEVER the list-row summary,
   // whose manifest state is metadata-derived and legitimately differs (list:
@@ -3135,6 +3143,15 @@ function PackageDetailPanel({
         >
           Download Package
         </button>
+        {actionsPending ? (
+          <span
+            role="status"
+            style={{ alignSelf: 'center', fontSize: '0.75rem', color: '#94a3b8' }}
+          >
+            Loading package actions…
+          </span>
+        ) : (
+          <>
         {onGenerateManifest && showGenerateManifest ? (
           <button
             type="button"
@@ -3203,6 +3220,8 @@ function PackageDetailPanel({
             Download Manifest
           </button>
         ) : null}
+          </>
+        )}
         {pkg.incident_id ? (
           <Link
             href="/incidents"
