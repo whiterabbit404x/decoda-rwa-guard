@@ -141,6 +141,17 @@ type EvidencePackage = {
   is_legacy_export?: boolean;
   is_manifest_missing?: boolean;
   ready_for_verification?: boolean;
+  // Canonical status axes — manifest availability and evidence completeness are
+  // SEPARATE concerns; the UI never infers one from the other.
+  manifest_status?: string | null;
+  generation_status?: string | null;
+  verification_status?: string | null;
+  evidence_completeness_status?: string | null;
+  // Canonical recovery model: recovery_state is the policy axis; when recovery is
+  // blocked, recovery_blocked_reason is a customer-safe next-step message.
+  recovery_state?: string | null;
+  recovery_blocked_reason?: string | null;
+  recovery_required?: boolean;
   allowed_actions?: {
     view?: boolean;
     download?: boolean;
@@ -2490,6 +2501,16 @@ function PackageDetailPanel({
   // authoritative detail says otherwise (never on a background list/detail refresh).
   const showGenerateManifest = actionGate.showGenerate;
   const showRegeneratePackage = actionGate.showRegenerate;
+  // Recovery POLICY axis (backend-authoritative). When recovery is BLOCKED — the
+  // required source evidence must be collected first, or the user lacks permission —
+  // the recovery panel shows a stable "Recovery required" message + a next action
+  // (View Incident / Collect Evidence) rather than dead-end disabled buttons. The
+  // reason text is backend-supplied so it is always customer-safe.
+  const recoveryBlocked = actionGate.recoveryBlocked;
+  const recoveryState = actionGate.recoveryState;
+  const recoveryBlockedReason =
+    actionGate.recoveryBlockedReason ??
+    (detail?.recovery_blocked_reason ?? null);
   // Development-only guard (EV-2026-004): the recovery button MUST stay visible
   // while the authoritative DETAIL permits generation. If it is ever hidden while
   // detail says generate_manifest:true, a summary/pending value has leaked into the
@@ -2636,10 +2657,50 @@ function PackageDetailPanel({
             color: '#94a3b8',
           }}
         >
-          Refreshing package status…
+          Loading recovery options…
         </div>
       )}
-      {manifestMissing && (
+      {/* Recovery is BLOCKED (backend recovery_state = evidence_required /
+          permission_required): neither an in-place manifest nor a regeneration is a
+          valid recovery yet, so we show a STABLE "Recovery required" panel with the
+          backend's customer-safe reason and a clear next action — View Incident /
+          Collect Evidence — instead of dead-end disabled Generate/Regenerate buttons.
+          This is why the recovery surface never flickers a Generate Manifest button
+          for a degraded diagnostic package whose evidence is still missing. */}
+      {manifestMissing && recoveryBlocked && (
+        <div
+          role="group"
+          aria-label="Recovery required"
+          style={{
+            marginBottom: '0.75rem',
+            padding: '0.65rem 0.7rem',
+            background: 'rgba(239,68,68,0.07)',
+            borderRadius: '6px',
+            borderLeft: '3px solid #ef4444',
+          }}
+        >
+          <p style={{ margin: 0, fontSize: '0.82rem', fontWeight: 700, color: '#fca5a5' }}>
+            Recovery required
+          </p>
+          <p style={{ margin: '0.25rem 0 0.6rem', fontSize: '0.75rem', color: '#e2e8f0' }}>
+            {recoveryBlockedReason ??
+              (recoveryState === 'permission_required'
+                ? 'You do not have permission to recover this package. Ask a workspace administrator for evidence export access.'
+                : 'This diagnostic package cannot be verified because required source evidence is missing. Collect the missing evidence and regenerate the package.')}
+          </p>
+          {recoveryState !== 'permission_required' && pkg.incident_id ? (
+            <Link
+              href="/incidents"
+              prefetch={false}
+              className="btn btn-primary"
+              style={{ fontSize: '0.75rem' }}
+            >
+              View Incident / Collect Evidence
+            </Link>
+          ) : null}
+        </div>
+      )}
+      {manifestMissing && !recoveryBlocked && (
         <div
           role="group"
           aria-label="Manifest recovery"
