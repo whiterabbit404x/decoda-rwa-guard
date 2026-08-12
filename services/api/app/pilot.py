@@ -25011,6 +25011,8 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
         # actually produce.
         from services.api.app.evidence_completeness import (
             resolve_manifest_reference as _resolve_manifest_ref,
+            resolve_package_artifact_reference as _resolve_artifact_ref,
+            reconcile_completeness_hash_evidence as _reconcile_completeness,
             get_evidence_package_display_state as _display_state,
             integrity_status_label as _integrity_label,
             get_package_allowed_actions as _allowed_actions,
@@ -25025,6 +25027,12 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
         item['hash_display_state'] = _state['hash_state']
         item['files_hashed'] = _state['files_hashed']
         item['manifest_reference'] = _manifest_ref.as_dict()
+        # Separate canonical reference to the PACKAGE bundle object. A retrievable
+        # package artifact (Download works) does not imply a retrievable manifest
+        # (Verify / Download Manifest) — EV-2026-004 had the former without the
+        # latter — so the two never resolve through one reused storage key.
+        item['package_artifact_reference'] = _resolve_artifact_ref(
+            item, bundle_parts=manifest_parts, size_bytes=item.get('size_bytes'))
         # Authoritative SHA-256 for the hash column: the manifest's own hash when a
         # manifest is retrievable, else the recorded hash; never a stale value.
         item['manifest_sha256'] = _manifest_ref.sha256 if _manifest_ref.retrievable else None
@@ -25040,6 +25048,29 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
             _detail_can_export = 'evidence.export' in DEFAULT_ROLE_PERMISSIONS.get(_detail_role, frozenset())
         item['allowed_actions'] = _allowed_actions(item, can_export=_detail_can_export, manifest_reference=_manifest_ref)
         item['can_export'] = _detail_can_export
+
+        # Reconcile the stored (build-time) completeness snapshot's HASH evidence with
+        # the canonical manifest state resolved above. The snapshot is written with
+        # has_manifest=True / files_hashed=N by construction, so on its own it claims
+        # file_hashes and manifest_hash are present even for a manifest_missing package
+        # (EV-2026-004). Correcting it here keeps the detail response internally
+        # self-consistent: completeness categories, checklist and score can never
+        # contradict files_hashed / manifest_reference.retrievable.
+        #
+        # This runs AFTER integrity_status and allowed_actions are resolved: those are
+        # keyed on the canonical manifest reference, and the corrected completeness
+        # (which now lists file_hashes/manifest_hash as missing) must NOT be fed back
+        # into derive_integrity_status — doing so would flip a manifest_missing package
+        # to needs_evidence and hide its recovery action. Manifest existence is
+        # resolved from the reference, never from the completeness score.
+        completeness = _reconcile_completeness(
+            completeness,
+            files_hashed=_state['files_hashed'],
+            manifest_retrievable=_manifest_ref.retrievable,
+            manifest_sha256=item['manifest_sha256'],
+            manifest_verified=bool(verification and verification.get('valid') is True),
+        )
+        item['completeness'] = completeness
 
         # Agent findings — every statement references package records, never invented.
         findings: list[dict[str, Any]] = []

@@ -235,6 +235,17 @@ test('14e: Manifest-Missing recovery offers Generate Manifest (primary) and Rege
   expect(source).toContain('detailCanRegenerate');
 });
 
+test('14f: while the detail loads the action bar shows a neutral loading state, not a half-resolved button set (EV-2026-004 flicker)', () => {
+  const source = read(PANEL);
+  // A neutral action-loading affordance replaces the detail-gated buttons until
+  // the authoritative detail response arrives — so Generate Manifest / Verify /
+  // Download Manifest render exactly once, from allowed_actions, never optimistically.
+  expect(source).toContain('Loading package actions…');
+  // Gated on the PENDING (detail-not-yet-loaded) state, derived from detailAvailable.
+  expect(source).toContain('actionsPending');
+  expect(source).toContain('const actionsPending = !detailAvailable');
+});
+
 /* ── 15. Simulator evidence not labeled as live_provider ─────────── */
 
 test('15: simulator evidence is labeled simulator, not live_provider', () => {

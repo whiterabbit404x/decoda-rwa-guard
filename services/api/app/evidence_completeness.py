@@ -337,6 +337,104 @@ def _resolve_required_fields_present(categories: list[dict[str, Any]]) -> bool:
     return True
 
 
+def reconcile_completeness_hash_evidence(
+    completeness: dict[str, Any] | None,
+    *,
+    files_hashed: int,
+    manifest_retrievable: bool,
+    manifest_sha256: str | None,
+    manifest_verified: bool = False,
+) -> dict[str, Any] | None:
+    """Reconcile a completeness snapshot's HASH evidence with the canonical manifest.
+
+    A package's completeness is computed once, at build time, with
+    ``has_manifest=True`` and ``files_hashed=N`` by construction — so the stored
+    snapshot ALWAYS reports the ``file_hashes`` and ``manifest_hash`` categories as
+    present. When the canonical manifest reference is later resolved against storage
+    and the manifest turns out to be missing or unretrievable (the EV-2026-004
+    state), surfacing that stale snapshot makes the detail response contradict
+    itself: it would claim file/manifest hashes exist next to ``files_hashed=0`` and
+    a non-retrievable manifest.
+
+    This returns a copy of ``completeness`` whose hash-derived evidence can never
+    contradict the canonical facts resolved by ``get_evidence_package_display_state``
+    / ``resolve_manifest_reference``:
+
+      - ``file_hashes``  is present ONLY when ``files_hashed > 0`` (the canonical
+        count, which is 0 unless a retrievable manifest hashed every file).
+      - ``manifest_hash`` is present ONLY when the manifest is retrievable AND a
+        manifest SHA-256 exists.
+
+    The score, required/present/missing counts, ``missing_codes`` and the checklist
+    are recomputed from the corrected categories so the whole object stays internally
+    consistent. Non-hash categories are left untouched — evidence collection does not
+    change at read time. When the manifest is healthy this is a no-op. A minimal
+    snapshot (``{'score': N}`` with no categories) is returned unchanged: it makes no
+    per-category hash claim to correct.
+    """
+    if not isinstance(completeness, dict):
+        return completeness
+    categories = completeness.get('categories')
+    if not isinstance(categories, list):
+        return completeness
+
+    canonical_present = {
+        'file_hashes': int(files_hashed or 0) > 0,
+        'manifest_hash': bool(manifest_retrievable) and bool(manifest_sha256),
+    }
+
+    corrected: list[dict[str, Any]] = []
+    changed = False
+    for cat in categories:
+        if not isinstance(cat, dict):
+            corrected.append(cat)
+            continue
+        new_cat = dict(cat)
+        code = new_cat.get('code')
+        if code in canonical_present and new_cat.get('required'):
+            truthful = 'present' if canonical_present[code] else 'missing'
+            if new_cat.get('status') != truthful:
+                changed = True
+            new_cat['status'] = truthful
+        corrected.append(new_cat)
+
+    if not changed:
+        # Snapshot already agrees with canonical hash facts — nothing to correct.
+        return completeness
+
+    required = [c for c in corrected if isinstance(c, dict) and c.get('required')]
+    required_count = len(required)
+    present_count = sum(1 for c in required if c.get('status') == 'present')
+    unverifiable_count = sum(1 for c in required if c.get('status') == 'unverifiable')
+    missing_count = sum(1 for c in required if c.get('status') == 'missing')
+    missing_codes = [c.get('code') for c in required if c.get('status') in ('missing', 'unverifiable')]
+    score = round(100 * present_count / required_count) if required_count else 100
+    status_key, status_label = _status_for_score(score)
+
+    # Rebuild the checklist from the corrected categories + canonical hash facts so
+    # "File hashes generated" / "Provenance complete" can never sit next to
+    # files_hashed=0 or a missing manifest.
+    checklist_facts = {
+        'files_hashed': int(files_hashed or 0),
+        'has_manifest': canonical_present['manifest_hash'],
+        'manifest_verified': bool(manifest_verified) and canonical_present['manifest_hash'],
+        'has_audit_events': _category_status(corrected, 'audit_events') == 'present',
+    }
+
+    result = dict(completeness)
+    result['categories'] = corrected
+    result['required_count'] = required_count
+    result['present_count'] = present_count
+    result['missing_count'] = missing_count
+    result['unverifiable_count'] = unverifiable_count
+    result['missing_codes'] = missing_codes
+    result['score'] = score
+    result['status'] = status_key
+    result['status_label'] = status_label
+    result['checklist'] = _build_checklist(checklist_facts, corrected)
+    return result
+
+
 def verify_files_and_manifest(file_values: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
     """Recompute every file's SHA-256 + byte count and the manifest hash, and
     compare against the stored manifest. Pure and deterministic.
@@ -601,6 +699,59 @@ def resolve_manifest_reference(
         generated_at=str(package.get('manifest_generated_at') or '') or None,
         source='metadata',
     )
+
+
+def resolve_package_artifact_reference(
+    package: dict[str, Any],
+    *,
+    bundle_parts: dict[str, Any] | None = None,
+    size_bytes: int | None = None,
+) -> dict[str, Any]:
+    """Canonical reference to the stored PACKAGE artifact (the bundle object).
+
+    Distinct from ``resolve_manifest_reference``: the package artifact is the JSON
+    bundle persisted in object storage, whereas the manifest is a logical document
+    embedded INSIDE that bundle. A retrievable package artifact does NOT imply a
+    retrievable manifest — EV-2026-004 had a downloadable package object with no
+    manifest inside it — so Download (package) and Download Manifest / Verify resolve
+    through separate references and can never be conflated. The package artifact's
+    ``storage_key`` is the real object key; the manifest reference does not own that
+    key, it only lives within the object it points at.
+
+    ``retrievable`` reflects whether the bundle bytes were actually read back (when
+    ``bundle_parts`` from the stored-artifact reader is supplied) or, at the list
+    level, whether the object is expected to be readable (completed + storage up).
+    """
+    status = str(package.get('status') or '').lower()
+    storage_key = str(
+        package.get('storage_object_key') or package.get('storage_key') or ''
+    ).strip() or None
+    exists = status == 'completed' and storage_key is not None
+    if bundle_parts is not None:
+        storage_error = bundle_parts.get('storage_error')
+        bundle = bundle_parts.get('bundle')
+        retrievable = exists and storage_error is None and isinstance(bundle, dict) and bool(bundle)
+    else:
+        storage_available = package.get('storage_available')
+        retrievable = exists and storage_available is not False
+    resolved_size: int | None
+    try:
+        if size_bytes is not None:
+            resolved_size = int(size_bytes)
+        elif package.get('size_bytes') is not None:
+            resolved_size = int(package.get('size_bytes'))
+        else:
+            resolved_size = None
+    except (TypeError, ValueError):
+        resolved_size = None
+    return {
+        'exists': exists,
+        'retrievable': bool(retrievable),
+        'storage_key': storage_key,
+        'sha256': str(package.get('artifact_sha256') or '') or None,
+        'size_bytes': resolved_size,
+        'media_type': _MANIFEST_MEDIA_TYPE,
+    }
 
 
 def _is_evidence_export_type(package: dict[str, Any]) -> bool:
