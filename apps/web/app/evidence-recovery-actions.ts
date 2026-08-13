@@ -200,3 +200,94 @@ export function resolveEvidenceActionState(
     recoveryBlocked,
   };
 }
+
+/* ── Recovery requirements: source evidence vs derived integrity artifacts ────── */
+
+/**
+ * DERIVED integrity artifacts — produced automatically once enough SOURCE evidence
+ * exists to regenerate the package. An operator can NEVER directly "collect" these;
+ * listing them beside collectable source evidence would falsely imply a manual step.
+ * They are the two hash categories the completeness snapshot always reports
+ * (`file_hashes` / `manifest_hash`).
+ */
+export const DERIVED_INTEGRITY_CODES = ['file_hashes', 'manifest_hash'] as const;
+const DERIVED_INTEGRITY_SET = new Set<string>(DERIVED_INTEGRITY_CODES);
+
+/**
+ * Fallback human labels for evidence category codes, used only when a completeness
+ * response omits the per-category `label` (older payloads). The backend's category
+ * `label` is authoritative and wins when present.
+ */
+const EVIDENCE_CODE_LABELS: Record<string, string> = {
+  incident_identity: 'Incident identity',
+  original_alert: 'Original alert',
+  detection_provenance: 'Detection provenance',
+  telemetry_reference: 'Raw telemetry references',
+  asset_identity: 'Asset identity',
+  chain_metadata: 'Chain and transaction metadata',
+  investigation_timeline: 'Investigation timeline',
+  response_recommendation: 'Recommended response',
+  approval_decision: 'Approval or rejection decision',
+  execution_result: 'Executed response and execution result',
+  rejection_evidence: 'Rejection evidence',
+  closure_state: 'Closure or containment state',
+  audit_events: 'Audit events',
+  file_hashes: 'File hashes',
+  manifest_hash: 'Manifest hash',
+};
+
+export type MissingRequirement = { code: string; label: string };
+
+/**
+ * The missing recovery requirements, split by whether the operator can act on them.
+ *  - `source`  : source-evidence gaps that must be collected (via the incident)
+ *                before the package can be regenerated.
+ *  - `derived` : integrity artifacts (file hashes / manifest hash) that are
+ *                GENERATED AFTER RECOVERY — never collected by hand.
+ */
+export type EvidenceRecoveryRequirements = {
+  source: MissingRequirement[];
+  derived: MissingRequirement[];
+};
+
+/** The completeness fields the requirement split reads. */
+export type CompletenessRequirementSource = {
+  missing_codes?: string[] | null;
+  categories?: Array<{
+    code?: string | null;
+    label?: string | null;
+    required?: boolean;
+    status?: string | null;
+  }> | null;
+};
+
+/**
+ * Split a package's MISSING required evidence (canonical `completeness.missing_codes`)
+ * into source-evidence gaps and derived integrity artifacts.
+ *
+ * The order of `missing_codes` is preserved. `file_hashes` / `manifest_hash` are the
+ * only DERIVED artifacts — everything else is source evidence the operator collects on
+ * the incident. This is the ONE place that classification lives, so the recovery panel
+ * (which lists both groups) and the Crypto-Auditing Clerk summary (which counts only the
+ * source gaps) can never disagree about what "6 source-evidence categories are missing"
+ * means. Never counts file_hashes / manifest_hash as operator-collected source evidence.
+ */
+export function resolveRecoveryRequirements(
+  completeness: CompletenessRequirementSource | null | undefined,
+): EvidenceRecoveryRequirements {
+  const source: MissingRequirement[] = [];
+  const derived: MissingRequirement[] = [];
+  if (!completeness) return { source, derived };
+
+  const labelByCode = new Map<string, string>();
+  for (const c of completeness.categories ?? []) {
+    if (c?.code && typeof c.label === 'string' && c.label) labelByCode.set(c.code, c.label);
+  }
+
+  for (const code of completeness.missing_codes ?? []) {
+    if (!code) continue;
+    const label = labelByCode.get(code) ?? EVIDENCE_CODE_LABELS[code] ?? code;
+    (DERIVED_INTEGRITY_SET.has(code) ? derived : source).push({ code, label });
+  }
+  return { source, derived };
+}
