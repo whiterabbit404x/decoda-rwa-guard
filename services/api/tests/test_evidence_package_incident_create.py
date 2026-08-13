@@ -9,9 +9,13 @@ package queued.") but no row showed up in the table:
 2. A queued/building package is included by GET /exports and is NOT filtered out.
 3. The response is canonical: package_id (+ export_job_id / id aliases), incident_id,
    package_number, status, and a `created` flag distinguishing new vs idempotent.
-4. Idempotency: a second create for the same incident + evidence scope reuses the
-   existing completed+retrievable package (created=False) and inserts no duplicate.
-5. A stale/missing prior artifact regenerates into the SAME row id (no duplicate).
+4. Idempotency is keyed on the canonical SOURCE-SNAPSHOT fingerprint: a second
+   create for the SAME source snapshot reuses the existing completed+retrievable
+   package (created=False) and inserts no duplicate; a create after the source
+   evidence changed materially (different fingerprint) mints a NEW package that
+   supersedes the prior one and never rewrites the historical row.
+5. A stale/missing prior artifact for the SAME snapshot regenerates into the SAME
+   row id (no duplicate, no supersession).
 6. Fail-closed: unconfigured generation storage raises 503 and commits nothing
    (no fake "queued" row, no success).
 7. An upload failure PERSISTS a visible 'failed' row and reports status='failed'
@@ -117,6 +121,7 @@ class _IncidentChainConnection:
         existing_status: str = 'completed',
         existing_storage_key: str | None = 'ws-1/pkg-existing.json',
         incident_found: bool = True,
+        existing_fingerprint_matches: bool = True,
     ):
         self.executed: list[tuple[str, object]] = []
         self.committed = False
@@ -124,6 +129,10 @@ class _IncidentChainConnection:
         self._existing_status = existing_status
         self._existing_storage_key = existing_storage_key
         self._incident_found = incident_found
+        # Whether the existing package's stored source fingerprint MATCHES the one
+        # the collector resolves for the current request. True → same snapshot
+        # (reuse/repair); False → the snapshot changed (new, superseding package).
+        self._existing_fingerprint_matches = existing_fingerprint_matches
         self.inserted_pkg_id: str | None = None
         self.filters_repaired = False
         # export_jobs row state (mutated by the generation UPDATEs)
@@ -140,9 +149,11 @@ class _IncidentChainConnection:
         self.committed = True
 
     def _handle(self, stmt, params):
-        # Idempotency lookup (incident-scoped: response_action_id IS NULL)
-        if "(filters->>'response_action_id') IS NULL" in stmt:
-            if self._existing_package_id:
+        # Idempotency reuse lookup — scoped to the canonical SOURCE-SNAPSHOT
+        # fingerprint. Returns the existing package only when its stored fingerprint
+        # matches the current snapshot (models "same source evidence").
+        if 'evidence_source_fingerprint' in stmt and "(filters->>'response_action_id') IS NULL" in stmt:
+            if self._existing_package_id and self._existing_fingerprint_matches:
                 return _Row({
                     'id': self._existing_package_id,
                     'status': self._existing_status,
@@ -151,6 +162,15 @@ class _IncidentChainConnection:
                     'filters': {'incident_id': 'inc-1', 'include_raw_events': True},
                 })
             return _Row(None)
+        # Supersession-target lookup (latest incident package, any fingerprint) — the
+        # prior package a changed snapshot supersedes.
+        if "(filters->>'response_action_id') IS NULL" in stmt:
+            if self._existing_package_id:
+                return _Row({'id': self._existing_package_id})
+            return _Row(None)
+        # Investigation-timeline rows consulted by the source fingerprint.
+        if 'FROM incident_timeline' in stmt:
+            return _Row(rows=[])
         # Regenerate-into-same-row filters repair
         if 'UPDATE export_jobs SET filters' in stmt:
             self.filters_repaired = True
@@ -302,7 +322,11 @@ def test_idempotent_reuse_returns_existing_without_duplicate(monkeypatch):
 
 
 def test_idempotent_regenerates_stale_object_into_same_row(monkeypatch):
-    """Existing completed row whose artifact is gone regenerates into the SAME id."""
+    """Existing completed row whose artifact is gone regenerates into the SAME id.
+
+    The prior package has the SAME source fingerprint (unchanged evidence); only
+    its stored artifact is missing, so it is repaired in place — never duplicated
+    and never superseded."""
     conn = _IncidentChainConnection(existing_package_id='pkg-gone', existing_status='completed', existing_storage_key='ws-1/pkg-gone.json')
     _monkeypatch_common(monkeypatch, conn, storage=_FakeStorageObjectMissing())
 
@@ -310,9 +334,43 @@ def test_idempotent_regenerates_stale_object_into_same_row(monkeypatch):
 
     assert result['package_id'] == 'pkg-gone', 'Reuses the same row id, never a duplicate'
     assert result['created'] is True
+    assert result['supersedes_package_id'] is None, 'A same-snapshot repair supersedes nothing'
     assert conn.filters_repaired, 'A stale row must be repaired + regenerated in place'
     inserts = [s for s, _ in conn.executed if 'INSERT INTO export_jobs' in s]
     assert not inserts, 'Regeneration must not insert a duplicate row'
+
+
+def test_changed_source_snapshot_creates_superseding_package(monkeypatch):
+    """When the canonical source snapshot changed (its fingerprint differs from the
+    prior package's), a NEW package is created that SUPERSEDES the prior one — the
+    historical row (EV-2026-004) is never reused, returned, or rewritten in place.
+
+    This is the reported Screen 9 regression: after the collector was repaired so an
+    incident's linked alert / telemetry / investigation timeline resolve, clicking
+    Create must no longer resolve back to the stale historical package."""
+    conn = _IncidentChainConnection(
+        existing_package_id='ev-2026-004',
+        existing_status='completed',
+        existing_storage_key='ws-1/ev-2026-004.json',
+        existing_fingerprint_matches=False,  # the source snapshot changed
+    )
+    _monkeypatch_common(monkeypatch, conn)
+
+    result = pilot.create_proof_bundle_export({'incident_id': 'inc-1'}, _fake_request())
+
+    assert result['created'] is True
+    assert result['package_id'] == conn.inserted_pkg_id
+    assert conn.inserted_pkg_id and conn.inserted_pkg_id != 'ev-2026-004', 'A brand-new row is minted'
+    assert result['supersedes_package_id'] == 'ev-2026-004'
+    assert result['evidence_source_fingerprint'], 'The new package records its source fingerprint'
+    assert not conn.filters_repaired, 'The historical EV-2026-004 row is never rewritten in place'
+    # The new row persists its supersession lineage + source fingerprint in filters.
+    inserts = [(s, p) for s, p in conn.executed if 'INSERT INTO export_jobs' in s]
+    assert inserts, 'A new package row must be inserted'
+    new_filters = json.loads(inserts[0][1][3])
+    assert new_filters['supersedes_package_id'] == 'ev-2026-004'
+    assert new_filters['superseded_from'] == 'ev-2026-004'
+    assert new_filters['evidence_source_fingerprint'] == result['evidence_source_fingerprint']
 
 
 def test_storage_unconfigured_fails_closed_no_commit(monkeypatch):

@@ -1151,6 +1151,8 @@ export default function EvidenceAuditPanel() {
         id?: string;
         status?: string;
         created?: boolean;
+        supersedes_package_id?: string | null;
+        evidence_source_fingerprint?: string | null;
         detail?: unknown;
         error_message?: string;
         error?: string;
@@ -1189,11 +1191,18 @@ export default function EvidenceAuditPanel() {
         return;
       }
 
-      // Status-specific truthful success messages.
+      // Status-specific truthful success messages. Idempotency is keyed on the
+      // canonical source-evidence snapshot, so "already exists" means the CURRENT
+      // snapshot is unchanged — and a fresh package that supersedes a prior one was
+      // built because the source evidence changed materially.
       if (payload.created === false) {
-        setMessage('An evidence package already exists for this incident and evidence scope.');
+        setMessage('An evidence package already exists for the current evidence snapshot.');
       } else if (backendStatus === 'completed') {
-        setMessage('Evidence package created.');
+        setMessage(
+          payload.supersedes_package_id
+            ? 'New evidence package created from updated source evidence.'
+            : 'Evidence package created.',
+        );
       } else {
         // Asynchronous generation (queued/building/hashing/verifying).
         setMessage('Evidence package queued.');

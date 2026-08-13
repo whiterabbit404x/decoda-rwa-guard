@@ -21331,6 +21331,8 @@ def _proof_bundle_response(
     package_number: Any = None,
     artifact_meta: dict[str, Any] | None = None,
     error_message: Any = None,
+    supersedes_package_id: str | None = None,
+    evidence_source_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     """Canonical, list-consistent Screen 9 evidence-package creation response.
 
@@ -21338,6 +21340,9 @@ def _proof_bundle_response(
     ``id`` aliases for older clients), the incident it belongs to, the assigned
     ``package_number``, the truthful ``status``, and a ``created`` flag so the UI
     can distinguish a freshly created package from an idempotently returned one.
+    ``supersedes_package_id`` names the prior package this one supersedes (when a
+    changed source snapshot minted a NEW package), and ``evidence_source_fingerprint``
+    is the canonical source-snapshot identity the idempotency decision keyed on.
     """
     meta = artifact_meta or {}
     return {
@@ -21348,6 +21353,8 @@ def _proof_bundle_response(
         'package_number': str(package_number).strip() if package_number else None,
         'status': status_value,
         'created': bool(created),
+        'supersedes_package_id': supersedes_package_id,
+        'evidence_source_fingerprint': evidence_source_fingerprint,
         'download_link': f'/exports/{pkg_id}/download' if status_value == 'completed' else None,
         'export_status': meta.get('export_status'),
         'evidence_source_type': meta.get('evidence_source_type'),
@@ -21355,6 +21362,186 @@ def _proof_bundle_response(
         'warnings': meta.get('warnings'),
         'error_message': error_message,
     }
+
+
+def _evidence_source_fingerprint(
+    connection: Any, *, workspace_id: str, incident_id: str
+) -> dict[str, Any]:
+    """Deterministic fingerprint of an incident's canonical source evidence (Screen 9).
+
+    Screen 9 idempotency must tell "the same source evidence" (reuse the existing
+    package) apart from "the source evidence changed materially" (create a NEW,
+    superseding package). Incident id + evidence scope alone cannot: after the
+    canonical evidence collector was repaired to resolve an incident's linked
+    alert, telemetry and investigation timeline, a second Create for the SAME
+    incident still resolved to the historical package built from the OLD, partial
+    snapshot (EV-2026-004) and no new package was created.
+
+    This computes a stable SHA-256 over the identities AND version markers of the
+    workspace-scoped source records the proof-bundle collector resolves — the
+    incident, its canonically linked alert(s) (detection_metrics bridge, then the
+    incidents.source_alert_id / linked_alert_ids / alerts.incident_id relations the
+    Incident page uses), telemetry (detection_metrics), detections, response
+    actions and investigation-timeline rows — mirroring the collector's own
+    resolution order. Two materially different snapshots always fingerprint
+    differently; an unchanged snapshot always fingerprints the same, so the same
+    click is idempotent while a repaired/expanded snapshot supersedes.
+
+    It deliberately EXCLUDES the volatile meta rows that evidence-package creation
+    itself writes (``export.*`` audit events), so clicking Create again with no
+    further evidence change reproduces the SAME fingerprint and never spawns a
+    runaway EV-N+1. Never derived from wall-clock, random, package number or the
+    completeness score (two different snapshots can share a completeness score).
+
+    Returns ``{'fingerprint': 'sha256:<hex>', 'facts': {...}}`` — the digest keys
+    idempotency; the facts are diagnostic only. Raises 404 when the incident is not
+    in the caller's workspace (fail-closed, before any package row is minted).
+    """
+    incident = connection.execute(
+        'SELECT * FROM incidents WHERE workspace_id = %s AND id = %s',
+        (workspace_id, incident_id),
+    ).fetchone()
+    if incident is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Incident not found.')
+
+    def _s(value: Any) -> str | None:
+        return None if value is None else str(value)
+
+    # Canonical alert resolution (mirrors the collector's precedence): alerts
+    # bridged to THIS incident by a detection_metrics row, else the canonical
+    # originating alert(s) via incidents.source_alert_id / linked_alert_ids /
+    # alerts.incident_id — the SAME relations the Incident detail page uses.
+    alert_rows = connection.execute(
+        '''
+        SELECT a.id, a.status, a.severity, a.source, a.detection_id, a.detection_event_id
+        FROM alerts a
+        JOIN detection_metrics dm ON dm.alert_id = a.id
+        WHERE dm.workspace_id = %s AND dm.incident_id = %s
+        ''',
+        (workspace_id, incident_id),
+    ).fetchall()
+    if not alert_rows:
+        _canon_ids: list[str] = []
+        _linked = incident.get('linked_alert_ids')
+        if isinstance(_linked, list):
+            _canon_ids.extend(str(a).strip() for a in _linked if a and str(a).strip())
+        _src_alert = incident.get('source_alert_id')
+        if _src_alert and str(_src_alert).strip():
+            _canon_ids.append(str(_src_alert).strip())
+        alert_rows = connection.execute(
+            '''
+            SELECT a.id, a.status, a.severity, a.source, a.detection_id, a.detection_event_id
+            FROM alerts a
+            WHERE a.workspace_id = %s
+              AND (a.incident_id = %s::uuid OR a.id = ANY(%s::uuid[]))
+            ''',
+            (workspace_id, incident_id, _canon_ids),
+        ).fetchall()
+    alert_ids = sorted({str(r.get('id')) for r in alert_rows if r.get('id')})
+
+    # Telemetry (detection_metrics): by incident, else through the resolved alert(s).
+    metric_rows = connection.execute(
+        'SELECT id, detected_at FROM detection_metrics WHERE workspace_id = %s AND incident_id = %s',
+        (workspace_id, incident_id),
+    ).fetchall()
+    if not metric_rows and alert_ids:
+        metric_rows = connection.execute(
+            'SELECT id, detected_at FROM detection_metrics WHERE workspace_id = %s AND alert_id = ANY(%s::uuid[])',
+            (workspace_id, alert_ids),
+        ).fetchall()
+
+    # Detections linked to the incident's alerts.
+    detection_rows: list[Any] = []
+    if alert_ids:
+        try:
+            detection_rows = connection.execute(
+                'SELECT id, status, detected_at FROM detections WHERE workspace_id = %s AND linked_alert_id = ANY(%s::uuid[])',
+                (workspace_id, alert_ids),
+            ).fetchall()
+        except Exception:
+            detection_rows = []
+
+    # Response actions for the incident (status + execution markers are version bits).
+    action_rows = connection.execute(
+        '''
+        SELECT id, status, action_type, mode, executed_at, rolled_back_at
+        FROM response_actions
+        WHERE workspace_id = %s AND incident_id = %s
+        ''',
+        (workspace_id, incident_id),
+    ).fetchall()
+
+    # Investigation-timeline (state-transition) rows.
+    timeline_rows: list[Any] = []
+    try:
+        timeline_rows = connection.execute(
+            'SELECT id, event_type, created_at FROM incident_timeline WHERE workspace_id = %s AND incident_id = %s',
+            (workspace_id, incident_id),
+        ).fetchall()
+    except Exception:
+        timeline_rows = []
+
+    facts: dict[str, Any] = {
+        'incident': {
+            'id': str(incident_id),
+            'status': _s(incident.get('status')),
+            'severity': _s(incident.get('severity')),
+            'asset_id': _s(incident.get('asset_id')),
+            'source_alert_id': _s(incident.get('source_alert_id')),
+            'linked_alert_ids': sorted(str(a) for a in (incident.get('linked_alert_ids') or []) if a),
+        },
+        'alerts': sorted(
+            (
+                {
+                    'id': _s(r.get('id')),
+                    'status': _s(r.get('status')),
+                    'severity': _s(r.get('severity')),
+                    'source': _s(r.get('source')),
+                    'detection_id': _s(r.get('detection_id')),
+                    'detection_event_id': _s(r.get('detection_event_id')),
+                }
+                for r in alert_rows
+            ),
+            key=lambda d: d['id'] or '',
+        ),
+        'telemetry': sorted(
+            ({'id': _s(r.get('id')), 'detected_at': _s(r.get('detected_at'))} for r in metric_rows),
+            key=lambda d: d['id'] or '',
+        ),
+        'detections': sorted(
+            (
+                {'id': _s(r.get('id')), 'status': _s(r.get('status')), 'detected_at': _s(r.get('detected_at'))}
+                for r in detection_rows
+            ),
+            key=lambda d: d['id'] or '',
+        ),
+        'response_actions': sorted(
+            (
+                {
+                    'id': _s(r.get('id')),
+                    'status': _s(r.get('status')),
+                    'action_type': _s(r.get('action_type')),
+                    'mode': _s(r.get('mode')),
+                    'executed_at': _s(r.get('executed_at')),
+                    'rolled_back_at': _s(r.get('rolled_back_at')),
+                }
+                for r in action_rows
+            ),
+            key=lambda d: d['id'] or '',
+        ),
+        'investigation_timeline': {
+            'count': len(timeline_rows),
+            'ids': sorted(str(r.get('id')) for r in timeline_rows if r.get('id')),
+            'latest': max(
+                (_s(r.get('created_at')) for r in timeline_rows if r.get('created_at')),
+                default=None,
+            ),
+        },
+    }
+
+    from services.api.app.evidence_signing import canonical_json as _canon_json
+    digest = hashlib.sha256(_canon_json(facts)).hexdigest()
+    return {'fingerprint': f'sha256:{digest}', 'facts': facts}
 
 
 def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -21424,37 +21611,52 @@ def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dic
             },
         )
 
+        # Canonical source-snapshot fingerprint (Screen 9 idempotency identity).
+        # Collected from the incident's canonical source-record identities/versions
+        # (via the repaired collector's own resolution) BEFORE the reuse lookup, so
+        # "same source evidence" (reuse) is told apart from "source evidence changed
+        # materially" (a NEW, superseding package) — never by incident id + scope
+        # alone, which cannot see a repaired/expanded snapshot. Fail-closed: a
+        # cross-workspace incident raises 404 here, before any row is minted.
+        _fp = _evidence_source_fingerprint(connection, workspace_id=workspace_id, incident_id=incident_id)
+        evidence_source_fingerprint = str(_fp.get('fingerprint') or '')
+
         # Concurrency-safe idempotency: serialize the check-and-insert for this
-        # (workspace, incident, incident-scope) with a per-key transaction advisory
-        # lock — the project's existing convention (see _next_evidence_package_number).
-        # It is held until this transaction commits, so two concurrent equivalent
-        # requests can never both pass the reuse check and insert a duplicate: the
-        # first inserts + commits, the second blocks, then finds the committed row
-        # and returns it idempotently. A hard unique index is deliberately NOT used
-        # because the product allows multiple (superseding) packages per incident
-        # over time; the lock guards the narrow create-or-reuse decision instead.
+        # (workspace, incident) with a per-key transaction advisory lock — the
+        # project's existing convention (see _next_evidence_package_number). It is
+        # held until this transaction commits, so two concurrent requests for the
+        # SAME source fingerprint can never both pass the reuse check and insert a
+        # duplicate: the first inserts + commits, the second blocks, then finds the
+        # committed row and returns it idempotently. A hard unique index is
+        # deliberately NOT used because the product allows multiple (superseding)
+        # packages per incident over time; the lock guards the create-or-reuse
+        # decision instead. It is incident-scoped (not fingerprint-scoped) so it also
+        # serializes the supersession bookkeeping across changing snapshots.
         connection.execute(
             'SELECT pg_advisory_xact_lock(hashtext(%s))',
             (f'evidence_package_incident:{workspace_id}:{incident_id}',),
         )
 
-        # Idempotency: reuse an existing incident-scoped proof_bundle for this
-        # incident (never a response-action-scoped one) that completed AND whose
-        # artifact is still retrievable. Any other state (missing key, stale
-        # object, failed) regenerates into the same row id below.
-        existing = connection.execute(
-            """SELECT id, status, storage_object_key, package_number, filters FROM export_jobs
-               WHERE workspace_id = %s
-                 AND export_type = 'proof_bundle'
-                 AND filters->>'incident_id' = %s
-                 AND (filters->>'response_action_id') IS NULL
-               ORDER BY created_at DESC LIMIT 1""",
-            (workspace_id, incident_id),
-        ).fetchone()
-        # In supersede (regenerate) mode the reuse/rewrite paths are skipped entirely
-        # so the prior package is never returned or overwritten — a brand-new row is
-        # always created below.
-        if existing and not supersede:
+        # Idempotency by canonical SOURCE SNAPSHOT: reuse an existing incident-scoped
+        # proof_bundle (never a response-action-scoped one) only when it was built
+        # from the SAME source fingerprint AND its artifact is still retrievable. A
+        # package built from a different (older/partial) snapshot is never reused and
+        # never rewritten — it is superseded by a new package below, so the historical
+        # evidence state stays immutable. In supersede (explicit regenerate) mode the
+        # reuse path is skipped entirely so a brand-new row is always minted.
+        existing = None
+        if not supersede:
+            existing = connection.execute(
+                """SELECT id, status, storage_object_key, package_number, filters FROM export_jobs
+                   WHERE workspace_id = %s
+                     AND export_type = 'proof_bundle'
+                     AND filters->>'incident_id' = %s
+                     AND (filters->>'response_action_id') IS NULL
+                     AND filters->>'evidence_source_fingerprint' = %s
+                   ORDER BY created_at DESC LIMIT 1""",
+                (workspace_id, incident_id, evidence_source_fingerprint),
+            ).fetchone()
+        if existing is not None:
             existing_pkg_id = str(existing['id'])
             existing_status = str(existing.get('status') or '')
             existing_key = str(existing.get('storage_object_key') or '').strip()
@@ -21470,8 +21672,8 @@ def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dic
                     retrievable = False  # object gone / unreadable — must regenerate
                 if retrievable:
                     logger.info(
-                        'evidence_package_reused request_id=%s job_id=%s incident_id=%s created=false duration_ms=%.0f',
-                        request_id, existing_pkg_id, incident_id, (monotonic() - _t0) * 1000.0,
+                        'evidence_package_reused request_id=%s job_id=%s incident_id=%s fingerprint=%s created=false duration_ms=%.0f',
+                        request_id, existing_pkg_id, incident_id, evidence_source_fingerprint, (monotonic() - _t0) * 1000.0,
                     )
                     connection.commit()  # persist the append-only request event
                     return _proof_bundle_response(
@@ -21480,20 +21682,52 @@ def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dic
                         status_value='completed',
                         created=False,
                         package_number=existing.get('package_number'),
+                        evidence_source_fingerprint=evidence_source_fingerprint,
                     )
 
-        # Fresh create, or regenerate a stale/missing/failed prior row into the
-        # SAME id so repeated clicks can never spawn duplicates. In supersede mode a
-        # NEW id is always minted so the prior (Manifest-Missing) package is left
-        # untouched and becomes superseded — historical evidence is never rewritten.
-        reuse_existing = bool(existing) and not supersede
-        pkg_id = str(existing['id']) if reuse_existing else str(uuid.uuid4())
+        # No reusable package for THIS snapshot. Either:
+        #  • a package with the SAME fingerprint exists but is stale/missing/failed →
+        #    regenerate into that SAME id (a storage repair for one snapshot, never a
+        #    rewrite of a different one), or
+        #  • this is a NEW/changed snapshot (or an explicit supersede) → mint a NEW
+        #    package that SUPERSEDES the incident's prior latest package. The prior
+        #    package is left untouched (it becomes superseded) so evidence captured on
+        #    its collection date is never rewritten.
+        reuse_existing = existing is not None and not supersede
+        supersedes_package_id: str | None = None
+        if reuse_existing:
+            pkg_id = str(existing['id'])
+        else:
+            pkg_id = str(uuid.uuid4())
+            if supersede:
+                # Explicit "Regenerate Package" recovery — supersede the named prior row.
+                supersedes_package_id = superseded_from
+            else:
+                # A changed snapshot supersedes the incident's current latest package.
+                _prior = connection.execute(
+                    """SELECT id FROM export_jobs
+                       WHERE workspace_id = %s
+                         AND export_type = 'proof_bundle'
+                         AND filters->>'incident_id' = %s
+                         AND (filters->>'response_action_id') IS NULL
+                       ORDER BY created_at DESC LIMIT 1""",
+                    (workspace_id, incident_id),
+                ).fetchone()
+                supersedes_package_id = str(_prior['id']) if _prior else None
         output_path = f'{workspace_id}/{pkg_id}.json'
-        filters = {'incident_id': incident_id, 'include_raw_events': include_raw_events}
+        filters = {
+            'incident_id': incident_id,
+            'include_raw_events': include_raw_events,
+            'evidence_source_fingerprint': evidence_source_fingerprint,
+        }
         if supersede:
             filters['regenerated'] = True
-            if superseded_from:
-                filters['superseded_from'] = superseded_from
+        if supersedes_package_id:
+            # Both keys carry the same prior-package UUID: `supersedes_package_id` is
+            # the canonical lineage field; `superseded_from` preserves the existing
+            # regenerate-flow convention already read by the recovery selectors.
+            filters['supersedes_package_id'] = supersedes_package_id
+            filters['superseded_from'] = supersedes_package_id
         if reuse_existing:
             connection.execute(
                 "UPDATE export_jobs SET filters = %s::jsonb, status = 'queued', error_message = NULL, updated_at = NOW() WHERE id = %s AND workspace_id = %s",
@@ -21537,7 +21771,9 @@ def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dic
                 'incident_id': incident_id,
                 'request_id': request_id,
                 'regenerated': supersede,
-                'superseded_from': superseded_from,
+                'superseded_from': supersedes_package_id,
+                'supersedes_package_id': supersedes_package_id,
+                'evidence_source_fingerprint': evidence_source_fingerprint,
                 'status': final_status,
                 'result': 'success' if final_status == 'completed' else 'failed',
             },
@@ -21564,6 +21800,8 @@ def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dic
             package_number=final_number,
             artifact_meta=artifact_meta,
             error_message=final_error,
+            supersedes_package_id=supersedes_package_id,
+            evidence_source_fingerprint=evidence_source_fingerprint,
         )
 
 
@@ -24930,7 +25168,8 @@ def list_exports(request: Request) -> dict[str, Any]:
             # selector then reports truthfully as a legacy export.
             for _mf in ('export_status', 'evidence_source_type', 'missing_sections', 'unavailable_sections',
                         'warnings', 'chain_complete', 'completeness_score', 'verified_at', 'files_hashed', 'integrity_hash',
-                        'manifest_sha256', 'manifest_file_count', 'manifest_size_bytes', 'manifest_generated_at'):
+                        'manifest_sha256', 'manifest_file_count', 'manifest_size_bytes', 'manifest_generated_at',
+                        'evidence_source_fingerprint', 'supersedes_package_id'):
                 if _mf in filters_val:
                     item[_mf] = filters_val[_mf]
             item['completeness_score'] = filters_val.get('completeness_score')
@@ -25177,6 +25416,9 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
         item['integrity_hash'] = filters_val.get('integrity_hash')
         item['completeness_score'] = filters_val.get('completeness_score')
         item['files_hashed'] = filters_val.get('files_hashed')
+        # Canonical source-snapshot idempotency identity + supersession lineage.
+        item['evidence_source_fingerprint'] = filters_val.get('evidence_source_fingerprint')
+        item['supersedes_package_id'] = filters_val.get('supersedes_package_id') or filters_val.get('superseded_from')
         _detail_incident_id = str(filters_val.get('incident_id') or '').strip()
         item['incident_short_id'] = f'INC-{_detail_incident_id[:8]}' if _detail_incident_id else None
         item['package_number'] = str(item.get('package_number') or '').strip() or f"EV-{str(export_id)[:8].upper()}"

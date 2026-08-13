@@ -722,6 +722,13 @@ def _bootstrap_create(monkeypatch, conn, storage):
     monkeypatch.setattr(pilot, 'load_export_storage', lambda: storage)
     monkeypatch.setattr(pilot, 'log_audit', lambda *a, **k: None)
     monkeypatch.setattr(pilot, '_generate_export_artifact', lambda *a, **k: {})
+    # This connection double models only the export_jobs decision path, not the
+    # incident's canonical source records, so stub the source fingerprint (its real
+    # queries are exercised in test_evidence_source_fingerprint_screen9.py).
+    monkeypatch.setattr(
+        pilot, '_evidence_source_fingerprint',
+        lambda *a, **k: {'fingerprint': 'sha256:stub-fingerprint', 'facts': {}},
+    )
 
 
 def test_supersede_flag_creates_new_row_preserving_original(monkeypatch):

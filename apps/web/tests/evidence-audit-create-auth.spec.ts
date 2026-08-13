@@ -227,12 +227,17 @@ test('create: success closes the modal, refreshes, and selects the returned pack
   expect(source).toContain('setPackages(loaded)');
 });
 
-test('create: status-specific truthful messages (created / already exists / accepted-but-unloaded)', () => {
+test('create: status-specific truthful messages (created / superseded / already exists / accepted-but-unloaded)', () => {
   const source = read(PANEL);
-  // A freshly generated, synchronously completed package.
+  // A freshly generated, synchronously completed package (unchanged-source, first create).
   expect(source).toContain('Evidence package created.');
-  // An idempotent response must NOT read as a new "queued" job.
-  expect(source).toContain('An evidence package already exists for this incident and evidence scope.');
+  // A package created because the source evidence changed materially — it supersedes
+  // the prior one; the message must say so rather than read as an ordinary create.
+  expect(source).toContain('New evidence package created from updated source evidence.');
+  expect(source).toContain('payload.supersedes_package_id');
+  // An idempotent response is keyed on the CURRENT source snapshot, and must NOT
+  // read as a new "queued" job.
+  expect(source).toContain('An evidence package already exists for the current evidence snapshot.');
   expect(source).toContain('payload.created === false');
   // Asynchronous (queued/building) generation.
   expect(source).toContain('Evidence package queued.');
