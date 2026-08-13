@@ -264,6 +264,45 @@ def test_ev2026004_missing_codes_include_hash_categories(monkeypatch):
     assert {'file_hashes', 'manifest_hash'} <= finding_codes
 
 
+def test_ev2026004_top_level_completeness_score_agrees_with_canonical(monkeypatch):
+    # Regression: the top-level `completeness_score` scalar (seeded from the stored
+    # build-time filters value) must NOT disagree with the canonical `completeness.score`
+    # after read-time reconciliation. EV-2026-004 previously reported a stale top-level
+    # score (e.g. 40/90) next to a reconciled canonical score (e.g. 20) — the canonical
+    # value is authoritative and the scalar is normalized onto it.
+    _bootstrap(monkeypatch, dict(_FILTERS_EV),
+               _stored_bundle(include_manifest=False, completeness=_build_time_completeness()))
+    export = pilot.get_export(PKG_ID, _Req())['export']
+    canonical = export['completeness']['score']
+    # The reconciled canonical score has genuinely dropped from the build-time filter.
+    assert canonical < _FILTERS_EV['completeness_score']
+    # ...and the top-level scalar now equals it — the two can never contradict.
+    assert export['completeness_score'] == canonical
+
+
+def test_healthy_manifest_top_level_completeness_score_matches_canonical(monkeypatch):
+    # The normalization is a no-op for a healthy package: the top-level scalar equals
+    # the canonical score (reconciliation did not change it), so no over-correction.
+    completeness = _build_time_completeness()
+    manifest, _ = build_evidence_manifest(
+        export_id=PKG_ID, export_type='proof_bundle', workspace_id=WS_ID,
+        generated_at='2026-01-01T00:00:00Z', generated_by_user_id=USER_ID,
+        source_resource_type='incident', source_resource_id='inc-1',
+        storage_backend='local', file_values=_PARTIAL_FILES,
+    )
+    filters = {
+        'incident_id': 'inc-1', 'completeness_score': completeness['score'],
+        'files_hashed': len(manifest['files']),
+        'integrity_hash': manifest['manifest_sha256'],
+        'manifest_sha256': manifest['manifest_sha256'],
+    }
+    _bootstrap(monkeypatch, filters,
+               _stored_bundle(include_manifest=True, completeness=completeness))
+    export = pilot.get_export(PKG_ID, _Req())['export']
+    assert export['completeness']['score'] == completeness['score']
+    assert export['completeness_score'] == export['completeness']['score']
+
+
 def test_healthy_manifest_detail_preserves_completeness(monkeypatch):
     # Guard against over-correction: a package WITH a retrievable manifest keeps its
     # hash evidence present and its score unchanged (reconciliation is a no-op).

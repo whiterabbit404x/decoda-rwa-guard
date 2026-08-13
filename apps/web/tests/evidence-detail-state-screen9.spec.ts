@@ -190,22 +190,28 @@ test('E — re-affirming the selection (as a list refresh re-renders) never over
   expect(selectAuthoritativeDetail(switched)).toBeNull();
 });
 
-/* ── Test F: undefined generate_manifest ≠ explicit false ───────────────────── */
+/* ── Test F: visibility is strictly allowed_actions-driven + refresh retention ─ */
 
-test('F — undefined generate_manifest is not treated as an explicit false when authoritative detail is manifest_missing', () => {
-  // (a) At the gate: a manifest_missing detail with NO generate_manifest key still
-  // shows recovery (undefined falls back to the missing-state capability, it is not
-  // coerced to false).
+test('F — Generate Manifest visibility comes ONLY from allowed_actions.generate_manifest; a retained detail survives a failed refresh', () => {
+  // (a) At the gate: visibility is NEVER inferred from the manifest-missing fact. A
+  // manifest_missing detail with NO explicit generate_manifest does NOT show the
+  // button (requirement 1) — only an explicit generate_manifest:true does. The
+  // ENABLED capability still legacy-falls-back for old responses, but that never
+  // makes the button appear.
   const undefinedGen = resolveEvidenceActionState(
     { integrity_status: 'manifest_missing', is_manifest_missing: true, allowed_actions: {} },
     READY,
   );
-  expect(undefinedGen.showGenerate).toBe(true);
-  expect(undefinedGen.canGenerate).toBe(true);
+  expect(undefinedGen.showGenerate).toBe(false); // not shown — no explicit permission
+  const explicitGen = resolveEvidenceActionState(
+    { integrity_status: 'manifest_missing', is_manifest_missing: true, allowed_actions: { generate_manifest: true } },
+    READY,
+  );
+  expect(explicitGen.showGenerate).toBe(true); // shown — backend explicitly permits
 
-  // (b) Across a refresh: a prior authoritative manifest_missing detail is retained,
-  // and a failed refresh (no new authoritative value) must NOT downgrade it to a
-  // hidden/false state. The last-known detail — and the visible recovery action —
+  // (b) Across a refresh: a prior authoritative detail with generate_manifest:true is
+  // retained, and a failed refresh (no new authoritative value) must NOT downgrade it
+  // to a hidden state. The last-known detail — and the visible recovery action —
   // survive, with only a warning surfaced.
   const loaded = run([
     { type: 'select', id: ID },
