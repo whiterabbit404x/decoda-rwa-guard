@@ -23979,6 +23979,60 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             evidence_rows = [_json_safe_value(dict(item)) for item in metrics]
             alert_ids = [str(item.get('id') or '') for item in alert_rows if item.get('id')]
 
+            # ── Canonical incident→alert linkage fallback ────────────────────────────
+            # The detection_metrics JOIN above only resolves alerts that have a metrics
+            # row tying them to THIS incident. An incident created from an alert (the
+            # normal detection → alert → incident flow) links its originating alert via
+            # the canonical relations incidents.source_alert_id / incidents.linked_alert_ids
+            # / alerts.incident_id — none of which require a detection_metrics bridge row.
+            # When the bridge yields nothing, resolve those canonical relations so a real
+            # originating alert (and, through it, its detection + telemetry provenance) is
+            # never dropped from its own evidence package. Deterministic and workspace
+            # scoped; additive — it only ever finds alerts that genuinely exist and are
+            # canonically linked to the incident, and never fabricates evidence.
+            if not alert_rows:
+                canonical_alert_ids: list[str] = []
+                _linked_alert_ids = incident.get('linked_alert_ids')
+                if isinstance(_linked_alert_ids, list):
+                    for _aid in _linked_alert_ids:
+                        if _aid and str(_aid).strip():
+                            canonical_alert_ids.append(str(_aid).strip())
+                _source_alert_id = incident.get('source_alert_id')
+                if _source_alert_id and str(_source_alert_id).strip():
+                    canonical_alert_ids.append(str(_source_alert_id).strip())
+                canonical_alerts = connection.execute(
+                    '''
+                    SELECT a.*
+                    FROM alerts a
+                    WHERE a.workspace_id = %s
+                      AND (a.incident_id = %s::uuid OR a.id = ANY(%s::uuid[]))
+                    ORDER BY a.created_at DESC
+                    ''',
+                    (workspace_id, incident_id, canonical_alert_ids),
+                ).fetchall()
+                if canonical_alerts:
+                    alert_rows = [_json_safe_value(dict(item)) for item in canonical_alerts]
+                    alert_ids = [str(item.get('id') or '') for item in alert_rows if item.get('id')]
+
+            # ── Canonical alert→telemetry linkage fallback ───────────────────────────
+            # Telemetry (detection_metrics) is primarily resolved by incident_id above. If
+            # none is tied to the incident directly but the incident's canonical alert(s)
+            # DO carry detection metrics (detection_metrics.alert_id — a NOT NULL FK), pull
+            # that real telemetry through the alert relation the schema already defines.
+            # Never inferred by timestamp proximity — only through the alert_id FK.
+            if not evidence_rows and alert_ids:
+                metrics_by_alert = connection.execute(
+                    '''
+                    SELECT *
+                    FROM detection_metrics
+                    WHERE workspace_id = %s AND alert_id = ANY(%s::uuid[])
+                    ORDER BY detected_at DESC
+                    ''',
+                    (workspace_id, alert_ids),
+                ).fetchall()
+                if metrics_by_alert:
+                    evidence_rows = [_json_safe_value(dict(item)) for item in metrics_by_alert]
+
             # Collect response actions for the incident
             response_actions_rows_raw = connection.execute(
                 '''

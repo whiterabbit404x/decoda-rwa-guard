@@ -254,6 +254,12 @@ class _NoIncidentOnActionConnection(_BaseConnection):
             return _Row(rows=[{'id': 'action-2', 'action_type': 'notify_team', 'status': 'pending', 'mode': 'recommended', 'execution_metadata': None, 'created_at': '2026-01-01T00:10:00Z', 'executed_at': None, 'rolled_back_at': None}])
         if 'FROM detections' in stmt and 'linked_alert_id = ANY' in stmt:
             return _Row(rows=[])
+        # Canonical alert→telemetry linkage fallback: no telemetry is tied to this
+        # incident (directly or through its alert), so it stays honestly missing.
+        if 'FROM detection_metrics WHERE workspace_id = %s AND alert_id = ANY' in stmt:
+            return _Row(rows=[])
+        if 'FROM alerts a WHERE a.workspace_id' in stmt:
+            return _Row(rows=[])
         if 'FROM audit_logs' in stmt and 'row_hash' not in stmt:
             return _Row(rows=[])
         if 'FROM audit_logs' in stmt and 'row_hash' in stmt:

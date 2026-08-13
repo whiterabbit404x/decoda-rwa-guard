@@ -327,6 +327,13 @@ class _FullChainConn:
         if 'FROM audit_logs' in q:
             return _Row(rows=[{'id': 'audit-val-1', 'action': 'export.generate', 'entity_type': 'export_job',
                                'entity_id': 'exp-val-1', 'metadata': None, 'created_at': '2026-05-01T00:10:00Z'}])
+        # Canonical incident→alert / alert→telemetry linkage fallbacks. This chain resolves
+        # everything via the detection_metrics bridge, so these only fire for subclasses
+        # that empty the bridge — return empty so no orphaned evidence is invented.
+        if 'FROM alerts a WHERE a.workspace_id' in q:
+            return _Row(rows=[])
+        if 'FROM detection_metrics WHERE workspace_id = %s AND alert_id = ANY' in q:
+            return _Row(rows=[])
         if "UPDATE export_jobs SET status = 'completed'" in q:
             return _Row(row=None)
         if "UPDATE export_jobs SET status = 'failed'" in q:

@@ -59,6 +59,16 @@ class _CompleteChainConnection:
             return _FakeRow([{'id': 'action-live-1', 'action_type': 'freeze_wallet', 'status': 'executed', 'mode': 'live', 'execution_metadata': None, 'created_at': '2026-01-01T00:10:00Z', 'executed_at': '2026-01-01T00:11:00Z', 'rolled_back_at': None}])
         if 'FROM detections' in normalized and 'linked_alert_id = ANY' in normalized:
             return _FakeRow([{'id': 'det-live-1', 'detection_type': 'anomaly', 'severity': 'high', 'confidence': 0.97, 'evidence_source': 'live', 'status': 'open', 'detected_at': '2026-01-01T00:01:00Z', 'title': 'Live anomaly'}])
+        # Canonical incident→alert linkage fallback (runs only when the detection_metrics
+        # bridge above found no alerts). Base chain resolves alerts via the bridge, so this
+        # never fires here — return empty so subclasses that DO fall through get a defined
+        # (no orphaned-alert) result rather than an unexpected-query assertion.
+        if 'FROM alerts a WHERE a.workspace_id' in normalized:
+            return _FakeRow([])
+        # Canonical alert→telemetry linkage fallback (runs only when no telemetry is tied
+        # to the incident directly). Base chain resolves telemetry by incident_id.
+        if 'FROM detection_metrics WHERE workspace_id = %s AND alert_id = ANY' in normalized:
+            return _FakeRow([])
         if 'FROM audit_logs' in normalized and 'row_hash IS NOT NULL' in normalized:
             # Audit chain tip query
             return _FakeRow(None)
@@ -595,3 +605,97 @@ def test_incident_report_includes_manifest_and_seal(monkeypatch: pytest.MonkeyPa
     assert 'manifest.json' in row, 'Incident report must include manifest.json'
     assert 'seal.json' in row, 'Incident report must include seal.json'
     assert row['manifest.json'].get('export_type') == 'incident_report'
+
+
+# ── Canonical incident→alert linkage collection (Screen 9 recovery) ────────────────
+#
+# The proof-bundle collector historically resolved alerts ONLY through the
+# detection_metrics bridge (JOIN detection_metrics dm ON dm.alert_id = a.id WHERE
+# dm.incident_id = incident). An incident created directly from an alert (the normal
+# detection → alert → incident flow) links its originating alert via the canonical
+# relations incidents.source_alert_id / incidents.linked_alert_ids / alerts.incident_id
+# and may have NO such bridge row — so the real alert (and, through it, its detection and
+# telemetry) was dropped from its own evidence package (alert_id/detection_id = null,
+# EV-2026-004). These tests lock the fix: real, canonically-linked evidence is collected;
+# genuinely-absent evidence stays honestly missing; nothing is fabricated.
+
+
+class _OrphanedChainConnection(_CompleteChainConnection):
+    """Incident created from an alert with canonical relations set, but NO
+    detection_metrics bridge row. The bridge JOIN and the incident-scoped telemetry query
+    both return empty — the alert, its detection and its telemetry are resolvable ONLY
+    through the canonical incident→alert relations."""
+
+    def execute(self, query, params=None):
+        normalized = ' '.join(str(query).split())
+        # Incident carries a canonical originating-alert relation (source_alert_id +
+        # linked_alert_ids), the way an incident created from an alert is linked.
+        if 'SELECT * FROM incidents WHERE workspace_id = %s AND id = %s' in normalized:
+            return _FakeRow({
+                'id': 'inc-live', 'workspace_id': 'ws-live', 'title': 'Orphaned-link Incident',
+                'severity': 'high', 'status': 'open',
+                'source_alert_id': 'alert-orphan-1', 'linked_alert_ids': ['alert-orphan-1'],
+            })
+        # The detection_metrics bridge resolves NO alerts for this incident...
+        if 'FROM alerts a JOIN detection_metrics dm ON dm.alert_id = a.id' in normalized:
+            return _FakeRow([])
+        # ...and NO telemetry is tied to the incident directly.
+        if 'FROM detection_metrics WHERE workspace_id = %s AND incident_id = %s' in normalized:
+            return _FakeRow([])
+        # But the canonical incident→alert relation DOES resolve the real originating alert.
+        if 'FROM alerts a WHERE a.workspace_id' in normalized:
+            return _FakeRow([{'id': 'alert-orphan-1', 'severity': 'high', 'source': 'live_provider', 'target_id': 'target-1', 'incident_id': 'inc-live'}])
+        # And that alert carries real detection telemetry via the alert_id FK.
+        if 'FROM detection_metrics WHERE workspace_id = %s AND alert_id = ANY' in normalized:
+            return _FakeRow([{'id': 'metric-orphan-1', 'event_observed_at': '2026-01-01T00:00:00Z', 'detected_at': '2026-01-01T00:02:00Z', 'mttd_seconds': 120, 'evidence': {'tx_hash': '0xorphan'}}])
+        return super().execute(query, params)
+
+
+def test_proof_bundle_resolves_alert_via_canonical_incident_relation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An incident linked to its originating alert via the canonical relations — but with
+    NO detection_metrics bridge row — must still collect the real alert, its detection and
+    its telemetry. Records that EXIST are no longer dropped from their own package."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    connection = _OrphanedChainConnection()
+    meta = pilot._generate_export_artifact(connection, workspace_id='ws-live', export_id='exp-1')
+
+    # The three previously-dropped sections are now present, not missing.
+    assert 'alerts' not in meta['missing_sections']
+    assert 'detections' not in meta['missing_sections']
+    assert 'telemetry_evidence' not in meta['missing_sections']
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    # The REAL ids are resolved via the canonical relation — never null, never fabricated.
+    assert summary['alert_id'] == 'alert-orphan-1'
+    assert summary['detection_id'] == 'det-live-1'
+    assert summary['alert_count'] == 1
+    assert summary['detection_count'] == 1
+    assert summary['detection_metric_count'] >= 1
+    # A bundle built from real, canonically-resolved live evidence is a complete chain.
+    assert meta['evidence_source_type'] == 'live'
+
+
+def test_proof_bundle_absent_relations_stay_missing_no_synthetic_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When an incident has NO alert/detection/telemetry anywhere — not via the bridge and
+    not via any canonical relation — those sections stay honestly missing and the summary
+    carries null ids. The canonical-linkage fallback never fabricates evidence to pass
+    completeness; missing evidence remains missing."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    connection = _NoAlertsConnection()
+    meta = pilot._generate_export_artifact(connection, workspace_id='ws-live', export_id='exp-1')
+
+    assert 'alerts' in meta['missing_sections']
+    assert 'detections' in meta['missing_sections']
+    assert 'telemetry_evidence' in meta['missing_sections']
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    # No synthetic ids invented for genuinely-absent evidence.
+    assert summary['alert_id'] is None
+    assert summary['detection_id'] is None
+    assert summary['alert_count'] == 0
+    assert summary['detection_count'] == 0
+    assert summary['detection_metric_count'] == 0

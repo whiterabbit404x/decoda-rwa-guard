@@ -291,3 +291,124 @@ export function resolveRecoveryRequirements(
   }
   return { source, derived };
 }
+
+/* ── Included Artifacts: truthful available / missing / derived inventory ──────── */
+
+/**
+ * The canonical incident-trace fields the Included-Artifacts inventory reads. These
+ * come from the storage-authoritative detail response (`incident_trace`), which is
+ * built from the package's OWN stored summary — never from hardcoded proof-bundle
+ * labels, the legacy `includes` list, or package-template expectations.
+ */
+export type IncidentTraceSource = {
+  available_sections?: string[] | null;
+  missing_sections?: string[] | null;
+};
+
+/** One artifact row in the Included-Artifacts inventory. */
+export type IncludedArtifact = { code: string; label: string };
+
+/**
+ * The Included-Artifacts inventory, split by canonical truth:
+ *  - `available` : evidence sections the package actually contains (green check).
+ *  - `missing`   : source-evidence sections/categories the package does NOT contain
+ *                  (red cross) — never shown as a green check.
+ *  - `derived`   : integrity artifacts (file hashes / manifest hash) that are
+ *                  GENERATED AFTER RECOVERY and are not yet available.
+ */
+export type IncludedArtifacts = {
+  available: IncludedArtifact[];
+  missing: IncludedArtifact[];
+  derived: IncludedArtifact[];
+};
+
+/**
+ * Canonical, ordered catalog of customer-facing evidence artifacts. Each entry maps a
+ * single displayed artifact onto the section-name aliases the backend emits in
+ * `incident_trace.available_sections` / `missing_sections` (the available list uses the
+ * singular section names like `alert`/`telemetry`; the missing list uses the plural
+ * `alerts`/`telemetry_evidence`, so BOTH forms are listed) AND onto the canonical
+ * completeness category code. Internal-only sections (`target_context`,
+ * `provider_context`) are deliberately absent — they are not customer evidence artifacts.
+ * `investigation_timeline` has no section and is resolved from completeness alone.
+ */
+const INCLUDED_ARTIFACT_CATALOG: Array<{
+  code: string;
+  label: string;
+  sections: string[];
+  completenessCode: string | null;
+}> = [
+  { code: 'incident', label: 'Incident', sections: ['incident'], completenessCode: 'incident_identity' },
+  { code: 'original_alert', label: 'Original Alert', sections: ['alert', 'alerts'], completenessCode: 'original_alert' },
+  { code: 'detection_provenance', label: 'Detection Provenance', sections: ['detection', 'detections'], completenessCode: 'detection_provenance' },
+  { code: 'telemetry_evidence', label: 'Raw Telemetry Evidence', sections: ['telemetry', 'telemetry_evidence'], completenessCode: 'telemetry_reference' },
+  { code: 'asset_identity', label: 'Asset Identity', sections: ['asset_context'], completenessCode: 'asset_identity' },
+  { code: 'investigation_timeline', label: 'Investigation Timeline', sections: [], completenessCode: 'investigation_timeline' },
+  { code: 'response_action', label: 'Response Action', sections: ['response_action', 'response_actions'], completenessCode: 'response_recommendation' },
+  { code: 'audit_events', label: 'Audit Events', sections: ['audit_log'], completenessCode: 'audit_events' },
+  { code: 'export_metadata', label: 'Export Metadata', sections: ['export_metadata'], completenessCode: null },
+];
+
+/**
+ * Build the truthful Included-Artifacts inventory from the CANONICAL detail response —
+ * `incident_trace` (available/missing sections) plus `completeness` (missing category
+ * codes). This is the ONLY source of the checklist: a green check is shown iff the
+ * section is in `available_sections`, and an artifact is listed as missing iff its
+ * section is in `missing_sections` OR its completeness category is in `missing_codes`.
+ * A missing artifact is therefore NEVER shown with a green check, and the list is never
+ * derived from hardcoded proof-bundle labels, the legacy `includes` field, or the
+ * package-template expectations — all of which can disagree with what the package
+ * actually contains (the EV-2026-004 contradiction).
+ *
+ * The two derived integrity artifacts (file hashes / manifest hash) are split out via
+ * the SAME classifier the recovery panel uses (`resolveRecoveryRequirements`), so the
+ * "generated after recovery" group can never disagree with the recovery requirements.
+ */
+export function resolveIncludedArtifacts(
+  incidentTrace: IncidentTraceSource | null | undefined,
+  completeness: CompletenessRequirementSource | null | undefined,
+): IncludedArtifacts {
+  const available: IncludedArtifact[] = [];
+  const missing: IncludedArtifact[] = [];
+
+  const availableSections = new Set(
+    (incidentTrace?.available_sections ?? []).filter(Boolean).map((s) => String(s).toLowerCase()),
+  );
+  const missingSections = new Set(
+    (incidentTrace?.missing_sections ?? []).filter(Boolean).map((s) => String(s).toLowerCase()),
+  );
+  const missingCodes = new Set((completeness?.missing_codes ?? []).filter(Boolean).map((c) => String(c)));
+
+  for (const entry of INCLUDED_ARTIFACT_CATALOG) {
+    // The Included-Artifacts inventory is a SECTION inventory, so it uses the stable
+    // section label (not the verbose completeness category label, which the separate
+    // Evidence Completeness checklist already shows) — "Incident", never "Incident
+    // identity and timestamps".
+    const label = entry.label;
+    const isAvailable = entry.sections.some((s) => availableSections.has(s));
+    if (isAvailable) {
+      available.push({ code: entry.code, label });
+      continue;
+    }
+    const isMissing =
+      entry.sections.some((s) => missingSections.has(s)) ||
+      (entry.completenessCode != null && missingCodes.has(entry.completenessCode));
+    if (isMissing) {
+      // Fail closed: never show a green check for an artifact the canonical response
+      // does not report as available.
+      missing.push({ code: entry.code, label });
+    }
+    // No canonical signal (neither available nor missing) → omit rather than invent a
+    // present/absent claim.
+  }
+
+  // The derived integrity artifacts come from the ONE canonical requirement split so
+  // the Included-Artifacts "generated after recovery" group and the recovery panel's
+  // derived group are always identical.
+  const derived = resolveRecoveryRequirements(completeness).derived.map((d) => ({
+    code: d.code,
+    label: d.label,
+  }));
+
+  return { available, missing, derived };
+}
