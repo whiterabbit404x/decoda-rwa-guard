@@ -69,6 +69,14 @@ class _LiveCompleteConnection:
             return _FakeRow([{'id': 'det-1', 'detection_type': 'anomaly', 'severity': 'high', 'confidence': 0.97, 'evidence_source': 'live', 'status': 'open', 'detected_at': '2026-01-01T00:01:00Z', 'title': 'Live anomaly'}])
         if 'FROM audit_logs' in normalized:
             return _FakeRow([{'id': 'audit-1', 'action': 'export.generate', 'entity_type': 'export_job', 'entity_id': 'exp-live', 'metadata': None, 'created_at': '2026-01-01T00:12:00Z'}])
+        # Canonical incident→alert / alert→telemetry linkage fallbacks (fire only when the
+        # detection_metrics bridge / incident-scoped telemetry query return empty). This
+        # chain resolves via the bridge, so returning empty here invents no orphaned rows;
+        # subclasses that empty the bridge keep their missing evidence honestly missing.
+        if 'FROM alerts a WHERE a.workspace_id' in normalized:
+            return _FakeRow([])
+        if 'FROM detection_metrics WHERE workspace_id = %s AND alert_id = ANY' in normalized:
+            return _FakeRow([])
         if "UPDATE export_jobs SET status = 'completed'" in normalized:
             return _FakeRow(None)
         if "UPDATE export_jobs SET status = 'failed'" in normalized:

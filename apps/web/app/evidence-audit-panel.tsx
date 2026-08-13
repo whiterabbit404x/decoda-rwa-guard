@@ -24,7 +24,9 @@ import {
 } from './evidence-detail-state';
 import {
   resolveEvidenceActionState,
+  resolveIncludedArtifacts,
   resolveRecoveryRequirements,
+  type IncidentTraceSource,
 } from './evidence-recovery-actions';
 import { useRuntimeSummary } from './runtime-summary-context';
 
@@ -2622,6 +2624,16 @@ function PackageDetailPanel({
   // manifest hash — never collected by hand). One canonical classifier so the panel and
   // the Crypto-Auditing Clerk agree on what is source evidence.
   const recoveryRequirements = resolveRecoveryRequirements(completeness);
+  // Included-Artifacts inventory, derived from the CANONICAL detail response only —
+  // incident_trace (available/missing sections) + completeness (missing category codes).
+  // NEVER from hardcoded proof-bundle labels, the legacy `includes` field, or the
+  // package-template expectations, all of which can claim a green check for evidence the
+  // package does not actually contain (the EV-2026-004 contradiction). A missing section
+  // is therefore never shown as available.
+  const includedArtifacts = resolveIncludedArtifacts(
+    (detail?.incident_trace ?? null) as IncidentTraceSource | null,
+    completeness,
+  );
   // A degraded diagnostic package (generated from partial evidence). Its disabled-action
   // tooltips are worded for that state — never implying a plain manifest is one click away.
   const diagnosticPackage = (detail?.generation_status ?? '').toLowerCase() === 'generated_partial';
@@ -2645,15 +2657,11 @@ function PackageDetailPanel({
     ? `/incidents/${encodeURIComponent(pkg.incident_id)}?tab=evidence`
     : '/incidents';
 
+  // Chain completeness for the summary banner. The Included-Artifacts inventory is now
+  // driven by the canonical incident_trace/completeness split (resolveIncludedArtifacts),
+  // NOT by the list-row `includes`/`missing_artifacts` fields — those legacy summary
+  // hints could disagree with what the package actually contains.
   const missingArtifacts: string[] = pkg.missing_artifacts ?? [];
-  const providedArtifacts = new Set((pkg.includes ?? []).map((s) => s.toLowerCase()));
-
-  function artifactPresent(name: string): boolean {
-    if (missingArtifacts.some((m) => m.toLowerCase().includes(name.toLowerCase()))) return false;
-    if (pkg.includes?.length) return providedArtifacts.has(name.toLowerCase());
-    return ready;
-  }
-
   const chainComplete = pkg.chain_complete ?? (missingArtifacts.length === 0 && ready);
 
   return (
@@ -3273,32 +3281,79 @@ function PackageDetailPanel({
         </div>
       ) : null}
 
-      {/* Included Artifacts checklist */}
-      <div style={{ marginBottom: '0.75rem', marginTop: '0.75rem' }}>
-        <p className="sectionEyebrow" style={{ marginBottom: '0.4rem' }}>
-          Included Artifacts
-        </p>
-        {REQUIRED_ARTIFACTS.map((artifact) => {
-          const present = artifactPresent(artifact);
-          return (
-            <div
-              key={artifact}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.4rem',
-                marginBottom: '0.28rem',
-                fontSize: '0.78rem',
-              }}
-            >
-              <span style={{ color: present ? '#22c55e' : '#ef4444', fontWeight: 700 }}>
-                {present ? '✓' : '✗'}
-              </span>
-              <span style={{ color: present ? undefined : '#f87171' }}>{artifact}</span>
+      {/* ── Included Artifacts (canonical incident_trace + completeness) ──────────
+          Truthfully separates what the package ACTUALLY contains from what is missing,
+          so a green check can never appear beside evidence the package does not hold.
+          Driven ONLY by the canonical detail response (incident_trace.available_sections
+          / missing_sections + completeness.missing_codes) — never hardcoded proof-bundle
+          labels, the legacy `includes` field, or package-template expectations. */}
+      {(includedArtifacts.available.length > 0 ||
+        includedArtifacts.missing.length > 0 ||
+        includedArtifacts.derived.length > 0) ? (
+        <div style={{ marginBottom: '0.75rem', marginTop: '0.75rem' }}>
+          <p className="sectionEyebrow" style={{ marginBottom: '0.4rem' }}>
+            Included Artifacts
+          </p>
+
+          {includedArtifacts.available.length > 0 ? (
+            <div style={{ marginBottom: '0.5rem' }}>
+              <p className="sectionEyebrow" style={{ margin: '0 0 0.3rem', fontSize: '0.66rem', color: '#4ade80' }}>
+                Available
+              </p>
+              {includedArtifacts.available.map((a) => (
+                <div
+                  key={a.code}
+                  style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.28rem', fontSize: '0.78rem' }}
+                >
+                  <span aria-hidden="true" style={{ color: '#22c55e', fontWeight: 700 }}>✓</span>
+                  <span>{a.label}</span>
+                  <span className="sr-only">available</span>
+                </div>
+              ))}
             </div>
-          );
-        })}
-      </div>
+          ) : null}
+
+          {includedArtifacts.missing.length > 0 ? (
+            <div style={{ marginBottom: '0.5rem' }}>
+              <p className="sectionEyebrow" style={{ margin: '0 0 0.3rem', fontSize: '0.66rem', color: '#fca5a5' }}>
+                Missing
+              </p>
+              {includedArtifacts.missing.map((a) => (
+                <div
+                  key={a.code}
+                  style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.28rem', fontSize: '0.78rem' }}
+                >
+                  <span aria-hidden="true" style={{ color: '#ef4444', fontWeight: 700 }}>✗</span>
+                  <span style={{ color: '#f87171' }}>{a.label}</span>
+                  <span className="sr-only">missing</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {includedArtifacts.derived.length > 0 ? (
+            <div style={{ marginBottom: '0.25rem' }}>
+              <p className="sectionEyebrow" style={{ margin: '0 0 0.3rem', fontSize: '0.66rem', color: '#94a3b8' }}>
+                Generated integrity artifacts — not yet available
+              </p>
+              {includedArtifacts.derived.map((a) => (
+                <div
+                  key={a.code}
+                  style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.28rem', fontSize: '0.78rem' }}
+                >
+                  <span aria-hidden="true" style={{ color: '#94a3b8', fontWeight: 700 }}>⟳</span>
+                  <span style={{ color: '#cbd5e1' }}>{a.label}</span>
+                  <span className="sr-only">generated automatically after recovery</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : detailLoading ? (
+        <p className="tableMeta" style={{ marginBottom: '0.75rem', marginTop: '0.75rem' }}>
+          Loading included artifacts…
+        </p>
+      ) : null}
 
       {/* Export Status */}
       <div style={{ marginBottom: '0.75rem' }}>
