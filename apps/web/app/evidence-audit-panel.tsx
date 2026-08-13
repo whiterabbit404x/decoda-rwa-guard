@@ -22,6 +22,10 @@ import {
   type EvidenceDetailEvent,
   type EvidenceDetailState,
 } from './evidence-detail-state';
+import {
+  resolveEvidenceActionState,
+  resolveRecoveryRequirements,
+} from './evidence-recovery-actions';
 import { useRuntimeSummary } from './runtime-summary-context';
 
 /* ── Constants ──────────────────────────────────────────────────── */
@@ -406,7 +410,27 @@ function integrityPill(pkg: EvidencePackage): { label: string; variant: PillVari
 // Generation Status — describes only whether the package artifact was produced,
 // and whether it is a partial/incomplete bundle. Completeness and hashing are
 // reported separately, so this never says "Verified" or "Manifest Missing".
+//
+// The backend now emits a canonical `generation_status` axis (generated /
+// generated_partial / building / failed). When present it WINS — the UI shows the
+// backend fact verbatim rather than re-deriving it. The legacy derivation below is a
+// fallback for older responses that predate the canonical axis.
+const GENERATION_STATUS_LABELS: Record<string, { label: string; variant: PillVariant }> = {
+  generated: { label: 'Generated', variant: 'success' },
+  generated_partial: { label: 'Generated / Partial Package', variant: 'warning' },
+  building: { label: 'Generating…', variant: 'warning' },
+  failed: { label: 'Failed', variant: 'danger' },
+};
 function generationStatus(pkg: EvidencePackage): { label: string; variant: PillVariant } {
+  const canonical = (pkg.generation_status ?? '').toLowerCase();
+  const mappedCanonical = GENERATION_STATUS_LABELS[canonical];
+  if (mappedCanonical) {
+    // A superseded package is annotated even when the canonical axis says "generated".
+    if (canonical === 'generated' && pkg.superseded) {
+      return { label: 'Generated (Superseded)', variant: 'neutral' };
+    }
+    return mappedCanonical;
+  }
   const status = (pkg.status ?? '').toLowerCase();
   if (status === 'failed') return { label: 'Failed', variant: 'danger' };
   if (['queued', 'pending', 'building', 'running'].includes(status)) {
@@ -426,9 +450,21 @@ function generationStatus(pkg: EvidencePackage): { label: string; variant: PillV
   return { label: 'Generated', variant: 'success' };
 }
 
-// Hash Verification — the cryptographic state of the package. It NEVER shows
-// "Needs Evidence" (a completeness concern surfaced in its own field); a package
-// with no retrievable manifest reads as "Manifest Missing", not as safe.
+// Hash Verification — the cryptographic-verification readiness of the package. This
+// axis is SEPARATE from manifest availability (its own row) and from completeness. It
+// NEVER shows "Needs Evidence" (a completeness concern) and it never conflates a
+// missing manifest into itself: a package with no retrievable manifest is simply
+// "Not Ready" to verify, while the distinct Manifest row states "Missing".
+//
+// The backend now emits a canonical `verification_status` axis (verified / failed /
+// ready / not_ready). When present it WINS. The legacy `integrity_status` map below is
+// the fallback for older responses that predate the canonical axis.
+const VERIFICATION_STATUS_LABELS: Record<string, { label: string; variant: PillVariant }> = {
+  verified: { label: 'Verified', variant: 'success' },
+  failed: { label: 'Integrity Failed', variant: 'danger' },
+  ready: { label: 'Ready to Verify', variant: 'info' },
+  not_ready: { label: 'Not Ready', variant: 'warning' },
+};
 const HASH_VERIFICATION_STATES: Record<string, { label: string; variant: PillVariant }> = {
   verified: { label: 'Verified', variant: 'success' },
   verifying: { label: 'Verifying', variant: 'warning' },
@@ -436,22 +472,50 @@ const HASH_VERIFICATION_STATES: Record<string, { label: string; variant: PillVar
   hashing: { label: 'Generating…', variant: 'warning' },
   building: { label: 'Generating…', variant: 'warning' },
   integrity_failed: { label: 'Integrity Failed', variant: 'danger' },
-  manifest_missing: { label: 'Manifest Missing', variant: 'danger' },
-  legacy_export: { label: 'No Manifest', variant: 'warning' },
+  // A missing manifest is NOT a hash-verification state — it is reported on the
+  // dedicated Manifest axis. Here it reads only as "Not Ready" to verify.
+  manifest_missing: { label: 'Not Ready', variant: 'warning' },
+  legacy_export: { label: 'Not Ready', variant: 'warning' },
   superseded: { label: 'Superseded', variant: 'neutral' },
 };
 function hashVerification(pkg: EvidencePackage): { label: string; variant: PillVariant } {
+  const canonical = (pkg.verification_status ?? '').toLowerCase();
+  const mappedCanonical = VERIFICATION_STATUS_LABELS[canonical];
+  if (mappedCanonical) return mappedCanonical;
   const status = (pkg.integrity_status ?? '').toLowerCase();
   const mapped = HASH_VERIFICATION_STATES[status];
   if (mapped) return mapped;
-  // Unknown / needs_evidence / draft: report only the manifest/hash truth, never
-  // "Needs Evidence". Fail closed — an absent manifest is "Manifest Missing".
+  // Unknown / needs_evidence / draft: report only the verification-readiness truth,
+  // never "Needs Evidence". Fail closed — with no retrievable manifest, "Not Ready".
   const hashState = (pkg.hash_state ?? pkg.hash_display_state ?? '').toLowerCase();
   if (hashState === 'generating') return { label: 'Generating…', variant: 'warning' };
   const hasManifest = pkg.manifest_reference?.retrievable ?? Boolean(packageHash(pkg));
   if (hasManifest) return { label: 'Hash Generated', variant: 'info' };
-  if (pkg.is_manifest_missing) return { label: 'Manifest Missing', variant: 'danger' };
-  return { label: 'Not Generated', variant: 'neutral' };
+  return { label: 'Not Ready', variant: 'warning' };
+}
+
+// Manifest availability — a storage FACT (is a signed manifest retrievable?), reported
+// as its own axis so a package can be "Manifest: Missing" while its Hash Verification
+// axis is simply "Not Ready". The backend emits a canonical `manifest_status`
+// (present / missing / pending / not_applicable); when present it WINS. Never inferred
+// from completeness or from the completeness-driven integrity_status.
+const MANIFEST_STATUS_LABELS: Record<string, { label: string; variant: PillVariant }> = {
+  present: { label: 'Available', variant: 'success' },
+  missing: { label: 'Missing', variant: 'danger' },
+  pending: { label: 'Generating…', variant: 'warning' },
+  not_applicable: { label: 'Not applicable', variant: 'neutral' },
+};
+function manifestStatus(pkg: EvidencePackage): { label: string; variant: PillVariant } {
+  const canonical = (pkg.manifest_status ?? '').toLowerCase();
+  const mapped = MANIFEST_STATUS_LABELS[canonical];
+  if (mapped) return mapped;
+  // Fallback for older responses without the canonical axis. Fail closed: only claim
+  // "Available" when a manifest is actually retrievable; an evidence package that is
+  // manifest-missing reads "Missing", everything else is neutral "Not available".
+  const hasManifest = pkg.manifest_reference?.retrievable ?? Boolean(packageHash(pkg));
+  if (hasManifest) return { label: 'Available', variant: 'success' };
+  if (pkg.is_manifest_missing) return { label: 'Missing', variant: 'danger' };
+  return { label: 'Not available', variant: 'neutral' };
 }
 
 // Full SHA-256 stays available for copy/tooltip; the table shows a truncated form.
@@ -2452,6 +2516,7 @@ function PackageDetailPanel({
   const source = detail ?? pkg;
   const genStatus = generationStatus(source);
   const hashStatus = hashVerification(source);
+  const manifestState = manifestStatus(source);
   const integrityStatus = (detail?.integrity_status ?? pkg.integrity_status ?? '').toLowerCase();
   // Whether the selected package's own storage-authoritative detail has loaded.
   // Until it has, the manifest/recovery/verify state is PENDING (refreshing), not
@@ -2552,6 +2617,33 @@ function PackageDetailPanel({
   const files = detail?.files ?? [];
   const chainEvidence = detail?.chain_evidence ?? [];
   const agentFindings = detail?.agent_findings ?? [];
+  // Missing recovery requirements, split into the source evidence the operator must
+  // collect vs the integrity artifacts that are GENERATED AFTER RECOVERY (file hashes /
+  // manifest hash — never collected by hand). One canonical classifier so the panel and
+  // the Crypto-Auditing Clerk agree on what is source evidence.
+  const recoveryRequirements = resolveRecoveryRequirements(completeness);
+  // A degraded diagnostic package (generated from partial evidence). Its disabled-action
+  // tooltips are worded for that state — never implying a plain manifest is one click away.
+  const diagnosticPackage = (detail?.generation_status ?? '').toLowerCase() === 'generated_partial';
+  // Why Verify Integrity is disabled — the exact reason depends on whether the block is
+  // "no verifiable manifest yet" (evidence still to collect) or a plain missing manifest.
+  const verifyDisabledReason =
+    recoveryState === 'evidence_required'
+      ? 'This package is missing required source evidence and does not yet have a verifiable manifest.'
+      : manifestMissing
+        ? 'This package has no retrievable manifest. Generate a manifest before verifying integrity.'
+        : 'Verification requires a retrievable signed manifest.';
+  // Why Download Manifest is disabled — there is simply no manifest to download.
+  const downloadManifestDisabledReason = diagnosticPackage
+    ? 'No manifest is available for this diagnostic package.'
+    : 'No retrievable manifest exists for this package.';
+  // Canonical incident route for the primary recovery action. Deep-links to the
+  // incident's Evidence/investigation tab (supported via ?tab=evidence) so the operator
+  // lands where the missing source evidence is collected. Falls back to the incidents
+  // list only when no incident is linked.
+  const incidentHref = pkg.incident_id
+    ? `/incidents/${encodeURIComponent(pkg.incident_id)}?tab=evidence`
+    : '/incidents';
 
   const missingArtifacts: string[] = pkg.missing_artifacts ?? [];
   const providedArtifacts = new Set((pkg.includes ?? []).map((s) => s.toLowerCase()));
@@ -2613,6 +2705,13 @@ function PackageDetailPanel({
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
           <span className="tableMeta">Hash Verification</span>
           <StatusPill label={hashStatus.label} variant={hashStatus.variant} />
+        </div>
+        {/* Manifest availability is its OWN axis (a storage fact), never folded into
+            Hash Verification or completeness. A package can be Manifest: Missing while
+            Hash Verification simply reads Not Ready. */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
+          <span className="tableMeta">Manifest</span>
+          <StatusPill label={manifestState.label} variant={manifestState.variant} />
         </div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
           <span className="tableMeta">Evidence Completeness</span>
@@ -2723,15 +2822,65 @@ function PackageDetailPanel({
           <p style={{ margin: 0, fontSize: '0.82rem', fontWeight: 700, color: '#fca5a5' }}>
             Recovery required
           </p>
+          {/* The backend's customer-safe recovery_blocked_reason verbatim — never raw JSON. */}
           <p style={{ margin: '0.25rem 0 0.6rem', fontSize: '0.75rem', color: '#e2e8f0' }}>
             {recoveryBlockedReason ??
               (recoveryState === 'permission_required'
                 ? 'You do not have permission to recover this package. Ask a workspace administrator for evidence export access.'
                 : 'This diagnostic package cannot be verified because required source evidence is missing. Collect the missing evidence and regenerate the package.')}
           </p>
+
+          {/* Missing requirements, split so the operator sees what THEY collect vs what
+              the system generates for them. Source evidence is collected on the incident;
+              file hashes / manifest hash are produced automatically after recovery — they
+              are NEVER presented as something to collect by hand. */}
+          {recoveryRequirements.source.length > 0 ? (
+            <div style={{ marginBottom: '0.5rem' }}>
+              <p className="sectionEyebrow" style={{ margin: '0 0 0.3rem', color: '#fca5a5' }}>
+                Source evidence required
+              </p>
+              {recoveryRequirements.source.map((req) => (
+                <div
+                  key={req.code}
+                  style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.2rem', fontSize: '0.74rem' }}
+                >
+                  <span aria-hidden="true" style={{ color: '#ef4444', fontWeight: 700 }}>✗</span>
+                  <span style={{ color: '#f87171' }}>{req.label}</span>
+                  <span className="sr-only">missing</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {recoveryRequirements.derived.length > 0 ? (
+            <div style={{ marginBottom: '0.6rem' }}>
+              <p className="sectionEyebrow" style={{ margin: '0 0 0.3rem', color: '#94a3b8' }}>
+                Generated after recovery
+              </p>
+              {recoveryRequirements.derived.map((req) => (
+                <div
+                  key={req.code}
+                  style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.2rem', fontSize: '0.74rem' }}
+                >
+                  <span aria-hidden="true" style={{ color: '#94a3b8', fontWeight: 700 }}>⟳</span>
+                  <span style={{ color: '#cbd5e1' }}>{req.label}</span>
+                  <span className="sr-only">generated automatically after recovery</span>
+                </div>
+              ))}
+              <p style={{ margin: '0.15rem 0 0', fontSize: '0.68rem', color: '#94a3b8' }}>
+                Produced automatically once enough source evidence exists to regenerate the package.
+              </p>
+            </div>
+          ) : null}
+
+          {/* Primary recovery action: route to the linked incident (canonical
+              /incidents/{id} route, deep-linked to its Evidence tab) where the missing
+              source evidence is collected. This is the ONLY action rendered here — no
+              fabricated evidence-collection or manifest/regeneration buttons, because
+              those actions are not available for this package. */}
           {recoveryState !== 'permission_required' && pkg.incident_id ? (
             <Link
-              href="/incidents"
+              href={incidentHref}
               prefetch={false}
               className="btn btn-primary"
               style={{ fontSize: '0.75rem' }}
@@ -3028,7 +3177,7 @@ function PackageDetailPanel({
         </p>
         {pkg.incident_id ? (
           <Link
-            href="/incidents"
+            href={incidentHref}
             prefetch={false}
             className="btn btn-secondary"
             style={{ fontSize: '0.73rem', padding: '0.15rem 0.45rem' }}
@@ -3293,13 +3442,7 @@ function PackageDetailPanel({
             // Backend-authoritative: Verify is offered only when the canonical
             // manifest resolver reports a retrievable manifest — never guessed here.
             disabled={!detailCanVerify || !!verifying}
-            title={
-              detailCanVerify
-                ? undefined
-                : manifestMissing
-                  ? 'This package has no retrievable manifest. Generate a manifest before verifying integrity.'
-                  : 'Verification requires a retrievable signed manifest.'
-            }
+            title={detailCanVerify ? undefined : verifyDisabledReason}
             style={{ fontSize: '0.75rem' }}
             onClick={() => void onVerify(pkg)}
           >
@@ -3311,7 +3454,7 @@ function PackageDetailPanel({
             type="button"
             className="btn btn-secondary"
             disabled={!detailCanManifest}
-            title={detailCanManifest ? undefined : 'No retrievable manifest exists for this package.'}
+            title={detailCanManifest ? undefined : downloadManifestDisabledReason}
             style={{ fontSize: '0.75rem' }}
             onClick={() => void onDownloadManifest(pkg)}
           >
@@ -3322,7 +3465,7 @@ function PackageDetailPanel({
         )}
         {pkg.incident_id ? (
           <Link
-            href="/incidents"
+            href={incidentHref}
             prefetch={false}
             className="btn btn-secondary"
             style={{ fontSize: '0.75rem' }}
@@ -3393,6 +3536,17 @@ function CryptoAuditingClerkPanel({
       : (typeof metrics?.average_completeness === 'number' ? metrics.average_completeness : null);
   const statusLabel = completenessStatusLabel(score);
   const checklist = completeness?.checklist ?? [];
+  // Recovery gate for the selected package, from the authoritative detail. Drives the
+  // agent's evidence-chain summary. file_hashes / manifest_hash are DERIVED artifacts —
+  // resolveRecoveryRequirements never counts them as operator-collected source evidence,
+  // so `source.length` is the true count of missing source-evidence categories.
+  const recoveryGate = detail ? resolveEvidenceActionState(detail, isPackageReady(detail)) : null;
+  const recoveryRequirements = resolveRecoveryRequirements(completeness);
+  const missingSourceCount = recoveryRequirements.source.length;
+  // The evidence chain is not yet complete enough to regenerate the package: the backend
+  // recovery state is evidence_required and real source-evidence categories are missing.
+  const showEvidenceChainSummary =
+    packageScope && recoveryGate?.recoveryState === 'evidence_required' && missingSourceCount > 0;
 
   return (
     <aside
@@ -3432,6 +3586,31 @@ function CryptoAuditingClerkPanel({
           ) : null}
         </div>
       </div>
+
+      {/* Agent finding — the evidence chain is incomplete. Counts ONLY missing source
+          evidence (file hashes / manifest hash are generated artifacts, never counted as
+          collected source evidence), so the agent never claims integrity work can begin
+          before the chain is regenerable. */}
+      {showEvidenceChainSummary ? (
+        <div
+          role="note"
+          aria-label="Evidence chain finding"
+          style={{
+            marginBottom: '0.75rem',
+            padding: '0.55rem 0.65rem',
+            background: 'rgba(239,68,68,0.07)',
+            borderRadius: '6px',
+            borderLeft: '3px solid #ef4444',
+            fontSize: '0.74rem',
+            color: '#e2e8f0',
+          }}
+        >
+          {missingSourceCount} required source-evidence{' '}
+          {missingSourceCount === 1 ? 'category is' : 'categories are'} missing. Integrity
+          verification cannot begin until the evidence chain is complete enough to
+          regenerate the package.
+        </div>
+      ) : null}
 
       {/* Package-mode evidence breakdown — real backend counts, never hardcoded. */}
       {packageScope && completeness ? (
