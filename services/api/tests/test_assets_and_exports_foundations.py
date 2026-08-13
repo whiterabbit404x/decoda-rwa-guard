@@ -127,6 +127,9 @@ def test_generate_export_artifact_proof_bundle_contains_expected_files(monkeypat
     expected_keys = {
         'alerts.json', 'detection_metrics.json', 'evidence.json', 'incidents.json',
         'summary.json', 'detections.json', 'response_actions.json', 'audit_log.json',
+        # Canonical Investigation Workflow / state-transition evidence (Incident-detail
+        # parity) is captured for every proof bundle.
+        'investigation_timeline.json',
         'manifest.json', 'seal.json',
     }
     assert set(row.keys()) == expected_keys

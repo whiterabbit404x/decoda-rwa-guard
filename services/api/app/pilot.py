@@ -24082,13 +24082,183 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             except Exception:
                 audit_log_rows = []
 
-            # Determine evidence source type from linked alerts and detections
+            # ── Canonical Incident-detail provenance parity (Screen 9 collector) ─────
+            # The Incident detail page (forensic_investigation.get_investigation)
+            # resolves this incident's originating alert, its detection provenance, its
+            # telemetry and its investigation workflow through ONE canonical builder —
+            # ai_triage.build_evidence_snapshot — plus the deterministic forensic
+            # workflow. The ad-hoc queries above resolve alerts/telemetry via
+            # detection_metrics and detections.linked_alert_id, relations that are
+            # legitimately empty for the create-from-alert / escalation flow, so
+            # detection provenance and the investigation timeline were silently dropped
+            # from a package whose incident demonstrably has them. Reuse the SAME
+            # canonical builder here (never a parallel heuristic — no title/timestamp
+            # matching) so Screen 9 collects exactly what the Incident page proves
+            # exists. Fail-closed and additive: any resolution failure leaves the base
+            # collection untouched and never fabricates a record.
+            canonical_snapshot: dict[str, Any] = {}
+            canonical_source_ids: dict[str, Any] = {}
+            try:
+                from services.api.app import ai_triage as _ai_triage
+                _assembled_snap = _ai_triage.build_evidence_snapshot(
+                    connection, workspace_id=workspace_id, incident_id=incident_id,
+                )
+                canonical_snapshot = _assembled_snap.get('snapshot') or {}
+                canonical_source_ids = _assembled_snap.get('source_record_ids') or {}
+            except HTTPException:
+                # The incident was already validated above; never mask a real
+                # auth/scope error raised by the canonical builder.
+                raise
+            except Exception:
+                canonical_snapshot = {}
+                canonical_source_ids = {}
+
+            _canon_alert_id = str(canonical_source_ids['alert_id']) if canonical_source_ids.get('alert_id') else None
+            _canon_detection_id = str(canonical_source_ids['detection_id']) if canonical_source_ids.get('detection_id') else None
+            _canon_detection_event_id = str(canonical_source_ids['detection_event_id']) if canonical_source_ids.get('detection_event_id') else None
+            _canon_rule = canonical_snapshot.get('rule') if isinstance(canonical_snapshot.get('rule'), dict) else {}
+            _canon_rule_id = str(_canon_rule['rule_id']) if _canon_rule.get('rule_id') else None
+            _canon_target = canonical_snapshot.get('target') if isinstance(canonical_snapshot.get('target'), dict) else {}
+            _canon_asset_id = str(_canon_target['asset_id']) if _canon_target.get('asset_id') else None
+            _canon_telemetry_snapshot = [t for t in (canonical_snapshot.get('telemetry') or []) if isinstance(t, dict)]
+
+            # Canonical incident→alert parity: resolve the SAME originating alert the
+            # Incident page uses (incidents.source_alert_id) when the metrics/relation
+            # queries above found none. Loads only a real, workspace-scoped alert row.
+            if not alert_rows and _canon_alert_id:
+                _canon_alert = connection.execute(
+                    'SELECT a.* FROM alerts a WHERE a.workspace_id = %s AND a.id = %s::uuid',
+                    (workspace_id, _canon_alert_id),
+                ).fetchone()
+                if _canon_alert:
+                    alert_rows = [_json_safe_value(dict(_canon_alert))]
+                    alert_ids = [str(item.get('id') or '') for item in alert_rows if item.get('id')]
+
+            # Canonical detection provenance: the Incident page resolves detection
+            # provenance through the alert's canonical detection linkage
+            # (alerts.detection_id / alerts.detection_event_id) and the rule that fired —
+            # NOT detections.linked_alert_id. When the linked_alert_id query above found
+            # nothing, load the same canonical detections-table row the snapshot used so
+            # the real detection record is captured. Never invents an id.
+            if not detection_rows and _canon_detection_id:
+                try:
+                    _canon_det = connection.execute(
+                        '''
+                        SELECT id, detection_type, source_rule, evidence_summary,
+                               evidence_source, raw_evidence_json, detected_at
+                        FROM detections
+                        WHERE workspace_id = %s AND id = %s::uuid
+                        ''',
+                        (workspace_id, _canon_detection_id),
+                    ).fetchone()
+                    if _canon_det:
+                        detection_rows = [_json_safe_value(dict(_canon_det))]
+                except Exception:
+                    pass
+
+            # Detection provenance is present when a canonical detection record exists OR
+            # the resolved alert was produced by a groundable deterministic rule (the
+            # truthful "rule/finding" model the task allows for the Incident UI). The
+            # detection_id stays null when only a rule grounds it — a rule is never
+            # promoted into an invented detection id.
+            _has_alert_now = bool(alert_rows) or bool(_canon_alert_id)
+            _detection_provenance_present = bool(
+                detection_rows
+                or _canon_detection_id
+                or _canon_detection_event_id
+                or (_has_alert_now and _canon_rule_id)
+            )
+            detection_provenance = {
+                'present': _detection_provenance_present,
+                'detection_id': _canon_detection_id or (detection_rows[0].get('id') if detection_rows else None),
+                'detection_event_id': _canon_detection_event_id,
+                'rule': ({
+                    'rule_id': _canon_rule_id,
+                    'name': _canon_rule.get('name'),
+                    'description': _canon_rule.get('description'),
+                } if _canon_rule_id else None),
+                'source': (
+                    'detections_table' if (detection_rows or _canon_detection_id)
+                    else 'detection_events' if _canon_detection_event_id
+                    else 'rule' if _canon_rule_id
+                    else None
+                ),
+            }
+
+            # Canonical telemetry parity: include the incident's real telemetry the
+            # Incident page resolves through canonical identifiers (telemetry_id /
+            # alert-&-detection linkage / target+chain+tx). This is resolved by canonical
+            # REFERENCE — never a "last 7 days" monitoring window — so a historical
+            # incident's telemetry is captured even when the current Threat-Monitoring
+            # window is empty. Included only when the detection_metrics relation above
+            # yielded nothing, so a live row is never duplicated.
+            canonical_telemetry_rows: list[dict[str, Any]] = []
+            if not evidence_rows and _canon_telemetry_snapshot:
+                canonical_telemetry_rows = [_json_safe_value(dict(t)) for t in _canon_telemetry_snapshot]
+
+            # Canonical investigation timeline: the Incident page's "Investigation
+            # Workflow" is the deterministic forensic workflow (detection → triage →
+            # evidence collection → correlation → analysis → recommendation → report),
+            # its state derived from persisted facts. Reuse that exact builder plus the
+            # incident_timeline state-transition rows so the package captures the same
+            # workflow the Incident page shows — not a bare audit-log heuristic.
+            workflow_stages: list[dict[str, Any]] = []
+            incident_timeline_rows: list[dict[str, Any]] = []
+            try:
+                from services.api.app import forensic_investigation as _forensic
+                _tri_status = _forensic._triage_status(connection, workspace_id=workspace_id, incident_id=incident_id)
+                _rec_count = _forensic._recommendation_count(connection, workspace_id=workspace_id, incident_id=incident_id)
+                _rep_generated = _forensic._report_generated(connection, workspace_id=workspace_id, incident_id=incident_id)
+                if canonical_snapshot:
+                    workflow_stages = _forensic.derive_workflow_stages(
+                        canonical_snapshot,
+                        triage_status=_tri_status,
+                        recommendation_count=_rec_count,
+                        report_generated=_rep_generated,
+                    )
+            except Exception:
+                workflow_stages = []
+            try:
+                _timeline_raw = connection.execute(
+                    '''
+                    SELECT id, event_type, message, actor_user_id, metadata, created_at
+                    FROM incident_timeline
+                    WHERE workspace_id = %s AND incident_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT 100
+                    ''',
+                    (workspace_id, incident_id),
+                ).fetchall()
+                incident_timeline_rows = [_json_safe_value(dict(item)) for item in (_timeline_raw or [])]
+            except Exception:
+                incident_timeline_rows = []
+
+            # A truthful investigation timeline exists when the workflow has actually
+            # progressed (any stage past 'pending') OR real state-transition / audit rows
+            # exist. A bare incident with nothing stays honestly "missing".
+            _progressed_stages = [s for s in workflow_stages if str(s.get('state') or '').lower() not in {'pending', ''}]
+            _has_investigation_timeline = bool(
+                _progressed_stages or incident_timeline_rows or audit_log_rows or detection_rows
+            )
+            investigation_timeline = {
+                'present': _has_investigation_timeline,
+                'workflow_stages': workflow_stages,
+                'timeline_events': incident_timeline_rows,
+                'source': 'forensic_workflow+incident_timeline',
+            }
+
+            # Determine evidence source type from linked alerts, detections and the
+            # canonical telemetry resolved above (all workspace-scoped source records).
             all_sources: list[str] = []
             for item in alert_rows:
                 src = str(item.get('source') or '').lower()
                 if src:
                     all_sources.append(src)
             for item in detection_rows:
+                src = str(item.get('evidence_source') or '').lower()
+                if src:
+                    all_sources.append(src)
+            for item in canonical_telemetry_rows:
                 src = str(item.get('evidence_source') or '').lower()
                 if src:
                     all_sources.append(src)
@@ -24111,19 +24281,27 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
 
             # Compute missing chain sections
             missing_sections: list[str] = []
-            if not alert_rows:
+            if not alert_rows and not _canon_alert_id:
                 missing_sections.append('alerts')
-            if not detection_rows:
+            if not detection_rows and not _detection_provenance_present:
                 missing_sections.append('detections')
             if not action_rows:
                 missing_sections.append('response_actions')
-            if not evidence_rows:
+            if not evidence_rows and not canonical_telemetry_rows:
                 missing_sections.append('telemetry_evidence')
             if not audit_log_rows:
                 missing_sections.append('audit_log')
 
-            # Compute export completeness status
-            core_present = bool(alert_rows and detection_rows and action_rows and evidence_rows)
+            # Compute export completeness status. Detection provenance and telemetry are
+            # counted through their canonical resolution (rule-grounded detection, and
+            # reference-resolved telemetry) so an incident whose provenance the Incident
+            # page proves is never understated as "incomplete".
+            core_present = bool(
+                (alert_rows or _canon_alert_id)
+                and (detection_rows or _detection_provenance_present)
+                and action_rows
+                and (evidence_rows or canonical_telemetry_rows)
+            )
             export_status = 'complete' if core_present else ('partial' if (alert_rows or detection_rows or action_rows) else 'incomplete')
 
             # Determine source truthfulness status — no "verified" prefix for non-live sources
@@ -24160,7 +24338,7 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             # Build warnings
             # Fail-closed package_status — uses canonical evidence_source and source_truthfulness_status.
             # Non-live evidence is never 'complete' for verified proof purposes.
-            _pkg_has_evidence = bool(alert_rows or detection_rows or action_rows or evidence_rows)
+            _pkg_has_evidence = bool(alert_rows or detection_rows or action_rows or evidence_rows or canonical_telemetry_rows)
             _pkg_status = (
                 'complete' if (
                     export_status == 'complete'
@@ -24216,9 +24394,12 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 if sec_status == 'available':
                     available_sections.append(name)
 
-            _add_section_status('telemetry', 'available' if evidence_rows else 'unavailable', 'Missing detection metrics' if not evidence_rows else '')
-            _add_section_status('detection', 'available' if detection_rows else 'unavailable', 'No detections found for incident' if not detection_rows else '')
-            _add_section_status('alert', 'available' if alert_rows else 'unavailable', 'No alerts found for incident' if not alert_rows else '')
+            _add_section_status('telemetry', 'available' if (evidence_rows or canonical_telemetry_rows) else 'unavailable', 'Missing detection metrics' if not (evidence_rows or canonical_telemetry_rows) else '')
+            _add_section_status('detection', 'available' if (detection_rows or _detection_provenance_present) else 'unavailable', 'No detection provenance found for incident' if not (detection_rows or _detection_provenance_present) else '')
+            # investigation_timeline is a completeness-only artifact (no section) in the
+            # canonical Included-Artifacts contract — its presence is carried by the
+            # `investigation_timeline` completeness category, not a section status.
+            _add_section_status('alert', 'available' if (alert_rows or _canon_alert_id) else 'unavailable', 'No alerts found for incident' if not (alert_rows or _canon_alert_id) else '')
             _add_section_status('incident', 'available', '')
             _add_section_status('response_action', 'available' if action_rows else 'unavailable', 'No response actions recorded yet' if not action_rows else '')
             _add_section_status('asset_context', 'available' if incident_dict.get('asset_id') else 'unavailable', 'No asset linked to incident' if not incident_dict.get('asset_id') else '')
@@ -24253,11 +24434,13 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 'generated_by': 'Decoda RWA Guard',
                 'workspace_id': workspace_id,
                 'incident_id': incident_id,
-                'alert_id': alert_rows[0].get('id') if alert_rows else None,
-                'detection_id': detection_rows[0].get('id') if detection_rows else None,
+                'alert_id': (alert_rows[0].get('id') if alert_rows else None) or _canon_alert_id,
+                'detection_id': (detection_rows[0].get('id') if detection_rows else None) or _canon_detection_id or _canon_detection_event_id,
+                'detection_provenance': detection_provenance,
                 'response_action_id': action_rows[0].get('id') if action_rows else None,
-                'asset_id': incident_dict.get('asset_id') or (alert_rows[0].get('target_id') if alert_rows else None),
-                'target_id': alert_rows[0].get('target_id') if alert_rows else None,
+                'asset_id': incident_dict.get('asset_id') or _canon_asset_id or (alert_rows[0].get('target_id') if alert_rows else None),
+                'target_id': (alert_rows[0].get('target_id') if alert_rows else None) or (_canon_target.get('target_id') if _canon_target else None),
+                'investigation_timeline_present': _has_investigation_timeline,
                 'include_raw_events': include_raw_events,
                 'detection_metric_count': len(evidence_rows),
                 'alert_count': len(alert_rows),
@@ -24294,7 +24477,16 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                     {'id': item.get('id'), 'event_observed_at': item.get('event_observed_at'), 'detected_at': item.get('detected_at'), 'mttd_seconds': item.get('mttd_seconds'), 'evidence': item.get('evidence')}
                     for item in evidence_rows
                 ],
+                # Canonical Investigation Workflow + state transitions (Incident-detail
+                # parity). Captured for every package so the seven-stage workflow the
+                # Incident page shows is part of the evidence record.
+                'investigation_timeline.json': investigation_timeline,
             }
+            # Canonical, reference-resolved telemetry — included only when the
+            # detection_metrics relation yielded nothing, so historical incident
+            # telemetry is captured without duplicating a live metrics row.
+            if canonical_telemetry_rows:
+                _bundle_data['telemetry_events.json'] = canonical_telemetry_rows
             # Deterministic evidence-completeness scoring (Crypto-Auditing Clerk).
             # Computed from the canonical facts already collected above — never an
             # LLM guess. files_hashed counts the bundle files that will receive a
@@ -24310,6 +24502,10 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                     for _k in ('tx_hash', 'transaction_hash', 'block_number', 'block_hash', 'chain_id', 'contract_address')
                 )
                 for item in evidence_rows
+            ) or any(
+                # Canonical telemetry carries its on-chain identifiers at the top level.
+                any(item.get(_k) for _k in ('tx_hash', 'transaction_hash', 'block_number', 'block_hash', 'chain_id', 'contract_address'))
+                for item in canonical_telemetry_rows
             )
             _executed_actions = [a for a in action_rows if str(a.get('status') or '').lower() == 'executed']
             _rejected_actions = [a for a in action_rows if str(a.get('status') or '').lower() in {'rejected', 'canceled', 'cancelled'}]
@@ -24318,12 +24514,12 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 'incident_status': incident_dict.get('status'),
                 'evidence_source_type': evidence_source_type,
                 'has_incident': True,
-                'has_alert': bool(alert_rows),
-                'has_detection': bool(detection_rows),
-                'has_telemetry': bool(evidence_rows),
-                'has_asset': bool(incident_dict.get('asset_id') or (alert_rows and alert_rows[0].get('target_id'))),
+                'has_alert': bool(alert_rows) or bool(_canon_alert_id),
+                'has_detection': _detection_provenance_present,
+                'has_telemetry': bool(evidence_rows) or bool(canonical_telemetry_rows),
+                'has_asset': bool(incident_dict.get('asset_id') or _canon_asset_id or (alert_rows and alert_rows[0].get('target_id'))),
                 'has_audit_events': bool(audit_log_rows),
-                'has_investigation_timeline': bool(audit_log_rows or detection_rows),
+                'has_investigation_timeline': _has_investigation_timeline,
                 'has_chain_metadata': _chain_metadata_present,
                 'has_manifest': True,
                 'files_hashed': len(_bundle_data),
@@ -24910,6 +25106,8 @@ _PACKAGE_FILE_SOURCE_TYPES: dict[str, str] = {
     'audit_log.json': 'audit_event',
     'evidence.json': 'telemetry_evidence',
     'detection_metrics.json': 'detection_metric',
+    'telemetry_events.json': 'telemetry_evidence',
+    'investigation_timeline.json': 'investigation_timeline',
     'manifest.json': 'manifest',
     'seal.json': 'signature_seal',
 }
@@ -24923,7 +25121,7 @@ def _extract_chain_evidence(file_values: dict[str, Any]) -> list[dict[str, Any]]
     """
     chain: list[dict[str, Any]] = []
     candidates: list[Any] = []
-    for key in ('detection_metrics.json', 'evidence.json'):
+    for key in ('detection_metrics.json', 'evidence.json', 'telemetry_events.json'):
         val = file_values.get(key)
         if isinstance(val, list):
             candidates.extend(val)
@@ -25039,6 +25237,8 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
                     'alert_id': summary.get('alert_id'),
                     'incident_id': summary.get('incident_id'),
                     'detection_id': summary.get('detection_id'),
+                    'detection_provenance': summary.get('detection_provenance'),
+                    'investigation_timeline_present': summary.get('investigation_timeline_present'),
                     'response_action_id': summary.get('response_action_id'),
                     'export_status': summary.get('export_status'),
                     'package_status': summary.get('package_status'),
