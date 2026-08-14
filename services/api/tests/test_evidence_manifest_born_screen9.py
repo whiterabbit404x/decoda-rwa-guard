@@ -1,0 +1,472 @@
+"""Screen 9 — a normally-created evidence package must be BORN with a manifest.
+
+These lock in the fix for the EV-2026-005 → EV-2026-006 production failure: the
+Manifest-Missing defect was traced past the recovery tools (Generate Manifest /
+Regenerate Package) into the NORMAL package-generation pipeline itself. A freshly
+generated proof bundle (including a superseding one) completed as "Generated" yet
+had no retrievable manifest and could never be verified, because
+``_generate_export_artifact`` swallowed any manifest-build failure and marked the
+job ``completed`` anyway, and never confirmed the manifest actually persisted.
+
+The tests exercise the real generation path (``create_proof_bundle_export`` /
+``regenerate_evidence_package``) plus the ``get_export`` detail projection with the
+project's fake-DB + fake-storage harness (no live DB, no network, no LLM):
+
+* A normal package is born with a retrievable manifest, real per-file SHA-256s,
+  and Verify Integrity / Download Manifest enabled — no Generate-Manifest recovery.
+* Manifest generation is NOT gated on evidence completeness (a partial package is
+  still hashed).
+* If the manifest cannot be built/sealed, the package fails CLOSED (truthful
+  ``failed`` status + safe diagnostic code) instead of silently completing as
+  Manifest-Missing and forcing the Generate-Manifest → Regenerate loop.
+* A read-back gate rejects a package whose persisted bytes do not actually carry
+  the sealed manifest.
+* Regeneration mints a NEW superseding package that is itself born with a manifest,
+  while the original manifest-missing package is preserved untouched.
+"""
+from __future__ import annotations
+
+import json
+from contextlib import contextmanager
+from types import SimpleNamespace
+
+import pytest
+from fastapi import HTTPException
+
+from services.api.app import pilot
+from services.api.app import evidence_signing
+
+
+WS = 'ws-5'
+USER = 'user-5'
+INCIDENT = 'inc-5'
+
+
+# ── Storage double (write + read, shared between generation and detail) ───────
+
+class _FakeStorage:
+    backend_name = 's3'
+    bucket = 'decoda-rwa-guard-evidence'
+    endpoint = 'https://example.r2.cloudflarestorage.com'
+
+    def __init__(self):
+        self.written: dict[str, bytes] = {}
+
+    def write_bytes(self, *, object_key: str, content: bytes) -> str:
+        self.written[object_key] = content
+        return object_key
+
+    def read_bytes(self, *, object_key: str) -> bytes:
+        if object_key not in self.written:
+            raise FileNotFoundError(object_key)
+        return self.written[object_key]
+
+    def get_object_size(self, *, object_key: str):
+        return len(self.written.get(object_key, b'')) or None
+
+    def stored_bundle(self, object_key: str) -> dict:
+        data = json.loads(self.written[object_key])
+        return data['rows'][0]
+
+
+class _Row:
+    def __init__(self, row=None, rows=None):
+        self._row = row
+        self._rows = rows or []
+
+    def fetchone(self):
+        return self._row
+
+    def fetchall(self):
+        return self._rows if self._rows else ([] if self._row is None else [self._row])
+
+
+class _EmptyQueryParams:
+    def get(self, key, default=None):
+        return default
+
+
+def _req(workspace_id: str = WS) -> SimpleNamespace:
+    return SimpleNamespace(headers={'x-workspace-id': workspace_id}, query_params=_EmptyQueryParams())
+
+
+# ── Stateful export_jobs + incident-chain connection ──────────────────────────
+
+class _BornConn:
+    """A mini export_jobs DB that also serves the full proof-bundle incident chain.
+
+    export_jobs rows are stored in ``self.rows`` and mutated by the generation
+    UPDATEs (queued -> completed/failed, with the manifest-reference filters patch
+    merged), so ``get_export`` sees exactly the row the generator just wrote.
+    """
+
+    def __init__(self, *, seed_rows: dict | None = None):
+        self.executed: list[tuple[str, object]] = []
+        self.committed = False
+        self.rows: dict[str, dict] = dict(seed_rows or {})
+        self.inserted_pkg_id: str | None = None
+
+    def execute(self, stmt, params=None):
+        n = ' '.join(str(stmt).split())
+        self.executed.append((n, params))
+        return self._handle(n, params)
+
+    def commit(self):
+        self.committed = True
+
+    # -- helpers ------------------------------------------------------------
+    def _full_row(self, pkg_id: str) -> dict | None:
+        row = self.rows.get(pkg_id)
+        return dict(row) if row is not None else None
+
+    def _handle(self, n, params):
+        # Transaction advisory lock (idempotency serialization).
+        if 'pg_advisory_xact_lock' in n:
+            return _Row(None)
+        # Idempotency reuse lookup (fingerprint-scoped) — no reusable package.
+        if 'evidence_source_fingerprint' in n and "(filters->>'response_action_id') IS NULL" in n:
+            return _Row(None)
+        # Supersession-target lookup (latest incident package).
+        if "(filters->>'response_action_id') IS NULL" in n and 'ORDER BY created_at DESC LIMIT 1' in n:
+            return _Row(None)
+        # "Already superseded?" / detail "newer package exists?" probe.
+        if 'created_at > %s' in n and 'LIMIT 1' in n:
+            return _Row(None)
+
+        # get_export / regenerate full-row read.
+        if 'SELECT * FROM export_jobs WHERE id = %s AND workspace_id = %s' in n:
+            return _Row(self._full_row(params[0]))
+        # _generate_export_artifact narrow job fetch.
+        if 'SELECT id, export_type, format, filters, requested_by_user_id FROM export_jobs' in n:
+            row = self.rows.get(params[0], {})
+            return _Row({
+                'id': params[0],
+                'export_type': row.get('export_type', 'proof_bundle'),
+                'format': row.get('format', 'json'),
+                'filters': dict(row.get('filters') or {'incident_id': INCIDENT, 'include_raw_events': True}),
+                'requested_by_user_id': row.get('requested_by_user_id', USER),
+            })
+
+        # INSERT a fresh export_jobs row.
+        if 'INSERT INTO export_jobs' in n:
+            pkg_id = params[0]
+            self.inserted_pkg_id = pkg_id
+            self.rows[pkg_id] = {
+                'id': pkg_id, 'workspace_id': params[1], 'requested_by_user_id': params[2],
+                'export_type': 'proof_bundle', 'format': 'json',
+                'filters': json.loads(params[3]) if params[3] else {},
+                'status': 'queued', 'output_path': params[4],
+                'storage_backend': params[5], 'storage_object_key': params[6],
+                'error_message': None, 'size_bytes': None, 'package_number': None,
+                'created_at': '2026-08-14T00:00:00Z', 'updated_at': '2026-08-14T00:00:00Z',
+            }
+            return _Row(None)
+
+        # Terminal generation UPDATEs.
+        if "UPDATE export_jobs SET status = 'completed'" in n:
+            pkg_id = params[6]
+            row = self.rows.setdefault(pkg_id, {'filters': {}})
+            row['status'] = 'completed'
+            row['error_message'] = None
+            row['storage_backend'] = params[0]
+            row['storage_object_key'] = params[1]
+            row['size_bytes'] = params[4]
+            merged = dict(row.get('filters') or {})
+            merged.update(json.loads(params[5]) if params[5] else {})
+            row['filters'] = merged
+            return _Row(None)
+        if "UPDATE export_jobs SET status = 'failed'" in n:
+            pkg_id = params[1]
+            row = self.rows.setdefault(pkg_id, {'filters': {}})
+            row['status'] = 'failed'
+            row['error_message'] = params[0]
+            return _Row(None)
+        # Regenerate-into-same-row filters repair (unused here, handled defensively).
+        if 'UPDATE export_jobs SET filters = %s::jsonb' in n:
+            return _Row(None)
+
+        # package_number allocation (best-effort inside _generate).
+        if 'SELECT status, package_number FROM export_jobs WHERE id = %s' in n:
+            row = self.rows.get(params[0], {})
+            return _Row({'status': row.get('status'), 'package_number': row.get('package_number')})
+        if 'MAX(NULLIF(regexp_replace(package_number' in n:
+            return _Row({'max_seq': 0})
+        if 'UPDATE export_jobs SET package_number' in n:
+            row = self.rows.get(params[1])
+            if row is not None:
+                row['package_number'] = params[0]
+            return _Row(None)
+        # create_proof_bundle_export final read.
+        if 'SELECT status, error_message, package_number FROM export_jobs WHERE id = %s' in n:
+            row = self.rows.get(params[0], {})
+            return _Row({'status': row.get('status'), 'error_message': row.get('error_message'), 'package_number': row.get('package_number')})
+
+        # ── Incident evidence chain (fingerprint + collector share these) ──
+        if 'FROM incidents WHERE workspace_id = %s AND id = %s' in n:
+            return _Row({
+                'id': INCIDENT, 'workspace_id': WS, 'title': 'Repaired incident',
+                'severity': 'high', 'status': 'contained', 'asset_id': 'asset-5',
+                'summary': 'Repaired EV-2026-005-style snapshot',
+                'linked_alert_ids': ['alert-5'], 'source_alert_id': 'alert-5',
+                'created_at': '2026-08-01T00:00:00Z',
+            })
+        if 'FROM alerts a JOIN detection_metrics dm' in n:
+            return _Row(rows=[{
+                'id': 'alert-5', 'analysis_run_id': 'run-5', 'target_id': 'target-5',
+                'title': 'Live anomaly', 'severity': 'high', 'status': 'open',
+                'source': 'live', 'detection_id': 'det-5', 'detection_event_id': None,
+                'summary': 'live', 'payload': {'source': 'live'}, 'created_at': '2026-08-01T00:01:00Z',
+            }])
+        if 'FROM alerts a WHERE a.workspace_id' in n:
+            return _Row(rows=[])
+        if 'FROM detection_metrics WHERE workspace_id = %s AND incident_id = %s' in n:
+            return _Row(rows=[{
+                'id': 'metric-5', 'alert_id': 'alert-5',
+                'event_observed_at': '2026-08-01T00:00:00Z', 'detected_at': '2026-08-01T00:02:00Z',
+                'mttd_seconds': 120, 'evidence_source': 'live',
+                'evidence': {'tx_hash': '0xreal', 'block_number': 123, 'chain_id': 1},
+            }])
+        if 'FROM detection_metrics WHERE workspace_id = %s AND alert_id = ANY' in n:
+            return _Row(rows=[])
+        if 'FROM response_actions' in n and 'incident_id = %s' in n:
+            return _Row(rows=[{
+                'id': 'action-5', 'action_type': 'notify_team', 'status': 'executed',
+                'mode': 'live', 'execution_metadata': None, 'executed_at': '2026-08-01T00:10:00Z',
+                'rolled_back_at': None, 'created_at': '2026-08-01T00:09:00Z',
+            }])
+        if 'FROM detections' in n and 'linked_alert_id = ANY' in n:
+            return _Row(rows=[{
+                'id': 'det-5', 'detection_type': 'anomaly', 'severity': 'high', 'confidence': 0.95,
+                'evidence_source': 'live', 'status': 'open', 'detected_at': '2026-08-01T00:01:30Z',
+                'title': 'Live anomaly',
+            }])
+        if 'FROM detections' in n and 'id = %s::uuid' in n:
+            return _Row(None)
+        if 'FROM audit_logs' in n and 'row_hash' in n:
+            return _Row(None)  # audit chain tip
+        if 'FROM audit_logs' in n:
+            return _Row(rows=[{
+                'id': 'audit-5', 'action': 'export.generate', 'entity_type': 'export_job',
+                'entity_id': INCIDENT, 'metadata': None, 'created_at': '2026-08-01T00:12:00Z',
+            }])
+        if 'FROM incident_timeline' in n:
+            return _Row(rows=[{
+                'id': 'tl-5', 'event_type': 'evidence_collected', 'message': 'collected',
+                'actor_user_id': USER, 'metadata': None, 'created_at': '2026-08-01T00:03:00Z',
+            }])
+
+        raise AssertionError(f'unexpected query: {n!r}')
+
+
+def _patch(monkeypatch, conn, storage) -> None:
+    @contextmanager
+    def _pg():
+        yield conn
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'pg_connection', _pg)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_a, **_k: (
+        {'id': USER, 'mfa_enabled': False}, {'workspace_id': WS, 'role': 'admin'}))
+    monkeypatch.setattr(pilot, '_workspace_plan', lambda *_a, **_k: {'exports_enabled': True})
+    monkeypatch.setattr(pilot, 'authenticate_with_connection', lambda *_a, **_k: {'id': USER})
+    monkeypatch.setattr(pilot, 'resolve_workspace', lambda *_a, **_k: {'workspace_id': WS, 'role': 'analyst'})
+    monkeypatch.setattr(pilot, '_workspace_permission_granted', lambda *_a, **_k: True)
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: storage)
+
+
+def _manifest_missing_bundle_bytes() -> bytes:
+    """A stored artifact with evidence files but NO manifest.json (EV-2026-005)."""
+    return json.dumps({'rows': [{
+        'summary.json': {'export_id': 'ev-2026-005', 'incident_id': INCIDENT, 'export_status': 'complete'},
+        'alerts.json': [{'id': 'alert-5', 'severity': 'high'}],
+        'incidents.json': [{'id': INCIDENT, 'status': 'contained'}],
+        'detections.json': [{'id': 'det-5'}],
+        'response_actions.json': [{'id': 'action-5', 'status': 'executed'}],
+        'audit_log.json': [{'id': 'audit-5'}],
+        'evidence.json': [{'tx_hash': '0xreal'}],
+        'detection_metrics.json': [{'id': 'metric-5'}],
+    }]}).encode('utf-8')
+
+
+# ── 10. A normal package is born with a retrievable manifest ──────────────────
+
+def test_normal_creation_is_born_with_retrievable_manifest(monkeypatch):
+    conn = _BornConn()
+    storage = _FakeStorage()
+    _patch(monkeypatch, conn, storage)
+
+    created = pilot.create_proof_bundle_export({'incident_id': INCIDENT, 'include_raw_events': True}, _req())
+    assert created['status'] == 'completed'
+    assert created['created'] is True
+    pkg_id = created['package_id']
+
+    # The package artifact exists in storage and physically carries the manifest.
+    object_key = f'{WS}/{pkg_id}.json'
+    assert object_key in storage.written, 'package artifact must be persisted'
+    stored = storage.stored_bundle(object_key)
+    assert 'manifest.json' in stored and 'seal.json' in stored
+    manifest = stored['manifest.json']
+    assert manifest['files'] and all(f.get('sha256') for f in manifest['files'])
+
+    # The detail projection resolves the manifest against the stored bytes.
+    detail = pilot.get_export(pkg_id, _req())['export']
+    assert detail['manifest_reference']['exists'] is True
+    assert detail['manifest_reference']['retrievable'] is True
+    assert detail['manifest_sha256'] == manifest['manifest_sha256']
+    assert detail['manifest_sha256']
+    assert detail['integrity_status'] == 'hash_generated'
+    assert detail['hash_state'] == 'present'
+    assert detail['is_manifest_missing'] is False
+    assert detail['generation_status'] == 'generated'
+    assert detail['verification_status'] == 'ready'
+
+    # File hashes: non-empty list, every file carries a SHA-256, count > 0.
+    assert detail['files'] and detail['files_hashed'] > 0
+    assert all(f.get('sha256') for f in detail['files'])
+
+    # Verify Integrity + Download Manifest are enabled with no recovery required.
+    assert detail['allowed_actions']['verify'] is True
+    assert detail['allowed_actions']['download_manifest'] is True
+    assert detail['recovery_required'] is False
+
+
+def test_partial_completeness_still_receives_a_manifest(monkeypatch):
+    """Source-evidence completeness and cryptographic integrity are independent:
+    a package below 100% still has finalized bytes and MUST be hashed."""
+    class _PartialConn(_BornConn):
+        def _handle(self, n, params):
+            # No response actions and no audit events → partial/critical completeness.
+            if 'FROM response_actions' in n and 'incident_id = %s' in n:
+                return _Row(rows=[])
+            if 'FROM audit_logs' in n and 'row_hash' not in n:
+                return _Row(rows=[])
+            return super()._handle(n, params)
+
+    conn = _PartialConn()
+    storage = _FakeStorage()
+    _patch(monkeypatch, conn, storage)
+
+    created = pilot.create_proof_bundle_export({'incident_id': INCIDENT}, _req())
+    assert created['status'] == 'completed'
+    detail = pilot.get_export(created['package_id'], _req())['export']
+
+    # Even a non-complete package is born verifiable.
+    assert detail['manifest_reference']['retrievable'] is True
+    assert detail['files_hashed'] > 0
+    assert detail['allowed_actions']['verify'] is True
+    # ...and it is NOT silently reported as a fully-complete evidence bundle.
+    assert detail['is_manifest_missing'] is False
+
+
+# ── 9 & 12. Manifest-build failure fails CLOSED (no silent manifest-missing) ───
+
+def test_manifest_build_failure_fails_closed(monkeypatch):
+    conn = _BornConn()
+    storage = _FakeStorage()
+    _patch(monkeypatch, conn, storage)
+
+    def _boom(_manifest):
+        raise ValueError('signing backend exploded')
+
+    monkeypatch.setattr(evidence_signing, 'seal_manifest', _boom)
+
+    created = pilot.create_proof_bundle_export({'incident_id': INCIDENT}, _req())
+
+    # Truthful failed status + safe diagnostic code — never a 'completed' package.
+    assert created['status'] == 'failed'
+    assert created['error_message'] == 'manifest_generation_failed'
+    assert created['download_link'] is None
+    assert conn.rows[created['package_id']]['status'] == 'failed'
+    # The manifest-less bundle is NOT persisted as a finished package.
+    assert f"{WS}/{created['package_id']}.json" not in storage.written
+
+
+def test_readback_gate_rejects_mismatched_manifest(monkeypatch):
+    """If the recorded manifest hash does not match the manifest actually embedded
+    in the persisted bytes (manifest 'uploaded but not persisted' / discarded), the
+    read-back gate fails the job instead of completing it as verifiable."""
+    conn = _BornConn()
+    storage = _FakeStorage()
+    _patch(monkeypatch, conn, storage)
+
+    real_signing_metadata = evidence_signing.signing_metadata
+
+    def _wrong(manifest, seal):
+        meta = dict(real_signing_metadata(manifest, seal))
+        meta['manifest_sha256'] = '0' * 64  # does not match the embedded manifest
+        return meta
+
+    monkeypatch.setattr(evidence_signing, 'signing_metadata', _wrong)
+
+    created = pilot.create_proof_bundle_export({'incident_id': INCIDENT}, _req())
+    assert created['status'] == 'failed'
+    assert created['error_message'] == 'manifest_readback_failed'
+
+
+# ── 11. Regeneration mints a NEW superseding package born with a manifest ──────
+
+def test_regeneration_supersedes_and_is_born_with_manifest(monkeypatch):
+    old_id = 'ev-2026-005'
+    old_row = {
+        'id': old_id, 'workspace_id': WS, 'requested_by_user_id': USER,
+        'export_type': 'proof_bundle', 'format': 'json',
+        'filters': {
+            'incident_id': INCIDENT, 'include_raw_events': True,
+            'completeness_score': 82, 'files_hashed': 8, 'export_status': 'complete',
+        },
+        'status': 'completed', 'output_path': f'{WS}/{old_id}.json',
+        'storage_backend': 's3', 'storage_object_key': f'{WS}/{old_id}.json',
+        'error_message': None, 'size_bytes': 1024, 'package_number': 'EV-2026-005',
+        'created_at': '2026-08-05T00:00:00Z', 'updated_at': '2026-08-05T00:00:00Z',
+    }
+    conn = _BornConn(seed_rows={old_id: old_row})
+    storage = _FakeStorage()
+    storage.written[f'{WS}/{old_id}.json'] = _manifest_missing_bundle_bytes()
+    _patch(monkeypatch, conn, storage)
+
+    # Sanity: the seeded package really is Manifest Missing before regeneration.
+    before = pilot.get_export(old_id, _req())['export']
+    assert before['is_manifest_missing'] is True
+    assert before['allowed_actions']['verify'] is False
+
+    result = pilot.regenerate_evidence_package(old_id, _req())
+
+    # A NEW superseding package was created (never the same row).
+    assert result['status'] == 'completed'
+    assert result['created'] is True
+    new_id = result['package_id']
+    assert new_id != old_id
+    assert result['superseded_package_id'] == old_id
+    assert result['supersedes_package_id'] == old_id
+
+    # The new package is born with a retrievable manifest + verification readiness.
+    new_detail = pilot.get_export(new_id, _req())['export']
+    assert new_detail['manifest_reference']['retrievable'] is True
+    assert new_detail['manifest_sha256']
+    assert new_detail['integrity_status'] == 'hash_generated'
+    assert new_detail['files_hashed'] > 0
+    assert new_detail['allowed_actions']['verify'] is True
+    assert new_detail['allowed_actions']['download_manifest'] is True
+    assert new_detail['is_manifest_missing'] is False
+    assert new_detail['supersedes_package_id'] == old_id
+
+    # The original manifest-missing package is preserved untouched (never rewritten).
+    assert conn.rows[old_id]['status'] == 'completed'
+    assert 'integrity_hash' not in conn.rows[old_id]['filters']
+    assert storage.written[f'{WS}/{old_id}.json'] == _manifest_missing_bundle_bytes()
+
+
+def test_regeneration_refuses_a_package_with_a_usable_manifest(monkeypatch):
+    """Verified/usable packages stay immutable — regeneration is only for recovery."""
+    conn = _BornConn()
+    storage = _FakeStorage()
+    _patch(monkeypatch, conn, storage)
+
+    # Create a healthy package (born with a manifest), then try to regenerate it.
+    created = pilot.create_proof_bundle_export({'incident_id': INCIDENT}, _req())
+    with pytest.raises(HTTPException) as exc:
+        pilot.regenerate_evidence_package(created['package_id'], _req())
+    assert exc.value.status_code == 409
+    assert exc.value.detail['error'] == 'PACKAGE_NOT_ELIGIBLE'

@@ -24844,17 +24844,37 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
     # psycopg2 returns natively from UUID/timestamp columns.
     rows = _json_safe_value(rows)
 
-    # P0: Add cryptographic evidence manifest + HMAC seal for evidentiary export types.
+    # ── Cryptographic evidence manifest + HMAC seal (Screen 9, normal creation) ──
+    # Every evidentiary export (proof_bundle / incident_report) is BORN with a
+    # deterministic manifest that SHA-256-hashes each finalized evidence file plus
+    # a sealed HMAC over the canonical manifest. This is the NORMAL creation path,
+    # never a retroactive recovery step: manifest generation is UNCONDITIONAL and
+    # is NOT gated on evidence completeness. A partial package still has finalized
+    # bytes, and those bytes can and must be hashed — source-evidence completeness
+    # (how many evidence categories are present) and cryptographic integrity (a
+    # manifest over exactly what IS included) are independent axes. If the manifest
+    # cannot be built and sealed, generation fails CLOSED with a truthful 'failed'
+    # status + safe diagnostic code, instead of silently completing a
+    # Manifest-Missing package that would force the Generate-Manifest / Regenerate
+    # recovery loop.
     export_type_val = str(job['export_type'])
+    _manifest_required = (
+        export_type_val in {'proof_bundle', 'incident_report'}
+        and bool(rows)
+        and isinstance(rows[0], dict)
+    )
     _signing_meta: dict[str, Any] = {}
-    if export_type_val in {'proof_bundle', 'incident_report'} and rows and isinstance(rows[0], dict):
+    if _manifest_required:
         from services.api.app.evidence_signing import (
             build_evidence_manifest,
             seal_manifest,
             signing_metadata as _signing_metadata_fn,
+            canonical_json as _canon_json,
         )
+        logger.info('evidence_manifest_generation_started package_id=%s export_type=%s', export_id, export_type_val)
         try:
             _bundle_dict: dict[str, Any] = rows[0]
+            logger.info('evidence_files_finalized package_id=%s file_count=%d', export_id, len(_bundle_dict))
             _generated_at = utc_now_iso()
             _source_resource_id = str(filters.get('incident_id') or '').strip() or export_id
             _requested_by = str(job.get('requested_by_user_id') or '') or None
@@ -24887,6 +24907,7 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 file_values=_bundle_dict,
                 previous_audit_anchor_hash=_audit_chain_head,
             )
+            logger.info('evidence_file_hashes_generated package_id=%s file_count=%d', export_id, len(_manifest.get('files') or []))
             _seal = seal_manifest(_manifest)
             rows[0]['manifest.json'] = _manifest
             rows[0]['seal.json'] = _seal
@@ -24895,16 +24916,33 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             # Canonical manifest-reference facts, captured only when the manifest is
             # actually built and sealed, so list/detail can describe the manifest
             # without re-reading storage — and never claim one that was not embedded.
-            from services.api.app.evidence_signing import canonical_json as _canon_json
             artifact_meta['manifest_file_count'] = len(_manifest.get('files') or [])
             artifact_meta['manifest_size_bytes'] = len(_canon_json(_manifest))
             artifact_meta['manifest_generated_at'] = _manifest.get('generated_at')
+            logger.info(
+                'evidence_manifest_generated package_id=%s manifest_sha256=%s size_bytes=%s file_count=%d',
+                export_id, _manifest.get('manifest_sha256'), artifact_meta['manifest_size_bytes'], artifact_meta['manifest_file_count'],
+            )
         except RuntimeError as _sign_exc:
-            # Fail closed in production when signing secret is missing
+            # Fail closed in production when the signing secret is missing/invalid.
+            logger.error('evidence_manifest_generation_failed package_id=%s reason=%s', export_id, type(_sign_exc).__name__)
             connection.execute("UPDATE export_jobs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s", (str(_sign_exc), export_id))
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(_sign_exc))
-        except Exception:
-            artifact_meta['signing'] = {'signed': False, 'error': 'signing_failed'}
+        except Exception as _mani_exc:
+            # A normal evidence package MUST be born with a manifest. If the manifest
+            # cannot be built/sealed, fail the job truthfully with a safe diagnostic
+            # code instead of silently completing a Manifest-Missing package. The row
+            # stays visible as 'failed' (retryable) — never a 'Generated' package that
+            # immediately needs retroactive Generate-Manifest recovery, which is what
+            # produced the endless Generate-Manifest → Regenerate loop.
+            logger.error('evidence_manifest_generation_failed package_id=%s reason=%s', export_id, type(_mani_exc).__name__)
+            connection.execute(
+                "UPDATE export_jobs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s",
+                ('manifest_generation_failed', export_id),
+            )
+            artifact_meta['signing'] = {'signed': False, 'error': 'manifest_generation_failed'}
+            artifact_meta['error_code'] = 'manifest_generation_failed'
+            return artifact_meta
 
     _upload_key = f"{workspace_id}/{export_id}.{job['format']}"
     logger.info('evidence_export_upload_start key=%s', _upload_key)
@@ -24939,6 +24977,36 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 logger.info('evidence_export_head_object_success key=%s size=%d', object_key, _head.get('ContentLength', 0))
             except Exception as _head_exc:
                 logger.info('evidence_export_head_object_failed error=%s', type(_head_exc).__name__)
+        # ── Manifest read-back verification (normal creation must be born verifiable) ─
+        # Before the job is allowed to finish as 'completed', confirm the manifest
+        # actually reads back out of the EXACT bytes just persisted: every file
+        # carries a SHA-256 and the manifest hash matches the one we sealed. This
+        # closes the gap that produced a "Generated" package with no retrievable
+        # manifest — a manifest generated in memory but discarded, or a bundle
+        # written without it. If read-back fails the upload is treated as failed, so
+        # the package is reported truthfully (status='failed' + diagnostic) rather
+        # than as a Manifest-Missing package that needs retroactive recovery.
+        # Scoped to JSON-serialized bundles (json/pdf both serialize via json.dumps);
+        # a CSV export cannot carry a retrievable JSON manifest by construction.
+        if _manifest_required and str(job['format']) in {'json', 'pdf'}:
+            logger.info('evidence_manifest_persisted package_id=%s key=%s bytes=%d', export_id, object_key, _content_size)
+            try:
+                _rb_rows = (json.loads(content) or {}).get('rows') or []
+                _rb_manifest = _rb_rows[0].get('manifest.json') if _rb_rows and isinstance(_rb_rows[0], dict) else None
+            except Exception:
+                _rb_manifest = None
+            _rb_files = _rb_manifest.get('files') if isinstance(_rb_manifest, dict) else None
+            _rb_ok = (
+                isinstance(_rb_manifest, dict)
+                and isinstance(_rb_files, list) and bool(_rb_files)
+                and all(isinstance(_f, dict) and str(_f.get('sha256') or '').strip() for _f in _rb_files)
+                and bool(_signing_meta.get('manifest_sha256'))
+                and str(_rb_manifest.get('manifest_sha256') or '') == str(_signing_meta.get('manifest_sha256') or '')
+            )
+            if not _rb_ok:
+                logger.error('evidence_manifest_readback_failed package_id=%s key=%s', export_id, object_key)
+                raise RuntimeError('manifest_readback_failed')
+            logger.info('evidence_manifest_readback_verified package_id=%s key=%s file_count=%d', export_id, object_key, len(_rb_files))
         # Persist computed proof_bundle metadata (evidence_source_type, export_status,
         # missing_sections) back into the filters JSONB so list_exports can return it
         # without re-deriving it from raw data.
