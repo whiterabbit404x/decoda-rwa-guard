@@ -27,6 +27,7 @@ project's fake-DB + fake-storage harness (no live DB, no network, no LLM):
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -35,6 +36,23 @@ from fastapi import HTTPException
 
 from services.api.app import pilot
 from services.api.app import evidence_signing
+
+
+def _event_tokens(caplog) -> list[str]:
+    """The leading structured-event token of every pilot log line, in order.
+
+    Each generation log line is ``<event> key=value key=value ...``; the event
+    name is the first whitespace-delimited token. Returned in emission order so a
+    test can assert both presence and ordering of the package-generation lifecycle.
+    """
+    tokens: list[str] = []
+    for record in caplog.records:
+        if record.name != 'services.api.app.pilot':
+            continue
+        message = record.getMessage()
+        if message:
+            tokens.append(message.split(' ', 1)[0])
+    return tokens
 
 
 WS = 'ws-5'
@@ -470,3 +488,168 @@ def test_regeneration_refuses_a_package_with_a_usable_manifest(monkeypatch):
         pilot.regenerate_evidence_package(created['package_id'], _req())
     assert exc.value.status_code == 409
     assert exc.value.detail['error'] == 'PACKAGE_NOT_ELIGIBLE'
+
+
+# ── b56fa931 (EV-2026-006) shape: superseding live-evidence bundle ────────────
+# b56fa931 is the NEW superseding proof bundle minted by "Regenerate Package" for
+# a manifest-missing predecessor, over live incident evidence. These lock in that
+# running the ACTUAL production generator for that exact shape produces a package
+# that is born verifiable, and emits the full structured lifecycle so the next
+# production regeneration is diagnosable from logs alone (no more trace-only gap).
+
+# The canonical package-generation lifecycle events _generate_export_artifact must
+# emit, in order, for a proof bundle that is born with a manifest.
+_EXPECTED_LIFECYCLE_EVENTS = [
+    'evidence_package_generation_started',
+    'evidence_manifest_generation_started',
+    'evidence_files_finalized',
+    'evidence_file_hashes_generated',
+    'evidence_manifest_generated',
+    'evidence_package_artifact_persisted',
+    'evidence_manifest_persisted',
+    'evidence_manifest_readback_verified',
+    'evidence_package_generation_completed',
+]
+
+
+def _seeded_manifest_missing_conn_and_storage():
+    old_id = 'ev-2026-005'
+    old_row = {
+        'id': old_id, 'workspace_id': WS, 'requested_by_user_id': USER,
+        'export_type': 'proof_bundle', 'format': 'json',
+        'filters': {
+            'incident_id': INCIDENT, 'include_raw_events': True,
+            'completeness_score': 82, 'files_hashed': 8, 'export_status': 'complete',
+        },
+        'status': 'completed', 'output_path': f'{WS}/{old_id}.json',
+        'storage_backend': 's3', 'storage_object_key': f'{WS}/{old_id}.json',
+        'error_message': None, 'size_bytes': 1024, 'package_number': 'EV-2026-005',
+        'created_at': '2026-08-05T00:00:00Z', 'updated_at': '2026-08-05T00:00:00Z',
+    }
+    conn = _BornConn(seed_rows={old_id: old_row})
+    storage = _FakeStorage()
+    storage.written[f'{WS}/{old_id}.json'] = _manifest_missing_bundle_bytes()
+    return old_id, conn, storage
+
+
+def test_regenerated_b56fa931_shape_is_born_verifiable(monkeypatch):
+    old_id, conn, storage = _seeded_manifest_missing_conn_and_storage()
+    _patch(monkeypatch, conn, storage)
+
+    # The predecessor is genuinely Manifest Missing (82% complete — a partial
+    # package is still hashed; completeness never gates the manifest).
+    before = pilot.get_export(old_id, _req())['export']
+    assert before['is_manifest_missing'] is True
+
+    result = pilot.regenerate_evidence_package(old_id, _req())
+    assert result['status'] == 'completed'
+    new_id = result['package_id']
+    assert new_id != old_id
+
+    # The package artifact physically exists in storage.
+    new_key = f'{WS}/{new_id}.json'
+    assert new_key in storage.written
+    manifest = storage.stored_bundle(new_key)['manifest.json']
+
+    detail = pilot.get_export(new_id, _req())['export']
+
+    # files.length >= 1, files_hashed == files.length, every file has a sha256.
+    assert len(detail['files']) >= 1
+    assert detail['files_hashed'] == len(detail['files'])
+    assert detail['files_hashed'] == len(manifest['files'])
+    assert all(f.get('sha256') for f in detail['files'])
+    # Section-5 single-file contract: each file carries logical_path/media_type/
+    # size_bytes/sha256 (a one-file bundle would satisfy exactly this shape).
+    for f in detail['files']:
+        assert {'logical_path', 'media_type', 'size_bytes', 'sha256'} <= set(f)
+
+    # manifest_reference.exists / retrievable and a real manifest_sha256.
+    assert detail['manifest_reference']['exists'] is True
+    assert detail['manifest_reference']['retrievable'] is True
+    assert detail['manifest_sha256']
+    assert detail['manifest_sha256'] == manifest['manifest_sha256']
+
+    # Verify Integrity + Download Manifest enabled; no recovery required.
+    assert detail['allowed_actions']['verify'] is True
+    assert detail['allowed_actions']['download_manifest'] is True
+    assert detail['is_manifest_missing'] is False
+    assert detail['recovery_required'] is False
+
+    # generation_status='generated' must NOT coexist with a missing manifest.
+    assert detail['generation_status'] == 'generated'
+    assert detail['verification_status'] == 'ready'
+
+
+def test_regeneration_emits_full_structured_lifecycle(monkeypatch, caplog):
+    """The trace-only production gap is closed: a real regeneration emits every
+    package-generation lifecycle event, in order, so A/B/C/D is separable from logs."""
+    old_id, conn, storage = _seeded_manifest_missing_conn_and_storage()
+    _patch(monkeypatch, conn, storage)
+
+    with caplog.at_level(logging.INFO, logger='services.api.app.pilot'):
+        result = pilot.regenerate_evidence_package(old_id, _req())
+    assert result['status'] == 'completed'
+
+    tokens = _event_tokens(caplog)
+    for event in _EXPECTED_LIFECYCLE_EVENTS:
+        assert event in tokens, f'missing lifecycle event: {event}'
+
+    # Ordering: start brackets everything; the manifest is generated, then the
+    # artifact persisted, then the manifest read back, then completion.
+    assert tokens.index('evidence_package_generation_started') < tokens.index('evidence_manifest_generated')
+    assert tokens.index('evidence_manifest_generated') < tokens.index('evidence_manifest_readback_verified')
+    assert tokens.index('evidence_manifest_readback_verified') < tokens.index('evidence_package_generation_completed')
+    # A born-with-manifest package never emits a manifest-failure event.
+    assert 'evidence_manifest_generation_failed' not in tokens
+
+    # The artifact-level completion line (carries manifest_present + files_hashed);
+    # distinct from the endpoint-level request_id/job_id correlation line.
+    completed = [
+        m for m in caplog.messages
+        if m.startswith('evidence_package_generation_completed') and 'manifest_present=' in m
+    ]
+    assert completed and 'status=completed' in completed[-1] and 'manifest_present=yes' in completed[-1]
+
+
+def test_normal_creation_emits_started_and_completed_brackets(monkeypatch, caplog):
+    """Every creation path (not just regenerate) brackets generation with the
+    canonical start/complete lifecycle events carrying the package id + type."""
+    conn = _BornConn()
+    storage = _FakeStorage()
+    _patch(monkeypatch, conn, storage)
+
+    with caplog.at_level(logging.INFO, logger='services.api.app.pilot'):
+        created = pilot.create_proof_bundle_export({'incident_id': INCIDENT}, _req())
+    assert created['status'] == 'completed'
+    pkg_id = created['package_id']
+
+    started = [m for m in caplog.messages if m.startswith('evidence_package_generation_started')]
+    completed = [m for m in caplog.messages if m.startswith('evidence_package_generation_completed')]
+    # The artifact-level bracket carries package_id + export_type (distinct from the
+    # endpoint-level request_id/job_id correlation line).
+    assert any(f'package_id={pkg_id}' in m and 'export_type=proof_bundle' in m for m in started)
+    assert any(f'package_id={pkg_id}' in m and 'status=completed' in m for m in completed)
+
+
+def test_manifest_with_no_hashable_files_fails_closed(monkeypatch):
+    """A manifest that would hash zero files must fail CLOSED — never a 'Generated'
+    package with files_hashed=0 (the Manifest-Missing shape). Guards the single-JSON
+    path: an empty files list is rejected before persistence."""
+    conn = _BornConn()
+    storage = _FakeStorage()
+    _patch(monkeypatch, conn, storage)
+
+    real_build = evidence_signing.build_evidence_manifest
+
+    def _empty_files(**kwargs):
+        manifest, file_bytes = real_build(**kwargs)
+        manifest['files'] = []  # simulate a degenerate 'single JSON object, no files' manifest
+        return manifest, file_bytes
+
+    monkeypatch.setattr(evidence_signing, 'build_evidence_manifest', _empty_files)
+
+    created = pilot.create_proof_bundle_export({'incident_id': INCIDENT}, _req())
+    assert created['status'] == 'failed'
+    assert created['error_message'] == 'manifest_generation_failed'
+    # No manifest-less bundle is persisted as a finished package.
+    assert f"{WS}/{created['package_id']}.json" not in storage.written
