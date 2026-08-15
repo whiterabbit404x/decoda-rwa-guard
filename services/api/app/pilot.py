@@ -24039,6 +24039,20 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
     job = connection.execute('SELECT id, export_type, format, filters, requested_by_user_id FROM export_jobs WHERE id = %s AND workspace_id = %s', (export_id, workspace_id)).fetchone()
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Export not found.')
+    # ── Package-generation lifecycle: START ──────────────────────────────────
+    # Bracketing event emitted for EVERY export BEFORE any artifact/manifest work,
+    # so the whole generation lifecycle is reconstructable from logs alone. This is
+    # what the production trace-only logs were missing: a job that later reaches
+    # 'completed' with NO evidence_manifest_generated event between this line and
+    # evidence_package_generation_completed is, by construction, the manifest-skipped
+    # case; a job that logs evidence_manifest_generation_started but not
+    # evidence_manifest_readback_verified pins the failure to the exact phase. The
+    # human package_number is assigned only after persistence, so it is reported on
+    # the completion event, not here. Never logs evidence contents.
+    logger.info(
+        'evidence_package_generation_started package_id=%s export_type=%s format=%s',
+        export_id, str(job['export_type']), str(job['format']),
+    )
     rows: list[dict[str, Any]]
     artifact_meta: dict[str, Any] = {}
     filters = job.get('filters') if isinstance(job.get('filters'), dict) else {}
@@ -24907,7 +24921,23 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 file_values=_bundle_dict,
                 previous_audit_anchor_hash=_audit_chain_head,
             )
-            logger.info('evidence_file_hashes_generated package_id=%s file_count=%d', export_id, len(_manifest.get('files') or []))
+            # A manifest MUST hash at least one finalized file, and every listed file
+            # MUST carry a SHA-256. A one-file bundle is perfectly valid — a single
+            # JSON artifact becomes files == [{path, sha256, size_bytes}] — but an
+            # EMPTY files list (or an unhashed entry) is not: it would yield a
+            # 'Generated' package with files_hashed=0 and nothing to verify, which is
+            # exactly the Manifest-Missing shape. Fail CLOSED here rather than persist a
+            # manifest that hashes nothing. Raised as ValueError (not RuntimeError) so
+            # it is handled below as a manifest-build failure -> truthful 'failed'
+            # package, not a signing-infra 503.
+            _manifest_files = _manifest.get('files') or []
+            if not (
+                isinstance(_manifest_files, list)
+                and _manifest_files
+                and all(isinstance(_f, dict) and str(_f.get('sha256') or '').strip() for _f in _manifest_files)
+            ):
+                raise ValueError('manifest_produced_no_files')
+            logger.info('evidence_file_hashes_generated package_id=%s file_count=%d', export_id, len(_manifest_files))
             _seal = seal_manifest(_manifest)
             rows[0]['manifest.json'] = _manifest
             rows[0]['seal.json'] = _seal
@@ -24925,7 +24955,10 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             )
         except RuntimeError as _sign_exc:
             # Fail closed in production when the signing secret is missing/invalid.
-            logger.error('evidence_manifest_generation_failed package_id=%s reason=%s', export_id, type(_sign_exc).__name__)
+            logger.error(
+                'evidence_manifest_generation_failed package_id=%s error_class=%s safe_reason=%s',
+                export_id, type(_sign_exc).__name__, 'signing_unavailable',
+            )
             connection.execute("UPDATE export_jobs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s", (str(_sign_exc), export_id))
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(_sign_exc))
         except Exception as _mani_exc:
@@ -24935,7 +24968,10 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             # stays visible as 'failed' (retryable) — never a 'Generated' package that
             # immediately needs retroactive Generate-Manifest recovery, which is what
             # produced the endless Generate-Manifest → Regenerate loop.
-            logger.error('evidence_manifest_generation_failed package_id=%s reason=%s', export_id, type(_mani_exc).__name__)
+            logger.error(
+                'evidence_manifest_generation_failed package_id=%s error_class=%s safe_reason=%s',
+                export_id, type(_mani_exc).__name__, 'manifest_generation_failed',
+            )
             connection.execute(
                 "UPDATE export_jobs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s",
                 ('manifest_generation_failed', export_id),
@@ -24964,6 +25000,15 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
         object_key = storage.write_bytes(object_key=_upload_key, content=content)
         _content_size = len(content)
         logger.info('evidence_export_upload_success key=%s bytes=%d', object_key, _content_size)
+        # Canonical package-ARTIFACT-persisted lifecycle event: the bundle object is
+        # now in storage. Distinct from evidence_manifest_persisted below — the package
+        # artifact is the stored JSON object; the manifest is a document INSIDE it, and
+        # a persisted artifact does NOT by itself prove a retrievable manifest (the
+        # read-back gate below proves that separately). Never logs evidence contents.
+        logger.info(
+            'evidence_package_artifact_persisted package_id=%s storage_key=%s size_bytes=%d',
+            export_id, object_key, _content_size,
+        )
         if storage.backend_name == 's3':
             _endpoint_host = getattr(storage, 'endpoint', None)
             if _endpoint_host:
@@ -25064,6 +25109,31 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
         except Exception:
             # Numbering is best-effort; the read-time EV-<short> fallback covers it.
             pass
+
+    # ── Package-generation lifecycle: COMPLETE ───────────────────────────────
+    # Terminal bracketing event, emitted for every export with the FINAL persisted
+    # status read back from the row (never assumed). Together with the START event
+    # and the manifest_* events, this makes the four hypotheses directly separable
+    # from logs alone for the next regeneration of a package like b56fa931:
+    #   started + completed(status=completed) with NO manifest_* -> (A) skipped
+    #   started + manifest_generation_started + generation_failed -> (B) build failed
+    #   started + manifest_generated but NO manifest_persisted     -> (C) persist gap
+    #   started + manifest_persisted but NO readback_verified      -> (D) readback gap
+    # manifest_present is a hash-presence signal only; it never logs evidence content.
+    try:
+        _final_row = connection.execute(
+            'SELECT status, package_number FROM export_jobs WHERE id = %s', (export_id,)
+        ).fetchone()
+    except Exception:
+        _final_row = None
+    logger.info(
+        'evidence_package_generation_completed package_id=%s export_type=%s status=%s package_number=%s files_hashed=%s manifest_present=%s',
+        export_id, export_type_val,
+        str((_final_row or {}).get('status') or '') or 'unknown',
+        str((_final_row or {}).get('package_number') or artifact_meta.get('package_number') or ''),
+        artifact_meta.get('files_hashed', 0),
+        'yes' if _signing_meta.get('manifest_sha256') else 'no',
+    )
     return artifact_meta
 
 
