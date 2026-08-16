@@ -392,9 +392,11 @@ def test_manifest_build_failure_fails_closed(monkeypatch):
 
     created = pilot.create_proof_bundle_export({'incident_id': INCIDENT}, _req())
 
-    # Truthful failed status + safe diagnostic code — never a 'completed' package.
+    # Truthful failed status + the PRECISE failing stage (the seal/sign stage here),
+    # never a single generic "manifest generation failed" — the row now names the
+    # stage so a production failure is diagnosable from error_message alone.
     assert created['status'] == 'failed'
-    assert created['error_message'] == 'manifest_generation_failed'
+    assert created['error_message'] == 'manifest_signing_failed'
     assert created['download_link'] is None
     assert conn.rows[created['package_id']]['status'] == 'failed'
     # The manifest-less bundle is NOT persisted as a finished package.
@@ -402,9 +404,10 @@ def test_manifest_build_failure_fails_closed(monkeypatch):
 
 
 def test_readback_gate_rejects_mismatched_manifest(monkeypatch):
-    """If the recorded manifest hash does not match the manifest actually embedded
-    in the persisted bytes (manifest 'uploaded but not persisted' / discarded), the
-    read-back gate fails the job instead of completing it as verifiable."""
+    """If the recorded/sealed manifest hash does not match the manifest actually
+    embedded in the persisted bytes (manifest 'uploaded but not persisted' /
+    discarded), the read-back gate fails the job CLOSED instead of completing it as
+    verifiable — and reports it as the precise ``manifest_hash_mismatch`` stage."""
     conn = _BornConn()
     storage = _FakeStorage()
     _patch(monkeypatch, conn, storage)
@@ -420,7 +423,7 @@ def test_readback_gate_rejects_mismatched_manifest(monkeypatch):
 
     created = pilot.create_proof_bundle_export({'incident_id': INCIDENT}, _req())
     assert created['status'] == 'failed'
-    assert created['error_message'] == 'manifest_readback_failed'
+    assert created['error_message'] == 'manifest_hash_mismatch'
 
 
 # ── 11. Regeneration mints a NEW superseding package born with a manifest ──────
@@ -599,8 +602,8 @@ def test_regeneration_emits_full_structured_lifecycle(monkeypatch, caplog):
     assert tokens.index('evidence_package_generation_started') < tokens.index('evidence_manifest_generated')
     assert tokens.index('evidence_manifest_generated') < tokens.index('evidence_manifest_readback_verified')
     assert tokens.index('evidence_manifest_readback_verified') < tokens.index('evidence_package_generation_completed')
-    # A born-with-manifest package never emits a manifest-failure event.
-    assert 'evidence_manifest_generation_failed' not in tokens
+    # A born-with-manifest package never emits a stage-classified failure event.
+    assert 'evidence_package_generation_failed' not in tokens
 
     # The artifact-level completion line (carries manifest_present + files_hashed);
     # distinct from the endpoint-level request_id/job_id correlation line.
@@ -650,6 +653,104 @@ def test_manifest_with_no_hashable_files_fails_closed(monkeypatch):
 
     created = pilot.create_proof_bundle_export({'incident_id': INCIDENT}, _req())
     assert created['status'] == 'failed'
-    assert created['error_message'] == 'manifest_generation_failed'
+    # Zero hashable files is specifically an artifact-enumeration failure, not a
+    # generic manifest failure.
+    assert created['error_message'] == 'artifact_enumeration_failed'
     # No manifest-less bundle is persisted as a finished package.
     assert f"{WS}/{created['package_id']}.json" not in storage.written
+
+
+# ── 13. Stored-bytes integrity: the manifest hashes the EXACT persisted bytes ──
+
+def test_manifest_hashes_the_exact_persisted_bytes(monkeypatch):
+    """Read the persisted package artifact back out of storage and independently
+    recompute every SHA-256. Each manifest file entry must equal the SHA-256 of the
+    exact stored logical-file bytes, and the manifest hash must recompute from the
+    stored manifest body — proving hashes are taken over what is actually persisted,
+    not a reconstructed/pretty-printed variant."""
+    import hashlib as _hashlib
+    from services.api.app.evidence_signing import canonical_json as _canon
+
+    conn = _BornConn()
+    storage = _FakeStorage()
+    _patch(monkeypatch, conn, storage)
+
+    created = pilot.create_proof_bundle_export({'incident_id': INCIDENT}, _req())
+    assert created['status'] == 'completed'
+    object_key = f"{WS}/{created['package_id']}.json"
+
+    # Read the ACTUAL persisted object back out of storage (not an in-memory copy).
+    stored_bundle = json.loads(storage.read_bytes(object_key=object_key))['rows'][0]
+    manifest = stored_bundle['manifest.json']
+
+    # A single-file proof bundle would satisfy exactly this contract too: len>=1.
+    assert len(manifest['files']) >= 1
+    for entry in manifest['files']:
+        path = entry['path']
+        assert path in stored_bundle, f'manifest lists {path} but it is not in the stored bytes'
+        independent = _hashlib.sha256(_canon(stored_bundle[path])).hexdigest()
+        assert independent == entry['sha256'], f'sha256 mismatch for {path}'
+        assert entry['size_bytes'] == len(_canon(stored_bundle[path]))
+
+    # The manifest hash recomputes over the canonical manifest body (its own hash
+    # excluded) — i.e. sha256(persisted manifest bytes) == manifest_sha256.
+    body = {k: v for k, v in manifest.items() if k != 'manifest_sha256'}
+    assert _hashlib.sha256(_canon(body)).hexdigest() == manifest['manifest_sha256']
+
+    # The detail projection's recorded manifest_sha256 matches the stored manifest.
+    detail = pilot.get_export(created['package_id'], _req())['export']
+    assert detail['manifest_sha256'] == manifest['manifest_sha256']
+    assert detail['files'][0]['sha256'] == manifest['files'][0]['sha256']
+
+
+# ── 14. Real storage read-back failure fails CLOSED ───────────────────────────
+
+def test_storage_readback_returning_different_bytes_fails_closed(monkeypatch):
+    """The read-back gate must READ THE OBJECT BACK OUT OF STORAGE, not re-parse the
+    in-memory buffer. If storage returns bytes that differ from what was written
+    (corruption / eventual-consistency / a discarded write), generation fails CLOSED
+    with the precise ``manifest_storage_readback_failed`` code — never a 'Generated'
+    package whose manifest cannot actually be re-read."""
+
+    class _CorruptReadStorage(_FakeStorage):
+        def read_bytes(self, *, object_key: str) -> bytes:
+            # Write succeeds, but storage hands back different bytes on read-back.
+            return super().read_bytes(object_key=object_key) + b' '
+
+    conn = _BornConn()
+    storage = _CorruptReadStorage()
+    _patch(monkeypatch, conn, storage)
+
+    created = pilot.create_proof_bundle_export({'incident_id': INCIDENT}, _req())
+    assert created['status'] == 'failed'
+    assert created['error_message'] == 'manifest_storage_readback_failed'
+    assert created['download_link'] is None
+
+    # Fail-closed detail: not generated, and Verify / Download Manifest disabled.
+    detail = pilot.get_export(created['package_id'], _req())['export']
+    assert detail['generation_status'] == 'failed'
+    assert detail['allowed_actions']['verify'] is False
+    assert detail['allowed_actions']['download_manifest'] is False
+
+
+# ── 15. Storage WRITE failure fails CLOSED with the write stage code ──────────
+
+def test_storage_write_failure_fails_closed(monkeypatch):
+    """A manifest storage upload failure fails the job with a code that identifies
+    the storage-WRITE stage, and never persists a successful generation status or a
+    finished package object."""
+
+    class _WriteFailsStorage(_FakeStorage):
+        def write_bytes(self, *, object_key: str, content: bytes) -> str:
+            raise OSError('simulated S3 upload failure')
+
+    conn = _BornConn()
+    storage = _WriteFailsStorage()
+    _patch(monkeypatch, conn, storage)
+
+    created = pilot.create_proof_bundle_export({'incident_id': INCIDENT}, _req())
+    assert created['status'] == 'failed'
+    assert created['error_message'] == 'manifest_storage_write_failed'
+    # Nothing was persisted as a finished package.
+    assert f"{WS}/{created['package_id']}.json" not in storage.written
+    assert conn.rows[created['package_id']]['status'] == 'failed'

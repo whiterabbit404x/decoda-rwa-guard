@@ -38,6 +38,10 @@ class _FakeStorage:
         self.content = content
         return object_key
 
+    def read_bytes(self, *, object_key: str) -> bytes:
+        # The manifest read-back gate reads the persisted object back out of storage.
+        return self.content
+
 
 class _FakeRow:
     def __init__(self, row):
