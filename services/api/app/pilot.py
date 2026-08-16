@@ -24858,6 +24858,17 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
     # psycopg2 returns natively from UUID/timestamp columns.
     rows = _json_safe_value(rows)
 
+    # Canonical source-collection bracket: the incident's evidence has been collected
+    # and JSON-sanitized, BEFORE any hashing/manifest work. Carries the source-snapshot
+    # fingerprint (idempotency identity) and the number of logical evidence sections
+    # collected, so the collect → hash → seal → persist lifecycle is reconstructable
+    # from logs alone. Never logs evidence contents.
+    _collected_section_count = len(rows[0]) if rows and isinstance(rows[0], dict) else len(rows)
+    logger.info(
+        'evidence_source_collection_completed package_id=%s source_fingerprint=%s source_section_count=%d',
+        export_id, str(filters.get('evidence_source_fingerprint') or ''), _collected_section_count,
+    )
+
     # ── Cryptographic evidence manifest + HMAC seal (Screen 9, normal creation) ──
     # Every evidentiary export (proof_bundle / incident_report) is BORN with a
     # deterministic manifest that SHA-256-hashes each finalized evidence file plus
@@ -24887,6 +24898,7 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
         )
         logger.info('evidence_manifest_generation_started package_id=%s export_type=%s', export_id, export_type_val)
         try:
+            _build_stage = 'manifest_build'
             _bundle_dict: dict[str, Any] = rows[0]
             logger.info('evidence_files_finalized package_id=%s file_count=%d', export_id, len(_bundle_dict))
             _generated_at = utc_now_iso()
@@ -24909,6 +24921,7 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             except Exception:
                 _audit_chain_head = None
 
+            _build_stage = 'artifact_hash_generation'
             _manifest, _ = build_evidence_manifest(
                 export_id=export_id,
                 export_type=export_type_val,
@@ -24930,6 +24943,7 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             # manifest that hashes nothing. Raised as ValueError (not RuntimeError) so
             # it is handled below as a manifest-build failure -> truthful 'failed'
             # package, not a signing-infra 503.
+            _build_stage = 'artifact_enumeration'
             _manifest_files = _manifest.get('files') or []
             if not (
                 isinstance(_manifest_files, list)
@@ -24938,9 +24952,11 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             ):
                 raise ValueError('manifest_produced_no_files')
             logger.info('evidence_file_hashes_generated package_id=%s file_count=%d', export_id, len(_manifest_files))
+            _build_stage = 'manifest_signing'
             _seal = seal_manifest(_manifest)
             rows[0]['manifest.json'] = _manifest
             rows[0]['seal.json'] = _seal
+            _build_stage = 'manifest_metadata'
             _signing_meta = _signing_metadata_fn(_manifest, _seal)
             artifact_meta.update({'signing': _signing_meta})
             # Canonical manifest-reference facts, captured only when the manifest is
@@ -24954,34 +24970,44 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 export_id, _manifest.get('manifest_sha256'), artifact_meta['manifest_size_bytes'], artifact_meta['manifest_file_count'],
             )
         except RuntimeError as _sign_exc:
-            # Fail closed in production when the signing secret is missing/invalid.
+            # A RuntimeError from this block is the signing subsystem being
+            # unavailable (missing/invalid managed key) — an infrastructure fault,
+            # not a bad package. Fail closed as a 503 so the caller can retry once
+            # signing is restored; the row is marked failed with the raw reason.
             logger.error(
-                'evidence_manifest_generation_failed package_id=%s error_class=%s safe_reason=%s',
-                export_id, type(_sign_exc).__name__, 'signing_unavailable',
+                'evidence_package_generation_failed package_id=%s stage=%s error_class=%s safe_reason=%s',
+                export_id, _build_stage, type(_sign_exc).__name__, 'manifest_signing_unavailable',
             )
             connection.execute("UPDATE export_jobs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s", (str(_sign_exc), export_id))
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(_sign_exc))
         except Exception as _mani_exc:
-            # A normal evidence package MUST be born with a manifest. If the manifest
-            # cannot be built/sealed, fail the job truthfully with a safe diagnostic
-            # code instead of silently completing a Manifest-Missing package. The row
-            # stays visible as 'failed' (retryable) — never a 'Generated' package that
-            # immediately needs retroactive Generate-Manifest recovery, which is what
-            # produced the endless Generate-Manifest → Regenerate loop.
+            # A normal evidence package MUST be born with a manifest. Classify the
+            # EXACT stage that failed (never one generic "manifest generation failed")
+            # so a production failure is diagnosable from the row's error_message and
+            # the structured log alone, then fail CLOSED — the row stays 'failed'
+            # (retryable), never a silently-completed Manifest-Missing package that
+            # forces the Generate-Manifest → Regenerate loop.
+            _safe_reason = {
+                'artifact_enumeration': 'artifact_enumeration_failed',
+                'artifact_hash_generation': 'artifact_hash_generation_failed',
+                'manifest_signing': 'manifest_signing_failed',
+                'manifest_metadata': 'manifest_serialization_failed',
+            }.get(_build_stage, 'manifest_generation_failed')
             logger.error(
-                'evidence_manifest_generation_failed package_id=%s error_class=%s safe_reason=%s',
-                export_id, type(_mani_exc).__name__, 'manifest_generation_failed',
+                'evidence_package_generation_failed package_id=%s stage=%s error_class=%s safe_reason=%s',
+                export_id, _build_stage, type(_mani_exc).__name__, _safe_reason,
             )
             connection.execute(
                 "UPDATE export_jobs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s",
-                ('manifest_generation_failed', export_id),
+                (_safe_reason, export_id),
             )
-            artifact_meta['signing'] = {'signed': False, 'error': 'manifest_generation_failed'}
-            artifact_meta['error_code'] = 'manifest_generation_failed'
+            artifact_meta['signing'] = {'signed': False, 'error': _safe_reason}
+            artifact_meta['error_code'] = _safe_reason
             return artifact_meta
 
     _upload_key = f"{workspace_id}/{export_id}.{job['format']}"
     logger.info('evidence_export_upload_start key=%s', _upload_key)
+    _upload_stage = 'artifact_serialize'
     try:
         if str(job['format']) == 'json':
             content = json.dumps({'rows': rows}, indent=2).encode('utf-8')
@@ -24997,6 +25023,7 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             for row in rows:
                 writer.writerow({key: _json_safe_value(row.get(key)) for key in headers})
             content = buffer.getvalue().encode('utf-8')
+        _upload_stage = 'artifact_storage_write'
         object_key = storage.write_bytes(object_key=_upload_key, content=content)
         _content_size = len(content)
         logger.info('evidence_export_upload_success key=%s bytes=%d', object_key, _content_size)
@@ -25022,39 +25049,75 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 logger.info('evidence_export_head_object_success key=%s size=%d', object_key, _head.get('ContentLength', 0))
             except Exception as _head_exc:
                 logger.info('evidence_export_head_object_failed error=%s', type(_head_exc).__name__)
-        # ── Manifest read-back verification (normal creation must be born verifiable) ─
-        # Before the job is allowed to finish as 'completed', confirm the manifest
-        # actually reads back out of the EXACT bytes just persisted: every file
-        # carries a SHA-256 and the manifest hash matches the one we sealed. This
-        # closes the gap that produced a "Generated" package with no retrievable
-        # manifest — a manifest generated in memory but discarded, or a bundle
-        # written without it. If read-back fails the upload is treated as failed, so
-        # the package is reported truthfully (status='failed' + diagnostic) rather
-        # than as a Manifest-Missing package that needs retroactive recovery.
-        # Scoped to JSON-serialized bundles (json/pdf both serialize via json.dumps);
-        # a CSV export cannot carry a retrievable JSON manifest by construction.
+        # ── Manifest read-back verification (real storage round-trip) ─────────────
+        # Before the job may finish as 'completed', READ THE PERSISTED OBJECT BACK
+        # OUT OF STORAGE (never the in-memory buffer) and prove three things about
+        # the bytes storage actually returns: (1) they are byte-for-byte what we
+        # wrote; (2) they carry the sealed manifest with a SHA-256 on every file; and
+        # (3) the manifest hash both matches the one we sealed AND independently
+        # recomputes from the read-back manifest body. This is the difference between
+        # "we intended to write a manifest" and "a manifest is retrievable" — a
+        # package is only born verifiable when the second is TRUE against real
+        # storage. Any failure here fails the job CLOSED with a precise diagnostic
+        # (manifest_storage_readback_failed vs manifest_hash_mismatch), never a
+        # 'Generated' package whose manifest cannot actually be re-read. Scoped to
+        # JSON-serialized bundles (json/pdf); a CSV export cannot carry a retrievable
+        # JSON manifest by construction.
         if _manifest_required and str(job['format']) in {'json', 'pdf'}:
+            _upload_stage = 'manifest_storage_readback'
+            try:
+                _stored_back = storage.read_bytes(object_key=object_key)
+            except Exception as _rb_exc:
+                logger.error(
+                    'evidence_package_generation_failed package_id=%s stage=manifest_storage_readback error_class=%s safe_reason=manifest_storage_readback_failed key=%s',
+                    export_id, type(_rb_exc).__name__, object_key,
+                )
+                raise RuntimeError('manifest_storage_readback_failed') from _rb_exc
+            if _stored_back != content:
+                logger.error(
+                    'evidence_package_generation_failed package_id=%s stage=manifest_storage_readback error_class=BytesMismatch safe_reason=manifest_storage_readback_failed key=%s',
+                    export_id, object_key,
+                )
+                raise RuntimeError('manifest_storage_readback_failed')
             logger.info('evidence_manifest_persisted package_id=%s key=%s bytes=%d', export_id, object_key, _content_size)
             try:
-                _rb_rows = (json.loads(content) or {}).get('rows') or []
+                _rb_rows = (json.loads(_stored_back) or {}).get('rows') or []
                 _rb_manifest = _rb_rows[0].get('manifest.json') if _rb_rows and isinstance(_rb_rows[0], dict) else None
             except Exception:
                 _rb_manifest = None
             _rb_files = _rb_manifest.get('files') if isinstance(_rb_manifest, dict) else None
-            _rb_ok = (
+            _upload_stage = 'manifest_hash_verify'
+            _rb_files_ok = (
                 isinstance(_rb_manifest, dict)
                 and isinstance(_rb_files, list) and bool(_rb_files)
                 and all(isinstance(_f, dict) and str(_f.get('sha256') or '').strip() for _f in _rb_files)
-                and bool(_signing_meta.get('manifest_sha256'))
-                and str(_rb_manifest.get('manifest_sha256') or '') == str(_signing_meta.get('manifest_sha256') or '')
             )
-            if not _rb_ok:
-                logger.error('evidence_manifest_readback_failed package_id=%s key=%s', export_id, object_key)
-                raise RuntimeError('manifest_readback_failed')
+            _rb_sha = str(_rb_manifest.get('manifest_sha256') or '') if isinstance(_rb_manifest, dict) else ''
+            _sealed_sha = str(_signing_meta.get('manifest_sha256') or '')
+            _hash_matches = bool(_sealed_sha) and _rb_sha == _sealed_sha
+            # Independently recompute the manifest hash from the READ-BACK body so a
+            # persisted manifest whose recorded hash does not describe its own bytes
+            # can never pass — this is what proves the stored bytes carry the exact
+            # sealed manifest, not merely a matching hash string.
+            _recompute_ok = False
+            if _rb_files_ok and isinstance(_rb_manifest, dict):
+                try:
+                    from services.api.app.evidence_signing import canonical_json as _rb_canon
+                    _rb_body = {k: v for k, v in _rb_manifest.items() if k != 'manifest_sha256'}
+                    _recompute_ok = hashlib.sha256(_rb_canon(_rb_body)).hexdigest() == _rb_sha
+                except Exception:
+                    _recompute_ok = False
+            if not (_rb_files_ok and _hash_matches and _recompute_ok):
+                logger.error(
+                    'evidence_package_generation_failed package_id=%s stage=manifest_hash_verify error_class=HashMismatch safe_reason=manifest_hash_mismatch key=%s files_ok=%s hash_matches=%s recompute_ok=%s',
+                    export_id, object_key, _rb_files_ok, _hash_matches, _recompute_ok,
+                )
+                raise RuntimeError('manifest_hash_mismatch')
             logger.info('evidence_manifest_readback_verified package_id=%s key=%s file_count=%d', export_id, object_key, len(_rb_files))
         # Persist computed proof_bundle metadata (evidence_source_type, export_status,
         # missing_sections) back into the filters JSONB so list_exports can return it
         # without re-deriving it from raw data.
+        _upload_stage = 'export_metadata_persist'
         _artifact_filters_patch: dict[str, Any] = {}
         for _mf_key in ('evidence_source_type', 'export_status', 'completeness_score', 'integrity_status', 'files_hashed'):
             if artifact_meta.get(_mf_key) is not None:
@@ -25078,12 +25141,30 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             (storage.backend_name, object_key, _signing_meta.get('key_id'), _signing_meta.get('key_version'), _content_size, _json_dumps(_artifact_filters_patch), export_id),
         )
     except Exception as exc:
+        # Classify the EXACT persistence stage that failed (serialize / storage write
+        # / storage read-back / hash verify / metadata persist) instead of recording a
+        # raw driver string, so a production failure names the failing stage. Precise
+        # read-back/hash codes raised above are preserved verbatim.
+        _raised = str(exc)
+        _stage_reason = {
+            'artifact_serialize': 'manifest_serialization_failed',
+            'artifact_storage_write': 'manifest_storage_write_failed',
+            'manifest_storage_readback': 'manifest_storage_readback_failed',
+            'manifest_hash_verify': 'manifest_hash_mismatch',
+            'export_metadata_persist': 'export_metadata_persistence_failed',
+        }
+        _safe_reason = _raised if _raised in {
+            'manifest_storage_readback_failed', 'manifest_hash_mismatch',
+        } else _stage_reason.get(_upload_stage, 'export_artifact_persist_failed')
+        # Operator-facing detail (bounded, single-lined). Storage/driver error codes
+        # (e.g. NoSuchBucket, InvalidAccessKeyId) are safe to log and pin the root
+        # cause; the customer-facing error_message stays the clean classified code.
+        _error_detail = str(exc)[:300].replace('\n', ' ').replace('\r', ' ')
         logger.error(
-            'evidence_export_upload_failed error_type=%s message=%s',
-            type(exc).__name__,
-            str(exc),
+            'evidence_package_generation_failed package_id=%s stage=%s error_class=%s safe_reason=%s error_detail=%r',
+            export_id, _upload_stage, type(exc).__name__, _safe_reason, _error_detail,
         )
-        connection.execute("UPDATE export_jobs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s", (str(exc), export_id))
+        connection.execute("UPDATE export_jobs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s", (_safe_reason, export_id))
 
     # Assign a human-readable package number (EV-YYYY-NNN) to completed evidence
     # packages. Backend-generated (never derived in the client) and done in a

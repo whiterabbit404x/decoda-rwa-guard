@@ -485,8 +485,17 @@ def test_storage_key_set_only_after_successful_upload(monkeypatch: pytest.Monkey
     class _SucceedingStorage:
         backend_name = 's3'
 
+        def __init__(self):
+            self._store: dict[str, bytes] = {}
+
         def write_bytes(self, *, object_key: str, content: bytes) -> str:
+            # A real backend persists the bytes so the manifest read-back gate can
+            # actually read them back — the double must too.
+            self._store[object_key] = content
             return object_key
+
+        def read_bytes(self, *, object_key: str) -> bytes:
+            return self._store[object_key]
 
         def object_lock_status(self):
             return {'object_lock_enabled': True}
@@ -509,8 +518,11 @@ def test_storage_key_not_set_when_upload_fails(monkeypatch: pytest.MonkeyPatch) 
     assert connection.final_status == 'failed', 'Status must be failed when upload raises'
     assert connection.storage_key_written is None, 'storage_object_key must NOT be set when upload fails'
     assert connection.upload_error_message is not None, 'error_message must be written to DB'
-    assert 'InvalidAccessKeyId' in (connection.upload_error_message or ''), (
-        'Real upload error must be stored as error_message'
+    # The customer-facing error_message is the classified storage-WRITE stage code
+    # (the raw driver detail — InvalidAccessKeyId — is preserved in the structured
+    # operator log, not surfaced to customers).
+    assert connection.upload_error_message == 'manifest_storage_write_failed', (
+        'Storage-write failure must be recorded with its classified stage code'
     )
 
 
@@ -566,10 +578,12 @@ def test_create_export_job_returns_failed_status_without_download_url_on_upload_
     conn = _ExportJobConnection()
     meta = pilot._generate_export_artifact(conn, workspace_id='ws-live', export_id='exp-1')
 
-    # upload failed → status should be 'failed', no storage_key set
+    # upload failed → status should be 'failed', no storage_key set, and the
+    # error_message is the classified storage-WRITE stage code (the raw NoSuchBucket
+    # detail is preserved in the structured operator log).
     assert conn.final_status == 'failed'
     assert conn.storage_key_written is None
-    assert 'NoSuchBucket' in (conn.upload_error_message or '')
+    assert conn.upload_error_message == 'manifest_storage_write_failed'
 
 
 def test_incident_report_includes_manifest_and_seal(monkeypatch: pytest.MonkeyPatch) -> None:
