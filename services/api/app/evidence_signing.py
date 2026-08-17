@@ -12,11 +12,16 @@ The raw secret is never logged or included in any export artifact.
 """
 from __future__ import annotations
 
+import base64
+import datetime
+import decimal
+import enum
 import hashlib
 import hmac
 import json
 import logging
 import os
+import uuid
 from typing import Any
 
 from services.api.app.managed_keys import (
@@ -146,14 +151,105 @@ def _sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+class EvidenceSerializationError(TypeError):
+    """A value in an evidence artifact has no deterministic JSON-safe representation.
+
+    Raised by :func:`json_safe_for_hash` instead of letting a raw ``json.dumps``
+    ``TypeError`` escape the artifact-hash stage. Carries a SAFE, structural
+    diagnostic — the logical evidence file, the top-level value type, and the
+    nested structural path/type where an unsupported object was found — and NEVER
+    the value itself, so the failure can be logged and classified precisely without
+    leaking evidence contents, secrets, or wallet material.
+    """
+
+    def __init__(
+        self,
+        *,
+        nested_path: str,
+        nested_type: str,
+        logical_path: str | None = None,
+        value_type: str | None = None,
+    ) -> None:
+        self.nested_path = nested_path
+        self.nested_type = nested_type
+        self.logical_path = logical_path
+        self.value_type = value_type
+        super().__init__(
+            f'unsupported evidence value of type {nested_type!r} at {nested_path}'
+        )
+
+
+def json_safe_for_hash(value: Any, *, path: str = '$') -> Any:
+    """Deterministic, recursively JSON-safe representation of an evidence value.
+
+    This is the serialization CONTRACT for evidence hashing. ``canonical_json`` (and
+    therefore every per-file SHA-256, the manifest hash and the HMAC seal) is only
+    deterministic if the value it serializes is already JSON-native; the evidence
+    collectors legitimately produce ``uuid.UUID``, ``datetime``/``date``/``time``,
+    ``decimal.Decimal`` and ``bytes`` (psycopg returns these natively), so a raw
+    ``json.dumps`` raises ``TypeError`` on them at the artifact-hash stage.
+
+    Rather than a blanket ``default=str`` (which can silently alter evidence
+    semantics and make hashes unstable), each legitimate type is encoded EXACTLY as
+    the persistence normalizer (``pilot._json_safe_value``) encodes it — so the
+    representation that is HASHED is byte-for-byte the same semantic representation
+    that is PERSISTED and later VERIFIED. This function is the identity on
+    already-JSON-native input (so every previously-stored manifest still verifies).
+
+    Anything without a legitimate, deterministic encoding — a ``set``/``frozenset``
+    (nondeterministic ordering) or an arbitrary Python object — fails CLOSED with an
+    :class:`EvidenceSerializationError` naming the safe structural path and type,
+    never a silent stringification.
+    """
+    # JSON-native scalars pass through unchanged (bool is intentionally handled by
+    # the int/bool isinstance below — json.dumps emits true/false either way).
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, decimal.Decimal):
+        return str(value)
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return base64.b64encode(bytes(value)).decode('ascii')
+    if isinstance(value, enum.Enum):
+        inner = value.value
+        return inner if isinstance(inner, (str, int, float, bool, type(None))) else str(inner)
+    if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {
+            str(key): json_safe_for_hash(item, path=f'{path}.{key}')
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [json_safe_for_hash(item, path=f'{path}[{index}]') for index, item in enumerate(value)]
+    # No deterministic, evidence-safe encoding (set/frozenset/arbitrary object):
+    # fail CLOSED with a structural diagnostic and never a silent str().
+    raise EvidenceSerializationError(nested_path=path, nested_type=type(value).__name__)
+
+
 def canonical_json(obj: Any) -> bytes:
-    """Deterministic JSON bytes: sorted keys, compact separators, UTF-8, no BOM."""
+    """Deterministic JSON bytes: sorted keys, compact separators, UTF-8, no BOM.
+
+    Expects JSON-native input. Evidence values are normalized through
+    :func:`json_safe_for_hash` by :func:`_file_sha256` before reaching here, so the
+    bytes hashed are deterministic and match what is persisted and later verified.
+    """
     return json.dumps(obj, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('utf-8')
 
 
-def _file_sha256(value: Any) -> tuple[bytes, str]:
-    """Serialize a file value to canonical JSON bytes and return (bytes, sha256_hex)."""
-    b = canonical_json(value)
+def _file_sha256(value: Any, *, logical_path: str = '$') -> tuple[bytes, str]:
+    """Serialize a file value to canonical JSON bytes and return (bytes, sha256_hex).
+
+    The value is first normalized through the deterministic, fail-closed evidence
+    contract (:func:`json_safe_for_hash`) so a legitimate ``UUID``/``datetime``/
+    ``Decimal``/``bytes`` never raises ``TypeError`` at hash time, and an
+    unsupported type fails closed with a safe path/type diagnostic. Used by BOTH
+    manifest generation and verification, so the hashed and verified
+    representations are identical.
+    """
+    safe = json_safe_for_hash(value, path=logical_path)
+    b = canonical_json(safe)
     return b, _sha256_hex(b)
 
 
@@ -180,7 +276,15 @@ def build_evidence_manifest(
     file_bytes_map: dict[str, bytes] = {}
     file_list: list[dict[str, Any]] = []
     for path in sorted(file_values.keys()):
-        b, sha = _file_sha256(file_values[path])
+        try:
+            b, sha = _file_sha256(file_values[path], logical_path=path)
+        except EvidenceSerializationError as exc:
+            # Annotate the structural failure with the LOGICAL evidence file and its
+            # top-level type so the caller can log path/value_type/nested_path/
+            # nested_type precisely (never the value) and classify the failure.
+            exc.logical_path = path
+            exc.value_type = type(file_values[path]).__name__
+            raise
         file_bytes_map[path] = b
         file_list.append({'path': path, 'sha256': sha, 'size_bytes': len(b)})
 
@@ -359,7 +463,13 @@ def verify_bundle(
         if path not in file_values:
             errors.append(f'file_missing:{path}')
             continue
-        _, actual_sha256 = _file_sha256(file_values[path])
+        try:
+            _, actual_sha256 = _file_sha256(file_values[path], logical_path=path)
+        except EvidenceSerializationError:
+            # A stored file that cannot be deterministically re-serialized cannot be
+            # proven intact — treat it as a verification failure, never a pass.
+            errors.append(f'file_unserializable:{path}')
+            continue
         if actual_sha256 != expected_sha256:
             errors.append(f'file_tampered:{path}')
 

@@ -24895,6 +24895,7 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             seal_manifest,
             signing_metadata as _signing_metadata_fn,
             canonical_json as _canon_json,
+            EvidenceSerializationError,
         )
         logger.info('evidence_manifest_generation_started package_id=%s export_type=%s', export_id, export_type_val)
         try:
@@ -24980,6 +24981,25 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             )
             connection.execute("UPDATE export_jobs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s", (str(_sign_exc), export_id))
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(_sign_exc))
+        except EvidenceSerializationError as _ser_exc:
+            # An evidence value has no deterministic, JSON-safe representation. Fail
+            # CLOSED with a PRECISE, safe diagnostic — the logical evidence file, the
+            # top-level value type, and the nested structural path/type where the
+            # unsupported object was found — instead of one generic
+            # ``artifact_hash_generation_failed``. Never logs evidence contents,
+            # secrets, or wallet material: only structural field names and type names.
+            logger.error(
+                'evidence_artifact_hash_failed package_id=%s path=%s value_type=%s nested_path=%s nested_type=%s error_class=%s safe_reason=artifact_hash_unsupported_type',
+                export_id, _ser_exc.logical_path, _ser_exc.value_type,
+                _ser_exc.nested_path, _ser_exc.nested_type, type(_ser_exc).__name__,
+            )
+            connection.execute(
+                "UPDATE export_jobs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s",
+                ('artifact_hash_unsupported_type', export_id),
+            )
+            artifact_meta['signing'] = {'signed': False, 'error': 'artifact_hash_unsupported_type'}
+            artifact_meta['error_code'] = 'artifact_hash_unsupported_type'
+            return artifact_meta
         except Exception as _mani_exc:
             # A normal evidence package MUST be born with a manifest. Classify the
             # EXACT stage that failed (never one generic "manifest generation failed")
