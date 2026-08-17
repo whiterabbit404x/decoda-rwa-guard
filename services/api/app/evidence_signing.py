@@ -228,28 +228,51 @@ def json_safe_for_hash(value: Any, *, path: str = '$') -> Any:
     raise EvidenceSerializationError(nested_path=path, nested_type=type(value).__name__)
 
 
-def canonical_json(obj: Any) -> bytes:
+def canonical_json(obj: Any, *, path: str = '$') -> bytes:
     """Deterministic JSON bytes: sorted keys, compact separators, UTF-8, no BOM.
 
-    Expects JSON-native input. Evidence values are normalized through
-    :func:`json_safe_for_hash` by :func:`_file_sha256` before reaching here, so the
-    bytes hashed are deterministic and match what is persisted and later verified.
+    THE single authoritative evidence-hashing serializer. It first normalizes ``obj``
+    through :func:`json_safe_for_hash`, so EVERY hashed / sealed / verified evidence
+    document is deterministically JSON-safe regardless of whether the caller
+    pre-normalized it — not only each per-file value, but the manifest body ITSELF
+    (its metadata: ``workspace_id``, ``generated_at``, the audit anchor, the
+    recovery/completeness fields, …), the HMAC-sealed manifest, and the audit-chain
+    payload. The evidence collectors and the workspace context legitimately carry
+    ``uuid.UUID`` / ``datetime`` / ``Decimal`` / ``bytes`` (psycopg returns these
+    natively for uuid / timestamptz / numeric / bytea columns), so a raw
+    ``json.dumps`` here raised ``TypeError`` the moment such a value reached the hash
+    stage — which is exactly how the manifest-metadata ``workspace_id`` (a raw
+    ``uuid.UUID``) failed in production even AFTER per-file values were normalized.
+
+    ``json_safe_for_hash`` is the IDENTITY on already-JSON-native input, so every
+    previously-persisted manifest (JSON-native by construction once read back) and
+    every audit-chain row re-serializes to byte-for-byte identical bytes and still
+    verifies — SHA-256 is not weakened and existing hashes / HMAC seals are
+    unchanged. A value with no deterministic JSON-safe encoding fails CLOSED with an
+    :class:`EvidenceSerializationError` naming a safe structural path/type, never a
+    raw ``json.dumps`` ``TypeError``. ``path`` seeds that structural diagnostic so a
+    per-file caller can report the failure against the logical evidence-file root.
     """
-    return json.dumps(obj, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('utf-8')
+    return json.dumps(
+        json_safe_for_hash(obj, path=path),
+        sort_keys=True,
+        separators=(',', ':'),
+        ensure_ascii=True,
+    ).encode('utf-8')
 
 
 def _file_sha256(value: Any, *, logical_path: str = '$') -> tuple[bytes, str]:
     """Serialize a file value to canonical JSON bytes and return (bytes, sha256_hex).
 
-    The value is first normalized through the deterministic, fail-closed evidence
-    contract (:func:`json_safe_for_hash`) so a legitimate ``UUID``/``datetime``/
-    ``Decimal``/``bytes`` never raises ``TypeError`` at hash time, and an
-    unsupported type fails closed with a safe path/type diagnostic. Used by BOTH
-    manifest generation and verification, so the hashed and verified
+    Delegates to :func:`canonical_json` — THE single authoritative serializer —
+    seeding the structural diagnostic path at the logical evidence-file root so a
+    legitimate ``UUID``/``datetime``/``Decimal``/``bytes`` never raises ``TypeError``
+    at hash time and an unsupported type fails closed with a safe path/type
+    diagnostic. There is exactly ONE normalization pass (no double-normalization).
+    Used by BOTH manifest generation and verification, so the hashed and verified
     representations are identical.
     """
-    safe = json_safe_for_hash(value, path=logical_path)
-    b = canonical_json(safe)
+    b = canonical_json(value, path=logical_path)
     return b, _sha256_hex(b)
 
 
@@ -305,7 +328,24 @@ def build_evidence_manifest(
     if previous_audit_anchor_hash:
         manifest['previous_audit_anchor_hash'] = previous_audit_anchor_hash
 
-    # Canonical hash of the manifest body (without manifest_sha256 itself)
+    # Normalize the ENTIRE manifest body (metadata + files) to its deterministic
+    # JSON-safe form BEFORE hashing, and RETURN that normalized document. This is the
+    # single-contract invariant: the manifest that is HASHED here is byte-for-byte the
+    # SAME object that the caller embeds into the bundle, uploads to storage,
+    # HMAC-seals and later verifies — generated == persisted == hashed == sealed ==
+    # verified. It is what finally covers the manifest METADATA (the psycopg-native
+    # ``uuid.UUID`` workspace_id that broke production BOTH at the manifest hash AND,
+    # once past it, at the bundle-upload ``json.dumps``), which per-file normalization
+    # never touched. ``json_safe_for_hash`` is the identity on already-JSON-native
+    # input, so every existing string-id manifest is byte-for-byte unchanged; a
+    # genuinely unsupported metadata value fails CLOSED with a safe structural
+    # path/type, annotated against the manifest so the caller classifies it precisely.
+    try:
+        manifest = json_safe_for_hash(manifest)
+    except EvidenceSerializationError as exc:
+        exc.logical_path = exc.logical_path or '<manifest>'
+        exc.value_type = exc.value_type or 'dict'
+        raise
     manifest['manifest_sha256'] = _sha256_hex(canonical_json(manifest))
     return manifest, file_bytes_map
 
@@ -390,7 +430,18 @@ def build_recovery_manifest(
     if evidence_window:
         manifest['evidence_window'] = evidence_window
 
-    # Canonical hash over the enriched body (still excluding manifest_sha256 itself).
+    # Normalize the enriched body to its JSON-safe form and RETURN that document, so
+    # the enrichment fields (``completeness_score`` Decimal, ``evidence_window``
+    # datetimes, …) are embedded/persisted/hashed/verified as ONE canonical
+    # representation — never a raw ``Decimal``/``datetime`` that would serialize here
+    # but fail at the bundle-upload ``json.dumps``. Identity on JSON-native input; an
+    # unsupported value fails CLOSED with a safe structural path/type.
+    try:
+        manifest = json_safe_for_hash(manifest)
+    except EvidenceSerializationError as exc:
+        exc.logical_path = exc.logical_path or '<recovery-manifest>'
+        exc.value_type = exc.value_type or 'dict'
+        raise
     manifest['manifest_sha256'] = _sha256_hex(canonical_json(manifest))
     return manifest, file_bytes_map
 

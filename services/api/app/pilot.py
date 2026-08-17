@@ -21686,15 +21686,33 @@ def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dic
                     )
 
         # No reusable package for THIS snapshot. Either:
-        #  • a package with the SAME fingerprint exists but is stale/missing/failed →
-        #    regenerate into that SAME id (a storage repair for one snapshot, never a
-        #    rewrite of a different one), or
+        #  • a COMPLETED package with the SAME fingerprint exists but its stored
+        #    artifact is stale/missing → regenerate into that SAME id (a storage
+        #    repair for one snapshot, never a rewrite of a different one), or
+        #  • an active queued/building package with the SAME fingerprint exists →
+        #    reuse it in place (a duplicate click never forks a package), or
         #  • this is a NEW/changed snapshot (or an explicit supersede) → mint a NEW
         #    package that SUPERSEDES the incident's prior latest package. The prior
         #    package is left untouched (it becomes superseded) so evidence captured on
         #    its collection date is never rewritten.
-        reuse_existing = existing is not None and not supersede
+        # A TERMINAL FAILED package is handled separately just below — it is NEVER
+        # regenerated into the same id (see retry_after_failed).
+        # A TERMINAL FAILED package for THIS source snapshot must NEVER be requeued or
+        # mutated in place. The historical failed evidence object is immutable and
+        # auditable — it stays visible as its own distinct failed attempt (e.g. the
+        # production package 64e9aaa3-…). A user-triggered retry after terminal
+        # failure therefore mints a NEW package attempt (new internal id + the next
+        # EV-YYYY-NNN number) that records ``retry_of`` the failed package, instead of
+        # silently resurrecting and rewriting the failed row forever. Two other cases
+        # are deliberately UNCHANGED: a stale/missing COMPLETED artifact for the same
+        # snapshot is a storage repair (regenerate into the SAME id, no duplicate),
+        # and an active queued/building row for the same snapshot is still reused
+        # idempotently so a duplicate click during generation never forks a package.
+        _existing_status = str(existing.get('status') or '') if existing is not None else ''
+        retry_after_failed = existing is not None and not supersede and _existing_status == 'failed'
+        reuse_existing = existing is not None and not supersede and not retry_after_failed
         supersedes_package_id: str | None = None
+        retry_of_package_id: str | None = None
         if reuse_existing:
             pkg_id = str(existing['id'])
         else:
@@ -21702,6 +21720,11 @@ def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dic
             if supersede:
                 # Explicit "Regenerate Package" recovery — supersede the named prior row.
                 supersedes_package_id = superseded_from
+            elif retry_after_failed:
+                # Retry AFTER a terminal failure: the failed package is left untouched
+                # (immutable), and the new attempt links back to it for audit lineage.
+                retry_of_package_id = str(existing['id'])
+                supersedes_package_id = retry_of_package_id
             else:
                 # A changed snapshot supersedes the incident's current latest package.
                 _prior = connection.execute(
@@ -21728,6 +21751,11 @@ def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dic
             # regenerate-flow convention already read by the recovery selectors.
             filters['supersedes_package_id'] = supersedes_package_id
             filters['superseded_from'] = supersedes_package_id
+        if retry_of_package_id:
+            # Truthful lineage: this package is a fresh attempt AFTER a terminal
+            # failure, not a supersession of a valid prior package. The failed
+            # package it retries is preserved unchanged.
+            filters['retry_of'] = retry_of_package_id
         if reuse_existing:
             connection.execute(
                 "UPDATE export_jobs SET filters = %s::jsonb, status = 'queued', error_message = NULL, updated_at = NOW() WHERE id = %s AND workspace_id = %s",
@@ -21773,6 +21801,7 @@ def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dic
                 'regenerated': supersede,
                 'superseded_from': supersedes_package_id,
                 'supersedes_package_id': supersedes_package_id,
+                'retry_of': retry_of_package_id,
                 'evidence_source_fingerprint': evidence_source_fingerprint,
                 'status': final_status,
                 'result': 'success' if final_status == 'completed' else 'failed',
