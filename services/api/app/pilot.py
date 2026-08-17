@@ -14094,6 +14094,497 @@ def _as_aware_utc(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
+# ===========================================================================
+# Integration Gateway (Screen 10) — control plane over external dependencies.
+#
+# Screen 10 consumes CANONICAL provider health (the same _build_monitoring_sources_
+# enrichment source Screen 4 + Screen 12 read) and never re-derives it. It adds an
+# operator control plane: a real Run Health Check (reusing the bounded provider
+# diagnostic that writes canonical provider_health_records evidence), a deterministic
+# recommendation engine, a persisted "last scan" timestamp, and a derived connection
+# risk. Secrets are never returned; every mutation is audited. GET is read-only.
+# ===========================================================================
+
+_INTEGRATION_HEALTH_CHECK_MIN_INTERVAL_SECONDS = 5
+
+
+def _rate_limit_integration_health_check(connection: Any, *, workspace_id: str) -> None:
+    """Bounded cadence guard: reject a health check fired seconds after the last one
+    so the control plane never hammers external providers (§29/§50)."""
+    try:
+        row = connection.execute(
+            '''SELECT started_at FROM integration_health_scans
+               WHERE workspace_id = %s::uuid ORDER BY started_at DESC LIMIT 1''',
+            (workspace_id,),
+        ).fetchone()
+    except Exception:
+        return
+    last = _coerce_datetime((row or {}).get('started_at')) if row else None
+    if last is None:
+        return
+    if (utc_now() - _as_aware_utc(last)).total_seconds() < _INTEGRATION_HEALTH_CHECK_MIN_INTERVAL_SECONDS:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail='A health check ran moments ago. Please wait a few seconds before retrying.',
+        )
+
+
+def _load_last_integration_scan(connection: Any, *, workspace_id: str) -> dict[str, Any] | None:
+    """Latest completed integration health scan — the canonical 'last scan' record.
+
+    A browser refresh (GET) reads this SAME row until another scan runs, so the
+    'Last scan: Nm ago' timestamp is backend-derived and stable (§15/§24).
+
+    Degrades gracefully (returns None) if migration 0142 has not yet applied, so the
+    control-plane GET still renders canonical provider health without the new table."""
+    try:
+        row = connection.execute(
+            '''SELECT id, status, trigger, checked_count, healthy_count, degraded_count, failed_count,
+                      recommendations_open, connection_risk, correlation_id, started_at, completed_at
+               FROM integration_health_scans
+               WHERE workspace_id = %s::uuid
+               ORDER BY started_at DESC LIMIT 1''',
+            (workspace_id,),
+        ).fetchone()
+    except Exception:
+        logger.warning('integration_health_scans_unavailable workspace_id=%s', workspace_id, exc_info=True)
+        return None
+    if not row:
+        return None
+    scan = dict(row)
+    return {
+        'id': str(scan.get('id')),
+        'status': scan.get('status'),
+        'trigger': scan.get('trigger'),
+        'checked_count': int(scan.get('checked_count') or 0),
+        'healthy_count': int(scan.get('healthy_count') or 0),
+        'degraded_count': int(scan.get('degraded_count') or 0),
+        'failed_count': int(scan.get('failed_count') or 0),
+        'recommendations_open': int(scan.get('recommendations_open') or 0),
+        'connection_risk': scan.get('connection_risk'),
+        'started_at': _isoformat_or_none(scan.get('started_at')),
+        'completed_at': _isoformat_or_none(scan.get('completed_at')),
+    }
+
+
+def _record_integration_scan(
+    connection: Any, *, workspace_id: str, user_id: str | None, trigger: str,
+    checked: int, healthy: int, degraded: int, failed: int, recommendations_open: int,
+    connection_risk: str | None, correlation_id: str, summary: dict[str, Any],
+    started_at: datetime, completed_at: datetime,
+) -> str:
+    scan_id = str(uuid.uuid4())
+    connection.execute(
+        '''INSERT INTO integration_health_scans
+            (id, workspace_id, status, trigger, checked_count, healthy_count, degraded_count,
+             failed_count, recommendations_open, connection_risk, correlation_id, summary,
+             started_by_user_id, started_at, completed_at)
+           VALUES (%s, %s::uuid, 'completed', %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)''',
+        (scan_id, workspace_id, trigger, checked, healthy, degraded, failed, recommendations_open,
+         connection_risk, correlation_id, _json_dumps(summary), user_id, started_at, completed_at),
+    )
+    return scan_id
+
+
+_INTEGRATION_RECOMMENDATION_COLUMNS = (
+    'id, workspace_id, integration_key, integration_kind, recommendation_type, severity, '
+    'title, description, reason, evidence, recommended_action, confidence, risk_if_ignored, '
+    'execution_mode, status, dedupe_key, correlation_id, detected_count, acknowledged_at, '
+    'resolved_at, created_at, updated_at'
+)
+
+
+def _load_integration_recommendations(
+    connection: Any, *, workspace_id: str, include_resolved: bool = False, limit: int = 100,
+) -> list[dict[str, Any]]:
+    """List integration recommendations, worst severity first. Open-only by default
+    (GET read model); include_resolved surfaces recent history too."""
+    limit = max(1, min(int(limit or 100), 500))
+    severity_rank = ("CASE severity WHEN 'critical' THEN 3 WHEN 'high' THEN 2 "
+                     "WHEN 'medium' THEN 1 ELSE 0 END")
+    try:
+        if include_resolved:
+            rows = connection.execute(
+                f'''SELECT {_INTEGRATION_RECOMMENDATION_COLUMNS}
+                    FROM integration_recommendations
+                    WHERE workspace_id = %s::uuid
+                    ORDER BY (resolved_at IS NULL) DESC, {severity_rank} DESC, created_at DESC
+                    LIMIT %s''',
+                (workspace_id, limit),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                f'''SELECT {_INTEGRATION_RECOMMENDATION_COLUMNS}
+                    FROM integration_recommendations
+                    WHERE workspace_id = %s::uuid AND resolved_at IS NULL
+                    ORDER BY {severity_rank} DESC, created_at DESC
+                    LIMIT %s''',
+                (workspace_id, limit),
+            ).fetchall()
+    except Exception:
+        # Degrade gracefully before migration 0142 applies: the control-plane GET
+        # still renders canonical provider health with no persisted recommendations.
+        logger.warning('integration_recommendations_unavailable workspace_id=%s', workspace_id, exc_info=True)
+        return []
+    return [_json_safe_value(dict(row)) for row in rows]
+
+
+def _persist_integration_recommendations(
+    connection: Any, *, workspace_id: str, detected: list[dict[str, Any]],
+    correlation_id: str, now: datetime,
+) -> dict[str, int]:
+    """Idempotent upsert of the deterministic recommendations (§53).
+
+    At most ONE open recommendation per (workspace, dedupe_key): a re-detected
+    condition UPDATEs the existing open row (refreshing content, bumping
+    detected_count) and preserves its identity + any human status
+    (acknowledged/approved). Open recommendations whose condition cleared this scan
+    are marked 'obsolete' (resolved) — never deleted, so history is retained and a
+    later recurrence starts a fresh row (§D recovery). Uses explicit SELECT-then-
+    write against the exact partial-unique predicate (resolved_at IS NULL) rather
+    than ON CONFLICT, so no unmatched conflict target can exist (§21)."""
+    detected_keys: set[str] = set()
+    upserted = 0
+    for rec in detected:
+        dedupe_key = str(rec['dedupe_key'])
+        detected_keys.add(dedupe_key)
+        existing = connection.execute(
+            '''SELECT id FROM integration_recommendations
+               WHERE workspace_id = %s::uuid AND dedupe_key = %s AND resolved_at IS NULL
+               LIMIT 1''',
+            (workspace_id, dedupe_key),
+        ).fetchone()
+        if existing:
+            connection.execute(
+                '''UPDATE integration_recommendations SET
+                       integration_key = %s, integration_kind = %s, recommendation_type = %s,
+                       severity = %s, title = %s, description = %s, reason = %s, evidence = %s::jsonb,
+                       recommended_action = %s, confidence = %s, risk_if_ignored = %s,
+                       execution_mode = %s, detected_count = detected_count + 1,
+                       correlation_id = %s, updated_at = %s
+                   WHERE id = %s''',
+                (rec['integration_key'], rec['integration_kind'], rec['recommendation_type'],
+                 rec['severity'], rec['title'], rec['description'], rec['reason'], _json_dumps(rec['evidence']),
+                 rec['recommended_action'], rec['confidence'], rec['risk_if_ignored'],
+                 rec['execution_mode'], correlation_id, now, existing['id']),
+            )
+        else:
+            rec_id = str(uuid.uuid4())
+            initial_status = 'approval_required' if rec['execution_mode'] == 'approval_required' else 'open'
+            connection.execute(
+                '''INSERT INTO integration_recommendations
+                    (id, workspace_id, integration_key, integration_kind, recommendation_type, severity,
+                     title, description, reason, evidence, recommended_action, confidence, risk_if_ignored,
+                     execution_mode, status, dedupe_key, correlation_id, detected_count, created_at, updated_at)
+                   VALUES (%s, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s)''',
+                (rec_id, workspace_id, rec['integration_key'], rec['integration_kind'], rec['recommendation_type'],
+                 rec['severity'], rec['title'], rec['description'], rec['reason'], _json_dumps(rec['evidence']),
+                 rec['recommended_action'], rec['confidence'], rec['risk_if_ignored'], rec['execution_mode'],
+                 initial_status, dedupe_key, correlation_id, now, now),
+            )
+        upserted += 1
+
+    # Obsolete open recommendations whose condition cleared this scan (recovery).
+    open_rows = connection.execute(
+        '''SELECT id, dedupe_key FROM integration_recommendations
+           WHERE workspace_id = %s::uuid AND resolved_at IS NULL''',
+        (workspace_id,),
+    ).fetchall()
+    obsoleted = 0
+    for row in open_rows:
+        if str(row['dedupe_key']) not in detected_keys:
+            connection.execute(
+                '''UPDATE integration_recommendations
+                   SET status = 'obsolete', resolved_at = %s, updated_at = %s
+                   WHERE id = %s''',
+                (now, now, row['id']),
+            )
+            obsoleted += 1
+    return {'upserted': upserted, 'obsoleted': obsoleted}
+
+
+def _build_integration_webhooks(connection: Any, *, workspace_id: str) -> list[dict[str, Any]]:
+    """Load webhooks + REAL delivery-health aggregates (§37). Only safe columns are
+    selected — never secret_hash/secret_token, only the secret_last4 presence flag."""
+    rows = connection.execute(
+        '''SELECT id, target_url, description, event_types, enabled, secret_last4, created_at
+           FROM workspace_webhooks WHERE workspace_id = %s::uuid ORDER BY created_at DESC''',
+        (workspace_id,),
+    ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        wh = dict(row)
+        agg = connection.execute(
+            '''SELECT
+                 COUNT(*) AS total,
+                 COUNT(*) FILTER (WHERE status = 'succeeded') AS succeeded,
+                 COUNT(*) FILTER (WHERE status IN ('failed', 'dead_letter')) AS failed,
+                 COUNT(*) FILTER (WHERE status = 'queued') AS pending,
+                 MAX(created_at) AS last_delivery_at
+               FROM webhook_deliveries
+               WHERE workspace_id = %s::uuid AND webhook_id = %s''',
+            (workspace_id, wh['id']),
+        ).fetchone()
+        agg = dict(agg or {})
+        event_types = wh.get('event_types')
+        result.append({
+            'id': str(wh['id']),
+            'target_url': wh.get('target_url'),
+            'description': wh.get('description'),
+            'event_types': event_types if isinstance(event_types, list) else [],
+            'enabled': bool(wh.get('enabled')),
+            'secret_configured': bool(wh.get('secret_last4')),
+            'delivery_total': int(agg.get('total') or 0),
+            'delivery_succeeded': int(agg.get('succeeded') or 0),
+            'delivery_failed': int(agg.get('failed') or 0),
+            'delivery_pending': int(agg.get('pending') or 0),
+            'last_delivery_at': _isoformat_or_none(agg.get('last_delivery_at')),
+        })
+    return result
+
+
+def _integration_agent_state(risk_level: str, open_recommendations: int, has_any: bool) -> str:
+    if not has_any:
+        return 'idle'
+    if risk_level in {'critical', 'high'}:
+        return 'attention_required'
+    if risk_level == 'medium' or open_recommendations > 0:
+        return 'monitoring'
+    if risk_level == 'low':
+        return 'healthy'
+    return 'monitoring'
+
+
+def get_integration_control_plane(request: Request) -> dict[str, Any]:
+    """GET read model for Screen 10 — READ-ONLY (§24).
+
+    Provider health is the CANONICAL Screen-4 aggregate (guaranteeing Screen 4/10/12
+    agreement). Recommendations are the PERSISTED set from the last scan — GET never
+    regenerates or mutates them. Connection risk is derived from the current (live,
+    read-only) provider rows plus persisted open recommendations."""
+    require_live_mode()
+    from services.api.app import integration_gateway as _ig
+
+    # Canonical monitoring-source facts (same builder Screen 4 uses).
+    sources_payload = list_monitoring_sources(request)
+    sources = sources_payload.get('sources', []) or []
+    provider_health = sources_payload.get('provider_health')
+    settings = sources_payload.get('settings') or {}
+
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context, _ = resolve_workspace_context_for_request(connection, request)
+        workspace_id = workspace_context['workspace_id']
+        role = _normalize_workspace_role(str(workspace_context.get('role') or ''))
+        can_manage = _workspace_permission_granted(connection, workspace_id, role, 'monitoring.configure')
+        can_approve = _workspace_permission_granted(connection, workspace_id, role, 'response.approve')
+        infra = integration_health_snapshot(connection)
+        webhooks = _build_integration_webhooks(connection, workspace_id=workspace_id)
+        last_scan = _load_last_integration_scan(connection, workspace_id=workspace_id)
+        recommendations = _load_integration_recommendations(connection, workspace_id=workspace_id)
+
+    provider_rows = _ig.build_provider_rows(sources=sources, provider_health=provider_health)
+    api_rows = _ig.build_api_rows(infra)
+    webhook_rows = _ig.build_webhook_rows(webhooks)
+    connection_rows = _ig.build_connection_rows(provider_rows=provider_rows, webhook_rows=webhook_rows)
+    has_any = bool(provider_rows or webhook_rows or any(r['credential_configured'] for r in api_rows))
+    risk = _ig.compute_connection_risk(
+        provider_rows=provider_rows, webhook_rows=webhook_rows, recommendations=recommendations,
+        has_scan=bool(last_scan), has_any_integration=has_any,
+    )
+    summary = _ig.summarize(
+        provider_rows=provider_rows, webhook_rows=webhook_rows, api_rows=api_rows,
+        open_recommendation_count=len(recommendations),
+    )
+
+    return _json_safe_value({
+        'workspace': {'id': workspace_context['workspace_id']},
+        'server_time': utc_now_iso(),
+        'last_scan': last_scan,
+        'providers': provider_rows,
+        'apis': api_rows,
+        'webhooks': webhook_rows,
+        'connections': connection_rows,
+        'recommendations': recommendations,
+        'summary': summary,
+        'connection_risk': risk,
+        'settings': {'auto_routing_enabled': bool(settings.get('auto_routing_enabled'))},
+        'permissions': {'can_manage': bool(can_manage), 'can_approve': bool(can_approve)},
+        'agent': {
+            'state': _integration_agent_state(risk['level'], len(recommendations), has_any),
+            'connection_risk': risk['level'],
+            'connection_risk_reason': risk['reason'],
+            'open_recommendations': len(recommendations),
+            'last_scan_at': (last_scan or {}).get('completed_at'),
+            'auto_routing_enabled': bool(settings.get('auto_routing_enabled')),
+        },
+    })
+
+
+def run_integration_health_check(request: Request) -> dict[str, Any]:
+    """POST Run Health Check — a REAL backend workflow (§6).
+
+    Steps: authorize (monitoring.configure) + rate-limit; run the bounded provider
+    diagnostic that writes CANONICAL provider_health_records evidence (the same
+    evidence Screen 4/12 read — cross-screen consistency by construction); re-read
+    canonical provider health; run the deterministic recommendation detectors and
+    upsert them idempotently; derive connection risk; persist a scan row (the 'last
+    scan' timestamp) and write an audit event. Failure of the provider probe is
+    isolated (§52): the scan still records the current canonical state."""
+    require_live_mode()
+    from services.api.app import integration_gateway as _ig
+
+    correlation_id = str(uuid.uuid4())
+    started_at = utc_now()
+
+    # 1. Authorize + rate-limit (short-lived connection).
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(connection, request, 'monitoring.configure')
+        workspace_id = workspace_context['workspace_id']
+        _rate_limit_integration_health_check(connection, workspace_id=workspace_id)
+
+    # 2. Real bounded provider diagnostic (writes canonical evidence). Best-effort:
+    #    a lock/HTTP/other failure is isolated so the scan still completes.
+    diagnostic_summary: dict[str, Any] | None = None
+    diagnostic_note: str | None = None
+    try:
+        diagnostic_summary = (run_source_diagnostic(request, {}) or {}).get('summary')
+    except HTTPException as exc:
+        diagnostic_note = 'diagnostic_unavailable'
+        logger.warning(
+            'integration_health_check_diagnostic_http status=%s detail=%s correlation_id=%s',
+            getattr(exc, 'status_code', '?'), getattr(exc, 'detail', ''), correlation_id,
+        )
+    except Exception:
+        diagnostic_note = 'diagnostic_error'
+        logger.exception('integration_health_check_diagnostic_failed correlation_id=%s', correlation_id)
+
+    # 3. Re-read canonical sources AFTER the probe wrote fresh evidence.
+    sources_payload = list_monitoring_sources(request)
+    sources = sources_payload.get('sources', []) or []
+    provider_health = sources_payload.get('provider_health')
+
+    now = utc_now()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(connection, request, 'monitoring.configure')
+        workspace_id = workspace_context['workspace_id']
+        infra = integration_health_snapshot(connection)
+        webhooks = _build_integration_webhooks(connection, workspace_id=workspace_id)
+
+        provider_rows = _ig.build_provider_rows(sources=sources, provider_health=provider_health)
+        api_rows = _ig.build_api_rows(infra)
+        webhook_rows = _ig.build_webhook_rows(webhooks)
+        detected = _ig.evaluate_recommendations(
+            sources=sources, provider_rows=provider_rows, webhook_rows=webhook_rows,
+        )
+        persist_result = _persist_integration_recommendations(
+            connection, workspace_id=workspace_id, detected=detected, correlation_id=correlation_id, now=now,
+        )
+        open_recs = _load_integration_recommendations(connection, workspace_id=workspace_id)
+        has_any = bool(provider_rows or webhook_rows or any(r['credential_configured'] for r in api_rows))
+        risk = _ig.compute_connection_risk(
+            provider_rows=provider_rows, webhook_rows=webhook_rows, recommendations=open_recs,
+            has_scan=True, has_any_integration=has_any,
+        )
+
+        checked = len(provider_rows)
+        healthy = sum(1 for p in provider_rows if p['status'] == _ig.PROVIDER_STATUS_HEALTHY)
+        degraded = sum(1 for p in provider_rows if p['status'] == _ig.PROVIDER_STATUS_DEGRADED)
+        failed = sum(1 for p in provider_rows if p['status'] == _ig.PROVIDER_STATUS_DISCONNECTED)
+        scan_summary = {
+            'providers': checked, 'healthy': healthy, 'degraded': degraded, 'disconnected': failed,
+            'webhooks': len(webhook_rows), 'recommendations_open': len(open_recs),
+            'recommendations_upserted': persist_result['upserted'],
+            'recommendations_obsoleted': persist_result['obsoleted'],
+            'connection_risk': risk['level'], 'diagnostic': diagnostic_summary,
+            'diagnostic_note': diagnostic_note,
+        }
+        scan_id = _record_integration_scan(
+            connection, workspace_id=workspace_id, user_id=user['id'], trigger='manual',
+            checked=checked, healthy=healthy, degraded=degraded, failed=failed,
+            recommendations_open=len(open_recs), connection_risk=risk['level'],
+            correlation_id=correlation_id, summary=scan_summary, started_at=started_at, completed_at=now,
+        )
+        log_audit(
+            connection, action='integration.health_check.completed',
+            entity_type='integration_health_scan', entity_id=scan_id, request=request,
+            user_id=user['id'], workspace_id=workspace_id,
+            metadata={
+                'correlation_id': correlation_id, 'checked': checked, 'healthy': healthy,
+                'degraded': degraded, 'disconnected': failed, 'connection_risk': risk['level'],
+                'recommendations_open': len(open_recs),
+                'recommendations_upserted': persist_result['upserted'],
+                'recommendations_obsoleted': persist_result['obsoleted'],
+                'diagnostic_note': diagnostic_note,
+            },
+        )
+        connection.commit()
+
+    logger.info(
+        'event=integration_health_check_completed workspace_id=%s run_id=%s checked=%s healthy=%s '
+        'degraded=%s disconnected=%s connection_risk=%s recommendations_open=%s duration_ms=%s',
+        workspace_id, scan_id, checked, healthy, degraded, failed, risk['level'], len(open_recs),
+        int((now - started_at).total_seconds() * 1000),
+    )
+    return {
+        'run_id': scan_id, 'status': 'completed', 'checked': checked, 'healthy': healthy,
+        'degraded': degraded, 'failed': failed, 'started_at': started_at.isoformat(),
+        'completed_at': now.isoformat(), 'connection_risk': risk, 'recommendations_open': len(open_recs),
+        'diagnostic_note': diagnostic_note,
+    }
+
+
+def _resolve_integration_recommendation(rec_id: str, request: Request, *, dismiss: bool) -> dict[str, Any]:
+    """Acknowledge or dismiss an integration recommendation (manage permission).
+
+    These are the safe, operator-driven Level-1 lifecycle actions (§18/§41). They
+    never mutate any external provider — they only record the operator's decision on
+    the recommendation and audit it. Approval of a Level-2 action (e.g. failover) is
+    handled by the canonical Screen-8 approval flow, not here (§19)."""
+    require_live_mode()
+    if not _looks_like_uuid(rec_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid recommendation id.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(connection, request, 'monitoring.configure')
+        workspace_id = workspace_context['workspace_id']
+        row = connection.execute(
+            '''SELECT id, status, resolved_at, dedupe_key, title
+               FROM integration_recommendations WHERE id = %s AND workspace_id = %s::uuid''',
+            (rec_id, workspace_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Recommendation not found.')
+        now = utc_now()
+        if dismiss:
+            connection.execute(
+                '''UPDATE integration_recommendations
+                   SET status = 'dismissed', resolved_by_user_id = %s, resolved_at = %s, updated_at = %s
+                   WHERE id = %s''',
+                (user['id'], now, now, rec_id),
+            )
+            new_status, audit_action = 'dismissed', 'integration.recommendation.dismissed'
+        else:
+            if row['resolved_at'] is not None:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Recommendation is already resolved.')
+            connection.execute(
+                '''UPDATE integration_recommendations
+                   SET status = 'acknowledged', acknowledged_by_user_id = %s, acknowledged_at = %s, updated_at = %s
+                   WHERE id = %s''',
+                (user['id'], now, now, rec_id),
+            )
+            new_status, audit_action = 'acknowledged', 'integration.recommendation.acknowledged'
+        log_audit(
+            connection, action=audit_action, entity_type='integration_recommendation', entity_id=rec_id,
+            request=request, user_id=user['id'], workspace_id=workspace_id,
+            metadata={'dedupe_key': row['dedupe_key'], 'title': row['title'], 'new_status': new_status},
+        )
+        connection.commit()
+    return {'id': rec_id, 'status': new_status}
+
+
 def create_asset(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
     validated = _validate_asset_payload(payload)

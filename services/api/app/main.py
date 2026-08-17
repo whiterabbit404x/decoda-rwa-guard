@@ -237,6 +237,9 @@ from services.api.app.pilot import (
     list_finding_actions,
     list_finding_decisions,
     get_integration_health,
+    get_integration_control_plane,
+    run_integration_health_check,
+    _resolve_integration_recommendation,
     get_workspace_readiness,
     get_admin_readiness,
     get_recovery_drill_status,
@@ -5366,6 +5369,26 @@ def integrations_slack_deliveries(integration_id: str, request: Request) -> dict
 @app.get('/system/integrations/health', summary='Integration health diagnostics')
 def system_integrations_health(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_integration_health(request))
+
+
+@app.get('/integrations/control-plane', summary='Integration Gateway control plane (Screen 10) read model')
+def integrations_control_plane(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_integration_control_plane(request))
+
+
+@app.post('/integrations/health-check', summary='Run a real integration health check and refresh recommendations')
+def integrations_health_check(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: run_integration_health_check(request))
+
+
+@app.post('/integrations/recommendations/{recommendation_id}/acknowledge', summary='Acknowledge an integration recommendation')
+def integrations_recommendation_acknowledge(recommendation_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: _resolve_integration_recommendation(recommendation_id, request, dismiss=False))
+
+
+@app.post('/integrations/recommendations/{recommendation_id}/dismiss', summary='Dismiss an integration recommendation')
+def integrations_recommendation_dismiss(recommendation_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: _resolve_integration_recommendation(recommendation_id, request, dismiss=True))
 
 
 @app.get('/system/readiness', summary='Workspace readiness diagnostics with gates, reasons, and dependency checks')

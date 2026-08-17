@@ -1,746 +1,424 @@
-﻿'use client';
+'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 
+import {
+  EmptyStateBlocker,
+  MetricTile,
+  StatusPill,
+  TableShell,
+  TabStrip,
+} from '../components/ui-primitives';
 import { usePilotAuth } from '../pilot-auth-context';
 import RuntimeSummaryPanel from '../runtime-summary-panel';
+import { IntegrationGatewayAgentPanel } from './integration-gateway-agent-panel';
+import {
+  apiStatusVariant,
+  connectionStateVariant,
+  fmtExact,
+  fmtLatency,
+  fmtRelative,
+  providerStatusLabel,
+  providerStatusVariant,
+  webhookStatusVariant,
+  type ApiRow,
+  type ConnectionRow,
+  type ControlPlane,
+  type ProviderRow,
+  type Recommendation,
+  type WebhookRow,
+} from './integration-gateway-types';
 
-type TabKey = 'providers' | 'api-keys' | 'webhooks' | 'connections';
+type TabKey = 'providers' | 'apis' | 'webhooks' | 'connections';
 
 const TABS: Array<{ key: TabKey; label: string }> = [
   { key: 'providers', label: 'Providers' },
-  { key: 'api-keys', label: 'API Keys' },
+  { key: 'apis', label: 'APIs' },
   { key: 'webhooks', label: 'Webhooks' },
   { key: 'connections', label: 'Connections' },
 ];
 
-const PROVIDER_HEADERS = ['Provider', 'Type', 'Status', 'Last Sync', 'Last Error', 'Actions'] as const;
-const API_KEY_HEADERS = ['Key Name', 'Scope', 'Status', 'Created', 'Last Used', 'Actions'] as const;
-const WEBHOOK_HEADERS = ['Webhook', 'Event Types', 'Status', 'Last Delivery', 'Failure Rate', 'Actions'] as const;
-const CONNECTION_HEADERS = ['Connection', 'Source', 'Destination', 'Status', 'Latency', 'Last Check', 'Actions'] as const;
-
-type HealthRecord = {
-  status?: string | null;
-  message?: string | null;
-  checked_at?: string | null;
-  last_check_at?: string | null;
-  last_sync_at?: string | null;
-  latency_ms?: number | null;
-};
-
-type IntegrationHealth = Record<string, HealthRecord | undefined>;
-
-type ProviderRow = {
-  id: string;
-  provider: string;
-  type: string;
-  status: 'Connected' | 'Degraded' | 'Disconnected' | 'Not Configured' | 'Disabled' | 'Error' | 'Unknown';
-  lastSync: string | null;
-  lastError: string | null;
-  linkedTargets: number;
-  linkedSystems: number;
-  evidenceSourceCapability: string;
-  authenticationStatus: string;
-  nextAction: string;
-};
-
-type ApiKeyRow = {
-  id: string;
-  keyName: string;
-  keyPrefix: string | null;
-  scope: string;
-  status: 'Active' | 'Expiring Soon' | 'Revoked' | 'Disabled' | 'Never Used' | 'Unknown';
-  created: string | null;
-  lastUsed: string | null;
-  rotationStatus: string;
-  owner: string;
-  linkedIntegration: string | null;
-};
-
-type WebhookRow = {
-  id: string;
-  webhook: string;
-  eventTypes: string[];
-  status: 'Active' | 'Failing' | 'Disabled' | 'Pending Verification' | 'Unknown';
-  lastDelivery: string | null;
-  lastError: string | null;
-  failureRate: string;
-  signingSecretStatus: string;
-  retryPolicy: string;
-};
-
-type ConnectionRow = {
-  id: string;
-  connection: string;
-  source: string;
-  destination: string;
-  status: 'Healthy' | 'Degraded' | 'Offline' | 'Not Configured' | 'Unknown';
-  latency: string;
-  lastCheck: string | null;
-  lastError: string | null;
-  healthReason: string;
-  linkedProvider: string;
-  linkedTargetSystem: string;
-};
-
-function normaliseStatus(value?: string | null): string {
-  return String(value ?? '').trim().toLowerCase();
-}
-
-function providerStatusFromBackend(record?: HealthRecord): ProviderRow['status'] {
-  const status = normaliseStatus(record?.status);
-
-  if (!record || !status) return 'Unknown';
-  if (['ok', 'healthy', 'connected'].includes(status)) return 'Connected';
-  if (['degraded', 'warning', 'limited'].includes(status)) return 'Degraded';
-  if (['disabled'].includes(status)) return 'Disabled';
-  if (['not_configured', 'not configured', 'missing'].includes(status)) return 'Not Configured';
-  if (['disconnected', 'offline'].includes(status)) return 'Disconnected';
-  if (['error', 'failed', 'failure'].includes(status)) return 'Error';
-
-  return 'Unknown';
-}
-
-function connectionStatusFromBackend(record?: HealthRecord, lastCheck?: string | null): ConnectionRow['status'] {
-  const status = normaliseStatus(record?.status);
-
-  if (!record || !status || !lastCheck) return 'Unknown';
-  if (['ok', 'healthy', 'connected'].includes(status)) return 'Healthy';
-  if (['degraded', 'warning', 'limited'].includes(status)) return 'Degraded';
-  if (['offline', 'disconnected', 'error', 'failed', 'failure'].includes(status)) return 'Offline';
-  if (['not_configured', 'not configured', 'missing'].includes(status)) return 'Not Configured';
-
-  return 'Unknown';
-}
-
-function apiKeyStatusFromBackend(key: Record<string, unknown>): ApiKeyRow['status'] {
-  const status = normaliseStatus(String(key.status ?? ''));
-
-  if (key.revoked_at || status === 'revoked') return 'Revoked';
-  if (status === 'disabled') return 'Disabled';
-  if (['expiring_soon', 'expiring soon'].includes(status)) return 'Expiring Soon';
-  if (!key.last_used_at) return 'Never Used';
-  if (status === 'active') return 'Active';
-
-  return status ? 'Unknown' : 'Unknown';
-}
-
-function webhookStatusFromBackend(webhook: Record<string, unknown>): WebhookRow['status'] {
-  const status = normaliseStatus(String(webhook.status ?? ''));
-
-  if (webhook.enabled === false || status === 'disabled') return 'Disabled';
-  if (['failing', 'failed', 'error'].includes(status) || Number(webhook.failure_count ?? 0) > 0) return 'Failing';
-  if (['pending_verification', 'pending verification'].includes(status)) return 'Pending Verification';
-  if (status === 'active' || webhook.enabled === true) return 'Active';
-
-  return 'Unknown';
-}
-
-function providerTypeFor(key: string): string {
-  const normalised = key.toLowerCase();
-
-  if (normalised.includes('rpc')) return 'Blockchain RPC';
-  if (normalised.includes('index')) return 'Indexer';
-  if (normalised.includes('oracle')) return 'Oracle';
-  if (normalised.includes('compliance')) return 'Compliance Source';
-  if (normalised.includes('custody')) return 'Custody Provider';
-  if (normalised.includes('stable')) return 'Stablecoin Provider';
-  if (normalised.includes('webhook')) return 'Webhook';
-  if (normalised.includes('stream')) return 'Internal Stream';
-
-  return 'Other';
-}
-
-function titleCase(value: string): string {
-  return value
-    .replace(/[-_]+/g, ' ')
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-function formatDate(value?: string | null): string {
-  if (!value) return '-';
-
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return '-';
-
-  return parsed.toLocaleString();
-}
-
-function formatRelative(value?: string | null): string {
-  if (!value) return '-';
-
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return '-';
-
-  const seconds = Math.max(0, Math.floor((Date.now() - parsed.getTime()) / 1000));
-  if (seconds < 60) return String(seconds) + 's ago';
-
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return String(minutes) + 'm ago';
-
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return String(hours) + 'h ago';
-
-  return String(Math.floor(hours / 24)) + 'd ago';
-}
-
-function maskUrl(value?: string | null): string {
-  if (!value) return '-';
-
-  try {
-    const url = new URL(value);
-    return url.protocol + '//' + url.hostname + '/***';
-  } catch {
-    return value.length > 32 ? value.slice(0, 32) + '...' : value;
-  }
-}
-
-function statusClass(status: string): string {
-  const normalized = status.toLowerCase();
-
-  if (['connected', 'healthy', 'active'].includes(normalized)) return 'statusPill statusPill-success';
-  if (['degraded', 'expiring soon', 'pending verification', 'never used'].includes(normalized)) return 'statusPill statusPill-warning';
-  if (['error', 'offline', 'failing', 'revoked', 'disconnected'].includes(normalized)) return 'statusPill statusPill-danger';
-
-  return 'statusPill';
-}
-
-function StatusBadge({ status }: { status: string }) {
-  return <span className={statusClass(status)}>{status}</span>;
-}
-
-function MetricCard({ label, value, meta }: { label: string; value: ReactNode; meta?: ReactNode }) {
-  return (
-    <article className="dataCard">
-      <p className="sectionEyebrow">{label}</p>
-      <h3 style={{ margin: '0.25rem 0', fontSize: '1.55rem' }}>{value}</h3>
-      {meta ? <p className="muted">{meta}</p> : null}
-    </article>
-  );
-}
+const PROVIDER_HEADERS = ['Provider', 'Type', 'Status', 'Role', 'Last Check', 'Latency', 'Targets'];
+const API_HEADERS = ['API / Service', 'Authentication', 'Scope', 'Status', 'Credential'];
+const WEBHOOK_HEADERS = ['Endpoint', 'Event Types', 'Status', 'Last Delivery', 'Success Rate', 'Failures', 'Retry'];
+const CONNECTION_HEADERS = ['Source', 'Via', 'Destination', 'Purpose', 'State', 'Failover', 'Last Verified'];
 
 function DetailRow({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <div style={{ display: 'grid', gap: '0.2rem' }}>
-      <span className="sectionEyebrow">{label}</span>
-      <span>{value}</span>
+    <div style={{ display: 'grid', gap: '0.15rem' }}>
+      <span className="sectionEyebrow" style={{ fontSize: '0.66rem' }}>{label}</span>
+      <span style={{ fontSize: '0.82rem' }}>{value}</span>
     </div>
   );
 }
 
-function DetailPanel({ title, children }: { title: string; children: ReactNode }) {
+function ProviderDetailDrawer({ provider, onClose }: { provider: ProviderRow; onClose: () => void }) {
   return (
-    <aside className="dataCard" style={{ minWidth: 280 }}>
-      <p className="sectionEyebrow">{title}</p>
-      <div style={{ display: 'grid', gap: '0.75rem' }}>{children}</div>
-    </aside>
-  );
-}
-
-function EmptyState({
-  title,
-  message,
-  action,
-  href,
-  disabled,
-}: {
-  title: string;
-  message: string;
-  action?: string;
-  href?: string;
-  disabled?: boolean;
-}) {
-  return (
-    <article className="dataCard" style={{ padding: '1.25rem' }}>
-      <h3 style={{ marginTop: 0 }}>{title}</h3>
-      <p className="muted">{message}</p>
-      {action && href ? (
-        <Link className="btn btn-secondary" href={href} prefetch={false}>
-          {action}
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={`${provider.provider} details`}
+      style={{ position: 'fixed', inset: 0, zIndex: 60, display: 'flex', justifyContent: 'flex-end' }}
+    >
+      <button type="button" aria-label="Close" onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(2,6,23,0.6)', border: 'none' }} />
+      <div style={{ position: 'relative', width: 'min(420px, 100%)', height: '100%', overflowY: 'auto', background: 'var(--surface, #0b1220)', padding: '1.25rem', display: 'grid', gap: '0.85rem', alignContent: 'start' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3 style={{ margin: 0 }}>{provider.provider}</h3>
+          <button type="button" className="btn btn-secondary" style={{ fontSize: '0.75rem' }} onClick={onClose}>Close</button>
+        </div>
+        <StatusPill label={providerStatusLabel(provider.status)} variant={providerStatusVariant(provider.status)} />
+        <DetailRow label="Provider type" value={provider.type} />
+        <DetailRow label="Current role" value={provider.role} />
+        <DetailRow label="Networks" value={provider.networks.length ? provider.networks.join(', ') : '—'} />
+        <DetailRow label="Chains" value={provider.chains.length ? provider.chains.join(', ') : '—'} />
+        <DetailRow label="Monitored targets" value={provider.target_count} />
+        <DetailRow label="Latency (last success)" value={fmtLatency(provider.latency_ms)} />
+        <DetailRow label="Last successful check" value={provider.last_check_at ? fmtExact(provider.last_check_at) : 'No measured observation'} />
+        <DetailRow label="Evidence source" value={provider.evidence_source ?? 'none'} />
+        {provider.status !== 'healthy' && provider.degraded_reason ? (
+          <DetailRow label="Reason" value={provider.degraded_reason.replace(/_/g, ' ')} />
+        ) : null}
+        <DetailRow
+          label="Credential age"
+          value={provider.credential_age_days == null ? 'Not available (managed outside Decoda)' : `${provider.credential_age_days} days`}
+        />
+        <p className="muted" style={{ fontSize: '0.72rem', margin: 0 }}>
+          Provider health is read from canonical monitoring evidence — the same source as
+          Monitoring Sources and System Health. No secret values are shown.
+        </p>
+        <Link href="/monitoring-sources" prefetch={false} className="btn btn-secondary" style={{ fontSize: '0.76rem' }}>
+          View in Monitoring Sources
         </Link>
-      ) : action ? (
-        <button className="btn btn-secondary" type="button" disabled={disabled}>
-          {action}
-        </button>
-      ) : null}
-    </article>
+      </div>
+    </div>
   );
 }
 
-function DataTable({ headers, children }: { headers: readonly string[]; children: ReactNode }) {
-  return (
-    <article className="dataCard" style={{ overflowX: 'auto' }}>
-      <table>
-        <thead>
-          <tr>
-            {headers.map((header) => (
-              <th key={header}>{header}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>{children}</tbody>
-      </table>
-    </article>
-  );
-}
-
-export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
-  const { authHeaders, user } = usePilotAuth();
+export default function IntegrationsPageClient(_props?: { apiUrl?: string }) {
+  const { authHeaders, refreshCsrfToken } = usePilotAuth();
+  const [data, setData] = useState<ControlPlane | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>('providers');
-  const [health, setHealth] = useState<IntegrationHealth | null>(null);
-  const [monitoringHealth, setMonitoringHealth] = useState<HealthRecord | null>(null);
-  const [apiKeys, setApiKeys] = useState<ApiKeyRow[]>([]);
-  const [webhooks, setWebhooks] = useState<WebhookRow[]>([]);
-  const [slackIntegrations, setSlackIntegrations] = useState<Array<Record<string, unknown>>>([]);
   const [loading, setLoading] = useState(true);
-  const [message, setMessage] = useState<string>('');
+  const [loadError, setLoadError] = useState('');
+  const [actionMsg, setActionMsg] = useState('');
+  const [actionError, setActionError] = useState('');
+  const [healthCheckBusy, setHealthCheckBusy] = useState(false);
+  const [recBusyId, setRecBusyId] = useState<string | null>(null);
+  const [mobileAgentOpen, setMobileAgentOpen] = useState(false);
+  const [selectedProvider, setSelectedProvider] = useState<ProviderRow | null>(null);
 
-  const role = String((user as any)?.role ?? (user as any)?.memberships?.[0]?.role ?? '');
-  const canManageApiKeys = ['owner', 'admin', 'workspace_owner', 'workspace_admin'].includes(role);
+  // GET-only load (spec §24): reads canonical state + persisted recommendations. A
+  // browser refresh never triggers a scan or mutates the last-scan timestamp.
+  const load = useCallback(
+    async (opts?: { quiet?: boolean }) => {
+      if (!opts?.quiet) setLoading(true);
+      try {
+        const response = await fetch('/api/integrations/control-plane', { headers: authHeaders(), cache: 'no-store' });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const detail = (payload as { detail?: unknown }).detail;
+          setLoadError(`Unable to load integrations: ${typeof detail === 'string' ? detail : `HTTP ${response.status}`}`);
+          return;
+        }
+        setData(payload as ControlPlane);
+        setLoadError('');
+      } catch (error) {
+        setLoadError(`Network error loading integrations: ${error instanceof Error ? error.message : 'unknown error'}`);
+      } finally {
+        if (!opts?.quiet) setLoading(false);
+      }
+    },
+    [authHeaders],
+  );
 
   useEffect(() => {
-    let cancelled = false;
+    void load();
+  }, [load]);
 
-    async function loadData() {
-      setLoading(true);
-      setMessage('');
+  async function mutate(url: string): Promise<Response> {
+    await refreshCsrfToken().catch(() => undefined);
+    return fetch(url, {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      body: '{}',
+    });
+  }
 
-      try {
-        const [healthResponse, monitoringResponse, webhooksResponse, slackResponse, keysResponse] = await Promise.all([
-          fetch(apiUrl + '/system/integrations/health', { headers: authHeaders(), cache: 'no-store' }),
-          fetch(apiUrl + '/ops/monitoring/health', { headers: authHeaders(), cache: 'no-store' }),
-          fetch(apiUrl + '/integrations/webhooks', { headers: authHeaders(), cache: 'no-store' }),
-          fetch(apiUrl + '/integrations/slack', { headers: authHeaders(), cache: 'no-store' }),
-          canManageApiKeys
-            ? fetch('/api/workspace/api-keys', { headers: authHeaders(), cache: 'no-store' })
-            : Promise.resolve(null),
-        ]);
-
-        if (cancelled) return;
-
-        setHealth(healthResponse.ok ? await healthResponse.json() : null);
-        setMonitoringHealth(monitoringResponse.ok ? await monitoringResponse.json() : null);
-
-        const webhookPayload = webhooksResponse.ok ? await webhooksResponse.json() : {};
-        const rawWebhooks: Array<Record<string, unknown>> = Array.isArray(webhookPayload.webhooks)
-          ? webhookPayload.webhooks
-          : [];
-
-        setWebhooks(
-          rawWebhooks.map((webhook) => {
-            const total = Number(webhook.total_count ?? webhook.delivery_count ?? 0);
-            const failed = Number(webhook.failure_count ?? webhook.failed_count ?? 0);
-
-            return {
-              id: String(webhook.id ?? webhook.target_url ?? Math.random()),
-              webhook: String(webhook.description ?? maskUrl(String(webhook.target_url ?? 'Webhook'))),
-              eventTypes: Array.isArray(webhook.event_types) ? (webhook.event_types as string[]) : ['alert', 'incident'],
-              status: webhookStatusFromBackend(webhook),
-              lastDelivery: String(webhook.last_delivery_at ?? webhook.last_delivered_at ?? '') || null,
-              lastError: String(webhook.last_error ?? webhook.error_message ?? '') || null,
-              failureRate: total > 0 ? String(Math.round((failed / total) * 100)) + '%' : '-',
-              signingSecretStatus: webhook.secret_last4 ? 'Configured (...' + String(webhook.secret_last4) + ')' : 'Not configured',
-              retryPolicy: String(webhook.retry_policy ?? 'Default retry policy'),
-            };
-          }),
-        );
-
-        const slackPayload = slackResponse.ok ? await slackResponse.json() : {};
-        setSlackIntegrations(Array.isArray(slackPayload.integrations) ? slackPayload.integrations : []);
-
-        if (keysResponse?.ok) {
-          const keysPayload = await keysResponse.json();
-          const rawKeys: Array<Record<string, unknown>> = Array.isArray(keysPayload.items) ? keysPayload.items : [];
-
-          setApiKeys(
-            rawKeys.map((key) => ({
-              id: String(key.id ?? key.secret_prefix ?? Math.random()),
-              keyName: String(key.label ?? key.name ?? 'Workspace API key'),
-              keyPrefix: key.secret_prefix ? String(key.secret_prefix) : null,
-              scope: String(key.scope ?? 'workspace'),
-              status: apiKeyStatusFromBackend(key),
-              created: String(key.created_at ?? '') || null,
-              lastUsed: String(key.last_used_at ?? '') || null,
-              rotationStatus: String(key.rotation_status ?? (key.revoked_at ? 'Revoked' : 'Rotation not scheduled')),
-              owner: String(key.owner ?? key.created_by ?? 'Workspace'),
-              linkedIntegration: key.linked_integration ? String(key.linked_integration) : null,
-            })),
-          );
-        } else {
-          setApiKeys([]);
-        }
-      } catch {
-        if (!cancelled) {
-          setHealth(null);
-          setMonitoringHealth(null);
-          setMessage('Integration diagnostics are temporarily unavailable.');
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
+  async function handleRunHealthCheck() {
+    setHealthCheckBusy(true);
+    setActionMsg('');
+    setActionError('');
+    try {
+      const response = await mutate('/api/integrations/health-check');
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = (payload as { detail?: unknown }).detail;
+        setActionError(`Health check failed: ${typeof detail === 'string' ? detail : `HTTP ${response.status}`}`);
+        return;
       }
+      const p = payload as { checked?: number; healthy?: number; degraded?: number; failed?: number; connection_risk?: { level?: string } };
+      setActionMsg(
+        `Health check completed: ${p.checked ?? 0} provider(s) — ${p.healthy ?? 0} healthy, ${p.degraded ?? 0} degraded, ${p.failed ?? 0} disconnected. Connection risk: ${(p.connection_risk?.level ?? 'unknown').toUpperCase()}.`,
+      );
+      await load({ quiet: true });
+    } catch (error) {
+      setActionError(`Network error running health check: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      setHealthCheckBusy(false);
     }
+  }
 
-    void loadData();
+  async function handleRecAction(rec: Recommendation, action: 'acknowledge' | 'dismiss') {
+    setRecBusyId(rec.id);
+    setActionMsg('');
+    setActionError('');
+    try {
+      const response = await mutate(`/api/integrations/recommendations/${encodeURIComponent(rec.id)}/${action}`);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = (payload as { detail?: unknown }).detail;
+        setActionError(`Could not ${action} recommendation: ${typeof detail === 'string' ? detail : `HTTP ${response.status}`}`);
+        return;
+      }
+      setActionMsg(`Recommendation ${action === 'acknowledge' ? 'acknowledged' : 'dismissed'}.`);
+      await load({ quiet: true });
+    } catch (error) {
+      setActionError(`Network error: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      setRecBusyId(null);
+    }
+  }
 
-    return () => {
-      cancelled = true;
-    };
-  }, [apiUrl, canManageApiKeys]);
+  const summary = data?.summary ?? null;
+  const providers = data?.providers ?? [];
+  const apis = data?.apis ?? [];
+  const webhooks = data?.webhooks ?? [];
+  const connections = data?.connections ?? [];
+  const canManage = Boolean(data?.permissions.can_manage);
 
-  const providers = useMemo<ProviderRow[]>(() => {
-    if (!health) return [];
+  const hasAnyIntegration = useMemo(
+    () => providers.length > 0 || webhooks.length > 0 || apis.some((a) => a.credential_configured),
+    [providers, webhooks, apis],
+  );
 
-    const lastCycle = monitoringHealth?.last_check_at ?? monitoringHealth?.checked_at ?? monitoringHealth?.last_sync_at ?? null;
-
-    return Object.entries(health).map(([key, record]) => {
-      const status = providerStatusFromBackend(record);
-      const linkedTargets = key.toLowerCase() === 'slack'
-        ? slackIntegrations.filter((integration) => integration.enabled !== false).length
-        : 0;
-
-      return {
-        id: key,
-        provider: titleCase(key),
-        type: providerTypeFor(key),
-        status,
-        lastSync: record?.last_sync_at ?? record?.last_check_at ?? record?.checked_at ?? lastCycle,
-        lastError: status === 'Connected' ? null : record?.message ?? null,
-        linkedTargets,
-        linkedSystems: 0,
-        evidenceSourceCapability: ['Blockchain RPC', 'Indexer', 'Oracle', 'Compliance Source', 'Internal Stream'].includes(providerTypeFor(key))
-          ? 'Supported'
-          : 'Not available',
-        authenticationStatus: status === 'Connected' ? 'Authenticated' : 'Provider health unavailable',
-        nextAction: status === 'Connected' ? 'View Targets' : 'Test Connection',
-      };
-    });
-  }, [health, monitoringHealth, slackIntegrations]);
-
-  const connections = useMemo<ConnectionRow[]>(() => {
-    if (!health) return [];
-
-    const lastCheck = monitoringHealth?.last_check_at ?? monitoringHealth?.checked_at ?? monitoringHealth?.last_sync_at ?? null;
-
-    return Object.entries(health).map(([key, record]) => {
-      const status = connectionStatusFromBackend(record, lastCheck);
-
-      return {
-        id: 'connection-' + key,
-        connection: titleCase(key) + ' Connection',
-        source: 'RWA Guard',
-        destination: titleCase(key),
-        status,
-        latency: typeof record?.latency_ms === 'number' ? String(record.latency_ms) + 'ms' : '-',
-        lastCheck,
-        lastError: status === 'Healthy' ? null : record?.message ?? null,
-        healthReason: record?.message ?? (status === 'Unknown' ? 'Provider health unavailable' : 'No active issue reported'),
-        linkedProvider: titleCase(key),
-        linkedTargetSystem: 'Provider health unavailable',
-      };
-    });
-  }, [health, monitoringHealth]);
-
-  const connectedProviders = providers.filter((provider) => provider.status === 'Connected').length;
-  const activeApiKeys = apiKeys.filter((key) => key.status === 'Active').length;
-  const activeWebhooks = webhooks.filter((webhook) => webhook.status === 'Active').length;
-  const degradedConnections = connections.filter((connection) =>
-    ['Degraded', 'Offline', 'Unknown'].includes(connection.status),
-  ).length;
-
-  const selectedProvider = providers[0] ?? null;
-  const selectedApiKey = apiKeys[0] ?? null;
-  const selectedWebhook = webhooks[0] ?? null;
-  const selectedConnection = connections[0] ?? null;
-  const degradedConnection = connections.find((connection) => ['Degraded', 'Offline'].includes(connection.status));
+  const agentPanel = (
+    <IntegrationGatewayAgentPanel
+      data={data}
+      loading={loading}
+      healthCheckBusy={healthCheckBusy}
+      recBusyId={recBusyId}
+      onRunHealthCheck={() => void handleRunHealthCheck()}
+      onAcknowledge={(rec) => void handleRecAction(rec, 'acknowledge')}
+      onDismiss={(rec) => void handleRecAction(rec, 'dismiss')}
+    />
+  );
 
   return (
     <main className="productPage">
       <RuntimeSummaryPanel />
 
-      <section className="featureSection">
-        <div className="sectionHeader">
-          <div>
-            <p className="eyebrow">External integrations</p>
-            <h1>Integrations</h1>
-            <p className="muted" style={{ marginTop: '0.35rem', maxWidth: 720 }}>
-              Manage providers, API keys, webhooks, and external connections used by monitoring sources.
-            </p>
-          </div>
-
-          <Link className="btn btn-primary" href="/settings/notifications" prefetch={false}>
-            Manage notification policies
+      {/* ── Header ─────────────────────────────────────────── */}
+      <div className="listHeader" style={{ marginBottom: '1rem', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.75rem' }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: '1.45rem', fontWeight: 700 }}>Integrations</h1>
+          <p className="muted" style={{ margin: '0.35rem 0 0', fontSize: '0.9rem', maxWidth: 640 }}>
+            Operational control plane for every external dependency Decoda relies on — provider
+            health, API credentials, outbound webhooks, and connection risk.
+          </p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+          {data?.last_scan?.completed_at ? (
+            <span title={fmtExact(data.last_scan.completed_at)} style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+              Last scan {fmtRelative(data.last_scan.completed_at)}
+            </span>
+          ) : null}
+          <button
+            type="button"
+            className="btn btn-secondary"
+            style={{ fontSize: '0.8rem' }}
+            disabled={healthCheckBusy || !canManage}
+            title={canManage ? undefined : 'Requires the Manage Integrations permission'}
+            onClick={() => void handleRunHealthCheck()}
+          >
+            {healthCheckBusy ? 'Running…' : 'Run Health Check'}
+          </button>
+          <Link href="/monitoring-sources/targets" prefetch={false} className="btn btn-primary" style={{ fontSize: '0.8rem' }}>
+            Add Provider
           </Link>
         </div>
+      </div>
 
-        <div className="threeColumnSection" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
-          <MetricCard label="Connected Providers" value={loading ? '-' : connectedProviders} meta={String(providers.length) + ' provider records'} />
-          <MetricCard label="Active API Keys" value={loading ? '-' : canManageApiKeys ? activeApiKeys : '-'} meta={canManageApiKeys ? String(apiKeys.length) + ' keys visible' : 'API key management not configured'} />
-          <MetricCard label="Webhooks" value={loading ? '-' : activeWebhooks} meta={String(webhooks.length) + ' webhook records'} />
-          <MetricCard label="Degraded Connections" value={loading ? '-' : degradedConnections} meta={degradedConnections > 0 ? 'Needs attention' : 'No degraded connections'} />
-        </div>
+      {loadError ? <p className="statusLine" style={{ color: 'var(--danger-fg)' }}>{loadError}</p> : null}
+      {actionError ? <p className="statusLine" style={{ color: 'var(--danger-fg)', fontSize: '0.85rem' }}>{actionError}</p> : null}
+      {actionMsg ? <p className="statusLine" style={{ color: 'var(--success-fg)', fontSize: '0.85rem' }}>{actionMsg}</p> : null}
 
-        {message ? <p className="statusLine">{message}</p> : null}
+      {/* ── Summary metrics (derived from canonical data §4) ── */}
+      <div className="metricRow" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0.75rem', marginBottom: '1rem' }}>
+        <MetricTile label="Total Integrations" value={loading && !summary ? '—' : summary?.total_integrations ?? 0} meta={`${providers.length} provider(s)`} />
+        <MetricTile label="Healthy" value={loading && !summary ? '—' : summary?.healthy ?? 0} meta="Providers" />
+        <MetricTile label="Degraded" value={loading && !summary ? '—' : summary?.degraded ?? 0} meta={summary && summary.degraded > 0 ? 'Needs attention' : 'Providers'} />
+        <MetricTile label="Disconnected" value={loading && !summary ? '—' : summary?.disconnected ?? 0} meta={summary && summary.disconnected > 0 ? 'Failover required' : 'Providers'} />
+        <MetricTile label="Recommendations" value={loading && !summary ? '—' : summary?.recommendations ?? 0} meta="Open" />
+      </div>
 
-        <div className="buttonRow" role="tablist" aria-label="Integrations tabs">
-          {TABS.map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              role="tab"
-              aria-selected={activeTab === tab.key}
-              className={activeTab === tab.key ? 'btn btn-primary' : 'btn btn-secondary'}
-              onClick={() => setActiveTab(tab.key)}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-      </section>
+      <div style={{ display: 'flex', gap: '1.25rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        {/* ── Main content ─────────────────────────────────── */}
+        <div style={{ flex: '1 1 620px', minWidth: 0 }}>
+          <TabStrip tabs={TABS} active={activeTab} onChange={(key) => setActiveTab(key as TabKey)} />
 
-      {activeTab === 'providers' ? (
-        <section className="featureSection">
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: '1rem', alignItems: 'start' }}>
-            {providers.length === 0 && !loading ? (
-              <EmptyState
-                title="No integrations configured"
-                message="Connect a provider, API key, or webhook before enabling live monitoring."
-                action="Add Integration"
-                disabled
-              />
-            ) : (
-              <DataTable headers={PROVIDER_HEADERS}>
-                {providers.map((provider) => (
-                  <tr key={provider.id}>
-                    <td>{provider.provider}</td>
-                    <td>{provider.type}</td>
-                    <td><StatusBadge status={provider.status} /></td>
-                    <td>{formatRelative(provider.lastSync)}</td>
-                    <td>{provider.lastError ?? '-'}</td>
-                    <td>
-                      <div className="buttonRow">
-                        <button className="btn btn-secondary" type="button" disabled>Configure</button>
-                        <button className="btn btn-secondary" type="button" disabled>Test Connection</button>
-                        <Link className="btn btn-secondary" href="/monitoring-sources" prefetch={false}>View Targets</Link>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </DataTable>
-            )}
-
-            <DetailPanel title="Provider detail panel">
-              {selectedProvider ? (
-                <>
-                  <DetailRow label="Provider name" value={selectedProvider.provider} />
-                  <DetailRow label="Provider type" value={selectedProvider.type} />
-                  <DetailRow label="Status" value={<StatusBadge status={selectedProvider.status} />} />
-                  <DetailRow label="Last sync" value={formatDate(selectedProvider.lastSync)} />
-                  <DetailRow label="Last error" value={selectedProvider.lastError ?? '-'} />
-                  <DetailRow
-                    label="Linked monitoring targets"
-                    value={
-                      selectedProvider.linkedTargets > 0 ? (
-                        <Link href="/monitoring-sources" prefetch={false}>
-                          {selectedProvider.linkedTargets} linked target{selectedProvider.linkedTargets === 1 ? '' : 's'}
-                        </Link>
-                      ) : (
-                        <span>Provider configured, but no monitoring target is linked</span>
-                      )
-                    }
-                  />
-                  <DetailRow label="Linked monitored systems" value={selectedProvider.linkedSystems || '-'} />
-                  <DetailRow label="Evidence source capability" value={selectedProvider.evidenceSourceCapability} />
-                  <DetailRow label="Authentication status" value={selectedProvider.authenticationStatus} />
-                  <DetailRow label="Next required action" value={selectedProvider.nextAction} />
-                </>
+          {activeTab === 'providers' ? (
+            <div role="tabpanel" aria-label="Providers">
+              {!loading && providers.length === 0 ? (
+                <EmptyStateBlocker
+                  title="No providers are configured"
+                  body="Connect an RPC, oracle, custody platform, or external API to begin monitoring integration health."
+                  ctaHref="/monitoring-sources/targets"
+                  ctaLabel="Add Provider"
+                />
               ) : (
-                <p className="muted">Select a provider to inspect connection details.</p>
+                <TableShell headers={PROVIDER_HEADERS} compact>
+                  {loading && providers.length === 0 ? (
+                    <tr><td colSpan={PROVIDER_HEADERS.length} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>Loading integrations…</td></tr>
+                  ) : (
+                    providers.map((provider) => (
+                      <tr key={provider.integration_key} style={{ cursor: 'pointer' }} onClick={() => setSelectedProvider(provider)}>
+                        <td style={{ fontWeight: 600 }}>{provider.provider}</td>
+                        <td>{provider.type}</td>
+                        <td>
+                          <StatusPill label={providerStatusLabel(provider.status)} variant={providerStatusVariant(provider.status)} />
+                          {provider.status !== 'healthy' && provider.degraded_reason ? (
+                            <div className="muted" style={{ fontSize: '0.66rem', marginTop: '0.15rem' }}>{provider.degraded_reason.replace(/_/g, ' ')}</div>
+                          ) : null}
+                        </td>
+                        <td style={{ textTransform: 'capitalize' }}>{provider.role}</td>
+                        <td style={{ whiteSpace: 'nowrap' }} title={fmtExact(provider.last_check_at)}>{fmtRelative(provider.last_check_at)}</td>
+                        <td style={{ whiteSpace: 'nowrap' }}>{fmtLatency(provider.latency_ms)}</td>
+                        <td>{provider.target_count}</td>
+                      </tr>
+                    ))
+                  )}
+                </TableShell>
               )}
-            </DetailPanel>
-          </div>
-        </section>
-      ) : null}
-
-      {activeTab === 'api-keys' ? (
-        <section className="featureSection">
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: '1rem', alignItems: 'start' }}>
-            {!canManageApiKeys ? (
-              <EmptyState
-                title="API key management not configured"
-                message="API key creation and rotation are not enabled for this workspace yet."
-                action="Action not configured"
-                disabled
-              />
-            ) : apiKeys.length === 0 && !loading ? (
-              <EmptyState
-                title="API key management not configured"
-                message="API key creation and rotation are not enabled for this workspace yet."
-                action="Action not configured"
-                disabled
-              />
-            ) : (
-              <DataTable headers={API_KEY_HEADERS}>
-                {apiKeys.map((key) => (
-                  <tr key={key.id}>
-                    <td>{key.keyName}</td>
-                    <td>{key.scope}</td>
-                    <td><StatusBadge status={key.status} /></td>
-                    <td>{formatDate(key.created)}</td>
-                    <td>{formatRelative(key.lastUsed)}</td>
-                    <td>
-                      <div className="buttonRow">
-                        <button className="btn btn-secondary" type="button" disabled>Rotate Key</button>
-                        <button className="btn btn-secondary" type="button" disabled>Revoke Key</button>
-                        <button className="btn btn-secondary" type="button" disabled>View Usage</button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </DataTable>
-            )}
-
-            <DetailPanel title="API key detail panel">
-              {selectedApiKey ? (
-                <>
-                  <DetailRow label="Key name" value={selectedApiKey.keyName} />
-                  <DetailRow label="Key prefix" value={selectedApiKey.keyPrefix ? selectedApiKey.keyPrefix + "..." : "Not available"} />
-                  <DetailRow label="Scope" value={selectedApiKey.scope} />
-                  <DetailRow label="Status" value={<StatusBadge status={selectedApiKey.status} />} />
-                  <DetailRow label="Created at" value={formatDate(selectedApiKey.created)} />
-                  <DetailRow label="Last used" value={formatRelative(selectedApiKey.lastUsed)} />
-                  <DetailRow label="Rotation status" value={selectedApiKey.rotationStatus} />
-                  <DetailRow label="Owner" value={selectedApiKey.owner} />
-                  <DetailRow label="Linked integration" value={selectedApiKey.linkedIntegration ?? '-'} />
-                </>
-              ) : (
-                <p className="muted">API key management not configured</p>
-              )}
-            </DetailPanel>
-          </div>
-        </section>
-      ) : null}
-
-      {activeTab === 'webhooks' ? (
-        <section className="featureSection">
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: '1rem', alignItems: 'start' }}>
-            {webhooks.length === 0 && !loading ? (
-              <EmptyState
-                title="Webhooks not configured"
-                message="Webhook delivery is not enabled for this workspace yet."
-                action="Action not configured"
-                disabled
-              />
-            ) : (
-              <DataTable headers={WEBHOOK_HEADERS}>
-                {webhooks.map((webhook) => (
-                  <tr key={webhook.id}>
-                    <td>{webhook.webhook}</td>
-                    <td>{webhook.eventTypes.join(', ')}</td>
-                    <td><StatusBadge status={webhook.status} /></td>
-                    <td>{formatRelative(webhook.lastDelivery)}</td>
-                    <td>{webhook.failureRate}</td>
-                    <td>
-                      <div className="buttonRow">
-                        <button className="btn btn-secondary" type="button" disabled>Configure</button>
-                        <button className="btn btn-secondary" type="button" disabled>Test Delivery</button>
-                        <button className="btn btn-secondary" type="button" disabled>View Deliveries</button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </DataTable>
-            )}
-
-            <DetailPanel title="Webhook detail panel">
-              {selectedWebhook ? (
-                <>
-                  <DetailRow label="Webhook URL" value={selectedWebhook.webhook} />
-                  <DetailRow label="Event types" value={selectedWebhook.eventTypes.join(', ')} />
-                  <DetailRow label="Status" value={<StatusBadge status={selectedWebhook.status} />} />
-                  <DetailRow label="Last delivery" value={formatDate(selectedWebhook.lastDelivery)} />
-                  <DetailRow label="Last error" value={selectedWebhook.lastError ?? '-'} />
-                  <DetailRow label="Signing secret status" value={selectedWebhook.signingSecretStatus} />
-                  <DetailRow label="Retry policy" value={selectedWebhook.retryPolicy} />
-                  <DetailRow label="Delivery history" value="View deliveries action not configured" />
-                </>
-              ) : (
-                <p className="muted">Webhooks not configured</p>
-              )}
-            </DetailPanel>
-          </div>
-        </section>
-      ) : null}
-
-      {activeTab === 'connections' ? (
-        <section className="featureSection">
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: '1rem', alignItems: 'start' }}>
-            {connections.length === 0 && !loading ? (
-              <EmptyState
-                title="No connections configured"
-                message="Connections appear when provider health checks are available."
-                action="View System Health"
-                href="/system-health"
-              />
-            ) : (
-              <DataTable headers={CONNECTION_HEADERS}>
-                {connections.map((connection) => (
-                  <tr key={connection.id}>
-                    <td>{connection.connection}</td>
-                    <td>{connection.source}</td>
-                    <td>{connection.destination}</td>
-                    <td><StatusBadge status={connection.status} /></td>
-                    <td>{connection.latency}</td>
-                    <td>{formatRelative(connection.lastCheck)}</td>
-                    <td>
-                      <div className="buttonRow">
-                        <button className="btn btn-secondary" type="button" disabled>Test Connection</button>
-                        <Link className="btn btn-secondary" href="/system-health" prefetch={false}>View System Health</Link>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </DataTable>
-            )}
-
-            <DetailPanel title="Connection detail panel">
-              {selectedConnection ? (
-                <>
-                  <DetailRow label="Connection name" value={selectedConnection.connection} />
-                  <DetailRow label="Source" value={selectedConnection.source} />
-                  <DetailRow label="Destination" value={selectedConnection.destination} />
-                  <DetailRow label="Status" value={<StatusBadge status={selectedConnection.status} />} />
-                  <DetailRow label="Latency" value={selectedConnection.latency} />
-                  <DetailRow label="Last check" value={formatDate(selectedConnection.lastCheck)} />
-                  <DetailRow label="Last error" value={selectedConnection.lastError ?? '-'} />
-                  <DetailRow label="Health reason" value={selectedConnection.healthReason} />
-                  <DetailRow label="Linked provider" value={selectedConnection.linkedProvider} />
-                  <DetailRow
-                    label="Linked target/system"
-                    value={<Link href="/monitoring-sources" prefetch={false}>{selectedConnection.linkedTargetSystem}</Link>}
-                  />
-                </>
-              ) : (
-                <p className="muted">Provider health unavailable</p>
-              )}
-            </DetailPanel>
-          </div>
-
-          {degradedConnection ? (
-            <article className="dataCard" style={{ marginTop: '1rem' }}>
-              <h3>Connection degraded</h3>
-              <p className="muted">{degradedConnection.healthReason}</p>
-              <Link className="btn btn-secondary" href="/system-health" prefetch={false}>View System Health</Link>
-            </article>
+            </div>
           ) : null}
-        </section>
+
+          {activeTab === 'apis' ? (
+            <div role="tabpanel" aria-label="APIs">
+              {!loading && apis.length === 0 ? (
+                <EmptyStateBlocker title="No API integrations" body="API-based service integrations appear here once configured." />
+              ) : (
+                <TableShell headers={API_HEADERS} compact>
+                  {apis.map((api: ApiRow) => (
+                    <tr key={api.integration_key}>
+                      <td style={{ fontWeight: 600 }}>{api.name}</td>
+                      <td>{api.authentication}</td>
+                      <td style={{ textTransform: 'capitalize' }}>{api.scope}</td>
+                      <td><StatusPill label={api.status} variant={apiStatusVariant(api.status)} /></td>
+                      <td>{api.credential_configured ? 'Configured' : 'Missing'}</td>
+                    </tr>
+                  ))}
+                </TableShell>
+              )}
+              <p className="muted" style={{ fontSize: '0.72rem', marginTop: '0.6rem' }}>
+                Credentials are never returned to the browser — only a configured / missing flag is shown.
+              </p>
+            </div>
+          ) : null}
+
+          {activeTab === 'webhooks' ? (
+            <div role="tabpanel" aria-label="Webhooks">
+              {!loading && webhooks.length === 0 ? (
+                <EmptyStateBlocker
+                  title="No webhooks configured"
+                  body="Configure an outbound webhook to deliver alert and incident events to an external system (e.g. a SIEM)."
+                  ctaHref="/settings/notifications"
+                  ctaLabel="Configure notifications"
+                />
+              ) : (
+                <TableShell headers={WEBHOOK_HEADERS} compact>
+                  {webhooks.map((webhook: WebhookRow) => (
+                    <tr key={webhook.integration_key}>
+                      <td style={{ fontWeight: 600 }} title={webhook.description ?? undefined}>{webhook.endpoint}</td>
+                      <td>{webhook.event_types.length ? webhook.event_types.join(', ') : '—'}</td>
+                      <td><StatusPill label={webhook.status} variant={webhookStatusVariant(webhook.status)} /></td>
+                      <td style={{ whiteSpace: 'nowrap' }} title={fmtExact(webhook.last_delivery_at)}>{fmtRelative(webhook.last_delivery_at)}</td>
+                      <td>{webhook.success_rate == null ? '—' : `${webhook.success_rate}%`}</td>
+                      <td>{webhook.failures}</td>
+                      <td style={{ textTransform: 'capitalize' }}>{webhook.retry_state}</td>
+                    </tr>
+                  ))}
+                </TableShell>
+              )}
+            </div>
+          ) : null}
+
+          {activeTab === 'connections' ? (
+            <div role="tabpanel" aria-label="Connections">
+              {!loading && connections.length === 0 ? (
+                <EmptyStateBlocker title="No connections" body="Connection dependencies appear once providers or webhooks are configured." />
+              ) : (
+                <TableShell headers={CONNECTION_HEADERS} compact>
+                  {connections.map((connection: ConnectionRow) => (
+                    <tr key={connection.integration_key}>
+                      <td>{connection.source}</td>
+                      <td style={{ fontWeight: 600 }}>{connection.via}</td>
+                      <td>{connection.destination}</td>
+                      <td>{connection.purpose}</td>
+                      <td><StatusPill label={connection.state} variant={connectionStateVariant(connection.state)} /></td>
+                      <td style={{ textTransform: 'capitalize' }}>{connection.failover}</td>
+                      <td style={{ whiteSpace: 'nowrap' }} title={fmtExact(connection.last_verified_at)}>{fmtRelative(connection.last_verified_at)}</td>
+                    </tr>
+                  ))}
+                </TableShell>
+              )}
+            </div>
+          ) : null}
+
+          {!hasAnyIntegration && !loading ? (
+            <p className="muted" style={{ fontSize: '0.75rem', marginTop: '0.75rem' }}>
+              No external integrations are configured for this workspace yet.
+            </p>
+          ) : null}
+        </div>
+
+        {/* ── Right rail (desktop) ──────────────────────────── */}
+        <aside style={{ flex: '0 1 320px', minWidth: '280px' }} className="integrationAgentRail">
+          {agentPanel}
+        </aside>
+      </div>
+
+      {/* ── Mobile agent drawer toggle ────────────────────── */}
+      <button
+        type="button"
+        className="btn btn-primary integrationAgentMobileToggle"
+        onClick={() => setMobileAgentOpen(true)}
+        style={{ position: 'fixed', bottom: 16, right: 16, zIndex: 40, display: 'none' }}
+      >
+        Agent
+      </button>
+      {mobileAgentOpen ? (
+        <div role="dialog" aria-modal="true" aria-label="Integration Gateway Agent" style={{ position: 'fixed', inset: 0, zIndex: 60, display: 'flex', justifyContent: 'flex-end' }}>
+          <button type="button" aria-label="Close" onClick={() => setMobileAgentOpen(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(2,6,23,0.6)', border: 'none' }} />
+          <div style={{ position: 'relative', width: 'min(360px, 100%)', height: '100%', overflowY: 'auto', background: 'var(--surface, #0b1220)', padding: '1rem' }}>
+            <button type="button" className="btn btn-secondary" style={{ marginBottom: '0.75rem', fontSize: '0.75rem' }} onClick={() => setMobileAgentOpen(false)}>Close</button>
+            {agentPanel}
+          </div>
+        </div>
       ) : null}
+
+      {selectedProvider ? (
+        <ProviderDetailDrawer provider={selectedProvider} onClose={() => setSelectedProvider(null)} />
+      ) : null}
+
+      <style>{`
+        @media (max-width: 900px) {
+          .integrationAgentRail { display: none; }
+          .integrationAgentMobileToggle { display: inline-flex !important; }
+        }
+      `}</style>
     </main>
   );
 }
-
-
-
-
-
