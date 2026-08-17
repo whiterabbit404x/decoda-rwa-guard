@@ -1,98 +1,103 @@
-﻿import { expect, test } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const src = fs.readFileSync(
-  path.join(__dirname, '..', 'app', '(product)', 'integrations-page-client.tsx'),
-  'utf-8',
-);
+// Screen 10 was rebuilt into the Integration Gateway control plane. These source-grep
+// tests pin the NEW contract: a real GET read model, a real Run Health Check mutation,
+// deterministic recommendations, a derived connection risk, a persisted last-scan
+// timestamp, and — critically — no secret material in the client.
+const clientPath = path.join(__dirname, '..', 'app', '(product)', 'integrations-page-client.tsx');
+const panelPath = path.join(__dirname, '..', 'app', '(product)', 'integration-gateway-agent-panel.tsx');
+const typesPath = path.join(__dirname, '..', 'app', '(product)', 'integration-gateway-types.ts');
+const src = fs.readFileSync(clientPath, 'utf-8');
+const panel = fs.readFileSync(panelPath, 'utf-8');
+const types = fs.readFileSync(typesPath, 'utf-8');
 
 test('integrations route client exports a page component', () => {
   expect(src).toContain('export default function IntegrationsPageClient');
 });
 
 test('integrations title and subtitle exist', () => {
-  expect(src).toContain('<h1>Integrations</h1>');
-  expect(src).toContain('Manage providers, API keys, webhooks, and external connections used by monitoring sources.');
+  expect(src).toContain('>Integrations</h1>');
+  expect(src).toContain('Operational control plane for every external dependency Decoda relies on');
 });
 
-test('disabled Add Integration button exists', () => {
-  expect(src).toContain('Add Integration');
-  expect(src).toMatch(/Add Integration[\s\S]{0,180}<\/button>/);
-  expect(src).toContain('disabled');
+test('Run Health Check and Add Provider actions exist', () => {
+  expect(src).toContain('Run Health Check');
+  expect(src).toContain('Add Provider');
 });
 
-test('metric cards exist', () => {
-  for (const label of ['Connected Providers', 'Active API Keys', 'Webhooks', 'Degraded Connections']) {
+test('summary metric tiles exist', () => {
+  for (const label of ['Total Integrations', 'Healthy', 'Degraded', 'Disconnected', 'Recommendations']) {
     expect(src).toContain(label);
   }
 });
 
-test('tabs exist exactly', () => {
-  for (const label of ['Providers', 'API Keys', 'Webhooks', 'Connections']) {
+test('tabs exist exactly (Providers / APIs / Webhooks / Connections)', () => {
+  for (const label of ['Providers', 'APIs', 'Webhooks', 'Connections']) {
     expect(src).toContain(`label: '${label}'`);
   }
+  // The old workspace-API-keys tab is gone; the tab is now external-service APIs.
+  expect(src).not.toContain("label: 'API Keys'");
 });
 
 test('providers table columns exist exactly', () => {
-  for (const header of ['Provider', 'Type', 'Status', 'Last Sync', 'Last Error', 'Actions']) {
-    expect(src).toContain(`'${header}'`);
-  }
-});
-
-test('api keys table columns exist exactly', () => {
-  for (const header of ['Key Name', 'Scope', 'Status', 'Created', 'Last Used', 'Actions']) {
+  for (const header of ['Provider', 'Type', 'Status', 'Role', 'Last Check', 'Latency', 'Targets']) {
     expect(src).toContain(`'${header}'`);
   }
 });
 
 test('webhooks table columns exist exactly', () => {
-  for (const header of ['Webhook', 'Event Types', 'Status', 'Last Delivery', 'Failure Rate', 'Actions']) {
+  for (const header of ['Endpoint', 'Event Types', 'Status', 'Last Delivery', 'Success Rate', 'Failures', 'Retry']) {
     expect(src).toContain(`'${header}'`);
   }
 });
 
 test('connections table columns exist exactly', () => {
-  for (const header of ['Connection', 'Source', 'Destination', 'Status', 'Latency', 'Last Check', 'Actions']) {
+  for (const header of ['Source', 'Via', 'Destination', 'Purpose', 'State', 'Failover', 'Last Verified']) {
     expect(src).toContain(`'${header}'`);
   }
 });
 
-test('does not expose raw secrets', () => {
+test('GET read model is read-only; Run Health Check is a POST mutation (spec §24)', () => {
+  // The page load reads the control plane over the same-origin proxy…
+  expect(src).toContain("fetch('/api/integrations/control-plane', { headers: authHeaders(), cache: 'no-store' })");
+  // …and the ONLY mutating action helper posts.
+  expect(src).toContain("method: 'POST'");
+  expect(src).toContain("'/api/integrations/health-check'");
+});
+
+test('last scan renders the backend-persisted timestamp, never a fresh client clock', () => {
+  // Uses the persisted last_scan.completed_at; there is no new Date() driving "last scan".
+  expect(src).toContain('data.last_scan.completed_at');
+  expect(src).not.toMatch(/last[_ ]?scan[\s\S]{0,40}new Date\(\)/i);
+});
+
+test('connection risk is derived from backend, never hard-coded LOW', () => {
+  expect(panel).toContain('Connection Risk');
+  expect(panel).toContain('risk?.level');
+  // No literal hard-coded risk verdict in the panel.
+  expect(panel).not.toMatch(/riskLevel\s*=\s*['"]low['"]/i);
+});
+
+test('does not expose raw secrets in the client', () => {
+  expect(src).not.toContain('secret_token');
+  expect(src).not.toContain('secret_hash');
   expect(src).not.toContain('revealedSecret');
-  expect(src).not.toContain('payload.secret');
-  expect(src).not.toMatch(/\bkey\.secret\b/);
-  expect(src).not.toMatch(/\bwebhook\.secret\b(?!_last4)/);
-  expect(src).not.toContain('signing_secret');
+  expect(src).not.toMatch(/\bpayload\.secret\b/);
+  // The credential hint in the type model is always null (metadata only, no value).
+  expect(types).toContain('credential_hint: string | null');
 });
 
-test('provider connected status is derived from backend health', () => {
-  expect(src).toContain('providerStatusFromBackend');
-  expect(src).toContain("['ok', 'healthy', 'connected'].includes(status)");
-  expect(src).not.toMatch(/status:\s*['"]Connected['"]/);
+test('empty states exist for each tab', () => {
+  expect(src).toContain('No providers are configured');
+  expect(src).toContain('No webhooks configured');
+  expect(src).toContain('No API integrations');
+  expect(src).toContain('No connections');
 });
 
-test('connection healthy requires backend health and last check', () => {
-  expect(src).toContain('connectionStatusFromBackend');
-  expect(src).toContain("if (!record || !status || !lastCheck) return 'Unknown'");
-  expect(src).toContain("return 'Healthy'");
+test('management actions are RBAC-gated (button state is not the only guard)', () => {
+  // Run Health Check is disabled without the manage permission; the backend re-checks it.
+  expect(src).toContain('!canManage');
+  expect(src).toContain("data?.permissions.can_manage");
 });
-
-test('degraded/offline reason appears and links to system health', () => {
-  expect(src).toContain('Connection degraded');
-  expect(src).toContain('healthReason');
-  expect(src).toContain('href="/system-health"');
-});
-
-test('provider target state links to monitoring sources', () => {
-  expect(src).toContain('Provider configured, but no monitoring target is linked');
-  expect(src).toContain('href="/monitoring-sources"');
-});
-
-test('empty states exist', () => {
-  expect(src).toContain('No integrations configured');
-  expect(src).toContain('Connect a provider, API key, or webhook before enabling live monitoring.');
-  expect(src).toContain('API key management not configured');
-  expect(src).toContain('Webhooks not configured');
-});
-
