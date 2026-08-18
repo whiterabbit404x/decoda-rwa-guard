@@ -6,6 +6,20 @@ import type { ReactNode } from 'react';
 
 import { usePilotAuth } from 'app/pilot-auth-context';
 import { BillingRuntime, billingDisabledMessage, billingEnabled, billingProviderLabel } from './billing-capability';
+import { GovernanceDialog } from './components/governance-dialog';
+import {
+  Approval,
+  ChangeLogItem,
+  GovernanceAnomaly,
+  GovernanceState,
+  LoadState,
+  accessRiskLabel,
+  anomalyStateLabel,
+  changeSafeguardLabel,
+  emptyGovernanceState,
+  posturePercentLabel,
+  riskPillVariant,
+} from './governance-view-model';
 
 type TabKey = 'general' | 'team' | 'security' | 'billing' | 'notifications';
 
@@ -141,7 +155,7 @@ function maskId(value?: string | null): string {
 }
 
 export default function SettingsPageClient() {
-  const { apiUrl, authHeaders, error, liveModeConfigured, loading, user } = usePilotAuth();
+  const { apiUrl, authHeaders, csrfReady, error, liveModeConfigured, loading, refreshCsrfToken, user } = usePilotAuth();
   const [members, setMembers] = useState<Member[]>([]);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [plans, setPlans] = useState<Array<{ plan_key: string; plan_name: string; max_members: number }>>([]);
@@ -159,6 +173,22 @@ export default function SettingsPageClient() {
   const [timezone, setTimezone] = useState('UTC');
   const [currency, setCurrency] = useState('USD');
 
+  // --- Governance Guard state (Screen 11) ---
+  const [gov, setGov] = useState<GovernanceState>(emptyGovernanceState());
+  const [settingsVersion, setSettingsVersion] = useState<number>(1);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [settingsMsg, setSettingsMsg] = useState<{ tone: 'success' | 'error' | 'conflict'; text: string } | null>(null);
+  // Which governance dialog is open.
+  const [dialog, setDialog] = useState<null | 'policy' | 'changelog' | 'approvals' | 'anomalies' | 'security' | 'anomaly-detail'>(null);
+  const [changeLog, setChangeLog] = useState<{ state: LoadState; items: ChangeLogItem[]; filter: string }>({ state: 'idle', items: [], filter: 'all' });
+  const [approvals, setApprovals] = useState<{ state: LoadState; items: Approval[] }>({ state: 'idle', items: [] });
+  const [anomalies, setAnomalies] = useState<{ state: LoadState; items: GovernanceAnomaly[] }>({ state: 'idle', items: [] });
+  const [anomalyDetail, setAnomalyDetail] = useState<GovernanceAnomaly | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [govMessage, setGovMessage] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
+  // Proposed security-policy change awaiting confirmation (critical-change flow).
+  const [securityDraft, setSecurityDraft] = useState<{ mfa_enforcement: string; reauthentication_minutes: number } | null>(null);
+
   const fallbackWorkspace = user?.memberships?.[0]?.workspace ?? null;
   const resolvedWorkspace = user?.current_workspace ?? fallbackWorkspace;
   const hasWorkspace = Boolean(resolvedWorkspace?.id);
@@ -168,6 +198,21 @@ export default function SettingsPageClient() {
 
   async function call(path: string, init?: RequestInit) {
     return fetch(`${apiUrl}${path}`, { cache: 'no-store', ...init, headers: { ...(init?.headers ?? {}), ...authHeaders() } });
+  }
+
+  // A state-changing governance request needs the anti-CSRF token bootstrapped.
+  // authHeaders() already carries it once ready; ensure it is before mutating.
+  async function ensureCsrf() {
+    if (!csrfReady) {
+      await refreshCsrfToken();
+    }
+  }
+
+  // Map an HTTP status to a governance LoadState (permission_denied vs error).
+  function loadStateFor(status: number): LoadState {
+    if (status === 200) return 'loaded';
+    if (status === 401 || status === 403) return 'permission_denied';
+    return 'error';
   }
 
   async function loadAll() {
@@ -193,6 +238,219 @@ export default function SettingsPageClient() {
   }
 
   useEffect(() => { void loadAll(); }, [apiUrl, resolvedWorkspace?.id]);
+
+  // Governance Guard: read-only load of settings, security policy, posture, and
+  // summary. A page load / refresh performs GETs only — it never evaluates or
+  // persists anomalies as a side effect.
+  async function loadGovernance() {
+    if (!apiUrl || !resolvedWorkspace?.id) return;
+    const [settingsRes, securityRes, postureRes, summaryRes] = await Promise.all([
+      call('/workspace/settings'),
+      call('/workspace/security-settings'),
+      call('/workspace/governance/posture'),
+      call('/workspace/governance/summary'),
+    ]);
+    const next = emptyGovernanceState();
+    next.settingsState = loadStateFor(settingsRes.status);
+    if (settingsRes.ok) {
+      const s = await settingsRes.json();
+      next.settings = s;
+      setSettingsVersion(Number(s.version ?? 1));
+      if (typeof s.timezone === 'string') setTimezone(s.timezone);
+      if (typeof s.currency === 'string') setCurrency(s.currency);
+      if (typeof s.name === 'string' && s.name) setWsName(s.name);
+    }
+    next.securityState = loadStateFor(securityRes.status);
+    if (securityRes.ok) next.security = await securityRes.json();
+    next.postureState = loadStateFor(postureRes.status);
+    if (postureRes.ok) next.posture = await postureRes.json();
+    next.summaryState = loadStateFor(summaryRes.status);
+    if (summaryRes.ok) next.summary = await summaryRes.json();
+    setGov(next);
+  }
+
+  useEffect(() => { void loadGovernance(); }, [apiUrl, resolvedWorkspace?.id]);
+
+  const settingsDirty = Boolean(
+    gov.settings &&
+    (wsName.trim() !== (gov.settings.name ?? '') || timezone !== gov.settings.timezone || currency !== gov.settings.currency),
+  );
+  const canManageSettings = gov.settings?.can_manage ?? false;
+  const canManageSecurity = gov.summary?.can_manage ?? gov.security?.can_manage ?? false;
+
+  async function saveWorkspaceSettings() {
+    if (!settingsDirty || savingSettings) return;
+    setSavingSettings(true);
+    setSettingsMsg(null);
+    await ensureCsrf();
+    const res = await call('/workspace/settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: wsName.trim(), timezone, currency, expected_version: settingsVersion }),
+    });
+    setSavingSettings(false);
+    if (res.ok) {
+      const payload = await res.json();
+      setSettingsVersion(Number(payload.version ?? settingsVersion + 1));
+      setSettingsMsg({ tone: 'success', text: 'Workspace settings saved.' });
+      void loadGovernance();
+      return;
+    }
+    if (res.status === 409) {
+      setSettingsMsg({ tone: 'conflict', text: 'Settings changed since you opened this page. Refresh the current configuration before retrying.' });
+      return;
+    }
+    if (res.status === 401 || res.status === 403) {
+      setSettingsMsg({ tone: 'error', text: 'You do not have permission to change workspace settings.' });
+      return;
+    }
+    setSettingsMsg({ tone: 'error', text: 'Could not save workspace settings. No change was applied.' });
+  }
+
+  // Submit a security-policy change. LOW/MEDIUM applies directly; HIGH/CRITICAL
+  // enters the approval workflow — the confirmation dialog collects intent first.
+  async function submitSecurityChange(proposed: { mfa_enforcement: string; reauthentication_minutes: number }) {
+    setActionBusy(true);
+    setGovMessage(null);
+    await ensureCsrf();
+    const res = await call('/workspace/security-settings/change', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(proposed),
+    });
+    setActionBusy(false);
+    setSecurityDraft(null);
+    setDialog(null);
+    if (res.ok) {
+      const payload = await res.json();
+      if (payload.status === 'pending_approval') {
+        setGovMessage({ tone: 'success', text: `Change classified ${String(payload.risk_level).toUpperCase()} and submitted for approval. The current policy is unchanged until approved.` });
+      } else {
+        setGovMessage({ tone: 'success', text: 'Security policy updated.' });
+      }
+      void loadGovernance();
+      return;
+    }
+    if (res.status === 409) {
+      setGovMessage({ tone: 'error', text: 'A security policy change is already awaiting approval.' });
+      return;
+    }
+    if (res.status === 401 || res.status === 403) {
+      setGovMessage({ tone: 'error', text: 'Reauthentication or the security management permission is required.' });
+      return;
+    }
+    setGovMessage({ tone: 'error', text: 'Could not submit the security policy change.' });
+  }
+
+  async function runEvaluation() {
+    setActionBusy(true);
+    setGovMessage(null);
+    await ensureCsrf();
+    const res = await call('/workspace/governance/evaluate', { method: 'POST' });
+    setActionBusy(false);
+    if (res.ok) {
+      const payload = await res.json();
+      setGovMessage({ tone: 'success', text: `Evaluation complete — ${payload.findings_count} finding(s) across ${payload.events_scanned} events.` });
+      void loadGovernance();
+    } else if (res.status === 401 || res.status === 403) {
+      setGovMessage({ tone: 'error', text: 'The security management permission is required to run evaluation.' });
+    } else {
+      setGovMessage({ tone: 'error', text: 'Governance evaluation failed.' });
+    }
+  }
+
+  async function openChangeLog() {
+    setDialog('changelog');
+    setChangeLog((prev) => ({ ...prev, state: 'loading' }));
+    const res = await call('/workspace/governance/changes');
+    if (res.ok) {
+      const payload = await res.json();
+      setChangeLog({ state: 'loaded', items: payload.changes ?? [], filter: 'all' });
+    } else {
+      setChangeLog({ state: loadStateFor(res.status), items: [], filter: 'all' });
+    }
+  }
+
+  async function openApprovals() {
+    setDialog('approvals');
+    setApprovals({ state: 'loading', items: [] });
+    const res = await call('/workspace/governance/approvals');
+    if (res.ok) {
+      const payload = await res.json();
+      setApprovals({ state: 'loaded', items: payload.approvals ?? [] });
+    } else {
+      setApprovals({ state: loadStateFor(res.status), items: [] });
+    }
+  }
+
+  async function openAnomalies() {
+    setDialog('anomalies');
+    setAnomalies({ state: 'loading', items: [] });
+    const res = await call('/workspace/governance/anomalies');
+    if (res.ok) {
+      const payload = await res.json();
+      setAnomalies({ state: 'loaded', items: payload.anomalies ?? [] });
+    } else {
+      setAnomalies({ state: loadStateFor(res.status), items: [] });
+    }
+  }
+
+  async function decideApproval(id: string, decision: 'approve' | 'reject') {
+    setActionBusy(true);
+    setGovMessage(null);
+    await ensureCsrf();
+    const res = await call(`/workspace/governance/approvals/${id}/decision`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision }),
+    });
+    setActionBusy(false);
+    if (res.ok) {
+      setGovMessage({ tone: 'success', text: decision === 'approve' ? 'Change approved and executed.' : 'Change rejected. The current policy is unchanged.' });
+      await openApprovals();
+      void loadGovernance();
+    } else if (res.status === 403) {
+      const payload = await res.json().catch(() => ({}));
+      const code = payload?.detail?.code;
+      setGovMessage({ tone: 'error', text: code === 'SELF_APPROVAL_FORBIDDEN' ? 'You cannot approve a change you requested. A different authorized approver must approve it.' : 'Reauthentication or permission is required.' });
+    } else if (res.status === 409) {
+      setGovMessage({ tone: 'error', text: 'This change request has already been decided.' });
+      await openApprovals();
+    } else {
+      setGovMessage({ tone: 'error', text: 'Could not record the approval decision.' });
+    }
+  }
+
+  async function openAnomalyDetail(id: string) {
+    setActionBusy(true);
+    const res = await call(`/workspace/governance/anomalies/${id}`);
+    setActionBusy(false);
+    if (res.ok) {
+      setAnomalyDetail(await res.json());
+      setDialog('anomaly-detail');
+    }
+  }
+
+  async function setAnomalyStatus(id: string, status: 'acknowledged' | 'resolved' | 'dismissed') {
+    setActionBusy(true);
+    await ensureCsrf();
+    const res = await call(`/workspace/governance/anomalies/${id}/status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    });
+    setActionBusy(false);
+    if (res.ok) {
+      setDialog('anomalies');
+      setAnomalyDetail(null);
+      await openAnomalies();
+      void loadGovernance();
+      setGovMessage({ tone: 'success', text: `Finding ${status}.` });
+    } else {
+      setGovMessage({ tone: 'error', text: 'Could not update the finding.' });
+    }
+  }
+
   function validateInviteEmail(value: string): string {
     if (!value.trim()) return 'Email address is required.';
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim())) return 'Enter a valid email address.';
@@ -325,10 +583,13 @@ export default function SettingsPageClient() {
       
       {activeTab === 'general' ? (
         <section className="featureSection">
+          {govMessage ? (
+            <p role="status" style={{ marginTop: '0.75rem', fontSize: '0.82rem', color: govMessage.tone === 'error' ? '#f87171' : '#4ade80' }}>{govMessage.text}</p>
+          ) : null}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: '1rem', marginTop: '1rem' }}>
 
-            {/* Workspace Profile */}
-            <SectionCard title="Workspace Profile">
+            {/* Workspace Settings */}
+            <SectionCard title="Workspace Settings">
               {!hasWorkspace ? (
                 <EmptyState
                   title="Workspace settings unavailable"
@@ -342,63 +603,357 @@ export default function SettingsPageClient() {
                     <input
                       value={wsName}
                       onChange={(e) => setWsName(e.target.value)}
-                      style={{ width: '100%', background: '#0d1117', border: '1px solid #30363d', borderRadius: 8, color: '#e6edf3', padding: '0.45rem 0.65rem', fontSize: '0.85rem' }}
+                      disabled={!canManageSettings}
+                      aria-label="Workspace Name"
+                      style={{ width: '100%', background: '#0d1117', border: '1px solid #30363d', borderRadius: 8, color: '#e6edf3', padding: '0.45rem 0.65rem', fontSize: '0.85rem', opacity: canManageSettings ? 1 : 0.6 }}
                     />
                   } />
                   <FieldRow label="Workspace ID" readOnly value={<code style={{ fontSize: '0.8rem', color: '#8b949e' }}>{resolvedWorkspace?.id ?? '-'}</code>} />
-                  <FieldRow label="Organization" value={<span style={{ color: '#8b949e' }}>{resolvedWorkspace?.name ?? '-'}</span>} />
-                  <FieldRow label="Primary Contact" value={user?.full_name ?? user?.email ?? '-'} />
-                  <FieldRow label="Support Email" value={<a href="mailto:support@decoda.app" style={{ color: '#6aa9ff', textDecoration: 'none' }}>support@decoda.app</a>} />
-                  <div style={{ marginTop: '0.85rem' }}>
-                    <button className="btn btn-secondary" type="button" disabled style={{ opacity: 0.5, cursor: 'not-allowed' }}>
-                      Save Changes -Action not configured
+                  <FieldRow label="Timezone" value={
+                    <select
+                      value={timezone}
+                      onChange={(e) => setTimezone(e.target.value)}
+                      disabled={!canManageSettings}
+                      aria-label="Timezone"
+                      style={{ background: '#0d1117', border: '1px solid #30363d', borderRadius: 8, color: '#e6edf3', padding: '0.4rem 0.6rem', fontSize: '0.85rem', width: '100%' }}
+                    >
+                      {(gov.settings?.allowed_timezones ?? ['UTC']).map((tz) => <option key={tz} value={tz}>{tz}</option>)}
+                    </select>
+                  } />
+                  <FieldRow label="Currency" value={
+                    <select
+                      value={currency}
+                      onChange={(e) => setCurrency(e.target.value)}
+                      disabled={!canManageSettings}
+                      aria-label="Currency"
+                      style={{ background: '#0d1117', border: '1px solid #30363d', borderRadius: 8, color: '#e6edf3', padding: '0.4rem 0.6rem', fontSize: '0.85rem', width: '100%' }}
+                    >
+                      {(gov.settings?.allowed_currencies ?? ['USD']).map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  } />
+                  <FieldRow label="Default Monitoring Mode" value={<StatusPill status={liveModeConfigured ? 'Live' : 'Sample'} />} note={liveModeConfigured ? 'Connected to live data sources' : 'Using sample data only'} />
+                  {!canManageSettings ? (
+                    <p className="muted" style={{ fontSize: '0.78rem', marginTop: '0.6rem' }}>You need workspace administration permission to edit these settings.</p>
+                  ) : null}
+                  <div style={{ marginTop: '0.85rem', display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
+                    <button
+                      className="btn btn-primary"
+                      type="button"
+                      onClick={() => void saveWorkspaceSettings()}
+                      disabled={!canManageSettings || !settingsDirty || savingSettings}
+                      style={{ opacity: (!canManageSettings || !settingsDirty) ? 0.5 : 1, cursor: (!canManageSettings || !settingsDirty) ? 'not-allowed' : 'pointer' }}
+                    >
+                      {savingSettings ? 'Saving…' : 'Save Changes'}
                     </button>
+                    {settingsMsg ? (
+                      <span role={settingsMsg.tone === 'success' ? 'status' : 'alert'} style={{ fontSize: '0.8rem', color: settingsMsg.tone === 'success' ? '#4ade80' : settingsMsg.tone === 'conflict' ? '#fbbf24' : '#f87171' }}>
+                        {settingsMsg.text}
+                        {settingsMsg.tone === 'conflict' ? (
+                          <button className="btn btn-ghost" type="button" style={{ marginLeft: '0.5rem', fontSize: '0.76rem', padding: '0.2rem 0.5rem' }} onClick={() => void loadGovernance()}>Refresh</button>
+                        ) : null}
+                      </span>
+                    ) : null}
                   </div>
                 </>
               )}
             </SectionCard>
 
-            {/* Workspace Defaults */}
-            <SectionCard title="Workspace Defaults">
-              <FieldRow label="Timezone" value={
-                <select
-                  value={timezone}
-                  onChange={(e) => setTimezone(e.target.value)}
-                  style={{ background: '#0d1117', border: '1px solid #30363d', borderRadius: 8, color: '#e6edf3', padding: '0.4rem 0.6rem', fontSize: '0.85rem', width: '100%' }}
-                >
-                  <option value="UTC">UTC</option>
-                  <option value="America/New_York">America/New_York</option>
-                  <option value="America/Los_Angeles">America/Los_Angeles</option>
-                  <option value="Europe/London">Europe/London</option>
-                  <option value="Europe/Berlin">Europe/Berlin</option>
-                  <option value="Asia/Singapore">Asia/Singapore</option>
-                  <option value="Asia/Tokyo">Asia/Tokyo</option>
-                </select>
-              } />
-              <FieldRow label="Currency" value={
-                <select
-                  value={currency}
-                  onChange={(e) => setCurrency(e.target.value)}
-                  style={{ background: '#0d1117', border: '1px solid #30363d', borderRadius: 8, color: '#e6edf3', padding: '0.4rem 0.6rem', fontSize: '0.85rem', width: '100%' }}
-                >
-                  <option value="USD">USD</option>
-                  <option value="EUR">EUR</option>
-                  <option value="GBP">GBP</option>
-                  <option value="SGD">SGD</option>
-                  <option value="JPY">JPY</option>
-                </select>
-              } />
-              <FieldRow label="Default Evidence Retention" value={<span style={{ color: '#8b949e' }}>90 days</span>} note="Configurable via evidence settings" />
-              <FieldRow label="Default Monitoring Mode" value={<StatusPill status={liveModeConfigured ? 'Live' : 'Sample'} />} note={liveModeConfigured ? 'Connected to live data sources' : 'Using sample data only'} />
-              <FieldRow label="API Diagnostics" value={<span style={{ color: '#8b949e', fontSize: '0.8rem' }}>{apiUrl || 'Not configured'}</span>} />
-              <div style={{ marginTop: '0.85rem' }}>
-                <button className="btn btn-secondary" type="button" disabled style={{ opacity: 0.5, cursor: 'not-allowed' }}>
-                  Save Defaults -Action not configured
-                </button>
-              </div>
+            {/* Security Settings (canonical workspace_auth_policies) */}
+            <SectionCard title="Security Settings" action={canManageSecurity ? (
+              <button className="btn btn-ghost" type="button" style={{ fontSize: '0.78rem', padding: '0.25rem 0.6rem' }}
+                onClick={() => { setSecurityDraft({ mfa_enforcement: gov.security?.mfa_enforcement ?? 'optional', reauthentication_minutes: gov.security?.reauthentication_minutes ?? 30 }); setDialog('security'); }}>
+                Change security policy
+              </button>
+            ) : undefined}>
+              {gov.securityState === 'error' ? (
+                <p role="alert" style={{ color: '#f87171', fontSize: '0.85rem' }}>Security settings unavailable.</p>
+              ) : gov.securityState === 'permission_denied' ? (
+                <p className="muted" style={{ fontSize: '0.85rem' }}>Requires security management permission.</p>
+              ) : gov.securityState === 'loading' ? (
+                <p className="muted" style={{ fontSize: '0.85rem' }}>Loading security policy…</p>
+              ) : (
+                <>
+                  <FieldRow label="MFA Enforcement" value={
+                    <span className={'pill pill-' + (gov.security?.mfa_enforcement === 'all_members' ? 'success' : gov.security?.mfa_enforcement === 'administrators' ? 'warning' : 'neutral')}>
+                      {gov.security?.mfa_enforcement === 'all_members' ? 'All members' : gov.security?.mfa_enforcement === 'administrators' ? 'Administrators' : 'Optional'}
+                    </span>
+                  } note="Workspace policy — reused from canonical MFA/session policy." />
+                  <FieldRow label="Session Timeout" value={<span>{gov.security ? `${gov.security.reauthentication_minutes} minutes` : '—'}</span>} note="Reauthentication window for sensitive actions." />
+                  <FieldRow label="IP Allowlist" value={<StatusPill status="Not configured" />} note="IP allowlist enforcement is not available in this deployment." />
+                  <FieldRow label="Audit Logging" value={<span className="pill pill-success">Always on</span>} note="Append-only, hash-chained. Cannot be disabled." />
+                  <FieldRow label="Data Encryption" value={<span className="pill pill-info">At rest &amp; in transit</span>} note="Enforced at the infrastructure layer." />
+                </>
+              )}
+            </SectionCard>
+
+            {/* AI Policy Impact */}
+            <SectionCard title="AI Policy Impact">
+              {gov.postureState === 'error' ? (
+                <p role="alert" style={{ color: '#f87171', fontSize: '0.85rem' }}>Policy analysis unavailable.</p>
+              ) : gov.postureState === 'permission_denied' ? (
+                <p className="muted" style={{ fontSize: '0.85rem' }}>Requires security management permission.</p>
+              ) : (
+                <>
+                  <p className="muted" style={{ marginTop: 0, fontSize: '0.82rem' }}>These settings reduce risk and improve your security posture.</p>
+                  <div style={{ display: 'flex', gap: '1.5rem', margin: '0.75rem 0' }}>
+                    <div>
+                      <p className="sectionEyebrow" style={{ margin: '0 0 0.2rem' }}>Risk Reduction</p>
+                      <p style={{ margin: 0, fontSize: '1.35rem', fontWeight: 700 }}>{posturePercentLabel(gov.posture, gov.postureState)}</p>
+                    </div>
+                    <div>
+                      <p className="sectionEyebrow" style={{ margin: '0 0 0.2rem' }}>Access Risk</p>
+                      <p style={{ margin: 0 }}><span className={'pill pill-' + riskPillVariant(gov.posture?.access_risk ?? 'unknown')}>{accessRiskLabel(gov.posture, gov.postureState)}</span></p>
+                    </div>
+                  </div>
+                  {gov.posture?.evidence_status === 'insufficient' ? (
+                    <p style={{ color: '#fbbf24', fontSize: '0.78rem', margin: '0 0 0.5rem' }}>Access evidence not evaluated — run Governance Guard evaluation for a complete score.</p>
+                  ) : null}
+                  <button className="btn btn-secondary" type="button" onClick={() => setDialog('policy')} disabled={gov.postureState !== 'loaded'}>
+                    View policy impact →
+                  </button>
+                </>
+              )}
+            </SectionCard>
+
+            {/* Governance Guard */}
+            <SectionCard title="Governance Guard">
+              {(() => {
+                const anomaly = anomalyStateLabel(gov.summary, gov.summaryState);
+                const safeguard = changeSafeguardLabel(gov.summary, gov.summaryState);
+                const pending = gov.summary?.pending_change_requests ?? 0;
+                return (
+                  <>
+                    <div style={{ marginBottom: '0.75rem' }}>
+                      <p className="sectionEyebrow" style={{ margin: '0 0 0.2rem' }}>Access Anomalies</p>
+                      <p style={{ margin: 0, fontSize: '1.15rem', fontWeight: 700 }}>
+                        <span className={'pill pill-' + anomaly.tone} style={{ fontSize: '0.95rem' }}>{anomaly.value}</span>
+                      </p>
+                      <p className="muted" style={{ margin: '0.3rem 0 0', fontSize: '0.8rem' }}>{anomaly.detail}</p>
+                    </div>
+                    <div style={{ marginBottom: '0.75rem' }}>
+                      <p className="sectionEyebrow" style={{ margin: '0 0 0.2rem' }}>Change Safeguards</p>
+                      <p style={{ margin: 0 }}><span className={'pill pill-' + safeguard.tone}>{safeguard.value}</span></p>
+                      <p className="muted" style={{ margin: '0.3rem 0 0', fontSize: '0.8rem' }}>{safeguard.detail}</p>
+                    </div>
+                    {pending > 0 ? (
+                      <p style={{ margin: '0 0 0.6rem', fontSize: '0.82rem', color: '#fbbf24' }}>
+                        {pending} security change{pending === 1 ? '' : 's'} awaiting approval.{' '}
+                        <button className="btn btn-ghost" type="button" style={{ fontSize: '0.78rem', padding: '0.2rem 0.5rem' }} onClick={() => void openApprovals()}>Review approvals</button>
+                      </p>
+                    ) : null}
+                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      <button className="btn btn-ghost" type="button" onClick={() => void openAnomalies()} disabled={gov.summaryState !== 'loaded'}>View anomalies</button>
+                      <button className="btn btn-ghost" type="button" onClick={() => void openChangeLog()}>View change log →</button>
+                      {canManageSecurity ? (
+                        <button className="btn btn-secondary" type="button" onClick={() => void runEvaluation()} disabled={actionBusy}>{actionBusy ? 'Evaluating…' : 'Run evaluation'}</button>
+                      ) : null}
+                    </div>
+                  </>
+                );
+              })()}
             </SectionCard>
 
           </div>
+
+          {/* ---- Governance dialogs ---- */}
+          <GovernanceDialog open={dialog === 'policy'} title="Policy impact" onClose={() => setDialog(null)}>
+            {gov.posture ? (
+              <div>
+                <div style={{ display: 'flex', gap: '2rem', marginBottom: '1rem' }}>
+                  <div><p className="sectionEyebrow">Risk reduction</p><p style={{ fontSize: '1.3rem', fontWeight: 700, margin: 0 }}>{gov.posture.risk_reduction_percent}%</p></div>
+                  <div><p className="sectionEyebrow">Access risk</p><p style={{ margin: 0 }}><span className={'pill pill-' + riskPillVariant(gov.posture.access_risk)}>{accessRiskLabel(gov.posture, 'loaded')}</span></p></div>
+                  <div><p className="sectionEyebrow">Controls passing</p><p style={{ margin: 0 }}>{gov.posture.controls_passing} / {gov.posture.controls_total}</p></div>
+                </div>
+                <p className="sectionEyebrow">Controls evaluated</p>
+                <div style={{ overflowX: 'auto' }}>
+                  <table>
+                    <thead><tr><th>Control</th><th>Result</th><th>Evidence</th></tr></thead>
+                    <tbody>
+                      {gov.posture.controls.map((c) => (
+                        <tr key={c.key}>
+                          <td>{c.label}<span className="tableMeta">{c.detail}</span></td>
+                          <td><span className={'pill pill-' + (c.status === 'pass' ? 'success' : c.status === 'fail' ? 'danger' : c.status === 'attention' ? 'warning' : 'neutral')}>{c.status === 'unsupported' ? 'Unsupported' : c.status === 'unknown' ? 'Not evaluated' : c.status.charAt(0).toUpperCase() + c.status.slice(1)}</span></td>
+                          <td><span className="muted" style={{ fontSize: '0.78rem' }}>{c.evidence_source === 'configuration' ? 'Configuration' : c.evidence_source === 'access_evidence' ? 'Access evidence' : 'Unavailable'}</span></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {gov.posture.recommendations.length > 0 ? (
+                  <>
+                    <p className="sectionEyebrow" style={{ marginTop: '1rem' }}>Recommended actions</p>
+                    <ul style={{ fontSize: '0.85rem' }}>
+                      {gov.posture.recommendations.map((r) => (
+                        <li key={r.key} style={{ marginBottom: '0.35rem' }}><span className={'pill pill-' + riskPillVariant(r.severity)} style={{ marginRight: '0.4rem' }}>{r.severity}</span>{r.recommended_action}</li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+                <p className="muted" style={{ fontSize: '0.76rem', marginTop: '0.75rem' }}>Last evaluated: {gov.posture.last_evaluated_at ? new Date(gov.posture.last_evaluated_at).toLocaleString() : 'Not evaluated'} · Calculated: {new Date(gov.posture.calculated_at).toLocaleString()}</p>
+              </div>
+            ) : <p className="muted">Policy analysis unavailable.</p>}
+          </GovernanceDialog>
+
+          <GovernanceDialog open={dialog === 'changelog'} title="Change log" onClose={() => setDialog(null)} maxWidth={860}>
+            <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
+              {['all', 'critical', 'high', 'medium', 'low', 'pending', 'completed', 'rejected'].map((f) => (
+                <button key={f} type="button" className={'btn btn-ghost'} onClick={() => setChangeLog((p) => ({ ...p, filter: f }))}
+                  style={{ fontSize: '0.76rem', padding: '0.2rem 0.55rem', borderBottom: changeLog.filter === f ? '2px solid #3b82f6' : '2px solid transparent', textTransform: 'capitalize' }}>{f}</button>
+              ))}
+            </div>
+            {changeLog.state === 'loading' ? <p className="muted">Loading change log…</p>
+              : changeLog.state === 'error' ? <p role="alert" style={{ color: '#f87171' }}>Change log unavailable.</p>
+              : changeLog.state === 'permission_denied' ? <p className="muted">Requires security management permission.</p>
+              : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table>
+                    <thead><tr><th>Time</th><th>Actor</th><th>Change</th><th>Risk</th><th>Approval</th><th>Result</th><th>Source</th></tr></thead>
+                    <tbody>
+                      {changeLog.items
+                        .filter((it) => changeLog.filter === 'all'
+                          || (['critical', 'high', 'medium', 'low'].includes(changeLog.filter) && it.risk_level === changeLog.filter)
+                          || (['pending', 'completed', 'rejected'].includes(changeLog.filter) && it.approval === changeLog.filter))
+                        .map((it) => (
+                          <tr key={it.id}>
+                            <td><span className="muted" style={{ fontSize: '0.78rem' }}>{it.timestamp ? new Date(it.timestamp).toLocaleString() : '-'}</span></td>
+                            <td>{it.actor}</td>
+                            <td>{it.change}<span className="tableMeta">{it.target ?? ''}</span></td>
+                            <td><span className={'pill pill-' + riskPillVariant(it.risk_level)}>{it.risk_level}</span></td>
+                            <td><span className="muted" style={{ fontSize: '0.78rem' }}>{it.approval.replace('_', ' ')}</span></td>
+                            <td><span className="muted" style={{ fontSize: '0.78rem' }}>{it.result}</span></td>
+                            <td><span className="muted" style={{ fontSize: '0.78rem' }}>{it.source_ip ?? 'Current session'}</span></td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                  {changeLog.items.length === 0 ? <p className="muted" style={{ marginTop: '0.75rem' }}>No governance changes recorded yet.</p> : null}
+                </div>
+              )}
+          </GovernanceDialog>
+
+          <GovernanceDialog open={dialog === 'approvals'} title="Pending approvals" onClose={() => setDialog(null)} maxWidth={760}>
+            {approvals.state === 'loading' ? <p className="muted">Loading approvals…</p>
+              : approvals.state === 'error' ? <p role="alert" style={{ color: '#f87171' }}>Approvals unavailable.</p>
+              : approvals.state === 'permission_denied' ? <p className="muted">Requires security management permission.</p>
+              : approvals.items.length === 0 ? <p className="muted">No change requests.</p>
+              : (
+                <div style={{ display: 'grid', gap: '0.75rem' }}>
+                  {approvals.items.map((a) => (
+                    <article key={a.id} className="dataCard" style={{ margin: 0 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+                        <span className={'pill pill-' + riskPillVariant(a.risk_level)}>{a.risk_level}</span>
+                        <span className="muted" style={{ fontSize: '0.78rem' }}>{a.status}</span>
+                      </div>
+                      <p style={{ margin: '0.5rem 0 0.25rem', fontSize: '0.85rem' }}>{a.risk_reason}</p>
+                      <p className="muted" style={{ fontSize: '0.78rem', margin: 0 }}>
+                        Requested by {a.requested_by} · {a.requested_at ? new Date(a.requested_at).toLocaleString() : ''}
+                      </p>
+                      <p className="muted" style={{ fontSize: '0.78rem', margin: '0.25rem 0 0' }}>
+                        {JSON.stringify(a.before_value)} → {JSON.stringify(a.proposed_value)}
+                      </p>
+                      {a.status === 'pending' ? (
+                        <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.6rem' }}>
+                          <button className="btn btn-primary" type="button" disabled={actionBusy} onClick={() => void decideApproval(a.id, 'approve')}>Approve</button>
+                          <button className="btn btn-danger" type="button" disabled={actionBusy} onClick={() => void decideApproval(a.id, 'reject')}>Reject</button>
+                        </div>
+                      ) : a.status === 'completed' ? (
+                        <p className="muted" style={{ fontSize: '0.78rem', margin: '0.4rem 0 0' }}>Approved by {a.approved_by ?? 'authorized approver'} · executed {a.executed_at ? new Date(a.executed_at).toLocaleString() : ''}</p>
+                      ) : a.status === 'failed' ? (
+                        <p style={{ fontSize: '0.78rem', margin: '0.4rem 0 0', color: '#f87171' }}>Execution failed: {a.failure_reason}</p>
+                      ) : null}
+                    </article>
+                  ))}
+                </div>
+              )}
+          </GovernanceDialog>
+
+          <GovernanceDialog open={dialog === 'anomalies'} title="Access anomalies" onClose={() => setDialog(null)} maxWidth={760}>
+            {anomalies.state === 'loading' ? <p className="muted">Loading findings…</p>
+              : anomalies.state === 'error' ? <p role="alert" style={{ color: '#f87171' }}>Findings unavailable.</p>
+              : anomalies.state === 'permission_denied' ? <p className="muted">Requires security management permission.</p>
+              : anomalies.items.length === 0 ? <p className="muted">No access anomalies recorded. Run evaluation to check for new findings.</p>
+              : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table>
+                    <thead><tr><th>Severity</th><th>Type</th><th>Actor</th><th>Status</th><th>Last seen</th><th></th></tr></thead>
+                    <tbody>
+                      {anomalies.items.map((an) => (
+                        <tr key={an.id}>
+                          <td><span className={'pill pill-' + riskPillVariant(an.severity)}>{an.severity}</span></td>
+                          <td>{an.type.replace(/_/g, ' ')}</td>
+                          <td>{an.actor}</td>
+                          <td><span className="muted" style={{ fontSize: '0.78rem' }}>{an.status}</span></td>
+                          <td><span className="muted" style={{ fontSize: '0.78rem' }}>{an.last_seen_at ? new Date(an.last_seen_at).toLocaleString() : '-'}</span></td>
+                          <td><button className="btn btn-ghost" type="button" style={{ fontSize: '0.76rem', padding: '0.2rem 0.5rem' }} onClick={() => void openAnomalyDetail(an.id)}>Details</button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+          </GovernanceDialog>
+
+          <GovernanceDialog open={dialog === 'anomaly-detail'} title="Access anomaly" onClose={() => { setDialog('anomalies'); setAnomalyDetail(null); }}>
+            {anomalyDetail ? (
+              <div>
+                <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', marginBottom: '0.75rem' }}>
+                  <span className={'pill pill-' + riskPillVariant(anomalyDetail.severity)}>{anomalyDetail.severity}</span>
+                  <strong>{anomalyDetail.type.replace(/_/g, ' ')}</strong>
+                </div>
+                <FieldRow label="Actor" value={anomalyDetail.actor} />
+                <FieldRow label="Status" value={anomalyDetail.status} />
+                <FieldRow label="Confidence" value={anomalyDetail.confidence != null ? `${anomalyDetail.confidence}%` : '—'} />
+                <FieldRow label="First seen" value={anomalyDetail.first_seen_at ? new Date(anomalyDetail.first_seen_at).toLocaleString() : '-'} />
+                <FieldRow label="Last seen" value={anomalyDetail.last_seen_at ? new Date(anomalyDetail.last_seen_at).toLocaleString() : '-'} />
+                <p className="sectionEyebrow" style={{ marginTop: '0.75rem' }}>Evidence</p>
+                <pre style={{ fontSize: '0.76rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(anomalyDetail.evidence, null, 2)}</pre>
+                {anomalyDetail.recommended_actions && anomalyDetail.recommended_actions.length > 0 ? (
+                  <>
+                    <p className="sectionEyebrow">Recommended next action</p>
+                    <ul style={{ fontSize: '0.84rem' }}>{anomalyDetail.recommended_actions.map((a, i) => <li key={i}>{a}</li>)}</ul>
+                  </>
+                ) : null}
+                {canManageSecurity ? (
+                  <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem', flexWrap: 'wrap' }}>
+                    <button className="btn btn-secondary" type="button" disabled={actionBusy} onClick={() => void setAnomalyStatus(anomalyDetail.id, 'acknowledged')}>Acknowledge</button>
+                    <button className="btn btn-primary" type="button" disabled={actionBusy} onClick={() => void setAnomalyStatus(anomalyDetail.id, 'resolved')}>Mark resolved</button>
+                    <button className="btn btn-ghost" type="button" disabled={actionBusy} onClick={() => void setAnomalyStatus(anomalyDetail.id, 'dismissed')}>Dismiss</button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </GovernanceDialog>
+
+          <GovernanceDialog open={dialog === 'security'} title="Change security policy" onClose={() => { setDialog(null); setSecurityDraft(null); }}
+            footer={securityDraft ? (
+              <>
+                <button className="btn btn-ghost" type="button" onClick={() => { setDialog(null); setSecurityDraft(null); }}>Cancel</button>
+                <button className="btn btn-primary" type="button" disabled={actionBusy} onClick={() => void submitSecurityChange(securityDraft)}>Submit change</button>
+              </>
+            ) : undefined}>
+            {securityDraft ? (
+              <div>
+                <p className="muted" style={{ marginTop: 0, fontSize: '0.84rem' }}>
+                  Governance Guard classifies each security change. Weakening MFA enforcement or lengthening the session window is a sensitive change and will require a separate-duty approval before it takes effect — the current policy stays unchanged until then.
+                </p>
+                <label className="label" htmlFor="mfa-enforcement">MFA enforcement</label>
+                <select id="mfa-enforcement" value={securityDraft.mfa_enforcement}
+                  onChange={(e) => setSecurityDraft({ ...securityDraft, mfa_enforcement: e.target.value })}
+                  style={{ display: 'block', width: '100%', background: '#0d1117', border: '1px solid #30363d', borderRadius: 8, color: '#e6edf3', padding: '0.45rem 0.6rem', fontSize: '0.85rem', margin: '0.25rem 0 0.75rem' }}>
+                  <option value="optional">Optional</option>
+                  <option value="administrators">Administrators</option>
+                  <option value="all_members">All members</option>
+                </select>
+                <label className="label" htmlFor="session-window">Session timeout</label>
+                <select id="session-window" value={securityDraft.reauthentication_minutes}
+                  onChange={(e) => setSecurityDraft({ ...securityDraft, reauthentication_minutes: Number(e.target.value) })}
+                  style={{ display: 'block', width: '100%', background: '#0d1117', border: '1px solid #30363d', borderRadius: 8, color: '#e6edf3', padding: '0.45rem 0.6rem', fontSize: '0.85rem', margin: '0.25rem 0 0' }}>
+                  {(gov.security?.session_timeout_options ?? [{ value: 30, label: '30 minutes' }]).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+            ) : null}
+          </GovernanceDialog>
+
         </section>
       ) : null}
       
