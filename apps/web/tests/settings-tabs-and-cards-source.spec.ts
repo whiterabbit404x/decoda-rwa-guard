@@ -22,13 +22,17 @@ test('settings page exposes required top tabs and enterprise card sections backe
   expect(settings).toContain('Security Posture');
   expect(settings).toContain('Billing Status');
 
-  // General tab
-  expect(settings).toContain('Workspace Profile');
+  // General tab — reference-aligned Governance Guard cards (Screen 11):
+  // Workspace Settings, Security Settings, AI Policy Impact, Governance Guard.
+  expect(settings).toContain('Workspace Settings');
   expect(settings).toContain('Workspace Name');
   expect(settings).toContain('Workspace ID');
-  expect(settings).toContain('Workspace Defaults');
   expect(settings).toContain('Timezone');
   expect(settings).toContain('Currency');
+  expect(settings).toContain('Save Changes');
+  expect(settings).toContain('Security Settings');
+  expect(settings).toContain('AI Policy Impact');
+  expect(settings).toContain('Governance Guard');
 
   // Team tab
   expect(settings).toContain('Invite Member');

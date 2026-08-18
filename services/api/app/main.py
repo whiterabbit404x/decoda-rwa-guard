@@ -272,6 +272,7 @@ from services.api.app.pilot import (
     require_ops_rbac_guard,
     promote_wallet_transfer_alerts,
 )
+from services.api.app import governance as governance_guard
 from services.api.app.monitoring_runner import (
     backfill_missing_alerts_for_target,
     backfill_target_block_range,
@@ -3697,6 +3698,78 @@ def workspace_access_control(request: Request) -> dict[str, Any]:
 @app.put('/workspace/auth-policy', summary='Update workspace MFA and reauthentication policy')
 def workspace_auth_policy_update(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: update_workspace_auth_policy(payload, request))
+
+
+# --- Screen 11: Governance Guard ------------------------------------------------
+# General workspace settings (name/timezone/currency) with optimistic concurrency.
+@app.get('/workspace/settings', summary='Get general workspace settings')
+def workspace_settings_get(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: governance_guard.get_workspace_settings(request))
+
+
+@app.patch('/workspace/settings', summary='Update general workspace settings (version-guarded)')
+def workspace_settings_update(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: governance_guard.update_workspace_settings(payload, request))
+
+
+# Canonical security settings view + governance-aware security-policy change flow.
+@app.get('/workspace/security-settings', summary='Get canonical workspace security settings')
+def workspace_security_settings_get(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: governance_guard.get_security_settings(request))
+
+
+@app.post('/workspace/security-settings/change', summary='Submit a security-policy change (classified + approval-gated)')
+def workspace_security_settings_change(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: governance_guard.submit_security_policy_change(payload, request))
+
+
+# Policy Impact posture + Governance Guard summary (read-only, deterministic).
+@app.get('/workspace/governance/posture', summary='Deterministic security posture (Policy Impact)')
+def governance_posture_get(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: governance_guard.get_policy_posture(request))
+
+
+@app.get('/workspace/governance/summary', summary='Governance Guard summary (anomalies + safeguards)')
+def governance_summary_get(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: governance_guard.get_governance_summary(request))
+
+
+# Access anomalies (read + status changes; NO writes on GET).
+@app.get('/workspace/governance/anomalies', summary='List access-anomaly findings')
+def governance_anomalies_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: governance_guard.list_governance_anomalies(request))
+
+
+@app.get('/workspace/governance/anomalies/{anomaly_id}', summary='Get an access-anomaly finding')
+def governance_anomaly_get(anomaly_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: governance_guard.get_governance_anomaly(anomaly_id, request))
+
+
+@app.post('/workspace/governance/anomalies/{anomaly_id}/status', summary='Acknowledge/resolve/dismiss an anomaly')
+def governance_anomaly_status(anomaly_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: governance_guard.update_governance_anomaly_status(anomaly_id, payload, request))
+
+
+# Change log (backed by canonical audit_logs) + pending-approval workflow.
+@app.get('/workspace/governance/changes', summary='Governance change log (from audit_logs)')
+def governance_changes_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: governance_guard.list_governance_changes(request))
+
+
+@app.get('/workspace/governance/approvals', summary='List governance change-request approvals')
+def governance_approvals_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: governance_guard.list_governance_approvals(request))
+
+
+@app.post('/workspace/governance/approvals/{request_id}/decision', summary='Approve or reject a change request')
+def governance_approval_decision(request_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: governance_guard.decide_governance_approval(request_id, payload, request))
+
+
+# Explicit anomaly evaluation — the ONLY write path for governance_anomalies.
+@app.post('/workspace/governance/evaluate', summary='Run deterministic access-anomaly evaluation')
+def governance_evaluate(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: governance_guard.evaluate_governance(request))
 
 
 @app.get('/workspace/sso/oidc', summary='Get workspace OIDC configuration')

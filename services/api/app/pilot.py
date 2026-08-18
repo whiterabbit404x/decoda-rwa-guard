@@ -4550,7 +4550,25 @@ def update_workspace_member(member_id: str, payload: dict[str, Any], request: Re
             if int((owner_count or {}).get('count') or 0) <= 1:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Workspace must keep at least one owner.')
         connection.execute('UPDATE workspace_members SET role = %s WHERE id = %s', (role, member_id))
-        log_audit(connection, action='member.role_update', entity_type='workspace_member', entity_id=member_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'role': role})
+        # Governance Guard evidence: record BOTH previous_role and new_role (and the
+        # target user) so privilege-escalation / role-change anomaly detection and the
+        # change log have truthful before→after evidence. ``role`` is retained for
+        # backward compatibility with any existing consumers of this audit metadata.
+        log_audit(
+            connection,
+            action='member.role_update',
+            entity_type='workspace_member',
+            entity_id=member_id,
+            request=request,
+            user_id=user['id'],
+            workspace_id=workspace_context['workspace_id'],
+            metadata={
+                'role': role,
+                'previous_role': current_role,
+                'new_role': role,
+                'target_user_id': str(row['user_id']),
+            },
+        )
         connection.commit()
         return {'id': member_id, 'role': role}
 
