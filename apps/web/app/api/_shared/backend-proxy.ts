@@ -22,7 +22,7 @@ function jsonError(status: number, body: Record<string, unknown>): Response {
 export type BackendProxyOptions = {
   /** Backend path beginning with a slash, e.g. '/alerts' or '/alerts/open-from-detection'. */
   backendPath: string;
-  method: 'GET' | 'POST' | 'PATCH';
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
   /** Query params forwarded verbatim to the backend (used by the list endpoint filters). */
   searchParams?: URLSearchParams;
   /** Forward the JSON request body (POST/PATCH). */

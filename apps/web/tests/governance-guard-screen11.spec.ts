@@ -109,15 +109,23 @@ test('risk pill variants map severity to colour tokens', () => {
 
 // --- Wiring: real backend calls, no fabricated data ---------------------------
 
-test('general tab wires the governance backend endpoints (read-only on load)', () => {
+test('governance load wires the four read-only backend endpoints (fetchGovernanceState)', () => {
+  // The four on-load GETs live in the pure, unit-tested fetchGovernanceState() so the
+  // truthful state machine is testable independently of React. They must all be present.
   for (const ep of [
     "call('/workspace/settings')",
     "call('/workspace/security-settings')",
     "call('/workspace/governance/posture')",
     "call('/workspace/governance/summary')",
   ]) {
-    expect(settings).toContain(ep);
+    expect(viewModel).toContain(ep);
   }
+});
+
+test('settings page delegates the on-load governance read to fetchGovernanceState', () => {
+  // The page must call the shared pure loader (which always resolves to a terminal state)
+  // rather than mapping statuses inline, so no card can be left spinning by an early return.
+  expect(settings).toContain('fetchGovernanceState({ hasWorkspace, call })');
 });
 
 test('workspace settings save is version-guarded with 409 conflict handling', () => {
