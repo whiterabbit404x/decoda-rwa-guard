@@ -73,6 +73,23 @@ _PROVIDER_TYPE_HINTS: list[tuple[tuple[str, ...], str]] = [
 _WEBHOOK_HEALTHY_SUCCESS_RATE = 0.95   # >= 95% recent success = healthy
 _WEBHOOK_DEGRADED_SUCCESS_RATE = 0.80  # 80–95% = degraded
 
+# Evidence signals for an observation whose latency was NOT meaningfully measured —
+# a skipped probe, an active provider backoff, a rate-limit, or a hard
+# provider-unavailable/error condition. Legacy failed rows persisted latency_ms = 0
+# as a placeholder under these conditions; a stored 0 here means "no measurement",
+# never a real 0 ms round trip, so it must render as "—" not "0 ms" (§5/§7/§28).
+_UNMEASURED_LATENCY_EVIDENCE: tuple[str, ...] = (
+    'provider_backoff_active',
+    'backoff',
+    'rate_limited',
+    'rate_limit',
+    'probe_skipped',
+    'skipped',
+    'provider_unavailable',
+    'unavailable',
+    'cache_hit',
+)
+
 
 def _as_aware(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
@@ -123,6 +140,47 @@ def _title_case_host(host: str) -> str:
                 return part.capitalize()
     token = parts[0] if parts else label
     return token[:1].upper() + token[1:] if token else label
+
+
+def _effective_latency_ms(
+    *, latency_ms: Any, status: str, backoff: bool,
+    degraded_reason: Any, evidence_source: Any,
+) -> Any:
+    """Evidence-aware latency normalization for the Screen-10 read model (§5/§7/§28).
+
+    Rules:
+      * A missing latency stays ``None`` (the frontend renders "—").
+      * A non-zero measured latency is passed through UNCHANGED — never discarded.
+      * A stored ``latency_ms == 0`` is only meaningful for a HEALTHY / measured
+        success. For an observation that was skipped or never meaningfully measured
+        (provider backoff, rate limit, skipped probe, provider unavailable / error →
+        Screen-10 disconnected/degraded/unknown), a persisted ``0`` is a placeholder
+        for "no measurement" and is normalized to ``None`` so the operator sees "—",
+        not a misleading "0 ms".
+
+    This is deliberately NOT a blanket "every 0 → None": a legitimate ``0`` on a
+    healthy observation is preserved. Only evidence-indicated unmeasured zeros —
+    legacy persisted rows and non-success observations — become ``None``.
+    """
+    if latency_ms is None:
+        return None
+    try:
+        value = float(latency_ms)
+    except (TypeError, ValueError):
+        return None
+    if value != 0:
+        return latency_ms
+    # value == 0: keep only for a healthy/measured success; otherwise it is an
+    # unmeasured placeholder and must render as unavailable.
+    reason_text = ' '.join(
+        str(part or '') for part in (status, degraded_reason, evidence_source)
+    ).lower()
+    unmeasured = (
+        bool(backoff)
+        or status in {PROVIDER_STATUS_DISCONNECTED, PROVIDER_STATUS_DEGRADED, PROVIDER_STATUS_UNKNOWN}
+        or any(signal in reason_text for signal in _UNMEASURED_LATENCY_EVIDENCE)
+    )
+    return None if unmeasured else latency_ms
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +277,16 @@ def build_provider_rows(
             # Prefer the canonical aggregate's timestamp/latency; fall back to the
             # freshest per-source values folded above.
             'last_check_at': canonical.get('checked_at') or bucket['last_checked_at'],
-            'latency_ms': canonical.get('latency_ms') if canonical.get('latency_ms') is not None else bucket['latency_ms'],
+            # Evidence-aware: a persisted latency_ms == 0 from a skipped/backoff/
+            # unavailable observation was never measured and renders as "—", never
+            # "0 ms". A real measured latency is always passed through unchanged.
+            'latency_ms': _effective_latency_ms(
+                latency_ms=(canonical.get('latency_ms') if canonical.get('latency_ms') is not None else bucket['latency_ms']),
+                status=status,
+                backoff=bucket['backoff'],
+                degraded_reason=bucket['degraded_reason'],
+                evidence_source=canonical.get('evidence_source') or bucket['evidence_source'],
+            ),
             'evidence_source': canonical.get('evidence_source') or bucket['evidence_source'],
             'degraded_reason': bucket['degraded_reason'],
             # Credential age is NOT measured for RPC providers in canonical storage;

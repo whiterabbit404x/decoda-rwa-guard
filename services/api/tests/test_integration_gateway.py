@@ -377,6 +377,49 @@ def test_provider_row_latency_is_null_when_unmeasured_never_zero():
     assert rows[0]['latency_ms'] is None
 
 
+def test_legacy_zero_latency_from_provider_backoff_normalizes_to_unavailable():
+    """Screen-10 cleanup: a persisted failed observation with latency_ms == 0 from a
+    provider-backoff / unavailable condition never measured latency. The read model
+    normalizes that legacy 0 to None so the operator sees "—", never "0 ms" — WITHOUT
+    a new live health check. Mirrors the reported Alchemy Disconnected / 0 ms row."""
+    sources = [{'provider': 'alchemy', 'primary_provider': 'alchemy', 'status': 'provider_unavailable',
+                'status_reason': 'provider_backoff_active', 'provider_backoff_active': True,
+                'network': 'Base Mainnet', 'chain_id': 8453, 'is_oracle': False,
+                'successful_latency_ms': None}]
+    # Legacy persisted failed record: status unavailable, latency_ms = 0 (placeholder).
+    ph = _provider_health([{'host': 'alchemy', 'status': 'unavailable', 'latency_ms': 0,
+                            'checked_at': NOW_ISO, 'evidence_source': 'replay', 'target_count': 1}])
+    rows = ig.build_provider_rows(sources=sources, provider_health=ph)
+    assert rows[0]['status'] == 'disconnected'
+    # 0 ms from an unmeasured/backoff observation → None. The frontend fmtLatency()
+    # renders None as "—" (proven in apps/web/tests/integrations-screen10.spec.ts),
+    # so the operator never sees a misleading "0 ms".
+    assert rows[0]['latency_ms'] is None
+
+
+def test_successful_probe_latency_is_preserved_and_rendered_ms():
+    """The complementary truth: a real measured latency (125 ms) is NEVER discarded —
+    it is passed through unchanged and rendered as "125 ms"."""
+    sources = [{'provider': 'alchemy', 'operational_primary_provider': 'alchemy', 'primary_provider': 'alchemy',
+                'status': 'healthy', 'network': 'Base Mainnet', 'chain_id': 8453, 'is_oracle': False,
+                'provider_checked_at': NOW_ISO, 'successful_latency_ms': 125, 'evidence_source': 'live'}]
+    ph = _provider_health([{'host': 'alchemy', 'status': 'healthy', 'latency_ms': 125,
+                            'checked_at': NOW_ISO, 'evidence_source': 'live', 'target_count': 1}])
+    rows = ig.build_provider_rows(sources=sources, provider_health=ph)
+    assert rows[0]['status'] == 'healthy'
+    # A real measured 125 is preserved; frontend fmtLatency() renders it "125 ms".
+    assert rows[0]['latency_ms'] == 125
+
+
+def test_healthy_zero_latency_is_not_blindly_nulled():
+    """Guard against over-reach: a legitimate 0 on a HEALTHY/measured observation is
+    preserved — normalization is evidence-aware, not a blanket every-zero → None."""
+    row = ig._effective_latency_ms(
+        latency_ms=0, status='healthy', backoff=False,
+        degraded_reason=None, evidence_source='live')
+    assert row == 0
+
+
 # ---------------------------------------------------------------------------
 # Scenario G: ONE canonical provider state -> semantically compatible Screen 4 vs
 # Screen 10 output. Never "healthy on one screen, disconnected on another".
