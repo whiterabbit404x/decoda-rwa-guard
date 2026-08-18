@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fmtLatency } from '../app/(product)/integration-gateway-types';
 
 // Screen 10 was rebuilt into the Integration Gateway control plane. These source-grep
 // tests pin the NEW contract: a real GET read model, a real Run Health Check mutation,
@@ -15,6 +16,18 @@ const types = fs.readFileSync(typesPath, 'utf-8');
 
 test('integrations route client exports a page component', () => {
   expect(src).toContain('export default function IntegrationsPageClient');
+});
+
+// Screen-10 cleanup: unavailable latency must render as "—", never a misleading "0 ms".
+// The read model normalizes an unmeasured/backoff latency_ms=0 to null (see
+// services/api/tests/test_integration_gateway.py); the UI must render that null as "—".
+test('fmtLatency renders unavailable latency as an em-dash, never "0 ms"', () => {
+  expect(fmtLatency(null)).toBe('—');
+  expect(fmtLatency(undefined)).toBe('—');
+});
+
+test('fmtLatency renders a real measured latency in ms', () => {
+  expect(fmtLatency(125)).toBe('125 ms');
 });
 
 test('integrations title and subtitle exist', () => {
