@@ -17,6 +17,8 @@ import {
   anomalyStateLabel,
   changeSafeguardLabel,
   emptyGovernanceState,
+  fetchGovernanceState,
+  loadStateFor,
   posturePercentLabel,
   riskPillVariant,
 } from './governance-view-model';
@@ -155,7 +157,12 @@ function maskId(value?: string | null): string {
 }
 
 export default function SettingsPageClient() {
-  const { apiUrl, authHeaders, csrfReady, error, liveModeConfigured, loading, refreshCsrfToken, user } = usePilotAuth();
+  // NOTE: customer-facing reads/writes go through the SAME-ORIGIN Next proxy (/api/*),
+  // never the browser-exposed apiUrl. The proxy resolves the backend base URL server-side
+  // (API_URL) — the same canonical transport /auth/me uses — so these calls do not depend
+  // on NEXT_PUBLIC_API_URL being set or on the backend being reachable/CORS-open from the
+  // browser. See app/api/_shared/backend-proxy.ts.
+  const { authHeaders, csrfReady, error, liveModeConfigured, loading, refreshCsrfToken, user } = usePilotAuth();
   const [members, setMembers] = useState<Member[]>([]);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [plans, setPlans] = useState<Array<{ plan_key: string; plan_name: string; max_members: number }>>([]);
@@ -196,8 +203,12 @@ export default function SettingsPageClient() {
     if (resolvedWorkspace?.name) setWsName(resolvedWorkspace.name);
   }, [resolvedWorkspace?.name]);
 
+  // All settings/governance traffic goes through the same-origin proxy at /api/<path>.
+  // authHeaders() carries Authorization + X-Workspace-Id (and X-CSRF-Token once ready);
+  // the proxy forwards them to the backend and preserves its status code. GET reads never
+  // require CSRF; mutations call ensureCsrf() first so the token is present to forward.
   async function call(path: string, init?: RequestInit) {
-    return fetch(`${apiUrl}${path}`, { cache: 'no-store', ...init, headers: { ...(init?.headers ?? {}), ...authHeaders() } });
+    return fetch(`/api${path}`, { cache: 'no-store', ...init, headers: { ...(init?.headers ?? {}), ...authHeaders() } });
   }
 
   // A state-changing governance request needs the anti-CSRF token bootstrapped.
@@ -208,68 +219,63 @@ export default function SettingsPageClient() {
     }
   }
 
-  // Map an HTTP status to a governance LoadState (permission_denied vs error).
-  function loadStateFor(status: number): LoadState {
-    if (status === 200) return 'loaded';
-    if (status === 401 || status === 403) return 'permission_denied';
-    return 'error';
-  }
+  // loadStateFor() lives in governance-view-model.ts (single source of truth) and is
+  // imported above; the dialog loaders below reuse it for the same 200 / 401-403 / error mapping.
 
   async function loadAll() {
-    if (!apiUrl || !resolvedWorkspace?.id) return;
-    const [membersRes, inviteRes, seatsRes, subscriptionRes, plansRes, readinessRes] = await Promise.all([
-      call('/workspace/members'),
-      call('/workspace/invitations'),
-      call('/team/seats'),
-      call('/billing/subscription'),
-      call('/billing/plans'),
-      call('/system/readiness'),
-    ]);
-    if (membersRes.ok) setMembers((await membersRes.json()).members ?? []);
-    if (inviteRes.ok) setInvitations((await inviteRes.json()).invitations ?? []);
-    if (seatsRes.ok) setSeatSummary(await seatsRes.json());
-    if (subscriptionRes.ok) {
-      const payload = await subscriptionRes.json();
-      setSubscription(payload.subscription ?? null);
-      setBillingRuntime(payload.billing ?? { provider: 'none', available: false });
+    if (!resolvedWorkspace?.id) return;
+    try {
+      const [membersRes, inviteRes, seatsRes, subscriptionRes, plansRes, readinessRes] = await Promise.all([
+        call('/workspace/members'),
+        call('/workspace/invitations'),
+        call('/team/seats'),
+        call('/billing/subscription'),
+        call('/billing/plans'),
+        call('/system/readiness'),
+      ]);
+      if (membersRes.ok) setMembers((await membersRes.json()).members ?? []);
+      if (inviteRes.ok) setInvitations((await inviteRes.json()).invitations ?? []);
+      if (seatsRes.ok) setSeatSummary(await seatsRes.json());
+      if (subscriptionRes.ok) {
+        const payload = await subscriptionRes.json();
+        setSubscription(payload.subscription ?? null);
+        setBillingRuntime(payload.billing ?? { provider: 'none', available: false });
+      }
+      if (plansRes.ok) setPlans((await plansRes.json()).plans ?? []);
+      if (readinessRes.ok) setReadiness(await readinessRes.json());
+    } catch {
+      // Transport failure: leave the per-section empty states ("No team members loaded",
+      // "Not Configured") in place rather than fabricating data. Never throws out of the effect.
     }
-    if (plansRes.ok) setPlans((await plansRes.json()).plans ?? []);
-    if (readinessRes.ok) setReadiness(await readinessRes.json());
   }
 
-  useEffect(() => { void loadAll(); }, [apiUrl, resolvedWorkspace?.id]);
+  useEffect(() => { if (loading) return; void loadAll(); }, [loading, resolvedWorkspace?.id]);
 
-  // Governance Guard: read-only load of settings, security policy, posture, and
-  // summary. A page load / refresh performs GETs only — it never evaluates or
-  // persists anomalies as a side effect.
+  // Governance Guard: read-only load of settings, security policy, posture, and summary.
+  // A page load / refresh performs GETs only — it never evaluates or persists anomalies as a
+  // side effect. The state machine (workspace guard, per-endpoint permission_denied vs error,
+  // fail-closed transport handling) lives in fetchGovernanceState() so it is unit-tested
+  // independently of React and ALWAYS resolves to a terminal state — a read/no-admin user can
+  // never leave a card stuck on 'loading' via an early return, and a failed/forbidden read is
+  // rendered as an explicit Unavailable/Restricted state rather than a spinner.
   async function loadGovernance() {
-    if (!apiUrl || !resolvedWorkspace?.id) return;
-    const [settingsRes, securityRes, postureRes, summaryRes] = await Promise.all([
-      call('/workspace/settings'),
-      call('/workspace/security-settings'),
-      call('/workspace/governance/posture'),
-      call('/workspace/governance/summary'),
-    ]);
-    const next = emptyGovernanceState();
-    next.settingsState = loadStateFor(settingsRes.status);
-    if (settingsRes.ok) {
-      const s = await settingsRes.json();
-      next.settings = s;
+    if (hasWorkspace) setGov(emptyGovernanceState());
+    const next = await fetchGovernanceState({ hasWorkspace, call });
+    setGov(next);
+    // Seed the editable General-form fields from the canonical settings payload (read path).
+    const s = next.settings;
+    if (s) {
       setSettingsVersion(Number(s.version ?? 1));
       if (typeof s.timezone === 'string') setTimezone(s.timezone);
       if (typeof s.currency === 'string') setCurrency(s.currency);
       if (typeof s.name === 'string' && s.name) setWsName(s.name);
     }
-    next.securityState = loadStateFor(securityRes.status);
-    if (securityRes.ok) next.security = await securityRes.json();
-    next.postureState = loadStateFor(postureRes.status);
-    if (postureRes.ok) next.posture = await postureRes.json();
-    next.summaryState = loadStateFor(summaryRes.status);
-    if (summaryRes.ok) next.summary = await summaryRes.json();
-    setGov(next);
   }
 
-  useEffect(() => { void loadGovernance(); }, [apiUrl, resolvedWorkspace?.id]);
+  // Re-run whenever auth finishes resolving OR the active workspace changes, so a workspace
+  // switch retriggers every Screen 11 read. Gated on `loading` so we wait for the session
+  // before deciding "no workspace" (which is an explicit unavailable state, not a spinner).
+  useEffect(() => { if (loading) return; void loadGovernance(); }, [loading, resolvedWorkspace?.id]);
 
   const settingsDirty = Boolean(
     gov.settings &&
@@ -460,7 +466,7 @@ export default function SettingsPageClient() {
   async function inviteMember() {
     const emailErr = validateInviteEmail(inviteEmail);
     setInviteEmailError(emailErr);
-    if (!apiUrl || emailErr) return;
+    if (!hasWorkspace || emailErr) return;
     setSubmitting(true);
     const res = await call('/workspace/invitations', {
       method: 'POST',
@@ -1007,7 +1013,7 @@ export default function SettingsPageClient() {
                   title="No team members loaded"
                   message="Team membership data is unavailable or not configured for this workspace."
                   action="Invite Member"
-                  disabled={!apiUrl}
+                  disabled={!hasWorkspace}
                 />
               ) : (
                 <DataTable headers={TEAM_MEMBER_HEADERS}>

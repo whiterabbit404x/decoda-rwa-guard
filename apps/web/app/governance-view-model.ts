@@ -145,6 +145,76 @@ export function emptyGovernanceState(): GovernanceState {
   };
 }
 
+// Map an HTTP status to a governance LoadState. A read is authorized-but-forbidden
+// (permission_denied) ONLY on an explicit 401/403 from the backend; every other
+// non-200 is a hard error. Reads and writes are never conflated here: this is driven
+// purely by the READ response, so a user who lacks write permission still resolves to
+// 'loaded' whenever the backend served the row (with can_manage=false inside it).
+export function loadStateFor(status: number): LoadState {
+  if (status === 200) return 'loaded';
+  if (status === 401 || status === 403) return 'permission_denied';
+  return 'error';
+}
+
+// Build a governance state where every card carries the SAME deterministic terminal
+// state. Used for the two "no read could possibly have succeeded" cases — no workspace
+// in scope, and a transport failure — so a card is never left spinning on 'loading'.
+export function governanceTerminalState(state: Extract<LoadState, 'permission_denied' | 'error'>): GovernanceState {
+  return {
+    settings: null,
+    settingsState: state,
+    security: null,
+    securityState: state,
+    posture: null,
+    postureState: state,
+    summary: null,
+    summaryState: state,
+  };
+}
+
+export type GovernanceCallResult = { status: number; ok: boolean; json: () => Promise<any> };
+export type GovernanceCall = (path: string) => Promise<GovernanceCallResult>;
+
+// Read-only Governance Guard load (Screen 11), extracted as a pure function so the
+// truthful state machine is unit-testable independently of React. It performs the four
+// on-load GETs via the injected same-origin `call` and is deterministic + fail-closed:
+//
+//   * no workspace in scope       -> every card 'error' (Unavailable); NO request is made
+//   * any read throws (transport) -> every card 'error' (Unavailable); never left 'loading'
+//   * a per-endpoint 401/403      -> that card 'permission_denied' (Restricted)
+//   * a 200                       -> that card 'loaded' from the backend payload
+//
+// The returned state NEVER contains 'loading', so an effect that calls this can never
+// leave a card spinning by exiting early — the load always resolves to a terminal state.
+// GETs only: no CSRF token is required or sent for reads.
+export async function fetchGovernanceState(params: { hasWorkspace: boolean; call: GovernanceCall }): Promise<GovernanceState> {
+  if (!params.hasWorkspace) {
+    // Missing workspace is an explicit "unavailable" — not a spinner, and not "safe".
+    return governanceTerminalState('error');
+  }
+  try {
+    const [settingsRes, securityRes, postureRes, summaryRes] = await Promise.all([
+      params.call('/workspace/settings'),
+      params.call('/workspace/security-settings'),
+      params.call('/workspace/governance/posture'),
+      params.call('/workspace/governance/summary'),
+    ]);
+    const next = emptyGovernanceState();
+    next.settingsState = loadStateFor(settingsRes.status);
+    if (settingsRes.ok) next.settings = await settingsRes.json();
+    next.securityState = loadStateFor(securityRes.status);
+    if (securityRes.ok) next.security = await securityRes.json();
+    next.postureState = loadStateFor(postureRes.status);
+    if (postureRes.ok) next.posture = await postureRes.json();
+    next.summaryState = loadStateFor(summaryRes.status);
+    if (summaryRes.ok) next.summary = await summaryRes.json();
+    return next;
+  } catch {
+    // Transport / parse failure: fail closed to an explicit error state on every card.
+    return governanceTerminalState('error');
+  }
+}
+
 export type PillTone = 'success' | 'warning' | 'danger' | 'info' | 'neutral';
 
 export function riskPillVariant(risk: string): PillTone {
