@@ -9972,7 +9972,21 @@ def ensure_monitored_system_for_target(
             asset_id = EXCLUDED.asset_id,
             chain = EXCLUDED.chain,
             is_enabled = TRUE,
+            -- CONFIGURATION vs OPERATIONAL state are separate concepts (§4/§6). This
+            -- upsert is a CONFIGURATION reconcile: it (re)links the target and asserts
+            -- the system is enabled/configured. It MUST NOT fabricate a healthier
+            -- OPERATIONAL verdict than the evidence supports, and MUST NOT erase a fresh
+            -- operational FAILURE — a successful reconcile is never proof that an external
+            -- provider recovered (§5). Provider recovery is proven only by a fresh
+            -- successful poll/diagnostic (which writes runtime_status='healthy'), never by
+            -- re-running config reconcile. So an existing operational failure verdict
+            -- ('failed'/'degraded' — the vocabulary the worker/diagnostic write) is
+            -- PRESERVED here, symmetric with how a fresh 'healthy' verdict is preserved.
+            -- Legacy/benign states ('idle'/'provisioning'/'error'/'disabled'/NULL) still
+            -- reset to 'idle' so a re-enabled target starts cleanly awaiting its first poll.
             runtime_status = CASE
+                WHEN monitored_systems.runtime_status IN ('failed', 'degraded')
+                    THEN monitored_systems.runtime_status
                 WHEN monitored_systems.runtime_status = 'healthy'
                      AND monitored_systems.last_heartbeat IS NOT NULL
                      AND monitored_systems.last_heartbeat >= NOW() - INTERVAL '10 minutes' THEN 'healthy'
@@ -9980,21 +9994,31 @@ def ensure_monitored_system_for_target(
             END,
             status = 'active',
             freshness_status = CASE
+                WHEN monitored_systems.runtime_status IN ('failed', 'degraded')
+                    THEN monitored_systems.freshness_status
                 WHEN monitored_systems.last_heartbeat IS NOT NULL
                      AND monitored_systems.last_heartbeat >= NOW() - INTERVAL '10 minutes' THEN 'fresh'
                 ELSE 'unavailable'
             END,
             confidence_status = CASE
+                WHEN monitored_systems.runtime_status IN ('failed', 'degraded')
+                    THEN monitored_systems.confidence_status
                 WHEN monitored_systems.last_heartbeat IS NOT NULL
                      AND monitored_systems.last_heartbeat >= NOW() - INTERVAL '10 minutes' THEN 'medium'
                 ELSE 'unavailable'
             END,
             coverage_reason = CASE
+                WHEN monitored_systems.runtime_status IN ('failed', 'degraded')
+                    THEN monitored_systems.coverage_reason
                 WHEN monitored_systems.last_heartbeat IS NOT NULL
                      AND monitored_systems.last_heartbeat >= NOW() - INTERVAL '10 minutes' THEN NULL
                 ELSE 'waiting_for_runtime_telemetry'
             END,
-            last_error_text = NULL
+            last_error_text = CASE
+                WHEN monitored_systems.runtime_status IN ('failed', 'degraded')
+                    THEN monitored_systems.last_error_text
+                ELSE NULL
+            END
         RETURNING id
         ''',
         (str(uuid.uuid4()), target_workspace_id, resolved_asset_id, target_id, normalized_chain),
@@ -10003,7 +10027,11 @@ def ensure_monitored_system_for_target(
         '''
         UPDATE targets
         SET last_run_status = 'ready',
-            watcher_degraded_reason = NULL,
+            watcher_degraded_reason = CASE
+                WHEN watcher_degraded_reason = 'provider_backoff_active'
+                    THEN watcher_degraded_reason
+                ELSE NULL
+            END,
             updated_at = NOW()
         WHERE id = %s::uuid
         ''',
@@ -13645,9 +13673,17 @@ def _diagnostic_probe(rpc_url: str, *, address: str | None, is_contract: bool) -
     """Timed, bounded RPC probe against a single provider URL.
 
     Runs eth_chainId + eth_blockNumber (via the shared probe) and, for a contract
-    target, eth_getCode to confirm deployed bytecode. Measures wall-clock latency.
-    Never raises — a failure is returned as ``ok=False`` with a short error string so
-    the caller can record truthful degraded/error evidence.
+    target, eth_getCode to confirm deployed bytecode. Measures wall-clock latency for a
+    probe that actually hit the network. Never raises — a failure is returned as
+    ``ok=False`` with a short error string so the caller can record truthful
+    degraded/error evidence.
+
+    Skipped-probe truthfulness (§7): when the process-wide RPC backoff (a recent 429)
+    is active, ``probe_rpc_health`` short-circuits WITHOUT any network call and replays
+    the last known health tagged ``cache_hit`` / ``provider_backoff_active``. No live
+    RPC executed, so there is no measured latency: ``latency_ms`` MUST be ``None`` (never
+    the ~0 ms wall-clock of the cache read) and the result is flagged ``skipped`` so the
+    caller classifies it as a rate-limited DEGRADED observation, not a fresh failure.
     """
     from services.api.app.evm_activity_provider import probe_rpc_health, rpc_caller_scope, JsonRpcClient
 
@@ -13658,14 +13694,18 @@ def _diagnostic_probe(rpc_url: str, *, address: str | None, is_contract: bool) -
     except Exception as exc:  # pragma: no cover - defensive
         return {
             'ok': False, 'latency_ms': None, 'chain_id': None, 'latest_block': None,
-            'bytecode_present': None, 'error': str(exc)[:200],
+            'bytecode_present': None, 'error': str(exc)[:200], 'skipped': False,
         }
-    latency_ms = int(round((monotonic() - started) * 1000))
+    # A backoff replay performed NO network I/O — the elapsed time is a cache read, not a
+    # provider round-trip. Report latency as unmeasured (None) and mark the probe skipped.
+    probe_skipped = bool(health.get('provider_backoff_active') or health.get('cache_hit'))
+    latency_ms = None if probe_skipped else int(round((monotonic() - started) * 1000))
     if not health.get('ok'):
         return {
             'ok': False, 'latency_ms': latency_ms,
             'chain_id': health.get('chain_id_int'), 'latest_block': health.get('block_number_int'),
             'bytecode_present': None, 'error': str(health.get('error') or 'rpc_unavailable')[:200],
+            'skipped': probe_skipped,
         }
     bytecode_present: bool | None = None
     if is_contract and address:
@@ -13679,7 +13719,7 @@ def _diagnostic_probe(rpc_url: str, *, address: str | None, is_contract: bool) -
     return {
         'ok': True, 'latency_ms': latency_ms,
         'chain_id': health.get('chain_id_int'), 'latest_block': health.get('block_number_int'),
-        'bytecode_present': bytecode_present, 'error': None,
+        'bytecode_present': bytecode_present, 'error': None, 'skipped': probe_skipped,
     }
 
 
@@ -13821,21 +13861,60 @@ def _diagnose_target(
 
     # Truthful status: healthy only when reachable AND on the right chain AND (for a
     # contract) bytecode is not definitively absent. Reachable-but-wrong is degraded;
-    # unreachable is error. Never healthy without a real successful observation.
+    # a genuinely unreachable endpoint is error. Never healthy without a real successful
+    # observation.
+    #
+    # ONE canonical rate-limit definition (§8): a probe SKIPPED because the process-wide
+    # RPC backoff is active (a recent 429) is a TEMPORARY rate-limit impairment, not a
+    # connection failure — we deliberately did not dial the provider. The canonical
+    # scheduled-worker policy already records a backoff-skipped poll as ``degraded``
+    # (source_status/provider_status='degraded', degraded_reason='provider_backoff_active');
+    # the diagnostic MUST agree so Screens 4/10/12 never disagree on the same 429 evidence
+    # (one shows Degraded, another Disconnected). A genuine all-providers-unreachable
+    # outage still raises/records ``error`` -> Disconnected, so that policy is preserved.
     reachable = bool(probe.get('ok'))
+    probe_skipped = bool(probe.get('skipped'))
+    # A skipped probe made NO fresh network observation (it replayed cache under backoff),
+    # so it is NEVER a fresh success — even if the replayed snapshot itself was ``ok``.
+    # This keeps a backoff skip from being counted as a recovery (§5): recovery requires
+    # a real successful observation, not a replayed one.
+    observed_success = reachable and not probe_skipped
     contract_bytecode_absent = bool(is_contract and probe.get('bytecode_present') is False)
-    if not reachable:
+    if probe_skipped:
+        provider_health_status = 'degraded'
+    elif not reachable:
         provider_health_status = 'error'
     elif not chain_id_ok or contract_bytecode_absent:
         provider_health_status = 'degraded'
     else:
         provider_health_status = 'healthy'
-    evidence_source = 'live' if reachable else 'none'
+    # A skipped probe replays the last-known health from cache — that is REPLAY evidence,
+    # never fresh live evidence, and never a hard 'none' (replay wins over reachability).
+    if probe_skipped:
+        evidence_source = 'replay'
+    elif reachable:
+        evidence_source = 'live'
+    else:
+        evidence_source = 'none'
     runtime_status = {'healthy': 'healthy', 'degraded': 'degraded', 'error': 'failed'}[provider_health_status]
     system_status = 'error' if provider_health_status == 'error' else 'active'
-    coverage_status = 'reporting' if provider_health_status == 'healthy' else ('stale' if reachable else 'unavailable')
-    error_message = None if reachable else str(probe.get('error') or 'provider_unavailable')
-    if reachable and not chain_id_ok:
+    if provider_health_status == 'healthy':
+        coverage_status = 'reporting'
+    elif observed_success or probe_skipped:
+        coverage_status = 'stale'
+    else:
+        coverage_status = 'unavailable'
+    # error_message carries the safe reason code even for the degraded backoff case so the
+    # operator sees WHY (provider_backoff_active) without it being mistaken for a hard error.
+    # For a skip, force the canonical backoff reason so the reason is present even when the
+    # replayed snapshot carried no error string.
+    if probe_skipped:
+        error_message = str(probe.get('error') or 'provider_backoff_active')
+    elif not reachable:
+        error_message = str(probe.get('error') or 'provider_unavailable')
+    else:
+        error_message = None
+    if reachable and not probe_skipped and not chain_id_ok:
         error_message = 'chain_id_mismatch'
     elif contract_bytecode_absent:
         error_message = 'contract_bytecode_absent'
@@ -13852,12 +13931,12 @@ def _diagnose_target(
         target_id=target_id,
         provider_host=provider_type,
         status=provider_health_status,
-        success=reachable,
+        success=observed_success,
         latency_ms=probe.get('latency_ms'),
         chain_id=probe.get('chain_id'),
         latest_block=probe.get('latest_block'),
         error_message=error_message,
-        error_category=(None if reachable else str(probe.get('error') or 'provider_unavailable')),
+        error_category=(None if observed_success else error_message),
         evidence_source=evidence_source,
         role='primary',
         actor_type='diagnostic',

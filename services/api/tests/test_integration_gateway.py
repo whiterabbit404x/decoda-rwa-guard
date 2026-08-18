@@ -360,5 +360,176 @@ def test_build_integration_webhooks_never_selects_secret_columns_and_reads_only(
     assert all(not q.upper().startswith(('INSERT', 'UPDATE', 'DELETE')) for q in conn.queries)
 
 
+# ---------------------------------------------------------------------------
+# §7: a skipped/unmeasured probe carries latency_ms = None (rendered "—"), never 0.
+# ---------------------------------------------------------------------------
+def test_provider_row_latency_is_null_when_unmeasured_never_zero():
+    sources = [{'provider': 'alchemy', 'primary_provider': 'alchemy', 'status': 'degraded',
+                'status_reason': 'provider_backoff_active', 'provider_backoff_active': True,
+                'network': 'Base Mainnet', 'chain_id': 8453, 'is_oracle': False,
+                'successful_latency_ms': None}]
+    # Canonical degraded observation from a skipped 429 probe: latency was NOT measured.
+    ph = _provider_health([{'host': 'alchemy', 'status': 'degraded', 'latency_ms': None,
+                            'checked_at': NOW_ISO, 'evidence_source': 'replay', 'target_count': 1}])
+    rows = ig.build_provider_rows(sources=sources, provider_health=ph)
+    assert rows[0]['status'] == 'degraded'
+    # Null latency stays null (frontend renders "—"); a skipped probe is never "0 ms".
+    assert rows[0]['latency_ms'] is None
+
+
+# ---------------------------------------------------------------------------
+# Scenario G: ONE canonical provider state -> semantically compatible Screen 4 vs
+# Screen 10 output. Never "healthy on one screen, disconnected on another".
+# ---------------------------------------------------------------------------
+# The diagnostic/worker write monitored_systems.runtime_status from the SAME provider
+# verdict Screen 10 reads, so feed the row that canonical status would produce.
+_RUNTIME_FOR = {'healthy': 'healthy', 'degraded': 'degraded', 'unavailable': 'failed', 'error': 'failed'}
+
+
+def _screen4_source_status(canonical_status, *, backoff, error_message=None):
+    """Screen-4 row status from the same canonical provider record Screen 10 consumes."""
+    target = {'enabled': True, 'monitoring_enabled': True, 'asset_id': 'a1'}
+    system = {'is_enabled': True, 'runtime_status': _RUNTIME_FOR.get(canonical_status, 'idle'),
+              'last_heartbeat': NOW_ISO, 'coverage_reason': None, 'freshness_status': 'fresh'}
+    provider_health = {'status': canonical_status, 'error_message': error_message}
+    return pilot._derive_source_status(
+        target, system, provider_health=provider_health, provider_backoff_active=backoff,
+    )[0]
+
+
+def _screen10_provider_status(canonical_status, *, backoff):
+    sources = [{'provider': 'alchemy', 'primary_provider': 'alchemy', 'status': 'degraded',
+                'provider_backoff_active': backoff, 'network': 'Base Mainnet', 'chain_id': 8453,
+                'is_oracle': False}]
+    ph = _provider_health([{'host': 'alchemy', 'status': canonical_status, 'latency_ms': None,
+                            'checked_at': NOW_ISO, 'evidence_source': 'live', 'target_count': 1}])
+    return ig.build_provider_rows(sources=sources, provider_health=ph)[0]['status']
+
+
+_UNHEALTHY10 = {'degraded', 'disconnected'}
+
+
+def test_cross_screen_backoff_is_degraded_on_both_never_contradictory():
+    # Same 429/backoff evidence -> Screen 4 non-healthy AND Screen 10 'degraded'.
+    s4 = _screen4_source_status('degraded', backoff=True, error_message='provider_backoff_active')
+    s10 = _screen10_provider_status('degraded', backoff=True)
+    assert s4 != 'healthy'
+    assert s10 == 'degraded'
+    # The forbidden contradiction (one healthy, one disconnected) never occurs.
+    assert not (s4 == 'healthy' and s10 == 'disconnected')
+
+
+def test_cross_screen_healthy_agrees_on_both():
+    s4 = _screen4_source_status('healthy', backoff=False)
+    s10 = _screen10_provider_status('healthy', backoff=False)
+    assert s4 == 'healthy'
+    assert s10 == 'healthy'
+
+
+def test_cross_screen_genuine_outage_is_down_on_both():
+    # A genuine (non-backoff) all-providers outage stays error/Disconnected on both.
+    s4 = _screen4_source_status('unavailable', backoff=False)
+    s10 = _screen10_provider_status('unavailable', backoff=False)
+    assert s4 != 'healthy'
+    assert s10 in _UNHEALTHY10 and s10 == 'disconnected'
+
+
+# ---------------------------------------------------------------------------
+# Scenario H: repeated scans of the SAME unresolved condition keep exactly ONE
+# open recommendation — never REC-001..REC-00N duplicates.
+# ---------------------------------------------------------------------------
+class _DedupeConn:
+    """Stateful fake of integration_recommendations enforcing the partial-unique
+    (workspace, dedupe_key) WHERE resolved_at IS NULL predicate across many scans."""
+
+    def __init__(self):
+        self.open_by_key: dict[str, str] = {}   # dedupe_key -> id
+        self.insert_count = 0
+
+    def execute(self, query, params=None):
+        q = ' '.join(str(query).split())
+        up = q.upper()
+        params = params or ()
+        if up.startswith('SELECT ID, DEDUPE_KEY FROM INTEGRATION_RECOMMENDATIONS'):
+            return _Result([{'id': i, 'dedupe_key': k} for k, i in self.open_by_key.items()])
+        if up.startswith('SELECT ID FROM INTEGRATION_RECOMMENDATIONS'):
+            dedupe = params[1]
+            existing = self.open_by_key.get(dedupe)
+            return _Result([{'id': existing}] if existing else [])
+        if up.startswith('INSERT INTO INTEGRATION_RECOMMENDATIONS'):
+            # params: (id, workspace_id, integration_key, kind, type, severity, ... dedupe_key, ...)
+            self.insert_count += 1
+            self.open_by_key[params[15]] = params[0]
+            return _Result([])
+        if up.startswith('UPDATE INTEGRATION_RECOMMENDATIONS'):
+            return _Result([])
+        return _Result([])
+
+    def commit(self):
+        pass
+
+
+def test_recommendation_dedupe_is_idempotent_across_repeated_scans():
+    conn = _DedupeConn()
+    for _ in range(4):  # four consecutive health checks of the same unresolved condition
+        pilot._persist_integration_recommendations(
+            conn, workspace_id='ws1', detected=_detected(), correlation_id='c', now=pilot.utc_now(),
+        )
+    # Exactly ONE insert total; the other three scans UPDATE the same open row.
+    assert conn.insert_count == 1
+    assert len(conn.open_by_key) == 1
+
+
+# ---------------------------------------------------------------------------
+# Scenario I: GET control-plane is READ-ONLY — it never runs a diagnostic, writes
+# provider observations, clears failures, creates recommendations, or moves the scan.
+# ---------------------------------------------------------------------------
+def test_get_control_plane_is_read_only_no_mutations(monkeypatch):
+    writes: list[str] = []
+
+    class _ReadConn:
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if q.upper().startswith(('INSERT', 'UPDATE', 'DELETE')):
+                writes.append(q)
+            return _Result([])
+
+        def commit(self):
+            pass
+
+    class _Ctx:
+        def __enter__(self):
+            return _ReadConn()
+
+        def __exit__(self, *a):
+            return False
+
+    # Any provider-mutating path invoked from a GET is a hard failure.
+    def _forbidden(*_a, **_k):
+        raise AssertionError('GET control-plane must not mutate provider/scan/recommendation state')
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _Ctx())
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda c: None)
+    monkeypatch.setattr(pilot, 'list_monitoring_sources', lambda request: {'sources': [], 'provider_health': None, 'settings': {}})
+    monkeypatch.setattr(pilot, 'resolve_workspace_context_for_request', lambda conn, request: ({'id': 'u1'}, {'workspace_id': 'ws1', 'role': 'owner'}, None))
+    monkeypatch.setattr(pilot, '_normalize_workspace_role', lambda role: 'owner')
+    monkeypatch.setattr(pilot, '_workspace_permission_granted', lambda *a, **k: True)
+    monkeypatch.setattr(pilot, 'integration_health_snapshot', lambda conn: {})
+    monkeypatch.setattr(pilot, '_build_integration_webhooks', lambda conn, *, workspace_id: [])
+    monkeypatch.setattr(pilot, '_load_last_integration_scan', lambda conn, *, workspace_id: None)
+    monkeypatch.setattr(pilot, '_load_integration_recommendations', lambda conn, *, workspace_id, **k: [])
+    # These MUST NOT be called by a GET.
+    monkeypatch.setattr(pilot, 'run_source_diagnostic', _forbidden)
+    monkeypatch.setattr(pilot, '_persist_integration_recommendations', _forbidden)
+    monkeypatch.setattr(pilot, '_record_integration_scan', _forbidden)
+    monkeypatch.setattr(pilot, 'persist_provider_health_evidence', _forbidden)
+
+    result = pilot.get_integration_control_plane(request=object())
+
+    assert 'providers' in result and 'connection_risk' in result
+    assert writes == [], f'GET must issue no writes, saw: {writes}'
+
+
 if __name__ == '__main__':  # pragma: no cover
     raise SystemExit(pytest.main([__file__, '-q']))

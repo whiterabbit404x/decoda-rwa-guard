@@ -355,6 +355,68 @@ def test_diagnose_chain_mismatch_is_degraded(monkeypatch):
     assert result['chain_id_ok'] is False
 
 
+# ---------------------------------------------------------------------------
+# Provider backoff (HTTP 429): the diagnostic records a rate-limit DEGRADED
+# observation with NO measured latency — never a Disconnected/error verdict,
+# never a fabricated ~0 ms latency, and never a false recovery. (§7/§8/§5)
+# ---------------------------------------------------------------------------
+def test_diagnostic_probe_skips_network_and_reports_null_latency_during_backoff(monkeypatch):
+    """Scenario C: a probe issued while the process-wide RPC backoff is active makes NO
+    network call and therefore has NO measured latency (latency_ms is None, never ~0 ms)."""
+    import services.api.app.evm_activity_provider as evm
+
+    # Network guard: any real RPC dial during backoff must fail loudly (§16).
+    def _boom(*_a, **_k):
+        raise AssertionError('no network call may be made while provider backoff is active')
+
+    monkeypatch.setattr(evm.JsonRpcClient, 'call', _boom)
+    # Arm the REAL process-wide backoff via the global sentinel (no configured providers).
+    monkeypatch.setattr(evm, '_configured_provider_hosts', lambda: [])
+    evm.record_rpc_rate_limited()
+    assert evm.rpc_provider_backoff_active() is True
+
+    probe = pilot._diagnostic_probe(f'https://{ALCHEMY}/v2/SECRETKEY', address=USDC, is_contract=True)
+
+    assert probe['skipped'] is True
+    assert probe['ok'] is False
+    # A skipped probe was not measured — latency MUST be None, never the ~0 ms cache read.
+    assert probe['latency_ms'] is None
+    assert 'provider_backoff_active' in str(probe['error'])
+
+
+def test_diagnose_backoff_skip_is_degraded_not_disconnected(monkeypatch):
+    """Scenario B/C: a 429 backoff skip is canonically DEGRADED (rate-limited), matching the
+    scheduled-worker policy — NOT 'error'/Disconnected — with null latency + replay evidence."""
+    _stub_resolve(monkeypatch)
+    _stub_probe(monkeypatch, {
+        'ok': False, 'latency_ms': None, 'chain_id': None, 'latest_block': None,
+        'bytecode_present': None, 'error': 'provider_backoff_active', 'skipped': True,
+    })
+    conn = _RecordingConn()
+    result = pilot._diagnose_target(conn, workspace_id=WS, target=_diag_target(), correlation_id='c', now=NOW)
+
+    # Canonical rate-limit verdict: degraded, not error/disconnected.
+    assert result['provider_health_status'] == 'degraded'
+    assert result['latency_ms'] is None
+    assert result['evidence_source'] == 'replay'
+
+    ph = conn.find('INSERT INTO PROVIDER_HEALTH_RECORDS')[0][1]
+    assert ph[4] == 'degraded'                 # status — never 'error'
+    assert ph[6] is None                       # latency_ms — never a measured/invented value
+    assert ph[8] == 'replay'                   # evidence_source — replayed, never 'live'/'none'
+    # The safe backoff reason is recorded so the operator sees WHY.
+    assert 'provider_backoff_active' in ph[7]  # error_message
+    # A skip is NEVER a fresh success, so it can never register a recovery streak (§5).
+    assert '"success": false' in ph[9] or '"success":false' in ph[9]
+    assert '"consecutive_success": 0' in ph[9] or '"consecutive_success":0' in ph[9]
+
+    # The monitored-system runtime reflects DEGRADED (impaired), not FAILED — the system
+    # stays configured/active while the provider is rate-limited.
+    hb = conn.find('UPDATE MONITORED_SYSTEMS')
+    assert hb and hb[0][1][0] == 'degraded'    # runtime_status
+    assert hb[0][1][1] == 'active'             # status (configuration plane stays active)
+
+
 def test_diagnose_reports_missing_linkage(monkeypatch):
     _stub_resolve(monkeypatch)
     _stub_probe(monkeypatch, {

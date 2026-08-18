@@ -121,8 +121,26 @@ class _Conn:
         if 'INSERT INTO monitored_systems' in q:
             target_id = str(params[3])
             existing = self.monitored_systems.get(target_id, {})
-            runtime_status = 'healthy' if existing.get('runtime_status') == 'healthy' else 'idle'
+            prev_runtime = existing.get('runtime_status')
             row = {'id': f'ms-{target_id}'}
+            # Faithfully mirror the ON CONFLICT DO UPDATE contract: a CONFIG reconcile
+            # PRESERVES an operational failure verdict ('failed'/'degraded') and its
+            # last_error_text (fail-closed, §4/§5), preserves a fresh 'healthy' verdict,
+            # and otherwise resets to 'idle'. status stays the config marker 'active'.
+            if prev_runtime in ('failed', 'degraded'):
+                self.monitored_systems[target_id] = {
+                    'id': row['id'],
+                    'target_id': target_id,
+                    'asset_id': params[2],
+                    'runtime_status': prev_runtime,
+                    'freshness_status': existing.get('freshness_status', 'unavailable'),
+                    'confidence_status': existing.get('confidence_status', 'unavailable'),
+                    'coverage_reason': existing.get('coverage_reason'),
+                    'status': 'active',
+                    'last_error_text': existing.get('last_error_text'),
+                }
+                return _Result(row)
+            runtime_status = 'healthy' if prev_runtime == 'healthy' else 'idle'
             self.monitored_systems[target_id] = {
                 'id': row['id'],
                 'target_id': target_id,
@@ -470,6 +488,78 @@ def test_repair_reconcile_never_writes_idle_legacy_status():
     assert "VALUES (%s, %s, %s::uuid, %s::uuid, %s, TRUE, 'provisioning', 'active'" in source
     assert "status = 'active'" in source
     assert "'idle', 'idle'" not in source
+
+
+# ---------------------------------------------------------------------------
+# CONFIG reconcile must NOT erase a FRESH operational failure (§3/§4/§5).
+# A successful configuration reconcile is never evidence that an external
+# provider recovered — only a fresh successful poll/diagnostic is.
+# ---------------------------------------------------------------------------
+def test_config_reconcile_preserves_operational_failed_runtime_state():
+    """Scenario D: target configured + enabled + provider operational FAILURE.
+
+    Reconcile keeps the configuration enabled (is_enabled/status active) but must NOT
+    downgrade the operational verdict: runtime_status='failed' and its last_error_text
+    are preserved, so a config reconcile can never make a failing system read benign.
+    """
+    conn = _Conn()
+    conn.monitored_systems['target-valid'] = {
+        'id': 'ms-target-valid',
+        'target_id': 'target-valid',
+        'asset_id': 'asset-1',
+        'runtime_status': 'failed',
+        'status': 'error',
+        'last_error_text': 'provider_backoff_active',
+    }
+
+    result = pilot.ensure_monitored_system_for_target(conn, target_id='target-valid')
+
+    assert result['status'] == 'ok'
+    repaired = conn.monitored_systems['target-valid']
+    # Operational failure verdict PRESERVED (fail-closed) — never reset to idle/None.
+    assert repaired['runtime_status'] == 'failed'
+    assert repaired['last_error_text'] == 'provider_backoff_active'
+    # Configuration plane stays active (the target IS enabled/configured for monitoring).
+    assert repaired['status'] == 'active'
+
+
+def test_config_reconcile_preserves_operational_degraded_runtime_state():
+    """A degraded (e.g. rate-limited) operational verdict is likewise preserved by a
+    config reconcile — provider impairment is not a configuration concern."""
+    conn = _Conn()
+    conn.monitored_systems['target-valid'] = {
+        'id': 'ms-target-valid',
+        'target_id': 'target-valid',
+        'asset_id': 'asset-1',
+        'runtime_status': 'degraded',
+        'status': 'active',
+        'last_error_text': 'provider_backoff_active',
+    }
+
+    pilot.ensure_monitored_system_for_target(conn, target_id='target-valid')
+
+    repaired = conn.monitored_systems['target-valid']
+    assert repaired['runtime_status'] == 'degraded'
+    assert repaired['last_error_text'] == 'provider_backoff_active'
+
+
+def test_config_reconcile_alone_never_marks_failed_system_healthy():
+    """Scenario F: running ONLY configuration reconcile (repeatedly) never flips a failed
+    operational verdict to healthy/idle. Recovery requires fresh operational evidence."""
+    conn = _Conn()
+    conn.monitored_systems['target-valid'] = {
+        'id': 'ms-target-valid',
+        'target_id': 'target-valid',
+        'asset_id': 'asset-1',
+        'runtime_status': 'failed',
+        'status': 'error',
+        'last_error_text': 'rpc_unavailable',
+    }
+
+    for _ in range(3):
+        pilot.reconcile_enabled_targets_monitored_systems(conn)
+        assert conn.monitored_systems['target-valid']['runtime_status'] == 'failed'
+        assert conn.monitored_systems['target-valid']['last_error_text'] == 'rpc_unavailable'
 
 
 def test_normalize_reconcile_result_provides_render_safe_fields():
