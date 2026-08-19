@@ -3560,6 +3560,44 @@ def ops_system_health(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: build_system_health_snapshot(request))
 
 
+# ---------------------------------------------------------------------------
+# Screen 12 — Self-Healing Reliability Agent.
+# Reads are ops-accessible (same tier as /ops/system-health; infra facts only, no
+# secrets). Writes (diagnostics/run, remediate) authenticate and enforce RBAC
+# INSIDE the handler — the frontend never authorizes a restart. GET never
+# performs remediation.
+# ---------------------------------------------------------------------------
+
+@app.get('/ops/reliability/overview', summary='Self-Healing Reliability Agent overview', description='Reliability summary cards, normalized component health, agent diagnosis (root cause + recommended action), and autonomous status. Read-only.')
+def ops_reliability_overview(request: Request) -> dict[str, Any]:
+    from services.api.app import reliability_agent
+    return with_auth_schema_json(lambda: reliability_agent.build_reliability_overview(request))
+
+
+@app.get('/ops/reliability/events', summary='Reliability event ledger (findings + remediation history)')
+def ops_reliability_events(request: Request, limit: int = 50) -> dict[str, Any]:
+    from services.api.app import reliability_agent
+    return with_auth_schema_json(lambda: reliability_agent.list_reliability_events(request, limit=limit))
+
+
+@app.get('/ops/reliability/report', summary='Full reliability / system-health report', description='Detailed report: components, freshness, SLO/queue evidence, unresolved findings, remediation history, and build/runtime identifiers. Read-only.')
+def ops_reliability_report(request: Request) -> dict[str, Any]:
+    from services.api.app import reliability_agent
+    return with_auth_schema_json(lambda: reliability_agent.build_health_report(request))
+
+
+@app.post('/ops/reliability/diagnostics/run', summary='Run a bounded reliability diagnostic', description='Explicit diagnostic: re-reads canonical health, persists a health sample + structured findings, and audits the run. Requires monitoring.configure.')
+def ops_reliability_diagnostics_run(request: Request) -> dict[str, Any]:
+    from services.api.app import reliability_agent
+    return with_auth_schema_json(lambda: reliability_agent.run_diagnostic(request))
+
+
+@app.post('/ops/reliability/findings/{finding_id}/remediate', summary='Execute a policy-gated remediation for a reliability finding', description='Policy-gated, verified remediation. Requires security.manage + reauthentication. Executes only where a real mechanism exists; otherwise records manual_required.')
+def ops_reliability_remediate(finding_id: str, request: Request) -> dict[str, Any]:
+    from services.api.app import reliability_agent
+    return with_auth_schema_json(lambda: reliability_agent.execute_remediation(finding_id, {}, request))
+
+
 @app.get('/ops/monitoring/heartbeats', summary='Latest monitoring heartbeat rows')
 def ops_monitoring_heartbeats(request: Request, limit: int = 50) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_monitoring_heartbeats(request, limit=limit))

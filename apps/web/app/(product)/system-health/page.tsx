@@ -4,6 +4,8 @@ import { getBuildInfo } from '../../build-info';
 import { fetchDashboardPageData, resolveApiUrl } from '../../dashboard-data';
 import { resolveWorkspaceMonitoringTruthFromSummary } from '../../workspace-monitoring-truth';
 import { fetchSystemHealth } from './_components/fetch-system-health';
+import { fetchReliabilityOverview } from './_components/fetch-reliability-overview';
+import { ReliabilityAgentSection } from './_components/reliability-agent-section';
 import { SystemHealthEndpointError } from './_components/system-health-endpoint-error';
 import { SystemHealthHero } from './_components/system-health-hero';
 import { DeploymentVersionSection } from './_components/deployment-version-section';
@@ -20,9 +22,10 @@ export const fetchCache = 'force-no-store';
 
 export default async function SystemHealthPage() {
   const apiUrl = resolveApiUrl();
-  const [data, healthResult] = await Promise.all([
+  const [data, healthResult, reliabilityResult] = await Promise.all([
     fetchDashboardPageData(undefined, { featureFeeds: ['resilienceDashboard'] }),
     fetchSystemHealth(apiUrl),
+    fetchReliabilityOverview(apiUrl),
   ]);
 
   // Preserve *why* the health endpoint failed instead of collapsing it into a
@@ -130,6 +133,11 @@ export default async function SystemHealthPage() {
         webBuildTime={webBuildTime}
         apiDeployTime={apiDeployTime}
       />
+
+      {/* Screen 12 headline: Self-Healing Reliability Agent (summary cards,
+          system components, operational diagnosis, autonomous status). The
+          detailed panels below remain as supporting depth. */}
+      <ReliabilityAgentSection result={reliabilityResult} />
 
       {healthResult.ok ? (
         <>
