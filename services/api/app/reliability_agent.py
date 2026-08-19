@@ -966,16 +966,21 @@ def _autonomous_status(connection: Any, *, config: RemediationConfig, now: datet
 # Snapshot acquisition
 # ---------------------------------------------------------------------------
 
-def _snapshot(request: Any = None) -> tuple[dict[str, Any], int]:
+def _snapshot(request: Any = None, *, allow_live_rpc_probe: bool = False) -> tuple[dict[str, Any], int]:
     """Build the canonical health snapshot and measure its evaluation time (ms).
 
     The measured elapsed time is a real, clearly-sourced response-time metric —
-    it is the health evaluator's own DB+Redis+RPC probe round-trip, never a
-    frontend render time.
+    it is the health evaluator's own DB+Redis round-trip, never a frontend render
+    time.
+
+    ``allow_live_rpc_probe`` defaults to ``False`` so read handlers (the Screen 12
+    overview GET) resolve Base RPC health from observed state and never make a paid
+    provider call. The explicit diagnostic action passes ``True`` to permit one live
+    probe.
     """
     from services.api.app.system_health import build_system_health_snapshot
     start = time.monotonic()
-    snapshot = build_system_health_snapshot(request)
+    snapshot = build_system_health_snapshot(request, allow_live_rpc_probe=allow_live_rpc_probe)
     elapsed_ms = int(round((time.monotonic() - start) * 1000))
     return snapshot, elapsed_ms
 
@@ -1196,8 +1201,10 @@ def run_diagnostic(request: Any) -> dict[str, Any]:
     """POST /ops/reliability/diagnostics/run — a bounded, explicit diagnostic.
 
     Re-reads canonical health, persists a health sample + any structured findings,
-    and audits the run. Never scans arbitrary networks; only inspects Decoda's own
-    DB/Redis/worker/telemetry/detection/storage state via the canonical evaluator.
+    and audits the run. This is the explicit, RBAC-gated action where a live Base RPC
+    connectivity probe is intended — unlike a page GET, which never touches the
+    provider. Only Decoda's own configured RPC endpoint is probed (never arbitrary
+    networks), and provider health is never fabricated.
     """
     from services.api.app import pilot
     pilot.require_live_mode()
@@ -1207,7 +1214,8 @@ def run_diagnostic(request: Any) -> dict[str, Any]:
         workspace_id = workspace_context['workspace_id']
         now = pilot.utc_now()
 
-        snapshot, elapsed_ms = _snapshot(request)
+        # Explicit operator-initiated diagnostic → a live RPC probe is permitted here.
+        snapshot, elapsed_ms = _snapshot(request, allow_live_rpc_probe=True)
         normalized = normalize_all(snapshot)
         slo = _slo_metrics_safe(connection)
         findings = correlate_findings(snapshot, slo_metrics=slo)
