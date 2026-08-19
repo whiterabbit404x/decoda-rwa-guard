@@ -4421,7 +4421,7 @@ def list_workspace_invitations(request: Request) -> dict[str, Any]:
             '''
             SELECT id, email, role, status, expires_at, created_at, updated_at
             FROM workspace_invitations
-            WHERE i.workspace_id = %s
+            WHERE workspace_id = %s
             ORDER BY created_at DESC
             ''',
             (workspace_context['workspace_id'],),
