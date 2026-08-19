@@ -274,10 +274,28 @@ def test_runtime_status_endpoint_includes_detection_and_contradiction_guards(mon
     assert response.status_code == 200
     payload = response.json()
     assert payload['runtime_status'] in {'offline', 'fail'}
-    assert payload['status_reason'] in {
-        'runtime_status_degraded',
-        'workspace_configuration_invalid:no_valid_protected_assets',
-    } or payload['status_reason'].startswith('runtime_status_degraded')
+    # This workspace has a detection but no telemetry (last_telemetry_at is None), so the
+    # truthful, fail-closed outcome is the detection/telemetry contradiction guard. Note:
+    # the runtime-status GET is now READ-ONLY (it no longer reconciles), so the status
+    # reason is the real guard — previously it was masked by a reconcile-on-read side
+    # effect (a partial_query_failure). Both the guard and a runtime_status_degraded
+    # variant are truthful non-healthy reasons for this state.
+    status_reason = payload['status_reason']
+    assert (
+        status_reason in {
+            'guard:detection_without_telemetry',
+            'runtime_status_degraded',
+            'workspace_configuration_invalid:no_valid_protected_assets',
+        }
+        or status_reason.startswith('runtime_status_degraded')
+        or status_reason.startswith('guard:')
+    ), status_reason
+    # The detection-without-telemetry contradiction must be surfaced somewhere truthful.
+    assert (
+        'detection_without_telemetry' in status_reason
+        or 'detection_without_telemetry' in (payload.get('contradiction_flags') or [])
+        or status_reason.startswith('runtime_status_degraded')
+    )
 
 
 _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS = [

@@ -38,6 +38,14 @@ RPC_PROBE_TIMEOUT_SECONDS = max(1, int(os.getenv('SYSTEM_HEALTH_RPC_TIMEOUT_SECO
 # refreshes reuse one probe instead of calling the provider on every request.
 # Default 60s so the status page never out-paces the worker's 60s poll cadence.
 RPC_HEALTH_CACHE_TTL_SECONDS = max(0, int(os.getenv('SYSTEM_HEALTH_RPC_TTL_SECONDS', '60')))
+# How recent a persisted provider observation (provider_health_records, written by
+# the monitoring worker or the Run Diagnostic action) may be to be reflected as the
+# current Base RPC status on a read-only GET. Older evidence is surfaced truthfully
+# as "stale" (degraded), never as healthy. Two canonical worker cycles by default so
+# a single missed poll does not flap a healthy source to stale.
+RPC_OBSERVATION_FRESH_SECONDS = max(
+    60, int(os.getenv('SYSTEM_HEALTH_RPC_OBSERVATION_TTL_SECONDS', '1800'))
+)
 
 logger = logging.getLogger(__name__)
 
@@ -656,6 +664,204 @@ def _cached_base_rpc_health(force: bool = False) -> dict[str, Any]:
         'log_fields': dict(_LAST_RPC_PROBE_LOG),
     }
     return dict(result)
+
+
+# Map the persisted provider_health_records.status vocabulary
+# ({'healthy','degraded','unavailable','error'}) to the System Health component
+# vocabulary ({'healthy','degraded','failing','unavailable'}).
+_OBSERVED_RPC_STATUS_MAP = {
+    'healthy': 'healthy',
+    'degraded': 'degraded',
+    'unavailable': 'unavailable',
+    'error': 'failing',
+}
+
+
+def _persisted_rpc_component(connection: Any, workspace_id: str | None) -> dict[str, Any] | None:
+    """Build the Base RPC component from the most recent PERSISTED provider observation.
+
+    Reads one ``provider_health_records`` row — the canonical evidence written by the
+    monitoring worker during normal polling and by the explicit Run Diagnostic action
+    (the only writers) — and reflects it truthfully WITHOUT any network call. Returns
+    ``None`` when no row exists, so the caller can fall back to a truthful
+    unknown/unavailable. Workspace-scoped when a workspace id is present so evidence
+    from another tenant can never satisfy this workspace's status. Only the provider
+    host (already redacted to a hostname at write time) is ever surfaced.
+    """
+    row = None
+    try:
+        if workspace_id:
+            row = connection.execute(
+                'SELECT status, checked_at, latency_ms, metadata '
+                'FROM provider_health_records WHERE workspace_id = %s::uuid '
+                'ORDER BY checked_at DESC LIMIT 1',
+                (workspace_id,),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                'SELECT status, checked_at, latency_ms, metadata '
+                'FROM provider_health_records ORDER BY checked_at DESC LIMIT 1'
+            ).fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    d = dict(row) if hasattr(row, 'keys') else {}
+    status_raw = str(d.get('status') or '').lower()
+    checked_at = d.get('checked_at')
+    checked_iso = (
+        checked_at.isoformat() if isinstance(checked_at, datetime)
+        else (str(checked_at) if checked_at else None)
+    )
+    meta = d.get('metadata') or {}
+    if isinstance(meta, str):
+        try:
+            import json as _json
+            meta = _json.loads(meta)
+        except Exception:
+            meta = {}
+    host = str(meta.get('provider_host') or _host_of_rpc(_resolve_base_rpc_url()) or 'configured')
+    actor = str(meta.get('actor_type') or 'worker')
+    latest_block = meta.get('latest_block') or meta.get('last_successful_block')
+    latency = d.get('latency_ms') or meta.get('last_successful_latency_ms')
+    metric = None
+    if latest_block:
+        metric = f'block #{latest_block}'
+        if isinstance(latency, (int, float)) and latency:
+            metric += f' · {int(latency)}ms'
+    age = _age_seconds(checked_iso)
+    fresh = age is not None and age <= RPC_OBSERVATION_FRESH_SECONDS
+    mapped = _OBSERVED_RPC_STATUS_MAP.get(status_raw, 'degraded')
+    # Log the served state (host only, no secrets) as a replayed observation so the
+    # response stays observable in logs without a live provider call.
+    _log_rpc_probe(
+        rpc_configured=True, rpc_host=host,
+        rpc_status=f'observed_{status_raw or "unknown"}' if fresh else 'observed_stale',
+        response_time_ms=int(latency) if isinstance(latency, (int, float)) else 0,
+        last_error_class=(None if (fresh and mapped == 'healthy') else (status_raw or 'stale_observation')),
+        cache_hit=True,
+    )
+    if not fresh:
+        return _component(
+            'degraded',
+            f'Base RPC last observation is stale ({_human_age(checked_iso)}, host: {host}). '
+            f'Rendered from persisted worker/diagnostic evidence without a live probe.',
+            age=_human_age(checked_iso), last_event=checked_iso, metric=metric,
+            action='Live RPC status is refreshed by the monitoring worker or the Run Diagnostic action, not by opening this page.',
+        )
+    if mapped == 'healthy':
+        return _component(
+            'healthy',
+            f'Base RPC observed healthy ({_human_age(checked_iso)} via {actor}, host: {host}).',
+            age=_human_age(checked_iso), last_event=checked_iso, metric=metric,
+        )
+    if mapped == 'degraded':
+        return _component(
+            'degraded',
+            f'Base RPC observed degraded at last poll ({_human_age(checked_iso)}, host: {host}).',
+            age=_human_age(checked_iso), last_event=checked_iso, metric=metric,
+            action='Provider failover or rate-limiting was observed by the monitoring worker.',
+        )
+    if mapped == 'unavailable':
+        return _component(
+            'unavailable',
+            f'Base RPC observed unavailable at last poll ({_human_age(checked_iso)}, host: {host}).',
+            age=_human_age(checked_iso), last_event=checked_iso,
+            action='The worker could not reach the RPC provider at its last observation.',
+        )
+    return _component(
+        'failing',
+        f'Base RPC observed failing at last poll ({_human_age(checked_iso)}, host: {host}).',
+        age=_human_age(checked_iso), last_event=checked_iso,
+        action=_rpc_failure_action(str(meta.get('error_category') or 'failing')),
+    )
+
+
+def _readonly_base_rpc_health(connection: Any, workspace_id: str | None) -> dict[str, Any]:
+    """Resolve the Base RPC component for a normal GET WITHOUT any live network call.
+
+    Opening or refreshing Screen 12 must never consume paid provider quota merely to
+    render health. This reads ONLY observed state, in order of precedence:
+
+      1. an active provider backoff window (armed by the worker or a diagnostic in
+         THIS process after a real HTTP 429) — truthful "failing/backoff", no network;
+      2. a fresh process-local probe cache (populated only by an explicit diagnostic
+         probe in this process) — the same real probe result, replayed, no network;
+      3. the most recent persisted ``provider_health_records`` observation (written by
+         the monitoring worker or the Run Diagnostic action) — reflected truthfully;
+      4. otherwise a truthful state: ``unavailable`` when the RPC URL is not
+         configured, else ``unavailable`` "unknown — not verified on this page load".
+
+    A live ``eth_blockNumber`` probe happens only through the monitoring worker, an
+    explicit diagnostic POST (``build_system_health_snapshot(allow_live_rpc_probe=True)``),
+    or another intentional background diagnostic — never a page GET/refresh. Provider
+    health is NEVER fabricated: "healthy" is returned only from real observed evidence.
+    """
+    # 1. Active provider backoff (no network). Only armed after a real 429.
+    try:
+        from services.api.app.evm_activity_provider import (
+            rpc_provider_backoff_active as _bo_active,
+            rpc_provider_backoff_status as _bo_status,
+        )
+        if _bo_active():
+            host = _host_of_rpc(_resolve_base_rpc_url())
+            _log_rpc_probe(
+                rpc_configured=True, rpc_host=host, rpc_status='rate_limited',
+                response_time_ms=0, last_error_class='provider_backoff_active', cache_hit=True,
+            )
+            return _rpc_backoff_component(_bo_status(), host)
+    except Exception:
+        pass
+
+    # 2. Fresh process-local probe cache (no network) — populated only by an explicit
+    #    diagnostic probe, so its result is a real probe that we may safely replay.
+    key = _resolve_base_rpc_url() or '<unconfigured>'
+    entry = _RPC_HEALTH_CACHE.get('entry')
+    if (
+        RPC_HEALTH_CACHE_TTL_SECONDS > 0
+        and entry is not None
+        and entry.get('key') == key
+        and time.monotonic() < float(entry.get('expires_monotonic', 0.0))
+    ):
+        log_fields = entry.get('log_fields')
+        if log_fields:
+            _log_rpc_probe(cache_hit=True, **log_fields)
+        return dict(entry['result'])
+
+    # 3. RPC URL not configured → unavailable (identical truthful message to the live path).
+    if not _resolve_base_rpc_urls():
+        _log_rpc_probe(
+            rpc_configured=False, rpc_host='unconfigured', rpc_status='unavailable',
+            response_time_ms=0, last_error_class='rpc_url_not_configured', cache_hit=True,
+        )
+        return _component(
+            'unavailable',
+            'Base RPC URL is missing in worker service. Set EVM_RPC_URL or STAGING_EVM_RPC_URL.',
+            action=(
+                'Set EVM_RPC_URL or STAGING_EVM_RPC_URL in the Railway worker service. '
+                'For Base mainnet you may instead set EVM_RPC_URL_8453 (or BASE_EVM_RPC_URL) '
+                'or EVM_RPC_URLS for multiple providers.'
+            ),
+        )
+
+    # 4. Most recent persisted provider observation (worker / diagnostic), if any.
+    observed = _persisted_rpc_component(connection, workspace_id)
+    if observed is not None:
+        return observed
+
+    # 5. Configured but no fresh evidence and no probe on this path → truthful UNKNOWN.
+    #    Never "healthy": absence of evidence is not proof of health (fail closed).
+    host = _host_of_rpc(_resolve_base_rpc_url())
+    _log_rpc_probe(
+        rpc_configured=True, rpc_host=host, rpc_status='unknown',
+        response_time_ms=0, last_error_class='no_persisted_provider_evidence', cache_hit=True,
+    )
+    return _component(
+        'unavailable',
+        f'Base RPC status is unknown — not verified on this page load and no recent '
+        f'provider observation exists (host: {host}).',
+        action='Live RPC status is verified by the monitoring worker or the Run Diagnostic action, not by opening this page.',
+    )
 
 
 def _worker_enabled_state() -> dict[str, Any]:
@@ -1513,7 +1719,17 @@ def _build_primary_action(components: dict[str, dict[str, Any]]) -> str | None:
 # Main builder
 # ---------------------------------------------------------------------------
 
-def build_system_health_snapshot(request: Any = None) -> dict[str, Any]:
+def build_system_health_snapshot(
+    request: Any = None, *, allow_live_rpc_probe: bool = False
+) -> dict[str, Any]:
+    """Assemble the SaaS system-health snapshot.
+
+    ``allow_live_rpc_probe`` defaults to ``False`` so a normal Screen 12 GET/refresh
+    (``/ops/system-health``, ``/ops/reliability/overview``) resolves Base RPC health
+    from persisted/cached/observed state ONLY and never makes a paid provider call.
+    An explicit diagnostic action (``run_diagnostic``) passes ``True`` to permit a
+    live ``eth_blockNumber`` probe. Provider health is never fabricated either way.
+    """
     from services.api.app.pilot import pg_connection, runtime_environment_identity
     import os
 
@@ -1554,11 +1770,17 @@ def build_system_health_snapshot(request: Any = None) -> dict[str, Any]:
             components['database'] = _check_database(connection)
             components['redis'] = _check_redis()
             components['worker'] = _check_worker(connection, workspace_id)
-            # Compute the Base RPC probe once and reuse it everywhere it is needed
+            # Resolve the Base RPC status once and reuse it everywhere it is needed
             # (component, live chain monitoring, providers) to keep the endpoint fast.
-            # The probe is cached for a short TTL so repeated page refreshes do not
-            # re-hit the provider on every request.
-            base_rpc_check = _cached_base_rpc_health()
+            # A normal GET (allow_live_rpc_probe=False) reads ONLY observed state
+            # (backoff / process cache / persisted provider_health_records) and never
+            # calls the provider — opening Screen 12 must not consume RPC quota. An
+            # explicit diagnostic passes allow_live_rpc_probe=True to permit one live,
+            # short-TTL-cached eth_blockNumber probe.
+            if allow_live_rpc_probe:
+                base_rpc_check = _cached_base_rpc_health()
+            else:
+                base_rpc_check = _readonly_base_rpc_health(connection, workspace_id)
             components['base_rpc'] = base_rpc_check
             components['live_polling'] = _check_live_polling(connection, workspace_id)
             components['telemetry'] = _check_telemetry(connection, workspace_id)
@@ -1578,7 +1800,13 @@ def build_system_health_snapshot(request: Any = None) -> dict[str, Any]:
         )
         components.setdefault('redis', _check_redis())
         components.setdefault('worker', _component('unavailable', 'Cannot check worker: database unavailable.'))
-        components.setdefault('base_rpc', _cached_base_rpc_health())
+        # Database is unavailable, so persisted provider evidence cannot be read. Keep
+        # the GET truthful and network-free: report Base RPC as unavailable/unknown
+        # unless an explicit diagnostic probe was requested. Never a live call on GET.
+        if allow_live_rpc_probe:
+            components.setdefault('base_rpc', _cached_base_rpc_health())
+        else:
+            components.setdefault('base_rpc', _readonly_base_rpc_health(None, workspace_id))
         components.setdefault('live_polling', _component('unavailable', 'Cannot check polling: database unavailable.'))
         components.setdefault('telemetry', _component('unavailable', 'Cannot check telemetry: database unavailable.'))
         components.setdefault('detection', _component('unavailable', 'Cannot check detection: database unavailable.'))

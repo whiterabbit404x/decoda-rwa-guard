@@ -7590,7 +7590,19 @@ def _classify_optional_query_reason(exc: Exception) -> tuple[str, str]:
     return ('unexpected_database_error', 'runtime_optional_query_unexpected_error')
 
 
-def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
+def monitoring_runtime_status(
+    request: Request | None = None, *, allow_reconcile: bool = False
+) -> dict[str, Any]:
+    """Compute the canonical monitoring runtime status.
+
+    This is a READ path: it derives status from persisted state and, by default
+    (``allow_reconcile=False``), performs NO writes — opening or refreshing
+    ``GET /ops/monitoring/runtime-status`` must never create monitoring configs,
+    enable/disable systems, repair target links, or otherwise mutate state. Explicit
+    write/action flows (e.g. ``POST /monitoring/systems/reconcile``, which calls
+    ``reconcile_enabled_targets_monitored_systems`` directly) own reconciliation; a
+    caller that legitimately needs an inline repair may pass ``allow_reconcile=True``.
+    """
     canonical_runtime_truth_enabled = is_canonical_runtime_truth_enabled()
     last_query_checkpoint = 'not_started'
     resolved_workspace_id: str | None = None
@@ -8766,7 +8778,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 [str(row.get('id') or '') for row in monitored_rows if row.get('id')],
                 enabled_monitored_rows_count,
             )
-            if healthy_enabled_targets_count > 0 and (enabled_monitored_rows_count < healthy_enabled_targets_count or bool(missing_healthy_target_ids)):
+            reconcile_needed = healthy_enabled_targets_count > 0 and (
+                enabled_monitored_rows_count < healthy_enabled_targets_count
+                or bool(missing_healthy_target_ids)
+            )
+            if reconcile_needed and allow_reconcile:
                 try:
                     reconcile_result = reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_id)
                     logger.info(
@@ -8795,6 +8811,19 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                         reason_code='optional_table_unavailable',
                         error_code='runtime_optional_query_failed',
                     )
+            elif reconcile_needed:
+                # READ-ONLY GET: a monitored_systems gap exists, but repairing it here
+                # would mutate configuration on a page refresh. Report the observed
+                # (unreconciled) counts truthfully instead; the explicit reconcile
+                # action (POST /monitoring/systems/reconcile) owns the repair.
+                logger.info(
+                    'monitoring_runtime_status_reconcile_skipped_read_only workspace_id=%s '
+                    'healthy_enabled_targets=%s enabled_monitored_rows=%s missing_healthy_target_ids=%s',
+                    workspace_id,
+                    healthy_enabled_targets_count,
+                    enabled_monitored_rows_count,
+                    len(missing_healthy_target_ids),
+                )
             _mark_query_checkpoint('select_latest_evidence')
             try:
                 latest_evidence = connection.execute(

@@ -1277,7 +1277,10 @@ def test_runtime_status_not_offline_when_valid_enabled_targets_exist_without_row
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_HealthyTargetsNoRowsConn(None)))
 
     payload = monitoring_runner.monitoring_runtime_status()
-    assert reconcile_calls == [None]
+    # READ-ONLY: a GET must never reconcile/repair monitoring configuration, even when
+    # enabled targets have no monitored_systems rows yet. Status is still derived
+    # truthfully from persisted state without any write.
+    assert reconcile_calls == []
     assert payload['monitoring_status'] != 'offline'
     assert payload['status'] != 'Offline'
     assert payload['monitored_systems'] >= 1
@@ -1314,7 +1317,7 @@ def test_runtime_status_not_offline_when_workspace_has_monitored_rows_but_no_ena
     assert payload['status'] != 'Offline'
 
 
-def test_runtime_status_triggers_reconcile_when_enabled_rows_missing_for_healthy_targets(monkeypatch):
+def test_runtime_status_does_not_reconcile_when_enabled_rows_missing_for_healthy_targets(monkeypatch):
     now = datetime.now(timezone.utc)
 
     class _OnlyDisabledRowsConn(_Conn):
@@ -1345,11 +1348,13 @@ def test_runtime_status_triggers_reconcile_when_enabled_rows_missing_for_healthy
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_OnlyDisabledRowsConn(None)))
 
     payload = monitoring_runner.monitoring_runtime_status()
-    assert reconcile_calls == [None]
+    # READ-ONLY: a GET must not create/repair monitored_systems for healthy targets
+    # that are missing enabled rows. The explicit reconcile action owns that write.
+    assert reconcile_calls == []
     assert payload['monitoring_status'] != 'offline'
 
 
-def test_runtime_status_triggers_reconcile_when_healthy_target_ids_are_missing_even_if_counts_match(monkeypatch):
+def test_runtime_status_does_not_reconcile_when_healthy_target_ids_are_missing_even_if_counts_match(monkeypatch):
     now = datetime.now(timezone.utc)
 
     class _MismatchedTargetRowsConn(_Conn):
@@ -1382,8 +1387,89 @@ def test_runtime_status_triggers_reconcile_when_healthy_target_ids_are_missing_e
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_MismatchedTargetRowsConn(None)))
 
     payload = monitoring_runner.monitoring_runtime_status()
-    assert reconcile_calls == [None]
+    # READ-ONLY: even when counts match but a healthy target id is missing from the
+    # monitored_systems set, a GET must not reconcile. It reports observed state only.
+    assert reconcile_calls == []
     assert payload['monitoring_status'] != 'offline'
+
+
+class _ReconcileNeededRecordingConn(_Conn):
+    """A workspace with a healthy enabled target that has NO enabled monitored_systems
+    row (target-999) — the exact condition that used to trigger a reconcile write on a
+    GET. Records every write statement so a test can assert the GET stays read-only."""
+
+    def __init__(self, evidence_at=None):
+        super().__init__(evidence_at)
+        self.write_sql: list[str] = []
+
+    def execute(self, query, params=None):
+        head = ' '.join(str(query).split()).strip().upper()
+        if head.startswith(('INSERT', 'UPDATE', 'DELETE')):
+            self.write_sql.append(head[:48])
+        q = ' '.join(str(query).split())
+        if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
+            # A healthy enabled target with no matching enabled monitored_systems row.
+            return _Result(rows=[
+                {'id': 'target-1', 'asset_id': 'asset-1'},
+                {'id': 'target-2', 'asset_id': 'asset-2'},
+                {'id': 'target-999', 'asset_id': 'asset-9'},
+            ])
+        return super().execute(query, params)
+
+
+def test_runtime_status_get_issues_no_write_sql_and_is_idempotent(monkeypatch):
+    """READ-ONLY + idempotent: even when a monitored_systems gap exists (reconcile
+    "needed"), repeated GETs must issue no INSERT/UPDATE/DELETE, never call reconcile,
+    and return a stable status."""
+    now = datetime.now(timezone.utc)
+    conn = _ReconcileNeededRecordingConn(None)
+
+    reconcile_calls: list[str | None] = []
+    monkeypatch.setattr(
+        monitoring_runner,
+        'reconcile_enabled_targets_monitored_systems',
+        lambda _c, workspace_id=None: reconcile_calls.append(workspace_id) or {'created_or_updated': 1},
+    )
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
+
+    first = monitoring_runner.monitoring_runtime_status()
+    second = monitoring_runner.monitoring_runtime_status()
+
+    assert reconcile_calls == [], 'a GET must never reconcile'
+    assert conn.write_sql == [], f'a GET must issue no write SQL, got {conn.write_sql}'
+    assert first['monitoring_status'] == second['monitoring_status']
+    assert first['status'] == second['status']
+
+
+def test_runtime_status_allow_reconcile_true_still_reconciles(monkeypatch):
+    """The reconcile capability is preserved for explicit write/action flows: passing
+    allow_reconcile=True still repairs, so only the default (GET) path changed."""
+    now = datetime.now(timezone.utc)
+    conn = _ReconcileNeededRecordingConn(None)
+
+    reconcile_calls: list[str | None] = []
+    monkeypatch.setattr(
+        monitoring_runner,
+        'reconcile_enabled_targets_monitored_systems',
+        lambda _c, workspace_id=None: reconcile_calls.append(workspace_id) or {'created_or_updated': 1, 'created_monitored_systems': 1, 'preserved_monitored_systems': 0, 'removed_monitored_systems': 0},
+    )
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
+
+    monitoring_runner.monitoring_runtime_status(allow_reconcile=True)
+
+    assert reconcile_calls == [None], 'allow_reconcile=True must still perform the repair'
 
 
 def test_runtime_status_and_monitored_system_listing_use_same_workspace_rows(monkeypatch):
