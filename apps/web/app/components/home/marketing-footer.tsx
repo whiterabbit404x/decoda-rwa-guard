@@ -1,70 +1,63 @@
 import Link from 'next/link';
 
-import { DecodaLogo } from './home-icons';
-import { ROUTES } from './home-data';
+import { HomeIcon } from './home-icons';
+import { BrandLockup } from './marketing-header';
+import { footerColumns, ROUTES } from './home-data';
 import styles from './home.module.css';
 
-const PRODUCT_LINKS = [
-  { label: 'Platform', href: ROUTES.platformAnchor, external: false },
-  { label: 'How it works', href: ROUTES.howItWorksAnchor, external: false },
-  { label: 'RWA Security', href: ROUTES.rwaAnchor, external: false },
-  { label: 'Pricing', href: '/pricing', external: false },
-  { label: 'Live Proof', href: '/live-proof', external: false },
-];
+function FooterLink({ href, label }: { href: string; label: string }) {
+  if (href.startsWith('#') || href.startsWith('mailto:')) {
+    return (
+      <a href={href} className={styles.footerLink}>
+        {label}
+      </a>
+    );
+  }
+  return (
+    <Link href={href} className={styles.footerLink} prefetch={false}>
+      {label}
+    </Link>
+  );
+}
 
-const COMPANY_LINKS = [
-  { label: 'Security & Trust', href: '/trust', external: false },
-  { label: 'Support', href: '/support', external: false },
-  { label: 'Privacy', href: '/privacy', external: false },
-  { label: 'Terms', href: '/terms', external: false },
-];
-
-export function MarketingFooter({ supportEmail }: { supportEmail: string }) {
+export function MarketingFooter() {
   return (
     <footer className={styles.footer}>
       <div className={styles.footerInner}>
-        <div>
-          <Link href="/" className={styles.brand} prefetch={false}>
-            <DecodaLogo className={styles.brandMark} />
-            <span className={styles.brandName}>DECODA</span>
+        <div className={styles.footerBrandCol}>
+          <Link href="/" className={styles.brand} prefetch={false} aria-label="Decoda Security home">
+            <BrandLockup />
           </Link>
           <p className={styles.footerTag}>
-            Real-time RWA security and incident-response with evidence-grounded AI and
-            policy-controlled automation.
+            Security infrastructure for blockchain financial systems. Built for institutions.
+            Designed for trust at scale.
           </p>
         </div>
 
-        <nav className={styles.footerCol} aria-label="Product">
-          <span className={styles.footerColHead}>Product</span>
-          {PRODUCT_LINKS.map((link) =>
-            link.href.startsWith('#') ? (
-              <a key={link.label} href={link.href} className={styles.footerLink}>
-                {link.label}
-              </a>
-            ) : (
-              <Link key={link.label} href={link.href} className={styles.footerLink} prefetch={false}>
-                {link.label}
-              </Link>
-            ),
-          )}
-        </nav>
+        {footerColumns.map((col) => (
+          <nav key={col.head} className={styles.footerCol} aria-label={col.head}>
+            <span className={styles.footerColHead}>{col.head}</span>
+            {col.links.map((link) => (
+              <FooterLink key={link.label} href={link.href} label={link.label} />
+            ))}
+          </nav>
+        ))}
 
-        <nav className={styles.footerCol} aria-label="Company">
-          <span className={styles.footerColHead}>Company</span>
-          {COMPANY_LINKS.map((link) => (
-            <Link key={link.label} href={link.href} className={styles.footerLink} prefetch={false}>
-              {link.label}
-            </Link>
-          ))}
-          <a href={`mailto:${supportEmail}`} className={styles.footerLink}>
-            {supportEmail}
+        <div className={styles.footerCta}>
+          <span className={styles.footerColHead}>Ready to get started?</span>
+          <p className={styles.footerCtaText}>
+            Talk to our team about securing your blockchain financial programs.
+          </p>
+          <a href={ROUTES.demoMailto} className={`${styles.btnPrimary} ${styles.footerCtaBtn}`}>
+            Request a strategy session
+            <HomeIcon name="arrowRight" className={styles.btnArrow} />
           </a>
-        </nav>
+        </div>
       </div>
 
       <div className={styles.footerBottom}>
-        <span className={styles.footerCopy}>&copy; 2026 Decoda. All rights reserved.</span>
-        <span className={styles.footerCopy}>Real-time RWA security &amp; incident response.</span>
+        <span className={styles.footerCopy}>&copy; 2026 Decoda Security. All rights reserved.</span>
+        <span className={styles.footerCopy}>Security infrastructure for blockchain financial systems.</span>
       </div>
     </footer>
   );

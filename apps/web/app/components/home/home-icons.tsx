@@ -38,7 +38,13 @@ export type IconName =
   | 'compliance'
   | 'check'
   | 'arrowRight'
-  | 'lock';
+  | 'lock'
+  | 'shield'
+  | 'institution'
+  | 'flag'
+  | 'team'
+  | 'layers'
+  | 'network';
 
 const PATHS: Record<IconName, ReactElement> = {
   telemetry: (
@@ -225,6 +231,47 @@ const PATHS: Record<IconName, ReactElement> = {
     <>
       <rect x="5" y="10.5" width="14" height="9" rx="2" />
       <path d="M8 10.5V8a4 4 0 018 0v2.5" />
+    </>
+  ),
+  shield: (
+    <>
+      <path d="M12 3l7 3v5c0 4.2-2.9 7.6-7 8.6C7.9 18.6 5 15.2 5 11V6l7-3z" />
+    </>
+  ),
+  institution: (
+    <>
+      <path d="M4 9l8-5 8 5" />
+      <path d="M6 9.5v8M10 9.5v8M14 9.5v8M18 9.5v8" />
+      <path d="M4.5 9.3h15M3 20.5h18" />
+    </>
+  ),
+  flag: (
+    <>
+      <path d="M6 21V4" />
+      <path d="M6 4.5h11l-2.2 3.4L17 11.3H6" />
+    </>
+  ),
+  team: (
+    <>
+      <circle cx="9" cy="8.5" r="3" />
+      <path d="M3.5 19a5.6 5.6 0 0111 0" />
+      <path d="M16 6.2a3 3 0 010 5.6" />
+      <path d="M17.4 13.2a5.4 5.4 0 013.1 4.9" />
+    </>
+  ),
+  layers: (
+    <>
+      <path d="M12 3.5l8 4.2-8 4.2-8-4.2 8-4.2z" />
+      <path d="M4 12l8 4.2 8-4.2" />
+      <path d="M4 16.2l8 4.3 8-4.3" />
+    </>
+  ),
+  network: (
+    <>
+      <circle cx="6" cy="7" r="2.3" />
+      <circle cx="18" cy="7" r="2.3" />
+      <circle cx="12" cy="17.5" r="2.3" />
+      <path d="M8 8.4l3 7.3M16 8.4l-3 7.3M8.3 7h7.4" />
     </>
   ),
 };
