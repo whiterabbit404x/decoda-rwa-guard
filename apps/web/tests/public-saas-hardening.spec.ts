@@ -4,17 +4,11 @@ import path from 'node:path';
 
 import { fetchDashboardPageData } from '../app/dashboard-data';
 
-test('public company homepage uses truthful enterprise CTA wording, not demo/trial wording', async () => {
-  const homeDir = path.join(__dirname, '..', 'app', 'components', 'home');
-  const cta = ['marketing-header.tsx', 'hero-section.tsx', 'company-cta.tsx', 'marketing-footer.tsx']
-    .map((file) => fs.readFileSync(path.join(homeDir, file), 'utf-8'))
-    .join('\n');
-  // Enterprise sales language is the conversion path — "Request a demo" —
-  // rather than consumer "free trial" demo-mode wording.
-  expect(cta).toContain('Request a demo');
-  expect(cta).toContain('Request a strategy session');
-  expect(cta).not.toContain('Start free trial');
-  expect(cta).not.toContain('Free trial');
+test('customer-facing routes remove demo wording', async () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'app', 'page.tsx'), 'utf-8');
+  expect(content).toContain('Start pilot');
+  expect(content).toContain('Contact sales');
+  expect(content).not.toContain('Start free trial');
 });
 
 test('production mode does not silently render sample dashboard payloads', async () => {

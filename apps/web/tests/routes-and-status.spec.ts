@@ -13,12 +13,11 @@ test('keeps the route split between marketing / and authenticated /dashboard', a
   const marketingPage = readFileSync(join(appDir, 'page.tsx'), 'utf8');
   const dashboardPage = readFileSync(join(appDir, '(product)/dashboard/page.tsx'), 'utf8');
 
-  // Marketing `/` composes the public company homepage sections and drives
-  // conversion through the demo request; it must not pull in the authenticated
-  // dashboard data path.
+  // Marketing `/` composes the public homepage sections and drives conversion
+  // to sign-up; it must not pull in the authenticated dashboard data path.
   expect(marketingPage).toContain('HeroSection');
-  expect(marketingPage).toContain('RWASecurityPlatformSection');
-  expect(marketingPage).toContain('CompanyCTA');
+  expect(marketingPage).toContain('Start pilot');
+  expect(marketingPage).toContain('/sign-up');
   expect(marketingPage).not.toContain('fetchDashboardPageData');
   expect(dashboardPage).toContain('DashboardLiveHydrator');
   expect(dashboardPage).toContain('fetchDashboardPageData');
