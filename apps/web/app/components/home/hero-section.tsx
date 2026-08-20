@@ -1,8 +1,6 @@
-import Link from 'next/link';
-
 import { HomeIcon } from './home-icons';
-import { heroCapabilities, ROUTES } from './home-data';
-import { IncidentWorkflowDemo } from './incident-workflow-demo';
+import { ROUTES } from './home-data';
+import { EnterpriseSecurityPanel } from './enterprise-security-panel';
 import styles from './home.module.css';
 
 export function HeroSection() {
@@ -10,45 +8,29 @@ export function HeroSection() {
     <section className={styles.hero}>
       <div className={styles.heroInner}>
         <div className={styles.heroLeft}>
-          <p className={styles.heroEyebrow}>Autonomous security operations for RWA</p>
+          <p className={styles.heroEyebrow}>Security infrastructure for digital finance</p>
           <h1 className={styles.heroTitle}>
-            <span className={styles.heroTitleLine}>Detect threats.</span>{' '}
-            <span className={styles.heroTitleLine}>Investigate with evidence.</span>{' '}
-            <span className={styles.heroTitleAccent}>Respond under policy.</span>
+            Security infrastructure for blockchain financial systems.
           </h1>
           <p className={styles.heroLead}>
-            Decoda is a real-time RWA security and incident-response platform with evidence-grounded
-            AI investigation and policy-controlled automation.
-          </p>
-          <p className={styles.heroLead2}>
-            From on-chain telemetry to incident response and tamper-evident evidence, Decoda operates
-            across the entire security lifecycle.
+            Decoda helps institutions launch and scale digital asset and real-world asset programs
+            with the controls, visibility, and resilience that modern financial infrastructure
+            demands.
           </p>
 
           <div className={styles.heroCtas}>
-            <Link href={ROUTES.startMonitoring} className={styles.btnPrimary} prefetch={false}>
-              Start monitoring
+            <a href={ROUTES.rwaAnchor} className={styles.btnPrimary}>
+              Explore RWA Security
               <HomeIcon name="arrowRight" className={styles.btnArrow} />
-            </Link>
-            <a href={ROUTES.platformAnchor} className={styles.btnSecondary}>
-              Explore the platform
+            </a>
+            <a href={ROUTES.demoMailto} className={styles.btnSecondary}>
+              Request a demo
             </a>
           </div>
-
-          <ul className={styles.capRow}>
-            {heroCapabilities.map((cap) => (
-              <li key={cap.label} className={styles.capItem}>
-                <span className={styles.capIcon}>
-                  <HomeIcon name={cap.icon} />
-                </span>
-                {cap.label}
-              </li>
-            ))}
-          </ul>
         </div>
 
         <div className={styles.heroRight}>
-          <IncidentWorkflowDemo />
+          <EnterpriseSecurityPanel />
         </div>
       </div>
     </section>
