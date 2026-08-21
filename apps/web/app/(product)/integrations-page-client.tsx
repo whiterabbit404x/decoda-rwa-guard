@@ -12,7 +12,6 @@ import {
   TabStrip,
 } from '../components/ui-primitives';
 import { usePilotAuth } from '../pilot-auth-context';
-import RuntimeSummaryPanel from '../runtime-summary-panel';
 import { IntegrationGatewayAgentPanel } from './integration-gateway-agent-panel';
 import {
   apiStatusVariant,
@@ -218,7 +217,9 @@ export default function IntegrationsPageClient(_props?: { apiUrl?: string }) {
 
   return (
     <main className="productPage">
-      <RuntimeSummaryPanel />
+      {/* Integrations content is primary here. Full monitoring diagnostics live on
+          /system-health; a degraded runtime is surfaced by the compact global health
+          warning in the app shell. */}
 
       {/* ── Header ─────────────────────────────────────────── */}
       <div className="listHeader" style={{ marginBottom: '1rem', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.75rem' }}>

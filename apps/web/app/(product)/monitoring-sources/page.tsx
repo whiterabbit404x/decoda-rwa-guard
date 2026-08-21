@@ -13,7 +13,6 @@ import {
 } from '../../components/ui-primitives';
 import { usePilotAuth } from '../../pilot-auth-context';
 import { useRuntimeSummary } from '../../runtime-summary-context';
-import RuntimeSummaryPanel from '../../runtime-summary-panel';
 import { SourceOptimizationAgentPanel } from './agent-panel';
 import { DecisionEvidenceDrawer, SourceDetailDrawer } from './detail-drawer';
 import { SummaryCards } from './summary-cards';
@@ -549,7 +548,10 @@ export default function MonitoringSourcesPage() {
 
   return (
     <main className="productPage">
-      <RuntimeSummaryPanel />
+      {/* Source-specific health (connection, RPC/provider state, last poll, last
+          telemetry, verify/diagnose) is kept below in the summary cards and the
+          Source Optimization agent panel. The full global System Health dashboard is
+          NOT repeated here — it lives on /system-health. */}
 
       {/* ── Header ─────────────────────────────────────────── */}
       <div className="listHeader" style={{ marginBottom: '1rem', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.75rem' }}>

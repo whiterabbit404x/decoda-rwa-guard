@@ -148,7 +148,11 @@ test('/alerts page renders the h1, the screen, and a triage-focused subtitle', (
   const src = appSource('(product)/alerts/page.tsx');
   expect(src).toContain('export default function AlertsPage');
   expect(src).toContain('<h1>Active Alerts</h1>');
-  expect(src).toContain('RuntimeSummaryPanel');
+  // The large runtime/coverage diagnostics panel no longer sits above Active Alerts —
+  // detailed monitoring diagnostics live on /system-health, and a degraded runtime is
+  // surfaced by the compact global health warning in the app shell. Active Alerts is the
+  // primary content near the top of the page.
+  expect(src).not.toContain('RuntimeSummaryPanel');
   expect(src).toContain('AlertsScreen');
   expect(src.toLowerCase()).toContain('cluster');
 });

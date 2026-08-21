@@ -1,5 +1,4 @@
 import Link from 'next/link';
-import RuntimeSummaryPanel from '../../../runtime-summary-panel';
 import ForensicInvestigatorPanel from '../../../forensic-investigator-panel';
 import IncidentCaseFileTabs from '../../../incident-case-file-tabs';
 
@@ -29,7 +28,6 @@ export default async function IncidentDetailPage({
   const { incidentId } = await params;
   return (
     <main className="productPage">
-      <RuntimeSummaryPanel />
       <section className="hero compactHero">
         <div>
           <p className="eyebrow">Investigation Workflow</p>
