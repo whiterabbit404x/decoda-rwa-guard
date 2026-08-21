@@ -30,8 +30,8 @@ const principles = [
   },
   {
     icon: 'proofgates',
-    title: 'Proof gates in CI',
-    body: 'Every push triggers a release proof pipeline that validates the full evidence chain end-to-end: telemetry receipt → detection → alert → incident → evidence package. The pipeline is fail-closed — a broken gate blocks release.',
+    title: 'Fail-closed release proof gates',
+    body: 'Release readiness is gated by a fail-closed proof pipeline that exercises the evidence chain — telemetry receipt → detection → alert → incident → evidence package. A broken gate blocks the release rather than shipping an unverified claim.',
   },
 ];
 
@@ -145,7 +145,6 @@ export default function TrustPage() {
           <nav className="mktStandaloneNavLinks" aria-label="Site navigation">
             <Link href="/#platform" className="mktStandaloneNavLink" prefetch={false}>Product</Link>
             <Link href="/pricing" className="mktStandaloneNavLink" prefetch={false}>Pricing</Link>
-            <Link href="/live-proof" className="mktStandaloneNavLink" prefetch={false}>Live Proof</Link>
           </nav>
           <div className="mktStandaloneNavRight">
             <Link href="/sign-in" className="mktStandaloneNavSignIn" prefetch={false}>Sign in</Link>
@@ -173,8 +172,8 @@ export default function TrustPage() {
           <span className="trustHeroBadge trustHeroBadge--yellow">SOC 2 — in roadmap, not yet certified</span>
         </div>
         <p className="trustHeroProofLine">
-          Live runtime, telemetry and evidence-chain proof status is published on our{' '}
-          <Link href="/live-proof" prefetch={false} className="trustLink">Live Proof</Link> page.
+          Runtime, telemetry and evidence-chain status is derived from canonical backend facts and surfaced
+          fail-closed inside the product — degraded or missing signals are shown as such, never as healthy.
         </p>
       </header>
 
@@ -281,7 +280,6 @@ export default function TrustPage() {
         <Link href="/pricing" prefetch={false} className="trustLink">Pricing</Link>
         <Link href="/privacy" prefetch={false} className="trustLink">Privacy Policy</Link>
         <Link href="/terms" prefetch={false} className="trustLink">Terms of Service</Link>
-        <Link href="/live-proof" prefetch={false} className="trustLink">Live Proof</Link>
         <a href={`mailto:${supportEmail}`} className="trustLink">Support</a>
       </div>
     </main>
