@@ -14,7 +14,7 @@ const tiers = [
     features: [
       { label: 'Workspaces', value: '1' },
       { label: 'Monitored contracts', value: '5' },
-      { label: 'Networks', value: 'Ethereum mainnet' },
+      { label: 'Networks', value: 'Base Mainnet' },
       { label: 'Live EVM telemetry', value: '✓' },
       { label: 'Threat & compliance detection', value: '✓' },
       { label: 'Alert routing', value: 'Email' },
@@ -37,7 +37,7 @@ const tiers = [
     features: [
       { label: 'Workspaces', value: '3' },
       { label: 'Monitored contracts', value: '50' },
-      { label: 'Networks', value: 'Multi-chain (EVM)' },
+      { label: 'Networks', value: 'Base + EVM (roadmap)' },
       { label: 'Live EVM telemetry', value: '✓' },
       { label: 'Threat & compliance detection', value: '✓' },
       { label: 'Alert routing', value: 'Email + priority' },
@@ -56,11 +56,11 @@ const tiers = [
     description: 'Dedicated deployment, compliance reporting, custom SLA, and dedicated support.',
     featured: false,
     ctaLabel: 'Contact sales →',
-    ctaHref: 'mailto:sales@decoda.app',
+    ctaHref: 'mailto:sales@decodasecurity.com',
     features: [
       { label: 'Workspaces', value: 'Unlimited' },
       { label: 'Monitored contracts', value: 'Unlimited' },
-      { label: 'Networks', value: 'Multi-chain + private' },
+      { label: 'Networks', value: 'Base + EVM (roadmap)' },
       { label: 'Live EVM telemetry', value: '✓' },
       { label: 'Threat & compliance detection', value: '✓' },
       { label: 'Alert routing', value: 'Custom routing rules' },
@@ -97,7 +97,7 @@ const faqs = [
   },
   {
     q: 'Is there a discount for annual billing?',
-    a: 'Annual billing is available for Pro and Enterprise plans at a 15% discount. Contact sales@decoda.app to arrange.',
+    a: 'Annual billing is available for Pro and Enterprise plans at a 15% discount. Contact sales@decodasecurity.com to arrange.',
   },
 ];
 
@@ -235,7 +235,7 @@ export default function PricingPage() {
           Enterprise plans include dedicated deployment, custom evidence templates, compliance export formats,
           configurable audit log retention, and a dedicated support channel with SLA guarantees.
         </p>
-        <a href="mailto:sales@decoda.app" className="mktCtaPrimary">
+        <a href="mailto:sales@decodasecurity.com" className="mktCtaPrimary">
           Contact sales →
         </a>
       </section>

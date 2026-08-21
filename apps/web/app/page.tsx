@@ -49,7 +49,7 @@ const pricingTiers: PricingTier[] = [
     features: [
       '3 workspaces',
       '50 monitored contracts',
-      'Multi-chain telemetry',
+      'Base Mainnet telemetry (+ EVM roadmap)',
       'Priority alert routing',
       'Unlimited evidence packages',
       'Incident playbooks',
@@ -63,7 +63,7 @@ const pricingTiers: PricingTier[] = [
     description: 'Dedicated deployment, compliance reporting, custom SLA and a dedicated support channel.',
     featured: false,
     ctaLabel: 'Contact sales →',
-    ctaHref: 'mailto:sales@decoda.app',
+    ctaHref: 'mailto:sales@decodasecurity.com',
     features: [
       'Unlimited workspaces & assets',
       'Dedicated deployment',

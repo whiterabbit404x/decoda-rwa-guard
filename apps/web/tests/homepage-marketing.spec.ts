@@ -124,7 +124,7 @@ test('homepage links point at real existing routes only', () => {
   // Auth + conversion routes that exist in the app router.
   expect(dataFile).toContain("signIn: '/sign-in'");
   expect(dataFile).toContain("startMonitoring: '/sign-up'");
-  expect(dataFile).toContain("demoMailto: 'mailto:sales@decoda.app'");
+  expect(dataFile).toContain("demoMailto: 'mailto:sales@decodasecurity.com'");
 
   const page = read(APP_DIR, 'page.tsx');
   // Real pricing CTAs are reused verbatim; no invented plan wording.
@@ -139,4 +139,15 @@ test('public support contact uses the official decodasecurity.com address', () =
   const page = read(APP_DIR, 'page.tsx');
   expect(page).toContain("support@decodasecurity.com");
   expect(page).not.toContain('support@decoda.app');
+});
+
+test('public sales/contact CTAs use the official decodasecurity.com domain', () => {
+  // Public contact identities (sales, security) must use the canonical
+  // decodasecurity.com domain. Transactional/infra identities (no-reply@,
+  // demo@) are intentionally out of scope and handled by mail configuration.
+  const page = read(APP_DIR, 'page.tsx');
+  const dataFile = read(HOME_DIR, 'home-data.ts');
+  expect(page).toContain('mailto:sales@decodasecurity.com');
+  expect(page).not.toContain('sales@decoda.app');
+  expect(dataFile).not.toContain('@decoda.app');
 });

@@ -1,8 +1,27 @@
 import Link from 'next/link';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { getBuildInfo } from '../build-info';
 
 export const dynamic = 'force-dynamic';
+
+// ─── Network naming ───────────────────────────────────────────
+// The live monitoring environment runs on Base Mainnet (chain 8453) today;
+// the routing layer can also serve other EVM chains when configured. The
+// observed chain id is read from the proof artifact — never hard-coded — so
+// the label always reflects what the CI run actually probed.
+const CHAIN_NAMES: Record<string, string> = {
+  '1': 'Ethereum Mainnet',
+  '8453': 'Base Mainnet',
+  '42161': 'Arbitrum One',
+};
+
+function chainLabel(chainId: string | undefined): string {
+  if (!chainId) return '—';
+  const id = String(chainId).trim();
+  const name = CHAIN_NAMES[id];
+  return name ? `${id} (${name})` : `${id}`;
+}
 
 // ─── Safe artifact reader ─────────────────────────────────────
 
@@ -45,6 +64,27 @@ function buildProofCards(): ProofCard[] {
 
   const cards: ProofCard[] = [];
 
+  // 0. Build & deployment — genuine, always-available evidence read live from
+  //    the running deployment environment (not a committed artifact). This is
+  //    the one card that reflects the deployment serving this very request.
+  {
+    const build = getBuildInfo(process.env);
+    const configured = build.runtimeConfig.configured;
+    cards.push({
+      title: 'Build & Deployment',
+      status: configured ? 'pass' : 'unknown',
+      statusLabel: configured ? 'Live deployment' : 'Backend not configured',
+      lines: [
+        { label: 'Environment', value: build.vercelEnv ?? '—' },
+        { label: 'Commit', value: build.shortCommitSha ?? 'unknown' },
+        { label: 'Built at', value: build.buildTimestamp ? build.buildTimestamp.replace('T', ' ').replace(/\.\d+.*$/, ' UTC') : '—' },
+        { label: 'Backend API configured', value: configured ? 'Yes' : 'No' },
+        { label: 'Live monitoring mode', value: build.runtimeConfig.liveModeEnabled ? 'Enabled' : 'Disabled' },
+      ],
+      note: 'Read live from the deployment serving this request — not from a stored artifact.',
+    });
+  }
+
   // 1. Overall readiness
   {
     const score = readiness?.overall_score as number | undefined;
@@ -53,7 +93,7 @@ function buildProofCards(): ProofCard[] {
     cards.push({
       title: 'Production Readiness Gates',
       status: ready100 ? 'pass' : score !== undefined ? 'fail' : 'unknown',
-      statusLabel: ready100 ? 'All gates passing' : score !== undefined ? `Score: ${score}/100` : 'Unavailable',
+      statusLabel: ready100 ? 'All gates passing' : score !== undefined ? `Score: ${score}/100` : 'Verification pending',
       lines: [
         { label: 'Overall score', value: score !== undefined ? `${score}/100` : '—' },
         { label: 'Controlled pilot ready', value: readiness?.controlled_pilot_ready ? 'Yes' : '—' },
@@ -76,14 +116,17 @@ function buildProofCards(): ProofCard[] {
     cards.push({
       title: 'Live EVM Telemetry',
       status: ready ? 'pass' : lep ? 'fail' : 'unknown',
-      statusLabel: ready ? 'Proven in CI' : lep ? 'Proof unavailable' : 'Unavailable',
+      statusLabel: ready ? 'Proven in CI' : lep ? 'Proof incomplete' : 'Verification pending',
       lines: [
         { label: 'Provider mode', value: providerMode ?? '—' },
-        { label: 'Chain ID', value: chainId ? `${chainId} (Ethereum mainnet)` : '—' },
+        { label: 'Chain observed', value: chainLabel(chainId) },
         { label: 'Block observed', value: block ? `#${block}` : '—' },
         { label: 'CI run', value: githubRunId ? `#${githubRunId}` : '—' },
         { label: 'Proof generated', value: generatedAt ? generatedAt.replace('T', ' ').replace(/\.\d+.*$/, ' UTC') : '—' },
       ],
+      note: ready
+        ? undefined
+        : 'Live-provider telemetry is validated by our staging live-evidence CI pipeline. Results publish here when a proof run is attached to this deployment.',
     });
   }
 
@@ -95,7 +138,7 @@ function buildProofCards(): ProofCard[] {
     cards.push({
       title: 'Alert → Incident → Evidence Chain',
       status: chain && ready ? 'pass' : chain ? 'fail' : 'unknown',
-      statusLabel: chain && ready ? 'Proven end-to-end' : chain ? 'Partial' : 'Unavailable',
+      statusLabel: chain && ready ? 'Proven end-to-end' : chain ? 'Partial' : 'Verification pending',
       lines: [
         { label: 'Telemetry event ID', value: chain?.telemetry_event_id as string ?? '—' },
         { label: 'Detection ID', value: chain?.detection_id as string ?? '—' },
@@ -103,7 +146,9 @@ function buildProofCards(): ProofCard[] {
         { label: 'Incident ID', value: chain?.incident_id as string ?? '—' },
         { label: 'Evidence package ID', value: chain?.evidence_package_id as string ?? '—' },
       ],
-      note: 'All IDs are live — generated from real Ethereum mainnet telemetry, not seeded or simulated data.',
+      note: chain && ready
+        ? 'All IDs are live — generated from real on-chain telemetry, not seeded or simulated data.'
+        : 'The full evidence chain is exercised end-to-end by a staging live-evidence CI run; IDs publish here once that proof is attached.',
     });
   }
 
@@ -116,7 +161,7 @@ function buildProofCards(): ProofCard[] {
     cards.push({
       title: 'CI Release Gates',
       status: ciReady && testReady ? 'pass' : ciReady !== undefined ? 'fail' : 'unknown',
-      statusLabel: ciReady && testReady ? 'All gates green' : ciReady !== undefined ? 'Gates failing' : 'Unavailable',
+      statusLabel: ciReady && testReady ? 'All gates green' : ciReady !== undefined ? 'Gates failing' : 'Verification pending',
       lines: [
         { label: 'Release status', value: releaseStatus ?? '—' },
         { label: 'CI gates', value: ciReady ? 'Passing' : ciReady === false ? 'Failing' : '—' },
@@ -135,7 +180,7 @@ function buildProofCards(): ProofCard[] {
     cards.push({
       title: 'Billing & Email Readiness',
       status: billingReady && emailReady ? 'pass' : billingReady !== undefined ? 'fail' : 'unknown',
-      statusLabel: billingReady && emailReady ? 'Both ready' : billingReady !== undefined ? 'Check required' : 'Unavailable',
+      statusLabel: billingReady && emailReady ? 'Both ready' : billingReady !== undefined ? 'Check required' : 'Verification pending',
       lines: [
         { label: 'Billing provider', value: billingReady ? 'Ready (Paddle)' : billingReady === false ? 'Not ready' : '—' },
         { label: 'Email provider', value: emailReady ? 'Ready' : emailReady === false ? 'Not ready' : '—' },
@@ -154,7 +199,7 @@ function buildProofCards(): ProofCard[] {
     cards.push({
       title: 'Sell-Now Assessment',
       status: ready ? 'pass' : ready === false ? 'fail' : 'unknown',
-      statusLabel: ready ? 'Ready' : ready === false ? 'Blockers present' : 'Unavailable',
+      statusLabel: ready ? 'Ready' : ready === false ? 'Blockers present' : 'Verification pending',
       lines: safeClaims?.slice(0, 4).map((c) => ({ label: '✓', value: c })) ?? [
         { label: 'Status', value: '—' },
       ],
@@ -183,18 +228,19 @@ export default function LiveProofPage() {
       <header className="proofHero">
         <p className="mktSectionLabel">LIVE PROOF</p>
         <h1 className="proofHeroTitle">
-          Production proof — sourced from real CI artifacts.
+          Production proof — sourced from real runtime and CI evidence.
         </h1>
         <p className="proofHeroSubtitle">
-          Every value on this page is read from proof artifacts committed to the repository and generated by
-          real CI runs. Nothing is fabricated. If an artifact is missing, we say so rather than showing placeholder data.
+          Every value on this page is read live from the running deployment and from proof artifacts produced by our CI and
+          staging live-evidence pipelines. Nothing is fabricated. When a proof artifact is not attached to this deployment,
+          the card is marked pending rather than showing placeholder data.
         </p>
         <div className={`proofSummaryBadge${allPass ? ' proofSummaryBadge--pass' : failCount > 0 ? ' proofSummaryBadge--fail' : ' proofSummaryBadge--warn'}`}>
           {allPass
             ? '✓ All proof checks passing'
             : failCount > 0
               ? `✗ ${failCount} check${failCount > 1 ? 's' : ''} failing`
-              : `⚠ ${unknownCount} artifact${unknownCount > 1 ? 's' : ''} unavailable`}
+              : `⚠ ${unknownCount} proof${unknownCount > 1 ? 's' : ''} pending verification`}
         </div>
       </header>
 
@@ -225,9 +271,9 @@ export default function LiveProofPage() {
       <section className="proofHonestyNote">
         <h2 className="proofHonestyTitle">How this page works</h2>
         <ul className="proofHonestyList">
-          <li>Data is read at server-render time from committed JSON artifact files in <code>artifacts/</code>.</li>
-          <li>Artifacts are generated by CI pipelines that run the full evidence chain against live Ethereum mainnet RPC.</li>
-          <li>If an artifact file is missing or unparseable, the card shows &ldquo;Unavailable&rdquo; rather than placeholder values.</li>
+          <li>The Build &amp; Deployment card is read at server-render time from the live deployment environment serving this request.</li>
+          <li>Proof cards are read from JSON artifacts produced by our CI and staging live-evidence pipelines, which run the full evidence chain against a live Base Mainnet RPC endpoint.</li>
+          <li>When a proof artifact is not attached to this deployment, the card is marked &ldquo;Verification pending&rdquo; rather than showing placeholder values.</li>
           <li>No chart or status is fabricated. All UUIDs shown are from actual CI runs.</li>
           <li>Simulator or seeded data is never used on this page.</li>
         </ul>

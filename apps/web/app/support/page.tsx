@@ -12,8 +12,8 @@ export default function SupportPage() {
       <h2>Channels</h2>
       <ul>
         <li>General support: <a href="mailto:support@decodasecurity.com">support@decodasecurity.com</a></li>
-        <li>Security reports: <a href="mailto:security@decoda.app">security@decoda.app</a></li>
-        <li>Commercial / pilot expansion: <a href="mailto:sales@decoda.app">sales@decoda.app</a></li>
+        <li>Security reports: <a href="mailto:security@decodasecurity.com">security@decodasecurity.com</a></li>
+        <li>Commercial / pilot expansion: <a href="mailto:sales@decodasecurity.com">sales@decodasecurity.com</a></li>
       </ul>
 
       <h2>What we can help with</h2>

@@ -55,7 +55,7 @@ const disclosureFaqs = [
   },
   {
     q: 'How do I report a security issue?',
-    a: 'Email security@decoda.app with a description of the issue. We will acknowledge within 48 hours and coordinate disclosure. We do not have a formal bug bounty programme at this stage.',
+    a: 'Email security@decodasecurity.com with a description of the issue. We will acknowledge within 48 hours and coordinate disclosure. We do not have a formal bug bounty programme at this stage.',
   },
   {
     q: 'Where is data stored?',
@@ -124,7 +124,7 @@ function TrustShield() {
 }
 
 export default function TrustPage() {
-  const securityEmail = 'security@decoda.app';
+  const securityEmail = 'security@decodasecurity.com';
   const supportEmail = process.env.NEXT_PUBLIC_SUPPORT_EMAIL ?? 'support@decodasecurity.com';
 
   return (
@@ -167,11 +167,15 @@ export default function TrustPage() {
           This page documents the security and trust posture of the platform as it stands today.
         </p>
         <div className="trustHeroBadges">
-          <span className="trustHeroBadge trustHeroBadge--green">Live EVM telemetry proven</span>
-          <span className="trustHeroBadge trustHeroBadge--green">Evidence chain end-to-end verified</span>
-          <span className="trustHeroBadge trustHeroBadge--green">100/100 production readiness</span>
+          <span className="trustHeroBadge trustHeroBadge--green">Fail-closed by design</span>
+          <span className="trustHeroBadge trustHeroBadge--green">Workspace-isolated</span>
+          <span className="trustHeroBadge trustHeroBadge--green">Immutable audit trail</span>
           <span className="trustHeroBadge trustHeroBadge--yellow">SOC 2 — in roadmap, not yet certified</span>
         </div>
+        <p className="trustHeroProofLine">
+          Live runtime, telemetry and evidence-chain proof status is published on our{' '}
+          <Link href="/live-proof" prefetch={false} className="trustLink">Live Proof</Link> page.
+        </p>
       </header>
 
       {/* ── Principles grid ──────────────────────────────────── */}
