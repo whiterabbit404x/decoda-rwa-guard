@@ -53,8 +53,9 @@ test.describe('onboarding no longer uses native <select> popups', () => {
 test.describe('backend payload values are preserved', () => {
   test('Network submits the numeric chain id (Number conversion kept)', () => {
     expect(clientSrc).toContain('chain_id: Number(v)');
-    // options carry the chain id as the option value
-    expect(clientSrc).toContain('options={CHAINS.map((c) => ({ value: String(c.id), label: c.label }))}');
+    // options still carry the chain id as the option value
+    expect(clientSrc).toContain('options={CHAINS.map((c) => ({');
+    expect(clientSrc).toContain('value: String(c.id)');
     // controlled value round-trips the numeric chain id as a string
     expect(clientSrc).toContain('value={String(form.chain_id)}');
   });
@@ -62,6 +63,29 @@ test.describe('backend payload values are preserved', () => {
   test('Base Mainnet = 8453 and Ethereum Mainnet = 1 are still defined', () => {
     expect(clientSrc).toMatch(/id:\s*8453,\s*label:\s*'Base Mainnet \(8453\)'/);
     expect(clientSrc).toMatch(/id:\s*1,\s*label:\s*'Ethereum Mainnet \(1\)'/);
+  });
+
+  test('Base Mainnet is the only network validated for automated discovery', () => {
+    // Base is marked supported; every future EVM network is defined but not yet supported.
+    expect(clientSrc).toMatch(/id:\s*8453,\s*label:\s*'Base Mainnet \(8453\)',\s*supported:\s*true/);
+    expect(clientSrc).toMatch(/id:\s*1,\s*label:\s*'Ethereum Mainnet \(1\)',\s*supported:\s*false/);
+    expect(clientSrc).toMatch(/id:\s*42161,[^}]*supported:\s*false/);
+    expect(clientSrc).toMatch(/id:\s*10,[^}]*supported:\s*false/);
+    expect(clientSrc).toMatch(/id:\s*137,[^}]*supported:\s*false/);
+  });
+
+  test('unsupported networks render disabled with a "Coming soon" label', () => {
+    // Displayed option label carries the capability state; unsupported = disabled.
+    expect(clientSrc).toContain('— Supported');
+    expect(clientSrc).toContain('— Coming soon');
+    expect(clientSrc).toContain('disabled: !c.supported');
+  });
+
+  test('automated discovery is fail-closed to supported networks only', () => {
+    // A customer cannot start discovery on an unsupported network even via a restored draft.
+    expect(clientSrc).toContain('SUPPORTED_CHAIN_IDS');
+    expect(clientSrc).toMatch(/const\s+chainSupported\s*=\s*SUPPORTED_CHAIN_IDS\.has\(form\.chain_id\)/);
+    expect(clientSrc).toMatch(/const\s+canSubmit\s*=\s*contractValid\s*&&\s*chainSupported\s*&&\s*busy === null/);
   });
 
   test('Monitoring mode still submits its enum value unchanged', () => {

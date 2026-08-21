@@ -4,12 +4,14 @@ import { DecodaLogo } from './home-icons';
 import { ROUTES } from './home-data';
 import styles from './home.module.css';
 
+// Live Proof is intentionally omitted from prominent public navigation until
+// genuine public verification artifacts are published to the deployment. The
+// page still exists at /live-proof in a truthful, graceful state.
 const PRODUCT_LINKS = [
   { label: 'Platform', href: ROUTES.platformAnchor, external: false },
   { label: 'How it works', href: ROUTES.howItWorksAnchor, external: false },
   { label: 'RWA Security', href: ROUTES.rwaAnchor, external: false },
   { label: 'Pricing', href: '/pricing', external: false },
-  { label: 'Live Proof', href: '/live-proof', external: false },
 ];
 
 const COMPANY_LINKS = [

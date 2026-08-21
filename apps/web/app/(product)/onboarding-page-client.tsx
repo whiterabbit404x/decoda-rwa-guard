@@ -12,13 +12,22 @@ import {
   type OnboardingSnapshot, type StreamStatus,
 } from '../onboarding-agent-client';
 
+// Network capability registry. Base Mainnet is the only network Decoda
+// currently validates end-to-end for production/pilot monitoring. Future EVM
+// networks are intentionally kept defined (the platform architecture is
+// multi-chain by design) but are surfaced as "Coming soon" and cannot be
+// selected to start automated discovery until they are genuinely end-to-end
+// validated. This keeps the public capability claim truthful and fail-closed.
 const CHAINS = [
-  { id: 8453, label: 'Base Mainnet (8453)' },
-  { id: 1, label: 'Ethereum Mainnet (1)' },
-  { id: 42161, label: 'Arbitrum One (42161)' },
-  { id: 10, label: 'Optimism (10)' },
-  { id: 137, label: 'Polygon (137)' },
+  { id: 8453, label: 'Base Mainnet (8453)', supported: true },
+  { id: 1, label: 'Ethereum Mainnet (1)', supported: false },
+  { id: 42161, label: 'Arbitrum One (42161)', supported: false },
+  { id: 10, label: 'Optimism (10)', supported: false },
+  { id: 137, label: 'Polygon (137)', supported: false },
 ];
+
+// Canonical set of chain ids on which automated discovery may actually start.
+const SUPPORTED_CHAIN_IDS = new Set(CHAINS.filter((c) => c.supported).map((c) => c.id));
 
 const MODES = [
   { id: 'recommended', label: 'Recommended', detail: 'Agent generates appropriate monitoring coverage.' },
@@ -416,7 +425,12 @@ function SessionErrorNotice({ session, onRetry, busy }: { session: OnboardingSes
 function IntakeForm({ form, setForm, onCreate, busy, contractValid }: {
   form: any; setForm: (f: any) => void; onCreate: () => void; busy: Busy; contractValid: boolean;
 }) {
-  const canSubmit = contractValid && busy === null;
+  // Fail-closed: automated discovery may only start on a network Decoda has
+  // validated end-to-end (Base Mainnet today). Even though the Select prevents
+  // picking a "Coming soon" network, this guard also covers a restored draft
+  // that carried an unsupported chain id.
+  const chainSupported = SUPPORTED_CHAIN_IDS.has(form.chain_id);
+  const canSubmit = contractValid && chainSupported && busy === null;
   return (
     <SurfaceCard className="onbCard">
       <div className="onbCardHead">
@@ -443,8 +457,17 @@ function IntakeForm({ form, setForm, onCreate, busy, contractValid }: {
             ariaLabelledBy="onb-field-network"
             value={String(form.chain_id)}
             onValueChange={(v) => setForm({ ...form, chain_id: Number(v) })}
-            options={CHAINS.map((c) => ({ value: String(c.id), label: c.label }))}
+            options={CHAINS.map((c) => ({
+              value: String(c.id),
+              label: c.supported ? `${c.label} — Supported` : `${c.label} — Coming soon`,
+              disabled: !c.supported,
+            }))}
           />
+          <span className="onbFieldHint">
+            {chainSupported
+              ? 'Base Mainnet (8453) is validated for automated discovery today. Additional EVM networks are coming soon.'
+              : 'Automated discovery currently runs on Base Mainnet only. Select Base Mainnet to continue — additional networks are coming soon.'}
+          </span>
         </div>
         <label className="onbField onbFieldWide">
           <span>Primary contract address <em className="req">required</em></span>

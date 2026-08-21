@@ -37,7 +37,7 @@ const tiers = [
     features: [
       { label: 'Workspaces', value: '3' },
       { label: 'Monitored contracts', value: '50' },
-      { label: 'Networks', value: 'Base + EVM (roadmap)' },
+      { label: 'Networks', value: 'Base Mainnet · additional EVM on request' },
       { label: 'Live EVM telemetry', value: '✓' },
       { label: 'Threat & compliance detection', value: '✓' },
       { label: 'Alert routing', value: 'Email + priority' },
@@ -60,7 +60,7 @@ const tiers = [
     features: [
       { label: 'Workspaces', value: 'Unlimited' },
       { label: 'Monitored contracts', value: 'Unlimited' },
-      { label: 'Networks', value: 'Base + EVM (roadmap)' },
+      { label: 'Networks', value: 'Base Mainnet · additional EVM on request' },
       { label: 'Live EVM telemetry', value: '✓' },
       { label: 'Threat & compliance detection', value: '✓' },
       { label: 'Alert routing', value: 'Custom routing rules' },
@@ -140,7 +140,6 @@ export default function PricingPage() {
             <Link href="/#platform" className="mktStandaloneNavLink" prefetch={false}>Product</Link>
             <Link href="/#how-it-works" className="mktStandaloneNavLink" prefetch={false}>How it works</Link>
             <Link href="/trust" className="mktStandaloneNavLink" prefetch={false}>Trust</Link>
-            <Link href="/live-proof" className="mktStandaloneNavLink" prefetch={false}>Live Proof</Link>
           </nav>
           <div className="mktStandaloneNavRight">
             <Link href="/sign-in" className="mktStandaloneNavSignIn" prefetch={false}>Sign in</Link>

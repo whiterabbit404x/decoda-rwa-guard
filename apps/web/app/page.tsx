@@ -31,7 +31,7 @@ const pricingTiers: PricingTier[] = [
     features: [
       '1 workspace',
       '5 monitored contracts',
-      'Live EVM telemetry',
+      'Base Mainnet telemetry',
       'Threat & compliance detection',
       'Evidence export (up to 10 packages)',
       'Community support',
@@ -49,7 +49,7 @@ const pricingTiers: PricingTier[] = [
     features: [
       '3 workspaces',
       '50 monitored contracts',
-      'Base Mainnet telemetry (+ EVM roadmap)',
+      'Base Mainnet telemetry (additional EVM on request)',
       'Priority alert routing',
       'Unlimited evidence packages',
       'Incident playbooks',
