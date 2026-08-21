@@ -132,3 +132,11 @@ test('homepage links point at real existing routes only', () => {
   expect(page).toContain('Contact sales');
   expect(page).not.toContain('Start free trial');
 });
+
+test('public support contact uses the official decodasecurity.com address', () => {
+  // The footer renders the support email as both visible text and a mailto:
+  // link, defaulting to this value when NEXT_PUBLIC_SUPPORT_EMAIL is unset.
+  const page = read(APP_DIR, 'page.tsx');
+  expect(page).toContain("support@decodasecurity.com");
+  expect(page).not.toContain('support@decoda.app');
+});

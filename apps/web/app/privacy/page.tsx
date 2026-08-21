@@ -21,7 +21,7 @@ export default function PrivacyPage() {
       <p>Data is used to authenticate users, operate workspace features, preserve auditability, and support incident response. We do not sell customer data.</p>
 
       <h2>Retention and deletion</h2>
-      <p>Workspace records remain available to support customer operations until deletion is requested or contractual retention ends. For export or deletion assistance, contact <a href="mailto:support@decoda.app">support@decoda.app</a>.</p>
+      <p>Workspace records remain available to support customer operations until deletion is requested or contractual retention ends. For export or deletion assistance, contact <a href="mailto:support@decodasecurity.com">support@decodasecurity.com</a>.</p>
 
       <h2>Security and subprocessors</h2>
       <p>Decoda relies on cloud infrastructure and operational subprocessors to host the service. We maintain least-privilege access, encrypted transport, and workspace-scoped controls as described on the <Link href="/security" prefetch={false}>Security page</Link>.</p>

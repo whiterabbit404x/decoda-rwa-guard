@@ -79,7 +79,7 @@ const pricingNote =
   'Pro includes a 14-day trial. Billing is via Paddle — cancel any time from workspace settings. Enterprise pricing is custom.';
 
 export default function MarketingHomePage() {
-  const supportEmail = process.env.NEXT_PUBLIC_SUPPORT_EMAIL ?? 'support@decoda.app';
+  const supportEmail = process.env.NEXT_PUBLIC_SUPPORT_EMAIL ?? 'support@decodasecurity.com';
 
   return (
     <div className={styles.page}>

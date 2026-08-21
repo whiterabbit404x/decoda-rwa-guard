@@ -125,7 +125,7 @@ function TrustShield() {
 
 export default function TrustPage() {
   const securityEmail = 'security@decoda.app';
-  const supportEmail = process.env.NEXT_PUBLIC_SUPPORT_EMAIL ?? 'support@decoda.app';
+  const supportEmail = process.env.NEXT_PUBLIC_SUPPORT_EMAIL ?? 'support@decodasecurity.com';
 
   return (
     <>
