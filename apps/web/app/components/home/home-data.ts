@@ -19,7 +19,7 @@ export const ROUTES = {
   platformAnchor: '#operating-layer',
   howItWorksAnchor: '#lifecycle',
   rwaAnchor: '#rwa-security',
-  demoMailto: 'mailto:sales@decoda.app',
+  demoMailto: 'mailto:sales@decodasecurity.com',
 } as const;
 
 // ── Hero capability indicators ───────────────────────────────
@@ -316,7 +316,7 @@ export interface ConsoleIncidentRow {
 
 export const consoleIncidents: ConsoleIncidentRow[] = [
   { id: 'INC-2026-017', event: 'Unauthorized mint detected', asset: 'USDC / Base', severity: 'High', status: 'Open', age: '2m ago' },
-  { id: 'INC-2026-016', event: 'Large transfer anomaly', asset: 'USYC / Ethereum', severity: 'Medium', status: 'Investigating', age: '1h ago' },
+  { id: 'INC-2026-016', event: 'Large transfer anomaly', asset: 'USYC / Base', severity: 'Medium', status: 'Investigating', age: '1h ago' },
   { id: 'INC-2026-015', event: 'Admin function change', asset: 'RWA Token / Base', severity: 'Medium', status: 'Open', age: '3h ago' },
   { id: 'INC-2026-014', event: 'Oracle deviation detected', asset: 'NAV Oracle', severity: 'Low', status: 'Closed', age: '1d ago' },
 ];

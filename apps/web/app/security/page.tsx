@@ -18,7 +18,7 @@ export default function SecurityPage() {
       </ul>
 
       <h2>Security reporting</h2>
-      <p>To report a security concern, email <a href="mailto:security@decoda.app">security@decoda.app</a> with reproduction details and affected environment information. For non-security support, use <Link href="/support" prefetch={false}>Support</Link>.</p>
+      <p>To report a security concern, email <a href="mailto:security@decodasecurity.com">security@decodasecurity.com</a> with reproduction details and affected environment information. For non-security support, use <Link href="/support" prefetch={false}>Support</Link>.</p>
 
       <h2>Shared responsibility</h2>
       <p>Customers are responsible for user lifecycle management, workspace role assignment, and integration credential hygiene. Decoda is responsible for service operation, infrastructure hardening, and response communication.</p>
