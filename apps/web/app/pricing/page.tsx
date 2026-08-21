@@ -244,7 +244,7 @@ export default function PricingPage() {
         <Link href="/" prefetch={false} className="trustLink">← Home</Link>
         <Link href="/trust" prefetch={false} className="trustLink">Security &amp; Trust</Link>
         <Link href="/sign-up" prefetch={false} className="trustLink">Start free pilot</Link>
-        <a href="mailto:support@decoda.app" className="trustLink">Support</a>
+        <a href="mailto:support@decodasecurity.com" className="trustLink">Support</a>
       </div>
     </main>
     </>

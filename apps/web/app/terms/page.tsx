@@ -31,7 +31,7 @@ export default function TermsPage() {
       <p>Decoda is currently offered in controlled pilot mode with billing intentionally disabled in environments configured with <code>BILLING_PROVIDER=none</code>. Access is still production-oriented and support-backed; commercial billing rollout is a separate later phase.</p>
 
       <h2>Data export and account assistance</h2>
-      <p>You can request help with workspace export, account updates, or account closure by contacting <a href="mailto:support@decoda.app">support@decoda.app</a>. See also the <Link href="/privacy" prefetch={false}>Privacy Policy</Link> and <Link href="/support" prefetch={false}>Support</Link> page for response expectations.</p>
+      <p>You can request help with workspace export, account updates, or account closure by contacting <a href="mailto:support@decodasecurity.com">support@decodasecurity.com</a>. See also the <Link href="/privacy" prefetch={false}>Privacy Policy</Link> and <Link href="/support" prefetch={false}>Support</Link> page for response expectations.</p>
     </main>
   );
 }
