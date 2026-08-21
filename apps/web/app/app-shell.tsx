@@ -207,8 +207,6 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
 
               <span className="shellHeaderSpacer" />
 
-              {topBanner}
-
               <div className="shellHeaderActions">
                 <button className="shellIconBtn" type="button" aria-label="Notifications">
                   <BellIcon />
@@ -227,6 +225,12 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
                 </button>
               </div>
             </div>
+
+            {/* Compact global health warning — a full-width strip that only appears
+                when the canonical runtime truth says monitoring is degraded. It is
+                placed on its own row (not inside the header bar) so it never overlaps
+                the workspace selector or user/account controls. */}
+            {topBanner}
 
             {/* Runtime banner: compact monitoring strip */}
             <RuntimeBanner />

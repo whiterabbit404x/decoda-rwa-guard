@@ -144,9 +144,13 @@ test('empty state shows "No protected assets yet" with correct message', () => {
   expect(managerSrc).toContain('Add your first wallet, smart contract, treasury vault, or tokenized RWA to begin monitoring.');
 });
 
-// 11. The tall global monitoring panel is collapsed into a compact strip on Screen 3.
-test('assets page uses the compact runtime status strip (not the full-height panel)', () => {
-  expect(pageSrc).toContain('<RuntimeSummaryPanel compact />');
+// 11. Asset risk is this page's job — the global monitoring diagnostics panel is not
+// repeated here. Detailed coverage/provider/worker/telemetry diagnostics live on
+// /system-health, and a genuinely degraded runtime is surfaced by the compact global
+// health warning in the app shell (not a large per-page panel).
+test('assets page does not embed the global runtime diagnostics panel', () => {
+  expect(pageSrc).not.toContain('RuntimeSummaryPanel');
+  expect(pageSrc).toContain('AssetsManager');
 });
 
 // 12. Workspace-level Run assessment is wired from the page into the AI panel.

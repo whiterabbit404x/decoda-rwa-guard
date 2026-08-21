@@ -6,7 +6,6 @@ import { actionDisabledReason, actionModeLabel, capabilityMapFromPayload, isActi
 import { fetchWorkspaceMonitoringSummary } from '../workspace-monitoring-summary-client';
 import ThreatChainPanel from '../threat-chain-panel';
 import { renderRiskLabel } from '../risk-normalization-labels';
-import RuntimeSummaryPanel from '../runtime-summary-panel';
 
 const WORKFLOW_STATUSES = ['open', 'investigating', 'contained', 'resolved', 'reopened'] as const;
 const PAGE_SIZE = 50;
@@ -180,7 +179,6 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
 
   return (
     <main className="productPage">
-      <RuntimeSummaryPanel />
       {isSimulatedMode ? <p className="statusLine" role="status" aria-label="Simulated mode active">SIMULATED mode active: response actions will not affect live systems. Switch to Live mode for production enforcement.</p> : null}
       <section className="featureSection">
         <div className="sectionHeader"><div><p className="eyebrow">Incident lifecycle</p><h1>Incidents</h1><p className="lede">Track open → investigating → contained → resolved → reopened with persistent activity logs.</p></div></div>

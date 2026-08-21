@@ -2032,6 +2032,62 @@ td .tableMeta {
 .runtimeBannerStale { border-top-color: var(--warning-bdr); }
 .runtimeBannerDead  { border-top-color: var(--danger-bdr);  }
 
+/* --- Compact global health warning --------------------------------------
+ * A single, low-profile strip in the app header that only renders when the
+ * canonical runtime truth reports degraded monitoring. It replaces the large
+ * per-page diagnostic panels: the detail lives on /system-health, reached via
+ * the "Diagnose →" link. Kept to a single ~36–48px row so it never pushes the
+ * page's primary content below the fold. */
+.globalHealthWarning {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 2.25rem;
+  padding: 0.4rem 0;
+  border-top: 1px solid var(--warning-bdr);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+}
+
+/* Critical (runtime/database unreachable) reads red; warning (limited coverage
+ * or setup gap) reads amber. */
+.globalHealthWarning.isCritical {
+  border-top-color: var(--danger-bdr);
+}
+
+.globalHealthWarningLabel {
+  flex: none;
+  font-weight: 700;
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.globalHealthWarningText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.globalHealthWarningWorker {
+  color: var(--text-muted);
+}
+
+.globalHealthWarningLink {
+  flex: none;
+  margin-left: auto;
+  color: var(--text-accent);
+  font-weight: 600;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.globalHealthWarningLink:hover {
+  text-decoration: underline;
+}
+
 /* --- Status pills (shared) --------------------------------------- */
 .pill-success {
   background: var(--success-bg);

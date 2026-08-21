@@ -5,7 +5,6 @@ import { usePilotAuth } from '../pilot-auth-context';
 import { actionDisabledReason, actionModeLabel, capabilityMapFromPayload, isActionDisabledInMode, responseActionExecutionMessage, type ResponseActionCapability } from '../response-action-capabilities';
 import { fetchWorkspaceMonitoringSummary } from '../workspace-monitoring-summary-client';
 import ThreatChainPanel from '../threat-chain-panel';
-import RuntimeSummaryPanel from '../runtime-summary-panel';
 import { SurfaceCard, TabStrip } from '../components/ui-primitives';
 
 const PAGE_SIZE = 50;
@@ -187,7 +186,6 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
 
   return (
     <main className="productPage">
-      <RuntimeSummaryPanel />
       {isSimulatedMode ? <p className="statusLine" role="status" aria-label="Simulated mode active">SIMULATED mode active: response actions will not affect live systems. Switch to Live mode for production enforcement.</p> : null}
       <section className="featureSection">
         <div className="sectionHeader"><div><p className="eyebrow">Operator queue</p><h1>Alerts</h1><p className="lede">Deduplicated alert queue with evidence-first triage and escalation actions.</p></div></div>

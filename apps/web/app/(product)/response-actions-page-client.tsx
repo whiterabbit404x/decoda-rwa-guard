@@ -36,7 +36,6 @@ import {
   type ApprovalGate,
 } from './response-actions-presentation';
 import { useRuntimeSummary } from '../runtime-summary-context';
-import RuntimeSummaryPanel from '../runtime-summary-panel';
 import { fetchRuntimeStatusDeduped } from '../runtime-status-client';
 import {
   hasRealTelemetryBackedChain,
@@ -1005,8 +1004,9 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
 
   return (
     <main className="productPage">
-      <RuntimeSummaryPanel />
-
+      {/* Response-action content is primary here. Infrastructure diagnostics live on
+          /system-health; the compact global health warning in the app shell surfaces a
+          degraded runtime. */}
       <section className="featureSection">
         <div className="sectionHeader">
           <div>
