@@ -1708,17 +1708,41 @@ async def lifespan(_: FastAPI):
     _api_worker_enabled_val = (os.getenv('WORKER_ENABLED') or 'not_set').strip()
     _api_worker_disabled = _api_worker_enabled_val.lower() in {'0', 'false', 'no', 'off'}
     _api_chain_id_configured = (os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or 'not_set').strip()
-    _api_rpc_raw = (os.getenv('STAGING_EVM_RPC_URL') or os.getenv('EVM_RPC_URL') or '').strip()
+    # Report the host the runtime detection path will ACTUALLY dial for the configured
+    # chain, resolved through the SAME canonical resolver those calls use
+    # (evm_activity_provider.resolve_chain_rpc), not just the legacy global
+    # STAGING_EVM_RPC_URL / EVM_RPC_URL. Reading only the globals is what made this line
+    # report Alchemy at startup while every real Base RPC call went to QuickNode (the
+    # per-chain EVM_RPC_URL_8453 / BASE_EVM_RPC_URL override the globals): a misleading
+    # provider readout. rpc_url_env names WHICH variable supplied the endpoint so the
+    # active provider is unambiguous from the log alone. Only the hostname + env-var
+    # NAME are logged — never the URL, path, or API key. Fully defensive: any resolution
+    # failure falls back to the legacy-global host so startup can never be blocked.
+    from urllib.parse import urlparse as _urlparse
+    _api_rpc_host = 'unconfigured'
+    _api_rpc_env = 'none'
     try:
-        from urllib.parse import urlparse as _urlparse
-        _api_rpc_host = _urlparse(_api_rpc_raw).hostname or 'unconfigured'
+        from services.api.app.evm_activity_provider import resolve_chain_rpc as _resolve_chain_rpc
+        _chain_network_by_id = {'1': 'ethereum', '8453': 'base', '42161': 'arbitrum'}
+        _api_network = _chain_network_by_id.get(_api_chain_id_configured, 'base')
+        _chain_rpc = _resolve_chain_rpc(_api_network)
+        _resolved_url = (_chain_rpc.get('rpc_url') or '').strip()
+        if _resolved_url:
+            _api_rpc_host = _urlparse(_resolved_url).hostname or 'unconfigured'
+            _api_rpc_env = _chain_rpc.get('rpc_url_env') or 'none'
     except Exception:
-        _api_rpc_host = 'unconfigured'
+        # Last-resort fallback: the legacy single-chain globals (host only).
+        try:
+            _api_rpc_raw = (os.getenv('STAGING_EVM_RPC_URL') or os.getenv('EVM_RPC_URL') or '').strip()
+            _api_rpc_host = _urlparse(_api_rpc_raw).hostname or 'unconfigured'
+        except Exception:
+            _api_rpc_host = 'unconfigured'
     logger.info(
-        'startup service_role=api WORKER_ENABLED=%s resolved_chain_id=%s rpc_host=%s',
+        'startup service_role=api WORKER_ENABLED=%s resolved_chain_id=%s rpc_host=%s rpc_url_env=%s',
         _api_worker_enabled_val,
         _api_chain_id_configured,
         _api_rpc_host,
+        _api_rpc_env,
     )
     if _api_worker_disabled:
         logger.info('startup monitoring_loop_skipped reason=WORKER_ENABLED=%s', _api_worker_enabled_val)

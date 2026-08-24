@@ -145,6 +145,18 @@ DEFAULT_QUICKNODE_LIVE_CONFIRMATIONS = 2
 # remaining blocks are picked up on the next tick (still at the tip).
 DEFAULT_QUICKNODE_LIVE_MAX_BLOCKS_PER_TICK = 25
 
+# Maximum distance (chain_head - live_checkpoint) the RPC-poller live lane will walk
+# forward block-by-block before it treats the checkpoint as STALE and snaps straight
+# to the tip instead of replaying history. The live lane is a chain-tip consumer that
+# "only ever moves forward at the tip" — a checkpoint frozen far behind the head (e.g.
+# a legacy live cursor left by a previous deploy, or a long worker outage) must NOT be
+# caught up one 25-block tick at a time via RPC (that is the historical-replay / RPC
+# storm the backfill lane exists to absorb). ~1800 blocks ≈ 1h of Base blocks: a brief
+# restart still catches up smoothly; anything larger snaps to the tip in a single tick,
+# with the skipped range left to the backfill lane and Stable RPC Polling. 0 disables
+# the snap (unbounded catch-up — only for deliberate replay debugging).
+DEFAULT_QUICKNODE_LIVE_MAX_CATCHUP_BLOCKS = 1800
+
 # Bounded batch for one historical backfill step (lower priority than live).
 DEFAULT_QUICKNODE_BACKFILL_MAX_BLOCKS_PER_TICK = 50
 
@@ -2011,6 +2023,19 @@ def live_max_blocks_per_tick() -> int:
     ))
 
 
+def live_max_catchup_blocks() -> int:
+    """Blocks the live lane will walk forward before snapping to the tip (default 1800).
+
+    Above this distance from the chain head, the live checkpoint is treated as STALE and
+    the lane snaps straight to the tip window rather than replaying the gap over RPC (see
+    :data:`DEFAULT_QUICKNODE_LIVE_MAX_CATCHUP_BLOCKS`). Configurable via
+    ``QUICKNODE_LIVE_MAX_CATCHUP_BLOCKS``; 0 disables the snap (unbounded catch-up).
+    """
+    return _quicknode_env_int(
+        'QUICKNODE_LIVE_MAX_CATCHUP_BLOCKS', DEFAULT_QUICKNODE_LIVE_MAX_CATCHUP_BLOCKS,
+    )
+
+
 def backfill_max_blocks_per_tick() -> int:
     return max(1, _quicknode_env_int(
         'QUICKNODE_BACKFILL_MAX_BLOCKS_PER_TICK', DEFAULT_QUICKNODE_BACKFILL_MAX_BLOCKS_PER_TICK,
@@ -2180,14 +2205,39 @@ def run_live_tip_ingest(
     stats['chain_head'] = head
     stats['safe_head'] = safe_head
 
+    max_catchup = live_max_catchup_blocks()
+    snapped_from: int | None = None
     if prev_block is None:
         # First run: begin AT the tip, do not replay history. Process just the
         # current safe head so the very first tick establishes the live cursor
         # at the top of the chain.
         start_block = safe_head
+    elif max_catchup > 0 and (safe_head - prev_block) > max_catchup:
+        # STALE checkpoint far behind the tip (e.g. a legacy live cursor frozen by a
+        # previous deploy — the production incident where live_checkpoint=48771299 sat
+        # ~1.6M blocks below the head). The live lane is a chain-tip consumer and must
+        # NOT walk that gap block-by-block over RPC (an unbounded historical replay /
+        # RPC storm). Snap forward to the tip window in ONE tick; the skipped range is
+        # left to the lower-priority backfill lane and Stable RPC Polling, exactly as a
+        # cold start would leave it. The checkpoint never regresses (it only jumps
+        # forward), and the snap is logged so the skipped range is provable, never
+        # silently erased.
+        start_block = max(prev_block + 1, safe_head - live_max_blocks_per_tick() + 1)
+        snapped_from = prev_block
     else:
         start_block = prev_block + 1
     end_block = min(safe_head, start_block + live_max_blocks_per_tick() - 1)
+
+    if snapped_from is not None:
+        logger.warning(
+            'event=quicknode_live_checkpoint_snapped_to_tip stream_lane=live '
+            'checkpoint_identity=%s stale_checkpoint_block=%s chain_head=%s safe_head=%s '
+            'snapped_start_block=%s skipped_from_block=%s skipped_to_block=%s '
+            'reason=checkpoint_behind_tip_beyond_max_catchup max_catchup_blocks=%s '
+            'note=skipped_range_recoverable_via_backfill_and_stable_polling',
+            QUICKNODE_STREAM_KEY_BASE_LIVE, snapped_from, head, safe_head,
+            start_block, snapped_from + 1, start_block - 1, max_catchup,
+        )
 
     if start_block > safe_head:
         # Caught up: nothing new at the tip yet. Refresh the observed head +
