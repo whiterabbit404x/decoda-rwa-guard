@@ -604,6 +604,22 @@ WHERE workspace_id = %s::uuid
 """
 
 
+def _telemetry_asset_id_for(target: dict[str, Any]) -> str | None:
+    """FK-safe ``telemetry_events.asset_id`` for a target.
+
+    Prefers the value resolved by ``process_monitoring_target``'s asset-integrity pre-flight
+    (``target['_telemetry_asset_id']`` — an id confirmed present in ``asset_registry``, or
+    ``None`` for a true orphan), so every per-event telemetry insert in the scheduled worker
+    path is FK-safe and never carries a fabricated id. Falls back to the raw ``target.asset_id``
+    for callers that did not run that pre-flight (e.g. realtime ingestion), preserving their
+    existing behavior.
+    """
+    if '_telemetry_asset_id' in target:
+        return target.get('_telemetry_asset_id')
+    raw = target.get('asset_id')
+    return str(raw) if raw else None
+
+
 def _persist_raw_wallet_transfer_telemetry(
     connection: Any,
     *,
@@ -2362,7 +2378,12 @@ def _persist_live_coverage_telemetry(
     _raw_asset_id = target.get('asset_id')
     _asset_id_str = str(_raw_asset_id) if _raw_asset_id else None
     _telem_asset_id: str | None = None
-    if _asset_id_str:
+    # A target flagged as a true asset orphan by process_monitoring_target's pre-flight
+    # (asset_id present in NEITHER assets NOR asset_registry) must NOT have an asset_registry
+    # row fabricated from its own fields — that would launder corrupted relational data into
+    # valid-looking, asset-linked coverage evidence. Persist coverage telemetry with a FK-safe
+    # NULL asset instead. (The flag is absent for non-worker callers, preserving their repair.)
+    if _asset_id_str and not target.get('_asset_integrity_orphan'):
         _ws_id_str = str(target['workspace_id'])
         _ar_row = connection.execute(
             'SELECT id FROM asset_registry WHERE id = %s::uuid LIMIT 1',
@@ -4113,6 +4134,271 @@ def _provider_observation_outcome(provider_result: Any, *, chain_mismatch: bool)
     return 'failure'
 
 
+def _canary_blocks_backfill_target(canary_config: Any, fallback_target_id: str) -> bool:
+    """True when canary mode must block a target from the anti-starvation backfill path.
+
+    The live-poll due list is canary-filtered separately, but the backfill fallback is
+    chosen from the FULL candidate set — so a non-allowlisted target could otherwise be
+    re-introduced as ``selected_for_backfill`` and drive real provider RPC. Under canary a
+    non-allowlisted fallback must never be polled; an empty id means there is simply no
+    candidate (not a block). Canary OFF never blocks (normal production backfill).
+    """
+    return bool(
+        getattr(canary_config, 'enabled', False)
+        and fallback_target_id
+        and not canary_config.is_target_allowed(fallback_target_id)
+    )
+
+
+def _worker_target_skip_result(
+    target: dict[str, Any],
+    *,
+    monitoring_run_id: str | None,
+    status: str,
+    status_reason_code: str,
+    degraded_reason: str,
+) -> dict[str, Any]:
+    """Uniform 'poll did not run' result for a target skipped BEFORE any provider scan.
+
+    Shaped exactly like the provider-backoff skip so ``run_monitoring_cycle`` accounts for
+    it as a skip (zero events/alerts/telemetry, never checked) and never surfaces it as a
+    healthy live observation. ``provider_poll_skipped`` is deliberately False here: a
+    fail-closed skip (canary exclusion) is a terminal decision for this target, not a
+    re-pollable provider backoff, so the cycle does not count it as
+    ``skipped_provider_backoff``.
+    """
+    return {
+        'target_id': str(target.get('id') or ''),
+        'target_type': str(target.get('target_type') or ''),
+        'monitoring_run_id': monitoring_run_id,
+        'runs': [],
+        'alerts_generated': 0,
+        'incidents_created': 0,
+        'detections_created': 0,
+        'events_ingested': 0,
+        'real_events_detected': 0,
+        'real_event_count': 0,
+        'coverage_heartbeat_updates': 0,
+        'coverage_heartbeat_count': 0,
+        'telemetry_records_seen': 0,
+        'evaluated_no_threat_marker_id': None,
+        'stale_open_alerts_closed': 0,
+        'status': status,
+        'status_reason_code': status_reason_code,
+        'provider_poll_skipped': False,
+        'network_attempted': False,
+        'latest_processed_block': int(target.get('watcher_last_observed_block') or 0),
+        'source_status': 'degraded',
+        'degraded_reason': degraded_reason,
+        # Fail-closed skip: never 'live', never real evidence, never healthy.
+        'provider_status': 'degraded',
+        'provider_source_type': 'unknown',
+        'synthetic': False,
+        'recent_evidence_state': ui_evidence_state('DEGRADED_EVIDENCE'),
+        'recent_truthfulness_state': ui_truthfulness_state('UNKNOWN_RISK'),
+        'recent_real_event_count': 0,
+        'last_event_at': None,
+        'last_real_event_at': None,
+        'live_coverage_telemetry_at': None,
+        'protected_asset_coverage_record': {},
+    }
+
+
+def _resolve_target_telemetry_asset_id(
+    connection: Any, target: dict[str, Any], chain: str
+) -> tuple[str | None, bool]:
+    """Resolve an FK-safe ``telemetry_events.asset_id`` for a target, and flag true orphans.
+
+    ``telemetry_events.asset_id`` references ``asset_registry(id)`` while ``targets.asset_id``
+    references ``assets(id)`` (see migration 0089). A target whose ``assets.id`` UUID is
+    missing from ``asset_registry`` otherwise crashes the per-event telemetry insert with
+    ``telemetry_events_asset_id_fkey``. This resolver returns ``(safe_asset_id, is_orphan)``:
+
+      * ``safe_asset_id`` — an id GUARANTEED present in ``asset_registry`` (so the telemetry
+        FK is satisfied), or ``None``. ``None`` is always FK-safe (the column is nullable) and
+        is used whenever a valid id cannot be confirmed — it is never a fabricated id.
+      * ``is_orphan`` — ``True`` ONLY when ``target.asset_id`` is set but exists in NEITHER
+        ``asset_registry`` NOR the canonical ``assets`` table (a genuinely broken/orphaned
+        relationship). Callers surface this as an explicit integrity error. A missing asset
+        id, or a real ``assets`` row whose ``asset_registry`` repair could not be confirmed,
+        is NOT an orphan.
+
+    Resolution:
+      * no ``asset_id``                              -> ``(None, False)``
+      * ``asset_id`` present in ``asset_registry``    -> ``(asset_id, False)``  (already FK-valid)
+      * ``asset_id`` present in canonical ``assets``   -> repair: insert an ``asset_registry`` row
+        (workspace-scoped, not deleted)                 with the SAME uuid (migration 0089); when
+                                                        confirmed -> ``(asset_id, False)``
+      * true orphan (in neither table)                -> ``(None, True)``   (never fabricated)
+      * assets row present but repair unconfirmed      -> ``(None, False)``  (FK-safe NULL, not orphan)
+
+    Never fabricates a replacement id and never invents an ``asset_registry`` row for an
+    orphan: a repair is performed ONLY when a real canonical ``assets`` row proves the
+    relationship, and the resolved id is used ONLY after it is confirmed present in
+    ``asset_registry``. Any lookup/repair error degrades to a FK-safe ``None``.
+    """
+    raw = target.get('asset_id')
+    asset_id = str(raw).strip() if raw else ''
+    if not asset_id:
+        return (None, False)
+    workspace_id = str(target.get('workspace_id') or '').strip()
+    # Fast path: already registered -> the telemetry FK is already satisfied.
+    try:
+        if connection.execute(
+            'SELECT 1 FROM asset_registry WHERE id = %s::uuid LIMIT 1', (asset_id,)
+        ).fetchone():
+            return (asset_id, False)
+    except Exception:
+        logger.warning(
+            'code=TELEMETRY_ASSET_REGISTRY_LOOKUP_FAILED target_id=%s asset_id=%s workspace_id=%s',
+            target.get('id'), asset_id, workspace_id, exc_info=True,
+        )
+        return (None, False)
+    # Canonical relationship: targets.asset_id -> assets(id). Only a real, non-deleted,
+    # workspace-scoped assets row proves the relationship; only then do we complete the FK
+    # chain into asset_registry using the SAME uuid (never a fabricated id).
+    try:
+        assets_row = connection.execute(
+            'SELECT 1 FROM assets WHERE id = %s::uuid AND workspace_id = %s::uuid AND deleted_at IS NULL LIMIT 1',
+            (asset_id, workspace_id),
+        ).fetchone()
+    except Exception:
+        logger.warning(
+            'code=TELEMETRY_ASSET_CANONICAL_LOOKUP_FAILED target_id=%s asset_id=%s workspace_id=%s',
+            target.get('id'), asset_id, workspace_id, exc_info=True,
+        )
+        return (None, False)
+    if not assets_row:
+        # True orphan: asset_id is in neither asset_registry nor assets. No canonical
+        # relationship to complete -> flag integrity failure; the telemetry asset stays NULL
+        # (never a fabricated id).
+        return (None, True)
+    _contract_id = str(target.get('contract_identifier') or '').strip()
+    _wallet_addr = str(target.get('wallet_address') or '').strip()
+    _ar_type = 'smart_contract' if _contract_id else ('wallet' if _wallet_addr else 'smart_contract')
+    _ar_addr = _contract_id or _wallet_addr or asset_id
+    _ar_chain = (str(chain or '').strip().lower() or 'ethereum')
+    try:
+        connection.execute(
+            '''
+            INSERT INTO asset_registry (
+                id, workspace_id, type, address_or_identifier, chain, status, created_at, updated_at
+            )
+            VALUES (%s::uuid, %s::uuid, %s, %s, %s, 'active', NOW(), NOW())
+            ON CONFLICT DO NOTHING
+            ''',
+            (asset_id, workspace_id, _ar_type, _ar_addr, _ar_chain),
+        )
+        if connection.execute(
+            'SELECT 1 FROM asset_registry WHERE id = %s::uuid LIMIT 1', (asset_id,)
+        ).fetchone():
+            logger.info(
+                'code=LIVE_TELEMETRY_ASSET_REGISTRY_REPAIRED asset_id=%s workspace_id=%s target_id=%s chain=%s source=assets_canonical',
+                asset_id, workspace_id, target.get('id'), _ar_chain,
+            )
+            return (asset_id, False)
+    except Exception as _repair_exc:
+        logger.warning(
+            'code=LIVE_TELEMETRY_ASSET_FK_REPAIR_FAILED asset_id=%s workspace_id=%s target_id=%s error=%s',
+            asset_id, workspace_id, target.get('id'), _safe_error_message(_repair_exc),
+        )
+    # Real assets row exists but the asset_registry repair could not be confirmed (e.g. a
+    # unique-key conflict under a different id). Not an orphan — degrade to a FK-safe NULL
+    # telemetry asset rather than risk inserting an id that violates the FK.
+    return (None, False)
+
+
+def _release_target_lease_after_skip(
+    connection: Any,
+    target: dict[str, Any],
+    *,
+    degraded_reason: str | None,
+    advance_last_checked: bool,
+    reason_log: str,
+) -> None:
+    """Release a fail-closed target's monitoring lease so the cycle continues cleanly.
+
+    Always clears the worker claim/lease. When ``advance_last_checked`` is True the target's
+    ``last_checked_at`` is moved to NOW so a persistently-broken target does not sort to the
+    front of the ``last_checked_at ASC`` claim queue every cycle and starve healthy targets.
+    ``degraded_reason`` (when set) records a truthful watcher status so the target is never
+    shown as healthy.
+    """
+    try:
+        _sets = [
+            'monitoring_claimed_by = NULL',
+            'monitoring_claimed_at = NULL',
+            'monitoring_lease_token = NULL',
+            'monitoring_lease_expires_at = NULL',
+            'updated_at = NOW()',
+        ]
+        if degraded_reason is not None:
+            _sets.append("watcher_source_status = 'degraded'")
+            _sets.append('watcher_degraded_reason = %(degraded_reason)s')
+        if advance_last_checked:
+            _sets.append('last_checked_at = NOW()')
+        connection.execute(
+            'UPDATE targets SET ' + ', '.join(_sets) + ' WHERE id = %(id)s AND workspace_id = %(workspace_id)s',
+            {
+                'degraded_reason': degraded_reason,
+                'id': target['id'],
+                'workspace_id': target['workspace_id'],
+            },
+        )
+    except Exception:
+        logger.warning('%s target_id=%s', reason_log, target.get('id'), exc_info=True)
+
+
+def _canary_rpc_blocked_result(
+    connection: Any, target: dict[str, Any], *, monitoring_run_id: str | None, path: str
+) -> dict[str, Any]:
+    """Fail-closed skip for a non-allowlisted target under canary mode.
+
+    Authoritative RPC gate: in canary mode ONLY allowlisted targets may drive
+    blockchain-provider RPC, on ANY scheduled path (live poll, catch-up, backfill,
+    bootstrap/live-tail, recovery). This runs BEFORE any provider scan, so no network is
+    attempted, then releases the worker lease and returns a skip result.
+    """
+    logger.warning(
+        'event=monitoring_canary_rpc_path_blocked target_id=%s workspace_id=%s path=%s '
+        'reason=not_in_canary_allowlist network_attempted=false action=target_skipped',
+        target.get('id'), target.get('workspace_id'), path,
+    )
+    _skip_cursor = int(target.get('watcher_last_observed_block') or 0)
+    emit_poll_safety_summary(
+        logger,
+        workspace_id=target.get('workspace_id'),
+        target_id=target.get('id'),
+        terminal_status='skipped',
+        blocks_queried=0,
+        log_query_count=0,
+        logs_received=0,
+        logs_processed=0,
+        transaction_enrichments=0,
+        rpc_calls_total=0,
+        poll_duration_seconds=0,
+        cursor_before=_skip_cursor,
+        cursor_after=_skip_cursor,
+        reason='canary_target_not_in_allowlist',
+    )
+    # A canary-excluded target is not broken — it is simply out of scope this cycle — so no
+    # degraded watcher status is written; the lease is released and last_checked_at advanced
+    # so it never monopolizes a due slot ahead of the allowlisted target.
+    _release_target_lease_after_skip(
+        connection, target,
+        degraded_reason=None,
+        advance_last_checked=True,
+        reason_log='canary_rpc_blocked_lease_release_failed',
+    )
+    return _worker_target_skip_result(
+        target,
+        monitoring_run_id=monitoring_run_id,
+        status='canary_excluded',
+        status_reason_code='not_in_canary_allowlist',
+        degraded_reason='canary_target_not_in_allowlist',
+    )
+
+
 def process_monitoring_target(
     connection: Any,
     target: dict[str, Any],
@@ -4120,6 +4406,40 @@ def process_monitoring_target(
     triggered_by_user_id: str | None = None,
     monitoring_run_id: str | None = None,
 ) -> dict[str, Any]:
+    # --- Canary RPC gate (fail-closed; scheduled worker path only) -------------------
+    # In canary mode ONLY allowlisted targets may cause blockchain-provider RPC. This is
+    # the authoritative gate applied BEFORE any RPC-consuming work — covering live poll,
+    # catch-up, backfill, bootstrap/live-tail init, recovery, and any other scheduled scan
+    # path. Manual "run once" (triggered_by_user_id set) is an explicit user action and is
+    # not gated here. Resolved from env config only — no target id is hard-coded.
+    if triggered_by_user_id is None:
+        _canary_cfg = resolve_canary_config()
+        if _canary_cfg.enabled and not _canary_cfg.is_target_allowed(target.get('id')):
+            return _canary_rpc_blocked_result(
+                connection, target, monitoring_run_id=monitoring_run_id, path='process_monitoring_target'
+            )
+    # --- Asset-integrity pre-flight (fail-closed for the telemetry asset LINKAGE) -----
+    # telemetry_events.asset_id -> asset_registry(id), but targets.asset_id -> assets(id)
+    # (migration 0089). Resolve one FK-safe telemetry asset id up front — reused by EVERY
+    # telemetry_events insert in this function (target['_telemetry_asset_id']) — so a target
+    # whose assets.id is missing from asset_registry can never crash the worker mid-poll with
+    # telemetry_events_asset_id_fkey. When the canonical assets row exists the FK chain is
+    # repaired (same uuid); a true orphan resolves to a FK-safe NULL (never a fabricated id)
+    # and is surfaced as an explicit, greppable integrity error so corrupted relational data
+    # is never laundered into valid-looking, asset-linked evidence.
+    _asset_chain = str(target.get('chain_network') or os.getenv('EVM_CHAIN_NETWORK', 'ethereum')).strip().lower()
+    _telemetry_asset_id, _asset_is_orphan = _resolve_target_telemetry_asset_id(connection, target, _asset_chain)
+    target['_telemetry_asset_id'] = _telemetry_asset_id
+    target['_asset_integrity_orphan'] = _asset_is_orphan
+    if _asset_is_orphan:
+        logger.error(
+            'event=monitoring_target_asset_integrity_failed target_id=%s workspace_id=%s '
+            'asset_id_present=true asset_registry_match=false assets_match=false '
+            'action=telemetry_asset_id_nulled_degraded',
+            target.get('id'), target.get('workspace_id'),
+        )
+    # From here every telemetry_events insert uses target['_telemetry_asset_id'] (an id
+    # confirmed present in asset_registry, or NULL) — so all telemetry writes below are FK-safe.
     workspace_row = connection.execute('SELECT id, name FROM workspaces WHERE id = %s', (target['workspace_id'],)).fetchone() or {'id': target['workspace_id'], 'name': 'Workspace'}
     workspace = _json_safe_value(dict(workspace_row))
     user_id = triggered_by_user_id or str(target.get('updated_by_user_id') or target.get('created_by_user_id'))
@@ -4590,7 +4910,7 @@ def process_monitoring_target(
                     connection,
                     telemetry_id=_telem_id,
                     workspace_id=str(target['workspace_id']),
-                    asset_id=str(target.get('asset_id')) if target.get('asset_id') else None,
+                    asset_id=_telemetry_asset_id_for(target),
                     target_id=str(target['id']),
                     provider_type=str(provider_result.provider_name or 'monitoring_provider'),
                     event_type=_telem_event_type,
@@ -4658,7 +4978,7 @@ def process_monitoring_target(
                 (
                     _telem_id,
                     str(target['workspace_id']),
-                    str(target.get('asset_id')) if target.get('asset_id') else None,
+                    _telemetry_asset_id_for(target),
                     str(target['id']),
                     str(provider_result.provider_name or 'monitoring_provider'),
                     _telem_event_type,
@@ -6120,6 +6440,23 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         fallback_target_id = str((oldest_candidate or {}).get('target_id') or '').strip()
         fallback_system_id = str((oldest_candidate or {}).get('monitored_system_id') or '').strip()
         fallback_workspace_id = str((oldest_candidate or {}).get('workspace_id') or '').strip()
+        # Canary: the anti-starvation backfill fallback must respect the allowlist too. The
+        # live-poll due list was already canary-filtered above, but this fallback is chosen
+        # from the FULL candidate set — so without this guard a non-allowlisted target could
+        # be re-introduced as selected_for_backfill and drive real RPC. Block it here (no
+        # network attempted) so a non-allowlisted target can NEVER cause provider RPC via
+        # backfill during a canary cycle.
+        if _canary_blocks_backfill_target(_canary, fallback_target_id):
+            logger.warning(
+                'event=monitoring_canary_rpc_path_blocked worker=%s target_id=%s path=backfill '
+                'reason=not_in_canary_allowlist network_attempted=false',
+                worker_name, fallback_target_id,
+            )
+            fallback_target_id = ''
+            fallback_system_id = ''
+            fallback_workspace_id = ''
+            oldest_candidate = None
+            oldest_checked_at = None
         fallback_interval_raw = (oldest_candidate or {}).get('monitoring_interval_seconds')
         fallback_interval_seconds = _min_interval
         if fallback_interval_raw is not None:
