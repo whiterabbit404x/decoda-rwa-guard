@@ -298,6 +298,80 @@ def get_cached_base_chain_head(rpc_client: Any, *, allow_refresh: bool = True) -
     return head
 
 
+# ---------------------------------------------------------------------------
+# Bounded process-local Base wallet target cache.
+#
+# Profiling (Stream Latency task) showed _load_all_base_wallet_targets runs a DB
+# round trip on EVERY webhook call (roughly once per Base block, ~2s) even though
+# the active target set changes on the order of minutes/hours, not blocks — and
+# for a target whose monitored wallet lives on its linked asset rather than the
+# target row itself, resolution adds ANOTHER round trip per such target. Reusing
+# a short-lived cache removes that DB work from the overwhelming majority of
+# blocks while still bounding staleness: a newly added/edited/removed Base wallet
+# target is picked up within one TTL window (default 10s — a few Base blocks),
+# never silently "forever" — satisfying the requirement that dynamically changing
+# monitored addresses keep propagating safely. 0 disables reuse (refetch every
+# call) for deep debugging. Only used by the hot webhook path (via
+# _load_cached_base_wallet_targets below); _load_all_base_wallet_targets itself
+# is unchanged so every existing direct caller/test keeps its current behavior.
+# ---------------------------------------------------------------------------
+DEFAULT_QUICKNODE_TARGET_CACHE_SECONDS = 10
+
+_TARGET_CACHE_LOCK = threading.Lock()
+# {'targets': list[dict] | None, 'at_monotonic': float}
+_TARGET_CACHE: dict[str, Any] = {'targets': None, 'at_monotonic': 0.0}
+
+
+def _target_cache_ttl_seconds() -> float:
+    raw = (getenv('QUICKNODE_TARGET_CACHE_SECONDS') or '').strip()
+    if not raw:
+        return float(DEFAULT_QUICKNODE_TARGET_CACHE_SECONDS)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return float(DEFAULT_QUICKNODE_TARGET_CACHE_SECONDS)
+    return max(0.0, value)
+
+
+def reset_base_wallet_target_cache() -> None:
+    """Clear the process-local Base wallet target cache (tests/ops)."""
+    with _TARGET_CACHE_LOCK:
+        _TARGET_CACHE.update(targets=None, at_monotonic=0.0)
+
+
+def _fresh_cached_targets(now_mono: float | None = None) -> list[dict[str, Any]] | None:
+    """Cached target list if still inside the TTL, else None (stale/empty)."""
+    now_mono = now_mono if now_mono is not None else time.monotonic()
+    ttl = _target_cache_ttl_seconds()
+    with _TARGET_CACHE_LOCK:
+        targets = _TARGET_CACHE['targets']
+        at = float(_TARGET_CACHE['at_monotonic'] or 0.0)
+    if targets is None:
+        return None
+    if ttl > 0 and (now_mono - at) > ttl:
+        return None
+    return targets
+
+
+def _load_cached_base_wallet_targets(connection: Any) -> list[dict[str, Any]]:
+    """Hot-path wrapper around :func:`_load_all_base_wallet_targets` with a bounded cache.
+
+    Behaves identically to calling ``_load_all_base_wallet_targets`` directly
+    (same resolved rows, same one-time diagnostic logging on a cache miss) except
+    that a call within the TTL window reuses the previous result instead of
+    re-querying — removing the per-block DB round trip (and any per-target asset
+    lookups) that a shared, low-cardinality, low-churn target set does not need.
+    """
+    cached = _fresh_cached_targets()
+    if cached is not None:
+        return cached
+    targets = _load_all_base_wallet_targets(connection)
+    with _TARGET_CACHE_LOCK:
+        _TARGET_CACHE['targets'] = targets
+        _TARGET_CACHE['at_monotonic'] = time.monotonic()
+    return targets
+
+
 def reset_quicknode_log_sampler_state() -> None:
     """Clear the process-local QuickNode log-sampler state.
 
@@ -556,6 +630,63 @@ def _check_quicknode_timestamp_freshness(timestamp_raw: str) -> None:
     if abs(now - ts) > _quicknode_timestamp_tolerance_seconds():
         _log_signature_failed('timestamp_out_of_tolerance')
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='QuickNode Streams timestamp outside allowed tolerance.')
+
+
+def _quicknode_send_to_receive_ms(timestamp_header: str | None) -> float | None:
+    """Milliseconds between QuickNode signing X-QN-Timestamp and this process seeing it.
+
+    Best-effort latency-profiling signal (Stream Latency task 1, candidate cause A:
+    "QuickNode delivery cadence"): a large, consistently-growing value here means the
+    delay is upstream of Decoda (QuickNode's own send queue / network transit), which
+    no amount of ingestion-path optimization can fix. A small/flat value here while
+    total request latency is high instead implicates Decoda's own processing (causes
+    C-J). Returns None on a missing/unparseable header rather than raising — this is
+    observability only and must never affect request handling.
+    """
+    raw = (timestamp_header or '').strip()
+    if not raw:
+        return None
+    try:
+        ts = float(raw)
+    except ValueError:
+        return None
+    if ts > 10 ** 12:  # tolerate milliseconds in addition to seconds
+        ts = ts / 1000.0
+    return (datetime.now(timezone.utc).timestamp() - ts) * 1000.0
+
+
+class _StageTimer:
+    """Tiny perf_counter-based stopwatch collecting named-stage durations (ms).
+
+    Not a general-purpose profiler: it exists only to answer task 1's explicit
+    question ("measure separately: request receive, HMAC verification, JSON
+    decoding, ...") with real numbers instead of guesses, at negligible cost
+    (a handful of ``time.perf_counter()`` calls and dict writes per webhook — no
+    I/O, no allocation beyond one dict). ``mark(name)`` records the elapsed time
+    since the previous mark (or since construction, for the first mark) under
+    ``name``; ``total_ms()`` reports elapsed time since construction.
+    """
+
+    __slots__ = ('_start', '_last', 'stages')
+
+    def __init__(self) -> None:
+        self._start = time.perf_counter()
+        self._last = self._start
+        self.stages: dict[str, float] = {}
+
+    def mark(self, name: str) -> float:
+        now = time.perf_counter()
+        elapsed_ms = (now - self._last) * 1000.0
+        self.stages[name] = self.stages.get(name, 0.0) + elapsed_ms
+        self._last = now
+        return elapsed_ms
+
+    def total_ms(self) -> float:
+        return (time.perf_counter() - self._start) * 1000.0
+
+    def elapsed_ms(self, since_perf_counter: float) -> float:
+        """Milliseconds from this timer's construction to an earlier ``perf_counter()`` reading."""
+        return (since_perf_counter - self._start) * 1000.0
 
 
 def verify_quicknode_stream_signature(
@@ -2562,6 +2693,7 @@ def quicknode_live_configuration_valid() -> bool:
 
 def _process_realtime_lane_batch(
     *, lane: str, normalized_txs: list[dict[str, Any]], batch_block_numbers: list[int],
+    timer: _StageTimer | None = None, send_to_receive_ms: float | None = None,
 ) -> dict[str, Any]:
     """Process one live- or backfill-lane batch on that lane's OWN checkpoint.
 
@@ -2572,7 +2704,16 @@ def _process_realtime_lane_batch(
     chain head so lag (head - last_block) and the degraded threshold are computed from
     canonical facts, and emits the mandatory ``quicknode_live_match`` +
     ``quicknode_stream_batch`` structured logs (task steps 3 & 4).
+
+    ``timer`` (Stream Latency task 1) is the caller's :class:`_StageTimer`, already
+    carrying the shared decode-stage marks (verify/gunzip/json_parse/extract/
+    normalize); this function adds its own marks (target_load/match_loop/checkpoint)
+    onto the SAME timer so the final ``quicknode_stream_latency`` line reports one
+    coherent, end-to-end breakdown of the whole request. Optional and side-effect-free
+    when omitted (a fresh timer is used) so existing direct callers/tests keep working
+    unchanged.
     """
+    timer = timer or _StageTimer()
     config = _realtime_lane_config(lane)
     checkpoint_key = config['checkpoint_key']
     source = config['source']
@@ -2605,7 +2746,7 @@ def _process_realtime_lane_batch(
             lag_blocks = max(0, int(chain_head) - int(last_block))
 
         try:
-            targets = _load_all_base_wallet_targets(connection)
+            targets = _load_cached_base_wallet_targets(connection)
         except psycopg.Error as exc:
             try:
                 connection.rollback()
@@ -2617,6 +2758,7 @@ def _process_realtime_lane_batch(
                 lane, route_stream_key, checkpoint_key, type(exc).__name__, len(normalized_txs),
             )
             return _target_load_failed_response(tx_count=len(normalized_txs))
+        timer.mark('target_load_ms')
 
         for normalized in normalized_txs:
             matched_targets = _match_targets_for_tx(
@@ -2628,18 +2770,43 @@ def _process_realtime_lane_batch(
                 continue
             for target in matched_targets:
                 match_count += 1
+                match_perf = time.perf_counter()
+                match_at = datetime.now(timezone.utc)
                 outcome = _persist_quicknode_wallet_transfer(
                     connection, target=target, tx=normalized, source=source,
                 )
+                persist_ms = (time.perf_counter() - match_perf) * 1000.0
                 persisted_payload = outcome.pop('payload', None)
                 is_persisted = outcome['status'] == 'processed'
                 is_duplicate = outcome['status'] == 'duplicate_suppressed'
+                alert_chain_ms = 0.0
                 if is_persisted:
                     persisted_count += 1
+                    alert_started = time.perf_counter()
                     _create_wallet_transfer_alert_chain(
                         target=target,
                         payload=persisted_payload if isinstance(persisted_payload, dict) else {},
                         telemetry_id=str(outcome.get('telemetry_id') or ''),
+                    )
+                    alert_chain_ms = (time.perf_counter() - alert_started) * 1000.0
+                    # Unconditional (never sampled): a persisted match is rare and is
+                    # exactly the "monitored wallet transfer" latency the Stream Latency
+                    # task's Target Performance section asks to measure end-to-end —
+                    # send_to_receive (QuickNode -> Decoda), webhook-entry -> match,
+                    # persist (telemetry commit + Redis publish, done inside
+                    # _persist_quicknode_wallet_transfer), and alert/detection chain
+                    # creation, individually.
+                    logger.info(
+                        'event=quicknode_stream_match_latency tx_hash=%s target_id=%s block_number=%s '
+                        'stream_lane=%s send_to_receive_ms=%s webhook_entry_to_match_ms=%.2f '
+                        'persist_ms=%.2f alert_chain_ms=%.2f redis_publish_success=%s '
+                        'match_at=%s',
+                        normalized['tx_hash'], target['id'], normalized.get('block_number'), lane,
+                        round(send_to_receive_ms, 2) if send_to_receive_ms is not None else 'unknown',
+                        timer.elapsed_ms(match_perf),
+                        persist_ms, alert_chain_ms,
+                        str(bool(outcome.get('redis_published'))).lower(),
+                        match_at.isoformat(),
                     )
                 elif is_duplicate:
                     duplicate_count += 1
@@ -2656,6 +2823,7 @@ def _process_realtime_lane_batch(
                         str(bool(outcome.get('redis_published'))).lower(),
                     )
                 results.append({'tx_hash': normalized['tx_hash'], 'target_id': target['id'], **outcome})
+        timer.mark('match_loop_ms')
 
         # Advance ONLY this lane's checkpoint — never the other lane's key. The live
         # lane records the observed chain head in latest_stream_block so the Telemetry
@@ -2672,6 +2840,7 @@ def _process_realtime_lane_batch(
                 received_at=received_at,
             )
             connection.commit()
+        timer.mark('checkpoint_ms')
 
     # lag_status is the truthful lane signal. A None head is UNKNOWN (never healthy,
     # never degraded=false-by-default): the UI must not paint the lane green when the
@@ -2719,6 +2888,25 @@ def _process_realtime_lane_batch(
             health_status if health_status is not None else 'not_applicable',
             len(normalized_txs), match_count, persisted_count,
             duplicate_count, 'null' if degraded_flag is None else str(degraded_flag).lower(),
+        )
+        # Stream Latency task 1: the full per-stage breakdown for this same batch,
+        # gated identically to quicknode_stream_batch above so the two lines always
+        # appear (or are sampled) together — one line an operator can grep to answer
+        # "which stage is slow" without cross-referencing separate log lines. Stages
+        # upstream of this function (verify/gunzip/json_parse/extract/normalize) were
+        # already marked onto this same timer by process_quicknode_base_stream_webhook.
+        logger.info(
+            'event=quicknode_stream_latency stream_lane=%s stream_key=%s tx_count=%s '
+            'send_to_receive_ms=%s verify_ms=%.2f gunzip_ms=%.2f json_parse_ms=%.2f '
+            'extract_ms=%.2f normalize_ms=%.2f target_load_ms=%.2f match_loop_ms=%.2f '
+            'checkpoint_ms=%.2f total_ms=%.2f',
+            lane, route_stream_key, len(normalized_txs),
+            round(send_to_receive_ms, 2) if send_to_receive_ms is not None else 'unknown',
+            timer.stages.get('verify_ms', 0.0), timer.stages.get('gunzip_ms', 0.0),
+            timer.stages.get('json_parse_ms', 0.0), timer.stages.get('extract_ms', 0.0),
+            timer.stages.get('normalize_ms', 0.0), timer.stages.get('target_load_ms', 0.0),
+            timer.stages.get('match_loop_ms', 0.0), timer.stages.get('checkpoint_ms', 0.0),
+            timer.total_ms(),
         )
     if degraded and _degraded_action in {'transition_degraded', 'periodic'}:
         # The live stream is pushing blocks far behind the chain head — it is NOT at
@@ -2848,6 +3036,11 @@ def process_quicknode_base_stream_webhook(
     untouched.
     """
     lane = _normalize_lane(lane)
+    # Stage-latency instrumentation (Stream Latency task 1): a stopwatch started at
+    # the first line of the handler, so downstream stage marks are comparable across
+    # every request regardless of which lane or return path it takes. Cheap (in-process
+    # perf_counter reads only) and additive — it changes no control flow or response.
+    timer = _StageTimer()
     # First handler line, logged *before* signature verification so a handler
     # entry is provable from logs even when verification then rejects the
     # request (missing/invalid signature, stale timestamp). Only sizes and
@@ -2868,6 +3061,13 @@ def process_quicknode_base_stream_webhook(
         nonce_header=nonce_header,
         timestamp_header=timestamp_header,
     )
+    timer.mark('verify_ms')
+    # Best-effort: milliseconds between QuickNode signing the request and this line
+    # running — separates upstream delivery delay (candidate cause A) from Decoda's
+    # own processing time (candidates C-J). None when the header is absent/unparseable
+    # (never raises — this is observability only, computed after verification already
+    # required the header to be present and fresh).
+    send_to_receive_ms = _quicknode_send_to_receive_ms(timestamp_header)
     # Polling-only MVP mode (REALTIME_STREAMS_ENABLED=false, the default): real-time
     # QuickNode Streams are intentionally paused and stable scheduled RPC polling is
     # the canonical detection path. The request is authenticated (signature verified
@@ -2881,10 +3081,12 @@ def process_quicknode_base_stream_webhook(
         _record_stream_ignored_polling_only()
         return _polling_only_ignored_response(lane=lane)
     body_bytes = _maybe_gunzip_quicknode_body(raw_body, content_encoding)
+    timer.mark('gunzip_ms')
     try:
         body = json.loads(body_bytes.decode('utf-8') or '{}')
     except (UnicodeDecodeError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid JSON payload.') from exc
+    timer.mark('json_parse_ms')
     logger.info(
         'quicknode_stream_payload_parsed decoded_bytes=%s decoded_type=%s',
         len(body_bytes), type(body).__name__,
@@ -2892,11 +3094,13 @@ def process_quicknode_base_stream_webhook(
     _log_payload_shape(body)
 
     raw_txs = _extract_tx_dicts(body)
+    timer.mark('extract_ms')
     normalized_txs: list[dict[str, Any]] = []
     for raw_tx in raw_txs:
         normalized = normalize_base_stream_tx(raw_tx)
         if normalized is not None:
             normalized_txs.append(normalized)
+    timer.mark('normalize_ms')
 
     sample = normalized_txs[0] if normalized_txs else {}
     logger.info(
@@ -2927,12 +3131,30 @@ def process_quicknode_base_stream_webhook(
             tx_count=0, targets_loaded=0, matched=0, persisted=0, duplicates=0, skipped=0, results=[],
         )
 
+    # Shared-prefix latency (Stream Latency task 1): verify/gunzip/parse/extract/
+    # normalize run identically for all three lanes, so this one line — sampled the
+    # same way the rest of this module's high-frequency logs are, to avoid flooding
+    # Railway while the stream delivers ~one webhook per Base block — already answers
+    # "how much of the total is decode/normalize work" regardless of which lane a
+    # batch takes below.
+    if _should_emit_sampled_quicknode_log(f'quicknode_stream_decode_latency:{lane}'):
+        logger.info(
+            'event=quicknode_stream_decode_latency stream_lane=%s tx_count=%s send_to_receive_ms=%s '
+            'verify_ms=%.2f gunzip_ms=%.2f json_parse_ms=%.2f extract_ms=%.2f normalize_ms=%.2f',
+            lane, len(normalized_txs),
+            round(send_to_receive_ms, 2) if send_to_receive_ms is not None else 'unknown',
+            timer.stages.get('verify_ms', 0.0), timer.stages.get('gunzip_ms', 0.0),
+            timer.stages.get('json_parse_ms', 0.0), timer.stages.get('extract_ms', 0.0),
+            timer.stages.get('normalize_ms', 0.0),
+        )
+
     # Real-time lanes (task step 3): the dedicated /base-live and /base-backfill routes
     # pass an explicit lane, so it is handled on its own checkpoint identity + detected_by
     # tag here — never mixed with the legacy `base` delivery lane's gap detector below.
     if lane in (LANE_LIVE, LANE_BACKFILL):
         return _process_realtime_lane_batch(
             lane=lane, normalized_txs=normalized_txs, batch_block_numbers=batch_block_numbers,
+            timer=timer, send_to_receive_ms=send_to_receive_ms,
         )
 
     received_at = datetime.now(timezone.utc)
@@ -2974,7 +3196,7 @@ def process_quicknode_base_stream_webhook(
                 tx_count=0, targets_loaded=0, matched=0, persisted=0, duplicates=0, skipped=0, results=[],
             )
         try:
-            targets = _load_all_base_wallet_targets(connection)
+            targets = _load_cached_base_wallet_targets(connection)
         except psycopg.Error as exc:
             # Target loading hit a database/schema error (e.g. a column the deployed
             # schema does not have — the monitored_system_id regression this handler
