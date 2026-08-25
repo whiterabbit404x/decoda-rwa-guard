@@ -31,3 +31,7 @@ artifacts/*/local-test/
 # Mutable proof aliases are diagnostic only and must never become release claims.
 artifacts/*/latest/
 services/api/artifacts/live_evidence/latest/
+
+# Generated QuickNode Streams filter output contains real monitored wallet
+# addresses read from the database — never commit it.
+services/api/artifacts/quicknode_filters/

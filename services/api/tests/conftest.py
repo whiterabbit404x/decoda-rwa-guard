@@ -41,6 +41,15 @@ def _reset_rpc_provider_state():
             reset_chain_head_cache()
         except Exception:
             pass
+        try:
+            # Same reasoning as the chain-head cache above: the Base wallet target
+            # cache (Stream Latency task 2) is module-level and reused across webhook
+            # calls on purpose, so targets cached by one test must not bleed into the
+            # next test's (differently-configured) fake connection.
+            from services.api.app.quicknode_streams import reset_base_wallet_target_cache
+            reset_base_wallet_target_cache()
+        except Exception:
+            pass
     _reset()
     yield
     _reset()
