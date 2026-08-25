@@ -30,12 +30,14 @@ from services.api.app.evm_activity_provider import (
     rpc_provider_backoff_status,
 )
 from services.api.app.monitoring_truth import (
+    derive_realtime_ingestion_health,
     derive_reporting_sub_counts,
     should_run_historical_backfill,
     ui_evidence_state,
     ui_truthfulness_state,
 )
 from services.api.app.monitoring_canary import resolve_canary_config
+from services.api.app.monitoring_runtime_mode import realtime_streams_enabled
 from services.api.app.monitoring_reliability import MonitoringSLOs, evaluate_monitoring_slos, monitoring_slo_snapshot
 from services.api.app.monitorable_target_types import (
     is_monitorable_target_type,
@@ -8374,6 +8376,22 @@ def monitoring_runtime_status(
         live_coverage_receipts_by_system: dict[str, datetime] = {}
         live_coverage_receipts_workspace_latest: datetime | None = None
         live_coverage_receipts_persisted_count = 0
+        # Realtime (QuickNode Streams) ingestion facts — defaulted here so every exit
+        # path has them. Empty/None is the fail-closed "no realtime evidence" state:
+        # derive_realtime_ingestion_health then reports no_evidence/disabled, never healthy.
+        realtime_lane_payload: dict[str, Any] = {}
+        realtime_stream_last_telemetry_at: datetime | None = None
+        realtime_ingestion = derive_realtime_ingestion_health(
+            streams_enabled=realtime_streams_enabled(),
+            lane_state=None,
+            checkpoint_stale_seconds=QUICKNODE_STREAM_STALE_SECONDS,
+            telemetry_window_seconds=int(telemetry_window_seconds),
+        )
+        # Fallback-RPC leg facts, defaulted alongside the realtime ones so the summary
+        # can always report both paths even if the canonical aggregation is cut short.
+        fallback_provider_reachable = False
+        fallback_provider_degraded_or_unreachable = True
+        invalid_enabled_targets_present = False
         query_failure_detected = False
         schema_drift_detected = False
         db_persistence_available = True
@@ -9732,6 +9750,63 @@ def monitoring_runtime_status(
                         (workspace_id,),
                     ).fetchone()
                     canonical_last_detection_at = _parse_ts((canonical_last_detection_row or {}).get('ts') if isinstance(canonical_last_detection_row, dict) else None)
+                    # ---------------------------------------------------------------
+                    # Realtime (QuickNode Streams) ingestion facts.
+                    #
+                    # canonical_last_telemetry_at above is deliberately filtered to the
+                    # STABLE RPC POLL rows (event_type rpc_polling/live_provider,
+                    # provider_type evm_rpc/live_provider), so QuickNode Stream telemetry
+                    # (provider_type=quicknode_stream, event_type=wallet_transfer_detected)
+                    # is invisible to it BY CONSTRUCTION. Read the realtime path from its
+                    # own canonical facts instead — the durable quicknode:base:live
+                    # checkpoint (via the SAME build_quicknode_live_lane_status the
+                    # Telemetry header uses, so there is no second stream-health model)
+                    # plus the workspace's freshest live quicknode_stream telemetry row.
+                    # Best-effort: a read failure leaves the realtime facts unknown, which
+                    # is fail-closed (never healthy), and never breaks runtime status.
+                    # ---------------------------------------------------------------
+                    realtime_lane_payload = {}
+                    try:
+                        from services.api.app.quicknode_streams import (
+                            build_quicknode_live_lane_status as _build_live_lane_status,
+                        )
+
+                        _lane_status = _build_live_lane_status(connection, now=now)
+                        if isinstance(_lane_status, dict):
+                            realtime_lane_payload = dict(_lane_status)
+                    except Exception:
+                        logger.warning(
+                            'monitoring_runtime_quicknode_live_lane_unavailable workspace_id=%s',
+                            workspace_id,
+                        )
+                        realtime_lane_payload = {}
+                    realtime_stream_last_telemetry_at = None
+                    try:
+                        _stream_telemetry_row = connection.execute(
+                            '''
+                            SELECT MAX(observed_at) AS ts
+                            FROM telemetry_events
+                            WHERE workspace_id = %s::uuid
+                              AND evidence_source = 'live'
+                              AND provider_type = %s
+                              AND observed_at IS NOT NULL
+                            ''',
+                            (workspace_id, QUICKNODE_STREAM_DETECTED_BY),
+                        ).fetchone()
+                        realtime_stream_last_telemetry_at = _parse_ts(
+                            (_stream_telemetry_row or {}).get('ts')
+                            if isinstance(_stream_telemetry_row, dict)
+                            else None
+                        )
+                    except Exception as exc:
+                        _record_optional_query_failure(
+                            exc=exc,
+                            checkpoint_label='select_realtime_stream_last_telemetry',
+                            impacted_fields=['realtime_ingestion'],
+                            reason_code='optional_table_unavailable',
+                            error_code='runtime_optional_query_failed',
+                        )
+                        realtime_stream_last_telemetry_at = None
                     telemetry_candidates: list[tuple[datetime, str]] = []
                     coverage_telemetry_candidates: list[datetime] = []
                     receipts_reporting_systems = 0
@@ -9769,13 +9844,60 @@ def monitoring_runtime_status(
                     if canonical_last_telemetry_at is not None:
                         if last_coverage_telemetry_at is None or canonical_last_telemetry_at > last_coverage_telemetry_at:
                             last_coverage_telemetry_at = canonical_last_telemetry_at
+                    # ---------------------------------------------------------------
+                    # Canonical realtime-ingestion verdict (CLAUDE.md: heartbeat / poll /
+                    # telemetry are separate proofs, and so are the two ingestion paths).
+                    #   * healthy            — the Stream is DELIVERING near the chain tip.
+                    #   * live_evidence_fresh — realtime live telemetry actually ARRIVED
+                    #     inside the freshness window (only this is customer evidence).
+                    # The 900s fallback RPC cadence is not an input to either.
+                    # ---------------------------------------------------------------
+                    _realtime_checkpoint_at = _parse_ts(realtime_lane_payload.get('live_checkpoint_at'))
+                    realtime_ingestion = derive_realtime_ingestion_health(
+                        streams_enabled=realtime_streams_enabled(),
+                        lane_state=realtime_lane_payload.get('state'),
+                        lag_blocks=realtime_lane_payload.get('lag_blocks'),
+                        checkpoint_block=realtime_lane_payload.get('live_checkpoint_block'),
+                        chain_head=realtime_lane_payload.get('chain_head'),
+                        checkpoint_age_seconds=(
+                            int((now - _realtime_checkpoint_at).total_seconds())
+                            if _realtime_checkpoint_at is not None
+                            else None
+                        ),
+                        live_telemetry_age_seconds=(
+                            int((now - realtime_stream_last_telemetry_at).total_seconds())
+                            if realtime_stream_last_telemetry_at is not None
+                            else None
+                        ),
+                        checkpoint_stale_seconds=QUICKNODE_STREAM_STALE_SECONDS,
+                        telemetry_window_seconds=int(telemetry_window_seconds),
+                    )
+                    # Fresh realtime live telemetry IS current live coverage for this
+                    # workspace. Without this fold the Stream — the realtime detection
+                    # path — could never contribute freshness, so a workspace carried by
+                    # Streams read as stale/replay purely because the 900s reconciliation
+                    # poll had not run inside the window. Fail-closed: only folded while
+                    # the realtime lane itself is healthy (derive_realtime_ingestion_health
+                    # clears live_evidence_fresh otherwise), so a stopped or far-behind
+                    # stream can never refresh coverage.
+                    if realtime_ingestion.live_evidence_fresh and realtime_stream_last_telemetry_at is not None:
+                        if (
+                            last_coverage_telemetry_at is None
+                            or realtime_stream_last_telemetry_at > last_coverage_telemetry_at
+                        ):
+                            last_coverage_telemetry_at = realtime_stream_last_telemetry_at
                     last_telemetry_at = canonical_last_telemetry_at or legacy_last_telemetry_at
+                    if realtime_ingestion.live_evidence_fresh and realtime_stream_last_telemetry_at is not None:
+                        if last_telemetry_at is None or realtime_stream_last_telemetry_at > last_telemetry_at:
+                            last_telemetry_at = realtime_stream_last_telemetry_at
                     # 'coverage' is the recognized kind in build_workspace_monitoring_summary;
                     # evm_rpc/rpc_polling polling events are coverage telemetry by definition.
                     telemetry_kind = (
                         'coverage' if canonical_last_telemetry_at is not None
                         else (legacy_telemetry_kind if legacy_last_telemetry_at is not None else None)
                     )
+                    if telemetry_kind is None and realtime_ingestion.live_evidence_fresh:
+                        telemetry_kind = 'coverage'
                     latest_target_coverage_rows = connection.execute(
                         '''
                         SELECT DISTINCT ON (target_id)
@@ -10108,17 +10230,39 @@ def monitoring_runtime_status(
                         last_coverage_telemetry_at is not None
                         and int((now - last_coverage_telemetry_at).total_seconds()) <= telemetry_window_seconds
                     )
-                    provider_reachable = bool(
+                    # ``provider_reachable`` only ever described the FALLBACK RPC leg:
+                    # an inline eth_chainId probe, or a source_type from the polling /
+                    # WebSocket watcher. The QuickNode Streams realtime path has no
+                    # representation in it at all, so a Streams-carried workspace was
+                    # judged purely on its 900s reconciliation poll.
+                    fallback_provider_reachable = bool(
                         (claim_validator.get('checks') or {}).get('provider_reachable_or_backfilling')
                         or str(health.get('source_type') or '').strip().lower() in {'polling', 'websocket', 'rpc_backfill'}
                     )
-                    provider_degraded_or_unreachable = bool(
+                    # Fallback-RPC transport degradation, kept as its OWN named fact so the
+                    # runtime payload can report "fallback degraded" without claiming the
+                    # active Stream stopped.
+                    fallback_provider_degraded_or_unreachable = bool(
                         health.get('last_error')
                         or health.get('degraded')
                         or degraded_reason
                         or stale_heartbeat
-                        or int((broken_targets or {}).get('c') or 0) > 0
-                        or not provider_reachable
+                        or not fallback_provider_reachable
+                    )
+                    # Invalid enabled targets are a TARGET CONFIGURATION fault, not provider
+                    # transport: a healthy Stream must never mask them, so they degrade
+                    # unconditionally (unchanged behavior).
+                    invalid_enabled_targets_present = int((broken_targets or {}).get('c') or 0) > 0
+                    # THE provider verdict. Realtime Streams and fallback RPC are two
+                    # independent paths to the same provider: the provider is only
+                    # "degraded or unreachable" when the fallback leg is degraded AND the
+                    # realtime leg is not demonstrably healthy. A 900s cadence that simply
+                    # has not polled recently can no longer, on its own, declare a Stream
+                    # that is delivering at the chain tip unavailable. Fail-closed: with no
+                    # healthy realtime evidence this is byte-for-byte the previous verdict.
+                    provider_degraded_or_unreachable = bool(
+                        invalid_enabled_targets_present
+                        or (fallback_provider_degraded_or_unreachable and not realtime_ingestion.healthy)
                     )
                     evidence_source_live = bool(
                         str(health.get('ingestion_mode') or '').strip().lower() not in {'demo', 'simulator', 'replay'}
@@ -10192,12 +10336,18 @@ def monitoring_runtime_status(
         provider_health = [dict(row) for row in (latest_provider_rows or [])]
         target_coverage = [dict(row) for row in coverage_by_target.values()]
         logger.info(
-            'monitoring_runtime_evidence_selection workspace_id=%s chosen_evidence_source=%s source_of_evidence=%s reporting_systems=%s receipts_reporting_systems=%s',
+            'monitoring_runtime_evidence_selection workspace_id=%s chosen_evidence_source=%s source_of_evidence=%s '
+            'reporting_systems=%s receipts_reporting_systems=%s realtime_ingestion_status=%s '
+            'realtime_ingestion_healthy=%s realtime_live_evidence_fresh=%s fallback_rpc_degraded=%s',
             workspace_id,
             evidence_source,
             source_of_evidence,
             reporting_systems,
             receipts_reporting_systems,
+            realtime_ingestion.status,
+            realtime_ingestion.healthy,
+            realtime_ingestion.live_evidence_fresh,
+            fallback_provider_degraded_or_unreachable,
         )
         downgrade_reason_tokens: list[str] = []
         if not coverage_fresh:
@@ -10208,6 +10358,14 @@ def monitoring_runtime_status(
             downgrade_reason_tokens.append('no_reporting_systems_from_coverage')
         if provider_degraded_or_unreachable:
             downgrade_reason_tokens.append('provider_degraded_or_unreachable')
+        # Report the fallback leg separately and by its own name. It is diagnostic
+        # context, NOT a live-evidence downgrade, whenever the realtime Stream is
+        # carrying detection — which is exactly the distinction the previous single
+        # provider_degraded_or_unreachable token collapsed.
+        if fallback_provider_degraded_or_unreachable and realtime_ingestion.healthy:
+            downgrade_reason_tokens.append('fallback_rpc_degraded_realtime_stream_healthy')
+        if realtime_ingestion.streams_enabled and not realtime_ingestion.healthy:
+            downgrade_reason_tokens.append(f'realtime_ingestion_{realtime_ingestion.status}')
         if downgrade_reason_tokens:
             logger.info(
                 'monitoring_runtime_live_downgrade workspace_id=%s reasons=%s',
@@ -10487,6 +10645,37 @@ def monitoring_runtime_status(
         summary['source_of_evidence'] = source_of_evidence
         summary['stale_heartbeat'] = stale_heartbeat
         summary['provider_degraded_flag'] = bool(provider_degraded_or_unreachable)
+        # ONE canonical set of realtime/fallback facts for every screen (Monitoring
+        # Sources, Threat Monitoring, Dashboard, System Health) so they cannot derive
+        # contradictory labels from the same evidence state. The distinctions CLAUDE.md
+        # requires stay explicit and separately named — realtime ingestion health, live
+        # realtime evidence, fallback RPC health, and the overall provider verdict are
+        # four different fields, never collapsed into one green status.
+        summary['realtime_ingestion'] = {
+            'streams_enabled': bool(realtime_ingestion.streams_enabled),
+            'status': realtime_ingestion.status,
+            'healthy': bool(realtime_ingestion.healthy),
+            'live_evidence_fresh': bool(realtime_ingestion.live_evidence_fresh),
+            'lane_state': realtime_ingestion.lane_state,
+            'lag_blocks': realtime_ingestion.lag_blocks,
+            'checkpoint_block': realtime_ingestion.checkpoint_block,
+            'chain_head': realtime_ingestion.chain_head,
+            'checkpoint_age_seconds': realtime_ingestion.checkpoint_age_seconds,
+            'last_live_telemetry_at': (
+                realtime_stream_last_telemetry_at.isoformat()
+                if realtime_stream_last_telemetry_at
+                else None
+            ),
+            'live_telemetry_age_seconds': realtime_ingestion.live_telemetry_age_seconds,
+            'reason': realtime_ingestion.reason,
+        }
+        summary['fallback_rpc'] = {
+            'degraded_or_unreachable': bool(fallback_provider_degraded_or_unreachable),
+            'reachable': bool(fallback_provider_reachable),
+            'poll_interval_seconds': int(canonical_polling_interval_seconds()),
+            'stale_threshold_seconds': int(_stable_poll_stale_threshold),
+            'last_poll_at': last_poll_at.isoformat() if last_poll_at else None,
+        }
         summary['coverage_receipts_workspace_count'] = int(live_coverage_receipts_persisted_count)
         summary['coverage_receipts_last_at'] = live_coverage_receipts_workspace_latest.isoformat() if live_coverage_receipts_workspace_latest else None
         summary['last_coverage_telemetry_at'] = last_coverage_telemetry_at.isoformat() if last_coverage_telemetry_at else None

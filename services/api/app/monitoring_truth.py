@@ -188,3 +188,157 @@ def ui_truthfulness_state(value: str) -> str:
         'UNKNOWN_RISK': 'unknown_risk',
     }
     return mapping.get(api_truthfulness_state(value), 'unknown_risk')
+
+
+# ---------------------------------------------------------------------------
+# Realtime (QuickNode Streams) ingestion health — kept SEPARATE from fallback
+# RPC health.
+#
+# Decoda runs two distinct ingestion paths against the same provider:
+#
+#   1. QuickNode Streams  — realtime webhook delivery at (or within a few blocks
+#      of) the Base chain tip. Proven by the ``quicknode:base:live`` checkpoint
+#      advancing and, when a monitored wallet actually transacts, by persisted
+#      ``evidence_source=live`` / ``detected_by=quicknode_stream`` telemetry.
+#   2. QuickNode HTTPS RPC — the stable reconciliation poll on the canonical
+#      900s cadence.
+#
+# These are RELATED but INDEPENDENT facts. A reconciliation poll that has not run
+# for a few minutes is normal for a 900s cadence and says NOTHING about whether
+# the Stream is delivering; treating "no recent fallback poll" as "provider
+# unavailable" is what produced the contradictory runtime state where
+# ``fresh_live_reporting_systems=1`` coexisted with
+# ``chosen_evidence_source=replay`` and ``provider_degraded_or_unreachable``.
+#
+# CLAUDE.md keeps heartbeat / poll / telemetry as separate proofs, so this helper
+# does too, and returns BOTH:
+#
+#   * ``healthy``            — the realtime ingestion PATH is delivering near the
+#     tip (checkpoint fresh + lag within threshold). Blocks arriving with no
+#     matched wallet transfer is the normal quiet case and stays healthy.
+#   * ``live_evidence_fresh`` — realtime LIVE TELEMETRY actually arrived inside
+#     the freshness window. Only this may be read as live customer evidence.
+#
+# Fail-closed everywhere: streams disabled, an unknown/stale/degraded lane, or no
+# realtime evidence at all can never report healthy, and neither flag is ever
+# inferred from the fallback RPC path.
+# ---------------------------------------------------------------------------
+
+REALTIME_INGESTION_HEALTHY = 'healthy'
+REALTIME_INGESTION_DEGRADED = 'degraded'
+REALTIME_INGESTION_STALE = 'stale'
+REALTIME_INGESTION_UNKNOWN = 'unknown'
+REALTIME_INGESTION_DISABLED = 'disabled'
+REALTIME_INGESTION_NO_EVIDENCE = 'no_evidence'
+
+REALTIME_INGESTION_STATES = {
+    REALTIME_INGESTION_HEALTHY,
+    REALTIME_INGESTION_DEGRADED,
+    REALTIME_INGESTION_STALE,
+    REALTIME_INGESTION_UNKNOWN,
+    REALTIME_INGESTION_DISABLED,
+    REALTIME_INGESTION_NO_EVIDENCE,
+}
+
+# Lane states produced by quicknode_streams.classify_quicknode_lane_state.
+_LANE_LIVE = 'live'
+_LANE_DEGRADED = 'degraded'
+_LANE_STALE = 'stale'
+_LANE_FAILED = 'failed'
+_LANE_CATCHING_UP = 'catching_up'
+
+
+@dataclass(frozen=True)
+class RealtimeIngestionHealth:
+    """Canonical realtime-ingestion facts for one workspace's runtime status."""
+
+    status: str
+    healthy: bool
+    live_evidence_fresh: bool
+    streams_enabled: bool
+    lane_state: str | None
+    lag_blocks: int | None
+    checkpoint_block: int | None
+    chain_head: int | None
+    checkpoint_age_seconds: int | None
+    live_telemetry_age_seconds: int | None
+    reason: str
+
+
+def derive_realtime_ingestion_health(
+    *,
+    streams_enabled: bool,
+    lane_state: str | None,
+    lag_blocks: int | None = None,
+    checkpoint_block: int | None = None,
+    chain_head: int | None = None,
+    checkpoint_age_seconds: int | None = None,
+    live_telemetry_age_seconds: int | None = None,
+    checkpoint_stale_seconds: int,
+    telemetry_window_seconds: int,
+) -> RealtimeIngestionHealth:
+    """Derive realtime ingestion health from canonical QuickNode Stream facts.
+
+    ``lane_state`` is the state produced by
+    :func:`services.api.app.quicknode_streams.classify_quicknode_lane_state` from the
+    durable ``quicknode:base:live`` checkpoint — this helper deliberately reuses that
+    canonical classification rather than inventing a second stream-health model.
+
+    The fallback RPC cadence is NOT an input: a 900s reconciliation poll can never
+    make a delivering Stream look unavailable, and a delivering Stream can never make
+    a stale RPC poll look fresh.
+    """
+    stale_window = max(int(checkpoint_stale_seconds or 0), 0)
+    telemetry_window = max(int(telemetry_window_seconds or 0), 0)
+    normalized_lane = str(lane_state or '').strip().lower() or None
+    checkpoint_age = int(checkpoint_age_seconds) if isinstance(checkpoint_age_seconds, int) else None
+    telemetry_age = (
+        int(live_telemetry_age_seconds) if isinstance(live_telemetry_age_seconds, int) else None
+    )
+    live_evidence_fresh = telemetry_age is not None and telemetry_age <= telemetry_window
+
+    def _result(status: str, healthy: bool, reason: str) -> RealtimeIngestionHealth:
+        return RealtimeIngestionHealth(
+            status=status,
+            healthy=healthy,
+            # Fail-closed: realtime telemetry only counts as live evidence while the
+            # realtime path itself is healthy. Fresh rows behind a stalled/degraded
+            # lane are historical evidence, not proof of current live monitoring.
+            live_evidence_fresh=bool(live_evidence_fresh and healthy),
+            streams_enabled=bool(streams_enabled),
+            lane_state=normalized_lane,
+            lag_blocks=lag_blocks if isinstance(lag_blocks, int) else None,
+            checkpoint_block=checkpoint_block if isinstance(checkpoint_block, int) else None,
+            chain_head=chain_head if isinstance(chain_head, int) else None,
+            checkpoint_age_seconds=checkpoint_age,
+            live_telemetry_age_seconds=telemetry_age,
+            reason=reason,
+        )
+
+    if not streams_enabled:
+        return _result(REALTIME_INGESTION_DISABLED, False, 'realtime_streams_disabled')
+    if normalized_lane is None and telemetry_age is None:
+        return _result(REALTIME_INGESTION_NO_EVIDENCE, False, 'no_realtime_stream_evidence')
+    if normalized_lane == _LANE_FAILED:
+        return _result(REALTIME_INGESTION_DEGRADED, False, 'stream_delivery_failed')
+    if normalized_lane == _LANE_STALE:
+        return _result(REALTIME_INGESTION_STALE, False, 'stream_checkpoint_stale')
+    if normalized_lane == _LANE_DEGRADED:
+        return _result(REALTIME_INGESTION_DEGRADED, False, 'stream_far_behind_chain_tip')
+    if normalized_lane == _LANE_CATCHING_UP:
+        return _result(REALTIME_INGESTION_DEGRADED, False, 'stream_live_lane_not_established')
+    if normalized_lane != _LANE_LIVE:
+        # No lane classification (unknown chain head, no checkpoint) — never healthy.
+        return _result(REALTIME_INGESTION_UNKNOWN, False, 'stream_health_unknown')
+    # Lane says live. Re-check the checkpoint age against the SAME canonical stale
+    # window so a lane classification computed against a different clock can never
+    # paint a stopped stream green.
+    if checkpoint_age is None:
+        return _result(REALTIME_INGESTION_UNKNOWN, False, 'stream_checkpoint_timestamp_missing')
+    if checkpoint_age > stale_window:
+        return _result(REALTIME_INGESTION_STALE, False, 'stream_checkpoint_stale')
+    return _result(
+        REALTIME_INGESTION_HEALTHY,
+        True,
+        'stream_near_chain_tip' if not live_evidence_fresh else 'stream_near_chain_tip_with_fresh_live_telemetry',
+    )
