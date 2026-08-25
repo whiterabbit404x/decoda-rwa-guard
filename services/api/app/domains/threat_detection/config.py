@@ -123,6 +123,13 @@ RUNTIME_EVENT_TYPES = frozenset(
         'heartbeat',
         'cursor_update',
         'checkpoint_update',
+        # QuickNode Streams live-lane monitoring coverage
+        # (worker_status.QUICKNODE_STREAM_COVERAGE_EVENT_TYPE): proof that a healthy
+        # near-tip Stream block was evaluated against the monitored target, with
+        # matched=0 being the normal quiet case. An ingestion/runtime heartbeat, never
+        # a security event — so it can never enter detector evaluation or be counted
+        # as on-chain telemetry.
+        'stream_coverage',
         'diagnostic',
         'diagnostic_result',
     }

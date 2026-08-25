@@ -216,12 +216,29 @@ def ui_truthfulness_state(value: str) -> str:
 #   * ``healthy``            — the realtime ingestion PATH is delivering near the
 #     tip (checkpoint fresh + lag within threshold). Blocks arriving with no
 #     matched wallet transfer is the normal quiet case and stays healthy.
-#   * ``live_evidence_fresh`` — realtime LIVE TELEMETRY actually arrived inside
-#     the freshness window. Only this may be read as live customer evidence.
+#   * ``live_evidence_fresh`` — realtime LIVE EVIDENCE actually arrived inside the
+#     freshness window. Only this may be read as live customer evidence.
+#
+# Realtime live evidence has TWO distinct kinds, and this helper keeps them
+# separately named rather than collapsing them into one green flag:
+#
+#   * ``live_coverage_fresh``           — a healthy Stream block was accepted and the
+#     monitored target was loaded and evaluated against it. This proves MONITORING
+#     ("Decoda actively monitored this target at this time") and is exactly what the
+#     900s fallback RPC poll's own coverage telemetry proves. It asserts NOTHING
+#     about whether anything happened on-chain.
+#   * ``live_security_telemetry_fresh`` — a real monitored-wallet transfer actually
+#     arrived on the Stream inside the window. Only THIS is evidence of an on-chain
+#     event; ``matched=0`` must never set it.
+#
+# ``live_evidence_kind`` names which one is carrying the freshness so a caller can
+# never read "we monitored you" as "we saw something". Coverage alone keeps
+# ``recent_real_event_count`` at zero, so the runtime's existing
+# ``coverage_only_no_events`` evidence state still reports truthfully.
 #
 # Fail-closed everywhere: streams disabled, an unknown/stale/degraded lane, or no
-# realtime evidence at all can never report healthy, and neither flag is ever
-# inferred from the fallback RPC path.
+# realtime evidence at all can never report healthy, and no flag is ever inferred
+# from the fallback RPC path.
 # ---------------------------------------------------------------------------
 
 REALTIME_INGESTION_HEALTHY = 'healthy'
@@ -255,6 +272,9 @@ class RealtimeIngestionHealth:
     status: str
     healthy: bool
     live_evidence_fresh: bool
+    live_coverage_fresh: bool
+    live_security_telemetry_fresh: bool
+    live_evidence_kind: str
     streams_enabled: bool
     lane_state: str | None
     lag_blocks: int | None
@@ -262,6 +282,7 @@ class RealtimeIngestionHealth:
     chain_head: int | None
     checkpoint_age_seconds: int | None
     live_telemetry_age_seconds: int | None
+    live_coverage_age_seconds: int | None
     reason: str
 
 
@@ -274,6 +295,7 @@ def derive_realtime_ingestion_health(
     chain_head: int | None = None,
     checkpoint_age_seconds: int | None = None,
     live_telemetry_age_seconds: int | None = None,
+    live_coverage_age_seconds: int | None = None,
     checkpoint_stale_seconds: int,
     telemetry_window_seconds: int,
 ) -> RealtimeIngestionHealth:
@@ -283,6 +305,13 @@ def derive_realtime_ingestion_health(
     :func:`services.api.app.quicknode_streams.classify_quicknode_lane_state` from the
     durable ``quicknode:base:live`` checkpoint — this helper deliberately reuses that
     canonical classification rather than inventing a second stream-health model.
+
+    ``live_telemetry_age_seconds`` is the age of the freshest realtime SECURITY
+    telemetry row (a matched monitored-wallet transfer). ``live_coverage_age_seconds``
+    is the age of the freshest realtime MONITORING COVERAGE row — written when a
+    healthy near-tip Stream block was accepted and the monitored target was loaded and
+    evaluated against it, whether or not anything matched. Both are live realtime
+    evidence; only the former is evidence of an on-chain event.
 
     The fallback RPC cadence is NOT an input: a 900s reconciliation poll can never
     make a delivering Stream look unavailable, and a delivering Stream can never make
@@ -295,16 +324,31 @@ def derive_realtime_ingestion_health(
     telemetry_age = (
         int(live_telemetry_age_seconds) if isinstance(live_telemetry_age_seconds, int) else None
     )
-    live_evidence_fresh = telemetry_age is not None and telemetry_age <= telemetry_window
+    coverage_age = (
+        int(live_coverage_age_seconds) if isinstance(live_coverage_age_seconds, int) else None
+    )
+    security_telemetry_fresh = telemetry_age is not None and telemetry_age <= telemetry_window
+    coverage_fresh = coverage_age is not None and coverage_age <= telemetry_window
+    live_evidence_fresh = security_telemetry_fresh or coverage_fresh
 
     def _result(status: str, healthy: bool, reason: str) -> RealtimeIngestionHealth:
+        # Fail-closed: realtime evidence only counts as live while the realtime path
+        # itself is healthy. Fresh rows behind a stalled/degraded lane are historical
+        # evidence, not proof of current live monitoring.
+        resolved_security_fresh = bool(security_telemetry_fresh and healthy)
+        resolved_coverage_fresh = bool(coverage_fresh and healthy)
         return RealtimeIngestionHealth(
             status=status,
             healthy=healthy,
-            # Fail-closed: realtime telemetry only counts as live evidence while the
-            # realtime path itself is healthy. Fresh rows behind a stalled/degraded
-            # lane are historical evidence, not proof of current live monitoring.
             live_evidence_fresh=bool(live_evidence_fresh and healthy),
+            live_coverage_fresh=resolved_coverage_fresh,
+            live_security_telemetry_fresh=resolved_security_fresh,
+            # Never let coverage ("we monitored this target") be read as a security
+            # event: security telemetry names itself whenever it is present.
+            live_evidence_kind=(
+                'security_telemetry' if resolved_security_fresh
+                else ('coverage' if resolved_coverage_fresh else 'none')
+            ),
             streams_enabled=bool(streams_enabled),
             lane_state=normalized_lane,
             lag_blocks=lag_blocks if isinstance(lag_blocks, int) else None,
@@ -312,12 +356,13 @@ def derive_realtime_ingestion_health(
             chain_head=chain_head if isinstance(chain_head, int) else None,
             checkpoint_age_seconds=checkpoint_age,
             live_telemetry_age_seconds=telemetry_age,
+            live_coverage_age_seconds=coverage_age,
             reason=reason,
         )
 
     if not streams_enabled:
         return _result(REALTIME_INGESTION_DISABLED, False, 'realtime_streams_disabled')
-    if normalized_lane is None and telemetry_age is None:
+    if normalized_lane is None and telemetry_age is None and coverage_age is None:
         return _result(REALTIME_INGESTION_NO_EVIDENCE, False, 'no_realtime_stream_evidence')
     if normalized_lane == _LANE_FAILED:
         return _result(REALTIME_INGESTION_DEGRADED, False, 'stream_delivery_failed')
@@ -337,8 +382,10 @@ def derive_realtime_ingestion_health(
         return _result(REALTIME_INGESTION_UNKNOWN, False, 'stream_checkpoint_timestamp_missing')
     if checkpoint_age > stale_window:
         return _result(REALTIME_INGESTION_STALE, False, 'stream_checkpoint_stale')
-    return _result(
-        REALTIME_INGESTION_HEALTHY,
-        True,
-        'stream_near_chain_tip' if not live_evidence_fresh else 'stream_near_chain_tip_with_fresh_live_telemetry',
-    )
+    if security_telemetry_fresh:
+        healthy_reason = 'stream_near_chain_tip_with_fresh_live_telemetry'
+    elif coverage_fresh:
+        healthy_reason = 'stream_near_chain_tip_with_fresh_coverage'
+    else:
+        healthy_reason = 'stream_near_chain_tip'
+    return _result(REALTIME_INGESTION_HEALTHY, True, healthy_reason)
