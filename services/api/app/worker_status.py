@@ -55,6 +55,29 @@ REALTIME_DETECTED_BY: tuple[str, ...] = (
 QUICKNODE_STREAM_DETECTED_BY = 'quicknode_stream'
 STABLE_DETECTED_BY = 'stable_rpc_polling'
 
+# QuickNode Streams live-lane MONITORING COVERAGE telemetry.
+#
+# A coverage row is written when a signed Stream block was accepted, the live lane
+# was healthy near the chain tip, and the monitored target was loaded and evaluated
+# against that block — INCLUDING the normal quiet case where nothing matched. It
+# proves "Decoda actively monitored this target at this time" and is the realtime
+# twin of the coverage telemetry the 900s stable RPC poll writes
+# (provider_type='evm_rpc', event_type='rpc_polling').
+#
+# It carries its OWN provider_type, deliberately NOT QUICKNODE_STREAM_DETECTED_BY, so
+# no existing reader that matches provider_type='quicknode_stream' exactly (the
+# runtime status realtime-telemetry read, the Telemetry header's "last stream event")
+# can mistake monitoring coverage for a detected on-chain event. For the same reason
+# the row carries no ``detected_by`` in its payload: nothing was detected.
+#
+# QUICKNODE_STREAM_COVERAGE_EVENT_TYPE is registered in
+# services/api/app/domains/threat_detection/config.RUNTIME_EVENT_TYPES, which is the
+# single place the security-telemetry boundary is defined — so a coverage row can
+# never enter detector evaluation, become a detection/alert, or be counted as
+# security telemetry.
+QUICKNODE_STREAM_COVERAGE_PROVIDER_TYPE = 'quicknode_stream_coverage'
+QUICKNODE_STREAM_COVERAGE_EVENT_TYPE = 'stream_coverage'
+
 # QuickNode-matcher detections that were recovered via Base RPC rather than
 # delivered on the live QuickNode stream (services/api/app/quicknode_streams.py):
 #   * quicknode_stream_backfill    — automatic gap backfill (a stream block skip).

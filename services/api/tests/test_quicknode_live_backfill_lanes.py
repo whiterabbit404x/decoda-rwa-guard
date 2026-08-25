@@ -51,6 +51,11 @@ def _enable_realtime_streams_mode(monkeypatch):
     # which the polling-only MVP (REALTIME_STREAMS_ENABLED unset) safely ignores. Opt
     # into real-time mode so the webhook processes payloads instead of short-circuiting.
     monkeypatch.setenv('REALTIME_STREAMS_ENABLED', 'true')
+    # The per-target monitoring-coverage refresh throttle is process-global, so clear
+    # it on both sides of every test to keep coverage writes deterministic.
+    qn.reset_stream_coverage_refresh_state()
+    yield
+    qn.reset_stream_coverage_refresh_state()
 from services.api.app.domains import alert_stream
 
 WALLET = '0x5f6f35fd8b10c5576089f99c7c8c351deb851d1f'
@@ -104,7 +109,14 @@ class _LaneConn:
         self.targets = targets or []
         self.existing_telemetry = existing_telemetry
         self.checkpoints: dict[str, dict] = dict(checkpoints or {})
+        # SECURITY telemetry (wallet_transfer_detected) only. Live-lane MONITORING
+        # COVERAGE rows are recorded separately below: they are a different artifact
+        # with their own provider_type/event_type, and a coverage refresh must never
+        # show up as a detected on-chain event.
         self.telemetry_inserts: list[tuple] = []
+        self.coverage_telemetry_inserts: list[tuple] = []
+        self.coverage_receipt_upserts: list[tuple] = []
+        self.monitored_system_coverage_updates: list[tuple] = []
         self.commit_calls = 0
         self.events = events if events is not None else []
 
@@ -145,7 +157,18 @@ class _LaneConn:
         if 'from telemetry_events' in q and 'select' in q:
             return _Rows([self.existing_telemetry] if self.existing_telemetry else [])
         if q.startswith('insert into telemetry_events'):
-            self.telemetry_inserts.append(tuple(params or ()))
+            row = tuple(params or ())
+            event_type = row[5] if len(row) > 5 else None
+            if event_type == qn.QUICKNODE_STREAM_COVERAGE_EVENT_TYPE:
+                self.coverage_telemetry_inserts.append(row)
+            else:
+                self.telemetry_inserts.append(row)
+            return _Rows([])
+        if q.startswith('insert into monitoring_event_receipts'):
+            self.coverage_receipt_upserts.append(tuple(params or ()))
+            return _Rows([])
+        if q.startswith('update monitored_systems'):
+            self.monitored_system_coverage_updates.append(tuple(params or ()))
             return _Rows([])
         return _Rows([])
 
@@ -361,7 +384,10 @@ def test_live_lane_ignores_unrelated_transaction(monkeypatch):
     result = _call_lane_webhook(lane='live', body=body, conn=conn, rpc_head=110, monkeypatch=monkeypatch)
     assert result['persisted'] == 0
     assert result['matched'] == 0
+    # No SECURITY telemetry for an unrelated tx. The healthy near-tip block still
+    # refreshes MONITORING COVERAGE for the loaded target — a separate artifact.
     assert conn.telemetry_inserts == []
+    assert len(conn.coverage_telemetry_inserts) == 1
 
 
 # ---------------------------------------------------------------------------

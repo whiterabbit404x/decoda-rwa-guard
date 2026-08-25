@@ -48,7 +48,11 @@ from services.api.app.monitoring_runner import (
 from services.api.app.pilot import ensure_pilot_schema, pg_connection
 from services.api.app import telemetry_realtime
 from services.api.app.monitoring_runtime_mode import polling_only_mode
-from services.api.app.worker_status import TRANSFER_FAMILY_EVENT_TYPES
+from services.api.app.worker_status import (
+    QUICKNODE_STREAM_COVERAGE_EVENT_TYPE,
+    QUICKNODE_STREAM_COVERAGE_PROVIDER_TYPE,
+    TRANSFER_FAMILY_EVENT_TYPES,
+)
 
 logger = logging.getLogger(__name__)
 # These quicknode_stream_* lines are mandatory operational evidence: the
@@ -2689,6 +2693,294 @@ def release_live_lane_lock(connection: Any) -> None:
         logger.warning('quicknode_live_lane_unlock_failed', exc_info=True)
 
 
+# ---------------------------------------------------------------------------
+# Live-lane MONITORING COVERAGE refresh.
+#
+# The realtime path proves more than "a wallet moved funds". Every accepted
+# live-lane block is also proof that Decoda MONITORED the enabled target at that
+# moment:
+#
+#     signed QuickNode block accepted
+#       + live lane healthy / near chain tip
+#       + monitored target loaded, wallet resolved, evaluated against the block
+#     = fresh live monitoring coverage        (matched=0 included)
+#
+# Before this, the only writer of monitoring coverage was the 900s fallback RPC
+# poll (monitoring_runner._persist_live_coverage_telemetry). The runtime freshness
+# window floors at 300s, so a workspace carried entirely by a healthy Stream lost
+# its coverage ~5 minutes after each poll and the runtime downgraded itself to
+# chosen_evidence_source=replay / monitoring_status=limited while the Stream was
+# still sitting at the chain tip evaluating every block.
+#
+# What this deliberately does NOT do (CLAUDE.md: coverage evidence must stay
+# separate from security-event evidence):
+#
+#   * It never writes wallet_transfer_detected telemetry, a detection, an alert, or
+#     an incident. matched=0 means nothing was detected, and nothing is claimed.
+#   * The row carries no ``detected_by`` and its own provider_type
+#     (QUICKNODE_STREAM_COVERAGE_PROVIDER_TYPE), so no reader that matches
+#     provider_type='quicknode_stream' can mistake it for a detected event.
+#   * Its event_type is registered in the threat-detection RUNTIME_EVENT_TYPES
+#     boundary, so the detector scan excludes it at the source and it is never
+#     counted as security telemetry.
+#
+# WRITE AMPLIFICATION. Base produces a block every ~2s, so a per-block write would
+# be ~43k writes/day/target. Two things bound it instead:
+#
+#   1. Every write is an UPSERT on an existing collapsed key — one telemetry_events
+#      row per target (the same "coverage_poll"-style collapsed idempotency key the
+#      RPC path uses), one monitoring_event_receipts coverage row per target, and an
+#      in-place monitored_systems update. Steady-state row growth is ZERO.
+#   2. A per-target refresh is skipped unless the last one is older than
+#      :func:`stream_coverage_refresh_seconds` — half the canonical live-lane stale
+#      window (live_stale_seconds(), 300s by default), i.e. refresh at half the TTL
+#      so coverage can never expire between refreshes while still writing at most
+#      about once per 150s per target.
+#
+# Deliberately NOT written here: target_coverage_records and evidence rows. Both are
+# append-only history tables owned by the 900s poll cycle; writing them at stream
+# cadence would grow rows without adding a single runtime-status coverage fact.
+# ---------------------------------------------------------------------------
+
+_STREAM_COVERAGE_LOCK = threading.Lock()
+_LAST_STREAM_COVERAGE_REFRESH_AT: dict[str, float] = {}
+
+
+def reset_stream_coverage_refresh_state() -> None:
+    """Clear the per-target coverage-refresh throttle (tests / worker restart)."""
+    with _STREAM_COVERAGE_LOCK:
+        _LAST_STREAM_COVERAGE_REFRESH_AT.clear()
+
+
+def stream_coverage_refresh_seconds() -> float:
+    """Minimum seconds between coverage refresh writes for ONE target.
+
+    Derived from existing system semantics rather than a chosen number: half the
+    canonical live-lane stale window (:func:`live_stale_seconds`, which is also the
+    checkpoint-stale window the runtime status reads and the floor of the runtime
+    telemetry freshness window). Refreshing at half the TTL guarantees coverage
+    cannot expire between two successful refreshes.
+
+    ``QUICKNODE_STREAM_COVERAGE_REFRESH_SECONDS`` can tune it, but it is clamped to
+    that same half-TTL ceiling: no configuration may stretch the interval far enough
+    to let coverage lapse, and none may turn this back into a per-block write.
+    """
+    ceiling = max(1.0, float(live_stale_seconds()) / 2.0)
+    raw = getenv('QUICKNODE_STREAM_COVERAGE_REFRESH_SECONDS')
+    try:
+        configured = float(str(raw).strip()) if raw is not None and str(raw).strip() else ceiling
+    except (TypeError, ValueError):
+        configured = ceiling
+    return max(1.0, min(configured, ceiling))
+
+
+def _should_refresh_stream_coverage(target_id: str, *, now_mono: float | None = None) -> bool:
+    now_mono = time.monotonic() if now_mono is None else now_mono
+    interval = stream_coverage_refresh_seconds()
+    with _STREAM_COVERAGE_LOCK:
+        last = _LAST_STREAM_COVERAGE_REFRESH_AT.get(target_id)
+    return last is None or (now_mono - last) >= interval
+
+
+def _mark_stream_coverage_refreshed(target_id: str, *, now_mono: float | None = None) -> None:
+    """Record a SUCCESSFUL refresh. Marked only after the write commits, so a failed
+    write retries on the next block instead of being throttled out for a full window."""
+    now_mono = time.monotonic() if now_mono is None else now_mono
+    with _STREAM_COVERAGE_LOCK:
+        _LAST_STREAM_COVERAGE_REFRESH_AT[target_id] = now_mono
+
+
+def _coverage_telemetry_asset_id(connection: Any, target: dict[str, Any]) -> str | None:
+    """asset_id that satisfies telemetry_events' FK, or None.
+
+    telemetry_events.asset_id references asset_registry(id) while targets.asset_id
+    references assets(id), so the id is verified before use. Unlike the RPC coverage
+    path this never CREATES a missing asset_registry row: coverage evidence must not
+    fabricate relational parents. A missing parent simply yields a FK-safe NULL.
+    """
+    asset_id = target.get('asset_id')
+    if not asset_id:
+        return None
+    asset_id_str = str(asset_id).strip()
+    if not asset_id_str:
+        return None
+    try:
+        row = connection.execute(
+            'SELECT id FROM asset_registry WHERE id = %s::uuid LIMIT 1', (asset_id_str,),
+        ).fetchone()
+    except psycopg.Error:
+        return None
+    return asset_id_str if row else None
+
+
+def _write_stream_target_coverage(
+    connection: Any, *, target: dict[str, Any], observed_at: datetime, block_number: int | None,
+    chain_head: int | None, lag_blocks: int | None, evaluated_tx_count: int,
+) -> None:
+    """Refresh ONE target's monitoring coverage from an accepted healthy live block.
+
+    Three upserts on collapsed keys — no new rows in steady state:
+
+      1. ``telemetry_events``          — the canonical coverage row the runtime status
+         counts as a fresh reporting system (fresh_live_reporting_systems).
+      2. ``monitoring_event_receipts`` — the canonical coverage RECEIPT the runtime
+         status counts in receipts_reporting_systems.
+      3. ``monitored_systems``         — last_coverage_telemetry_at / freshness, the
+         legacy per-system coverage row. ``last_event_at`` is deliberately untouched:
+         no event occurred.
+    """
+    workspace_id = str(target['workspace_id'])
+    target_id = str(target['id'])
+    payload = {
+        'telemetry_kind': 'coverage',
+        'proof_kind': 'monitoring_coverage',
+        'observation_type': 'stream_block_evaluated',
+        'provider_name': QUICKNODE_STREAM_SOURCE,
+        'source_type': QUICKNODE_STREAM_SOURCE,
+        'stream_lane': LANE_LIVE,
+        'stream_key': QUICKNODE_STREAM_KEY_BASE_LIVE,
+        'chain_id': BASE_CHAIN_ID,
+        'chain_network': BASE_CHAIN_NETWORK,
+        'block_number': block_number,
+        'chain_head': chain_head,
+        'lag_blocks': lag_blocks,
+        # Honest self-description: how many transactions from this block were
+        # evaluated against the target, and that nothing was detected.
+        'evaluated_tx_count': int(evaluated_tx_count),
+        'matched': 0,
+        'target_id': target_id,
+        'workspace_id': workspace_id,
+        'observed_at': observed_at.isoformat(),
+    }
+    payload_json = json.dumps(payload, sort_keys=True, default=str)
+    payload_hash = hashlib.sha256(payload_json.encode('utf-8')).hexdigest()
+    # Collapsed per-target key (no block number), mirroring the RPC coverage path's
+    # "<workspace>:<target>:coverage_poll": every refresh UPDATES the one row.
+    idempotency_key = f'{workspace_id}:{target_id}:stream_coverage'
+    connection.execute(
+        """
+        INSERT INTO telemetry_events (
+            id, workspace_id, asset_id, target_id, provider_type, event_type,
+            observed_at, evidence_source, payload_hash, payload_json, idempotency_key
+        )
+        VALUES (%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s::jsonb, %s)
+        ON CONFLICT (workspace_id, target_id, idempotency_key) WHERE idempotency_key IS NOT NULL
+        DO UPDATE SET
+            observed_at = EXCLUDED.observed_at,
+            payload_json = EXCLUDED.payload_json,
+            payload_hash = EXCLUDED.payload_hash,
+            ingested_at = NOW()
+        """,
+        (
+            str(uuid.uuid4()), workspace_id, _coverage_telemetry_asset_id(connection, target), target_id,
+            QUICKNODE_STREAM_COVERAGE_PROVIDER_TYPE, QUICKNODE_STREAM_COVERAGE_EVENT_TYPE,
+            observed_at, 'live', payload_hash, payload_json, idempotency_key,
+        ),
+    )
+    # Coverage RECEIPT, in the same shape the RPC coverage path writes
+    # (receipt_kind='coverage_telemetry', telemetry_kind='coverage',
+    # evidence_source='live'), on a collapsed per-target event_id so the
+    # UNIQUE (target_id, event_id) index makes every refresh an in-place update.
+    connection.execute(
+        """
+        INSERT INTO monitoring_event_receipts (
+            id, workspace_id, target_id, event_id, event_cursor, tx_hash, block_number,
+            log_index, ingestion_source, processed_at, receipt_kind, evidence_source, telemetry_kind
+        )
+        VALUES (%s::uuid, %s::uuid, %s::uuid, %s, %s, NULL, %s, -1, %s, %s, %s, %s, %s)
+        ON CONFLICT (target_id, event_id)
+        DO UPDATE SET
+            event_cursor = EXCLUDED.event_cursor,
+            block_number = EXCLUDED.block_number,
+            ingestion_source = EXCLUDED.ingestion_source,
+            processed_at = EXCLUDED.processed_at,
+            receipt_kind = EXCLUDED.receipt_kind,
+            evidence_source = EXCLUDED.evidence_source,
+            telemetry_kind = EXCLUDED.telemetry_kind
+        """,
+        (
+            str(uuid.uuid4()), workspace_id, target_id,
+            f'coverage:{QUICKNODE_STREAM_SOURCE}:{target_id}',
+            f'coverage:{QUICKNODE_STREAM_KEY_BASE_LIVE}:{block_number}',
+            block_number, QUICKNODE_STREAM_SOURCE, observed_at,
+            'coverage_telemetry', 'live', 'coverage',
+        ),
+    )
+    # last_event_at is NOT touched here — that is the on-chain event fact and nothing
+    # was detected. Only the coverage/heartbeat columns move.
+    connection.execute(
+        """
+        UPDATE monitored_systems
+        SET last_coverage_telemetry_at = %s,
+            last_heartbeat = NOW(),
+            freshness_status = 'fresh',
+            confidence_status = 'high',
+            coverage_reason = NULL
+        WHERE workspace_id = %s::uuid
+          AND target_id = %s::uuid
+          AND COALESCE(is_enabled, TRUE) = TRUE
+        """,
+        (observed_at, workspace_id, target_id),
+    )
+
+
+def refresh_live_stream_target_coverage(
+    connection: Any, *, targets: list[dict[str, Any]], health_status: str | None,
+    block_number: int | None, chain_head: int | None, lag_blocks: int | None,
+    evaluated_tx_count: int, observed_at: datetime,
+) -> dict[str, int]:
+    """Refresh monitoring coverage for every target this healthy live block evaluated.
+
+    Fail-closed on every precondition. Coverage is refreshed ONLY when the live lane
+    reported :data:`STREAM_HEALTH_HEALTHY` for this batch — the same canonical verdict
+    the ``quicknode_stream_batch`` log and the Telemetry header read, which requires a
+    KNOWN chain head and lag within the threshold. An unknown head, a degraded/far-
+    behind lane, or a block that could not be identified writes nothing, so coverage
+    naturally expires and the runtime downgrades truthfully.
+
+    A target with no resolvable monitored wallet is skipped: it was loaded but there
+    was no address to evaluate, so there is no coverage to claim.
+
+    Best-effort by contract — never raises. A coverage failure must not fail the
+    webhook, roll back the lane checkpoint, or make QuickNode retry the block.
+    """
+    stats = {'eligible': 0, 'refreshed': 0, 'throttled': 0, 'skipped_no_wallet': 0, 'failed': 0}
+    if health_status != STREAM_HEALTH_HEALTHY or block_number is None:
+        return stats
+    for target in targets:
+        target_id = str(target.get('id') or '').strip()
+        if not target_id:
+            continue
+        if not resolve_monitored_wallet(target):
+            stats['skipped_no_wallet'] += 1
+            continue
+        stats['eligible'] += 1
+        if not _should_refresh_stream_coverage(target_id):
+            stats['throttled'] += 1
+            continue
+        try:
+            _write_stream_target_coverage(
+                connection, target=target, observed_at=observed_at, block_number=block_number,
+                chain_head=chain_head, lag_blocks=lag_blocks, evaluated_tx_count=evaluated_tx_count,
+            )
+            connection.commit()
+        except Exception:
+            try:
+                connection.rollback()
+            except Exception:  # pragma: no cover - best-effort on a dead tx
+                pass
+            stats['failed'] += 1
+            logger.warning(
+                'event=quicknode_stream_coverage_refresh_failed target_id=%s block_number=%s',
+                target_id, block_number, exc_info=True,
+            )
+            continue
+        # Only a committed write starts the throttle window.
+        _mark_stream_coverage_refreshed(target_id)
+        stats['refreshed'] += 1
+    return stats
+
+
 def _realtime_lane_config(lane: str) -> dict[str, str]:
     """Map an explicit real-time lane to its checkpoint identity + detected_by tag.
 
@@ -2873,23 +3165,41 @@ def _process_realtime_lane_batch(
             connection.commit()
         timer.mark('checkpoint_ms')
 
-    # lag_status is the truthful lane signal. A None head is UNKNOWN (never healthy,
-    # never degraded=false-by-default): the UI must not paint the lane green when the
-    # head could not be determined.
-    if lane != LANE_LIVE:
-        lag_status = 'not_applicable'
-    elif chain_head is None:
-        lag_status = 'unknown'
-    elif lag_blocks is not None and lag_blocks > live_lag_threshold_blocks():
-        lag_status = 'degraded'
-    else:
-        lag_status = 'live'
-    degraded = lag_status == 'degraded'
-    # Canonical health enum + the null-aware degraded flag. When the chain head is
-    # unknown, degraded_flag is None (rendered 'null'), never False — an unknown lane
-    # must not serialize as degraded=false and be painted green.
-    health_status = stream_health_status(lag_status)
-    degraded_flag = stream_degraded_flag(lag_status)
+        # lag_status is the truthful lane signal. A None head is UNKNOWN (never
+        # healthy, never degraded=false-by-default): the UI must not paint the lane
+        # green when the head could not be determined. Computed inside the connection
+        # block (it reads no DB state) so the coverage refresh below can gate on the
+        # SAME canonical verdict the logs and the Telemetry header report, instead of
+        # deriving a second stream-health model.
+        if lane != LANE_LIVE:
+            lag_status = 'not_applicable'
+        elif chain_head is None:
+            lag_status = 'unknown'
+        elif lag_blocks is not None and lag_blocks > live_lag_threshold_blocks():
+            lag_status = 'degraded'
+        else:
+            lag_status = 'live'
+        degraded = lag_status == 'degraded'
+        # Canonical health enum + the null-aware degraded flag. When the chain head is
+        # unknown, degraded_flag is None (rendered 'null'), never False — an unknown lane
+        # must not serialize as degraded=false and be painted green.
+        health_status = stream_health_status(lag_status)
+        degraded_flag = stream_degraded_flag(lag_status)
+
+        # MONITORING COVERAGE for this accepted block. A healthy near-tip block whose
+        # monitored targets were loaded and evaluated proves current monitoring even
+        # when matched=0 — that is coverage evidence, never security evidence, and it
+        # creates no telemetry event, detection, alert, or incident. Runs after the
+        # checkpoint commit and swallows its own failures, so it can never roll back
+        # the lane cursor or make QuickNode retry the block.
+        coverage_stats = {'eligible': 0, 'refreshed': 0, 'throttled': 0, 'skipped_no_wallet': 0, 'failed': 0}
+        if lane == LANE_LIVE:
+            coverage_stats = refresh_live_stream_target_coverage(
+                connection, targets=targets, health_status=health_status,
+                block_number=last_block, chain_head=chain_head, lag_blocks=lag_blocks,
+                evaluated_tx_count=len(normalized_txs), observed_at=received_at,
+            )
+        timer.mark('coverage_refresh_ms')
     if lane == LANE_LIVE and lag_status == 'unknown':
         # Evidence-backed unknown: chain head unavailable, so lag cannot be computed
         # and the lane's health is NOT reported healthy this tick.
@@ -2920,6 +3230,21 @@ def _process_realtime_lane_batch(
             len(normalized_txs), match_count, persisted_count,
             duplicate_count, 'null' if degraded_flag is None else str(degraded_flag).lower(),
         )
+        # Coverage refresh outcome for THIS batch, gated with the batch line so a
+        # quiet stream cannot flood Railway. Proves from logs alone that a healthy
+        # near-tip block refreshed per-target monitoring coverage, and how often it
+        # actually wrote versus was throttled.
+        logger.info(
+            'event=quicknode_stream_coverage_refresh stream_lane=%s checkpoint_identity=%s '
+            'block_number=%s health_status=%s targets_eligible=%s coverage_refreshed=%s '
+            'coverage_throttled=%s skipped_no_wallet=%s coverage_failed=%s '
+            'refresh_interval_seconds=%s matched=%s',
+            lane, checkpoint_key, last_block,
+            health_status if health_status is not None else 'not_applicable',
+            coverage_stats['eligible'], coverage_stats['refreshed'], coverage_stats['throttled'],
+            coverage_stats['skipped_no_wallet'], coverage_stats['failed'],
+            int(stream_coverage_refresh_seconds()), match_count,
+        )
         # Stream Latency task 1: the full per-stage breakdown for this same batch,
         # gated identically to quicknode_stream_batch above so the two lines always
         # appear (or are sampled) together — one line an operator can grep to answer
@@ -2930,13 +3255,14 @@ def _process_realtime_lane_batch(
             'event=quicknode_stream_latency stream_lane=%s stream_key=%s tx_count=%s '
             'send_to_receive_ms=%s verify_ms=%.2f gunzip_ms=%.2f json_parse_ms=%.2f '
             'extract_ms=%.2f normalize_ms=%.2f target_load_ms=%.2f match_loop_ms=%.2f '
-            'checkpoint_ms=%.2f total_ms=%.2f',
+            'checkpoint_ms=%.2f coverage_refresh_ms=%.2f total_ms=%.2f',
             lane, route_stream_key, len(normalized_txs),
             round(send_to_receive_ms, 2) if send_to_receive_ms is not None else 'unknown',
             timer.stages.get('verify_ms', 0.0), timer.stages.get('gunzip_ms', 0.0),
             timer.stages.get('json_parse_ms', 0.0), timer.stages.get('extract_ms', 0.0),
             timer.stages.get('normalize_ms', 0.0), timer.stages.get('target_load_ms', 0.0),
             timer.stages.get('match_loop_ms', 0.0), timer.stages.get('checkpoint_ms', 0.0),
+            timer.stages.get('coverage_refresh_ms', 0.0),
             timer.total_ms(),
         )
     if degraded and _degraded_action in {'transition_degraded', 'periodic'}:

@@ -59,6 +59,8 @@ from services.api.app.worker_status import (
     transfer_source_priority,
     DEFAULT_REALTIME_HEARTBEAT_TTL_SECONDS,
     DETECTED_BY_BASIS_UNCLASSIFIED,
+    QUICKNODE_STREAM_COVERAGE_EVENT_TYPE,
+    QUICKNODE_STREAM_COVERAGE_PROVIDER_TYPE,
     QUICKNODE_STREAM_DETECTED_BY,
     REALTIME_DETECTED_BY,
     STABLE_DETECTED_BY,
@@ -8648,9 +8650,30 @@ def monitoring_runtime_status(
                     )
                 else:
                     raise
+            # ONE canonical monitored_systems read for the whole runtime-status
+            # computation, executed BEFORE any stage counts or compares against it.
+            #
+            # This load used to run here only for the request path, with the
+            # request-less (worker / internal) path re-loading it ~700 lines later —
+            # AFTER enabled_monitored_rows_count had already been computed from the
+            # still-empty initial list. That is what made different stages of the same
+            # GET disagree about the same enabled target in production:
+            #
+            #     monitoring_runtime_status_data_path healthy_enabled_targets=1
+            #         enabled_monitored_rows_before=0        <- read an unloaded list
+            #     monitoring_runtime_status_counts enabled_monitored_systems=1
+            #     monitoring_runtime_status_summary enabled_rows=1   <- read the real rows
+            #
+            # It also made reconcile_needed fire on a phantom gap. Reading once here
+            # makes every downstream stage use the identical read model. Still strictly
+            # read-only: this is a SELECT, and the repair below remains gated on
+            # allow_reconcile (False for GET /ops/monitoring/runtime-status).
+            _mark_query_checkpoint(
+                'load_runtime_monitored_rows' if request is not None
+                else 'load_runtime_monitored_rows_unscoped'
+            )
+            monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
             if request is not None:
-                _mark_query_checkpoint('load_runtime_monitored_rows')
-                monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
                 logger.info(
                     'monitoring_runtime_status_workspace_resolution workspace_id=%s workspace_slug=%s workspace_header_present=%s user_id=%s',
                     workspace_id,
@@ -9113,15 +9136,39 @@ def monitoring_runtime_status(
                 for row in healthy_enabled_target_rows
                 if row.get('id') and row.get('asset_id')
             }
+            # ONE predicate for "this monitored_systems row tracks a real monitorable
+            # target", shared by every stage below.
+            #
+            # This stage used to apply the RAW is_monitorable_target_type(row.target_type)
+            # check while the later counting stages applied the target-id-aware predicate,
+            # so a row whose monitored_systems->targets join yielded a NULL or
+            # non-canonical target_type was counted here as NOT enabled and there as
+            # enabled — the second half of the production disagreement:
+            #
+            #     monitoring_runtime_status_data_path healthy_enabled_targets=1
+            #         enabled_monitored_rows_before=0
+            #     monitoring_runtime_status_counts  enabled_monitored_systems=1
+            #     monitoring_runtime_status_summary enabled_rows=1
+            #
+            # A row pointing at a target already proven enabled + monitorable +
+            # asset-linked by list_healthy_enabled_target_rows is monitorable by that
+            # canonical fact; the raw type string is only the fallback for rows whose
+            # target could not be resolved.
+            def _row_tracks_valid_monitorable_target(row: dict[str, Any]) -> bool:
+                target_id = str(row.get('target_id') or '')
+                if target_id and target_id in healthy_enabled_target_ids:
+                    return True
+                return is_monitorable_target_type(row.get('target_type'))
+
             enabled_monitored_rows_count = sum(
                 1
                 for row in monitored_rows
-                if monitored_system_row_enabled(row) and is_monitorable_target_type(row.get('target_type'))
+                if monitored_system_row_enabled(row) and _row_tracks_valid_monitorable_target(row)
             )
             enabled_monitored_target_ids = {
                 str(row.get('target_id'))
                 for row in monitored_rows
-                if monitored_system_row_enabled(row) and is_monitorable_target_type(row.get('target_type')) and row.get('target_id')
+                if monitored_system_row_enabled(row) and _row_tracks_valid_monitorable_target(row) and row.get('target_id')
             }
             missing_healthy_target_ids = healthy_enabled_target_ids - enabled_monitored_target_ids
             logger.info(
@@ -9341,9 +9388,6 @@ def monitoring_runtime_status(
                 if not monitored_system_id:
                     continue
                 live_coverage_receipts_by_system[monitored_system_id] = processed_at
-            if request is None:
-                _mark_query_checkpoint('load_runtime_monitored_rows_unscoped')
-                monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
         _mark_query_checkpoint('aggregation_complete')
         query_total_duration_ms = sum(checkpoint_durations_ms.values())
         RUNTIME_STATUS_QUERY_PROFILE_HISTORY['total_runtime_status_query'].append(query_total_duration_ms)
@@ -9518,12 +9562,9 @@ def monitoring_runtime_status(
         # Resolved once here so the live-coverage-gap reason (below) and build_worker_status
         # agree on whether the realtime WebSocket worker is paused vs enabled.
         _reason_realtime_enabled = realtime_enabled()
-        def _row_tracks_valid_monitorable_target(row: dict[str, Any]) -> bool:
-            target_id = str(row.get('target_id') or '')
-            if target_id and target_id in healthy_enabled_target_ids:
-                return True
-            return is_monitorable_target_type(row.get('target_type'))
-    
+        # _row_tracks_valid_monitorable_target is defined once, above, next to the
+        # canonical healthy_enabled_target_ids read it closes over — so the row counts
+        # taken there and the enabled_rows derived here can never disagree.
         enabled_rows_all = [row for row in monitored_rows if monitored_system_row_enabled(row)]
         enabled_rows = [row for row in enabled_rows_all if _row_tracks_valid_monitorable_target(row)]
         unsupported_enabled_rows = [
@@ -9807,6 +9848,47 @@ def monitoring_runtime_status(
                             error_code='runtime_optional_query_failed',
                         )
                         realtime_stream_last_telemetry_at = None
+                    # Realtime MONITORING COVERAGE, read as its OWN fact and deliberately
+                    # NOT mixed into the security-telemetry read above (which matches
+                    # provider_type='quicknode_stream' exactly). A coverage row is written
+                    # by the live lane when a healthy near-tip Stream block was accepted
+                    # and the monitored target was loaded and evaluated against it — with
+                    # matched=0 being the normal quiet case. It proves MONITORING, never an
+                    # on-chain event, which is why the two timestamps stay separate all the
+                    # way into the payload (CLAUDE.md: heartbeat / poll / telemetry are
+                    # distinct proofs, and so is coverage).
+                    realtime_stream_last_coverage_at = None
+                    try:
+                        _stream_coverage_row = connection.execute(
+                            '''
+                            SELECT MAX(observed_at) AS ts
+                            FROM telemetry_events
+                            WHERE workspace_id = %s::uuid
+                              AND evidence_source = 'live'
+                              AND provider_type = %s
+                              AND event_type = %s
+                              AND observed_at IS NOT NULL
+                            ''',
+                            (
+                                workspace_id,
+                                QUICKNODE_STREAM_COVERAGE_PROVIDER_TYPE,
+                                QUICKNODE_STREAM_COVERAGE_EVENT_TYPE,
+                            ),
+                        ).fetchone()
+                        realtime_stream_last_coverage_at = _parse_ts(
+                            (_stream_coverage_row or {}).get('ts')
+                            if isinstance(_stream_coverage_row, dict)
+                            else None
+                        )
+                    except Exception as exc:
+                        _record_optional_query_failure(
+                            exc=exc,
+                            checkpoint_label='select_realtime_stream_last_coverage',
+                            impacted_fields=['realtime_ingestion'],
+                            reason_code='optional_table_unavailable',
+                            error_code='runtime_optional_query_failed',
+                        )
+                        realtime_stream_last_coverage_at = None
                     telemetry_candidates: list[tuple[datetime, str]] = []
                     coverage_telemetry_candidates: list[datetime] = []
                     receipts_reporting_systems = 0
@@ -9869,27 +9951,45 @@ def monitoring_runtime_status(
                             if realtime_stream_last_telemetry_at is not None
                             else None
                         ),
+                        live_coverage_age_seconds=(
+                            int((now - realtime_stream_last_coverage_at).total_seconds())
+                            if realtime_stream_last_coverage_at is not None
+                            else None
+                        ),
                         checkpoint_stale_seconds=QUICKNODE_STREAM_STALE_SECONDS,
                         telemetry_window_seconds=int(telemetry_window_seconds),
                     )
-                    # Fresh realtime live telemetry IS current live coverage for this
+                    # Fresh realtime live evidence IS current live coverage for this
                     # workspace. Without this fold the Stream — the realtime detection
                     # path — could never contribute freshness, so a workspace carried by
                     # Streams read as stale/replay purely because the 900s reconciliation
-                    # poll had not run inside the window. Fail-closed: only folded while
-                    # the realtime lane itself is healthy (derive_realtime_ingestion_health
-                    # clears live_evidence_fresh otherwise), so a stopped or far-behind
-                    # stream can never refresh coverage.
-                    if realtime_ingestion.live_evidence_fresh and realtime_stream_last_telemetry_at is not None:
+                    # poll had not run inside the window. BOTH realtime evidence kinds
+                    # fold in here: a matched wallet transfer (security telemetry) and a
+                    # healthy near-tip block evaluated against the monitored target
+                    # (coverage). Fail-closed: only folded while the realtime lane itself
+                    # is healthy (derive_realtime_ingestion_health clears both freshness
+                    # flags otherwise), so a stopped or far-behind stream can never
+                    # refresh coverage.
+                    realtime_live_evidence_candidates = [
+                        ts for ts, fresh in (
+                            (realtime_stream_last_telemetry_at, realtime_ingestion.live_security_telemetry_fresh),
+                            (realtime_stream_last_coverage_at, realtime_ingestion.live_coverage_fresh),
+                        )
+                        if fresh and ts is not None
+                    ]
+                    realtime_last_live_evidence_at = (
+                        max(realtime_live_evidence_candidates) if realtime_live_evidence_candidates else None
+                    )
+                    if realtime_last_live_evidence_at is not None:
                         if (
                             last_coverage_telemetry_at is None
-                            or realtime_stream_last_telemetry_at > last_coverage_telemetry_at
+                            or realtime_last_live_evidence_at > last_coverage_telemetry_at
                         ):
-                            last_coverage_telemetry_at = realtime_stream_last_telemetry_at
+                            last_coverage_telemetry_at = realtime_last_live_evidence_at
                     last_telemetry_at = canonical_last_telemetry_at or legacy_last_telemetry_at
-                    if realtime_ingestion.live_evidence_fresh and realtime_stream_last_telemetry_at is not None:
-                        if last_telemetry_at is None or realtime_stream_last_telemetry_at > last_telemetry_at:
-                            last_telemetry_at = realtime_stream_last_telemetry_at
+                    if realtime_last_live_evidence_at is not None:
+                        if last_telemetry_at is None or realtime_last_live_evidence_at > last_telemetry_at:
+                            last_telemetry_at = realtime_last_live_evidence_at
                     # 'coverage' is the recognized kind in build_workspace_monitoring_summary;
                     # evm_rpc/rpc_polling polling events are coverage telemetry by definition.
                     telemetry_kind = (
@@ -10338,7 +10438,8 @@ def monitoring_runtime_status(
         logger.info(
             'monitoring_runtime_evidence_selection workspace_id=%s chosen_evidence_source=%s source_of_evidence=%s '
             'reporting_systems=%s receipts_reporting_systems=%s realtime_ingestion_status=%s '
-            'realtime_ingestion_healthy=%s realtime_live_evidence_fresh=%s fallback_rpc_degraded=%s',
+            'realtime_ingestion_healthy=%s realtime_live_evidence_fresh=%s realtime_live_evidence_kind=%s '
+            'realtime_live_coverage_fresh=%s realtime_live_security_telemetry_fresh=%s fallback_rpc_degraded=%s',
             workspace_id,
             evidence_source,
             source_of_evidence,
@@ -10347,6 +10448,9 @@ def monitoring_runtime_status(
             realtime_ingestion.status,
             realtime_ingestion.healthy,
             realtime_ingestion.live_evidence_fresh,
+            realtime_ingestion.live_evidence_kind,
+            realtime_ingestion.live_coverage_fresh,
+            realtime_ingestion.live_security_telemetry_fresh,
             fallback_provider_degraded_or_unreachable,
         )
         downgrade_reason_tokens: list[str] = []
@@ -10656,6 +10760,12 @@ def monitoring_runtime_status(
             'status': realtime_ingestion.status,
             'healthy': bool(realtime_ingestion.healthy),
             'live_evidence_fresh': bool(realtime_ingestion.live_evidence_fresh),
+            # Which realtime evidence kind is carrying that freshness. Coverage proves
+            # the target was monitored; security telemetry proves an on-chain event
+            # actually arrived. Never collapse the two into one green label.
+            'live_evidence_kind': realtime_ingestion.live_evidence_kind,
+            'live_coverage_fresh': bool(realtime_ingestion.live_coverage_fresh),
+            'live_security_telemetry_fresh': bool(realtime_ingestion.live_security_telemetry_fresh),
             'lane_state': realtime_ingestion.lane_state,
             'lag_blocks': realtime_ingestion.lag_blocks,
             'checkpoint_block': realtime_ingestion.checkpoint_block,
@@ -10667,6 +10777,12 @@ def monitoring_runtime_status(
                 else None
             ),
             'live_telemetry_age_seconds': realtime_ingestion.live_telemetry_age_seconds,
+            'last_live_coverage_at': (
+                realtime_stream_last_coverage_at.isoformat()
+                if realtime_stream_last_coverage_at
+                else None
+            ),
+            'live_coverage_age_seconds': realtime_ingestion.live_coverage_age_seconds,
             'reason': realtime_ingestion.reason,
         }
         summary['fallback_rpc'] = {
