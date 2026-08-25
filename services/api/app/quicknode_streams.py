@@ -1575,6 +1575,22 @@ def record_stream_activity(
     Returns True when a ``quicknode_stream_periodic_summary`` was emitted on this call
     (the window elapsed) so the counters were reset. Bounded and cheap: integer
     counters only, one log line at most once per window.
+
+    The three state fields are LAST-KNOWN state, not per-window counters, and are only
+    overwritten when the caller supplies them (so a lane with no live-health signal
+    never clears or upgrades the live lane's state):
+
+      * ``health_status``      — the live lane's canonical health this batch
+                                 (:func:`stream_health_status`: healthy/degraded/unknown).
+      * ``chain_head_status``  — ``'known'`` when the chain head was resolved for this
+                                 batch, ``'unknown'`` when it could not be read.
+      * ``latest_stream_block``— the highest block the Stream DELIVERED (monotonic; the
+                                 observed chain head is reported via ``chain_head_status``
+                                 and the batch log, not here).
+
+    They are deliberately preserved across window resets: the periodic summary reports
+    the stream's current state, so leaving them at the initial ``'unknown'`` placeholder
+    (the bug this contract fixes) contradicted the concurrent per-batch lines.
     """
     tick = time.monotonic() if now_monotonic is None else now_monotonic
     emitted = False
@@ -1632,6 +1648,9 @@ def _summary_response(
     skipped: int,
     results: list[dict[str, Any]],
     backfill: dict[str, Any] | None = None,
+    health_status: str | None = None,
+    chain_head_status: str | None = None,
+    latest_stream_block: int | None = None,
 ) -> dict[str, Any]:
     """Build and log the safe aggregate outcome summary for a processed webhook.
 
@@ -1653,11 +1672,23 @@ def _summary_response(
     # Section 5: feed the routine per-POST counts into the per-minute aggregator so a
     # single quicknode_stream_periodic_summary carries the volume instead of every POST
     # spamming Railway. Never suppresses the security/state-transition logs.
+    # ``health_status`` / ``chain_head_status`` / ``latest_stream_block`` are the
+    # SAME per-batch facts the quicknode_stream_batch line reports, forwarded by the
+    # live-lane caller. Without them the aggregator kept its initial 'unknown'
+    # placeholders forever, so quicknode_stream_periodic_summary logged
+    # health_status=unknown chain_head_status=unknown latest_stream_block=unknown while
+    # the concurrent per-batch lines reported lag_blocks=0 lag_status=live
+    # health_status=healthy. Callers with no live-health signal (the legacy delivery
+    # lane, the ignored/parse paths) pass nothing and the last known state is kept —
+    # never upgraded to healthy.
     record_stream_activity(
         blocks=1,
         transactions=int(tx_count or 0),
         matched=int(matched or 0),
         persisted=int(persisted or 0) + (int((backfill or {}).get('persisted', 0)) if backfill else 0),
+        health_status=health_status,
+        chain_head_status=chain_head_status,
+        latest_stream_block=latest_stream_block,
     )
     summary: dict[str, Any] = {
         'received': True,
@@ -2932,6 +2963,15 @@ def _process_realtime_lane_batch(
     return _summary_response(
         tx_count=len(normalized_txs), targets_loaded=len(targets), matched=match_count,
         persisted=persisted_count, duplicates=duplicate_count, skipped=skipped_count, results=results,
+        # Feed the per-minute aggregator this batch's REAL stream state so the periodic
+        # summary reports the same health the quicknode_stream_batch line does. The
+        # backfill lane has no live-health signal (health_status is None there), so it
+        # leaves the live lane's last known state untouched instead of overwriting it.
+        health_status=health_status,
+        chain_head_status=('known' if chain_head is not None else 'unknown') if lane == LANE_LIVE else None,
+        latest_stream_block=(
+            last_block if (lane == LANE_LIVE and isinstance(last_block, int)) else None
+        ),
     )
 
 
