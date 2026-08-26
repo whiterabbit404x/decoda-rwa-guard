@@ -11,6 +11,24 @@ from psycopg.errors import SyntaxError as PsycopgSyntaxError
 from services.api.app import monitoring_runner
 
 
+def _is_proof_chain_counter(q: str) -> bool:
+    """The open-alert evidence anti-join, or the open-incident proof chain.
+
+    Both embed the shared canonical predicate
+    (``proof_chain_sql.OPEN_ALERT_EVIDENCE_PROVABLE_SQL``), so both mention EVERY
+    evidence home — detection_events, detections, asset_risk_findings,
+    threat_detections AND analysis_runs. A fake that routes on a bare table name
+    therefore swallows them and answers with the wrong shape; each of these
+    counters answers a COUNT and has its own branch.
+    """
+    return 'WITH proof_chain_alerts AS (' in q or 'AS unprovable_c' in q
+
+
+def _is_latest_analysis_run_probe(q: str) -> bool:
+    """The runtime's "latest monitoring analysis run" probe, and only that."""
+    return 'FROM analysis_runs' in q and not _is_proof_chain_counter(q)
+
+
 class _Result:
     def __init__(self, row=None, rows=None):
         self._row = row or {}
@@ -52,7 +70,7 @@ class _Conn:
             return _Result(rows=[{'id': 'target-1'}, {'id': 'target-2'}])
         if 'FROM evidence' in q:
             return _Result({'observed_at': self.evidence_at, 'block_number': 123})
-        if 'FROM analysis_runs' in q:
+        if _is_latest_analysis_run_probe(q):
             return _Result(None)
         return _Result({})
 
@@ -312,7 +330,7 @@ def test_runtime_status_active_live_coverage_promotes_mode_out_of_degraded(monke
                         },
                     ]
                 )
-            if 'FROM analysis_runs' in q:
+            if _is_latest_analysis_run_probe(q):
                 return _Result({'created_at': now, 'response_payload': {'metadata': {'recent_real_event_count': 1, 'evidence_state': 'real'}}})
             return super().execute(query, params)
 
@@ -366,7 +384,7 @@ def test_runtime_status_healthy_summary_with_live_coverage_does_not_force_degrad
                         },
                     ]
                 )
-            if 'FROM analysis_runs' in q:
+            if _is_latest_analysis_run_probe(q):
                 return _Result({'created_at': now, 'response_payload': {'metadata': {'recent_real_event_count': 2, 'evidence_state': 'real'}}})
             return super().execute(query, params)
 
@@ -422,7 +440,7 @@ def test_runtime_status_degraded_mode_requires_degraded_reasons(monkeypatch):
                         },
                     ]
                 )
-            if 'FROM analysis_runs' in q:
+            if _is_latest_analysis_run_probe(q):
                 return _Result({'created_at': now, 'response_payload': {'metadata': {'recent_real_event_count': 1, 'evidence_state': 'real'}}})
             return super().execute(query, params)
 
@@ -491,7 +509,7 @@ def test_runtime_status_live_coverage_keeps_live_mode_when_only_claim_safety_ris
                         },
                     ]
                 )
-            if 'FROM analysis_runs' in q:
+            if _is_latest_analysis_run_probe(q):
                 return _Result(
                     {
                         'created_at': now,
@@ -557,7 +575,7 @@ def test_runtime_status_marks_no_recent_real_events_as_limited_claim(monkeypatch
                         },
                     ]
                 )
-            if 'FROM analysis_runs' in q:
+            if _is_latest_analysis_run_probe(q):
                 return _Result(
                     {
                         'created_at': now,
@@ -744,7 +762,7 @@ def test_runtime_status_workspace_unconfigured_false_when_coverage_exists(monkey
                 return _Result({'target_count': 1, 'asset_count': 1})
             if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
                 return _Result(rows=[{'id': 'target-1'}])
-            if 'FROM analysis_runs' in q:
+            if _is_latest_analysis_run_probe(q):
                 return _Result({'created_at': now, 'response_payload': {'metadata': {'recent_real_event_count': 1, 'last_real_event_at': now.isoformat(), 'detection_outcome': 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE'}}})
             return super().execute(query, params)
 
@@ -773,7 +791,7 @@ def test_runtime_status_unconfigured_reason_codes_and_contract_keys_are_determin
                 return _Result({'target_count': 0, 'asset_count': 0})
             if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
                 return _Result(rows=[])
-            if 'FROM analysis_runs' in q:
+            if _is_latest_analysis_run_probe(q):
                 return _Result(None)
             return super().execute(query, params)
 
@@ -870,7 +888,7 @@ def test_runtime_status_promotes_to_reporting_system_with_simulator_coverage(mon
                 return _Result(rows=[{'id': 'target-1', 'asset_id': 'asset-1'}])
             if 'FROM evidence' in q:
                 return _Result({'observed_at': now - timedelta(seconds=20), 'block_number': 1})
-            if 'FROM analysis_runs' in q:
+            if _is_latest_analysis_run_probe(q):
                 return _Result({'created_at': now, 'response_payload': {'metadata': {'recent_real_event_count': 0}}})
             return super().execute(query, params)
 
@@ -1013,7 +1031,7 @@ def test_runtime_status_includes_recent_successful_checkpoint_without_events(mon
                         {'id': 'sys-1', 'workspace_id': 'ws-1', 'asset_id': 'asset-1', 'target_id': 'target-1', 'is_enabled': True, 'runtime_status': 'idle', 'last_heartbeat': now.isoformat(), 'monitoring_interval_seconds': 30, 'created_at': now.isoformat()},
                     ]
                 )
-            if 'FROM analysis_runs' in q:
+            if _is_latest_analysis_run_probe(q):
                 return _Result(
                     {
                         'created_at': now - timedelta(seconds=45),
@@ -1633,7 +1651,7 @@ def test_runtime_status_workspace_scoped_path_preserves_coverage_telemetry_field
                 return _Result({'target_count': 1, 'asset_count': 1})
             if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
                 return _Result(rows=[{'id': 'target-1', 'asset_id': 'asset-1'}])
-            if 'FROM analysis_runs' in q:
+            if _is_latest_analysis_run_probe(q):
                 return _Result(
                     {
                         'created_at': now,
@@ -1694,7 +1712,7 @@ def test_contradiction_guard_offline_runtime_clears_current_telemetry(monkeypatc
                 return _Result(rows=[])
             if 'FROM evidence' in q:
                 return _Result({'observed_at': now, 'block_number': 12})
-            if 'FROM analysis_runs' in q:
+            if _is_latest_analysis_run_probe(q):
                 return _Result({'created_at': now, 'response_payload': {'metadata': {'last_real_event_at': now.isoformat(), 'recent_real_event_count': 2, 'detection_outcome': 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE'}}})
             return super().execute(query, params)
 
@@ -1808,7 +1826,7 @@ def test_contradiction_guard_flags_heartbeat_without_telemetry(monkeypatch):
                 return _Result({'target_count': 1, 'asset_count': 1})
             if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
                 return _Result(rows=[{'id': 'target-1'}])
-            if 'FROM analysis_runs' in q:
+            if _is_latest_analysis_run_probe(q):
                 return _Result(
                     {
                         'created_at': now,
@@ -1894,11 +1912,11 @@ def test_runtime_status_live_with_fresh_coverage_telemetry_without_target_events
                 return _Result({'target_count': 1, 'asset_count': 1})
             if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
                 return _Result(rows=[{'id': 'target-1', 'asset_id': 'asset-1'}])
-            if 'FROM analysis_runs' in q:
+            if _is_latest_analysis_run_probe(q):
                 return _Result({'created_at': now, 'response_payload': {'metadata': {'recent_real_event_count': 0, 'detection_outcome': 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE'}}})
             if 'COUNT(*) AS c FROM detections' in q:
                 return _Result({'c': 1})
-            if 'FROM detections' in q:
+            if 'FROM detections' in q and not _is_proof_chain_counter(q):
                 return _Result({'detected_at': now - timedelta(seconds=30)})
             return super().execute(query, params)
 
@@ -1953,7 +1971,7 @@ def test_runtime_status_receipts_only_keeps_reporting_systems_zero(monkeypatch):
                 return _Result({'target_count': 1, 'asset_count': 1})
             if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
                 return _Result(rows=[{'id': 'target-1', 'asset_id': 'asset-1'}])
-            if 'FROM analysis_runs' in q:
+            if _is_latest_analysis_run_probe(q):
                 return _Result({'created_at': now, 'response_payload': {'metadata': {'recent_real_event_count': 0, 'detection_outcome': 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE'}}})
             return super().execute(query, params)
 
@@ -1993,7 +2011,7 @@ def test_runtime_status_poll_only_keeps_reporting_systems_zero(monkeypatch):
                 return _Result({'target_count': 1, 'asset_count': 1})
             if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
                 return _Result(rows=[{'id': 'target-1', 'asset_id': 'asset-1'}])
-            if 'FROM analysis_runs' in q:
+            if _is_latest_analysis_run_probe(q):
                 return _Result({'created_at': now, 'response_payload': {'metadata': {'recent_real_event_count': 0, 'detection_outcome': 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE'}}})
             return super().execute(query, params)
 
@@ -2083,7 +2101,7 @@ def test_runtime_status_treats_null_enabled_system_as_enabled_for_live_coverage(
                 return _Result({'target_count': 1, 'asset_count': 1})
             if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
                 return _Result(rows=[{'id': 'target-1', 'asset_id': 'asset-1'}])
-            if 'FROM analysis_runs' in q:
+            if _is_latest_analysis_run_probe(q):
                 return _Result({'created_at': now, 'response_payload': {'metadata': {'recent_real_event_count': 0, 'detection_outcome': 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE'}}})
             return super().execute(query, params)
 
@@ -2251,7 +2269,7 @@ def test_runtime_status_live_coverage_with_historical_detections_stays_live(monk
                 return _Result({'target_count': 1, 'asset_count': 1})
             if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
                 return _Result(rows=[{'id': 'target-1', 'asset_id': 'asset-1'}])
-            if 'FROM analysis_runs' in q:
+            if _is_latest_analysis_run_probe(q):
                 return _Result({'created_at': old_detection_at, 'response_payload': {'metadata': {'recent_real_event_count': 0, 'detection_outcome': 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE'}}})
             return super().execute(query, params)
 
@@ -2291,7 +2309,7 @@ def test_runtime_status_marks_heartbeat_only_as_no_evidence(monkeypatch):
                 return _Result({'target_count': 1, 'asset_count': 1})
             if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
                 return _Result(rows=[{'id': 'target-1', 'asset_id': 'asset-1'}])
-            if 'FROM analysis_runs' in q:
+            if _is_latest_analysis_run_probe(q):
                 return _Result({'created_at': now, 'response_payload': {'metadata': {'recent_real_event_count': 0, 'evidence_state': 'real'}}})
             return super().execute(query, params)
 
@@ -2704,7 +2722,7 @@ def test_runtime_status_workspace_scoped_success_keeps_identity_and_reports_live
                 return _Result(rows=[{'id': 'target-1', 'asset_id': 'asset-1'}])
             if 'FROM monitoring_event_receipts e' in q and "e.telemetry_kind = 'coverage'" in q:
                 return _Result(rows=[{'processed_at': now, 'target_id': 'target-1', 'monitored_system_id': 'sys-1'}])
-            if 'FROM analysis_runs' in q:
+            if _is_latest_analysis_run_probe(q):
                 return _Result({'created_at': now, 'response_payload': {'metadata': {'recent_real_event_count': 2, 'evidence_state': 'real'}}})
             return super().execute(query, params)
 
@@ -2890,7 +2908,7 @@ def test_runtime_status_partial_fallback_avoids_summary_unavailable_reason(monke
     class _OptionalSummaryFailureConn(_Conn):
         def execute(self, query, params=None):
             q = ' '.join(str(query).split())
-            if 'FROM analysis_runs' in q:
+            if _is_latest_analysis_run_probe(q):
                 raise RuntimeError('optional summary probe failed')
             return super().execute(query, params)
 
@@ -3104,14 +3122,14 @@ def test_runtime_status_detection_evaluation_checkpoint_prevents_missing_pipelin
                 return _Result({'target_count': 1, 'asset_count': 1})
             if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
                 return _Result(rows=[{'id': 'target-1', 'asset_id': 'asset-1'}])
-            if 'FROM analysis_runs' in q:
+            if _is_latest_analysis_run_probe(q):
                 return _Result(
                     {
                         'created_at': now - timedelta(seconds=20),
                         'response_payload': {'metadata': {'detection_outcome': 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE'}},
                     }
                 )
-            if 'FROM detections' in q:
+            if 'FROM detections' in q and not _is_proof_chain_counter(q):
                 return _Result(None)
             return super().execute(query, params)
 

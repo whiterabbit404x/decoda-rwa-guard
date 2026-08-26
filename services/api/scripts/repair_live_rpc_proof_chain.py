@@ -43,6 +43,15 @@ if str(REPO_ROOT) not in sys.path:
 # pilot imports are deferred inside _get_connection() so this module can be
 # imported in test environments where fastapi is not installed.
 
+# THE proof-chain definition, shared verbatim with the runtime. This module is
+# pure SQL text with no framework imports, so importing it here keeps the
+# diagnostics — and, critically, the destructive orphan predicates — from ever
+# being broader than what monitoring_runner actually counts as proof.
+from services.api.app.proof_chain_sql import (  # noqa: E402
+    OPEN_ALERT_EVIDENCE_PROVABLE_SQL,
+    incident_proof_chain_count_sql,
+)
+
 # Flags that must be absent for the runtime to show LIVE.
 BLOCKING_FLAGS = frozenset({
     'alert_without_detection',
@@ -423,8 +432,30 @@ def _query_contradiction_flags(conn: Any, workspace_id: str) -> dict[str, Any]:
     ).fetchone()
     legacy_linked_count = int((legacy_linked or {}).get('c') or 0)
 
-    # Mirror monitoring_runner: max covers all alerts that have ANY detection chain.
-    chain_alerts_count = max(canonical_linked_count, legacy_linked_count)
+    # The canonical union: open alerts provable by ANY evidence home the shipped
+    # product writes (chain detections, asset_risk_findings, threat_detection
+    # evidence, analysis runs). The two lane counts above are reported alongside
+    # as diagnostics, but this is the question the runtime actually asks.
+    # Fail-closed: a query that cannot run (pre-0131/0133 schema) contributes
+    # nothing to the proven set rather than vouching for every alert.
+    try:
+        canonical_union_linked = conn.execute(
+            f"""
+            SELECT COUNT(*) FILTER (
+                WHERE {OPEN_ALERT_EVIDENCE_PROVABLE_SQL}
+            ) AS provable_c
+            FROM alerts a
+            WHERE a.status IN ('open','acknowledged','investigating')
+              AND a.workspace_id = %s::uuid
+            """,
+            (workspace_id,),
+        ).fetchone()
+        canonical_union_linked_count = int((canonical_union_linked or {}).get('provable_c') or 0)
+    except Exception:
+        canonical_union_linked_count = 0
+
+    # Mirror monitoring_runner: max covers all alerts that have ANY evidence home.
+    chain_alerts_count = max(canonical_linked_count, legacy_linked_count, canonical_union_linked_count)
     open_alerts_without_detection = max(raw_alerts_count - chain_alerts_count, 0)
 
     raw_incidents = conn.execute(
@@ -433,39 +464,14 @@ def _query_contradiction_flags(conn: Any, workspace_id: str) -> dict[str, Any]:
     ).fetchone()
     raw_incidents_count = int((raw_incidents or {}).get('c') or 0)
 
-    # Mirror monitoring_runner proof_chain_alerts CTE (canonical + legacy UNION)
+    # THE incident proof chain, shared verbatim with monitoring_runner: canonical
+    # evidence homes + non-suppressed alert provenance + same-workspace linkage.
     chain_incidents = conn.execute(
-        """
-        WITH proof_chain_alerts AS (
-            SELECT a.id, a.incident_id
-            FROM alerts a
-            JOIN detection_events de
-              ON de.workspace_id = a.workspace_id AND de.id = a.detection_event_id
-            JOIN telemetry_events te
-              ON te.workspace_id = de.workspace_id AND te.id = de.telemetry_event_id
-            WHERE a.status IN ('open','acknowledged','investigating')
-              AND a.workspace_id = %s::uuid
-            UNION
-            SELECT a.id, a.incident_id
-            FROM alerts a
-            JOIN detections d ON d.id = a.detection_id AND d.workspace_id = a.workspace_id
-            WHERE a.status IN ('open','acknowledged','investigating')
-              AND EXISTS (
-                  SELECT 1 FROM detection_evidence dev
-                  WHERE dev.workspace_id = d.workspace_id AND dev.detection_id = d.id
-              )
-              AND a.workspace_id = %s::uuid
-        )
-        SELECT COUNT(DISTINCT i.id) AS c
-        FROM incidents i
-        WHERE i.status IN ('open','acknowledged')
-          AND (
-              EXISTS (SELECT 1 FROM proof_chain_alerts pca WHERE pca.incident_id = i.id)
-              OR EXISTS (SELECT 1 FROM proof_chain_alerts pca WHERE i.source_alert_id = pca.id)
-          )
-          AND i.workspace_id = %s::uuid
-        """,
-        (workspace_id, workspace_id, workspace_id),
+        incident_proof_chain_count_sql(
+            alert_workspace_filter='AND a.workspace_id = %s::uuid',
+            incident_workspace_filter='AND i.workspace_id = %s::uuid',
+        ),
+        (workspace_id, workspace_id),
     ).fetchone()
     chain_incidents_count = int((chain_incidents or {}).get('c') or 0)
 
@@ -478,7 +484,11 @@ def _query_contradiction_flags(conn: Any, workspace_id: str) -> dict[str, Any]:
           AND NOT EXISTS (
               SELECT 1 FROM alerts a
               WHERE a.workspace_id = i.workspace_id
-                AND (a.incident_id = i.id OR i.source_alert_id = a.id)
+                AND (
+                    a.incident_id = i.id
+                    OR i.source_alert_id = a.id
+                    OR i.alert_id = a.id
+                )
           )
         """,
         (workspace_id,),
@@ -623,27 +633,24 @@ def _has_complete_proof_chain(conn: Any, workspace_id: str) -> bool:
 
 
 def _archive_orphan_alerts(conn: Any, workspace_id: str, dry_run: bool) -> int:
-    """Resolve open alerts that have no detection linkage on ANY path.
+    """Resolve open alerts that have no evidence in ANY canonical home.
 
-    Targets all open alerts (any type) where BOTH the canonical path
-    (detection_event_id) and the legacy path (detection_id + detection_evidence)
-    are absent.  This is safe because alerts without any detection evidence are
-    contradictions that block the LIVE gate.
+    THE PREDICATE IS THE RUNTIME'S OWN, NEGATED. This function mutates customer
+    alert rows, so it may never target an alert the runtime counts as proven: an
+    orphan predicate broader than ``OPEN_ALERT_EVIDENCE_PROVABLE_SQL`` would
+    resolve alerts whose evidence lives in asset_risk_findings,
+    threat_detection_evidence, analysis_runs.response_payload or
+    detections.raw_evidence_json — real customer evidence, archived to make a
+    warning disappear.
     """
     count_row = conn.execute(
-        """
+        f"""
         SELECT COUNT(*) AS c
         FROM alerts a
         WHERE a.workspace_id = %s::uuid
           AND a.status IN ('open','acknowledged','investigating')
-          AND a.detection_event_id IS NULL
-          AND (
-              a.detection_id IS NULL
-              OR NOT EXISTS (
-                  SELECT 1 FROM detection_evidence dev
-                  WHERE dev.workspace_id = a.workspace_id
-                    AND dev.detection_id = a.detection_id
-              )
+          AND NOT (
+            {OPEN_ALERT_EVIDENCE_PROVABLE_SQL}
           )
         """,
         (workspace_id,),
@@ -655,19 +662,13 @@ def _archive_orphan_alerts(conn: Any, workspace_id: str, dry_run: bool) -> int:
         print(f'  [DRY RUN] Would archive {count} orphan alert(s) lacking detection linkage.')
         return count
     conn.execute(
-        """
-        UPDATE alerts
+        f"""
+        UPDATE alerts AS a
         SET status = 'resolved', updated_at = NOW()
-        WHERE workspace_id = %s::uuid
-          AND status IN ('open','acknowledged','investigating')
-          AND detection_event_id IS NULL
-          AND (
-              detection_id IS NULL
-              OR NOT EXISTS (
-                  SELECT 1 FROM detection_evidence dev
-                  WHERE dev.workspace_id = alerts.workspace_id
-                    AND dev.detection_id = alerts.detection_id
-              )
+        WHERE a.workspace_id = %s::uuid
+          AND a.status IN ('open','acknowledged','investigating')
+          AND NOT (
+            {OPEN_ALERT_EVIDENCE_PROVABLE_SQL}
           )
         """,
         (workspace_id,),
@@ -677,10 +678,13 @@ def _archive_orphan_alerts(conn: Any, workspace_id: str, dry_run: bool) -> int:
 
 
 def _archive_orphan_incidents(conn: Any, workspace_id: str, dry_run: bool) -> int:
-    """Resolve open incidents that have no alert linkage.
+    """Resolve open incidents that have no alert linkage at all.
 
-    Targets all open incidents (any type) where no alert links via
-    incident_id or source_alert_id.
+    Targets open incidents where NO same-workspace alert links via any of the
+    three legitimate relationships (alerts.incident_id, incidents.source_alert_id,
+    incidents.alert_id). Linkage — not provability — is the bar here: an incident
+    whose linked alert lacks evidence is an evidence problem to investigate, not a
+    row to archive.
     """
     count_row = conn.execute(
         """
@@ -691,7 +695,11 @@ def _archive_orphan_incidents(conn: Any, workspace_id: str, dry_run: bool) -> in
           AND NOT EXISTS (
               SELECT 1 FROM alerts a
               WHERE a.workspace_id = i.workspace_id
-                AND (a.incident_id = i.id OR i.source_alert_id = a.id)
+                AND (
+                    a.incident_id = i.id
+                    OR i.source_alert_id = a.id
+                    OR i.alert_id = a.id
+                )
           )
         """,
         (workspace_id,),
@@ -711,7 +719,11 @@ def _archive_orphan_incidents(conn: Any, workspace_id: str, dry_run: bool) -> in
           AND NOT EXISTS (
               SELECT 1 FROM alerts a
               WHERE a.workspace_id = incidents.workspace_id
-                AND (a.incident_id = incidents.id OR incidents.source_alert_id = a.id)
+                AND (
+                    a.incident_id = incidents.id
+                    OR incidents.source_alert_id = a.id
+                    OR incidents.alert_id = a.id
+                )
           )
         """,
         (workspace_id,),

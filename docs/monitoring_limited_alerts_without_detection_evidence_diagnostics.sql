@@ -30,7 +30,8 @@
 --        open_alerts_with_either_chain_count =
 --            COUNT(open alerts matching ANY evidence home)
 --      Both come from ONE aggregate pass embedding the shared canonical
---      predicate monitoring_runner.OPEN_ALERT_EVIDENCE_PROVABLE_SQL.
+--      predicate proof_chain_sql.OPEN_ALERT_EVIDENCE_PROVABLE_SQL (re-exported
+--      as monitoring_runner.OPEN_ALERT_EVIDENCE_PROVABLE_SQL).
 --
 --   2. open_alerts_without_evidence_count > 0
 --        -> proof_chain_status = 'incomplete'
@@ -663,7 +664,9 @@ SELECT
         AND i.status IN ('open', 'acknowledged')
         AND NOT EXISTS (SELECT 1 FROM alerts a
                          WHERE a.workspace_id = i.workspace_id
-                           AND (a.incident_id = i.id OR i.source_alert_id = a.id)))
+                           AND (a.incident_id = i.id
+                                OR i.source_alert_id = a.id
+                                OR i.alert_id = a.id)))
                                                            AS incidents_without_alert,
     (SELECT COUNT(*) FROM response_actions ra
       WHERE ra.workspace_id = :ws::uuid AND ra.incident_id IS NULL)
@@ -693,11 +696,44 @@ SELECT
 --     is real and the alert is provable.
 --
 -- ON services/api/scripts/repair_live_rpc_proof_chain.py — READ BEFORE RUNNING.
---   Its orphan predicate is the CHAIN half only, and even narrower than Block A's
---   chain lanes: it keys on `alerts.detection_id` alone (ignoring
---   detections.linked_alert_id) and requires a detection_evidence row (ignoring
---   raw_evidence_json). Against the corrected definition it therefore resolves
---   alerts that ARE provable — every asset-risk, threat-detection and
---   analysis-run alert included. Run Block B first and only act on rows Block B
---   actually returns; use DRY_RUN=1 and review its plan.
+--   Its orphan-alert predicate is now the runtime's own definition negated
+--   (`NOT (OPEN_ALERT_EVIDENCE_PROVABLE_SQL)`, imported from
+--   services/api/app/proof_chain_sql.py), so it can no longer resolve an alert
+--   the runtime counts as proven. That mirror is load-bearing: any future
+--   widening of the orphan predicate beyond runtime semantics would archive real
+--   customer evidence to make a warning disappear. Still run Block B first, act
+--   only on rows Block B actually returns, and use DRY_RUN=1 to review the plan.
+-- ============================================================================
+
+
+-- ============================================================================
+-- THE INCIDENT PROOF CHAIN (proof_chain_sql.incident_proof_chain_count_sql)
+--
+-- `incidents_without_proof_chain_alert` fires when
+-- raw_open_incidents > chain_open_incidents, and it feeds the SAME
+-- `proof_chain_link_missing` contradiction flag — so a workspace whose alerts
+-- are all provable can still be held at `limited` by this counter alone.
+--
+-- An OPEN incident ('open' / 'acknowledged') is PROVEN when a same-workspace
+-- alert exists that:
+--   * is NOT suppressed (a.status <> 'suppressed'), and
+--   * satisfies OPEN_ALERT_EVIDENCE_PROVABLE_SQL — the identical five-home
+--     evidence definition Block A uses for alerts, and
+--   * is linked by any of: alerts.incident_id = incidents.id,
+--     incidents.source_alert_id = alerts.id, incidents.alert_id = alerts.id.
+--
+-- TWO THINGS THAT ARE NOT THE SAME QUESTION.
+--   * The ALERT counter is bounded by the ACTIVE statuses
+--     ('open','acknowledged','investigating') because it asks what Decoda can
+--     prove RIGHT NOW.
+--   * INCIDENT provenance is HISTORICAL. The product preserves escalation
+--     provenance after an alert is worked and resolved, so an open incident
+--     routinely references a resolved alert. Reading the active-only universe
+--     here reported every such incident as orphaned.
+--
+-- FAIL-CLOSED, unchanged: status is a filter and never a grant. A resolved (or
+-- investigating) alert with no canonical evidence leaves its incident
+-- unprovable, a suppressed alert proves nothing however good its evidence, an
+-- incident with no linked alert is still an orphan, and a query that cannot run
+-- proves nothing.
 -- ============================================================================

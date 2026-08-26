@@ -36,6 +36,19 @@ from services.api.app.monitoring_truth import (
     ui_evidence_state,
     ui_truthfulness_state,
 )
+from services.api.app.proof_chain_sql import (
+    INCIDENT_PROOF_CHAIN_ELIGIBLE_ALERT_STATUS_SQL,
+    INCIDENT_PROOF_CHAIN_LINKAGE_SQL,
+    OPEN_ALERT_ANALYSIS_RUN_EVIDENCE_SQL,
+    OPEN_ALERT_ASSET_RISK_EVIDENCE_SQL,
+    OPEN_ALERT_CANONICAL_CHAIN_EVIDENCE_SQL,
+    OPEN_ALERT_CHAIN_EVIDENCE_PROVABLE_SQL,
+    OPEN_ALERT_EVIDENCE_PROVABLE_SQL,
+    OPEN_ALERT_LEGACY_DETECTION_EVIDENCE_SQL,
+    OPEN_ALERT_THREAT_DETECTION_EVIDENCE_SQL,
+    _non_empty_jsonb_sql,
+    incident_proof_chain_count_sql,
+)
 from services.api.app.monitoring_canary import resolve_canary_config
 from services.api.app.monitoring_runtime_mode import realtime_streams_enabled
 from services.api.app.monitoring_reliability import MonitoringSLOs, evaluate_monitoring_slos, monitoring_slo_snapshot
@@ -228,142 +241,10 @@ PREREQUISITE_COUNTER_KEYS: tuple[str, ...] = (
 NON_LIVE_PROVIDER_SOURCE_TYPES: set[str] = {'demo', 'simulator', 'replay', 'unknown'}
 
 
-# ---------------------------------------------------------------------------
-# Canonical open-alert provability predicate
-# ---------------------------------------------------------------------------
-# ONE definition of "Decoda can prove this open alert", correlated on the outer
-# ``alerts a`` row and shared by every counter that asks the question. An alert is
-# provable when a REAL evidence-bearing row exists in one of the evidence homes the
-# shipped product actually writes:
-#
-#   1. alerts.detection_event_id -> detection_events -> telemetry_events
-#      canonical lane, written by create_alert_from_detection_event (pilot.py).
-#   2. alerts.detection_id / detections.linked_alert_id -> detections carrying
-#      raw_evidence_json or a detection_evidence row. Legacy lane, written by
-#      _upsert_alert (the QuickNode wallet-transfer path, below) and
-#      monitoring_proof_chain (pilot.py).
-#   3. asset_risk_findings.alert_id -> asset_risk_findings.evidence
-#      domains/asset_risk/service.reconcile_findings. These alerts are raised from
-#      deterministic asset-risk findings and structurally NEVER carry a chain
-#      detection; their evidence lives on the finding row.
-#   4. threat_detections.linked_alert_id -> threat_detection_evidence
-#      domains/threat_detection/service.ensure_alert_for_detection.
-#   5. alerts.analysis_run_id -> analysis_runs.response_payload
-#      pilot.maybe_insert_alert.
-#
-# Lanes 3-5 are not a loosened threshold — they are evidence homes that shipped
-# after the counter was written, so open alerts carrying genuine evidence were
-# being counted as unprovable and degrading the whole workspace rollup to
-# `limited` through contradiction_reason_overrides['alert_without_detection'].
-#
-# FAIL-CLOSED, deliberately:
-#   * A LABEL IS NOT EVIDENCE. module_key ('asset_risk', 'threat_detection'),
-#     source, source_service and alert_type prove nothing and appear in no lane;
-#     an evidence-bearing ROW must exist.
-#   * asset_risk_findings.evidence, analysis_runs.response_payload and
-#     threat_detection_evidence.evidence_payload are all
-#     ``JSONB NOT NULL DEFAULT '{}'::jsonb``, so ``IS NOT NULL`` is true of every
-#     row and proves nothing. Each JSONB lane requires real content.
-#   * Simulator-sourced threat detections are excluded: simulator data must never
-#     be presented as customer evidence (CLAUDE.md).
-#   * An alert matching no lane is still counted as unprovable, exactly as before.
-#
-# Every lane binds the alert's own workspace_id, so the predicate stays
-# workspace-scoped and cross-tenant-safe wherever it is embedded.
-
-
-def _non_empty_jsonb_sql(column: str) -> str:
-    """SQL for "this JSONB column carries real content".
-
-    The evidence columns are ``NOT NULL DEFAULT '{}'::jsonb``, so emptiness — not
-    nullability — is what separates a row that carries evidence from a row that
-    merely exists. Rejects SQL NULL, JSON ``null``, ``{}`` and ``[]``.
-    """
-    return (
-        f"{column} IS NOT NULL"
-        f" AND jsonb_typeof({column}) <> 'null'"
-        f" AND {column} <> '{{}}'::jsonb"
-        f" AND {column} <> '[]'::jsonb"
-    )
-
-
-OPEN_ALERT_CANONICAL_CHAIN_EVIDENCE_SQL = """EXISTS (
-    SELECT 1
-    FROM detection_events de
-    JOIN telemetry_events te
-      ON te.workspace_id = de.workspace_id
-     AND te.id = de.telemetry_event_id
-    WHERE de.workspace_id = a.workspace_id
-      AND de.id = a.detection_event_id
-)"""
-
-OPEN_ALERT_LEGACY_DETECTION_EVIDENCE_SQL = """EXISTS (
-    SELECT 1
-    FROM detections d
-    WHERE d.workspace_id = a.workspace_id
-      AND (d.id = a.detection_id OR d.linked_alert_id = a.id)
-      AND (
-        d.raw_evidence_json IS NOT NULL
-        OR EXISTS (
-            SELECT 1
-            FROM detection_evidence dev
-            WHERE dev.workspace_id = d.workspace_id
-              AND dev.detection_id = d.id
-        )
-      )
-)"""
-
-OPEN_ALERT_ASSET_RISK_EVIDENCE_SQL = f"""EXISTS (
-    SELECT 1
-    FROM asset_risk_findings f
-    WHERE f.workspace_id = a.workspace_id
-      AND f.alert_id = a.id
-      AND ({_non_empty_jsonb_sql('f.evidence')})
-)"""
-
-OPEN_ALERT_THREAT_DETECTION_EVIDENCE_SQL = f"""EXISTS (
-    SELECT 1
-    FROM threat_detections td
-    WHERE td.workspace_id = a.workspace_id
-      AND td.linked_alert_id = a.id
-      AND td.evidence_source <> 'simulator'
-      AND EXISTS (
-          SELECT 1
-          FROM threat_detection_evidence tde
-          WHERE tde.workspace_id = td.workspace_id
-            AND tde.detection_id = td.id
-            AND (
-              tde.telemetry_id IS NOT NULL
-              OR ({_non_empty_jsonb_sql('tde.evidence_payload')})
-            )
-      )
-)"""
-
-OPEN_ALERT_ANALYSIS_RUN_EVIDENCE_SQL = f"""EXISTS (
-    SELECT 1
-    FROM analysis_runs ar
-    WHERE ar.id = a.analysis_run_id
-      AND ar.workspace_id = a.workspace_id
-      AND ({_non_empty_jsonb_sql('ar.response_payload')})
-)"""
-
-# The two chain-detection lanes on their own — the provability definition as it
-# shipped before the asset-risk / threat-detection / analysis-run evidence homes
-# existed. Kept named so the repair tooling and diagnostics can say precisely
-# which half of the definition they mean.
-OPEN_ALERT_CHAIN_EVIDENCE_PROVABLE_SQL = '\n    OR '.join((
-    OPEN_ALERT_CANONICAL_CHAIN_EVIDENCE_SQL,
-    OPEN_ALERT_LEGACY_DETECTION_EVIDENCE_SQL,
-))
-
-# The full canonical definition: provable by ANY supported evidence home.
-OPEN_ALERT_EVIDENCE_PROVABLE_SQL = '\n    OR '.join((
-    OPEN_ALERT_CANONICAL_CHAIN_EVIDENCE_SQL,
-    OPEN_ALERT_LEGACY_DETECTION_EVIDENCE_SQL,
-    OPEN_ALERT_ASSET_RISK_EVIDENCE_SQL,
-    OPEN_ALERT_THREAT_DETECTION_EVIDENCE_SQL,
-    OPEN_ALERT_ANALYSIS_RUN_EVIDENCE_SQL,
-))
+# The canonical alert / incident proof-chain SQL lives in
+# services.api.app.proof_chain_sql so the runtime, the diagnostics SQL and
+# scripts/repair_live_rpc_proof_chain.py cannot drift apart. Re-exported here
+# because every existing reader (and its tests) reaches them through this module.
 
 RUNTIME_STATUS_PROXY_TIMEOUT_SECONDS = int(os.getenv('RUNTIME_STATUS_PROXY_TIMEOUT_SECONDS', os.getenv('PROXY_TIMEOUT_SECONDS', '30')))
 RUNTIME_STATUS_QUERY_PROFILE_MAX_SAMPLES = int(os.getenv('RUNTIME_STATUS_QUERY_PROFILE_MAX_SAMPLES', '200'))
@@ -9178,53 +9059,40 @@ def monitoring_runtime_status(
                     )
                     raw_open_incidents_count = 0
             _mark_query_checkpoint('count_open_incidents')
+            # How many OPEN incidents Decoda can actually prove. This drives
+            # `incidents_without_proof_chain_alert` -> proof_chain_missing_reason_codes
+            # -> the `proof_chain_link_missing` contradiction flag, so it must ask the
+            # SAME canonical question as the open-alert anti-join above
+            # (proof_chain_sql.OPEN_ALERT_EVIDENCE_PROVABLE_SQL), not a private and
+            # older taxonomy of its own.
+            #
+            # Two stale assumptions used to live in this query and produced a FALSE
+            # integrity warning on a workspace whose every incident was provable:
+            #
+            #   BUG A — it recognized only the two chain lanes, and its legacy lane was
+            #     narrower still than the alert counter's: it joined on a.detection_id
+            #     alone (never detections.linked_alert_id) and demanded a
+            #     detection_evidence row, so a detection carrying raw_evidence_json —
+            #     the canonical home the QuickNode wallet-transfer path writes — proved
+            #     nothing here. asset_risk_findings.evidence, threat_detection_evidence
+            #     and analysis_runs.response_payload were invisible entirely.
+            #   BUG B — it read the ACTIVE-alert status universe
+            #     ('open','acknowledged','investigating'). Incident provenance is
+            #     historical: the product keeps escalation provenance after the
+            #     originating alert is worked and resolved, so an open incident whose
+            #     alert had been resolved looked orphaned. Only 'suppressed' is excluded
+            #     now — an explicit operator statement not to act on the signal.
+            #
+            # Neither change weakens the rule: eligibility is a filter, never a grant,
+            # and an incident whose linked alerts carry no canonical evidence is still
+            # unprovable and still degrades the rollup.
             try:
                 open_incidents = connection.execute(
-                    f'''
-                    WITH proof_chain_alerts AS (
-                        SELECT a.id, a.incident_id
-                        FROM alerts a
-                        JOIN detection_events de
-                          ON de.workspace_id = a.workspace_id
-                         AND de.id = a.detection_event_id
-                        JOIN telemetry_events te
-                          ON te.workspace_id = de.workspace_id
-                         AND te.id = de.telemetry_event_id
-                        WHERE a.status IN ('open','acknowledged','investigating')
-                          {'AND a.workspace_id = %s' if workspace_id else ''}
-                        UNION
-                        SELECT a.id, a.incident_id
-                        FROM alerts a
-                        JOIN detections d
-                          ON d.id = a.detection_id
-                         AND d.workspace_id = a.workspace_id
-                        WHERE a.status IN ('open','acknowledged','investigating')
-                          AND EXISTS (
-                              SELECT 1
-                              FROM detection_evidence de
-                              WHERE de.workspace_id = d.workspace_id
-                                AND de.detection_id = d.id
-                          )
-                          {'AND a.workspace_id = %s' if workspace_id else ''}
-                    )
-                    SELECT COUNT(DISTINCT i.id) AS c
-                    FROM incidents i
-                    WHERE i.status IN ('open','acknowledged')
-                      AND (
-                          EXISTS (
-                              SELECT 1
-                              FROM proof_chain_alerts pca
-                              WHERE pca.incident_id = i.id
-                          )
-                          OR EXISTS (
-                              SELECT 1
-                              FROM proof_chain_alerts pca
-                              WHERE i.source_alert_id = pca.id
-                          )
-                      )
-                      {'AND i.workspace_id = %s' if workspace_id else ''}
-                    ''',
-                    scoped_params + scoped_params + scoped_params if workspace_id else (),
+                    incident_proof_chain_count_sql(
+                        alert_workspace_filter='AND a.workspace_id = %s' if workspace_id else '',
+                        incident_workspace_filter='AND i.workspace_id = %s' if workspace_id else '',
+                    ),
+                    scoped_params + scoped_params if workspace_id else (),
                 ).fetchone()
             except Exception as exc:
                 _record_optional_query_failure(
@@ -9250,6 +9118,7 @@ def monitoring_runtime_status(
                             AND (
                                 a.incident_id = i.id
                                 OR i.source_alert_id = a.id
+                                OR i.alert_id = a.id
                             )
                       )
                       {'AND i.workspace_id = %s' if workspace_id else ''}
