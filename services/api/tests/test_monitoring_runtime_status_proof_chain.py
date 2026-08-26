@@ -47,6 +47,15 @@ class _RuntimeStatusConn:
         q = ' '.join(str(query).split())
         if 'FROM monitoring_workspace_runtime_summary' in q:
             return _Result(None)
+        # Union anti-join: open alerts backed by NEITHER proof chain. The two lanes are
+        # disjoint by construction in the application code, so |canonical UNION legacy|
+        # is their sum, capped at the number of open alerts.
+        if 'AS unprovable_c' in q and 'FROM alerts a' in q:
+            provable = min(self.raw_open_alerts, self.chain_open_alerts + self.legacy_smoke_alerts)
+            return _Result({
+                'unprovable_c': max(self.raw_open_alerts - provable, 0),
+                'provable_c': provable,
+            })
         if "FROM alerts WHERE status IN ('open','acknowledged','investigating')" in q and 'FROM alerts a' not in q:
             return _Result({'c': self.raw_open_alerts})
         if 'FROM alerts a' in q and 'JOIN detection_events de' in q and 'JOIN telemetry_events te' in q and 'COUNT' in q:

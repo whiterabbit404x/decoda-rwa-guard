@@ -91,6 +91,7 @@ class _AlertEvidenceConn(_RuntimeConn):
         open_alerts: int = 0,
         canonical_evidence_linked_alerts: int = 0,
         legacy_evidence_linked_alerts: int = 0,
+        provable_open_alerts: int | None = None,
         detection_age_seconds: int | None = 120,
         coverage_age_seconds: int | None = 30,
         **kwargs,
@@ -99,6 +100,17 @@ class _AlertEvidenceConn(_RuntimeConn):
         self.open_alerts = int(open_alerts)
         self.canonical_evidence_linked_alerts = int(canonical_evidence_linked_alerts)
         self.legacy_evidence_linked_alerts = int(legacy_evidence_linked_alerts)
+        # |canonical set UNION legacy set| — what the runtime's union anti-join actually
+        # measures. The two lanes are DISJOINT by construction in the application code
+        # (create_alert_from_detection_event sets detection_event_id and never detection_id;
+        # _upsert_alert / monitoring_proof_chain set detection_id and never
+        # detection_event_id), so the honest default is the disjoint union, capped at the
+        # number of open alerts. Pass provable_open_alerts explicitly to model an overlap.
+        self.provable_open_alerts = int(
+            min(self.open_alerts, self.canonical_evidence_linked_alerts + self.legacy_evidence_linked_alerts)
+            if provable_open_alerts is None
+            else provable_open_alerts
+        )
         self.detection_at = (
             None if detection_age_seconds is None else NOW - timedelta(seconds=detection_age_seconds)
         )
@@ -109,6 +121,14 @@ class _AlertEvidenceConn(_RuntimeConn):
     def execute(self, q, p=None):
         text = ' '.join(str(q).split())
 
+        # Union anti-join: open alerts backed by NEITHER proof chain. This is the counter
+        # the rollup actually consumes; it must be answered from the UNION of the two
+        # lanes, never from raw - MAX(canonical, legacy).
+        if 'AS unprovable_c' in text and 'FROM alerts a' in text:
+            return _Result(row={
+                'unprovable_c': max(self.open_alerts - self.provable_open_alerts, 0),
+                'provable_c': self.provable_open_alerts,
+            })
         # raw_open_alerts_count — every open/acknowledged/investigating alert.
         if (
             "FROM alerts WHERE status IN ('open','acknowledged','investigating')" in text
