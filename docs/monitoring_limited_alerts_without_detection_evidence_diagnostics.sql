@@ -121,9 +121,41 @@
 
 
 -- ---------------------------------------------------------------------------
--- A. Reproduce the counter arithmetic exactly as monitoring_runner.py computes it
+-- A. Reproduce the counter arithmetic — old MIN() vs the union anti-join
 -- ---------------------------------------------------------------------------
--- Expect: alerts_without_evidence_effective > 0 (that is what forces `limited`).
+-- READ THIS BLOCK FIRST. It answers the only question that decides whether the
+-- production `limited` is real: is the remainder a PHANTOM of the old set
+-- arithmetic, or a genuinely unprovable alert?
+--
+--   alerts_without_evidence_legacy_min  = LEAST(raw - canonical, raw - legacy)
+--                                       = raw - GREATEST(canonical, legacy)
+--       -- what monitoring_runner.py used to compute. Only equals the real
+--          unprovable count when one proved-set CONTAINS the other.
+--
+--   alerts_without_evidence_union       = COUNT(open alerts matching NEITHER chain)
+--       -- what monitoring_runner.py computes now (count_open_alerts_without_evidence),
+--          and what the runtime payload reports as
+--          `open_alerts_without_detection_evidence`.
+--
+--   phantom_orphans                     = legacy_min - union
+--       -- alerts the OLD arithmetic reported as unprovable that are in fact fully
+--          proven, just by the OTHER chain.
+--
+-- The two lanes are DISJOINT by construction in the application code:
+--     canonical  create_alert_from_detection_event (pilot.py) writes
+--                detection_event_id and never detection_id
+--     legacy     _upsert_alert (monitoring_runner.py — the QuickNode wallet-transfer
+--                path) and monitoring_proof_chain (pilot.py) write detection_id and
+--                never detection_event_id
+-- so any workspace with open alerts in BOTH lanes had phantom_orphans > 0.
+--
+-- HOW TO READ THE RESULT
+--   phantom_orphans > 0 AND alerts_without_evidence_union = 0
+--       -> the production `limited` was entirely the arithmetic. No data problem,
+--          no cleanup. The fix alone clears it. Blocks B-E return nothing.
+--   alerts_without_evidence_union > 0
+--       -> there are genuinely unprovable open alerts. `limited` is CORRECT and
+--          must stay. Run Blocks B-E to classify those rows.
 WITH raw_open AS (
     SELECT COUNT(*) AS c
     FROM alerts
@@ -158,17 +190,54 @@ legacy_linked AS (
         )
       )
 )
+either_chain_linked AS (
+    -- |canonical UNION legacy| — the set the fixed counter measures against.
+    SELECT COUNT(*) AS c
+    FROM alerts a
+    WHERE a.workspace_id = :ws::uuid
+      AND a.status IN ('open', 'acknowledged', 'investigating')
+      AND (
+        EXISTS (
+            SELECT 1
+            FROM detection_events de
+            JOIN telemetry_events te
+              ON te.workspace_id = de.workspace_id
+             AND te.id = de.telemetry_event_id
+            WHERE de.workspace_id = a.workspace_id
+              AND de.id = a.detection_event_id
+        )
+        OR EXISTS (
+            SELECT 1
+            FROM detections d
+            WHERE d.workspace_id = a.workspace_id
+              AND (d.id = a.detection_id OR d.linked_alert_id = a.id)
+              AND (
+                d.raw_evidence_json IS NOT NULL
+                OR EXISTS (
+                    SELECT 1 FROM detection_evidence de3
+                    WHERE de3.workspace_id = d.workspace_id AND de3.detection_id = d.id
+                )
+              )
+        )
+      )
+)
 SELECT
     raw_open.c                                             AS raw_open_alerts,
     canonical_linked.c                                     AS canonical_evidence_linked,
     legacy_linked.c                                        AS legacy_evidence_linked,
+    either_chain_linked.c                                  AS either_chain_linked,
     GREATEST(raw_open.c - canonical_linked.c, 0)           AS gap_canonical,
     GREATEST(raw_open.c - legacy_linked.c, 0)              AS gap_legacy,
     LEAST(
         GREATEST(raw_open.c - canonical_linked.c, 0),
         GREATEST(raw_open.c - legacy_linked.c, 0)
-    )                                                      AS alerts_without_evidence_effective
-FROM raw_open, canonical_linked, legacy_linked;
+    )                                                      AS alerts_without_evidence_legacy_min,
+    GREATEST(raw_open.c - either_chain_linked.c, 0)        AS alerts_without_evidence_union,
+    LEAST(
+        GREATEST(raw_open.c - canonical_linked.c, 0),
+        GREATEST(raw_open.c - legacy_linked.c, 0)
+    ) - GREATEST(raw_open.c - either_chain_linked.c, 0)    AS phantom_orphans
+FROM raw_open, canonical_linked, legacy_linked, either_chain_linked;
 
 
 -- ---------------------------------------------------------------------------

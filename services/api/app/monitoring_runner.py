@@ -8817,7 +8817,130 @@ def monitoring_runtime_status(
                 legacy_open_alerts_without_evidence_count = int(raw_open_alerts_count)
             # Alerts backed by the legacy proof-chain path (detection_id + detection_evidence) are
             # not counted in the primary detection_event_id query.  Use the most generous count.
-            open_alerts_without_evidence_count = min(open_alerts_without_evidence_count, legacy_open_alerts_without_evidence_count)
+            #
+            # MIN(raw - canonical, raw - legacy) == raw - MAX(canonical, legacy) only equals the
+            # real unprovable count when one proved-set CONTAINS the other. It does not: the
+            # canonical lane (create_alert_from_detection_event) sets detection_event_id and never
+            # detection_id, while the legacy lanes (_upsert_alert, monitoring_proof_chain) set
+            # detection_id and never detection_event_id — the two sets are disjoint by
+            # construction. With C canonical-linked and L legacy-linked alerts on DIFFERENT rows
+            # the arithmetic reports MIN(C, L) phantom alerts that are in fact fully provable,
+            # which then degrades the entire workspace rollup to limited via
+            # contradiction_reason_overrides['alert_without_detection'].
+            #
+            # Count the alerts backed by NEITHER chain directly instead — the same UNION
+            # semantics count_open_incidents already applies below. This is strictly the stated
+            # intent ("use the most generous count"), not a loosened threshold: an alert provable
+            # by neither chain is still counted, so the fail-closed rule is preserved. It also
+            # decouples the counter from raw_open_alerts_count, which can be served from the
+            # (possibly stale) precomputed monitoring_workspace_runtime_summary snapshot while
+            # the join counts are always live — a stale-high raw count used to manufacture a
+            # positive remainder on its own.
+            legacy_arithmetic_open_alerts_without_evidence_count = min(
+                open_alerts_without_evidence_count,
+                legacy_open_alerts_without_evidence_count,
+            )
+            open_alerts_without_evidence_count = legacy_arithmetic_open_alerts_without_evidence_count
+            open_alerts_with_either_chain_count = 0
+            open_alerts_without_evidence_source = 'union_anti_join'
+            _mark_query_checkpoint('count_open_alerts_without_evidence')
+            try:
+                unprovable_open_alerts_row = connection.execute(
+                    f'''
+                    SELECT
+                        COUNT(*) FILTER (
+                            WHERE NOT EXISTS (
+                                SELECT 1
+                                FROM detection_events de
+                                JOIN telemetry_events te
+                                  ON te.workspace_id = de.workspace_id
+                                 AND te.id = de.telemetry_event_id
+                                WHERE de.workspace_id = a.workspace_id
+                                  AND de.id = a.detection_event_id
+                            )
+                            AND NOT EXISTS (
+                                SELECT 1
+                                FROM detections d
+                                WHERE d.workspace_id = a.workspace_id
+                                  AND (d.id = a.detection_id OR d.linked_alert_id = a.id)
+                                  AND (
+                                    d.raw_evidence_json IS NOT NULL
+                                    OR EXISTS (
+                                        SELECT 1
+                                        FROM detection_evidence dev
+                                        WHERE dev.workspace_id = d.workspace_id
+                                          AND dev.detection_id = d.id
+                                    )
+                                  )
+                            )
+                        ) AS unprovable_c,
+                        COUNT(*) FILTER (
+                            WHERE EXISTS (
+                                SELECT 1
+                                FROM detection_events de
+                                JOIN telemetry_events te
+                                  ON te.workspace_id = de.workspace_id
+                                 AND te.id = de.telemetry_event_id
+                                WHERE de.workspace_id = a.workspace_id
+                                  AND de.id = a.detection_event_id
+                            )
+                            OR EXISTS (
+                                SELECT 1
+                                FROM detections d
+                                WHERE d.workspace_id = a.workspace_id
+                                  AND (d.id = a.detection_id OR d.linked_alert_id = a.id)
+                                  AND (
+                                    d.raw_evidence_json IS NOT NULL
+                                    OR EXISTS (
+                                        SELECT 1
+                                        FROM detection_evidence dev
+                                        WHERE dev.workspace_id = d.workspace_id
+                                          AND dev.detection_id = d.id
+                                    )
+                                  )
+                            )
+                        ) AS provable_c
+                    FROM alerts a
+                    WHERE a.status IN ('open','acknowledged','investigating')
+                      {'AND a.workspace_id = %s' if workspace_id else ''}
+                    ''',
+                    scoped_params,
+                ).fetchone()
+                open_alerts_without_evidence_count = max(
+                    int((unprovable_open_alerts_row or {}).get('unprovable_c') or 0),
+                    0,
+                )
+                open_alerts_with_either_chain_count = max(
+                    int((unprovable_open_alerts_row or {}).get('provable_c') or 0),
+                    0,
+                )
+            except Exception:
+                # Fail closed: keep the previous (never smaller) arithmetic rather than
+                # claiming every open alert is provable because a query could not run.
+                open_alerts_without_evidence_source = 'legacy_min_arithmetic_fallback'
+                open_alerts_without_evidence_count = legacy_arithmetic_open_alerts_without_evidence_count
+                logger.warning(
+                    'monitoring_runtime_open_alerts_evidence_query_failed workspace_id=%s '
+                    'fallback_count=%s source=%s',
+                    workspace_id,
+                    open_alerts_without_evidence_count,
+                    open_alerts_without_evidence_source,
+                )
+            if open_alerts_without_evidence_count != legacy_arithmetic_open_alerts_without_evidence_count:
+                logger.info(
+                    'monitoring_runtime_open_alerts_evidence_recount workspace_id=%s '
+                    'raw_open_alerts=%s canonical_linked=%s legacy_linked=%s '
+                    'either_chain_linked=%s legacy_arithmetic_without_evidence=%s '
+                    'without_evidence=%s source=%s',
+                    workspace_id,
+                    raw_open_alerts_count,
+                    int((open_alerts or {}).get('c') or 0),
+                    int((legacy_open_alerts_row or {}).get('c') or 0),
+                    open_alerts_with_either_chain_count,
+                    legacy_arithmetic_open_alerts_without_evidence_count,
+                    open_alerts_without_evidence_count,
+                    open_alerts_without_evidence_source,
+                )
             _mark_query_checkpoint('count_open_incidents_raw')
             raw_open_incidents_count = 0
             if use_precomputed_active_counts:
@@ -11159,6 +11282,42 @@ def monitoring_runtime_status(
             summary['monitoring_status'] = 'limited'
             runtime_status_reason = runtime_status_reason or 'canonical_guard_noncanonical_timestamp'
             summary['status_reason'] = runtime_status_reason
+            # Name the exact boolean that selected LIMITED. Without this the production log
+            # only shows the OUTCOME (decision=limited, status_reason=...), never which
+            # contradiction flag carried the override that produced it.
+            _degrading_flags = [
+                flag for flag in contradiction_flags
+                if (contradiction_reason_overrides.get(flag) or (None, None))[0] == 'degraded'
+            ]
+            logger.info(
+                'monitoring_runtime_status_limited_selector workspace_id=%s selector=%s '
+                'contradiction_severity=%s degrading_flags=%s reason_token=%s '
+                'canonical_guard_noncanonical_timestamp=%s '
+                'open_alerts_without_detection_evidence=%s open_alerts_with_either_chain=%s '
+                'open_alerts_without_detection_evidence_source=%s '
+                'open_alerts_without_detection_evidence_legacy_arithmetic=%s '
+                'reporting_systems=%s fresh_live_reporting_systems=%s evidence_source=%s '
+                'coverage_fresh=%s status_reason=%s',
+                workspace_id,
+                (
+                    'contradiction_severity_degraded'
+                    if contradiction_severity == 'degraded'
+                    else 'canonical_guard_noncanonical_timestamp'
+                ),
+                contradiction_severity,
+                ','.join(_degrading_flags) or 'none',
+                contradiction_reason_token or 'none',
+                canonical_guard_noncanonical_timestamp,
+                int(open_alerts_without_evidence_count),
+                int(open_alerts_with_either_chain_count),
+                open_alerts_without_evidence_source,
+                int(legacy_arithmetic_open_alerts_without_evidence_count),
+                reporting_systems,
+                int(summary.get('fresh_live_reporting_systems') or 0),
+                evidence_source,
+                coverage_fresh,
+                runtime_status_reason or 'none',
+            )
         strict_live_healthy_proof = bool(
             workspace_configured
             and evidence_source == 'live'
@@ -11359,6 +11518,11 @@ def monitoring_runtime_status(
             'raw_open_alerts': int(raw_open_alerts_count),
             'raw_open_incidents': int(raw_open_incidents_count),
             'open_alerts_without_detection_evidence': int(open_alerts_without_evidence_count),
+            'open_alerts_with_either_detection_chain': int(open_alerts_with_either_chain_count),
+            'open_alerts_without_detection_evidence_source': str(open_alerts_without_evidence_source),
+            'open_alerts_without_detection_evidence_legacy_arithmetic': int(
+                legacy_arithmetic_open_alerts_without_evidence_count
+            ),
             'open_alerts_without_canonical_detection_event': int(open_alerts_without_evidence_count),
             'evidence_freshness_seconds': evidence_freshness,
             'degraded_reason': degraded_reason,
