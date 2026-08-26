@@ -235,7 +235,7 @@ def test_ops_monitoring_health_fails_enterprise_gate_when_event_bus_is_unavailab
     from services.api.app import main as api_main
 
     monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda callback: callback())
-    monkeypatch.setattr(api_main, 'get_monitoring_health', lambda: {'status': 'healthy', 'enterprise_ready': True})
+    monkeypatch.setattr(api_main, 'get_monitoring_health', lambda *_a, **_k: {'status': 'healthy', 'enterprise_ready': True})
     monkeypatch.setattr(api_main, 'alert_delivery_health', lambda: {
         'ready': False, 'bus': {'connected': False},
         'workers': {'outbox_publisher': True, 'stream_consumer': True},

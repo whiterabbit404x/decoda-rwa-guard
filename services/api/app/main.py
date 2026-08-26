@@ -2935,7 +2935,10 @@ def ops_run_monitoring(payload: dict[str, Any], request: Request) -> Any:
 @app.get('/ops/monitoring/health', summary='Monitoring worker health snapshot')
 def ops_monitoring_health() -> dict[str, Any]:
     def _snapshot() -> dict[str, Any]:
-        monitoring = get_monitoring_health()
+        # Operator surface: this endpoint asks about the whole deployment, not about one
+        # workspace, so it opts in explicitly to the global target-health aggregation.
+        # Customer-facing runtime status never takes this path — it is workspace-scoped.
+        monitoring = get_monitoring_health(operator_global_scope=True)
         delivery = alert_delivery_health()
         enterprise_ready = bool(monitoring.get('enterprise_ready', True) and delivery.get('ready'))
         return {
