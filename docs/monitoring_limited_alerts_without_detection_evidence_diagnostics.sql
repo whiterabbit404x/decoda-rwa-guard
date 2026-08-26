@@ -13,7 +13,7 @@
 --     realtime_ingestion_status=healthy realtime_live_coverage_fresh=True
 --     fallback_rpc_degraded=True
 --
--- …and the workspace rollup still ends at:
+-- …and the workspace rollup still ended at:
 --
 --     monitoring_runtime_status_decision decision=limited
 --     status_reason=alerts_without_detection_evidence
@@ -22,55 +22,86 @@
 -- ADDITIVE proof-chain contradiction, on this exact path in
 -- services/api/app/monitoring_runner.py:
 --
---   1. count_open_alerts  (~line 8768)
---        raw_open_alerts_count            = every alert whose status is
---                                           open / acknowledged / investigating
---        open_alerts (canonical)          = alerts -> detection_events
---                                                  -> telemetry_events
---        legacy_open_alerts_row (legacy)  = alerts -> detections, where the
---                                           detection has raw_evidence_json
---                                           or a detection_evidence row
+--   1. count_open_alerts_without_evidence
+--        raw_open_alerts_count = every alert whose status is
+--                                open / acknowledged / investigating
 --        open_alerts_without_evidence_count =
---            MIN(raw - canonical, raw - legacy)          <- most generous count
+--            COUNT(open alerts matching NO evidence home)
+--        open_alerts_with_either_chain_count =
+--            COUNT(open alerts matching ANY evidence home)
+--      Both come from ONE aggregate pass embedding the shared canonical
+--      predicate monitoring_runner.OPEN_ALERT_EVIDENCE_PROVABLE_SQL.
 --
---   2. ~line 10586   open_alerts_without_evidence_count > 0
---                      -> proof_chain_status = 'incomplete'
---                      -> runtime_status_summary = 'degraded'
---                      -> proof_chain_missing_reason_codes +=
---                         'alerts_without_canonical_detection_event'
+--   2. open_alerts_without_evidence_count > 0
+--        -> proof_chain_status = 'incomplete'
+--        -> runtime_status_summary = 'degraded'
+--        -> proof_chain_missing_reason_codes += 'alerts_without_canonical_detection_event'
 --
---   3. ~line 11036/11037  contradiction_conditions add BOTH
---                         'open_alerts_without_detection_evidence' and
---                         'alert_without_detection'
+--   3. contradiction_conditions add BOTH
+--        'open_alerts_without_detection_evidence' and 'alert_without_detection'
 --
---   4. ~line 11083   contradiction_reason_overrides['alert_without_detection']
---                      == ('degraded', 'alerts_without_detection_evidence')
---                    Flags are iterated in SORTED order and the FIRST flag with
---                    an override wins the reason token. 'alert_without_detection'
---                    sorts before 'open_alerts_without_detection_evidence' and
---                    'proof_chain_link_missing', and it is the only one of the
---                    three that HAS an override — hence the exact production
---                    token `alerts_without_detection_evidence`.
+--   4. contradiction_reason_overrides['alert_without_detection']
+--        == ('degraded', 'alerts_without_detection_evidence')
+--      Flags are iterated in SORTED order and the FIRST flag with an override
+--      wins the reason token. 'alert_without_detection' sorts before
+--      'open_alerts_without_detection_evidence' and 'proof_chain_link_missing',
+--      and it is the only one of the three that HAS an override — hence the
+--      exact production token `alerts_without_detection_evidence`.
 --
---   5. ~line 11153   contradiction_severity == 'degraded'
---                      -> runtime_status = 'degraded'
---                      -> monitoring_status = 'limited'
---                    ('alert_without_detection' is NOT in `hard_contradictions`,
---                     so the workspace correctly does NOT go offline.)
+--   5. contradiction_severity == 'degraded'
+--        -> runtime_status = 'degraded'
+--        -> monitoring_status = 'limited'
+--      ('alert_without_detection' is NOT in `hard_contradictions`, so the
+--       workspace correctly does NOT go offline.)
 --
 --   6. workspace_monitoring_summary._normalized_monitoring_status independently
---      returns 'limited' because `contradiction_flags` is non-empty.
+--      returns 'limited' because `contradiction_flags` is non-empty. A SINGLE
+--      flag is enough — including `proof_chain_link_missing`, which is raised
+--      from its own chain count (chain_open_alerts_count). That count therefore
+--      reads the same provable set as the anti-join; otherwise clearing
+--      'alert_without_detection' just moves the workspace to `limited` under a
+--      different reason token.
 --
--- PRODUCT TAXONOMY — WHY `limited` IS THE INTENDED OUTCOME
+-- THE FIVE CANONICAL EVIDENCE HOMES
+-- ----------------------------------------------------------------------------
+-- An open alert is PROVABLE when a real evidence-bearing ROW exists in any of:
+--
+--   1. alerts.detection_event_id -> detection_events -> telemetry_events
+--      canonical lane; create_alert_from_detection_event (pilot.py).
+--   2. alerts.detection_id / detections.linked_alert_id -> detections carrying
+--      raw_evidence_json or a detection_evidence row; legacy lane, written by
+--      _upsert_alert (QuickNode wallet-transfer path) and monitoring_proof_chain.
+--   3. asset_risk_findings.alert_id -> asset_risk_findings.evidence
+--      domains/asset_risk/service.reconcile_findings.
+--   4. threat_detections.linked_alert_id -> threat_detection_evidence
+--      domains/threat_detection/service.ensure_alert_for_detection.
+--   5. alerts.analysis_run_id -> analysis_runs.response_payload
+--      pilot.maybe_insert_alert.
+--
+-- Lanes 3-5 shipped after the counter was written, so alerts raised into them
+-- were reported as unprovable while carrying genuine evidence. Recognizing them
+-- is NOT a loosened threshold — every lane still demands an evidence-bearing
+-- row, and a LABEL IS NOT EVIDENCE:
+--
+--   * module_key ('asset_risk', 'threat_detection'), source, source_service and
+--     alert_type prove nothing and appear in NO lane below.
+--   * asset_risk_findings.evidence, analysis_runs.response_payload and
+--     threat_detection_evidence.evidence_payload are all
+--     `JSONB NOT NULL DEFAULT '{}'::jsonb`, so `IS NOT NULL` is true of every
+--     row. Emptiness — not nullability — is the test.
+--   * Simulator-sourced threat detections never prove anything: simulator data
+--     must never be presented as customer evidence.
+--
+-- PRODUCT TAXONOMY — WHEN `limited` IS THE INTENDED OUTCOME
 -- ----------------------------------------------------------------------------
 -- `monitoring_status` is a three-value workspace ROLLUP: live | limited | offline.
 -- `live` is only reachable with an EMPTY contradiction set. An open alert that
--- satisfies neither the canonical nor the legacy proof chain is an alert a
--- customer can open and Decoda cannot prove — exporting evidence for it would
--- produce nothing. Claiming "Live / Fresh / Verified" over such an alert is the
--- overclaim CLAUDE.md forbids ("No alert must not be shown as healthy", "Keep
--- customer-facing status labels truthful and fail-closed"). So this combination
--- IS intentionally mapped to LIMITED:
+-- satisfies NO evidence home is an alert a customer can open and Decoda cannot
+-- prove — exporting evidence for it would produce nothing. Claiming
+-- "Live / Fresh / Verified" over such an alert is the overclaim CLAUDE.md
+-- forbids ("No alert must not be shown as healthy", "Keep customer-facing status
+-- labels truthful and fail-closed"). So that combination IS intentionally
+-- mapped to LIMITED:
 --
 --     realtime ingestion health      = healthy    (concept 1)
 --     monitoring coverage health     = healthy    (concept 2)
@@ -83,7 +114,9 @@
 -- reporting_systems, fresh_live_reporting_systems, replay_only_systems and
 -- realtime_ingestion.* byte-for-byte identical to the same workspace with no
 -- orphan alert. That separation is locked by
--- services/api/tests/test_monitoring_status_evidence_integrity_separation.py.
+-- services/api/tests/test_monitoring_status_evidence_integrity_separation.py,
+-- and the evidence-home taxonomy by
+-- services/api/tests/test_monitoring_alert_evidence_home_taxonomy.py.
 --
 -- AGE IS DELIBERATELY NOT A FACTOR. The counter is bounded by alert STATUS, not
 -- by created_at: an unprovable alert that is still OPEN is an unresolved
@@ -102,12 +135,10 @@
 --     D. orphan / inconsistent record
 --     E. false positive from status aggregation
 --
--- Block E is the one to read first: some alert lanes structurally CANNOT satisfy
--- either proof-chain join, because they are not chain-telemetry detections at all
--- (asset-risk findings carry their evidence in asset_risk_findings.evidence;
--- analysis-run alerts carry theirs in analysis_runs.response_payload). If the
--- offending rows are all in those lanes, the finding is a taxonomy gap in the
--- counter, not a customer-visible integrity failure — see the note under E.
+-- Blocks A and E are the ones to read first: an alert lane that structurally
+-- cannot satisfy either CHAIN join is not automatically an orphan — it may hold
+-- real evidence in home 3, 4 or 5. Block A separates "provable by a chain",
+-- "provable only by a non-chain home", and "provable by nothing at all".
 --
 -- SAFETY
 --   * Every statement here is a SELECT. Nothing writes, nothing auto-runs, and
@@ -121,39 +152,29 @@
 
 
 -- ---------------------------------------------------------------------------
--- A. Reproduce the counter arithmetic — old MIN() vs the union anti-join
+-- A. Reproduce the counter — chain-only vs. all five evidence homes
 -- ---------------------------------------------------------------------------
 -- READ THIS BLOCK FIRST. It answers the only question that decides whether the
--- production `limited` is real: is the remainder a PHANTOM of the old set
--- arithmetic, or a genuinely unprovable alert?
+-- production `limited` is real.
 --
---   alerts_without_evidence_legacy_min  = LEAST(raw - canonical, raw - legacy)
---                                       = raw - GREATEST(canonical, legacy)
---       -- what monitoring_runner.py used to compute. Only equals the real
---          unprovable count when one proved-set CONTAINS the other.
+--   alerts_without_evidence_chain_only  = open alerts matching NEITHER chain lane
+--       -- the definition before the asset-risk / threat-detection / analysis-run
+--          evidence homes were recognized.
 --
---   alerts_without_evidence_union       = COUNT(open alerts matching NEITHER chain)
---       -- what monitoring_runner.py computes now (count_open_alerts_without_evidence),
---          and what the runtime payload reports as
---          `open_alerts_without_detection_evidence`.
+--   alerts_without_evidence_all_homes   = open alerts matching NO evidence home
+--       -- what monitoring_runner.py computes now, and what the runtime payload
+--          reports as `open_alerts_without_detection_evidence`.
 --
---   phantom_orphans                     = legacy_min - union
---       -- alerts the OLD arithmetic reported as unprovable that are in fact fully
---          proven, just by the OTHER chain.
---
--- The two lanes are DISJOINT by construction in the application code:
---     canonical  create_alert_from_detection_event (pilot.py) writes
---                detection_event_id and never detection_id
---     legacy     _upsert_alert (monitoring_runner.py — the QuickNode wallet-transfer
---                path) and monitoring_proof_chain (pilot.py) write detection_id and
---                never detection_event_id
--- so any workspace with open alerts in BOTH lanes had phantom_orphans > 0.
+--   taxonomy_gap_false_positives        = chain_only - all_homes
+--       -- alerts the chain-only definition called unprovable that in fact carry
+--          real evidence, just not in a chain lane. These are FALSE POSITIVES;
+--          no data repair clears them and none should be attempted.
 --
 -- HOW TO READ THE RESULT
---   phantom_orphans > 0 AND alerts_without_evidence_union = 0
---       -> the production `limited` was entirely the arithmetic. No data problem,
---          no cleanup. The fix alone clears it. Blocks B-E return nothing.
---   alerts_without_evidence_union > 0
+--   taxonomy_gap_false_positives > 0 AND alerts_without_evidence_all_homes = 0
+--       -> the production `limited` was entirely the counter's taxonomy gap.
+--          No data problem, no cleanup. Blocks B-E return nothing.
+--   alerts_without_evidence_all_homes > 0
 --       -> there are genuinely unprovable open alerts. `limited` is CORRECT and
 --          must stay. Run Blocks B-E to classify those rows.
 WITH raw_open AS (
@@ -189,9 +210,9 @@ legacy_linked AS (
             WHERE de2.workspace_id = d.workspace_id AND de2.detection_id = d.id
         )
       )
-)
+),
 either_chain_linked AS (
-    -- |canonical UNION legacy| — the set the fixed counter measures against.
+    -- |canonical UNION legacy| — the chain half of the definition.
     SELECT COUNT(*) AS c
     FROM alerts a
     WHERE a.workspace_id = :ws::uuid
@@ -220,30 +241,96 @@ either_chain_linked AS (
               )
         )
       )
+),
+any_home_linked AS (
+    -- All five evidence homes — the canonical provability definition.
+    SELECT COUNT(*) AS c
+    FROM alerts a
+    WHERE a.workspace_id = :ws::uuid
+      AND a.status IN ('open', 'acknowledged', 'investigating')
+      AND (
+        EXISTS (
+            SELECT 1
+            FROM detection_events de
+            JOIN telemetry_events te
+              ON te.workspace_id = de.workspace_id
+             AND te.id = de.telemetry_event_id
+            WHERE de.workspace_id = a.workspace_id
+              AND de.id = a.detection_event_id
+        )
+        OR EXISTS (
+            SELECT 1
+            FROM detections d
+            WHERE d.workspace_id = a.workspace_id
+              AND (d.id = a.detection_id OR d.linked_alert_id = a.id)
+              AND (
+                d.raw_evidence_json IS NOT NULL
+                OR EXISTS (
+                    SELECT 1 FROM detection_evidence de4
+                    WHERE de4.workspace_id = d.workspace_id AND de4.detection_id = d.id
+                )
+              )
+        )
+        OR EXISTS (
+            SELECT 1
+            FROM asset_risk_findings f
+            WHERE f.workspace_id = a.workspace_id
+              AND f.alert_id = a.id
+              AND f.evidence IS NOT NULL
+              AND jsonb_typeof(f.evidence) <> 'null'
+              AND f.evidence <> '{}'::jsonb
+              AND f.evidence <> '[]'::jsonb
+        )
+        OR EXISTS (
+            SELECT 1
+            FROM threat_detections td
+            WHERE td.workspace_id = a.workspace_id
+              AND td.linked_alert_id = a.id
+              AND td.evidence_source <> 'simulator'
+              AND EXISTS (
+                  SELECT 1
+                  FROM threat_detection_evidence tde
+                  WHERE tde.workspace_id = td.workspace_id
+                    AND tde.detection_id = td.id
+                    AND (
+                      tde.telemetry_id IS NOT NULL
+                      OR (
+                        tde.evidence_payload IS NOT NULL
+                        AND jsonb_typeof(tde.evidence_payload) <> 'null'
+                        AND tde.evidence_payload <> '{}'::jsonb
+                        AND tde.evidence_payload <> '[]'::jsonb
+                      )
+                    )
+              )
+        )
+        OR EXISTS (
+            SELECT 1
+            FROM analysis_runs ar
+            WHERE ar.id = a.analysis_run_id
+              AND ar.workspace_id = a.workspace_id
+              AND ar.response_payload IS NOT NULL
+              AND jsonb_typeof(ar.response_payload) <> 'null'
+              AND ar.response_payload <> '{}'::jsonb
+              AND ar.response_payload <> '[]'::jsonb
+        )
+      )
 )
 SELECT
     raw_open.c                                             AS raw_open_alerts,
     canonical_linked.c                                     AS canonical_evidence_linked,
     legacy_linked.c                                        AS legacy_evidence_linked,
     either_chain_linked.c                                  AS either_chain_linked,
-    GREATEST(raw_open.c - canonical_linked.c, 0)           AS gap_canonical,
-    GREATEST(raw_open.c - legacy_linked.c, 0)              AS gap_legacy,
-    LEAST(
-        GREATEST(raw_open.c - canonical_linked.c, 0),
-        GREATEST(raw_open.c - legacy_linked.c, 0)
-    )                                                      AS alerts_without_evidence_legacy_min,
-    GREATEST(raw_open.c - either_chain_linked.c, 0)        AS alerts_without_evidence_union,
-    LEAST(
-        GREATEST(raw_open.c - canonical_linked.c, 0),
-        GREATEST(raw_open.c - legacy_linked.c, 0)
-    ) - GREATEST(raw_open.c - either_chain_linked.c, 0)    AS phantom_orphans
-FROM raw_open, canonical_linked, legacy_linked, either_chain_linked;
+    any_home_linked.c                                      AS any_evidence_home_linked,
+    GREATEST(raw_open.c - either_chain_linked.c, 0)        AS alerts_without_evidence_chain_only,
+    GREATEST(raw_open.c - any_home_linked.c, 0)            AS alerts_without_evidence_all_homes,
+    GREATEST(any_home_linked.c - either_chain_linked.c, 0) AS taxonomy_gap_false_positives
+FROM raw_open, canonical_linked, legacy_linked, either_chain_linked, any_home_linked;
 
 
 -- ---------------------------------------------------------------------------
--- B. Name the offending rows: open alerts provable by NEITHER chain
+-- B. Name the offending rows: open alerts provable by NO evidence home
 -- ---------------------------------------------------------------------------
--- These are the rows driving status_reason=alerts_without_detection_evidence.
+-- These, and only these, drive status_reason=alerts_without_detection_evidence.
 -- Structured identity + lineage only — no free text.
 SELECT
     a.id                                                   AS alert_id,
@@ -258,6 +345,12 @@ SELECT
     (a.detection_event_id IS NOT NULL)                     AS has_detection_event_id,
     (a.detection_id       IS NOT NULL)                     AS has_detection_id,
     (a.analysis_run_id    IS NOT NULL)                     AS has_analysis_run_id,
+    EXISTS (SELECT 1 FROM asset_risk_findings f
+             WHERE f.workspace_id = a.workspace_id AND f.alert_id = a.id)
+                                                           AS has_asset_risk_finding_row,
+    EXISTS (SELECT 1 FROM threat_detections td
+             WHERE td.workspace_id = a.workspace_id AND td.linked_alert_id = a.id)
+                                                           AS has_threat_detection_row,
     EXTRACT(DAY FROM (NOW() - a.created_at))::int          AS age_days
 FROM alerts a
 WHERE a.workspace_id = :ws::uuid
@@ -282,12 +375,57 @@ WHERE a.workspace_id = :ws::uuid
             )
           )
   )
+  AND NOT EXISTS (
+        SELECT 1
+        FROM asset_risk_findings f
+        WHERE f.workspace_id = a.workspace_id
+          AND f.alert_id = a.id
+          AND f.evidence IS NOT NULL
+          AND jsonb_typeof(f.evidence) <> 'null'
+          AND f.evidence <> '{}'::jsonb
+          AND f.evidence <> '[]'::jsonb
+  )
+  AND NOT EXISTS (
+        SELECT 1
+        FROM threat_detections td
+        WHERE td.workspace_id = a.workspace_id
+          AND td.linked_alert_id = a.id
+          AND td.evidence_source <> 'simulator'
+          AND EXISTS (
+              SELECT 1
+              FROM threat_detection_evidence tde
+              WHERE tde.workspace_id = td.workspace_id
+                AND tde.detection_id = td.id
+                AND (
+                  tde.telemetry_id IS NOT NULL
+                  OR (
+                    tde.evidence_payload IS NOT NULL
+                    AND jsonb_typeof(tde.evidence_payload) <> 'null'
+                    AND tde.evidence_payload <> '{}'::jsonb
+                    AND tde.evidence_payload <> '[]'::jsonb
+                  )
+                )
+          )
+  )
+  AND NOT EXISTS (
+        SELECT 1
+        FROM analysis_runs ar
+        WHERE ar.id = a.analysis_run_id
+          AND ar.workspace_id = a.workspace_id
+          AND ar.response_payload IS NOT NULL
+          AND jsonb_typeof(ar.response_payload) <> 'null'
+          AND ar.response_payload <> '{}'::jsonb
+          AND ar.response_payload <> '[]'::jsonb
+  )
 ORDER BY a.created_at ASC;
 
 
 -- ---------------------------------------------------------------------------
--- C. Which link is missing, per offending alert (why it fails each chain)
+-- C. Which link is missing, per open alert (why it fails each evidence home)
 -- ---------------------------------------------------------------------------
+-- Read `*_break` per row. A row is a genuine orphan only when EVERY column
+-- reports a break; an `*_ok` in any column means the alert is provable and must
+-- NOT be treated as an orphan.
 SELECT
     a.id                                                   AS alert_id,
     a.created_at,
@@ -308,7 +446,45 @@ SELECT
                  WHERE de2.workspace_id = d.workspace_id AND de2.detection_id = d.id
              )                                         THEN 'detection_has_no_evidence'
         ELSE 'legacy_chain_ok'
-    END                                                    AS legacy_break
+    END                                                    AS legacy_break,
+    CASE
+        WHEN NOT EXISTS (SELECT 1 FROM asset_risk_findings f
+                          WHERE f.workspace_id = a.workspace_id AND f.alert_id = a.id)
+                                                       THEN 'no_asset_risk_finding_row'
+        WHEN NOT EXISTS (SELECT 1 FROM asset_risk_findings f
+                          WHERE f.workspace_id = a.workspace_id AND f.alert_id = a.id
+                            AND f.evidence IS NOT NULL
+                            AND jsonb_typeof(f.evidence) <> 'null'
+                            AND f.evidence <> '{}'::jsonb
+                            AND f.evidence <> '[]'::jsonb)
+                                                       THEN 'asset_risk_finding_evidence_empty'
+        ELSE 'asset_risk_evidence_ok'
+    END                                                    AS asset_risk_break,
+    CASE
+        WHEN NOT EXISTS (SELECT 1 FROM threat_detections td
+                          WHERE td.workspace_id = a.workspace_id AND td.linked_alert_id = a.id)
+                                                       THEN 'no_threat_detection_row'
+        WHEN NOT EXISTS (SELECT 1 FROM threat_detections td
+                          WHERE td.workspace_id = a.workspace_id AND td.linked_alert_id = a.id
+                            AND td.evidence_source <> 'simulator')
+                                                       THEN 'threat_detection_evidence_is_simulator'
+        WHEN NOT EXISTS (SELECT 1 FROM threat_detections td
+                          JOIN threat_detection_evidence tde
+                            ON tde.workspace_id = td.workspace_id AND tde.detection_id = td.id
+                          WHERE td.workspace_id = a.workspace_id AND td.linked_alert_id = a.id
+                            AND td.evidence_source <> 'simulator')
+                                                       THEN 'threat_detection_has_no_evidence_rows'
+        ELSE 'threat_detection_evidence_ok'
+    END                                                    AS threat_detection_break,
+    CASE
+        WHEN a.analysis_run_id IS NULL                 THEN 'no_analysis_run_id'
+        WHEN ar.id IS NULL                             THEN 'analysis_run_row_missing'
+        WHEN ar.response_payload IS NULL
+             OR jsonb_typeof(ar.response_payload) = 'null'
+             OR ar.response_payload = '{}'::jsonb
+             OR ar.response_payload = '[]'::jsonb      THEN 'analysis_run_response_payload_empty'
+        ELSE 'analysis_run_evidence_ok'
+    END                                                    AS analysis_run_break
 FROM alerts a
 LEFT JOIN detection_events de
        ON de.workspace_id = a.workspace_id AND de.id = a.detection_event_id
@@ -317,6 +493,8 @@ LEFT JOIN telemetry_events te
 LEFT JOIN detections d
        ON d.workspace_id = a.workspace_id
       AND (d.id = a.detection_id OR d.linked_alert_id = a.id)
+LEFT JOIN analysis_runs ar
+       ON ar.workspace_id = a.workspace_id AND ar.id = a.analysis_run_id
 WHERE a.workspace_id = :ws::uuid
   AND a.status IN ('open', 'acknowledged', 'investigating')
 ORDER BY a.created_at ASC;
@@ -329,6 +507,9 @@ ORDER BY a.created_at ASC;
 -- detection_event, they are pre-canonical-model records (classification B).
 -- If any row is newer, the CURRENT pipeline is emitting unprovable alerts
 -- (classification A) and that is a live defect to chase, not history.
+--
+-- Scoped to alerts with NO linkage of any kind, so an alert carrying real
+-- asset-risk / threat-detection / analysis-run evidence is not counted here.
 SELECT
     (SELECT MIN(created_at) FROM detection_events WHERE workspace_id = :ws::uuid)
                                                            AS first_canonical_detection_event_at,
@@ -346,70 +527,136 @@ FROM alerts a
 WHERE a.workspace_id = :ws::uuid
   AND a.status IN ('open', 'acknowledged', 'investigating')
   AND a.detection_event_id IS NULL
-  AND a.detection_id IS NULL;
+  AND a.detection_id IS NULL
+  AND a.analysis_run_id IS NULL
+  AND NOT EXISTS (SELECT 1 FROM asset_risk_findings f
+                   WHERE f.workspace_id = a.workspace_id AND f.alert_id = a.id)
+  AND NOT EXISTS (SELECT 1 FROM threat_detections td
+                   WHERE td.workspace_id = a.workspace_id AND td.linked_alert_id = a.id);
 
 
 -- ---------------------------------------------------------------------------
 -- E. Lane classification — is this a real integrity failure or a counter gap?
 -- ---------------------------------------------------------------------------
--- Some alert lanes NEVER write detection_event_id / detection_id, by design:
+-- Classification is by EVIDENCE ROW, never by label. module_key='asset_risk' or
+-- 'threat_detection' on its own is not proof of anything and never clears an
+-- alert here; only a real, non-empty evidence row does. The label columns are
+-- reported separately, purely so an operator can see when a lane label and its
+-- evidence disagree — `mislabelled_without_evidence` is exactly that case, and
+-- those rows ARE genuine orphans.
 --
---   module_key='asset_risk' / source='asset_risk_assessor'
---       services/api/app/domains/asset_risk/service.py — evidence lives in
---       asset_risk_findings.evidence and alerts.payload->'evidence'.
---   analysis_run_id IS NOT NULL, detection_* NULL
---       pilot.maybe_insert_alert — evidence lives in
---       analysis_runs.response_payload.
---
--- Rows in those lanes are legitimate product records with a DIFFERENT evidence
--- origin. If `offending_with_own_evidence` accounts for the whole gap, the
--- finding is classification E (aggregation false positive): the counter is
--- demanding chain-detection evidence from alerts that were never supposed to
--- have any. THAT is the case where the mapping should be narrowed to the
--- chain-detection lanes — a fail-closed change, since any alert not provably in
--- an alternate-evidence lane keeps counting.
---
--- If instead the gap is wallet-transfer / threat-detection / proof-chain alerts,
--- it is classification A or D and `limited` is fully correct: fix or resolve the
--- rows, do not touch the status code.
+-- HOW TO READ THE RESULT
+--   provable_by_non_chain_home > 0 AND unprovable_total = 0
+--       -> classification E (aggregation false positive). The alerts carry real
+--          evidence in home 3/4/5. DO NOT touch the data; the corrected counter
+--          in monitoring_runner.py already recognizes them.
+--   unprovable_total > 0
+--       -> classification A / B / C / D. `limited` is correct. Use Block C to see
+--          which link is missing and Block D to date the rows.
 SELECT
-    COUNT(*)                                               AS offending_total,
-    COUNT(*) FILTER (WHERE a.module_key = 'asset_risk'
-                        OR a.source = 'asset_risk_assessor'
-                        OR a.source_service = 'asset-risk-assessor')
-                                                           AS lane_asset_risk,
-    COUNT(*) FILTER (WHERE a.analysis_run_id IS NOT NULL)  AS lane_analysis_run,
-    COUNT(*) FILTER (WHERE a.module_key = 'strategic_infrastructure_guard'
-                        OR a.alert_type ILIKE '%wallet_transfer%')
-                                                           AS lane_wallet_transfer,
-    COUNT(*) FILTER (WHERE a.alert_type = 'monitoring_proof_chain')
-                                                           AS lane_proof_chain,
+    COUNT(*)                                               AS open_alerts_total,
+    COUNT(*) FILTER (WHERE ev.provable_by_chain)           AS provable_by_chain,
+    COUNT(*) FILTER (WHERE NOT ev.provable_by_chain AND ev.provable_by_non_chain)
+                                                           AS provable_by_non_chain_home,
+    COUNT(*) FILTER (WHERE NOT ev.provable_by_chain AND NOT ev.provable_by_non_chain)
+                                                           AS unprovable_total,
+    -- Labels, reported but never trusted.
+    COUNT(*) FILTER (WHERE ev.asset_risk_labelled)         AS label_asset_risk,
+    COUNT(*) FILTER (WHERE ev.threat_labelled)             AS label_threat_detection,
+    COUNT(*) FILTER (WHERE a.analysis_run_id IS NOT NULL)  AS label_analysis_run,
     COUNT(*) FILTER (
-        WHERE a.module_key = 'asset_risk'
-           OR a.source = 'asset_risk_assessor'
-           OR a.source_service = 'asset-risk-assessor'
-           OR a.analysis_run_id IS NOT NULL
-    )                                                      AS offending_with_own_evidence,
-    COUNT(*) FILTER (
-        WHERE a.module_key IS DISTINCT FROM 'asset_risk'
-          AND a.source IS DISTINCT FROM 'asset_risk_assessor'
-          AND a.source_service IS DISTINCT FROM 'asset-risk-assessor'
-          AND a.analysis_run_id IS NULL
-    )                                                      AS offending_requiring_chain_evidence
+        WHERE (ev.asset_risk_labelled OR ev.threat_labelled)
+          AND NOT ev.provable_by_chain
+          AND NOT ev.provable_by_non_chain
+    )                                                      AS mislabelled_without_evidence
 FROM alerts a
+CROSS JOIN LATERAL (
+    SELECT
+        (a.module_key = 'asset_risk'
+         OR a.source = 'asset_risk_assessor'
+         OR a.source_service = 'asset-risk-assessor')      AS asset_risk_labelled,
+        (a.module_key = 'threat_detection'
+         OR a.source = 'threat_detection_engineer'
+         OR a.source_service = 'threat-detection-engineer') AS threat_labelled,
+        (
+            EXISTS (
+                SELECT 1
+                FROM detection_events de
+                JOIN telemetry_events te
+                  ON te.workspace_id = de.workspace_id AND te.id = de.telemetry_event_id
+                WHERE de.workspace_id = a.workspace_id AND de.id = a.detection_event_id
+            )
+            OR EXISTS (
+                SELECT 1
+                FROM detections d
+                WHERE d.workspace_id = a.workspace_id
+                  AND (d.id = a.detection_id OR d.linked_alert_id = a.id)
+                  AND (
+                    d.raw_evidence_json IS NOT NULL
+                    OR EXISTS (
+                        SELECT 1 FROM detection_evidence de5
+                        WHERE de5.workspace_id = d.workspace_id AND de5.detection_id = d.id
+                    )
+                  )
+            )
+        )                                                  AS provable_by_chain,
+        (
+            EXISTS (
+                SELECT 1
+                FROM asset_risk_findings f
+                WHERE f.workspace_id = a.workspace_id
+                  AND f.alert_id = a.id
+                  AND f.evidence IS NOT NULL
+                  AND jsonb_typeof(f.evidence) <> 'null'
+                  AND f.evidence <> '{}'::jsonb
+                  AND f.evidence <> '[]'::jsonb
+            )
+            OR EXISTS (
+                SELECT 1
+                FROM threat_detections td
+                WHERE td.workspace_id = a.workspace_id
+                  AND td.linked_alert_id = a.id
+                  AND td.evidence_source <> 'simulator'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM threat_detection_evidence tde
+                      WHERE tde.workspace_id = td.workspace_id
+                        AND tde.detection_id = td.id
+                        AND (
+                          tde.telemetry_id IS NOT NULL
+                          OR (
+                            tde.evidence_payload IS NOT NULL
+                            AND jsonb_typeof(tde.evidence_payload) <> 'null'
+                            AND tde.evidence_payload <> '{}'::jsonb
+                            AND tde.evidence_payload <> '[]'::jsonb
+                          )
+                        )
+                  )
+            )
+            OR EXISTS (
+                SELECT 1
+                FROM analysis_runs ar
+                WHERE ar.id = a.analysis_run_id
+                  AND ar.workspace_id = a.workspace_id
+                  AND ar.response_payload IS NOT NULL
+                  AND jsonb_typeof(ar.response_payload) <> 'null'
+                  AND ar.response_payload <> '{}'::jsonb
+                  AND ar.response_payload <> '[]'::jsonb
+            )
+        )                                                  AS provable_by_non_chain
+) ev
 WHERE a.workspace_id = :ws::uuid
-  AND a.status IN ('open', 'acknowledged', 'investigating')
-  AND a.detection_event_id IS NULL
-  AND a.detection_id IS NULL;
+  AND a.status IN ('open', 'acknowledged', 'investigating');
 
 
 -- ---------------------------------------------------------------------------
 -- F. Is the integrity flag the ONLY thing holding the workspace at `limited`?
 -- ---------------------------------------------------------------------------
 -- The reason token is first-wins over SORTED contradiction flags, so
--- `alerts_without_detection_evidence` can mask other conditions. These are the
--- other contradiction counters the same rollup reads; all must be 0 for the
--- workspace to reach `live` once the alerts are resolved.
+-- `alerts_without_detection_evidence` can mask other conditions, and ANY single
+-- contradiction flag keeps monitoring_status at `limited`. These are the other
+-- contradiction counters the same rollup reads; all must be 0 for the workspace
+-- to reach `live` once the alerts are provable.
 SELECT
     (SELECT COUNT(*) FROM incidents i
       WHERE i.workspace_id = :ws::uuid
@@ -435,15 +682,22 @@ SELECT
 --
 -- Resolving these rows is a product decision, not a schema repair:
 --   * classification A / D — repair the linkage or resolve the alert through the
---     normal workflow. services/api/scripts/repair_live_rpc_proof_chain.py
---     already archives orphan open proof-chain alerts and rebuilds both chains;
---     run it with DRY_RUN=1 first and review its plan.
+--     normal workflow.
 --   * classification B / C — close the alerts through the product (status
 --     'resolved'), which clears the flag truthfully. Do NOT delete rows and do
 --     NOT rewrite detection linkage to manufacture evidence that never existed;
 --     that would put fabricated proof in front of a customer.
---   * classification E — do not touch the data. Narrow the counter in
---     monitoring_runner.py to the lanes that are supposed to carry chain
---     detection evidence, and extend
---     services/api/tests/test_monitoring_status_evidence_integrity_separation.py.
+--   * classification E — do not touch the data. The counter in
+--     monitoring_runner.py already recognizes all five evidence homes
+--     (OPEN_ALERT_EVIDENCE_PROVABLE_SQL); a row landing here means the evidence
+--     is real and the alert is provable.
+--
+-- ON services/api/scripts/repair_live_rpc_proof_chain.py — READ BEFORE RUNNING.
+--   Its orphan predicate is the CHAIN half only, and even narrower than Block A's
+--   chain lanes: it keys on `alerts.detection_id` alone (ignoring
+--   detections.linked_alert_id) and requires a detection_evidence row (ignoring
+--   raw_evidence_json). Against the corrected definition it therefore resolves
+--   alerts that ARE provable — every asset-risk, threat-detection and
+--   analysis-run alert included. Run Block B first and only act on rows Block B
+--   actually returns; use DRY_RUN=1 and review its plan.
 -- ============================================================================
