@@ -7693,7 +7693,92 @@ def patch_incident(incident_id: str, payload: dict[str, Any], request: Request) 
         return {'id': incident_id, 'status': next_status}
 
 
-def get_monitoring_health() -> dict[str, Any]:
+# Watcher-source degradation of a workspace's OWN targets. Kept as a named
+# constant so the workspace-scoped producer and the primary/fallback demotion
+# below can never drift apart on the spelling.
+TARGET_SOURCE_DEGRADED_REASON = 'target_source_degraded'
+# The same fact, named as what it actually is when the realtime Stream is
+# demonstrably carrying detection: a FALLBACK-leg warning, not a primary
+# Stream-health failure.
+FALLBACK_TARGET_SOURCE_DEGRADED_REASON = 'fallback_rpc_target_source_degraded_realtime_stream_healthy'
+
+
+def target_source_health_snapshot(
+    connection: Any,
+    *,
+    workspace_id: str | None,
+    operator_global_scope: bool = False,
+) -> dict[str, Any]:
+    """Watcher-source health counts for the monitorable targets of ONE workspace.
+
+    Target watcher state is per-tenant data. Aggregating it across every workspace
+    let a single degraded target in workspace B raise
+    ``degraded_reason='target_source_degraded'`` for workspace A, so A's runtime
+    status inherited B's degradation — confirmed cross-tenant status contamination.
+
+    This helper therefore never guesses a scope:
+
+      * ``workspace_id`` set  -> counts are restricted to that workspace's targets.
+      * ``workspace_id`` unset -> FAIL CLOSED. No query runs at all, the counts are
+        reported as unavailable (``None``), and no degraded reason is produced.
+        It must never fall back to an all-workspace aggregation, because answering
+        a tenant question from another tenant's rows is the bug itself.
+      * ``operator_global_scope`` is the ONE explicit, opt-in exception, reserved for
+        operator surfaces (``GET /ops/monitoring/health``) that are asking about the
+        whole deployment rather than about a workspace. It is never reachable from a
+        customer-facing runtime-status calculation.
+    """
+    scope_id = str(workspace_id or '').strip()
+    if not scope_id:
+        if not operator_global_scope:
+            return {
+                'workspace_id': None,
+                'scope': 'unresolved_workspace',
+                'counts_available': False,
+                'degraded_targets': None,
+                'active_targets': None,
+                'degraded_reason': None,
+            }
+        row = connection.execute(
+            '''
+            SELECT
+                COALESCE(SUM(CASE WHEN watcher_source_status = 'degraded' THEN 1 ELSE 0 END), 0) AS degraded_targets,
+                COALESCE(SUM(CASE WHEN watcher_source_status = 'active' THEN 1 ELSE 0 END), 0) AS active_targets
+            FROM targets
+            WHERE deleted_at IS NULL AND monitoring_enabled = TRUE AND enabled = TRUE AND is_active = TRUE
+            '''
+        ).fetchone()
+        scope = 'operator_global'
+    else:
+        row = connection.execute(
+            '''
+            SELECT
+                COALESCE(SUM(CASE WHEN watcher_source_status = 'degraded' THEN 1 ELSE 0 END), 0) AS degraded_targets,
+                COALESCE(SUM(CASE WHEN watcher_source_status = 'active' THEN 1 ELSE 0 END), 0) AS active_targets
+            FROM targets
+            WHERE workspace_id = %s
+              AND deleted_at IS NULL AND monitoring_enabled = TRUE AND enabled = TRUE AND is_active = TRUE
+            ''',
+            (scope_id,),
+        ).fetchone()
+        scope = 'workspace'
+    stats = _json_safe_value(dict(row or {}))
+    degraded_targets = int(stats.get('degraded_targets') or 0)
+    return {
+        'workspace_id': scope_id or None,
+        'scope': scope,
+        'counts_available': True,
+        'degraded_targets': degraded_targets,
+        'active_targets': int(stats.get('active_targets') or 0),
+        'degraded_reason': TARGET_SOURCE_DEGRADED_REASON if degraded_targets > 0 else None,
+    }
+
+
+def get_monitoring_health(
+    workspace_id: str | None = None,
+    *,
+    operator_global_scope: bool = False,
+) -> dict[str, Any]:
     if not live_mode_enabled():
         runtime = monitoring_ingestion_runtime()
         degraded_reason = str(runtime.get('reason')) if runtime.get('degraded') else None
@@ -7786,18 +7871,26 @@ def get_monitoring_health() -> dict[str, Any]:
             LIMIT 1
             '''
         ).fetchone()
+        # Chain-progress aggregation only. The watcher-source TARGET HEALTH counts that
+        # used to ride along in this same unscoped aggregate now come from
+        # target_source_health_snapshot(), which is workspace-scoped and fails closed —
+        # see the tenant-isolation note there.
         checkpoint_stats = connection.execute(
             '''
             SELECT
                 MAX(watcher_last_observed_block) AS latest_processed_block,
                 MAX(watcher_checkpoint_lag_blocks) AS max_checkpoint_lag_blocks,
-                MAX(monitoring_checkpoint_at) AS latest_checkpoint_at,
-                COALESCE(SUM(CASE WHEN watcher_source_status = 'degraded' THEN 1 ELSE 0 END), 0) AS degraded_targets,
-                COALESCE(SUM(CASE WHEN watcher_source_status = 'active' THEN 1 ELSE 0 END), 0) AS active_targets
+                MAX(monitoring_checkpoint_at) AS latest_checkpoint_at
             FROM targets
             WHERE deleted_at IS NULL AND monitoring_enabled = TRUE AND enabled = TRUE AND is_active = TRUE
             '''
         ).fetchone()
+        target_source_health = target_source_health_snapshot(
+            connection,
+            workspace_id=workspace_id,
+            operator_global_scope=operator_global_scope,
+        )
+        target_source_degraded_reason = target_source_health.get('degraded_reason')
         last_15m_events = connection.execute(
             '''
             SELECT COUNT(*) AS event_count
@@ -7806,6 +7899,10 @@ def get_monitoring_health() -> dict[str, Any]:
             '''
         ).fetchone()
         stats = _json_safe_value(dict(checkpoint_stats or {}))
+        normalized['target_source_health'] = target_source_health
+        normalized['target_health_scope'] = target_source_health.get('scope')
+        normalized['degraded_targets'] = target_source_health.get('degraded_targets')
+        normalized['active_targets'] = target_source_health.get('active_targets')
         latest_checkpoint_at = _parse_ts(stats.get('latest_checkpoint_at'))
         heartbeat_at = _parse_ts(normalized.get('last_heartbeat_at') or normalized.get('last_cycle_at'))
         heartbeat_age_seconds = int((utc_now() - heartbeat_at).total_seconds()) if heartbeat_at else None
@@ -7838,11 +7935,11 @@ def get_monitoring_health() -> dict[str, Any]:
                 normalized['degraded'] = True
                 normalized['degraded_reason'] = watcher.get('degraded_reason') or runtime.get('reason') or 'watcher_degraded'
             else:
-                normalized['degraded_reason'] = runtime.get('reason') if runtime.get('degraded') else ('target_source_degraded' if int(stats.get('degraded_targets') or 0) > 0 else None)
+                normalized['degraded_reason'] = runtime.get('reason') if runtime.get('degraded') else target_source_degraded_reason
         else:
             # Realtime disabled (or no watcher row): stable RPC polling owns the source
             # status. Do not let a stale realtime watcher row mark the source degraded.
-            normalized['degraded_reason'] = runtime.get('reason') if runtime.get('degraded') else ('target_source_degraded' if int(stats.get('degraded_targets') or 0) > 0 else None)
+            normalized['degraded_reason'] = runtime.get('reason') if runtime.get('degraded') else target_source_degraded_reason
         normalized['mode'] = runtime.get('mode')
         normalized['ingestion_live_confirmed'] = bool(
             runtime.get('mode') in {'live', 'hybrid'}
@@ -8533,6 +8630,18 @@ def monitoring_runtime_status(
         fallback_provider_reachable = False
         fallback_provider_degraded_or_unreachable = True
         invalid_enabled_targets_present = False
+        # Workspace-scoped watcher-source target health. Defaulted to the fail-closed
+        # "no resolved workspace" shape so every exit path has it and no path can read
+        # another tenant's target health.
+        workspace_target_source_health: dict[str, Any] = {
+            'workspace_id': None,
+            'scope': 'unresolved_workspace',
+            'counts_available': False,
+            'degraded_targets': None,
+            'active_targets': None,
+            'degraded_reason': None,
+        }
+        workspace_target_source_degraded_reason: str | None = None
         query_failure_detected = False
         schema_drift_detected = False
         db_persistence_available = True
@@ -9263,6 +9372,26 @@ def monitoring_runtime_status(
                     error_code='runtime_optional_query_failed',
                 )
                 broken_targets = {'c': 0}
+            _mark_query_checkpoint('count_workspace_target_source_health')
+            try:
+                # Workspace-scoped watcher-source health. get_monitoring_health() no longer
+                # answers this question for a tenant (it fails closed without a workspace),
+                # so the runtime status reads it here, AFTER the authoritative workspace
+                # context has been resolved from the request — never from a raw header.
+                workspace_target_source_health = target_source_health_snapshot(
+                    connection, workspace_id=workspace_id
+                )
+            except Exception as exc:
+                _record_optional_query_failure(
+                    exc=exc,
+                    checkpoint_label='count_workspace_target_source_health',
+                    impacted_fields=['degraded_targets'],
+                    reason_code='optional_table_unavailable',
+                    error_code='runtime_optional_query_failed',
+                )
+                workspace_target_source_health = target_source_health_snapshot(
+                    connection, workspace_id=None
+                )
             _mark_query_checkpoint('count_dead_lettered_targets')
             try:
                 dead_lettered_targets = connection.execute(
@@ -9922,6 +10051,14 @@ def monitoring_runtime_status(
         else:
             monitoring_status = 'active'
         degraded_reason = health.get('degraded_reason')
+        # Watcher-source target degradation is a WORKSPACE fact, so it is folded in from
+        # this workspace's own targets — get_monitoring_health() is deliberately blind to
+        # it for tenant callers. Fail-closed by construction: realtime_ingestion is still
+        # the "no evidence" default here, so a workspace whose own target is degraded
+        # degrades exactly as before. Only after realtime health is actually derived (see
+        # the primary/fallback demotion below) can this stop being the PRIMARY reason.
+        workspace_target_source_degraded_reason = workspace_target_source_health.get('degraded_reason')
+        degraded_reason = degraded_reason or workspace_target_source_degraded_reason
         if not runner_alive and stale_heartbeat and enabled_system_count > 0:
             logger.info(
                 'live_downgrade_reason workspace_id=%s reason=live_worker_not_running runner_alive=%s stale_heartbeat=%s enabled_systems=%s',
@@ -10696,7 +10833,35 @@ def monitoring_runtime_status(
             realtime_ingestion.live_security_telemetry_fresh,
             fallback_provider_degraded_or_unreachable,
         )
+        # ---- PRIMARY vs FALLBACK: watcher-source target degradation ----------------
+        # 'target_source_degraded' records that the FALLBACK RPC watcher marked one of
+        # THIS workspace's own targets degraded. provider_degraded_or_unreachable above
+        # already refuses to call the provider unreachable for a fallback-leg fault while
+        # the Stream is delivering — but the status REASON had no such distinction, so the
+        # same fallback fault still surfaced as the workspace's primary status reason, i.e.
+        # as if live Stream health had failed. Re-name it to a fallback-scoped reason once
+        # the realtime Stream is demonstrably carrying detection.
+        #
+        # The warning is NOT hidden and no status field is forced green: the runtime status
+        # computed above stays degraded, fallback_rpc.degraded_or_unreachable stays true, a
+        # named downgrade token is emitted below, and the degraded target counts stay in the
+        # payload. Fail-closed: with no healthy + fresh realtime evidence (including the
+        # 'no evidence' default) the reason is left exactly as it was.
+        realtime_primary_live = bool(
+            realtime_ingestion.healthy
+            and realtime_ingestion.live_evidence_fresh
+            and coverage_fresh
+        )
+        target_source_degraded_is_fallback_only = bool(
+            workspace_target_source_degraded_reason
+            and degraded_reason == TARGET_SOURCE_DEGRADED_REASON
+            and realtime_primary_live
+        )
+        if target_source_degraded_is_fallback_only:
+            degraded_reason = FALLBACK_TARGET_SOURCE_DEGRADED_REASON
         downgrade_reason_tokens: list[str] = []
+        if target_source_degraded_is_fallback_only:
+            downgrade_reason_tokens.append(FALLBACK_TARGET_SOURCE_DEGRADED_REASON)
         if not coverage_fresh:
             downgrade_reason_tokens.append('no_fresh_coverage_telemetry')
         if not evidence_source_live:
@@ -11034,6 +11199,13 @@ def monitoring_runtime_status(
             'poll_interval_seconds': int(canonical_polling_interval_seconds()),
             'stale_threshold_seconds': int(_stable_poll_stale_threshold),
             'last_poll_at': last_poll_at.isoformat() if last_poll_at else None,
+            # Watcher-source target degradation, counted from THIS workspace's targets
+            # only. Reported here rather than hidden, so demoting it out of the primary
+            # status reason never makes it invisible. 'degraded_targets' is None (not 0)
+            # when the workspace could not be resolved — unknown is not "none".
+            'target_source_degraded': bool(workspace_target_source_degraded_reason),
+            'degraded_targets': workspace_target_source_health.get('degraded_targets'),
+            'target_health_scope': workspace_target_source_health.get('scope'),
         }
         summary['coverage_receipts_workspace_count'] = int(live_coverage_receipts_persisted_count)
         summary['coverage_receipts_last_at'] = live_coverage_receipts_workspace_latest.isoformat() if live_coverage_receipts_workspace_latest else None
