@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 PROVIDER_UNAVAILABLE_REASON = 'provider_unavailable'
@@ -389,3 +389,188 @@ def derive_realtime_ingestion_health(
     else:
         healthy_reason = 'stream_near_chain_tip'
     return _result(REALTIME_INGESTION_HEALTHY, True, healthy_reason)
+
+
+# ---------------------------------------------------------------------------
+# Continuity event-ingestion evidence.
+#
+# The continuity SLO asks ONE question: is this workspace's live monitoring
+# ingestion still flowing right now? Three workspace-scoped canonical facts can
+# answer it, produced by independent lanes running at different cadences:
+#
+#   * matched_security_event   — the freshest MATCHED on-chain event
+#                                (detection metadata ``last_real_event_at``).
+#   * realtime_stream_*        — the QuickNode Stream lane, refreshing coverage
+#                                at half the live-lane stale window.
+#   * fallback_rpc_coverage    — the stable reconciliation RPC poll.
+#
+# The NEWEST TRUSTWORTHY fact is the truthful answer. Selecting with ``or``
+# precedence instead let an older matched-event timestamp mask newer coverage,
+# and left the freshest lane out of the selection entirely — so a workspace
+# genuinely carried by a healthy Stream still read as event_ingestion_stale and
+# then event_ingestion_offline as the slower fallback RPC timestamp aged out,
+# oscillating back to fresh on every fallback poll.
+#
+# Quiet wallets are the normal case, not an outage: a monitored wallet can
+# legitimately go hours or days without a matched transfer. Continuity measures
+# active monitoring/ingestion COVERAGE; it must never require a security event.
+#
+# Fail-closed in both directions: realtime evidence is admitted ONLY through the
+# already-validated :func:`derive_realtime_ingestion_health` verdict (streams
+# enabled, lane live, checkpoint inside the canonical stale window, evidence
+# inside the freshness window). A stopped, stale, catching_up, degraded, failed
+# or checkpoint-expired lane contributes NOTHING here, so historical Stream rows
+# can never paint a dead lane green — and the fallback RPC timestamp becomes the
+# deciding fact again exactly when the Stream stops proving itself.
+# ---------------------------------------------------------------------------
+
+CONTINUITY_EVENT_SOURCE_NONE = 'none'
+CONTINUITY_EVENT_SOURCE_MATCHED_SECURITY_EVENT = 'matched_security_event'
+CONTINUITY_EVENT_SOURCE_REALTIME_SECURITY_TELEMETRY = 'realtime_stream_security_telemetry'
+CONTINUITY_EVENT_SOURCE_REALTIME_COVERAGE = 'realtime_stream_coverage'
+CONTINUITY_EVENT_SOURCE_FALLBACK_RPC_COVERAGE = 'fallback_rpc_coverage'
+
+CONTINUITY_EVENT_SOURCES = {
+    CONTINUITY_EVENT_SOURCE_NONE,
+    CONTINUITY_EVENT_SOURCE_MATCHED_SECURITY_EVENT,
+    CONTINUITY_EVENT_SOURCE_REALTIME_SECURITY_TELEMETRY,
+    CONTINUITY_EVENT_SOURCE_REALTIME_COVERAGE,
+    CONTINUITY_EVENT_SOURCE_FALLBACK_RPC_COVERAGE,
+}
+
+REALTIME_EVIDENCE_REJECTED_NO_VERDICT = 'realtime_health_unknown'
+REALTIME_EVIDENCE_REJECTED_NO_ROWS = 'no_realtime_rows'
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Normalize a candidate timestamp so candidates are always comparable.
+
+    A naive timestamp is read as UTC — the storage convention everywhere in this
+    codebase. Without this, mixing a naive and an aware candidate raises inside
+    the selection (and later inside ``now - ts``) instead of producing a verdict.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def resolve_realtime_live_evidence_at(
+    *,
+    realtime_ingestion: RealtimeIngestionHealth | None,
+    last_security_telemetry_at: datetime | None,
+    last_coverage_at: datetime | None,
+) -> datetime | None:
+    """Newest realtime Stream evidence admissible as CURRENT live monitoring.
+
+    Both realtime evidence kinds count — a matched wallet transfer (security
+    telemetry) and a healthy near-tip block evaluated against the monitored
+    target (coverage) — but ONLY through the freshness flags on the canonical
+    :class:`RealtimeIngestionHealth` verdict, which are already cleared unless
+    the realtime lane itself is healthy. ``None`` means "no admissible realtime
+    evidence", never "healthy".
+    """
+    if realtime_ingestion is None:
+        return None
+    candidates = [
+        ts
+        for ts, fresh in (
+            (_as_utc(last_security_telemetry_at), realtime_ingestion.live_security_telemetry_fresh),
+            (_as_utc(last_coverage_at), realtime_ingestion.live_coverage_fresh),
+        )
+        if fresh and ts is not None
+    ]
+    return max(candidates) if candidates else None
+
+
+@dataclass(frozen=True)
+class ContinuityEventEvidence:
+    """Which workspace-scoped fact answers "is ingestion still flowing?", and why."""
+
+    last_event_at: datetime | None
+    source: str
+    matched_security_event_at: datetime | None
+    fallback_rpc_coverage_at: datetime | None
+    realtime_live_evidence_at: datetime | None
+    realtime_admitted: bool
+    realtime_rejected_reason: str | None
+
+
+def derive_continuity_event_evidence(
+    *,
+    recent_last_real_event_at: datetime | None,
+    canonical_last_telemetry_at: datetime | None,
+    realtime_ingestion: RealtimeIngestionHealth | None = None,
+    realtime_last_security_telemetry_at: datetime | None = None,
+    realtime_last_coverage_at: datetime | None = None,
+) -> ContinuityEventEvidence:
+    """Select the newest trustworthy live-monitoring timestamp for the continuity SLO.
+
+    Newest-evidence semantics, NOT ``or`` precedence: whichever admissible lane
+    proved live monitoring most recently decides, and the others only fill in
+    when it is absent. Realtime candidates are filtered through
+    :func:`resolve_realtime_live_evidence_at` first, so an unhealthy Stream is
+    simply absent from the selection and the fallback RPC timestamp decides —
+    fail-closed degradation is preserved exactly as before.
+    """
+    matched_at = _as_utc(recent_last_real_event_at)
+    fallback_at = _as_utc(canonical_last_telemetry_at)
+    realtime_security_at = _as_utc(realtime_last_security_telemetry_at)
+    realtime_coverage_at = _as_utc(realtime_last_coverage_at)
+    admitted_security_at = (
+        realtime_security_at
+        if realtime_ingestion is not None and realtime_ingestion.live_security_telemetry_fresh
+        else None
+    )
+    admitted_coverage_at = (
+        realtime_coverage_at
+        if realtime_ingestion is not None and realtime_ingestion.live_coverage_fresh
+        else None
+    )
+    realtime_live_evidence_at = resolve_realtime_live_evidence_at(
+        realtime_ingestion=realtime_ingestion,
+        last_security_telemetry_at=realtime_security_at,
+        last_coverage_at=realtime_coverage_at,
+    )
+    if realtime_live_evidence_at is not None:
+        realtime_rejected_reason = None
+    elif realtime_ingestion is None:
+        realtime_rejected_reason = REALTIME_EVIDENCE_REJECTED_NO_VERDICT
+    elif realtime_security_at is None and realtime_coverage_at is None:
+        realtime_rejected_reason = REALTIME_EVIDENCE_REJECTED_NO_ROWS
+    else:
+        # Rows exist but the canonical verdict refused them — report the verdict's
+        # own reason so the rejection is never anonymous.
+        realtime_rejected_reason = str(realtime_ingestion.reason or '').strip() or None
+
+    # Ranked so an exact timestamp tie names the strongest evidence kind. Ranking
+    # NEVER overrides recency: the newest timestamp always wins first.
+    ranked: list[tuple[datetime | None, str]] = [
+        (matched_at, CONTINUITY_EVENT_SOURCE_MATCHED_SECURITY_EVENT),
+        (admitted_security_at, CONTINUITY_EVENT_SOURCE_REALTIME_SECURITY_TELEMETRY),
+        (admitted_coverage_at, CONTINUITY_EVENT_SOURCE_REALTIME_COVERAGE),
+        (fallback_at, CONTINUITY_EVENT_SOURCE_FALLBACK_RPC_COVERAGE),
+    ]
+    present = [(ts, source) for ts, source in ranked if ts is not None]
+    if not present:
+        return ContinuityEventEvidence(
+            last_event_at=None,
+            source=CONTINUITY_EVENT_SOURCE_NONE,
+            matched_security_event_at=matched_at,
+            fallback_rpc_coverage_at=fallback_at,
+            realtime_live_evidence_at=None,
+            realtime_admitted=False,
+            realtime_rejected_reason=realtime_rejected_reason,
+        )
+    newest_at = max(ts for ts, _ in present)
+    newest_source = next(source for ts, source in present if ts == newest_at)
+    return ContinuityEventEvidence(
+        last_event_at=newest_at,
+        source=newest_source,
+        matched_security_event_at=matched_at,
+        fallback_rpc_coverage_at=fallback_at,
+        realtime_live_evidence_at=realtime_live_evidence_at,
+        realtime_admitted=realtime_live_evidence_at is not None,
+        realtime_rejected_reason=realtime_rejected_reason,
+    )
