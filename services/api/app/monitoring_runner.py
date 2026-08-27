@@ -30,8 +30,10 @@ from services.api.app.evm_activity_provider import (
     rpc_provider_backoff_status,
 )
 from services.api.app.monitoring_truth import (
+    derive_continuity_event_evidence,
     derive_realtime_ingestion_health,
     derive_reporting_sub_counts,
+    resolve_realtime_live_evidence_at,
     should_run_historical_backfill,
     ui_evidence_state,
     ui_truthfulness_state,
@@ -126,6 +128,33 @@ MONITOR_POLL_INTERVAL_SECONDS = int(os.getenv('MONITOR_POLL_INTERVAL_SECONDS', '
 # webhook within this window PROVES the stream is alive; past it the Telemetry header
 # fails closed to "Idle" rather than a false "Active". Overridable for tuning.
 QUICKNODE_STREAM_STALE_SECONDS = max(60, int(os.getenv('QUICKNODE_STREAM_STALE_SECONDS', '300')))
+
+
+def canonical_runtime_telemetry_window_seconds(max_enabled_interval_seconds: int | None = None) -> int:
+    """The single canonical runtime telemetry freshness window (seconds).
+
+    ONE definition for every caller so the window a status is judged against can
+    never drift from the window it is reported with. The base floor is the same
+    ``max(300, MONITOR_POLL_INTERVAL_SECONDS * 6)`` the runtime summary has always
+    used; when the workspace's enabled monitoring configs poll more slowly than
+    that, the window widens to that configured cadence plus the poll-scheduling
+    slack, so a workspace configured for a long interval is never judged stale for
+    honouring its own configuration.
+
+    The window is DERIVED, never assumed: callers (tests included) must resolve it
+    through this function rather than hard-coding whatever value production happens
+    to report today.
+    """
+    base = max(300, MONITOR_POLL_INTERVAL_SECONDS * 6)
+    if max_enabled_interval_seconds is None:
+        return base
+    try:
+        configured = int(max_enabled_interval_seconds)
+    except (TypeError, ValueError):
+        return base
+    if configured <= 0:
+        return base
+    return max(base, configured + max(MONITOR_POLL_INTERVAL_SECONDS * 4, 60))
 
 
 def _min_monitoring_interval_seconds() -> int:
@@ -8411,7 +8440,7 @@ def monitoring_runtime_status(
                 linked_monitored_system_count=0,
                 persisted_enabled_config_count=0,
                 valid_target_system_link_count=0,
-                telemetry_window_seconds=max(300, MONITOR_POLL_INTERVAL_SECONDS * 6),
+                telemetry_window_seconds=canonical_runtime_telemetry_window_seconds(),
             )
             summary_reason_codes = list((summary.get('configuration_diagnostics') or {}).get('reason_codes') or [])
             if not summary_reason_codes and summary.get('configuration_reason'):
@@ -8491,7 +8520,7 @@ def monitoring_runtime_status(
         enabled_monitored_rows_count = 0
         healthy_enabled_target_ids: set[str] = set()
         healthy_enabled_target_asset_map: dict[str, str] = {}
-        telemetry_window_seconds = max(300, MONITOR_POLL_INTERVAL_SECONDS * 6)
+        telemetry_window_seconds = canonical_runtime_telemetry_window_seconds()
         live_coverage_receipts_by_system: dict[str, datetime] = {}
         live_coverage_receipts_workspace_latest: datetime | None = None
         live_coverage_receipts_persisted_count = 0
@@ -8500,6 +8529,8 @@ def monitoring_runtime_status(
         # derive_realtime_ingestion_health then reports no_evidence/disabled, never healthy.
         realtime_lane_payload: dict[str, Any] = {}
         realtime_stream_last_telemetry_at: datetime | None = None
+        realtime_stream_last_coverage_at: datetime | None = None
+        realtime_last_live_evidence_at: datetime | None = None
         realtime_ingestion = derive_realtime_ingestion_health(
             streams_enabled=realtime_streams_enabled(),
             lane_state=None,
@@ -9811,7 +9842,7 @@ def monitoring_runtime_status(
             max_enabled_interval_seconds = max(enabled_monitoring_intervals)
             telemetry_window_seconds = max(
                 telemetry_window_seconds,
-                max_enabled_interval_seconds + max(MONITOR_POLL_INTERVAL_SECONDS * 4, 60),
+                canonical_runtime_telemetry_window_seconds(max_enabled_interval_seconds),
             )
             logger.info(
                 'monitoring_runtime_telemetry_window workspace_id=%s telemetry_window_seconds=%s max_enabled_interval_seconds=%s',
@@ -10206,15 +10237,10 @@ def monitoring_runtime_status(
                     # is healthy (derive_realtime_ingestion_health clears both freshness
                     # flags otherwise), so a stopped or far-behind stream can never
                     # refresh coverage.
-                    realtime_live_evidence_candidates = [
-                        ts for ts, fresh in (
-                            (realtime_stream_last_telemetry_at, realtime_ingestion.live_security_telemetry_fresh),
-                            (realtime_stream_last_coverage_at, realtime_ingestion.live_coverage_fresh),
-                        )
-                        if fresh and ts is not None
-                    ]
-                    realtime_last_live_evidence_at = (
-                        max(realtime_live_evidence_candidates) if realtime_live_evidence_candidates else None
+                    realtime_last_live_evidence_at = resolve_realtime_live_evidence_at(
+                        realtime_ingestion=realtime_ingestion,
+                        last_security_telemetry_at=realtime_stream_last_telemetry_at,
+                        last_coverage_at=realtime_stream_last_coverage_at,
                     )
                     if realtime_last_live_evidence_at is not None:
                         if (
@@ -10877,6 +10903,30 @@ def monitoring_runtime_status(
             runtime_status_reason = 'coverage_only_persistent_no_evidence'
         if workspace_configured and runtime_error_code and not runtime_status_reason:
             runtime_status_reason = 'runtime_status_degraded:partial_query_failure'
+        # This workspace's OWN target-level blockage fails the summary closed on its own.
+        # A dead-lettered target, an enabled target with no valid asset link, or a target
+        # this workspace's watcher marked degraded is a target that is NOT being monitored
+        # — so the workspace can never carry a green label while one exists, no matter how
+        # healthy the ingestion lanes are. `status`/`monitoring_status` already refuse to
+        # call this healthy; before, runtime_status_summary only agreed by accident,
+        # because the continuity SLO happened to fail on the same workspaces. Now that
+        # continuity reads the live Stream lane truthfully, this states the rule directly
+        # instead of depending on another check to notice.
+        #
+        # Workspace-scoped by construction: every count here is read from THIS workspace's
+        # own rows (broken/dead-lettered via the target workspace filter, watcher-source
+        # health via the workspace-scoped snapshot), so another tenant's degraded target
+        # still cannot degrade this one. The REASON keeps whatever name the primary vs
+        # fallback demotion already gave it — this refuses the green label, it does not
+        # re-blame the realtime lane.
+        workspace_own_targets_blocked = bool(
+            dead_lettered_count > 0
+            or int((broken_targets or {}).get('c') or 0) > 0
+            or workspace_target_source_degraded_reason
+        )
+        if workspace_configured and workspace_own_targets_blocked:
+            runtime_status_summary = 'degraded'
+            runtime_status_reason = runtime_status_reason or degraded_reason or 'targets_blocked'
         # Promote 'healthy' → 'live' once the full telemetry → detection → alert →
         # incident → response_action → evidence chain is verified with no proof-chain
         # gaps and no orphan alerts/incidents without detection linkage.
@@ -11107,11 +11157,74 @@ def monitoring_runtime_status(
             summary.get('runtime_setup_chain'),
             ingestion_stale=bool(stale_heartbeat),
         )
+        # Continuity event-ingestion evidence: the NEWEST trustworthy workspace-scoped
+        # live-monitoring timestamp decides, across all three lanes that can prove
+        # ingestion is still flowing (canonical selection lives in monitoring_truth).
+        #
+        # This replaced `recent_last_real_event_at or canonical_last_telemetry_at`, which
+        # was wrong twice over. `or` precedence let an OLDER matched-security-event
+        # timestamp mask newer coverage; and the realtime QuickNode Stream lane — the
+        # fastest-refreshing evidence this workspace has — was not a candidate at all, so
+        # a workspace genuinely carried by a healthy Stream was judged solely on the much
+        # slower fallback RPC poll and read event_ingestion_stale, then
+        # event_ingestion_offline, as that timestamp aged out between polls.
+        #
         # canonical_last_telemetry_at is already filtered to live telemetry_events in SQL,
         # so it is safe to use as the event-ingestion fallback regardless of evidence_source.
         # Gating on evidence_source == 'live' creates a circular dependency: reporting_systems
         # transiently zero → evidence_source='replay' → last_event_at=None → event_ingestion_missing.
-        _continuity_last_event_at = recent_last_real_event_at or canonical_last_telemetry_at
+        #
+        # Fail-closed is preserved, not weakened: realtime evidence enters ONLY through the
+        # already-validated realtime_ingestion verdict (streams enabled, lane live,
+        # checkpoint fresh, evidence inside the window). A stopped/stale/catching_up/
+        # degraded/failed lane contributes nothing, so the fallback RPC timestamp decides
+        # again the moment the Stream stops proving itself. Streams being ENABLED never
+        # implies healthy.
+        _continuity_event_evidence = derive_continuity_event_evidence(
+            recent_last_real_event_at=recent_last_real_event_at,
+            canonical_last_telemetry_at=canonical_last_telemetry_at,
+            realtime_ingestion=realtime_ingestion,
+            realtime_last_security_telemetry_at=realtime_stream_last_telemetry_at,
+            realtime_last_coverage_at=realtime_stream_last_coverage_at,
+        )
+        _continuity_last_event_at = _continuity_event_evidence.last_event_at
+        summary['continuity_event_evidence'] = {
+            'source': _continuity_event_evidence.source,
+            'last_event_at': (
+                _continuity_last_event_at.isoformat() if _continuity_last_event_at else None
+            ),
+            'matched_security_event_at': (
+                _continuity_event_evidence.matched_security_event_at.isoformat()
+                if _continuity_event_evidence.matched_security_event_at
+                else None
+            ),
+            'fallback_rpc_coverage_at': (
+                _continuity_event_evidence.fallback_rpc_coverage_at.isoformat()
+                if _continuity_event_evidence.fallback_rpc_coverage_at
+                else None
+            ),
+            'realtime_live_evidence_at': (
+                _continuity_event_evidence.realtime_live_evidence_at.isoformat()
+                if _continuity_event_evidence.realtime_live_evidence_at
+                else None
+            ),
+            'realtime_admitted': bool(_continuity_event_evidence.realtime_admitted),
+            'realtime_rejected_reason': _continuity_event_evidence.realtime_rejected_reason,
+        }
+        logger.info(
+            'monitoring_runtime_continuity_event_evidence workspace_id=%s source=%s last_event_at=%s '
+            'matched_security_event_at=%s fallback_rpc_coverage_at=%s realtime_live_evidence_at=%s '
+            'realtime_admitted=%s realtime_rejected_reason=%s telemetry_window_seconds=%s',
+            workspace_id,
+            _continuity_event_evidence.source,
+            _continuity_last_event_at,
+            _continuity_event_evidence.matched_security_event_at,
+            _continuity_event_evidence.fallback_rpc_coverage_at,
+            _continuity_event_evidence.realtime_live_evidence_at,
+            _continuity_event_evidence.realtime_admitted,
+            _continuity_event_evidence.realtime_rejected_reason,
+            telemetry_window_seconds,
+        )
         _continuity_last_detection_at = detection_pipeline_checkpoint_at or canonical_last_detection_at
         continuity_evaluation = evaluate_workspace_monitoring_continuity(
             now=now,
