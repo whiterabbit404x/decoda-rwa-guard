@@ -566,6 +566,12 @@ DEFAULT_PRODUCTION_CORS_ORIGINS = [
 _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS = [
     'workspace_configured',
     'runtime_status',
+    # Canonical monitoring verdict: the workspace summary's normalized value
+    # ('live' / 'limited' / 'offline'), falling back to the runner's own decision
+    # ('active' / 'idle' / ...). Without it the web client had no monitoring status
+    # to read at all and defaulted every non-offline workspace to 'limited', which
+    # is what produced a permanent LIMITED COVERAGE banner on an active runtime.
+    'monitoring_status',
     'configured_systems',
     'reporting_systems',
     'protected_assets',
@@ -589,6 +595,9 @@ _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS = [
     'next_required_action',
     'worker_status',
     'realtime_enabled',
+    # Canonical QuickNode Stream ingestion facts (lane health + live evidence
+    # freshness) so the UI reads realtime health from the primary realtime path.
+    'realtime_ingestion',
     'last_stable_poll_at',
     'last_rpc_polling_heartbeat_at',
     'stable_poll_age_seconds',
@@ -3101,6 +3110,18 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
         canonical_runtime_summary['continuity_breach_reasons'] = list(
             summary_payload.get('continuity_breach_reasons') or []
         )
+        # Canonical realtime-ingestion facts (QuickNode Stream lane health, live
+        # coverage vs. live security-telemetry freshness) passed through verbatim from
+        # the runtime builder. Serialization only: nothing is derived, downgraded, or
+        # upgraded here. Customer-facing surfaces need these facts to read realtime
+        # health from the primary QuickNode Streams path instead of inferring it from
+        # the intentionally-disabled legacy WebSocket worker.
+        _realtime_ingestion_facts = payload.get('realtime_ingestion')
+        if not isinstance(_realtime_ingestion_facts, dict):
+            _realtime_ingestion_facts = summary_payload.get('realtime_ingestion')
+        if isinstance(_realtime_ingestion_facts, dict):
+            canonical_runtime['realtime_ingestion'] = dict(_realtime_ingestion_facts)
+            canonical_runtime_summary['realtime_ingestion'] = dict(_realtime_ingestion_facts)
         canonical_runtime['workspace_monitoring_summary'] = dict(canonical_runtime_summary)
         canonical_runtime['configuration_reason'] = payload.get('configuration_reason')
         canonical_runtime['configuration_reason_codes'] = list(payload.get('configuration_reason_codes') or [])

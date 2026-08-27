@@ -2,7 +2,14 @@
 
 import Link from 'next/link';
 
-import { hasLiveTelemetry, hasRealTelemetryBackedChain } from './workspace-monitoring-truth';
+import {
+  hasCanonicalLiveCoverage,
+  hasFaultedRealtimeLane,
+  hasFreshRealtimeLiveEvidence,
+  hasLiveTelemetry,
+  hasRealTelemetryBackedChain,
+} from './workspace-monitoring-truth';
+import { realtimeCoverageWarning, realtimeWorkerStatusLine } from './realtime-coverage-status';
 import { useRuntimeSummary } from './runtime-summary-context';
 import type { WorkspaceMonitoringTruth } from './workspace-monitoring-truth';
 
@@ -11,12 +18,22 @@ type BannerState = 'LIVE' | 'LIMITED_COVERAGE' | 'SETUP_REQUIRED' | 'OFFLINE';
 function deriveBannerState(truth: WorkspaceMonitoringTruth): BannerState {
   if (hasLiveTelemetry(truth) && hasRealTelemetryBackedChain(truth)) return 'LIVE';
   if (truth.db_failure_reason) return 'OFFLINE';
-  // Backend-authoritative live verdict: trust live_runtime_verified or a clean live runtime
-  // (no derived guard flags) when the API has not reported an error.
+  // Backend-authoritative live verdict: trust live_runtime_verified, a clean live
+  // runtime (no derived guard flags), or the canonical runtime-status verdict that
+  // monitoring is active with healthy realtime ingestion and fresh live evidence —
+  // when the API has not reported an error.
+  // A faulted primary realtime lane (Stream catching up, behind the tip, stalled or
+  // failing) is a genuine degraded condition, so it blocks the looser
+  // "runtime reads live" path — it must never be hidden behind a live status field.
+  const realtimeLaneFault = hasFaultedRealtimeLane(truth);
   if (
     truth.status_reason !== 'summary_unavailable' &&
     (truth.status_reason === 'live_runtime_verified' ||
-      (truth.runtime_status === 'live' && (truth.guard_flags ?? []).length === 0))
+      hasCanonicalLiveCoverage(truth) ||
+      (truth.runtime_status === 'live'
+        && (truth.guard_flags ?? []).length === 0
+        && (truth.contradiction_flags ?? []).length === 0
+        && !realtimeLaneFault))
   ) return 'LIVE';
   // Only show OFFLINE when the API returned a confirmed offline status — not when the
   // runtime-status call itself failed (status_reason === 'summary_unavailable').
@@ -44,6 +61,17 @@ function compactReason(state: BannerState, truth: WorkspaceMonitoringTruth): str
     return 'Live telemetry is not connected yet.';
   }
   // LIMITED_COVERAGE
+  // The canonical realtime verdict outranks the summary freshness field: when the
+  // backend reports fresh live evidence on the primary realtime path, claiming
+  // "live telemetry is stale" would contradict it. The remaining coverage gap is
+  // still shown truthfully rather than hidden.
+  if (hasFreshRealtimeLiveEvidence(truth)) {
+    return 'Live coverage is current; monitoring coverage is still incomplete.';
+  }
+  // A non-healthy realtime lane names itself (catching up, behind the tip, stale
+  // checkpoint, disabled) instead of being reported as generic telemetry staleness.
+  const realtimeWarning = realtimeCoverageWarning(truth.realtime_ingestion);
+  if (realtimeWarning) return realtimeWarning;
   if (truth.telemetry_freshness === 'stale') return 'Live telemetry is stale.';
   if (truth.telemetry_freshness === 'fresh' && Boolean(truth.last_telemetry_at)) {
     return 'Live telemetry active; proof-chain enrichment incomplete.';
@@ -51,23 +79,17 @@ function compactReason(state: BannerState, truth: WorkspaceMonitoringTruth): str
   return 'Live monitoring coverage is degraded.';
 }
 
-// The separated worker status is the truthful explanation when the realtime
-// WebSocket worker is paused/rate-limited or the stable polling worker is not
-// active. Surfacing worker_status.headline here means the strip says
-// "Stable polling active. Realtime WebSocket paused." instead of a generic
-// "worker heartbeat is stale" — and never claims the heartbeat is stale unless
-// the stable polling worker actually is.
+// The separated worker status is the truthful explanation when the monitoring
+// workers are not both carrying coverage. The line is built from the canonical
+// worker headline with the legacy realtime WebSocket clause removed — WebSocket is
+// intentionally disabled, so "Realtime WebSocket paused." is not a customer-facing
+// monitoring fact — plus the canonical QuickNode Stream condition. It never claims
+// a WebSocket failure, and never claims the heartbeat is stale unless the stable
+// polling worker actually is.
 function workerStatusBannerLine(truth: WorkspaceMonitoringTruth): string | null {
   const ws = truth.worker_status;
-  if (!ws) return null;
-  const realtimeNotablyOff =
-    !ws.realtime.enabled ||
-    ws.realtime.state === 'paused' ||
-    ws.realtime.state === 'rate_limited' ||
-    ws.realtime.state === 'degraded' ||
-    ws.realtime.state === 'starting';
-  const stableNotActive = !ws.stable_polling.active;
-  return realtimeNotablyOff || stableNotActive ? ws.headline : null;
+  if (!ws && !truth.realtime_ingestion) return null;
+  return realtimeWorkerStatusLine(ws, truth.realtime_ingestion);
 }
 
 // Warning vs critical: an unreachable runtime/database is critical (red); a
@@ -88,6 +110,9 @@ function stateLabel(state: BannerState): string {
   if (state === 'SETUP_REQUIRED') return 'SETUP REQUIRED';
   return 'OFFLINE';
 }
+
+export { deriveBannerState, compactReason, workerStatusBannerLine, stateLabel };
+export type { BannerState };
 
 export default function WorkspaceMonitoringModeBanner({ apiUrl: _apiUrl }: { apiUrl: string | null }) {
   const { summary: truth, loading } = useRuntimeSummary();
