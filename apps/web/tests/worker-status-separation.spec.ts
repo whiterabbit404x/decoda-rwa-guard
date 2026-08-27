@@ -41,13 +41,18 @@ test('truth resolver reads worker_status and realtime_enabled from the top-level
 
 // --- Banner wording: uses separated worker status, not a generic heartbeat ---
 
-test('workspace banner surfaces the separated worker status headline', () => {
-  // The banner renders worker_status.headline (the truthful "Stable polling active.
-  // Realtime WebSocket paused." line) rather than inventing its own.
+test('workspace banner surfaces the separated worker status through the shared line builder', () => {
+  // The banner still renders the canonical separated worker status rather than
+  // inventing its own, but it goes through realtimeWorkerStatusLine so the legacy
+  // realtime WebSocket clause is stripped: WebSocket is intentionally disabled and
+  // QuickNode Streams is the primary realtime path.
   expect(modeBannerSource).toContain('worker_status');
-  expect(modeBannerSource).toContain('ws.headline');
+  expect(modeBannerSource).toContain('realtimeWorkerStatusLine');
   expect(modeBannerSource).toContain('workerStatusBannerLine');
   expect(modeBannerSource).toContain('data-testid="worker-status-line"');
+  const realtimeCoverageSource = read(appDir, 'realtime-coverage-status.ts');
+  expect(realtimeCoverageSource).toContain('worker?.headline');
+  expect(realtimeCoverageSource).toContain('stripLegacyWebSocketWording');
 });
 
 test('runtime banner does not show generic heartbeat-stale when stable polling is active', () => {

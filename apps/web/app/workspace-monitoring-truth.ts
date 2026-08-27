@@ -1,4 +1,10 @@
 import type { MonitoringRuntimeStatus, WorkspaceMonitoringSummary, WorkerStatusSummary } from './monitoring-status-contract';
+import {
+  realtimeLaneFaulted,
+  realtimeLiveCoverageFresh,
+  resolveRealtimeCoverageFacts,
+  type RealtimeCoverageFacts,
+} from './realtime-coverage-status';
 
 export type WorkspaceMonitoringTruth = {
   workspace_slug: string | null;
@@ -35,6 +41,9 @@ export type WorkspaceMonitoringTruth = {
   workflow_steps?: unknown[];
   worker_status?: WorkerStatusSummary | null;
   realtime_enabled?: boolean;
+  // Canonical QuickNode Stream ingestion verdict from the runtime-status response.
+  // null means the backend did not report one — never "healthy".
+  realtime_ingestion?: RealtimeCoverageFacts | null;
 };
 
 const DEFAULT_TRUTH: WorkspaceMonitoringTruth = {
@@ -70,6 +79,7 @@ const DEFAULT_TRUTH: WorkspaceMonitoringTruth = {
   workflow_steps: [],
   worker_status: null,
   realtime_enabled: false,
+  realtime_ingestion: null,
 };
 
 function asTrimmedString(value: unknown): string | null {
@@ -90,6 +100,13 @@ function asCount(value: unknown): number {
   return Number.isFinite(numeric) ? numeric : 0;
 }
 
+// The backend emits monitoring status in several canonical words: the runtime
+// runner decides 'active' / 'idle' / 'degraded' / 'offline', while the workspace
+// summary normalizer emits 'live' / 'limited' / 'offline' and older payloads
+// carried 'healthy'. Every one of them is canonical, so all are mapped here.
+// 'active' previously fell through to the unknown-value branch and reported
+// 'limited', which is what pinned an active runtime to a LIMITED COVERAGE banner.
+// 'idle' stays 'limited': idle means no fresh evidence, which is never "live".
 function normalizeMonitoringStatus(
   monitoringStatus: unknown,
   runtimeStatus: WorkspaceMonitoringTruth['runtime_status'],
@@ -98,10 +115,15 @@ function normalizeMonitoringStatus(
   if (normalized === 'live' || normalized === 'limited' || normalized === 'offline') {
     return normalized;
   }
-  if (normalized === 'healthy') {
+  if (normalized === 'healthy' || normalized === 'active') {
     return 'live';
   }
-  if (normalized === 'degraded' || normalized === 'not_configured' || normalized === 'unknown') {
+  if (
+    normalized === 'degraded'
+    || normalized === 'idle'
+    || normalized === 'not_configured'
+    || normalized === 'unknown'
+  ) {
     return 'limited';
   }
   return runtimeStatus === 'offline' ? 'offline' : 'limited';
@@ -114,11 +136,27 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
   const runtimeStatus = summary.runtime_status;
   const telemetryFreshness = summary.telemetry_freshness;
   const confidence = summary.confidence;
-  const resolvedStatusReason = asTrimmedString(summary.status_reason);
+  // The API substitutes the literal 'unknown' whenever the backend reported no
+  // status reason at all (`str(status_reason or 'unknown')`). That placeholder is
+  // the absence of a reason, not a degraded condition, so it must never be
+  // rendered to a customer as one.
+  const rawStatusReason = asTrimmedString(summary.status_reason);
+  const resolvedStatusReason = rawStatusReason && rawStatusReason.toLowerCase() === 'unknown'
+    ? null
+    : rawStatusReason;
   const dbFailureClassification = asTrimmedString((summary as Record<string, unknown>).db_failure_classification);
   const dbFailureReason = asTrimmedString((summary as Record<string, unknown>).db_failure_reason)
     ?? (resolvedStatusReason && resolvedStatusReason.toLowerCase().includes('database') ? resolvedStatusReason : null);
   const lastCoverageTelemetryAt = asTimestamp((summary as Record<string, unknown>).last_coverage_telemetry_at);
+  // Canonical QuickNode Stream verdict. When it proves realtime live evidence
+  // arrived inside the freshness window, a missing raw timestamp in the flat
+  // runtime payload is a serialization gap, not a runtime contradiction — so the
+  // timestamp guards below stop firing on it. Nothing else is suppressed: an
+  // unhealthy or absent verdict leaves every guard exactly as it was.
+  const realtimeIngestionFacts = resolveRealtimeCoverageFacts(
+    (summary as Record<string, unknown>).realtime_ingestion,
+  );
+  const realtimeCoverageProven = realtimeLiveCoverageFresh(realtimeIngestionFacts);
   const telemetryKind = null;
   const lastTelemetryAt = asTimestamp(summary.last_telemetry_at);
   const lastDetectionAt = asTimestamp(summary.last_detection_at);
@@ -135,7 +173,11 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
     : [];
   const workspaceConfigured = Boolean(summary.workspace_configured);
   const runtimeStatusLabel = String(runtimeStatus ?? '').trim().toLowerCase();
-  const normalizedRuntimeStatus = runtimeStatusLabel === 'healthy' ? 'live' : runtimeStatusLabel;
+  // 'healthy' and 'active' are the backend's own words for a running runtime
+  // (runtime_status_summary vs. the runner's capitalized decision).
+  const normalizedRuntimeStatus = runtimeStatusLabel === 'healthy' || runtimeStatusLabel === 'active'
+    ? 'live'
+    : runtimeStatusLabel;
   const rawMonitoringStatus = normalizeMonitoringStatus(
     summary.monitoring_status ?? (summary as Record<string, unknown>).monitoring_mode,
     normalizedRuntimeStatus as WorkspaceMonitoringTruth['runtime_status'],
@@ -152,9 +194,17 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
   const normalizedConfidence = confidence === 'high' || confidence === 'medium' || confidence === 'low' || confidence === 'unavailable'
     ? confidence
     : ((summary as Record<string, unknown>).confidence_status as WorkspaceMonitoringTruth['confidence']) ?? 'unavailable';
-  const normalizedEvidenceSource = evidenceSourceSummary === 'live' || evidenceSourceSummary === 'simulator' || evidenceSourceSummary === 'replay' || evidenceSourceSummary === 'none'
-    ? evidenceSourceSummary
-    : ((summary as Record<string, unknown>).evidence_source as WorkspaceMonitoringTruth['evidence_source_summary']) ?? 'none';
+  // The summary normalizer spells a live provider source 'live_provider'; the flat
+  // runtime payload spells the same fact 'live'. Both mean chosen_evidence_source=live.
+  const canonicalEvidenceSource = (value: unknown): WorkspaceMonitoringTruth['evidence_source_summary'] | null => {
+    const normalized = String(value ?? '').trim().toLowerCase();
+    if (normalized === 'live' || normalized === 'live_provider') return 'live';
+    if (normalized === 'simulator' || normalized === 'replay' || normalized === 'none') return normalized;
+    return null;
+  };
+  const normalizedEvidenceSource = canonicalEvidenceSource(evidenceSourceSummary)
+    ?? canonicalEvidenceSource((summary as Record<string, unknown>).evidence_source)
+    ?? 'none';
   const continuityStatusValue = asTrimmedString((summary as Record<string, unknown>).continuity_status);
   const continuityStatus = continuityStatusValue === 'continuous_live'
     || continuityStatusValue === 'continuous_no_evidence'
@@ -218,6 +268,7 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
   // Suppress when backend has explicitly verified live runtime (it may not return raw timestamps).
   if (
     resolvedStatusReason !== 'live_runtime_verified' &&
+    !realtimeCoverageProven &&
     normalizedTelemetryFreshness === 'fresh' &&
     lastTelemetryAt === null &&
     lastCoverageTelemetryAt === null
@@ -252,6 +303,7 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
   // Suppress when backend has authoritatively verified live runtime — it may not return raw timestamps.
   if (
     resolvedStatusReason !== 'live_runtime_verified' &&
+    !realtimeCoverageProven &&
     lastHeartbeatAt !== null && lastTelemetryAt === null && lastCoverageTelemetryAt === null && lastPollAt === null
   ) {
     addGuard('heartbeat_without_telemetry_timestamp');
@@ -261,6 +313,7 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
   // Suppress when backend has authoritatively verified live runtime — it may not return raw timestamps.
   if (
     resolvedStatusReason !== 'live_runtime_verified' &&
+    !realtimeCoverageProven &&
     lastPollAt !== null && lastTelemetryAt === null && lastCoverageTelemetryAt === null
   ) {
     addGuard('poll_without_telemetry_timestamp');
@@ -320,6 +373,7 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
     contradiction_flags: normalizedContradictionFlags,
     guard_flags: normalizedGuardFlags,
     reason_codes: normalizedReasonCodes,
+    realtime_ingestion: realtimeIngestionFacts,
     next_required_action: asTrimmedString((summary as Record<string, unknown>).next_required_action) ?? 'review_reason_codes',
     current_step: asTrimmedString((summary as Record<string, unknown>).current_step) ?? 'asset_created',
     workflow_steps: Array.isArray((summary as Record<string, unknown>).workflow_steps) ? ((summary as Record<string, unknown>).workflow_steps as unknown[]) : [],
@@ -342,8 +396,12 @@ export function resolveWorkspaceMonitoringTruth(status: MonitoringRuntimeStatus 
   const workerStatus = (workerStatusRaw && typeof workerStatusRaw === 'object')
     ? (workerStatusRaw as WorkerStatusSummary)
     : null;
+  // Top-level realtime_ingestion is the canonical production shape; the nested
+  // summary copy (already resolved above) is the fallback.
+  const topLevelRealtimeIngestion = resolveRealtimeCoverageFacts(statusRecord?.realtime_ingestion);
   return {
     ...truth,
+    realtime_ingestion: topLevelRealtimeIngestion ?? truth.realtime_ingestion ?? null,
     next_required_action: asTrimmedString(statusRecord?.next_required_action) ?? truth.next_required_action,
     current_step: asTrimmedString(statusRecord?.current_step) ?? truth.current_step,
     workflow_steps: Array.isArray(statusRecord?.workflow_steps) ? (statusRecord?.workflow_steps as unknown[]) : truth.workflow_steps,
@@ -352,6 +410,66 @@ export function resolveWorkspaceMonitoringTruth(status: MonitoringRuntimeStatus 
     worker_status: workerStatus,
     realtime_enabled: Boolean(statusRecord?.realtime_enabled),
   };
+}
+
+/**
+ * Canonical live-coverage verdict, read straight from the runtime-status response:
+ * the backend's QuickNode Stream realtime ingestion is healthy with live evidence
+ * inside the freshness window, the live evidence source is the chosen one, and the
+ * backend reports NO status reason, NO contradiction, and NO database failure.
+ *
+ * Why the summary `telemetry_freshness` field is not required to be 'fresh' here:
+ * that field is derived from the reconciliation RPC poll's own coverage timestamp,
+ * on a 900s cadence. The realtime Stream lane is a separate, faster proof, and
+ * CLAUDE.md keeps heartbeat / poll / telemetry as separate proofs precisely so a
+ * quiet RPC poll can never be read as "live telemetry is stale" while the Stream is
+ * demonstrably delivering. The canonical realtime verdict is the authority on
+ * whether live coverage is current; the poll-based field is not.
+ *
+ * This is a READ of canonical backend facts, never a frontend-manufactured healthy
+ * state. Every one of these must hold, so a single genuine degraded condition — any
+ * reported status reason, contradiction, guard flag, non-live evidence source, an
+ * offline runtime, an unhealthy or absent realtime verdict — returns false and the
+ * warning surfaces stay up.
+ */
+export function hasCanonicalLiveCoverage(truth: WorkspaceMonitoringTruth): boolean {
+  if (!realtimeLiveCoverageFresh(truth.realtime_ingestion)) {
+    return false;
+  }
+  // The backend must be reporting no problem at all. Any real status reason —
+  // a coverage gap, a proof-chain break, a blocked target — keeps the warning up.
+  const reason = truth.status_reason;
+  if (reason !== null && reason !== 'live_runtime_verified') {
+    return false;
+  }
+  return truth.workspace_configured
+    && truth.monitoring_status !== 'offline'
+    && truth.runtime_status !== 'offline'
+    && truth.evidence_source_summary === 'live'
+    && truth.protected_assets_count > 0
+    && truth.reporting_systems_count > 0
+    && !truth.db_failure_reason
+    && (truth.guard_flags ?? []).length === 0
+    && (truth.contradiction_flags ?? []).length === 0;
+}
+
+/**
+ * True when the canonical realtime verdict proves live evidence arrived inside the
+ * freshness window. A surface that reads this must not claim live telemetry is
+ * stale — the backend has said the opposite.
+ */
+export function hasFreshRealtimeLiveEvidence(truth: WorkspaceMonitoringTruth): boolean {
+  return realtimeLiveCoverageFresh(truth.realtime_ingestion);
+}
+
+/**
+ * True when the canonical verdict reports an active fault on the primary realtime
+ * (QuickNode Stream) path. A faulted stream lane is a genuine degraded condition,
+ * so it must keep the warning surfaces up even when the runtime status field alone
+ * still reads live.
+ */
+export function hasFaultedRealtimeLane(truth: WorkspaceMonitoringTruth): boolean {
+  return realtimeLaneFaulted(truth.realtime_ingestion);
 }
 
 export function hasLiveTelemetry(truth: WorkspaceMonitoringTruth): boolean {

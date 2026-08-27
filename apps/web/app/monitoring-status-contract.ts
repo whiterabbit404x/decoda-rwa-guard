@@ -60,6 +60,60 @@ export type WorkerStatusSummary = {
   monitoring_source_live: boolean;
 };
 
+// Canonical monitoring verdict vocabulary emitted by the backend runtime-status
+// builder. The runner's own decision uses 'active' / 'idle', the workspace summary
+// normalizer uses 'live' / 'limited' / 'offline', and older payloads carried
+// 'healthy' / 'degraded'. All of them are canonical backend words, so the client
+// must accept every one instead of silently defaulting an unrecognised value to
+// 'limited'.
+export type CanonicalMonitoringStatus =
+  | 'live'
+  | 'active'
+  | 'healthy'
+  | 'limited'
+  | 'degraded'
+  | 'idle'
+  | 'offline';
+
+// Canonical realtime-ingestion facts from the backend runtime-status builder
+// (services/api/app/monitoring_truth.derive_realtime_ingestion_health). QuickNode
+// Streams is the PRIMARY realtime monitoring path; the legacy realtime WebSocket
+// worker is intentionally disabled, so realtime health must be read from these
+// facts and never inferred from worker_status.realtime.
+//
+// The two live-evidence kinds stay separately named exactly as the backend keeps
+// them: live_coverage_fresh proves the monitored target was evaluated against a
+// healthy near-tip Stream block ("we monitored you"), while
+// live_security_telemetry_fresh proves a real monitored-wallet transfer arrived
+// ("we saw something"). Never collapse the two into one green label.
+export type RealtimeIngestionStatus =
+  | 'healthy'
+  | 'degraded'
+  | 'stale'
+  | 'unknown'
+  | 'disabled'
+  | 'no_evidence';
+
+export type RealtimeIngestionFactsPayload = {
+  streams_enabled?: boolean;
+  status?: RealtimeIngestionStatus | string | null;
+  healthy?: boolean;
+  live_evidence_fresh?: boolean;
+  live_evidence_kind?: 'security_telemetry' | 'coverage' | 'none' | string | null;
+  live_coverage_fresh?: boolean;
+  live_security_telemetry_fresh?: boolean;
+  lane_state?: 'live' | 'catching_up' | 'degraded' | 'stale' | 'failed' | string | null;
+  lag_blocks?: number | null;
+  checkpoint_block?: number | null;
+  chain_head?: number | null;
+  checkpoint_age_seconds?: number | null;
+  last_live_telemetry_at?: string | null;
+  live_telemetry_age_seconds?: number | null;
+  last_live_coverage_at?: string | null;
+  live_coverage_age_seconds?: number | null;
+  reason?: string | null;
+};
+
 export type EnterpriseCriterionCheck = {
   name: string;
   pass: boolean;
@@ -71,7 +125,7 @@ export type EnterpriseCriterionCheck = {
 export type WorkspaceMonitoringSummary = {
   workspace_configured: boolean;
   runtime_status: 'live' | 'degraded' | 'offline' | 'idle';
-  monitoring_status: 'live' | 'limited' | 'offline';
+  monitoring_status: CanonicalMonitoringStatus;
   freshness_status: 'fresh' | 'stale' | 'unavailable';
   confidence_status: 'high' | 'medium' | 'low' | 'unavailable';
   protected_assets: number;
@@ -138,6 +192,7 @@ export type WorkspaceMonitoringSummary = {
   event_throughput_window_seconds?: number;
   contradiction_flags: string[];
   guard_flags: string[];
+  realtime_ingestion?: RealtimeIngestionFactsPayload | null;
   status_reason: string | null;
   configuration_reason?: string | null;
   configuration_reason_codes?: string[];
@@ -232,7 +287,7 @@ export type MonitoringRuntimeStatus = {
     hint?: string;
   };
   field_reason_codes?: Record<string, string[]>;
-  monitoring_status?: 'live' | 'limited' | 'offline';
+  monitoring_status?: CanonicalMonitoringStatus;
   monitored_systems?: number;
   enabled_systems?: number;
   protected_assets?: number;
@@ -288,6 +343,9 @@ export type MonitoringRuntimeStatus = {
   workspace_monitoring_summary?: WorkspaceMonitoringSummary;
   worker_status?: WorkerStatusSummary;
   realtime_enabled?: boolean;
+  // Canonical QuickNode Stream ingestion facts, surfaced at the top level of the
+  // production runtime-status response.
+  realtime_ingestion?: RealtimeIngestionFactsPayload | null;
   // Stable-polling debug fields (mirror worker_status.stable_polling) so the top banner,
   // worker-status card, limitation text, and runtime summary reconcile from one source.
   last_stable_poll_at?: string | null;
@@ -407,15 +465,20 @@ export type MonitoringInvestigationTimeline = {
   missing?: string[];
 };
 
-export function runtimeStatusModeFromMonitoringStatus(value: MonitoringRuntimeStatus['monitoring_status']): MonitoringMode {
-  if (value === 'live') {
+// Accepts the full canonical monitoring vocabulary. 'active' and 'healthy' are the
+// runtime runner's and the older summary's words for a running runtime; 'idle'
+// (no fresh evidence) is limited coverage, never live and never offline; 'error' is
+// only reachable from older payloads and is offline.
+export function runtimeStatusModeFromMonitoringStatus(value: MonitoringRuntimeStatus['monitoring_status'] | string | null | undefined): MonitoringMode {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'live' || normalized === 'active' || normalized === 'healthy') {
     return 'LIVE';
   }
-  if (value === 'offline') {
+  if (normalized === 'offline' || normalized === 'error') {
     return 'OFFLINE';
   }
-  if (value === 'limited') {
-    return 'LIMITED_COVERAGE';
+  if (normalized === 'degraded') {
+    return 'DEGRADED';
   }
   return 'LIMITED_COVERAGE';
 }

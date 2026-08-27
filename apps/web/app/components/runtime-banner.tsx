@@ -1,6 +1,11 @@
 'use client';
 
-import { hasLiveTelemetry, hasRealTelemetryBackedChain } from '../workspace-monitoring-truth';
+import {
+  hasCanonicalLiveCoverage,
+  hasLiveTelemetry,
+  hasRealTelemetryBackedChain,
+} from '../workspace-monitoring-truth';
+import { realtimeWorkerStatusLine } from '../realtime-coverage-status';
 import { useRuntimeSummary } from '../runtime-summary-context';
 import type { WorkspaceMonitoringTruth } from '../workspace-monitoring-truth';
 
@@ -42,12 +47,24 @@ function deriveMonitoringLabel(summary: WorkspaceMonitoringTruth, healthProvable
     if (summary.last_heartbeat_at) return 'Limited coverage';
     return 'Setup required';
   }
-  if (summary.runtime_status === 'live' || summary.status_reason === 'live_runtime_verified') return 'Live';
+  if (
+    summary.runtime_status === 'live'
+    || summary.status_reason === 'live_runtime_verified'
+    || hasCanonicalLiveCoverage(summary)
+  ) return 'Live';
   return 'Limited coverage';
 }
 
 function deriveFreshnessLabel(summary: WorkspaceMonitoringTruth, healthProvable: boolean): string {
   if (healthProvable) return 'Fresh';
+  // Canonical realtime verdict outranks the summary freshness field, and keeps the
+  // two live-evidence kinds apart exactly as the backend does: a matched
+  // monitored-wallet transfer inside the window is fresh telemetry, while a healthy
+  // near-tip Stream block evaluated against the target proves current COVERAGE and
+  // is labelled as such — never as fresh event telemetry, and never as stale.
+  const realtime = summary.realtime_ingestion;
+  if (realtime?.healthy && realtime.live_security_telemetry_fresh) return 'Fresh';
+  if (realtime?.healthy && realtime.live_coverage_fresh) return 'Live coverage current';
   if (!summary.last_telemetry_at) return 'Waiting for telemetry';
   if (summary.telemetry_freshness === 'stale') return 'Stale';
   if (summary.telemetry_freshness === 'fresh') return 'Fresh';
@@ -112,25 +129,25 @@ export default function RuntimeBanner() {
   // stable RPC polling is proven active (fresh heartbeat/poll). The backend now emits a
   // truthful reason in that case, but a stale/cached 'no_fresh_live_coverage_telemetry'
   // must never contradict a live stable-polling worker. The separated worker line still
-  // surfaces the truthful "Stable polling active. Realtime WebSocket paused." headline.
+  // surfaces the truthful stable-polling headline plus the canonical Stream condition.
   const isRpcConnectivityReason = topReason === 'no_fresh_live_coverage_telemetry';
   const suppressRpcConnectivityLimitation = isRpcConnectivityReason && stablePollingActive;
   const suppressLimitation = suppressHeartbeatLimitation || suppressRpcConnectivityLimitation;
   const reasonCopy = (topReason && topReason !== 'summary_unavailable' && !suppressLimitation)
     ? reasonMessageForCode(topReason)
     : null;
-  const workerLine = workerStatus
-    && (!workerStatus.realtime.enabled
-      || workerStatus.realtime.state !== 'active'
-      || !workerStatus.stable_polling.active)
-    ? workerStatus.headline
-    : null;
+  // Worker line: the stable-polling half of the canonical headline plus the
+  // canonical QuickNode Stream condition. The legacy realtime WebSocket clause is
+  // stripped — WebSocket is intentionally disabled and is not the realtime
+  // monitoring path, so a paused WebSocket is never reported as a coverage problem
+  // and a stable-polling fallback never claims a WebSocket failure.
+  const workerLine = realtimeWorkerStatusLine(workerStatus, summary.realtime_ingestion);
 
   const toneClass = healthProvable
     ? 'runtimeBannerLive'
-    : summary.monitoring_status === 'limited'
-      ? 'runtimeBannerStale'
-      : 'runtimeBannerDead';
+    : summary.monitoring_status === 'offline'
+      ? 'runtimeBannerDead'
+      : 'runtimeBannerStale';
 
   return (
     <section

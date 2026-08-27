@@ -301,6 +301,7 @@ def test_runtime_status_endpoint_includes_detection_and_contradiction_guards(mon
 _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS = [
     'workspace_configured',
     'runtime_status',
+    'monitoring_status',
     'configured_systems',
     'reporting_systems',
     'protected_assets',
@@ -322,7 +323,23 @@ _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS = [
     'target_coverage_status',
     'runtime_setup_chain',
     'next_required_action',
+    'worker_status',
+    'realtime_enabled',
+    'realtime_ingestion',
+    'last_stable_poll_at',
+    'last_rpc_polling_heartbeat_at',
+    'stable_poll_age_seconds',
+    'stable_poll_stale_threshold_seconds',
+    'stable_polling_status',
 ]
+
+# Keys the production response only carries when the runtime builder supplied them
+# (they are omitted rather than emitted as null), so key-set assertions compare
+# against the emitted subset.
+_RUNTIME_STATUS_OPTIONAL_TOP_LEVEL_KEYS = {
+    'worker_status',
+    'realtime_ingestion',
+}
 
 _RUNTIME_STATUS_STABLE_CANONICAL_FIELDS = [
     'runtime_status',
@@ -375,18 +392,21 @@ def test_runtime_status_behavioral_contract_and_single_source_timestamp_updates(
     res = client.get('/ops/monitoring/runtime-status', headers={'x-workspace-id': 'ws-1'})
     assert res.status_code == 200
     body = res.json()
-    assert list(body.keys()) == _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS
+    assert list(body.keys()) == [
+        k for k in _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS
+        if k not in _RUNTIME_STATUS_OPTIONAL_TOP_LEVEL_KEYS or k in body
+    ]
 
     poll_only = _canonical_runtime_payload(last_poll_at='2026-04-29T12:01:00Z')
     monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: dict(poll_only))
     poll_body = client.get('/ops/monitoring/runtime-status', headers={'x-workspace-id': 'ws-1'}).json()
-    changed = {k for k in _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS if poll_body[k] != body[k]}
+    changed = {k for k in _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS if k in body and poll_body[k] != body[k]}
     assert changed == {'last_poll_at'}
 
     heartbeat_only = _canonical_runtime_payload(last_heartbeat_at='2026-04-29T12:02:00Z')
     monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: dict(heartbeat_only))
     heartbeat_body = client.get('/ops/monitoring/runtime-status', headers={'x-workspace-id': 'ws-1'}).json()
-    changed = {k for k in _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS if heartbeat_body[k] != body[k]}
+    changed = {k for k in _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS if k in body and heartbeat_body[k] != body[k]}
     assert changed == {'last_heartbeat_at'}
 
     telemetry_only = _canonical_runtime_payload(
@@ -407,7 +427,7 @@ def test_runtime_status_behavioral_contract_and_single_source_timestamp_updates(
     detection_only = _canonical_runtime_payload(last_detection_at='2026-04-29T12:04:00Z')
     monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: dict(detection_only))
     detection_body = client.get('/ops/monitoring/runtime-status', headers={'x-workspace-id': 'ws-1'}).json()
-    changed = {k for k in _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS if detection_body[k] != body[k]}
+    changed = {k for k in _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS if k in body and detection_body[k] != body[k]}
     assert changed == {'last_detection_at'}
 
 
@@ -425,7 +445,7 @@ def test_runtime_status_production_like_returns_canonical_required_keys_only(mon
     monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: dict(payload))
 
     body = client.get('/ops/monitoring/runtime-status', headers={'x-workspace-id': 'ws-1'}).json()
-    assert set(body.keys()) == set(_RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS)
+    assert set(body.keys()) == set(_RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS) - _RUNTIME_STATUS_OPTIONAL_TOP_LEVEL_KEYS
     assert 'canonical_monitoring_runtime' not in body
     assert 'background_loop_health' not in body
     assert 'loop_running' not in body
@@ -459,7 +479,9 @@ def test_runtime_status_non_production_like_with_legacy_flag_includes_legacy_fie
     monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: dict(payload))
 
     body = client.get('/ops/monitoring/runtime-status', headers={'x-workspace-id': 'ws-1'}).json()
-    assert set(_RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS).issubset(set(body.keys()))
+    assert (
+        set(_RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS) - _RUNTIME_STATUS_OPTIONAL_TOP_LEVEL_KEYS
+    ).issubset(set(body.keys()))
     assert 'canonical_monitoring_runtime' in body
     assert 'background_loop_health' in body
     assert 'loop_running' in body
