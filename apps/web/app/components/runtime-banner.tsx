@@ -4,6 +4,7 @@ import {
   hasCanonicalLiveCoverage,
   hasLiveTelemetry,
   hasRealTelemetryBackedChain,
+  quietMonitoringNote,
 } from '../workspace-monitoring-truth';
 import { realtimeWorkerStatusLine } from '../realtime-coverage-status';
 import { useRuntimeSummary } from '../runtime-summary-context';
@@ -142,8 +143,14 @@ export default function RuntimeBanner() {
   // monitoring path, so a paused WebSocket is never reported as a coverage problem
   // and a stable-polling fallback never claims a WebSocket failure.
   const workerLine = realtimeWorkerStatusLine(workerStatus, summary.realtime_ingestion);
+  // Neutral copy for a healthy runtime that simply has nothing to report. Only set
+  // when the canonical verdict proves live coverage with no reported reason, so it
+  // never appears alongside a genuine limitation.
+  const quietNote = reasonCopy ? null : quietMonitoringNote(summary);
 
-  const toneClass = healthProvable
+  // A runtime the canonical verdict proves is carrying current live coverage is not
+  // "stale" — an idle (quiet) workspace must not be toned as a degraded one.
+  const toneClass = healthProvable || hasCanonicalLiveCoverage(summary)
     ? 'runtimeBannerLive'
     : summary.monitoring_status === 'offline'
       ? 'runtimeBannerDead'
@@ -178,6 +185,12 @@ export default function RuntimeBanner() {
         <>
           <Sep />
           <Field label="Limitation" value={reasonCopy} />
+        </>
+      ) : null}
+      {quietNote ? (
+        <>
+          <Sep />
+          <Field label="Activity" value={quietNote} />
         </>
       ) : null}
     </section>

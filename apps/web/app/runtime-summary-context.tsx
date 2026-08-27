@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
 import { usePilotAuth } from './pilot-auth-context';
+import { runtimeReasonMessage } from './runtime-reason-copy';
 import { fetchRuntimeStatusDeduped } from './runtime-status-client';
 import { resolveWorkspaceMonitoringTruth, type WorkspaceMonitoringTruth } from './workspace-monitoring-truth';
 
@@ -38,40 +39,6 @@ type RuntimeSummaryContextValue = {
   refresh: () => Promise<void>;
 };
 
-const REASON_CODE_MESSAGES: Record<string, string> = {
-  summary_unavailable: 'Runtime summary is unavailable. Recheck workspace connectivity.',
-  workspace_unconfigured: 'Workspace setup is incomplete. Finish onboarding to enable live monitoring.',
-  no_reporting_systems: 'No monitored systems are reporting. Enable and verify monitoring sources.',
-  stale_telemetry: 'Telemetry is stale. Investigate worker health and source ingestion lag.',
-  no_live_evidence: 'No live evidence has been persisted yet. Trigger and validate a real detection path.',
-  live_worker_not_running: 'The monitoring worker is not running. Deploy the worker service with WORKER_ENABLED=true and EVM_RPC_URL set.',
-  stale_heartbeat: 'Stable RPC polling worker heartbeat is stale. The polling worker may have stopped or lost its database connection. (The realtime WebSocket worker is reported separately.)',
-  targets_blocked: 'The monitoring worker is alive, but one or more targets are blocked (dead-lettered) and are not being polled. Recover the affected target(s) to resume live coverage.',
-  no_fresh_live_coverage_telemetry: 'Worker is running but has not received live chain data. Check EVM_RPC_URL connectivity in the worker service.',
-  // Stable RPC polling is proven alive (fresh heartbeat/poll) but realtime is paused: this
-  // is NOT an RPC connectivity problem, so the limitation must say so instead of blaming
-  // EVM_RPC_URL. Mirrors the telemetry page's worker-status strip wording.
-  realtime_paused_stable_polling_active: 'Realtime paused; stable polling active. Wallet transfers are detected by Stable RPC Polling.',
-  // Stable RPC polling is active with realtime enabled — the loop is live and simply
-  // awaiting new on-chain activity on monitored addresses (not an RPC failure).
-  stable_polling_active_awaiting_coverage: 'Stable RPC polling is active. Awaiting new on-chain activity on monitored addresses.',
-  runtime_contradiction_asset_monitoring_attached_but_no_monitored_systems: 'Assets are registered, but monitoring is not attached to any running systems.',
-  runtime_contradiction_asset_count_mismatch_runtime_vs_registry: 'Asset counts are out of sync between registry and runtime.',
-  runtime_contradiction_healthy_claim_with_reporting_systems_zero: 'Health cannot be verified because no systems are reporting.',
-  runtime_contradiction_live_claim_with_no_telemetry: 'Live mode cannot be verified because telemetry is missing.',
-  runtime_contradiction_simulator_evidence_rendered_as_live_provider: 'Simulator evidence was labeled as live provider data.',
-  runtime_contradiction_alert_without_detection: 'An alert exists without linked detection evidence.',
-  runtime_contradiction_incident_without_alert: 'An incident exists without a linked alert.',
-  runtime_contradiction_response_action_without_incident: 'A response action exists without a linked incident.',
-  live_monitoring_without_reporting_systems: 'Live monitoring requires at least one reporting monitored system.',
-  asset_monitoring_attached_but_no_monitored_systems: 'Assets are configured but no monitored system is attached.',
-  simulator_evidence_claimed_as_live_provider: 'Simulator telemetry is being represented as live provider evidence.',
-  alert_exists_without_detection: 'Alerts must be backed by at least one detection.',
-  incident_exists_without_alert: 'Incidents must be linked to at least one alert.',
-  response_action_exists_without_incident: 'Response actions must be linked to an incident.',
-  cross_page_count_mismatch: 'Cross-page count mismatch detected. Reconcile canonical runtime totals before proceeding.',
-};
-
 const NEXT_ACTION_LABELS: Record<string, string> = {
   add_asset: 'Add a protected asset',
   verify_asset: 'Verify asset',
@@ -85,6 +52,10 @@ const NEXT_ACTION_LABELS: Record<string, string> = {
   resolve_runtime_contradictions: 'Resolve runtime contradictions',
   review_reason_codes: 'Review runtime reason codes',
 };
+
+// Longer than RUNTIME_STATUS_FRESHNESS_MS in runtime-status-client so a revalidation
+// tick actually reaches the backend instead of replaying the cached payload.
+const RUNTIME_STATUS_REVALIDATE_MS = 90_000;
 
 const RuntimeSummaryContext = createContext<RuntimeSummaryContextValue | null>(null);
 
@@ -185,10 +156,25 @@ export function RuntimeSummaryProvider({ children }: { children: React.ReactNode
     void load();
   }, [load]);
 
+  // Revalidate on an interval so a limitation the backend has already cleared cannot
+  // stay pinned to the banner for the lifetime of the client session. Without this the
+  // provider fetched exactly once per mount, so a status_reason that has since become
+  // null kept rendering until a full page reload. The interval is deliberately longer
+  // than the runtime-status client's freshness window so both providers share one
+  // network fetch per cycle and the hot path stays light.
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const timer = setInterval(() => { void load(); }, RUNTIME_STATUS_REVALIDATE_MS);
+    return () => clearInterval(timer);
+  }, [isAuthenticated, load]);
+
   const value = useMemo<RuntimeSummaryContextValue>(() => {
     const reasons = summary.continuity_reason_codes ?? [];
     const topReason = reasons[0] ?? summary.status_reason ?? 'summary_unavailable';
-    const reasonMessageForCode = (code: string) => REASON_CODE_MESSAGES[code] ?? `Runtime condition: ${code.replaceAll('_', ' ')}.`;
+    // Guard-derived reasons arrive as `guard:<flag>`; runtimeReasonMessage resolves
+    // both spellings to the same sentence so the raw wire code never reaches a
+    // customer (e.g. "Runtime condition: guard:incident exists without alert").
+    const reasonMessageForCode = runtimeReasonMessage;
     const evidenceLabel = summary.evidence_source_summary === 'live' ? 'Live provider evidence' : summary.evidence_source_summary === 'none' ? 'No evidence configured' : 'Simulator evidence';
     const existsLabel = `${summary.protected_assets_count} assets, ${summary.reporting_systems_count} reporting systems, ${summary.active_alerts_count} active alerts`;
     const missingLabel = reasonMessageForCode(topReason);

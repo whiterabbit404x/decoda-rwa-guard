@@ -25,12 +25,18 @@ function deriveBannerState(truth: WorkspaceMonitoringTruth): BannerState {
   // A faulted primary realtime lane (Stream catching up, behind the tip, stalled or
   // failing) is a genuine degraded condition, so it blocks the looser
   // "runtime reads live" path — it must never be hidden behind a live status field.
+  // The same is true of a reported status reason: the looser path additionally
+  // requires that the CURRENT response reports none, so a real backend condition
+  // (targets_blocked, stale_heartbeat, a proof-chain guard) can never be silently
+  // dropped just because the runtime status field still reads live. The strict
+  // canonical path (hasCanonicalLiveCoverage) already enforces the same rule.
   const realtimeLaneFault = hasFaultedRealtimeLane(truth);
   if (
     truth.status_reason !== 'summary_unavailable' &&
     (truth.status_reason === 'live_runtime_verified' ||
       hasCanonicalLiveCoverage(truth) ||
       (truth.runtime_status === 'live'
+        && truth.status_reason === null
         && (truth.guard_flags ?? []).length === 0
         && (truth.contradiction_flags ?? []).length === 0
         && !realtimeLaneFault))

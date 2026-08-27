@@ -13,7 +13,9 @@ const contractSource = read(appDir, 'monitoring-status-contract.ts');
 const truthSource = read(appDir, 'workspace-monitoring-truth.ts');
 const modeBannerSource = read(appDir, 'workspace-monitoring-mode-banner.tsx');
 const runtimeBannerSource = read(appDir, 'components', 'runtime-banner.tsx');
-const reasonContextSource = read(appDir, 'runtime-summary-context.tsx');
+// The runtime reason-code copy map lives in its own pure module so it can be unit
+// tested directly; the provider imports runtimeReasonMessage from it.
+const reasonContextSource = read(appDir, 'runtime-reason-copy.ts');
 const telemetryPageSource = read(
   appDir, '(product)', 'monitoring-sources', '[targetId]', 'telemetry', 'page.tsx',
 );
