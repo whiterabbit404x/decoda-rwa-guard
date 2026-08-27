@@ -5,6 +5,13 @@ import { useRouter, useSearchParams } from 'next/navigation';
 
 import { EmptyStateBlocker, Select, StatusPill, TabStrip, TableShell } from '../components/ui-primitives';
 import { usePilotAuth } from '../pilot-auth-context';
+import { useRuntimeSummary } from '../runtime-summary-context';
+import {
+  coverageIncompleteWarningApplies,
+  coverageNotice,
+  liveCoverageIsCurrent,
+  telemetryFreshnessPill,
+} from './live-coverage-copy';
 import {
   ANOMALIES_TOOLTIP,
   CONFIDENCE_TOOLTIP,
@@ -20,7 +27,6 @@ import {
   confidenceVariant,
   dataFreshnessLabel,
   dataFreshnessVariant,
-  degradedReasonCopy,
   detectionStatusLabel,
   detectionStatusVariant,
   detectionTypeLabel,
@@ -73,6 +79,7 @@ export default function ThreatMonitoringScreen() {
 
 function ThreatMonitoringScreenInner() {
   const { authHeaders, signOut } = usePilotAuth();
+  const { summary: runtimeSummary } = useRuntimeSummary();
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -163,8 +170,16 @@ function ThreatMonitoringScreenInner() {
     }
   }, [setUrl]);
 
-  const stale = summary ? summary.data_freshness !== 'fresh' : false;
+  // Canonical live-coverage verdict from /ops/monitoring/runtime-status. The threat
+  // summary's own data_freshness only measures how long ago the last matched SECURITY
+  // event happened; it is not a statement about whether monitoring coverage is current.
+  const liveCoverageFresh = liveCoverageIsCurrent(runtimeSummary.realtime_ingestion);
+  const securityEventsStale = summary ? summary.data_freshness !== 'fresh' : false;
+  // Only propagate "results may be incomplete" downstream when coverage really is
+  // not current — a quiet wallet under fresh live coverage has complete results.
+  const stale = coverageIncompleteWarningApplies(securityEventsStale, liveCoverageFresh);
   const nextAction = summary?.next_action ?? 'diagnose_ingestion';
+  const notice = summary ? coverageNotice(summary.degraded_reasons, liveCoverageFresh) : null;
 
   return (
     // Left-aligned (no auto-centering) so the header/content share the SAME left edge
@@ -193,14 +208,20 @@ function ThreatMonitoringScreenInner() {
         </div>
       </header>
 
-      {summary && summary.degraded_reasons.length > 0 ? (
-        <div className="statusLine statusLine-warning" role="status" data-testid="degraded-banner" style={{ marginBottom: '1rem' }}>
-          {summary.degraded_reasons.map((r) => degradedReasonCopy(r)).join(' ')}
+      {notice ? (
+        <div
+          className={notice.tone === 'warning' ? 'statusLine statusLine-warning' : 'statusLine'}
+          role="status"
+          data-testid="degraded-banner"
+          data-tone={notice.tone}
+          style={{ marginBottom: '1rem' }}
+        >
+          {notice.text}
         </div>
       ) : null}
 
       {/* KPI row — labelled with the SAME selected window as every table below it. */}
-      <KpiRow summary={summary} loading={loading} windowKey={windowKey} />
+      <KpiRow summary={summary} loading={loading} windowKey={windowKey} liveCoverageFresh={liveCoverageFresh} />
 
       {error ? (
         <p className="statusLine" style={{ color: 'var(--danger-fg)', margin: '0 0 1rem' }} role="alert">{error}</p>
@@ -211,9 +232,9 @@ function ThreatMonitoringScreenInner() {
       {activeTab === 'overview' ? (
         <div role="tabpanel" aria-label="Overview" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)', gap: '1.5rem', marginTop: '0.5rem' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', minWidth: 0 }}>
-            <TelemetryVolumeCard summary={summary} loading={loading} />
+            <TelemetryVolumeCard summary={summary} loading={loading} liveCoverageFresh={liveCoverageFresh} />
             <DetectionsByTypeCard summary={summary} loading={loading} />
-            <WatchlistCard summary={summary} loading={loading} onViewEvidence={onViewEvidence} />
+            <WatchlistCard summary={summary} loading={loading} onViewEvidence={onViewEvidence} liveCoverageFresh={liveCoverageFresh} />
           </div>
           <ThreatDetectionEngineerPanel
             panel={summary?.engine_panel ?? null}
@@ -240,9 +261,15 @@ function ThreatMonitoringScreenInner() {
 }
 
 /* ── KPI row ─────────────────────────────────────────────────────── */
-function KpiRow({ summary, loading, windowKey }: { summary: ThreatSummary | null; loading: boolean; windowKey: WindowKey }) {
+function KpiRow({ summary, loading, windowKey, liveCoverageFresh }: { summary: ThreatSummary | null; loading: boolean; windowKey: WindowKey; liveCoverageFresh: boolean }) {
   const freshness = summary?.data_freshness ?? 'unavailable';
   const windowText = windowLabel(windowKey);
+  // The card keeps showing the historical security-event age; the pill must not turn
+  // that age into "monitoring is stale" while live coverage is proven current.
+  const freshnessPill = telemetryFreshnessPill(freshness, liveCoverageFresh, {
+    label: dataFreshnessLabel(freshness),
+    variant: dataFreshnessVariant(freshness),
+  });
   return (
     <div
       style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '1.25rem', margin: '0 0 1.5rem' }}
@@ -255,8 +282,8 @@ function KpiRow({ summary, loading, windowKey }: { summary: ThreatSummary | null
         metric="telemetry"
         changePercent={summary?.telemetry_change_percent}
         windowText={windowText}
-        freshnessLabel={dataFreshnessLabel(freshness)}
-        freshnessVariant={dataFreshnessVariant(freshness)}
+        freshnessLabel={freshnessPill.label}
+        freshnessVariant={freshnessPill.variant}
       />
       <Kpi
         label="Detections"
@@ -320,13 +347,14 @@ function Kpi({
 }
 
 /* ── Telemetry volume chart ─────────────────────────────────────── */
-function TelemetryVolumeCard({ summary, loading }: { summary: ThreatSummary | null; loading: boolean }) {
+function TelemetryVolumeCard({ summary, loading, liveCoverageFresh }: { summary: ThreatSummary | null; loading: boolean; liveCoverageFresh: boolean }) {
   const buckets = summary?.telemetry_volume_buckets ?? [];
   const max = buckets.reduce((m, b) => Math.max(m, b.count), 0);
+  const ingestionStale = summary ? summary.data_freshness === 'stale' || summary.worker_status === 'stale' || summary.worker_status === 'offline' : false;
   const emptyCopy = emptyStateCopy(summary?.empty_state_reason, {
     windowText: windowLabel(summary?.window),
     latestEverAt: summary?.last_security_telemetry_ever_at ?? null,
-    stale: summary ? summary.data_freshness === 'stale' || summary.worker_status === 'stale' || summary.worker_status === 'offline' : false,
+    stale: coverageIncompleteWarningApplies(ingestionStale, liveCoverageFresh),
   });
   return (
     <article className="dataCard" aria-label="Telemetry Volume" style={{ minHeight: '12rem' }}>
@@ -404,11 +432,13 @@ function DetectionsByTypeCard({ summary, loading }: { summary: ThreatSummary | n
 }
 
 /* ── Watchlist matches ──────────────────────────────────────────── */
-function WatchlistCard({ summary, loading, onViewEvidence }: { summary: ThreatSummary | null; loading: boolean; onViewEvidence: (id: string) => void }) {
+function WatchlistCard({ summary, loading, onViewEvidence, liveCoverageFresh }: { summary: ThreatSummary | null; loading: boolean; onViewEvidence: (id: string) => void; liveCoverageFresh: boolean }) {
   const matches = summary?.active_watchlist_matches ?? [];
   // Stale coverage means an unmatched watchlist may simply be under-observed — never
-  // imply that no risky addresses exist globally.
-  const stale = summary ? summary.data_freshness !== 'fresh' || summary.worker_status === 'stale' || summary.worker_status === 'offline' : false;
+  // imply that no risky addresses exist globally. An old last-security-event age is
+  // NOT stale coverage: under a proven-current live verdict the window was observed.
+  const coverageStale = summary ? summary.data_freshness !== 'fresh' || summary.worker_status === 'stale' || summary.worker_status === 'offline' : false;
+  const stale = coverageIncompleteWarningApplies(coverageStale, liveCoverageFresh);
   return (
     <article className="dataCard" aria-label="Active Watchlist Matches">
       <p className="sectionEyebrow">Active Watchlist Matches</p>

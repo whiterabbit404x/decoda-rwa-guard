@@ -136,8 +136,25 @@ test.describe('canonical runtime-status vocabulary', () => {
     expect(truthFor().runtime_status).toBe('live');
   });
 
-  test("monitoring_status='idle' stays limited — idle is not live", () => {
-    expect(truthFor({ monitoring_status: 'idle' }).monitoring_status).toBe('limited');
+  test("monitoring_status='idle' under proven live coverage is live monitoring, not limited", () => {
+    // Canonical idle: the runner saw no monitored security event in the window while
+    // the Stream lane is healthy with fresh live coverage and the backend reports no
+    // status reason. That is healthy monitoring with no current activity.
+    const truth = truthFor({ monitoring_status: 'idle' });
+    expect(truth.monitoring_status).toBe('live');
+    // The idle fact itself is preserved, not rewritten to 'active'.
+    expect(truth.monitoring_activity).toBe('idle');
+  });
+
+  test("monitoring_status='idle' stays limited without a canonical realtime verdict", () => {
+    const truth = truthFor({ monitoring_status: 'idle', realtime_ingestion: undefined });
+    expect(truth.monitoring_status).toBe('limited');
+    expect(truth.monitoring_activity).toBe('idle');
+  });
+
+  test("monitoring_status='idle' stays limited while the backend reports a status reason", () => {
+    const truth = truthFor({ monitoring_status: 'idle', status_reason: 'targets_blocked' });
+    expect(truth.monitoring_status).toBe('limited');
   });
 
   test("monitoring_status='degraded' stays limited", () => {

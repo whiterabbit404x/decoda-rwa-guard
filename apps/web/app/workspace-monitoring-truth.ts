@@ -12,6 +12,11 @@ export type WorkspaceMonitoringTruth = {
   workspace_configured: boolean;
   runtime_status: 'live' | 'degraded' | 'offline' | 'idle';
   monitoring_status: 'live' | 'limited' | 'offline';
+  // The runner's own activity decision, kept separate from monitoring_status.
+  // 'idle' means the monitoring loop ran but no monitored security event landed in
+  // the window; 'active' means one did. It is NOT a health verdict, so it is never
+  // collapsed into monitoring_status — a quiet wallet is idle AND live.
+  monitoring_activity?: 'active' | 'idle' | 'unknown';
   monitoring_mode?: 'live' | 'hybrid' | 'simulator' | 'offline' | 'unavailable';
   configured_systems?: number;
   monitored_systems_count: number;
@@ -52,6 +57,7 @@ const DEFAULT_TRUTH: WorkspaceMonitoringTruth = {
   workspace_configured: false,
   runtime_status: 'offline',
   monitoring_status: 'offline',
+  monitoring_activity: 'unknown',
   monitored_systems_count: 0,
   reporting_systems_count: 0,
   protected_assets_count: 0,
@@ -106,7 +112,10 @@ function asCount(value: unknown): number {
 // carried 'healthy'. Every one of them is canonical, so all are mapped here.
 // 'active' previously fell through to the unknown-value branch and reported
 // 'limited', which is what pinned an active runtime to a LIMITED COVERAGE banner.
-// 'idle' stays 'limited': idle means no fresh evidence, which is never "live".
+// 'idle' maps to 'limited' HERE because this helper sees only the status word. It
+// is the fail-closed default; the caller lifts it to 'live' only when the canonical
+// realtime verdict proves current live coverage and the backend reports no status
+// reason (see idleIsHealthyMonitoring below).
 function normalizeMonitoringStatus(
   monitoringStatus: unknown,
   runtimeStatus: WorkspaceMonitoringTruth['runtime_status'],
@@ -127,6 +136,15 @@ function normalizeMonitoringStatus(
     return 'limited';
   }
   return runtimeStatus === 'offline' ? 'offline' : 'limited';
+}
+
+// The runner's own activity decision ('active' / 'idle'), read verbatim. It answers
+// "did a monitored security event land in the window?", not "is monitoring healthy?".
+function normalizeMonitoringActivity(monitoringStatus: unknown): 'active' | 'idle' | 'unknown' {
+  const normalized = String(monitoringStatus ?? '').trim().toLowerCase();
+  if (normalized === 'idle') return 'idle';
+  if (normalized === 'active' || normalized === 'live' || normalized === 'healthy') return 'active';
+  return 'unknown';
 }
 
 export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMonitoringSummary | null | undefined): WorkspaceMonitoringTruth {
@@ -157,6 +175,13 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
     (summary as Record<string, unknown>).realtime_ingestion,
   );
   const realtimeCoverageProven = realtimeLiveCoverageFresh(realtimeIngestionFacts);
+  // Canonical "idle is healthy" proof, read straight from the backend response: the
+  // QuickNode Stream lane is healthy with fresh live evidence AND the backend reports
+  // no status reason at all. Under that proof the runner's 'idle' decision means
+  // "monitoring is live, nothing happened" — not a coverage limitation. It is
+  // fail-closed by construction: a missing or unhealthy realtime verdict, or ANY
+  // reported status reason, leaves idle handled exactly as before (limited).
+  const idleIsHealthyMonitoring = realtimeCoverageProven && resolvedStatusReason === null;
   const telemetryKind = null;
   const lastTelemetryAt = asTimestamp(summary.last_telemetry_at);
   const lastDetectionAt = asTimestamp(summary.last_detection_at);
@@ -178,14 +203,20 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
   const normalizedRuntimeStatus = runtimeStatusLabel === 'healthy' || runtimeStatusLabel === 'active'
     ? 'live'
     : runtimeStatusLabel;
+  const rawMonitoringStatusWord = summary.monitoring_status ?? (summary as Record<string, unknown>).monitoring_mode;
   const rawMonitoringStatus = normalizeMonitoringStatus(
-    summary.monitoring_status ?? (summary as Record<string, unknown>).monitoring_mode,
+    rawMonitoringStatusWord,
     normalizedRuntimeStatus as WorkspaceMonitoringTruth['runtime_status'],
   );
+  const monitoringActivity = normalizeMonitoringActivity(rawMonitoringStatusWord);
   // When the backend has authoritatively verified live runtime, trust it — the flat
   // response shape may omit monitoring_status, which would otherwise default to 'limited'.
+  // An 'idle' decision backed by the canonical idle-is-healthy proof is live monitoring
+  // with no current activity; the idle fact itself is preserved in monitoring_activity,
+  // so the distinction is kept rather than rewritten to 'active'.
   const normalizedMonitoringStatus: WorkspaceMonitoringTruth['monitoring_status'] =
-    resolvedStatusReason === 'live_runtime_verified' && normalizedRuntimeStatus === 'live'
+    (resolvedStatusReason === 'live_runtime_verified' && normalizedRuntimeStatus === 'live')
+      || (monitoringActivity === 'idle' && idleIsHealthyMonitoring)
       ? 'live'
       : rawMonitoringStatus;
   const normalizedTelemetryFreshness = telemetryFreshness === 'fresh' || telemetryFreshness === 'stale' || telemetryFreshness === 'unavailable'
@@ -246,8 +277,13 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
   }
 
   // idle runtime with active monitoring claims (skip when caller already explains why via degraded reason)
+  // Also skipped under the canonical idle-is-healthy proof: an idle runtime carrying
+  // fresh live coverage with no reported status reason is not claiming anything the
+  // backend contradicts, so manufacturing a guard here would invent a limitation the
+  // canonical response does not contain.
   if (
     normalizedRuntimeStatus === 'idle' &&
+    !idleIsHealthyMonitoring &&
     !resolvedStatusReason?.startsWith('runtime_status_degraded') &&
     (normalizedTelemetryFreshness === 'fresh' || lastTelemetryAt !== null || lastCoverageTelemetryAt !== null)
   ) {
@@ -351,6 +387,7 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
     workspace_configured: workspaceConfigured,
     runtime_status: normalizedRuntimeStatus as WorkspaceMonitoringTruth['runtime_status'],
     monitoring_status: normalizedMonitoringStatus,
+    monitoring_activity: monitoringActivity,
     monitored_systems_count: monitoredSystemsCount,
     reporting_systems_count: reportingSystemsCount,
     protected_assets_count: protectedAssetsCount,
@@ -451,6 +488,26 @@ export function hasCanonicalLiveCoverage(truth: WorkspaceMonitoringTruth): boole
     && !truth.db_failure_reason
     && (truth.guard_flags ?? []).length === 0
     && (truth.contradiction_flags ?? []).length === 0;
+}
+
+/**
+ * Neutral, non-warning line for a healthy-but-quiet runtime: the runner's own
+ * decision is 'idle' (no monitored security event in the window) while the canonical
+ * realtime verdict proves live coverage is current and the backend reports no
+ * problem at all. It is informational copy, never a status downgrade.
+ *
+ * Returns null in every other state — including any reported status reason, any
+ * guard or contradiction flag, and a database failure — so it can never be used to
+ * soften a genuinely degraded runtime.
+ */
+export function quietMonitoringNote(truth: WorkspaceMonitoringTruth): string | null {
+  if (truth.monitoring_activity !== 'idle') return null;
+  if (!realtimeLiveCoverageFresh(truth.realtime_ingestion)) return null;
+  if (truth.status_reason !== null) return null;
+  if (truth.db_failure_reason) return null;
+  if ((truth.guard_flags ?? []).length > 0) return null;
+  if ((truth.contradiction_flags ?? []).length > 0) return null;
+  return 'Monitoring live — no recent security events.';
 }
 
 /**
