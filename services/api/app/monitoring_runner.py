@@ -9069,6 +9069,39 @@ def monitoring_runtime_status(
                     open_alerts_without_evidence_count,
                     open_alerts_without_evidence_source,
                 )
+            # ONE canonical "open alerts Decoda can prove" count, shared by every
+            # reader that means exactly that: the workspace-summary guard operand
+            # (active_alerts_count), the runtime setup chain (alerts_count), the
+            # proof-chain reader below (chain_open_alerts_count) and the diagnostic
+            # payload ('active_alerts').
+            #
+            # WHY THE THIRD OPERAND. Those readers used to compute
+            # max(canonical, legacy) — or, in the setup chain's case, the canonical
+            # lane ALONE — from the two chain joins above. Both are the pre-lane-3
+            # evidence taxonomy: an open alert proven through
+            # asset_risk_findings.evidence, threat_detection_evidence or
+            # analysis_runs.response_payload counts as zero in either join, while the
+            # canonical five-lane anti-join immediately above proves it. Production
+            # (Rabbit workspace) held exactly that shape — raw_open_alerts=1,
+            # canonical_linked=0, legacy_linked=0, either_chain_linked=1, five provable
+            # open incidents — so `active_alerts_count` read 0 next to
+            # `active_incidents_count` 5 and fired `incident_exists_without_alert`
+            # against a workspace whose only open alert was a genuine, provable
+            # asset-risk alert. The setup chain, reading the canonical lane alone, then
+            # reported next_required_action=open_incident because it believed no alert
+            # existed. The guard is correct; the operands were stale.
+            #
+            # FAIL-CLOSED, in both directions. max() never lets a failed evidence query
+            # inflate the proven set: the five-lane query sets
+            # open_alerts_with_either_chain_count to 0 when it cannot run, so the count
+            # falls back to the established max(canonical, legacy) measured by the two
+            # chain joins — never to a manufactured value. And it never lets the newer
+            # taxonomy shrink the count below what those joins already proved.
+            provable_open_alerts_count = max(
+                int((open_alerts or {}).get('c') or 0),
+                int((legacy_open_alerts_row or {}).get('c') or 0),
+                int(open_alerts_with_either_chain_count),
+            )
             _mark_query_checkpoint('count_open_incidents_raw')
             raw_open_incidents_count = 0
             if use_precomputed_active_counts:
@@ -9209,7 +9242,7 @@ def monitoring_runtime_status(
                     scoped_params,
                 ).fetchone()
                 detections_count = int((latest_detection_count_row or {}).get('c') or 0)
-                alerts_count = int((open_alerts or {}).get('c') or 0)
+                alerts_count = int(provable_open_alerts_count)
                 incidents_count = int((open_incidents or {}).get('c') or 0)
                 response_actions_count = int(
                     (
@@ -9242,7 +9275,7 @@ def monitoring_runtime_status(
             except Exception:
                 verified_assets_count = 0
                 detections_count = 0
-                alerts_count = int((open_alerts or {}).get('c') or 0)
+                alerts_count = int(provable_open_alerts_count)
                 incidents_count = int((open_incidents or {}).get('c') or 0)
                 response_actions_count = 0
                 evidence_count = 0
@@ -10440,14 +10473,11 @@ def monitoring_runtime_status(
                     # second reason token even once the anti-join agreed every open alert
                     # was proven, just proven in an evidence home this count could not see.
                     #
-                    # max() keeps it fail-closed: open_alerts_with_either_chain_count is 0
+                    # provable_open_alerts_count is that shared answer, and it keeps
+                    # this reader fail-closed: open_alerts_with_either_chain_count is 0
                     # when the anti-join could not run, so a failed counter can never
                     # inflate the proven set beyond what the two chain joins measured.
-                    chain_open_alerts_count = max(
-                        int((open_alerts or {}).get('c') or 0),
-                        int((legacy_open_alerts_row or {}).get('c') or 0),
-                        int(open_alerts_with_either_chain_count),
-                    )
+                    chain_open_alerts_count = int(provable_open_alerts_count)
                     chain_open_incidents_count = int((open_incidents or {}).get('c') or 0)
                     _mark_query_checkpoint('select_proof_chain_last_detection')
                     try:
@@ -10983,10 +11013,7 @@ def monitoring_runtime_status(
             persisted_enabled_config_count=persisted_enabled_config_count,
             valid_target_system_link_count=valid_target_system_link_count,
             telemetry_window_seconds=telemetry_window_seconds,
-            active_alerts_count=int(max(
-                int((open_alerts or {}).get('c') or 0),
-                int((legacy_open_alerts_row or {}).get('c') or 0),
-            )),
+            active_alerts_count=int(provable_open_alerts_count),
             alerts_without_detection_count=int(open_alerts_without_evidence_count),
             active_incidents_count=int((open_incidents or {}).get('c') or 0),
             raw_incidents_count=int(raw_open_incidents_count),
@@ -11784,10 +11811,7 @@ def monitoring_runtime_status(
             'valid_asset_linked_targets': valid_asset_linked_targets,
             'enabled_monitored_systems': enabled_monitored_systems,
             'valid_target_system_links': valid_target_system_links,
-            'active_alerts': int(max(
-                int((open_alerts or {}).get('c') or 0),
-                int((legacy_open_alerts_row or {}).get('c') or 0),
-            )),
+            'active_alerts': int(provable_open_alerts_count),
             'open_incidents': int((open_incidents or {}).get('c') or 0),
             'raw_open_alerts': int(raw_open_alerts_count),
             'raw_open_incidents': int(raw_open_incidents_count),
