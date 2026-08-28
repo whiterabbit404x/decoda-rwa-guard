@@ -27,6 +27,7 @@ from services.api.app import pilot
 from services.api.app.domains.asset_integrity import ai_explanation
 from services.api.app.domains.asset_integrity import config as aic
 from services.api.app.domains.asset_integrity import reconciliation as engine
+from services.api.app.domains.asset_risk import config as arc
 
 logger = logging.getLogger(__name__)
 
@@ -420,8 +421,39 @@ def emit_canonical_event(
 
 
 # --------------------------------------------------------------------------
+# Does a token TOTAL SUPPLY exist as a concept for this asset?
+# --------------------------------------------------------------------------
+APPLICABILITY_APPLICABLE = 'APPLICABLE'
+APPLICABILITY_NOT_APPLICABLE = 'NOT_APPLICABLE'
+
+
+def token_supply_applicability(asset: Optional[dict[str, Any]], onchain_row: Optional[dict[str, Any]]) -> str:
+    """Whether a token TOTAL SUPPLY is a meaningful field for this asset.
+
+    A wallet is not a token contract: it has no total supply to observe, and
+    reporting one as "Unavailable" would imply a value we failed to collect.
+    Applicability is asserted from real facts only — an actual observed supply,
+    a registered token contract, or a reserve-backed RWA type.
+
+    Canonical for BOTH the read path (the On-Chain card's Total Supply row and
+    the projected verdict) and the persist path, so a rendered "Not applicable"
+    and a stored reconciliation status can never disagree.
+    """
+    if onchain_row is not None and onchain_row.get('total_supply') is not None:
+        return APPLICABILITY_APPLICABLE
+    asset = asset or {}
+    if str(asset.get('token_contract_address') or '').strip():
+        return APPLICABILITY_APPLICABLE
+    if arc.reserve_required_for(asset.get('rwa_asset_type'), asset.get('reserve_feed_type')):
+        return APPLICABILITY_APPLICABLE
+    return APPLICABILITY_NOT_APPLICABLE
+
+
+# --------------------------------------------------------------------------
 # Evaluate + persist (WRITE path — never reached from a GET)
 # --------------------------------------------------------------------------
+
+
 def evaluate_asset(
     connection: Any,
     *,
@@ -429,8 +461,13 @@ def evaluate_asset(
     asset_id: str,
     config: dict[str, Any] | None = None,
     now: Any = None,
+    asset: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Run the deterministic engine over stored evidence. Reads only."""
+    """Run the deterministic engine over stored evidence. Reads only.
+
+    ``asset`` supplies the applicability fact. Omitted (a caller that has not
+    loaded the row), supply is assumed to apply — the pre-existing behaviour.
+    """
     cfg = config or aic.integrity_config()
     now = now or pilot.utc_now()
     onchain_row = load_onchain_observation(connection, workspace_id=workspace_id, asset_id=asset_id)
@@ -445,6 +482,10 @@ def evaluate_asset(
         authorizations=_to_authorizations(authorization_rows),
         rules=aic.rules_from_config(cfg),
         now=now,
+        supply_applicable=(
+            asset is None
+            or token_supply_applicability(asset, onchain_row) == APPLICABILITY_APPLICABLE
+        ),
     )
     evidence_refs = build_evidence_refs(
         onchain_row=onchain_row, authoritative_row=authoritative_row,
@@ -470,13 +511,16 @@ def evaluate_and_persist(
     trigger_source: str = 'worker',
     config: dict[str, Any] | None = None,
     now: Any = None,
+    asset: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Evaluate, persist an immutable snapshot, and emit the canonical event.
 
     Historical snapshots are never modified — each evaluation appends a new row
     carrying the rule id/version it was produced under.
     """
-    evaluated = evaluate_asset(connection, workspace_id=workspace_id, asset_id=asset_id, config=config, now=now)
+    evaluated = evaluate_asset(
+        connection, workspace_id=workspace_id, asset_id=asset_id, config=config, now=now, asset=asset,
+    )
     result: engine.ReconciliationResult = evaluated['result']
     onchain_row = evaluated['onchain_row']
     authoritative_row = evaluated['authoritative_row']

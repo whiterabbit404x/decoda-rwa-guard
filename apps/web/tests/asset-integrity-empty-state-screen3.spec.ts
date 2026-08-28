@@ -28,7 +28,11 @@ import {
   authoritativeAvailability,
   availabilityLabel,
   integrityBanner,
+  isAnomalyStatus,
+  isHealthyStatus,
   onchainAvailability,
+  reconciliationStatusLabel,
+  reconciliationStatusVariant,
   reconciliationMeaning,
   reconciliationView,
   tokenSupplyApplicability,
@@ -53,6 +57,46 @@ const walletPayload = {
     available: false,
     total_supply: null,
     observed_at: null,
+  },
+  authoritative_state: { availability: 'NOT_CONFIGURED', source_status: 'missing', available: false },
+  reconciliation: null,
+  reconciliation_view: {
+    evaluated: false,
+    // A wallet address has no token total supply, so the blocker is applicability
+    // — not an observation someone could go and collect.
+    status: 'NOT_APPLICABLE',
+    reason_code: 'SUPPLY_RECONCILIATION_NOT_APPLICABLE',
+    variance_units: null,
+    severity: null,
+    rule_id: null,
+    rule_version: null,
+    evaluated_at: null,
+    evidence_count: 0,
+  },
+  ai_assessment_view: {
+    explanation: 'Supply reconciliation does not apply to Test MetaMask Wallet: this asset has no token total supply to reconcile.',
+    risk_impact: null,
+    next_steps: [],
+    source: 'deterministic',
+    assessment: 'Limited',
+  },
+  investigation: { available: false },
+};
+
+/**
+ * A token asset that IS reconcilable, observed on-chain, with no system of record
+ * configured — the honest MISSING_AUTHORITATIVE_DATA case. Kept separate from the
+ * wallet: for the wallet, configuring a source would change nothing.
+ */
+const sourceMissingPayload = {
+  state: 'not_evaluated',
+  asset: { id: 'a3', name: 'Demo Seed Tokenized Bond', asset_type: 'contract' },
+  onchain_state: {
+    availability: 'AVAILABLE',
+    total_supply_applicability: 'APPLICABLE',
+    available: true,
+    total_supply: '5000000',
+    observed_at: '2026-08-28T11:59:00Z',
   },
   authoritative_state: { availability: 'NOT_CONFIGURED', source_status: 'missing', available: false },
   reconciliation: null,
@@ -249,7 +293,7 @@ test('a token-bearing asset keeps its supply rows applicable', () => {
 
 /* ── No fabricated variance (items 6 & 12) ────────────────────────── */
 test('a missing authoritative source yields MISSING_AUTHORITATIVE_DATA and no variance', () => {
-  const view = reconciliationView(walletPayload);
+  const view = reconciliationView(sourceMissingPayload);
   expect(view.evaluated).toBe(false);
   expect(view.status).toBe('MISSING_AUTHORITATIVE_DATA');
   expect(view.reason_code).toBe('AUTHORITATIVE_SOURCE_MISSING');
@@ -300,7 +344,7 @@ test('a configured-but-never-evaluated asset gets its own sentence, not "no evid
   expect(meaning).toContain('not a clean bill of health');
 
   // Other statuses keep their existing sentence.
-  const missing = reconciliationView(walletPayload);
+  const missing = reconciliationView(sourceMissingPayload);
   expect(reconciliationMeaning(missing)).toContain('No authoritative state is recorded');
 });
 
@@ -328,14 +372,14 @@ test('Investigate Variance is offered only for an evidenced, persisted variance'
 });
 
 test('no Investigate Variance CTA exists when no variance was established', () => {
-  const cta = assessorCta(walletPayload, reconciliationView(walletPayload));
+  const cta = assessorCta(sourceMissingPayload, reconciliationView(sourceMissingPayload));
   expect(cta.kind).toBe('configure');
   expect(cta.label).not.toContain('Investigate');
   expect(cta.label).toBe('Configure Monitoring Source');
 });
 
 test('the configure CTA reuses the EXISTING Monitoring Sources workflow', () => {
-  const cta = assessorCta(walletPayload, reconciliationView(walletPayload));
+  const cta = assessorCta(sourceMissingPayload, reconciliationView(sourceMissingPayload));
   expect(cta.destination).toBe(MONITORING_SOURCES_ROUTE);
   expect(MONITORING_SOURCES_ROUTE).toBe('/monitoring-sources');
   // No second configuration surface is introduced.
@@ -367,8 +411,8 @@ test('a healthy result offers no CTA at all', () => {
 
 /* ── AI availability (item 7) ─────────────────────────────────────── */
 test('the assessor card works with no AI and asks it to infer nothing', () => {
-  const view = reconciliationView(walletPayload);
-  const withoutAi = assessorView({ ...walletPayload, ai_assessment_view: null, ai_assessment: null }, view);
+  const view = reconciliationView(sourceMissingPayload);
+  const withoutAi = assessorView({ ...sourceMissingPayload, ai_assessment_view: null, ai_assessment: null }, view);
   expect(withoutAi.source).toBe('deterministic');
   expect(withoutAi.explanation).toContain('no authoritative operational source is configured');
   expect(withoutAi.risk_impact).toBeNull();
@@ -432,4 +476,96 @@ test('the legacy fallback follows the engine precedence: on-chain gaps resolve f
   };
   expect(reconciliationView(staleSource).status).toBe('STALE_AUTHORITATIVE_DATA');
   expect(reconciliationView(staleSource).reason_code).toBe('AUTHORITATIVE_SOURCE_STALE');
+});
+
+/* ── Not applicable is not a missing observation (items 3, 4, 8, 14) ── */
+/**
+ * The production asset. A wallet address has no token total supply, so the tab
+ * must not report a gap the operator can never close, and must not contradict
+ * its own On-Chain card, which already reads "Not applicable".
+ */
+test('a wallet reports NOT_APPLICABLE, never a missing on-chain observation', () => {
+  const view = reconciliationView(walletPayload);
+  expect(view.status).toBe('NOT_APPLICABLE');
+  expect(view.reason_code).toBe('SUPPLY_RECONCILIATION_NOT_APPLICABLE');
+  expect(view.reason_code).not.toBe('ONCHAIN_OBSERVATION_MISSING');
+  // The result card and the on-chain card agree.
+  expect(tokenSupplyApplicability(walletPayload.onchain_state)).toBe('NOT_APPLICABLE');
+});
+
+test('a not-applicable result is neither healthy nor an anomaly', () => {
+  const view = reconciliationView(walletPayload);
+  expect(isHealthyStatus(view.status)).toBe(false);
+  expect(isAnomalyStatus(view.status)).toBe(false);
+  expect(view.evaluated).toBe(false);
+  expect(reconciliationStatusVariant(view.status)).not.toBe('success');
+  expect(reconciliationStatusVariant(view.status)).not.toBe('danger');
+});
+
+test('a not-applicable result carries no variance, severity or rule', () => {
+  const view = reconciliationView(walletPayload);
+  expect(view.variance_units).toBeNull();
+  expect(view.severity).toBeNull();
+  expect(view.rule_id).toBeNull();
+  expect(view.evaluated_at).toBeNull();
+});
+
+test('NOT_APPLICABLE is distinguished from every other absent-data state', () => {
+  // Item 8: these must not collapse into one another.
+  const statuses = ['NOT_APPLICABLE', 'MISSING_AUTHORITATIVE_DATA', 'SOURCE_UNAVAILABLE',
+                    'STALE_AUTHORITATIVE_DATA', 'INSUFFICIENT_EVIDENCE'];
+  const labels = statuses.map(reconciliationStatusLabel);
+  expect(new Set(labels).size).toBe(statuses.length);
+  const meanings = statuses.map((status) => reconciliationMeaning({ ...reconciliationView(walletPayload), status }));
+  expect(new Set(meanings).size).toBe(statuses.length);
+});
+
+test('a not-applicable asset is offered no dead-end Configure CTA', () => {
+  // No monitoring source gives a wallet address a token total supply, so
+  // offering to configure one would send the operator after a dead end.
+  const cta = assessorCta(walletPayload, reconciliationView(walletPayload));
+  expect(cta.kind).toBe('none');
+  expect(cta.destination).toBeNull();
+  expect(cta.label).not.toContain('Investigate');
+  expect(cta.hint).toContain('does not apply');
+});
+
+test('the not-applicable narrative never claims data is missing', () => {
+  const view = reconciliationView(walletPayload);
+  const withoutAi = assessorView({ ...walletPayload, ai_assessment_view: null, ai_assessment: null }, view);
+  expect(withoutAi.source).toBe('deterministic');
+  expect(withoutAi.explanation).toContain('does not apply');
+  expect(withoutAi.explanation).not.toContain('has not been collected');
+  expect(withoutAi.explanation).not.toContain('no authoritative operational source is configured');
+  // Still never a clean bill of health for the asset itself.
+  expect(withoutAi.explanation).toContain('not a clean bill of health');
+  expect(withoutAi.risk_impact).toBeNull();
+  expect(withoutAi.assessment).toBe('Limited');
+});
+
+test('the on-chain card does not promise a fix that cannot exist', () => {
+  // The "link a monitoring target so supply is observed" note is gated on
+  // applicability — it must not be shown for an asset that has no supply.
+  expect(panelSrc).toContain('{!supplyApplies ? (');
+  expect(panelSrc).toContain('supply reconciliation does not apply to it');
+});
+
+test('the four panels still render for a not-applicable asset', () => {
+  // The shell invariant holds for this state like every other.
+  const view = reconciliationView(walletPayload);
+  expect(reconciliationStatusLabel(view.status)).toBe('Not Applicable');
+  expect(integrityBanner({ loading: false, error: '', httpStatus: null })).toBeNull();
+  for (const card of ['aria-label="On-chain state"', 'aria-label="Authoritative state"',
+                      'aria-label="Reconciliation result"', 'aria-label="AI Asset Risk Assessor"']) {
+    expect(panelSrc).toContain(card);
+  }
+});
+
+test('the legacy fallback also resolves applicability before any evidence gap', () => {
+  // An older API that sends no reconciliation_view must reach the same verdict.
+  const legacy = { ...walletPayload, reconciliation_view: undefined, reconciliation: null };
+  const view = reconciliationView(legacy);
+  expect(view.status).toBe('NOT_APPLICABLE');
+  expect(view.reason_code).toBe('SUPPLY_RECONCILIATION_NOT_APPLICABLE');
+  expect(view.evaluated).toBe(false);
 });

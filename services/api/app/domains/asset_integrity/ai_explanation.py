@@ -43,6 +43,7 @@ _REASON_PHRASES = {
     'AUTHORITATIVE_SOURCE_UNAVAILABLE': 'the authoritative source could not be reached on its last attempt',
     'ONCHAIN_OBSERVATION_MISSING': 'no on-chain supply observation is stored for this asset',
     'ONCHAIN_OBSERVATION_STALE': 'the stored on-chain observation is older than the configured freshness threshold',
+    'SUPPLY_RECONCILIATION_NOT_APPLICABLE': 'this asset has no token total supply to reconcile',
 }
 
 _RISK_IMPACT_BY_SEVERITY = {'critical': 'Critical', 'high': 'High', 'medium': 'Medium', 'low': 'Low'}
@@ -98,6 +99,15 @@ def build_deterministic_summary(facts: dict[str, Any]) -> dict[str, Any]:
             f'by {_format_units(variance)} units, and {reason_phrase(reason_code)}. '
             f'A blockchain transaction can be cryptographically valid and still be operationally unauthorized.'
         )
+    elif status == 'NOT_APPLICABLE':
+        # Nothing is missing here, so the data-availability sentence below would
+        # be false: it would promise a verdict once evidence arrives, for a
+        # dimension that does not exist for this asset.
+        explanation = (
+            f'Supply reconciliation does not apply to {name}: {reason_phrase(reason_code)}. '
+            f'No supply variance can be computed for it, and none is implied — this is not a clean bill of health '
+            f'for the asset, only a statement that this particular check does not apply.'
+        )
     else:
         explanation = (
             f'Reconciliation could not establish integrity for {name} because {reason_phrase(reason_code)}. '
@@ -111,9 +121,15 @@ def build_deterministic_summary(facts: dict[str, Any]) -> dict[str, Any]:
             'Open an investigation so the variance is tracked with its evidence.',
         ]
     elif status in ('STALE_AUTHORITATIVE_DATA', 'SOURCE_UNAVAILABLE', 'MISSING_AUTHORITATIVE_DATA'):
-        next_steps = [f'Restore or refresh the {source} feed, then re-run reconciliation.']
+        next_steps = [f'Restore or refresh {source}, then re-run reconciliation.']
     elif status == 'INSUFFICIENT_EVIDENCE':
         next_steps = ['Confirm the asset has a monitoring target collecting on-chain supply observations.']
+    elif status == 'NOT_APPLICABLE':
+        # Deliberately no "configure a source" step: no configuration gives a
+        # wallet address a token total supply.
+        next_steps = [
+            'Register the token contract on this asset if supply reconciliation is expected to apply to it.',
+        ]
 
     return {
         'explanation': _clip(explanation),

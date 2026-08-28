@@ -160,7 +160,15 @@ function OnChainStateCard({ state, asset }: { state: any; asset?: any }) {
           : null}
       </Row>
 
-      {!observed ? (
+      {/* A wallet address has no token total supply, so telling the operator to
+          link a target "so supply is observed" would promise a fix for a gap that
+          cannot close. Each case states only what is true of it. */}
+      {!supplyApplies ? (
+        <p className="integrityEmptyNote">
+          This asset has no token total supply, so supply reconciliation does not apply to it. Register a
+          token contract on the asset if it should be reconciled against one.
+        </p>
+      ) : !observed ? (
         <p className="integrityEmptyNote">
           No on-chain supply observation is stored for this asset. Link a monitoring target so supply is
           observed, then reconciliation can run.

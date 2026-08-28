@@ -218,9 +218,18 @@ test('only a backend RECONCILED/AUTHORIZED result is styled as success', () => {
 
 test('an unexplained variance is the only status styled as a critical anomaly', () => {
   expect(reconciliationStatusVariant('UNEXPLAINED_VARIANCE')).toBe('danger');
+  // Nothing we could not establish is ever styled as an anomaly or as healthy.
   for (const status of INDETERMINATE_STATUSES) {
+    expect(reconciliationStatusVariant(status)).not.toBe('danger');
+    expect(reconciliationStatusVariant(status)).not.toBe('success');
+  }
+  // An unresolved gap is amber, because it is pending on someone.
+  for (const status of ['SOURCE_UNAVAILABLE', 'MISSING_AUTHORITATIVE_DATA',
+                        'STALE_AUTHORITATIVE_DATA', 'INSUFFICIENT_EVIDENCE']) {
     expect(reconciliationStatusVariant(status)).toBe('warning');
   }
+  // A check that does not apply is pending on nobody, so it is neutral, not amber.
+  expect(reconciliationStatusVariant('NOT_APPLICABLE')).toBe('neutral');
   expect(ANOMALY_STATUSES).toEqual(['UNEXPLAINED_VARIANCE']);
 });
 
