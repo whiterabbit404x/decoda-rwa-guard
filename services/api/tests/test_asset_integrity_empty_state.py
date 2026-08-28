@@ -351,9 +351,41 @@ def test_a_stale_source_projects_stale_data(integrity_get):
 
 
 def test_no_observation_projects_insufficient_evidence(integrity_get):
-    view = integrity_get(FakeConn())['reconciliation_view']
+    """For an asset supply DOES apply to, a missing observation is a real gap."""
+    view = integrity_get(FakeConn(asset=TOKEN_ASSET))['reconciliation_view']
     assert view['status'] == engine.INSUFFICIENT_EVIDENCE
     assert view['reason_code'] == engine.ONCHAIN_OBSERVATION_MISSING
+
+
+def test_a_wallet_is_not_applicable_rather_than_missing_an_observation(integrity_get):
+    """The production case. A wallet address has no token total supply, so the
+    verdict must not name a missing observation the operator can never supply —
+    and must not contradict the On-Chain card's own "Not applicable"."""
+    payload = integrity_get(FakeConn())
+    view = payload['reconciliation_view']
+    assert view['status'] == engine.NOT_APPLICABLE
+    assert view['reason_code'] == engine.SUPPLY_RECONCILIATION_NOT_APPLICABLE
+    assert view['reason_code'] != engine.ONCHAIN_OBSERVATION_MISSING
+    # The two cards agree.
+    assert payload['onchain_state']['total_supply_applicability'] == endpoints.APPLICABILITY_NOT_APPLICABLE
+    # Still not a verdict: no variance, no severity, no rule stamp.
+    assert view['evaluated'] is False
+    assert view['variance_units'] is None
+    assert view['severity'] is None
+    assert view['is_anomaly'] is False
+
+
+def test_a_not_applicable_wallet_is_never_reported_as_healthy(integrity_get):
+    view = integrity_get(FakeConn())['reconciliation_view']
+    assert view['status'] not in (engine.RECONCILED, engine.AUTHORIZED_VARIANCE)
+    assert view['is_indeterminate'] is True
+
+
+def test_a_wallet_that_gains_a_supply_observation_becomes_applicable(integrity_get):
+    """Applicability is asserted from facts, not from the asset_type label: an
+    actually observed supply makes the dimension apply."""
+    view = integrity_get(FakeConn(onchain=_onchain_row()))['reconciliation_view']
+    assert view['status'] != engine.NOT_APPLICABLE
 
 
 def test_a_projection_never_reports_an_anomaly_or_a_clean_result(integrity_get):
@@ -469,7 +501,30 @@ def test_the_assessor_payload_exists_without_ai_and_without_a_snapshot(integrity
     # No severity was computed, so no risk impact is claimed.
     assert view['risk_impact'] is None
     assert view['explanation']
+
+
+def test_the_configure_cta_appears_where_configuring_is_actually_the_fix(integrity_get):
+    """An observed token asset with no system of record: configuring one is
+    exactly what unblocks reconciliation."""
+    view = integrity_get(FakeConn(asset=TOKEN_ASSET, onchain=_onchain_row()))['ai_assessment_view']
     assert view['cta'] == 'configure_monitoring_source'
+
+
+def test_a_not_applicable_asset_offers_no_configure_cta(integrity_get):
+    """No monitoring source gives a wallet address a token total supply, so
+    offering to configure one would send the operator after a dead end."""
+    view = integrity_get(FakeConn())['ai_assessment_view']
+    assert view['cta'] is None
+    assert view['assessment_reason'] == engine.SUPPLY_RECONCILIATION_NOT_APPLICABLE
+
+
+def test_the_not_applicable_narrative_does_not_claim_missing_data(integrity_get):
+    view = integrity_get(FakeConn())['ai_assessment_view']
+    explanation = view['explanation'].lower()
+    assert 'does not apply' in explanation
+    # It must not tell the operator to collect an observation that cannot exist.
+    assert 'no on-chain supply observation is stored' not in explanation
+    assert not any('monitoring target collecting on-chain supply' in s for s in view['next_steps'])
 
 
 def test_the_assessor_cta_is_investigate_only_for_a_persisted_anomaly(integrity_get):

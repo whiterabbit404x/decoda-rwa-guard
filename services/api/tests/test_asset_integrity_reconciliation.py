@@ -367,11 +367,28 @@ def test_tolerance_does_not_absorb_a_real_variance():
 
 
 def test_severity_never_exceeds_medium_for_indeterminate_states():
+    # A state we could not establish is never escalated to high/critical, however
+    # large the numbers attached to it are.
     for status_value in sorted(r.INDETERMINATE_STATUSES):
         assert r.compute_severity(
             status=status_value, reason_code='X', variance_units=Decimal('999999999'),
             expected_supply=Decimal('1'), operation='mint',
+        ) in ('low', 'medium')
+
+
+def test_an_unestablished_state_is_medium_but_a_non_applicable_one_is_low():
+    # Missing/stale/unavailable evidence is a data-quality problem to chase.
+    for status_value in (r.STALE_AUTHORITATIVE_DATA, r.MISSING_AUTHORITATIVE_DATA,
+                         r.INSUFFICIENT_EVIDENCE, r.SOURCE_UNAVAILABLE):
+        assert r.compute_severity(
+            status=status_value, reason_code='X', variance_units=None,
+            expected_supply=None, operation=None,
         ) == 'medium'
+    # A dimension that does not apply to the asset is not a gap to chase at all.
+    assert r.compute_severity(
+        status=r.NOT_APPLICABLE, reason_code=r.SUPPLY_RECONCILIATION_NOT_APPLICABLE,
+        variance_units=None, expected_supply=None, operation=None,
+    ) == 'low'
 
 
 def test_severity_for_a_healthy_result_is_low():
@@ -403,3 +420,51 @@ def test_every_declared_status_is_classified():
     for status_value in r.RECONCILIATION_STATUSES:
         healthy = status_value in (r.RECONCILED, r.AUTHORIZED_VARIANCE)
         assert healthy or status_value in r.ANOMALY_STATUSES or status_value in r.INDETERMINATE_STATUSES
+
+
+# --------------------------------------------------------------------------
+# Applicability — resolved before every evidence gap
+# --------------------------------------------------------------------------
+def test_supply_reconciliation_that_does_not_apply_is_not_an_evidence_gap():
+    """A wallet has no token supply, so "no observation stored" would name a gap
+    that can never close. NOT_APPLICABLE says so instead."""
+    result = r.evaluate(onchain=None, authoritative=None, supply_applicable=False)
+    assert result.status == r.NOT_APPLICABLE
+    assert result.reason_code == r.SUPPLY_RECONCILIATION_NOT_APPLICABLE
+    assert result.status != r.INSUFFICIENT_EVIDENCE
+    assert result.reason_code != r.ONCHAIN_OBSERVATION_MISSING
+
+
+def test_a_not_applicable_result_is_neither_healthy_nor_an_anomaly():
+    result = r.evaluate(onchain=None, authoritative=None, supply_applicable=False)
+    assert result.is_anomaly is False
+    assert result.is_indeterminate is True
+    assert result.status not in (r.RECONCILED, r.AUTHORIZED_VARIANCE)
+
+
+def test_a_not_applicable_result_carries_no_variance_or_supply():
+    result = r.evaluate(onchain=None, authoritative=None, supply_applicable=False)
+    assert result.variance_units is None
+    assert result.observed_supply is None
+    assert result.expected_supply is None
+
+
+def test_applicability_outranks_a_full_set_of_usable_inputs():
+    """Even with inputs that would otherwise produce a verdict, a dimension that
+    does not apply cannot yield one."""
+    result = r.evaluate(
+        onchain=r.OnChainObservation(total_supply=Decimal('5000000'), observed_at=NOW, available=True),
+        authoritative=r.AuthoritativeState(
+            expected_total_supply=Decimal('5000000'), observed_at=NOW,
+            settlement_state='settled', source_status='reported',
+        ),
+        now=NOW,
+        supply_applicable=False,
+    )
+    assert result.status == r.NOT_APPLICABLE
+    assert result.variance_units is None
+
+
+def test_supply_applicable_defaults_to_true_so_existing_callers_are_unchanged():
+    assert r.evaluate(onchain=None, authoritative=None).status == r.INSUFFICIENT_EVIDENCE
+    assert r.evaluate(onchain=None, authoritative=None).reason_code == r.ONCHAIN_OBSERVATION_MISSING

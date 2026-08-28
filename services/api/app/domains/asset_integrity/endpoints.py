@@ -32,7 +32,6 @@ from services.api.app.domains.asset_integrity import reconciliation as engine
 from services.api.app.domains.asset_integrity import service
 # Asset-type applicability (reserve_required_for) is the EXISTING shared vocabulary
 # for "this field does not apply to this kind of asset" — reused, not duplicated.
-from services.api.app.domains.asset_risk import config as arc
 
 try:  # fastapi is stubbed in the offline test runner
     from fastapi import HTTPException, status
@@ -66,8 +65,10 @@ AVAILABILITY_STALE = 'STALE'
 AVAILABILITY_SOURCE_UNAVAILABLE = 'SOURCE_UNAVAILABLE'
 AVAILABILITY_NOT_CONFIGURED = 'NOT_CONFIGURED'
 
-APPLICABILITY_APPLICABLE = 'APPLICABLE'
-APPLICABILITY_NOT_APPLICABLE = 'NOT_APPLICABLE'
+# Canonical in ``service`` so the read path and the persist path share ONE
+# applicability fact; re-exported here for the payload builders below.
+APPLICABILITY_APPLICABLE = service.APPLICABILITY_APPLICABLE
+APPLICABILITY_NOT_APPLICABLE = service.APPLICABILITY_NOT_APPLICABLE
 
 # Reason code for "configured, but no reconciliation has been recorded yet". The
 # status stays the existing INSUFFICIENT_EVIDENCE — this only names why.
@@ -77,18 +78,11 @@ RECONCILIATION_NOT_EVALUATED = 'RECONCILIATION_NOT_EVALUATED'
 def _token_supply_applicability(asset: dict[str, Any], onchain_row: Optional[dict[str, Any]]) -> str:
     """Whether a token TOTAL SUPPLY is a meaningful field for this asset.
 
-    A wallet is not a token contract: it has no total supply to observe, and
-    reporting one as "Unavailable" would imply a value we failed to collect.
-    Applicability is asserted from real facts only — an actual observed supply,
-    a registered token contract, or a reserve-backed RWA type.
+    Delegates to the canonical rule in ``service`` — the same fact the persisted
+    evaluation uses — so the On-Chain card's "Not applicable" and the
+    reconciliation verdict can never contradict each other.
     """
-    if onchain_row is not None and onchain_row.get('total_supply') is not None:
-        return APPLICABILITY_APPLICABLE
-    if str(asset.get('token_contract_address') or '').strip():
-        return APPLICABILITY_APPLICABLE
-    if arc.reserve_required_for(asset.get('rwa_asset_type'), asset.get('reserve_feed_type')):
-        return APPLICABILITY_APPLICABLE
-    return APPLICABILITY_NOT_APPLICABLE
+    return service.token_supply_applicability(asset, onchain_row)
 
 
 _ASSET_COLUMNS = (
@@ -315,6 +309,7 @@ def _projected_reconciliation(
     authoritative_row: Optional[dict[str, Any]],
     now: Any,
     config: dict[str, Any],
+    supply_applicable: bool = True,
 ) -> dict[str, Any]:
     """Why reconciliation CANNOT yield a verdict right now — never a verdict itself.
 
@@ -336,6 +331,7 @@ def _projected_reconciliation(
         authorizations=(),
         rules=aic.rules_from_config(config),
         now=now,
+        supply_applicable=supply_applicable,
     )
     status_value = str(result.status)
     reason_code = str(result.reason_code)
@@ -369,6 +365,7 @@ def _reconciliation_view(
     authoritative_row: Optional[dict[str, Any]],
     now: Any,
     config: dict[str, Any],
+    supply_applicable: bool = True,
 ) -> dict[str, Any]:
     """The RECONCILIATION RESULT card's state — ALWAYS present.
 
@@ -381,6 +378,7 @@ def _reconciliation_view(
         return {**persisted, 'evaluated': True}
     return _projected_reconciliation(
         onchain_row=onchain_row, authoritative_row=authoritative_row, now=now, config=config,
+        supply_applicable=supply_applicable,
     )
 
 
@@ -507,8 +505,15 @@ def integrity_state_endpoint(asset_id: str, request: Any) -> dict[str, Any]:
         authoritative_row = service.load_authoritative_state(connection, workspace_id=workspace_id, asset_id=asset_id)
         snapshot = service.load_latest_snapshot(connection, workspace_id=workspace_id, asset_id=asset_id)
 
+        # One applicability fact drives BOTH the On-Chain card's Total Supply row
+        # and the reconciliation verdict, so the two can never contradict each
+        # other ("Not applicable" beside "observation missing").
+        supply_applicable = (
+            _token_supply_applicability(asset, onchain_row) == APPLICABILITY_APPLICABLE
+        )
         reconciliation_view = _reconciliation_view(
             snapshot, onchain_row=onchain_row, authoritative_row=authoritative_row, now=now, config=cfg,
+            supply_applicable=supply_applicable,
         )
         payload = {
             'asset': _asset_summary(asset),
@@ -637,6 +642,7 @@ def reconcile_endpoint(asset_id: str, request: Any) -> dict[str, Any]:
         outcome = service.evaluate_and_persist(
             connection, workspace_id=workspace_id, asset_id=asset_id,
             asset_name=str(asset.get('name') or 'Asset'), trigger_source='manual', config=cfg,
+            asset=asset,
         )
         connection.commit()
         result: engine.ReconciliationResult = outcome['result']

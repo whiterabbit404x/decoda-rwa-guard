@@ -39,6 +39,11 @@ STALE_AUTHORITATIVE_DATA = 'STALE_AUTHORITATIVE_DATA'
 MISSING_AUTHORITATIVE_DATA = 'MISSING_AUTHORITATIVE_DATA'
 INSUFFICIENT_EVIDENCE = 'INSUFFICIENT_EVIDENCE'
 SOURCE_UNAVAILABLE = 'SOURCE_UNAVAILABLE'
+# Supply reconciliation does not APPLY to this kind of asset at all. A wallet
+# address has no token total supply, so there is no baseline to reconcile and no
+# observation that could ever supply one. Distinct from INSUFFICIENT_EVIDENCE,
+# which promises a verdict once the missing evidence arrives.
+NOT_APPLICABLE = 'NOT_APPLICABLE'
 
 RECONCILIATION_STATUSES = (
     RECONCILED,
@@ -48,6 +53,7 @@ RECONCILIATION_STATUSES = (
     MISSING_AUTHORITATIVE_DATA,
     INSUFFICIENT_EVIDENCE,
     SOURCE_UNAVAILABLE,
+    NOT_APPLICABLE,
 )
 
 # Statuses that assert an operational-integrity ANOMALY (a real, evidenced
@@ -63,6 +69,7 @@ INDETERMINATE_STATUSES = frozenset({
     MISSING_AUTHORITATIVE_DATA,
     INSUFFICIENT_EVIDENCE,
     SOURCE_UNAVAILABLE,
+    NOT_APPLICABLE,
 })
 
 # --------------------------------------------------------------------------
@@ -82,6 +89,7 @@ AUTHORITATIVE_SOURCE_UNAVAILABLE = 'AUTHORITATIVE_SOURCE_UNAVAILABLE'
 ONCHAIN_OBSERVATION_MISSING = 'ONCHAIN_OBSERVATION_MISSING'
 ONCHAIN_OBSERVATION_STALE = 'ONCHAIN_OBSERVATION_STALE'
 SUPPLY_MATCHES_AUTHORITATIVE_STATE = 'SUPPLY_MATCHES_AUTHORITATIVE_STATE'
+SUPPLY_RECONCILIATION_NOT_APPLICABLE = 'SUPPLY_RECONCILIATION_NOT_APPLICABLE'
 
 REASON_CODES = (
     MATCHED_AUTHORIZED_ISSUANCE,
@@ -98,6 +106,7 @@ REASON_CODES = (
     ONCHAIN_OBSERVATION_MISSING,
     ONCHAIN_OBSERVATION_STALE,
     SUPPLY_MATCHES_AUTHORITATIVE_STATE,
+    SUPPLY_RECONCILIATION_NOT_APPLICABLE,
 )
 
 # Matcher outcomes.
@@ -393,6 +402,9 @@ def compute_severity(
     """
     if status in (RECONCILED, AUTHORIZED_VARIANCE):
         return 'low'
+    # A dimension that does not apply is not a data-quality gap to chase.
+    if status == NOT_APPLICABLE:
+        return 'low'
     if status in INDETERMINATE_STATUSES:
         return 'medium'
     if status != UNEXPLAINED_VARIANCE:
@@ -432,6 +444,7 @@ def evaluate(
     authorizations: Sequence[AuthorizedIssuance] = (),
     rules: Optional[ReconciliationRules] = None,
     now: Any = None,
+    supply_applicable: bool = True,
 ) -> ReconciliationResult:
     """Reconcile an on-chain observation against authoritative business state.
 
@@ -468,6 +481,17 @@ def evaluate(
             authoritative_age_seconds=kw.pop('authoritative_age_seconds', None),
             data_gaps=list(data_gaps),
         )
+
+    # 0. Does supply reconciliation APPLY to this asset at all?
+    #
+    # Resolved before every evidence check, because no evidence can settle it: a
+    # wallet address has no token total supply, so "no observation is stored"
+    # would name a gap that can never close and would send the operator to
+    # configure collection that cannot produce the field. Not applicable is not
+    # healthy either — it stays indeterminate, and carries no variance.
+    if not supply_applicable:
+        data_gaps.append('Token supply reconciliation does not apply to this kind of asset.')
+        return result(NOT_APPLICABLE, SUPPLY_RECONCILIATION_NOT_APPLICABLE)
 
     # 1. On-chain observation must exist and be usable.
     if onchain is None or not onchain.available or onchain.total_supply is None:

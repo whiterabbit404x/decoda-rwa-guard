@@ -19,7 +19,11 @@ export type ReconciliationStatus =
   | 'STALE_AUTHORITATIVE_DATA'
   | 'MISSING_AUTHORITATIVE_DATA'
   | 'INSUFFICIENT_EVIDENCE'
-  | 'SOURCE_UNAVAILABLE';
+  | 'SOURCE_UNAVAILABLE'
+  // Supply reconciliation does not APPLY to this kind of asset (a wallet has no
+  // token total supply). Distinct from INSUFFICIENT_EVIDENCE, which promises a
+  // verdict once the missing evidence arrives.
+  | 'NOT_APPLICABLE';
 
 export type IntegrityPanelState =
   | 'loading'
@@ -39,6 +43,7 @@ export const INDETERMINATE_STATUSES: readonly ReconciliationStatus[] = [
   'MISSING_AUTHORITATIVE_DATA',
   'INSUFFICIENT_EVIDENCE',
   'SOURCE_UNAVAILABLE',
+  'NOT_APPLICABLE',
 ];
 
 const HEALTHY_STATUSES: readonly ReconciliationStatus[] = ['RECONCILED', 'AUTHORIZED_VARIANCE'];
@@ -63,6 +68,7 @@ const STATUS_LABELS: Record<string, string> = {
   MISSING_AUTHORITATIVE_DATA: 'Missing Authoritative Data',
   INSUFFICIENT_EVIDENCE: 'Insufficient Evidence',
   SOURCE_UNAVAILABLE: 'Source Unavailable',
+  NOT_APPLICABLE: 'Not Applicable',
 };
 
 export function reconciliationStatusLabel(status: string | null | undefined): string {
@@ -80,6 +86,8 @@ export function reconciliationStatusVariant(status: string | null | undefined): 
   const key = String(status || '').toUpperCase();
   if (key === 'RECONCILED' || key === 'AUTHORIZED_VARIANCE') return 'success';
   if (key === 'UNEXPLAINED_VARIANCE') return 'danger';
+  // Not applicable is neutral, not amber: there is no gap to chase.
+  if (key === 'NOT_APPLICABLE') return 'neutral';
   if (INDETERMINATE_STATUSES.includes(key as ReconciliationStatus)) return 'warning';
   return 'neutral';
 }
@@ -93,6 +101,7 @@ const STATUS_MEANING: Record<string, string> = {
   MISSING_AUTHORITATIVE_DATA: 'No authoritative state is recorded, so there is nothing to reconcile against. This is not an anomaly, and not a clean bill of health.',
   INSUFFICIENT_EVIDENCE: 'There is not enough stored evidence to reach a verdict. This is not an anomaly, and not a clean bill of health.',
   SOURCE_UNAVAILABLE: 'The authoritative source could not be reached, so integrity could not be established. This is not an anomaly, and not a clean bill of health.',
+  NOT_APPLICABLE: 'This asset has no token total supply, so supply reconciliation does not apply to it. Nothing is missing and no variance can exist — this is not a clean bill of health for the asset, only for this check.',
 };
 
 export function reconciliationStatusMeaning(status: string | null | undefined): string {
@@ -371,6 +380,8 @@ export function reconciliationView(payload: any): ReconciliationView {
  */
 function fallbackIndeterminateStatus(payload: any): ReconciliationStatus {
   if (!payload) return 'INSUFFICIENT_EVIDENCE';
+  // Mirrors the engine: applicability is resolved before any evidence gap.
+  if (tokenSupplyApplicability(payload.onchain_state) === 'NOT_APPLICABLE') return 'NOT_APPLICABLE';
   const onchain = onchainAvailability(payload.onchain_state);
   if (onchain !== 'AVAILABLE') return 'INSUFFICIENT_EVIDENCE';
   const authoritative = authoritativeAvailability(payload.authoritative_state);
@@ -383,6 +394,7 @@ function fallbackIndeterminateStatus(payload: any): ReconciliationStatus {
 function fallbackReasonCode(payload: any): string | null {
   if (!payload) return null;
   switch (fallbackIndeterminateStatus(payload)) {
+    case 'NOT_APPLICABLE': return 'SUPPLY_RECONCILIATION_NOT_APPLICABLE';
     case 'MISSING_AUTHORITATIVE_DATA': return 'AUTHORITATIVE_SOURCE_MISSING';
     case 'SOURCE_UNAVAILABLE': return 'AUTHORITATIVE_SOURCE_UNAVAILABLE';
     case 'STALE_AUTHORITATIVE_DATA': return 'AUTHORITATIVE_SOURCE_STALE';
@@ -440,6 +452,9 @@ export function assessorView(payload: any, view: ReconciliationView): AssessorVi
 }
 
 function defaultAssessorExplanation(view: ReconciliationView): string {
+  if (view.status === 'NOT_APPLICABLE') {
+    return 'Supply reconciliation does not apply to this asset: it has no token total supply to reconcile. No variance can exist for it, and none is implied — this is not a clean bill of health for the asset, only for this check.';
+  }
   if (view.status === 'MISSING_AUTHORITATIVE_DATA') {
     return 'Asset integrity reconciliation cannot be completed because no authoritative operational source is configured for this asset.';
   }
@@ -604,6 +619,17 @@ export function assessorCta(
       enabled: false,
       label: 'No action required',
       hint: 'Reconciliation found no variance to act on.',
+      destination: null,
+    };
+  }
+  // No monitoring source gives a wallet address a token total supply, so
+  // offering to configure one would send the operator after a dead end.
+  if (view.status === 'NOT_APPLICABLE') {
+    return {
+      kind: 'none',
+      enabled: false,
+      label: 'No action required',
+      hint: 'Supply reconciliation does not apply to this asset, so there is nothing to configure for it here.',
       destination: null,
     };
   }
