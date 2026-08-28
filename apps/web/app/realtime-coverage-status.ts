@@ -192,6 +192,17 @@ export function stripLegacyWebSocketWording(headline: string | null | undefined)
 }
 
 /**
+ * The RPC polling line while the PRIMARY realtime path (QuickNode Streams) is proven
+ * healthy with fresh live evidence.
+ *
+ * The backend headline ("Stable polling active.") is true about the polling loop but
+ * reads as though polling were the realtime monitoring mechanism. It is not — it is
+ * the intentional fallback standing by, so it is reported as available rather than as
+ * the path carrying coverage.
+ */
+export const FALLBACK_POLLING_READY_COPY = 'Fallback polling ready.';
+
+/**
  * The worker/coverage status line for a status strip: the stable RPC polling half
  * of the canonical worker headline (with the legacy WebSocket clause removed),
  * followed by the truthful QuickNode Stream condition.
@@ -211,6 +222,15 @@ export function realtimeWorkerStatusLine(
     || worker?.realtime?.fallback_active === true;
   if (!realtimeLine && !workerNotable) {
     return null;
+  }
+  // Derived from the canonical realtime verdict, never from a fixed state: while the
+  // primary Stream is healthy with fresh live evidence AND the polling loop is alive,
+  // polling is the fallback standing by, so it is reported as ready rather than as the
+  // active monitoring mechanism. The moment the Stream stops proving itself
+  // realtimeLine is non-null and the stronger fallback wording below — the backend's
+  // own headline, which names the handoff — takes over again.
+  if (!realtimeLine && realtimeLiveCoverageFresh(facts) && worker?.stable_polling?.active === true) {
+    return FALLBACK_POLLING_READY_COPY;
   }
   const parts: string[] = [];
   const workerLine = stripLegacyWebSocketWording(worker?.headline);

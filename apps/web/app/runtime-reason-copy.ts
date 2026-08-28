@@ -6,9 +6,19 @@
 // prioritization in build_workspace_monitoring_summary. Both spell the same
 // condition, so both resolve to the same sentence — the raw wire code is never
 // what a customer reads.
+//
+// `status_reason` carries BOTH outcomes: a limitation ("telemetry is stale") and a
+// verified-healthy runtime ("live_runtime_verified"). Only the first kind is a
+// limitation, so the success codes are named here (isSuccessRuntimeReason) and a
+// surface must never file one under a limitation/problem field — that tells a
+// customer their verified-live runtime is degraded.
 // ---------------------------------------------------------------------------
 
 const REASON_CODE_MESSAGES: Record<string, string> = {
+  // Success reason — the backend verified the live runtime. Phrased as the positive
+  // statement it is, so a surface that does render reason text never reads as a
+  // limitation (and never falls through to the generic "Runtime condition: ..." form).
+  live_runtime_verified: 'Live runtime verified.',
   summary_unavailable: 'Runtime summary is unavailable. Recheck workspace connectivity.',
   workspace_unconfigured: 'Workspace setup is incomplete. Finish onboarding to enable live monitoring.',
   no_reporting_systems: 'No monitored systems are reporting. Enable and verify monitoring sources.',
@@ -42,13 +52,33 @@ const REASON_CODE_MESSAGES: Record<string, string> = {
   cross_page_count_mismatch: 'Cross-page count mismatch detected. Reconcile canonical runtime totals before proceeding.',
 };
 
+/**
+ * Reason codes that report a SUCCESSFUL runtime condition rather than a limitation.
+ * The backend emits `live_runtime_verified` exactly when it has proven the runtime
+ * live (monitoring_runner: runtime_status_summary == 'live' with no other reason).
+ */
+const SUCCESS_REASON_CODES = new Set(['live_runtime_verified']);
+
+function bareReasonCode(code: string | null | undefined): string {
+  const normalized = String(code ?? '').trim();
+  return normalized.startsWith('guard:') ? normalized.slice('guard:'.length) : normalized;
+}
+
+/**
+ * True when the reason code states a healthy runtime, not a problem. A caller that
+ * renders limitations must skip these: a success condition is never a limitation.
+ * Fail-closed by construction — an unknown or degraded code is never a success.
+ */
+export function isSuccessRuntimeReason(code: string | null | undefined): boolean {
+  return SUCCESS_REASON_CODES.has(bareReasonCode(code));
+}
 
 export function runtimeReasonMessage(code: string): string {
   const normalized = String(code ?? '').trim();
-  const bare = normalized.startsWith('guard:') ? normalized.slice('guard:'.length) : normalized;
+  const bare = bareReasonCode(normalized);
   return REASON_CODE_MESSAGES[normalized]
     ?? REASON_CODE_MESSAGES[bare]
     ?? `Runtime condition: ${bare.replaceAll('_', ' ')}.`;
 }
 
-export { REASON_CODE_MESSAGES };
+export { REASON_CODE_MESSAGES, SUCCESS_REASON_CODES };
