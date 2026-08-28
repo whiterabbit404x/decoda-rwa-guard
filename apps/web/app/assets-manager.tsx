@@ -7,8 +7,9 @@ import { usePilotAuth } from './pilot-auth-context';
 import { parseTagInput } from './policy-builders';
 import { classifyApiTransportError } from './auth-diagnostics';
 import { normalizeApiBaseUrl, isValidApiBaseUrl } from './api-config';
-import { DataTable, StatusPill, type PillVariant } from './components/ui-primitives';
+import { DataTable, StatusPill, TabStrip, type PillVariant } from './components/ui-primitives';
 import AssetRiskAssessorPanel from './asset-risk-assessor-panel';
+import AssetIntegrityPanel from './asset-integrity-panel';
 import {
   RISK_SCORE_TOOLTIP,
   RWA_TYPE_OPTIONS,
@@ -138,6 +139,25 @@ const QUICK_PRESETS = [
 ] as const;
 
 const ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
+
+// Asset detail tabs. "Integrity" is the deterministic reconciliation view added
+// in the Asset Integrity upgrade; the other tabs preserve the existing detail
+// content, redistributed rather than removed.
+export const ASSET_DETAIL_TABS = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'onchain', label: 'On-Chain' },
+  { key: 'offchain', label: 'Off-Chain' },
+  { key: 'integrity', label: 'Integrity' },
+  { key: 'history', label: 'History' },
+  { key: 'airisk', label: 'AI Risk' },
+] as const;
+
+export type AssetDetailTab = (typeof ASSET_DETAIL_TABS)[number]['key'];
+
+// Tabs whose content comes from the risk-assessment payload. The Integrity /
+// On-Chain / Off-Chain tabs read the separate integrity endpoint instead, so a
+// never-assessed asset can still show its reconciliation state.
+export const ASSESSMENT_BACKED_TABS: readonly AssetDetailTab[] = ['overview', 'history', 'airisk'];
 
 // Human-readable names + not-applicable rationale for the canonical scoring
 // dimensions (services/api/.../scoring.py DIMENSION_WEIGHTS). The drawer explains
@@ -1204,6 +1224,7 @@ function AssetDetailsDrawer({
   const [detail, setDetail] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [tab, setTab] = useState<AssetDetailTab>('overview');
 
   const loadDetail = useCallback(async () => {
     setError('');
@@ -1254,13 +1275,20 @@ function AssetDetailsDrawer({
 
   return (
     <div className="drawerOverlay" role="dialog" aria-modal="true" aria-label={`${asset.name} details`} onClick={onClose}>
-      <aside className="drawerCard" onClick={(e) => e.stopPropagation()}>
+      <aside className="drawerCard drawerCardWide" onClick={(e) => e.stopPropagation()}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
           <div>
-            <h2 style={{ margin: 0, fontSize: '1.15rem' }}>{asset.name}</h2>
+            <p className="sectionEyebrow" style={{ margin: 0 }}>Protected Asset</p>
+            <h2 style={{ margin: '0.15rem 0 0', fontSize: '1.15rem' }}>{asset.name}</h2>
             <p className="muted" style={{ margin: '0.2rem 0 0', fontFamily: 'monospace', fontSize: '0.75rem' }}>{asset.identifier}</p>
           </div>
-          <button type="button" className="btn btn-ghost" aria-label="Close details" onClick={onClose}>✕</button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span title={monitoringHealthTooltip(monHealth)}>
+              <StatusPill label={monitoringHealthLabel(monHealth)} variant={monitoringHealthVariant(monHealth)} />
+            </span>
+            <RiskBadge score={asset.risk_score} level={asset.risk_level} />
+            <button type="button" className="btn btn-ghost" aria-label="Close details" onClick={onClose}>✕</button>
+          </div>
         </div>
 
         <div className="drawerMetaGrid">
@@ -1268,11 +1296,31 @@ function AssetDetailsDrawer({
           <div><span className="drawerMetaLabel">Custodian</span><span>{asset.custodian || '—'}</span></div>
           <div><span className="drawerMetaLabel">Network</span><span>{asset.chain_network || '—'}</span></div>
           <div><span className="drawerMetaLabel">Protected value</span><span>{formatUsd(asset.value_usd)}</span></div>
-          <div><span className="drawerMetaLabel">Risk score</span><span><RiskBadge score={asset.risk_score} level={asset.risk_level} /></span></div>
-          <div><span className="drawerMetaLabel">Monitoring</span><span title={monitoringHealthTooltip(monHealth)}><StatusPill label={monitoringHealthLabel(monHealth)} variant={monitoringHealthVariant(monHealth)} /></span></div>
+          <div><span className="drawerMetaLabel">Token symbol</span><span>{asset.token_symbol || '—'}</span></div>
         </div>
 
+        <TabStrip
+          tabs={ASSET_DETAIL_TABS as unknown as Array<{ key: string; label: string }>}
+          active={tab}
+          onChange={(key) => setTab(key as AssetDetailTab)}
+        />
+
+        {/* Integrity / On-Chain / Off-Chain read the deterministic reconciliation
+            endpoint directly, so they render truthfully even for an asset that has
+            never been risk-assessed. */}
+        {tab === 'onchain' ? <AssetIntegrityPanel assetId={String(asset.id)} view="onchain" /> : null}
+        {tab === 'offchain' ? <AssetIntegrityPanel assetId={String(asset.id)} view="offchain" /> : null}
+        {tab === 'integrity' ? <AssetIntegrityPanel assetId={String(asset.id)} view="integrity" /> : null}
+
+        {tab === 'history' ? (
+          <div className="drawerSection">
+            <h3 className="drawerSectionTitle">Reconciliation history</h3>
+            <AssetIntegrityPanel assetId={String(asset.id)} view="history" />
+          </div>
+        ) : null}
+
         {/* Identity & configuration (independent of assessment) */}
+        {tab === 'overview' ? (
         <div className="drawerSection">
           <h3 className="drawerSectionTitle">Configuration</h3>
           {asset.token_contract_address ? (
@@ -1295,8 +1343,9 @@ function AssetDetailsDrawer({
               : <DataLabel kind="not_applicable" />}
           </div>
         </div>
+        ) : null}
 
-        {loading ? (
+        {ASSESSMENT_BACKED_TABS.includes(tab) ? (loading ? (
           <div className="assetsTableSkeleton"><div className="skelBlock" style={{ height: '80px' }} /><div className="skelBlock" style={{ height: '120px' }} /></div>
         ) : error ? (
           <p className="statusLine" role="alert">{error}</p>
@@ -1311,6 +1360,7 @@ function AssetDetailsDrawer({
         ) : (
           <>
             {/* Reserve coverage — only meaningful when reserve backing applies. */}
+            {tab === 'overview' ? (
             <div className="drawerSection">
               <h3 className="drawerSectionTitle">Reserve coverage</h3>
               <div className="drawerKvRow">
@@ -1329,8 +1379,10 @@ function AssetDetailsDrawer({
                 </p>
               )}
             </div>
+            ) : null}
 
             {/* Confidence & completeness */}
+            {tab === 'overview' ? (
             <div className="drawerSection">
               <h3 className="drawerSectionTitle">Confidence &amp; completeness</h3>
               <div className="drawerKvRow"><span>Confidence</span><strong>{Math.round((Number(assessment.confidence) || 0) * 100)}%</strong></div>
@@ -1340,11 +1392,13 @@ function AssetDetailsDrawer({
                 The assessment status describes whether the run finished (e.g. Complete = finished successfully); the monitoring health above describes the resulting condition (e.g. Critical = a monitoring gap needs attention). A completed assessment stays Complete even when its risk is high.
               </p>
             </div>
+            ) : null}
 
             {/* Risk breakdown — every applicable dimension shows its score, weight,
                 and weighted contribution so the headline score is fully explained.
                 Not-applicable dimensions (e.g. reserve/oracle for a wallet) are shown
                 as n/a with the reason — their weight is redistributed, never a 0. */}
+            {tab === 'airisk' ? (
             <div className="drawerSection">
               <h3 className="drawerSectionTitle">Risk score breakdown</h3>
               <p className="muted" style={{ margin: '0 0 0.4rem', fontSize: '0.72rem' }}>
@@ -1378,8 +1432,10 @@ function AssetDetailsDrawer({
                 );
               })}
             </div>
+            ) : null}
 
             {/* Active findings + monitoring gaps */}
+            {tab === 'overview' ? (
             <div className="drawerSection">
               <h3 className="drawerSectionTitle">Active findings ({findings.length})</h3>
               {findings.length === 0 ? (
@@ -1394,9 +1450,10 @@ function AssetDetailsDrawer({
                 </div>
               ))}
             </div>
+            ) : null}
 
             {/* Last provider observations (labelled by provenance) */}
-            {valuationHistory.length > 0 ? (
+            {tab === 'airisk' && valuationHistory.length > 0 ? (
               <div className="drawerSection">
                 <h3 className="drawerSectionTitle">Recent provider observations</h3>
                 {valuationHistory.slice(0, 5).map((v: any, i: number) => (
@@ -1412,7 +1469,7 @@ function AssetDetailsDrawer({
             ) : null}
 
             {/* Assessment history */}
-            {history.length > 1 ? (
+            {tab === 'history' && history.length > 1 ? (
               <div className="drawerSection">
                 <h3 className="drawerSectionTitle">Assessment history</h3>
                 {history.slice(0, 6).map((h: any, i: number) => (
@@ -1424,7 +1481,7 @@ function AssetDetailsDrawer({
               </div>
             ) : null}
           </>
-        )}
+        )) : null}
 
         <div className="drawerActions">
           <button
