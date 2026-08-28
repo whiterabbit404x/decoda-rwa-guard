@@ -27,6 +27,7 @@ import {
   formatRule,
   formatSupply,
   formatVarianceUnits,
+  freshnessLabel,
   integrityPanelState,
   investigateCta,
   isAnomalyStatus,
@@ -108,6 +109,8 @@ function OnChainStateCard({ state }: { state: any }) {
 function AuthoritativeStateCard({ state }: { state: any }) {
   const sourceStatus = String(state?.source_status || 'missing');
   const available = Boolean(state?.available);
+  // Freshness is the BACKEND's staleness verdict, not a timestamp the UI judged.
+  const freshness = freshnessLabel(state);
   return (
     <section className="integrityCard" aria-label="Authoritative state">
       <header className="integrityCardHeader">
@@ -115,10 +118,17 @@ function AuthoritativeStateCard({ state }: { state: any }) {
         <span className="integrityCardTag">{state?.source_kind ? String(state.source_kind).replace(/_/g, ' ') : 'Business system of record'}</span>
       </header>
       {sourceStatus === 'missing' ? (
-        <p className="integrityEmptyNote">
-          No authoritative off-chain state is recorded for this asset. Without a system of record there is
-          nothing to reconcile the chain against.
-        </p>
+        <>
+          {/* Stated as an explicit, labelled "Not configured" — an absent system of
+              record is a configuration fact, never an implied clean result. */}
+          <Row label="Authoritative source"><Unavailable label="Not configured" /></Row>
+          <Row label="Expected Units"><Unavailable /></Row>
+          <Row label="Freshness"><StatusPill label={freshness.label} variant={freshness.variant} /></Row>
+          <p className="integrityEmptyNote">
+            No authoritative off-chain state is recorded for this asset. Without a system of record there is
+            nothing to reconcile the chain against.
+          </p>
+        </>
       ) : (
         <>
           <Row label="Expected Units">
@@ -138,6 +148,7 @@ function AuthoritativeStateCard({ state }: { state: any }) {
               : null}
           </Row>
           <Row label="Reference" mono>{state.external_reference || <Unavailable label="Not provided" />}</Row>
+          <Row label="Freshness"><StatusPill label={freshness.label} variant={freshness.variant} /></Row>
           {sourceStatus !== 'reported' ? (
             <p className="integrityWarnNote" role="status">
               The authoritative source reported <strong>{sourceStatus}</strong>

@@ -288,3 +288,29 @@ export function investigateCta(payload: {
     destination: investigation.destination ?? null,
   };
 }
+
+/**
+ * Freshness of a state card, derived from the BACKEND's own staleness verdict.
+ *
+ * The backend compared the observation age against the configured staleness
+ * threshold and sent `stale` already decided; this only picks the label and the
+ * pill variant. Fail-closed: an unknown or unreported source is never "Current"
+ * and never green — the only green here is a backend `stale === false` on a
+ * source that actually reported.
+ */
+export function freshnessLabel(
+  state: {
+    stale?: boolean | null;
+    source_status?: string | null;
+  } | null | undefined,
+): { label: string; variant: PillVariant } {
+  if (!state) return { label: 'Unknown', variant: 'neutral' };
+  const status = state.source_status == null ? null : String(state.source_status).toLowerCase();
+  if (status === 'missing') return { label: 'Not configured', variant: 'neutral' };
+  // The source exists but did not report (unavailable / error): its last known
+  // value cannot be called current, whatever its age says.
+  if (status !== null && status !== 'reported') return { label: 'Not reported', variant: 'warning' };
+  if (state.stale === true) return { label: 'Stale', variant: 'warning' };
+  if (state.stale === false) return { label: 'Current', variant: 'success' };
+  return { label: 'Unknown', variant: 'neutral' };
+}
