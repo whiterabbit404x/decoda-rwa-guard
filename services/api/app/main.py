@@ -30,6 +30,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from services.api.app.domains import alert_stream, alert_delivery
 from services.api.app.domains.asset_risk import registry as asset_risk_registry
+from services.api.app.domains.asset_integrity import endpoints as asset_integrity_endpoints
 from services.api.app.domains.threat_detection import endpoints as threat_detection_endpoints
 from services.api.app.domains.alert_triage import endpoints as alert_triage_endpoints
 from services.api.app.domains.rate_limit import rate_limit_connectivity
@@ -4816,6 +4817,30 @@ def assets_risk_assessment_get(asset_id: str, request: Request) -> dict[str, Any
 @app.post('/assets/{asset_id}/risk-assessment', summary='Trigger an asset risk assessment (idempotent)')
 def assets_risk_assessment_trigger(asset_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: asset_risk_registry.trigger_assessment_endpoint(asset_id, request))
+
+
+# Screen 3 — Asset Integrity / Reconciliation. The GET routes are strictly
+# side-effect free: they read the persisted deterministic reconciliation result
+# and never evaluate, so a page refresh can never create a snapshot, a detection,
+# or an incident.
+@app.get('/assets/{asset_id}/integrity', summary='Asset integrity state (on-chain vs authoritative + reconciliation)')
+def assets_integrity_state(asset_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: asset_integrity_endpoints.integrity_state_endpoint(asset_id, request))
+
+
+@app.get('/assets/{asset_id}/integrity/history', summary='Asset reconciliation snapshot history')
+def assets_integrity_history(asset_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: asset_integrity_endpoints.integrity_history_endpoint(asset_id, request))
+
+
+@app.post('/assets/{asset_id}/integrity/reconcile', summary='Run a deterministic reconciliation for one asset')
+def assets_integrity_reconcile(asset_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: asset_integrity_endpoints.reconcile_endpoint(asset_id, request))
+
+
+@app.post('/assets/{asset_id}/integrity/investigate', summary='Open the investigation for an unexplained variance')
+def assets_integrity_investigate(asset_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: asset_integrity_endpoints.investigate_endpoint(asset_id, request))
 
 
 @app.patch('/asset-profiles/{asset_id}', summary='Update workspace asset profile')

@@ -6596,6 +6596,18 @@ def seed_demo_workspace(email: str, password: str, workspace_name: str, full_nam
             (password_hash, normalized_full_name, workspace_id, user_id),
         )
         monitoring_bootstrap = _seed_demo_monitoring_proof(connection, workspace_id=workspace_id, user_id=user_id)
+        # Screen 3 operational-integrity demo scenario. Simulator-sourced and
+        # no-op in production; the domain module owns the logic.
+        try:
+            from services.api.app.domains.asset_integrity import demo_seed as asset_integrity_demo_seed
+
+            integrity_bootstrap = asset_integrity_demo_seed.seed_demo_integrity_scenario(
+                connection, workspace_id=workspace_id, user_id=user_id,
+                allowed=_demo_monitoring_bootstrap_allowed(),
+            )
+        except Exception:
+            logger.exception('asset_integrity_demo_seed_failed workspace_id=%s', workspace_id)
+            integrity_bootstrap = {'seeded': False, 'reason': 'seed_error'}
         connection.commit()
         user = build_user_response(connection, user_id)
         return {
@@ -6607,6 +6619,7 @@ def seed_demo_workspace(email: str, password: str, workspace_name: str, full_nam
             'membership_created': membership_created,
             'user_created': created_user,
             'monitoring_bootstrap': monitoring_bootstrap,
+            'asset_integrity_bootstrap': integrity_bootstrap,
         }
 
 
