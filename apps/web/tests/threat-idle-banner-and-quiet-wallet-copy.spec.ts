@@ -43,6 +43,7 @@ import {
   resolveWorkspaceMonitoringTruth,
 } from '../app/workspace-monitoring-truth';
 import { runtimeReasonMessage } from '../app/runtime-reason-copy';
+import { FALLBACK_POLLING_READY_COPY } from '../app/realtime-coverage-status';
 import {
   QUIET_LIVE_COVERAGE_COPY,
   coverageIncompleteWarningApplies,
@@ -447,8 +448,10 @@ test.describe('9. fallback polling never implies primary monitoring failure', ()
   });
 
   test('the worker line reports the fallback without claiming the Stream failed', () => {
+    // The primary Stream is healthy here, so the RPC polling loop is the fallback
+    // standing by — reported as ready, never as the mechanism carrying monitoring.
     const line = workerStatusBannerLine(fallbackActive()) ?? '';
-    expect(line).toContain('Stable polling active.');
+    expect(line).toBe(FALLBACK_POLLING_READY_COPY);
     expect(line).not.toContain('QuickNode Stream is behind');
     expect(line).not.toContain('delivery is failing');
     expect(line).not.toContain('checkpoint is stale');

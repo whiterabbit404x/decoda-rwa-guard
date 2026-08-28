@@ -1,4 +1,5 @@
 import type { MonitoringRuntimeStatus, WorkspaceMonitoringSummary, WorkerStatusSummary } from './monitoring-status-contract';
+import { isSuccessRuntimeReason } from './runtime-reason-copy';
 import {
   realtimeLaneFaulted,
   realtimeLiveCoverageFresh,
@@ -488,6 +489,54 @@ export function hasCanonicalLiveCoverage(truth: WorkspaceMonitoringTruth): boole
     && !truth.db_failure_reason
     && (truth.guard_flags ?? []).length === 0
     && (truth.contradiction_flags ?? []).length === 0;
+}
+
+/**
+ * Canonical "the backend reports nothing wrong and monitoring is proven live" verdict.
+ *
+ * True only when the backend's own facts prove live monitoring — the canonical
+ * realtime live-coverage verdict, or a full telemetry-backed live chain — AND the
+ * reported status_reason is either absent or a SUCCESS reason
+ * (`live_runtime_verified`, which is the backend confirming the runtime, not a
+ * limitation). Fail-closed: any other reason, any guard or contradiction flag, a
+ * database failure, or an unproven realtime lane makes this false, so it can never
+ * be used to hide a genuine limited / degraded / offline state.
+ */
+export function runtimeIsHealthyLive(truth: WorkspaceMonitoringTruth): boolean {
+  const reason = truth.status_reason;
+  if (reason !== null && !isSuccessRuntimeReason(reason)) {
+    return false;
+  }
+  return hasCanonicalLiveCoverage(truth) || hasRealTelemetryBackedChain(truth);
+}
+
+// The backend's canonical "there is nothing left to do" values for
+// next_required_action (workspace_monitoring_summary.resolve_next_required_action
+// returns 'monitoring_live' once every runtime setup step is complete).
+const NO_OPERATOR_ACTION_REQUIRED = new Set(['monitoring_live', 'none']);
+
+/**
+ * True when an operator actually has something to do, so a "Next action" surface
+ * only appears when it carries a real instruction.
+ *
+ * A runtime that is not provably healthy ALWAYS requires an action — that is the
+ * fail-closed default, so every limited / degraded / offline state keeps its next
+ * action. On a proven-healthy runtime the action is dropped only when the backend
+ * itself reports one of the no-action values, or the generic `review_reason_codes`
+ * placeholder: there are no reason codes worth reviewing when the only reported
+ * reason is a success one. A specific action the backend names (export evidence,
+ * open incident, …) still stands on a healthy runtime — it is workflow progress,
+ * not a limitation.
+ */
+export function runtimeRequiresOperatorAction(truth: WorkspaceMonitoringTruth): boolean {
+  if (!runtimeIsHealthyLive(truth)) {
+    return true;
+  }
+  const action = String(truth.next_required_action ?? '').trim();
+  if (!action) {
+    return false;
+  }
+  return !NO_OPERATOR_ACTION_REQUIRED.has(action) && action !== 'review_reason_codes';
 }
 
 /**

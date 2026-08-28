@@ -5,7 +5,9 @@ import {
   hasLiveTelemetry,
   hasRealTelemetryBackedChain,
   quietMonitoringNote,
+  runtimeRequiresOperatorAction,
 } from '../workspace-monitoring-truth';
+import { isSuccessRuntimeReason, runtimeReasonMessage } from '../runtime-reason-copy';
 import { realtimeWorkerStatusLine } from '../realtime-coverage-status';
 import { useRuntimeSummary } from '../runtime-summary-context';
 import type { WorkspaceMonitoringTruth } from '../workspace-monitoring-truth';
@@ -94,12 +96,87 @@ const NEXT_ACTION_LABELS: Record<string, string> = {
   review_reason_codes: 'Complete setup',
 };
 
+/**
+ * The reason code this banner speaks for: the top continuity reason the backend
+ * reported, otherwise its status reason.
+ */
+export function runtimeBannerTopReason(summary: WorkspaceMonitoringTruth): string | null {
+  return summary.continuity_reason_codes?.[0] ?? summary.status_reason;
+}
+
+/**
+ * The "Next action" value, or null when the field must not render at all.
+ *
+ * Next action is an operator instruction, so it only appears when there is an
+ * instruction to give. On a runtime the canonical facts prove healthy — the backend's
+ * own next action is 'monitoring_live', or the generic review-reason-codes
+ * placeholder whose only reported reason is a success one — nothing is required, and
+ * "Review runtime reason codes" would be a false to-do. Fail-closed: every limited /
+ * degraded / offline runtime, and any specific action the backend names (export
+ * evidence, open incident, …), keeps its next action. See
+ * runtimeRequiresOperatorAction for the verdict itself.
+ */
+export function runtimeBannerNextAction(
+  summary: WorkspaceMonitoringTruth,
+  fallbackLabel: string,
+): string | null {
+  if (!runtimeRequiresOperatorAction(summary)) {
+    return null;
+  }
+  const nextAction = summary.next_required_action;
+  return nextAction ? (NEXT_ACTION_LABELS[nextAction] ?? fallbackLabel) : fallbackLabel;
+}
+
+/**
+ * The "Limitation" value, or null when there is no limitation to report.
+ *
+ * Three things are never a limitation, and each is dropped rather than reworded:
+ *  - a SUCCESS reason ('live_runtime_verified'), which is the backend CONFIRMING the
+ *    runtime. Filing it under "Limitation" tells a customer their verified-live
+ *    runtime is degraded; Monitoring / Freshness / Confidence already carry the
+ *    healthy state, and this banner only renders fields that have something to say.
+ *  - a stale-heartbeat reason while the stable RPC polling worker is proven active.
+ *  - a stale/cached EVM_RPC_URL connectivity reason, likewise.
+ *
+ * Everything else reaches the customer unchanged: no genuine reason is suppressed.
+ */
+export function runtimeBannerLimitation(
+  summary: WorkspaceMonitoringTruth,
+  reasonMessage: (code: string) => string = runtimeReasonMessage,
+): string | null {
+  const topReason = runtimeBannerTopReason(summary);
+  if (!topReason || topReason === 'summary_unavailable') {
+    return null;
+  }
+  if (isSuccessRuntimeReason(topReason)) {
+    return null;
+  }
+  // Separated worker status: a paused or rate-limited realtime WebSocket worker
+  // must never read as a dead worker while the stable RPC polling worker is alive.
+  const stablePollingActive = summary.worker_status?.stable_polling?.active ?? false;
+  const isHeartbeatStaleReason = topReason === 'stale_heartbeat' || topReason.startsWith('heartbeat_');
+  // Suppress the generic "worker heartbeat is stale" limitation when the stable
+  // polling worker is actually active (it would be misleading).
+  const suppressHeartbeatLimitation = isHeartbeatStaleReason && stablePollingActive;
+  // Fail-closed guard: never show the "Check EVM_RPC_URL connectivity" limitation while
+  // stable RPC polling is proven active (fresh heartbeat/poll). The backend now emits a
+  // truthful reason in that case, but a stale/cached 'no_fresh_live_coverage_telemetry'
+  // must never contradict a live stable-polling worker. The separated worker line still
+  // surfaces the truthful stable-polling headline plus the canonical Stream condition.
+  const isRpcConnectivityReason = topReason === 'no_fresh_live_coverage_telemetry';
+  const suppressRpcConnectivityLimitation = isRpcConnectivityReason && stablePollingActive;
+  if (suppressHeartbeatLimitation || suppressRpcConnectivityLimitation) {
+    return null;
+  }
+  return reasonMessage(topReason);
+}
+
 export default function RuntimeBanner() {
   const { summary, loading, nextActionLabel: contextNextActionLabel, reasonMessageForCode } = useRuntimeSummary();
 
   if (loading) return null;
 
-  const topReason = summary.continuity_reason_codes?.[0] ?? summary.status_reason;
+  const topReason = runtimeBannerTopReason(summary);
   // Live/healthy display disabled until telemetry verified
   const healthProvable =
     summary.runtime_status === 'live'
@@ -114,29 +191,9 @@ export default function RuntimeBanner() {
   const freshnessValue = deriveFreshnessLabel(summary, healthProvable);
   const confidenceValue = deriveConfidenceLabel(summary, healthProvable);
 
-  const nextAction = summary.next_required_action;
-  const nextActionDisplay = nextAction ? (NEXT_ACTION_LABELS[nextAction] ?? contextNextActionLabel) : contextNextActionLabel;
-
-  // Separated worker status: a paused or rate-limited realtime WebSocket worker
-  // must never read as a dead worker while the stable RPC polling worker is alive.
+  const nextActionDisplay = runtimeBannerNextAction(summary, contextNextActionLabel);
+  const reasonCopy = runtimeBannerLimitation(summary, reasonMessageForCode);
   const workerStatus = summary.worker_status ?? null;
-  const stablePollingActive = workerStatus?.stable_polling?.active ?? false;
-  const isHeartbeatStaleReason =
-    typeof topReason === 'string' && (topReason === 'stale_heartbeat' || topReason.startsWith('heartbeat_'));
-  // Suppress the generic "worker heartbeat is stale" limitation when the stable
-  // polling worker is actually active (it would be misleading).
-  const suppressHeartbeatLimitation = isHeartbeatStaleReason && stablePollingActive;
-  // Fail-closed guard: never show the "Check EVM_RPC_URL connectivity" limitation while
-  // stable RPC polling is proven active (fresh heartbeat/poll). The backend now emits a
-  // truthful reason in that case, but a stale/cached 'no_fresh_live_coverage_telemetry'
-  // must never contradict a live stable-polling worker. The separated worker line still
-  // surfaces the truthful stable-polling headline plus the canonical Stream condition.
-  const isRpcConnectivityReason = topReason === 'no_fresh_live_coverage_telemetry';
-  const suppressRpcConnectivityLimitation = isRpcConnectivityReason && stablePollingActive;
-  const suppressLimitation = suppressHeartbeatLimitation || suppressRpcConnectivityLimitation;
-  const reasonCopy = (topReason && topReason !== 'summary_unavailable' && !suppressLimitation)
-    ? reasonMessageForCode(topReason)
-    : null;
   // Worker line: the stable-polling half of the canonical headline plus the
   // canonical QuickNode Stream condition. The legacy realtime WebSocket clause is
   // stripped — WebSocket is intentionally disabled and is not the realtime
@@ -173,8 +230,12 @@ export default function RuntimeBanner() {
       <Field label="Heartbeat" value={formatAge(summary.last_heartbeat_at)} />
       <Sep />
       <Field label="Poll" value={formatAge(summary.last_poll_at)} />
-      <Sep />
-      <Field label="Next action" value={nextActionDisplay} />
+      {nextActionDisplay ? (
+        <>
+          <Sep />
+          <Field label="Next action" value={nextActionDisplay} />
+        </>
+      ) : null}
       {workerLine ? (
         <>
           <Sep />
