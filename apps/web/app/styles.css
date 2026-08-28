@@ -8246,8 +8246,15 @@ a.mktTrustBadge:hover {
 }
 
 /* The asset detail drawer widens for the Integrity layout; the registry drawer
-   keeps its original width everywhere else. */
-.drawerCardWide { width: min(1080px, 100%); }
+   keeps its original width everywhere else.
+
+   ~76vw on a desktop display so the Integrity tab has room for its 2x2
+   enterprise layout, with a 1080px floor (never narrower than before) and a
+   1600px cap so the cards do not stretch on an ultrawide monitor. The outer
+   min(..., 100%) keeps the floor from ever exceeding the viewport, so the
+   drawer never introduces horizontal scrolling. The asset list stays visible
+   to the left. */
+.drawerCardWide { width: min(clamp(1080px, 76vw, 1600px), 100%); }
 
 @media (max-width: 900px) {
   .integrityStateGrid,

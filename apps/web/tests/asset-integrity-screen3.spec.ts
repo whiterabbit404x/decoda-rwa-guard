@@ -23,6 +23,7 @@ import {
   formatUnits,
   formatVariance,
   formatVarianceUnits,
+  freshnessLabel,
   integrityPanelState,
   investigateCta,
   isAnomalyStatus,
@@ -385,4 +386,96 @@ test('reads are never cached, so a reload shows backend truth', () => {
 test('the presentation module documents that it decides nothing', () => {
   expect(presentationSrc).toContain('none of them decides one');
   expect(presentationSrc).toContain('The frontend never computes a supply');
+});
+
+
+/* ── Freshness (item 6) ───────────────────────────────────────────── */
+test('freshness reports the backend staleness verdict, never a UI-computed one', () => {
+  expect(freshnessLabel({ source_status: 'reported', stale: false })).toEqual({ label: 'Current', variant: 'success' });
+  expect(freshnessLabel({ source_status: 'reported', stale: true })).toEqual({ label: 'Stale', variant: 'warning' });
+});
+
+test('an unconfigured authoritative source reads as Not configured, never as fresh', () => {
+  expect(freshnessLabel({ source_status: 'missing', stale: null })).toEqual({ label: 'Not configured', variant: 'neutral' });
+  expect(freshnessLabel(null)).toEqual({ label: 'Unknown', variant: 'neutral' });
+  expect(freshnessLabel(undefined)).toEqual({ label: 'Unknown', variant: 'neutral' });
+});
+
+test('a source that did not report is never labelled Current, whatever its age', () => {
+  // stale=false only means "the stored timestamp is recent" — it cannot make an
+  // unavailable/errored source current.
+  for (const status of ['unavailable', 'error', 'degraded']) {
+    expect(freshnessLabel({ source_status: status, stale: false })).toEqual({ label: 'Not reported', variant: 'warning' });
+  }
+});
+
+test('an unknown staleness verdict is neutral, never green', () => {
+  const unknown = freshnessLabel({ source_status: 'reported', stale: null });
+  expect(unknown.label).toBe('Unknown');
+  expect(unknown.variant).not.toBe('success');
+});
+
+test('freshness is a label chooser, not a staleness calculation', () => {
+  // The threshold comparison belongs to the backend; the helper must not
+  // re-derive it from an age.
+  const helper = presentationSrc.slice(presentationSrc.indexOf('export function freshnessLabel'));
+  expect(helper).not.toMatch(/age_seconds\s*[<>]/);
+  expect(helper).not.toContain('Date.now()');
+});
+
+/* ── Authoritative "Not configured" (item 6) ──────────────────────── */
+test('a missing system of record is stated as an explicit labelled field', () => {
+  expect(panelSrc).toContain('<Row label="Authoritative source"><Unavailable label="Not configured" /></Row>');
+  // ...and the explanation of why nothing can be reconciled is kept.
+  expect(panelSrc).toContain('nothing to reconcile the chain against');
+});
+
+test('both authoritative branches surface Freshness', () => {
+  const occurrences = panelSrc.match(/<Row label="Freshness">/g) || [];
+  expect(occurrences.length).toBe(2);
+  expect(panelSrc).toContain('const freshness = freshnessLabel(state);');
+});
+
+test('a missing authoritative source never renders an expected supply', () => {
+  const missingBranch = panelSrc.slice(
+    panelSrc.indexOf("{sourceStatus === 'missing' ? ("),
+    panelSrc.indexOf('<Row label="Expected Units">\n            {available'),
+  );
+  // Expected Units in the missing branch is Unavailable — never 0, never a number.
+  expect(missingBranch).toContain('<Row label="Expected Units"><Unavailable /></Row>');
+  expect(missingBranch).not.toContain('expected_total_supply');
+});
+
+/* ── Drawer width (item 3) ────────────────────────────────────────── */
+test('the asset detail drawer is viewport-relative and wide enough for the 2x2 layout', () => {
+  const rule = stylesSrc.match(/\.drawerCardWide \{ width: ([^;]+); \}/);
+  expect(rule).not.toBeNull();
+  const width = (rule as RegExpMatchArray)[1];
+  // Viewport-relative, inside the 70-78vw target band.
+  const vw = Number((width.match(/(\d+)vw/) as RegExpMatchArray)[1]);
+  expect(vw).toBeGreaterThanOrEqual(70);
+  expect(vw).toBeLessThanOrEqual(78);
+  // A sensible max-width cap, and a floor no narrower than the previous 1080px.
+  expect(width).toContain('clamp(1080px');
+  expect(width).toContain('1600px');
+});
+
+test('the drawer never causes horizontal scrolling and goes full width on small screens', () => {
+  // The floor is bounded by the viewport, so it can never overflow.
+  expect(stylesSrc).toContain('.drawerCardWide { width: min(clamp(1080px, 76vw, 1600px), 100%); }');
+  expect(stylesSrc).toMatch(/@media \(max-width: 900px\) \{[\s\S]*?\.drawerCardWide \{ width: 100%; \}/);
+});
+
+test('the drawer stays a drawer over the asset list — no separate detail route', () => {
+  expect(managerSrc).toContain('drawerCard drawerCardWide');
+  expect(managerSrc).toContain('className="drawerOverlay"');
+  expect(stylesSrc).toContain('.drawerOverlay { position: fixed');
+  // The Integrity work must not have introduced an /assets/[assetId] page.
+  expect(fs.existsSync(path.join(__dirname, '..', 'app', '(product)', 'assets', '[assetId]'))).toBe(false);
+});
+
+test('cards stack rather than scroll sideways on a narrow viewport', () => {
+  expect(stylesSrc).toMatch(/\.integrityStateGrid,\s*\.integrityResultGridOuter,\s*\.integrityResultGrid \{ grid-template-columns: minmax\(0, 1fr\); \}/);
+  expect(stylesSrc).toContain('.integrityCard {');
+  expect(stylesSrc).toContain('min-width: 0;');
 });
