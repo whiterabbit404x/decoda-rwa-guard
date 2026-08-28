@@ -17,6 +17,16 @@ import path from 'node:path';
 import {
   ANOMALY_STATUSES,
   INDETERMINATE_STATUSES,
+  MONITORING_SOURCES_ROUTE,
+  absentValueLabel,
+  assessorCta,
+  assessorView,
+  authoritativeAvailability,
+  availabilityLabel,
+  integrityBanner,
+  onchainAvailability,
+  reconciliationView,
+  tokenSupplyApplicability,
   formatEvidenceCount,
   formatRule,
   formatSupply,
@@ -184,7 +194,7 @@ test('evidence count is the backend count, never a constant', () => {
   expect(formatEvidenceCount(null)).toBe('Unknown');
   expect(formatEvidenceCount(undefined)).toBe('Unknown');
   expect(formatEvidenceCount('')).toBe('Unknown');
-  expect(panelSrc).toContain('formatEvidenceCount(reconciliation?.evidence_count)');
+  expect(panelSrc).toContain('formatEvidenceCount(view.evidence_count)');
   expect(panelSrc).not.toMatch(/6\s*artifacts/);
 });
 
@@ -260,7 +270,9 @@ test('error state does not fall back to a healthy render', () => {
 test('not-configured and not-evaluated states are distinct and never claim health', () => {
   expect(integrityPanelState({ state: 'not_configured' }, { loading: false })).toBe('not_configured');
   expect(integrityPanelState({ state: 'not_evaluated' }, { loading: false })).toBe('not_evaluated');
-  expect(panelSrc).toContain('Nothing here asserts that the asset is healthy.');
+  // Neither state may read as a clean bill of health, wherever it is surfaced.
+  expect(presentationSrc).toContain('Nothing here asserts that the asset is healthy.');
+  expect(presentationSrc).toContain('This is not evidence that the asset is healthy.');
 });
 
 test('evaluated state renders the persisted backend result', () => {
@@ -283,13 +295,14 @@ test('simulator and replay evidence are labelled, never shown as live', () => {
 });
 
 test('a stale source is badged as stale', () => {
-  expect(panelSrc).toContain('state.stale ?');
+  expect(panelSrc).toContain('state?.stale ?');
   expect(panelSrc).toContain('label="Stale"');
+  expect(availabilityLabel('STALE')).toEqual({ label: 'Stale', variant: 'warning' });
 });
 
 /* ── AI availability ──────────────────────────────────────────────── */
 test('the AI panel works when AI is unavailable', () => {
-  expect(panelSrc).toContain("assessment?.source === 'ai' ? 'AI narrative' : 'Deterministic narrative'");
+  expect(panelSrc).toContain("assessment.source === 'ai' ? 'AI narrative' : 'Deterministic narrative'");
   // The reconciliation result is rendered independently of the AI panel.
   expect(panelSrc).toContain('<ReconciliationResultCard');
   expect(panelSrc).toContain('<AiAssessorCard');
@@ -340,7 +353,7 @@ test('an anomaly without a canonical event cannot be investigated', () => {
 });
 
 test('repeated Investigate clicks are guarded in the component', () => {
-  expect(panelSrc).toContain('if (investigating || !cta.enabled) return;');
+  expect(panelSrc).toContain("if (investigating || cta.kind !== 'investigate' || !cta.enabled) return;");
   expect(panelSrc).toContain('setInvestigating(true)');
   expect(panelSrc).toContain('disabled={!cta.enabled || investigating}');
 });
@@ -425,25 +438,30 @@ test('freshness is a label chooser, not a staleness calculation', () => {
 
 /* ── Authoritative "Not configured" (item 6) ──────────────────────── */
 test('a missing system of record is stated as an explicit labelled field', () => {
-  expect(panelSrc).toContain('<Row label="Authoritative source"><Unavailable label="Not configured" /></Row>');
+  // The card renders ONE unconditional set of rows, so "Not configured" is a
+  // labelled value on the Source row rather than a separate collapsed branch.
+  expect(authoritativeAvailability({ source_status: 'missing' })).toBe('NOT_CONFIGURED');
+  expect(absentValueLabel('NOT_CONFIGURED')).toBe('Not configured');
+  expect(panelSrc).toContain('<Absent availability={availability} />');
   // ...and the explanation of why nothing can be reconciled is kept.
   expect(panelSrc).toContain('nothing to reconcile the chain against');
 });
 
-test('both authoritative branches surface Freshness', () => {
+test('Freshness renders for every authoritative state, configured or not', () => {
   const occurrences = panelSrc.match(/<Row label="Freshness">/g) || [];
-  expect(occurrences.length).toBe(2);
+  expect(occurrences.length).toBe(1);
+  // One unconditional row, outside any branch — it cannot be skipped.
+  expect(panelSrc).toContain('<Row label="Freshness"><StatusPill label={freshness.label} variant={freshness.variant} /></Row>');
   expect(panelSrc).toContain('const freshness = freshnessLabel(state);');
 });
 
 test('a missing authoritative source never renders an expected supply', () => {
-  const missingBranch = panelSrc.slice(
-    panelSrc.indexOf("{sourceStatus === 'missing' ? ("),
-    panelSrc.indexOf('<Row label="Expected Units">\n            {available'),
-  );
-  // Expected Units in the missing branch is Unavailable — never 0, never a number.
-  expect(missingBranch).toContain('<Row label="Expected Units"><Unavailable /></Row>');
-  expect(missingBranch).not.toContain('expected_total_supply');
+  // Expected Units is gated on the source having actually REPORTED a value, so a
+  // missing or failed source can never print a number (and never a 0).
+  expect(panelSrc).toContain('{reported && state?.expected_total_supply != null');
+  expect(authoritativeAvailability({ source_status: 'missing' })).toBe('NOT_CONFIGURED');
+  expect(authoritativeAvailability({ source_status: 'unavailable' })).toBe('SOURCE_UNAVAILABLE');
+  expect(authoritativeAvailability({ source_status: 'reported', available: false })).toBe('SOURCE_UNAVAILABLE');
 });
 
 /* ── Drawer width (item 3) ────────────────────────────────────────── */

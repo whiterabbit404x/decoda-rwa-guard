@@ -8190,6 +8190,21 @@ a.mktTrustBadge:hover {
   border: 1px solid var(--warning-bdr); border-radius: 8px; padding: 0.5rem 0.65rem;
 }
 
+/* A genuine API/server failure. Sits ABOVE the four panels — it never replaces
+   them: an outage is not evidence about the asset, so the workspace still renders
+   beneath it in its unknown state. */
+.integrityErrorBanner {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 0.35rem;
+  border: 1px solid var(--danger-bdr); background: var(--danger-bg);
+  border-radius: 10px; padding: 0.65rem 0.8rem;
+}
+.integrityErrorBannerTitle {
+  margin: 0; font-size: 0.82rem; font-weight: 600; color: var(--danger-fg);
+}
+.integrityErrorBannerDetail {
+  margin: 0; font-size: 0.74rem; color: var(--text-secondary); line-height: 1.5;
+}
+
 /* ── Reconciliation result ─────────────────────────────────── */
 .integrityResultCard { border-width: 1px; }
 .integrityResultCritical { border-color: var(--danger-bdr); background: var(--danger-bg); }
