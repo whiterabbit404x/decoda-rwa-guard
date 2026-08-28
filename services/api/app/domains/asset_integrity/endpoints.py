@@ -22,6 +22,7 @@ user in workspace A can never read workspace B's reconciliation data.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 from services.api.app import pilot
@@ -29,6 +30,9 @@ from services.api.app.domains.asset_integrity import ai_explanation
 from services.api.app.domains.asset_integrity import config as aic
 from services.api.app.domains.asset_integrity import reconciliation as engine
 from services.api.app.domains.asset_integrity import service
+# Asset-type applicability (reserve_required_for) is the EXISTING shared vocabulary
+# for "this field does not apply to this kind of asset" — reused, not duplicated.
+from services.api.app.domains.asset_risk import config as arc
 
 try:  # fastapi is stubbed in the offline test runner
     from fastapi import HTTPException, status
@@ -37,21 +41,110 @@ except Exception:  # pragma: no cover
     status = pilot.status  # type: ignore
 
 
+logger = logging.getLogger(__name__)
+
+# --------------------------------------------------------------------------
+# Availability vocabulary for the state cards.
+#
+# These are DOMAIN states, deliberately distinct from a transport/server error.
+# The Integrity tab renders its four panels for every one of them; only an
+# actual unexpected API failure is an error, and that is carried by the HTTP
+# status, never by one of these values.
+#
+#   AVAILABLE           the state was observed/reported and is within its
+#                       configured freshness threshold
+#   STALE               observed/reported, but older than that threshold — not
+#                       current, and NOT a clean result
+#   SOURCE_UNAVAILABLE  the source exists but did not return a usable state on
+#                       its last attempt (temporary upstream failure)
+#   NOT_CONFIGURED      no source/observation is configured for this asset at all
+#   NOT_APPLICABLE      the field does not exist for this KIND of asset (a wallet
+#                       has no token total supply) — never the same as "missing"
+# --------------------------------------------------------------------------
+AVAILABILITY_AVAILABLE = 'AVAILABLE'
+AVAILABILITY_STALE = 'STALE'
+AVAILABILITY_SOURCE_UNAVAILABLE = 'SOURCE_UNAVAILABLE'
+AVAILABILITY_NOT_CONFIGURED = 'NOT_CONFIGURED'
+
+APPLICABILITY_APPLICABLE = 'APPLICABLE'
+APPLICABILITY_NOT_APPLICABLE = 'NOT_APPLICABLE'
+
+# Reason code for "configured, but no reconciliation has been recorded yet". The
+# status stays the existing INSUFFICIENT_EVIDENCE — this only names why.
+RECONCILIATION_NOT_EVALUATED = 'RECONCILIATION_NOT_EVALUATED'
+
+
+def _token_supply_applicability(asset: dict[str, Any], onchain_row: Optional[dict[str, Any]]) -> str:
+    """Whether a token TOTAL SUPPLY is a meaningful field for this asset.
+
+    A wallet is not a token contract: it has no total supply to observe, and
+    reporting one as "Unavailable" would imply a value we failed to collect.
+    Applicability is asserted from real facts only — an actual observed supply,
+    a registered token contract, or a reserve-backed RWA type.
+    """
+    if onchain_row is not None and onchain_row.get('total_supply') is not None:
+        return APPLICABILITY_APPLICABLE
+    if str(asset.get('token_contract_address') or '').strip():
+        return APPLICABILITY_APPLICABLE
+    if arc.reserve_required_for(asset.get('rwa_asset_type'), asset.get('reserve_feed_type')):
+        return APPLICABILITY_APPLICABLE
+    return APPLICABILITY_NOT_APPLICABLE
+
+
 _ASSET_COLUMNS = (
     'id, name, asset_type, rwa_asset_type, chain_network, identifier, custodian, '
     'token_symbol, token_contract_address, token_decimals, value_usd, '
-    'verification_status, created_by_user_id'
+    'reserve_feed_type, verification_status, created_by_user_id'
 )
 
 
 def _load_asset(connection: Any, *, workspace_id: str, asset_id: str) -> dict[str, Any]:
-    row = connection.execute(
-        f'SELECT {_ASSET_COLUMNS} FROM assets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL',
-        (asset_id, workspace_id),
-    ).fetchone()
+    """Load the asset, surviving a drifted production schema.
+
+    The named column list spans migrations 0007/0023/0024/0028/0131. On a
+    deployment where any one of them has not been applied, naming it raises
+    ``UndefinedColumn`` and the whole Integrity tab collapses into an error —
+    while every other drawer tab keeps working, because they select far fewer
+    columns. So a missing COLUMN falls back to ``to_jsonb(a)``, which never names
+    one: the absent field comes back as None and the tab still renders.
+
+    Only schema drift is recovered here. Any other failure (connection loss,
+    permission) must surface as a truthful API error rather than a silent empty
+    asset. Mirrors ``pilot.list_workspace_monitored_system_rows``.
+    """
+    try:
+        row = connection.execute(
+            f'SELECT {_ASSET_COLUMNS} FROM assets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL',
+            (asset_id, workspace_id),
+        ).fetchone()
+    except Exception as exc:
+        if 'does not exist' not in str(exc).lower():
+            raise
+        logger.warning(
+            'asset_integrity_asset_load_schema_drift_fallback workspace_id=%s asset_id=%s error_type=%s',
+            workspace_id, asset_id, type(exc).__name__,
+        )
+        row = connection.execute(
+            'SELECT id, to_jsonb(a) AS asset_json FROM assets a WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL',
+            (asset_id, workspace_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Asset not found.')
+        return _asset_from_json_snapshot(dict(row))
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Asset not found.')
     return dict(row)
+
+
+def _asset_from_json_snapshot(row: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild the asset dict from ``to_jsonb(a)``. A column the deployed schema
+    is missing resolves to None — never to a fabricated value."""
+    snapshot = row.get('asset_json')
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    asset = {column.strip(): snapshot.get(column.strip()) for column in _ASSET_COLUMNS.split(',')}
+    asset['id'] = row.get('id') if row.get('id') is not None else snapshot.get('id')
+    return asset
 
 
 def _asset_summary(asset: dict[str, Any]) -> dict[str, Any]:
@@ -71,12 +164,41 @@ def _asset_summary(asset: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _onchain_state_payload(row: Optional[dict[str, Any]], *, now: Any, config: dict[str, Any]) -> dict[str, Any]:
-    """Blockchain OBSERVATION. ``available=false`` means exactly that — the UI
-    must render an unavailable state, never a zero or a healthy value."""
+def _onchain_state_payload(
+    row: Optional[dict[str, Any]], *, now: Any, config: dict[str, Any],
+    asset: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Blockchain OBSERVATION, plus the registry facts the card identifies it by.
+
+    ``availability`` separates the reasons an observation is absent so the UI can
+    say the true one. ``total_supply_applicability`` separates "this asset has no
+    token supply" (a wallet) from "we could not read it" — reporting the first as
+    Unavailable would imply a collection failure that did not happen.
+
+    The ``asset_*`` fields are REGISTRY configuration, not observations: they are
+    what the workspace registered, and the card labels them that way. They are
+    never used to fill in an observation the chain did not provide.
+    """
+    asset = asset or {}
+    applicability = _token_supply_applicability(asset, row)
+    registry = {
+        'asset_type': asset.get('asset_type'),
+        'rwa_asset_type': asset.get('rwa_asset_type'),
+        'asset_chain_network': asset.get('chain_network'),
+        # A token contract when there is one, else the registered identifier (for
+        # a wallet asset that IS the address being monitored).
+        'asset_address': (
+            str(asset.get('token_contract_address') or '').strip()
+            or str(asset.get('identifier') or '').strip()
+            or None
+        ),
+        'total_supply_applicability': applicability,
+    }
     if row is None:
         return {
+            **registry,
             'available': False,
+            'availability': AVAILABILITY_NOT_CONFIGURED,
             'unavailable_reason': 'no_observation',
             'total_supply': None, 'token_decimals': None, 'last_delta': None,
             'last_delta_operation': None, 'last_delta_at': None, 'observed_at': None,
@@ -85,8 +207,11 @@ def _onchain_state_payload(row: Optional[dict[str, Any]], *, now: Any, config: d
             'age_seconds': None, 'stale': None,
         }
     age = engine.age_seconds(row.get('observed_at'), now)
+    stale = bool(age is not None and age > int(config['onchain_stale_seconds']))
     return {
+        **registry,
         'available': True,
+        'availability': AVAILABILITY_STALE if stale else AVAILABILITY_AVAILABLE,
         'unavailable_reason': None,
         'total_supply': pilot._json_safe_value(row.get('total_supply')),
         'token_decimals': row.get('token_decimals'),
@@ -102,7 +227,7 @@ def _onchain_state_payload(row: Optional[dict[str, Any]], *, now: Any, config: d
         'provider_type': row.get('provider_type'),
         'evidence_source': row.get('evidence_source'),
         'age_seconds': age,
-        'stale': bool(age is not None and age > int(config['onchain_stale_seconds'])),
+        'stale': stale,
     }
 
 
@@ -112,6 +237,7 @@ def _authoritative_state_payload(row: Optional[dict[str, Any]], *, now: Any, con
     if row is None:
         return {
             'available': False,
+            'availability': AVAILABILITY_NOT_CONFIGURED,
             'source_status': 'missing',
             'expected_total_supply': None, 'settlement_state': None, 'source_name': None,
             'source_kind': None, 'source_error': None, 'external_reference': None,
@@ -119,8 +245,21 @@ def _authoritative_state_payload(row: Optional[dict[str, Any]], *, now: Any, con
         }
     source_status = str(row.get('source_status') or 'reported').lower()
     age = engine.age_seconds(row.get('observed_at'), now)
+    stale = bool(age is not None and age > int(config['authoritative_stale_seconds']))
+    reported = source_status == 'reported' and row.get('expected_total_supply') is not None
+    if source_status == 'missing':
+        availability = AVAILABILITY_NOT_CONFIGURED
+    elif source_status in ('unavailable', 'error') or not reported:
+        # A source that exists but did not return a usable value is a temporary
+        # upstream failure — never a variance, and never "not configured".
+        availability = AVAILABILITY_SOURCE_UNAVAILABLE
+    elif stale:
+        availability = AVAILABILITY_STALE
+    else:
+        availability = AVAILABILITY_AVAILABLE
     return {
-        'available': source_status == 'reported' and row.get('expected_total_supply') is not None,
+        'available': reported,
+        'availability': availability,
         'source_status': source_status,
         'expected_total_supply': pilot._json_safe_value(row.get('expected_total_supply')),
         'settlement_state': row.get('settlement_state'),
@@ -131,7 +270,7 @@ def _authoritative_state_payload(row: Optional[dict[str, Any]], *, now: Any, con
         'observed_at': service._iso(row.get('observed_at')),
         'evidence_source': row.get('evidence_source'),
         'age_seconds': age,
-        'stale': bool(age is not None and age > int(config['authoritative_stale_seconds'])),
+        'stale': stale,
     }
 
 
@@ -167,6 +306,118 @@ def _reconciliation_payload(snapshot: Optional[dict[str, Any]]) -> Optional[dict
         'trigger_source': snapshot.get('trigger_source'),
         'is_anomaly': str(snapshot.get('status') or '') in engine.ANOMALY_STATUSES,
         'is_indeterminate': str(snapshot.get('status') or '') in engine.INDETERMINATE_STATUSES,
+    }
+
+
+def _projected_reconciliation(
+    *,
+    onchain_row: Optional[dict[str, Any]],
+    authoritative_row: Optional[dict[str, Any]],
+    now: Any,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    """Why reconciliation CANNOT yield a verdict right now — never a verdict itself.
+
+    No snapshot exists, so nothing here may assert an outcome. This runs the PURE
+    engine (no writes, no persistence) purely to name the input gap, so the reason
+    the UI shows is exactly the one a real evaluation would reach, under the same
+    precedence, rather than a second guess maintained by hand.
+
+    Fail-closed in BOTH directions: only an indeterminate outcome is adopted. If
+    the stored inputs would produce RECONCILED, AUTHORIZED_VARIANCE or
+    UNEXPLAINED_VARIANCE, that is a verdict, and a verdict requires a recorded
+    evaluation — so it is reported as INSUFFICIENT_EVIDENCE /
+    RECONCILIATION_NOT_EVALUATED instead. Authorizations are deliberately not
+    loaded here for the same reason: no matched/unmatched outcome is ever adopted.
+    """
+    result = engine.evaluate(
+        onchain=service._to_observation(onchain_row),
+        authoritative=service._to_authoritative(authoritative_row),
+        authorizations=(),
+        rules=aic.rules_from_config(config),
+        now=now,
+    )
+    status_value = str(result.status)
+    reason_code = str(result.reason_code)
+    if status_value not in engine.INDETERMINATE_STATUSES:
+        status_value, reason_code = engine.INSUFFICIENT_EVIDENCE, RECONCILIATION_NOT_EVALUATED
+    return {
+        'evaluated': False,
+        'status': status_value,
+        'reason_code': reason_code,
+        # Nothing was computed, so nothing is reported. A variance, a severity and
+        # a rule stamp only exist on a persisted snapshot.
+        'variance_units': None,
+        'observed_supply': None,
+        'expected_supply': None,
+        'severity': None,
+        'rule_id': None,
+        'rule_version': None,
+        'evaluated_at': None,
+        'evidence_count': 0,
+        'evidence_refs': [],
+        'canonical_event_id': None,
+        'is_anomaly': False,
+        'is_indeterminate': True,
+    }
+
+
+def _reconciliation_view(
+    snapshot: Optional[dict[str, Any]],
+    *,
+    onchain_row: Optional[dict[str, Any]],
+    authoritative_row: Optional[dict[str, Any]],
+    now: Any,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    """The RECONCILIATION RESULT card's state — ALWAYS present.
+
+    ``evaluated`` is the whole contract: true means every field came from a
+    persisted snapshot; false means no reconciliation has been recorded and the
+    card is showing why, with no variance, severity or rule of its own.
+    """
+    persisted = _reconciliation_payload(snapshot)
+    if persisted is not None:
+        return {**persisted, 'evaluated': True}
+    return _projected_reconciliation(
+        onchain_row=onchain_row, authoritative_row=authoritative_row, now=now, config=config,
+    )
+
+
+def _ai_assessment_view(
+    snapshot: Optional[dict[str, Any]], asset: dict[str, Any], view: dict[str, Any],
+) -> dict[str, Any]:
+    """The AI Asset Risk Assessor card's state — ALWAYS present, AI or not.
+
+    With no snapshot there is nothing for a model to explain, so the narrative is
+    built deterministically from the SAME reason code the result card shows. The
+    model is never asked to infer a missing value.
+    """
+    persisted = _ai_assessment_payload(snapshot, asset)
+    if persisted is not None:
+        return {**persisted, 'assessment': 'Complete', 'cta': 'investigate_variance'}
+    summary = ai_explanation.build_deterministic_summary({
+        'asset_name': asset.get('name'),
+        'status': view.get('status'),
+        'reason_code': view.get('reason_code'),
+        'severity': None,
+        'variance_units': None,
+        'authoritative_source': None,
+        'rule_id': None,
+        'rule_version': None,
+        'evidence_count': view.get('evidence_count'),
+    })
+    return {
+        **summary,
+        # Reconciliation never ran, so there is no severity to map a risk impact
+        # from. "Not determined" is the truthful answer; "Low" would not be.
+        'risk_impact': None,
+        'assessment': 'Limited',
+        'assessment_reason': view.get('reason_code'),
+        'cta': ('configure_monitoring_source'
+                if view.get('status') in (engine.MISSING_AUTHORITATIVE_DATA, engine.SOURCE_UNAVAILABLE,
+                                          engine.STALE_AUTHORITATIVE_DATA, engine.INSUFFICIENT_EVIDENCE)
+                else None),
     }
 
 
@@ -256,12 +507,21 @@ def integrity_state_endpoint(asset_id: str, request: Any) -> dict[str, Any]:
         authoritative_row = service.load_authoritative_state(connection, workspace_id=workspace_id, asset_id=asset_id)
         snapshot = service.load_latest_snapshot(connection, workspace_id=workspace_id, asset_id=asset_id)
 
+        reconciliation_view = _reconciliation_view(
+            snapshot, onchain_row=onchain_row, authoritative_row=authoritative_row, now=now, config=cfg,
+        )
         payload = {
             'asset': _asset_summary(asset),
-            'onchain_state': _onchain_state_payload(onchain_row, now=now, config=cfg),
+            'onchain_state': _onchain_state_payload(onchain_row, now=now, config=cfg, asset=asset),
             'authoritative_state': _authoritative_state_payload(authoritative_row, now=now, config=cfg),
+            # The persisted snapshot (null when none exists) — unchanged contract.
             'reconciliation': _reconciliation_payload(snapshot),
             'ai_assessment': _ai_assessment_payload(snapshot, asset),
+            # ALWAYS present, so the Integrity tab can render its four panels for
+            # every domain state instead of collapsing when reconciliation could
+            # not run. ``evaluated`` says which of the two it is.
+            'reconciliation_view': reconciliation_view,
+            'ai_assessment_view': _ai_assessment_view(snapshot, asset, reconciliation_view),
             'investigation': _investigation_payload(connection, workspace_id=workspace_id, snapshot=snapshot),
             'canonical_event': None,
             'rule': {'rule_id': cfg['rule_id'], 'rule_version': cfg['rule_version']},

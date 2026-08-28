@@ -23,24 +23,33 @@ import Link from 'next/link';
 import { usePilotAuth } from './pilot-auth-context';
 import { StatusPill } from './components/ui-primitives';
 import {
+  absentValueLabel,
+  assessorCta,
+  assessorView,
+  authoritativeAvailability,
+  availabilityLabel,
   formatEvidenceCount,
   formatRule,
   formatSupply,
   formatVarianceUnits,
   freshnessLabel,
+  integrityBanner,
   integrityPanelState,
-  investigateCta,
   isAnomalyStatus,
   isIndeterminateStatus,
+  onchainAvailability,
   reasonCodeLabel,
   reconciliationStatusLabel,
-  reconciliationStatusMeaning,
+  reconciliationMeaning,
   reconciliationStatusVariant,
+  reconciliationView,
   relativeTime,
   severityVariant,
+  tokenSupplyApplicability,
   truncateHex,
   varianceDirection,
 } from './asset-integrity-presentation';
+import type { ReconciliationView } from './asset-integrity-presentation';
 
 type Props = {
   assetId: string;
@@ -54,6 +63,34 @@ function Unavailable({ label = 'Unavailable' }: { label?: string }) {
   return <span className="integrityUnavailable">{label}</span>;
 }
 
+/**
+ * A field with no value, stating the REASON. "Not applicable" (a wallet has no
+ * token supply) is a different fact from "Unavailable" (we could not read it) and
+ * from "Not configured" (nothing is set up to read it) — collapsing them would
+ * report a collection failure that never happened.
+ */
+function Absent({ availability }: { availability: string }) {
+  return <span className="integrityUnavailable">{absentValueLabel(availability)}</span>;
+}
+
+/**
+ * A genuine request failure, stated ABOVE the workspace. It never replaces the
+ * panels: an API outage is not evidence about the asset, so hiding the panels
+ * behind it would turn a transport problem into an (absent) verdict.
+ */
+function ErrorBanner({
+  banner, onRetry,
+}: { banner: ReturnType<typeof integrityBanner>; onRetry: () => void }) {
+  if (!banner) return null;
+  return (
+    <div className="integrityErrorBanner" role="alert">
+      <p className="integrityErrorBannerTitle">{banner.message}</p>
+      <p className="integrityErrorBannerDetail">{banner.detail}</p>
+      <button type="button" className="btn btn-ghost" onClick={onRetry}>Retry</button>
+    </div>
+  );
+}
+
 function Row({ label, children, mono = false }: { label: string; children: React.ReactNode; mono?: boolean }) {
   return (
     <div className="integrityKvRow">
@@ -64,146 +101,195 @@ function Row({ label, children, mono = false }: { label: string; children: React
 }
 
 /* ── ON-CHAIN STATE ────────────────────────────────────────────────── */
-function OnChainStateCard({ state }: { state: any }) {
-  const available = Boolean(state?.available);
+/**
+ * Always renders every row, in two kinds:
+ *   * REGISTRY facts (asset type, network, address) — what the workspace
+ *     registered. Always known, and never used to fill in an observation the
+ *     chain did not provide.
+ *   * OBSERVATION facts (supply, last mint/burn, last observed, provider) — each
+ *     states its own reason when absent, behind the Observation badge.
+ *
+ * A wallet has no token total supply, so that field reads "Not applicable" rather
+ * than "Unavailable" — the latter would claim a read we never attempted.
+ */
+function OnChainStateCard({ state, asset }: { state: any; asset?: any }) {
+  const availability = onchainAvailability(state);
+  const observed = availability === 'AVAILABLE' || availability === 'STALE';
+  const supplyApplies = tokenSupplyApplicability(state) === 'APPLICABLE';
+  const badge = availabilityLabel(availability);
+  const assetType = state?.rwa_asset_type || state?.asset_type || asset?.rwa_asset_type || asset?.asset_type;
+  const network = state?.chain_network || state?.asset_chain_network || asset?.chain_network;
+  const address = state?.contract_address || state?.asset_address || asset?.token_contract_address || asset?.identifier;
+
   return (
     <section className="integrityCard" aria-label="On-chain state">
       <header className="integrityCardHeader">
         <p className="sectionEyebrow">On-Chain State</p>
         <span className="integrityCardTag">Blockchain observation</span>
       </header>
-      {!available ? (
+
+      <Row label="Asset Type">{assetType ? String(assetType).replace(/[-_]/g, ' ') : <Absent availability="UNKNOWN" />}</Row>
+      <Row label="Network">{network || <Absent availability="NOT_CONFIGURED" />}</Row>
+      <Row label="Address" mono>{address ? truncateHex(String(address)) : <Absent availability="NOT_CONFIGURED" />}</Row>
+      <Row label="Observation"><StatusPill label={badge.label} variant={badge.variant} /></Row>
+
+      <Row label="Total Supply">
+        {!supplyApplies
+          ? <Absent availability="NOT_APPLICABLE" />
+          : state?.total_supply != null
+            ? <><strong>{formatSupply(state.total_supply)}</strong> units</>
+            : <Absent availability={availability} />}
+      </Row>
+      <Row label={state?.last_delta_operation === 'burn' ? 'Last Burn' : 'Last Mint'}>
+        {!supplyApplies
+          ? <Absent availability="NOT_APPLICABLE" />
+          : state?.last_delta != null
+            ? <strong>{formatVarianceUnits(state.last_delta_operation === 'burn' ? `-${state.last_delta}` : state.last_delta)}</strong>
+            : <Unavailable label="Not observed" />}
+      </Row>
+      <Row label="Last Observed">
+        {state?.observed_at ? relativeTime(state.observed_at) : <Absent availability={availability} />}
+        {state?.stale ? <> <StatusPill label="Stale" variant="warning" /></> : null}
+      </Row>
+      <Row label="Block">{state?.block_number != null ? String(state.block_number) : <Unavailable label="Not recorded" />}</Row>
+      <Row label="Transaction" mono>{state?.tx_hash ? truncateHex(state.tx_hash) : <Unavailable label="Not recorded" />}</Row>
+      <Row label="Provider">
+        {state?.provider_type || <Absent availability={availability} />}
+        {state?.evidence_source && state.evidence_source !== 'live'
+          ? <> <StatusPill label={state.evidence_source === 'simulator' ? 'Simulator' : 'Replay'} variant="warning" /></>
+          : null}
+      </Row>
+
+      {!observed ? (
         <p className="integrityEmptyNote">
           No on-chain supply observation is stored for this asset. Link a monitoring target so supply is
           observed, then reconciliation can run.
         </p>
-      ) : (
-        <>
-          <Row label="Total Supply"><strong>{formatSupply(state.total_supply)}</strong>{state.total_supply != null ? ' units' : null}</Row>
-          <Row label={state.last_delta_operation === 'burn' ? 'Last Burn' : 'Last Mint'}>
-            {state.last_delta != null
-              ? <strong>{formatVarianceUnits(state.last_delta_operation === 'burn' ? `-${state.last_delta}` : state.last_delta)}</strong>
-              : <Unavailable label="Not observed" />}
-          </Row>
-          <Row label="Last Update">
-            {state.observed_at ? relativeTime(state.observed_at) : <Unavailable />}
-            {state.stale ? <> <StatusPill label="Stale" variant="warning" /></> : null}
-          </Row>
-          <Row label="Network">{state.chain_network || <Unavailable />}</Row>
-          <Row label="Contract" mono>{state.contract_address ? truncateHex(state.contract_address) : <Unavailable />}</Row>
-          <Row label="Block">{state.block_number != null ? String(state.block_number) : <Unavailable label="Not recorded" />}</Row>
-          <Row label="Transaction" mono>{state.tx_hash ? truncateHex(state.tx_hash) : <Unavailable label="Not recorded" />}</Row>
-          <Row label="Source">
-            {state.provider_type || <Unavailable />}
-            {state.evidence_source && state.evidence_source !== 'live'
-              ? <> <StatusPill label={state.evidence_source === 'simulator' ? 'Simulator' : 'Replay'} variant="warning" /></>
-              : null}
-          </Row>
-        </>
-      )}
+      ) : null}
     </section>
   );
 }
 
 /* ── AUTHORITATIVE STATE ───────────────────────────────────────────── */
+/**
+ * Always renders every row. An absent system of record is a CONFIGURATION fact
+ * ("Not configured"), a source that failed is a TRANSIENT fact ("Source
+ * unavailable"), and neither is ever an implied clean result.
+ */
 function AuthoritativeStateCard({ state }: { state: any }) {
-  const sourceStatus = String(state?.source_status || 'missing');
-  const available = Boolean(state?.available);
+  const availability = authoritativeAvailability(state);
+  const configured = availability !== 'NOT_CONFIGURED' && availability !== 'UNKNOWN';
+  const reported = availability === 'AVAILABLE' || availability === 'STALE';
+  const sourceStatus = String(state?.source_status || 'missing').toLowerCase();
   // Freshness is the BACKEND's staleness verdict, not a timestamp the UI judged.
   const freshness = freshnessLabel(state);
+  const badge = availabilityLabel(availability);
+
   return (
     <section className="integrityCard" aria-label="Authoritative state">
       <header className="integrityCardHeader">
         <p className="sectionEyebrow">Authoritative State</p>
         <span className="integrityCardTag">{state?.source_kind ? String(state.source_kind).replace(/_/g, ' ') : 'Business system of record'}</span>
       </header>
-      {sourceStatus === 'missing' ? (
-        <>
-          {/* Stated as an explicit, labelled "Not configured" — an absent system of
-              record is a configuration fact, never an implied clean result. */}
-          <Row label="Authoritative source"><Unavailable label="Not configured" /></Row>
-          <Row label="Expected Units"><Unavailable /></Row>
-          <Row label="Freshness"><StatusPill label={freshness.label} variant={freshness.variant} /></Row>
-          <p className="integrityEmptyNote">
-            No authoritative off-chain state is recorded for this asset. Without a system of record there is
-            nothing to reconcile the chain against.
-          </p>
-        </>
-      ) : (
-        <>
-          <Row label="Expected Units">
-            {available ? <strong>{formatSupply(state.expected_total_supply)}</strong> : <Unavailable />}
-          </Row>
-          <Row label="Settlement State">
-            {state.settlement_state ? <StatusPill label={String(state.settlement_state)} variant={available ? 'info' : 'neutral'} /> : <Unavailable />}
-          </Row>
-          <Row label="Last Updated">
-            {state.observed_at ? relativeTime(state.observed_at) : <Unavailable />}
-            {state.stale ? <> <StatusPill label="Stale" variant="warning" /></> : null}
-          </Row>
-          <Row label="Source">
-            {state.source_name || <Unavailable />}
-            {state.evidence_source && state.evidence_source !== 'live'
-              ? <> <StatusPill label={state.evidence_source === 'simulator' ? 'Simulator' : 'Replay'} variant="warning" /></>
-              : null}
-          </Row>
-          <Row label="Reference" mono>{state.external_reference || <Unavailable label="Not provided" />}</Row>
-          <Row label="Freshness"><StatusPill label={freshness.label} variant={freshness.variant} /></Row>
-          {sourceStatus !== 'reported' ? (
-            <p className="integrityWarnNote" role="status">
-              The authoritative source reported <strong>{sourceStatus}</strong>
-              {state.source_error ? `: ${state.source_error}` : ''}. Its last known value cannot be treated as current.
-            </p>
-          ) : null}
-        </>
-      )}
+
+      <Row label="Source">
+        {state?.source_name || <Absent availability={availability} />}
+        {state?.evidence_source && state.evidence_source !== 'live'
+          ? <> <StatusPill label={state.evidence_source === 'simulator' ? 'Simulator' : 'Replay'} variant="warning" /></>
+          : null}
+      </Row>
+      <Row label="Expected Units">
+        {reported && state?.expected_total_supply != null
+          ? <strong>{formatSupply(state.expected_total_supply)}</strong>
+          : <Absent availability={configured ? 'SOURCE_UNAVAILABLE' : availability} />}
+      </Row>
+      <Row label="Settlement State">
+        {state?.settlement_state
+          ? <StatusPill label={String(state.settlement_state)} variant={reported ? 'info' : 'neutral'} />
+          : <Absent availability={availability} />}
+      </Row>
+      <Row label="Reference" mono>{state?.external_reference || <Unavailable label="—" />}</Row>
+      <Row label="Last Updated">
+        {state?.observed_at ? relativeTime(state.observed_at) : <Unavailable label="—" />}
+        {state?.stale ? <> <StatusPill label="Stale" variant="warning" /></> : null}
+      </Row>
+      <Row label="Freshness"><StatusPill label={freshness.label} variant={freshness.variant} /></Row>
+      <Row label="Availability"><StatusPill label={badge.label} variant={badge.variant} /></Row>
+
+      {!configured ? (
+        <p className="integrityEmptyNote">
+          No authoritative off-chain state is recorded for this asset. Without a system of record there is
+          nothing to reconcile the chain against.
+        </p>
+      ) : !reported ? (
+        <p className="integrityWarnNote" role="status">
+          The authoritative source reported <strong>{sourceStatus}</strong>
+          {state?.source_error ? `: ${state.source_error}` : ''}. Its last known value cannot be treated as current.
+        </p>
+      ) : null}
     </section>
   );
 }
 
 /* ── RECONCILIATION RESULT ─────────────────────────────────────────── */
-function ReconciliationResultCard({ reconciliation }: { reconciliation: any }) {
-  const status = String(reconciliation?.status || '');
-  const anomaly = isAnomalyStatus(status);
-  const indeterminate = isIndeterminateStatus(status);
-  const direction = varianceDirection(reconciliation?.variance_units);
-  const tone = anomaly ? 'integrityResultCritical' : indeterminate ? 'integrityResultWarning' : 'integrityResultOk';
+/**
+ * Always renders. When `evaluated` is false no reconciliation has been recorded,
+ * so the card names the blocking state and shows NO variance, severity or rule:
+ * with no authoritative baseline there is nothing to subtract, and reporting a
+ * variance anyway would fabricate the very anomaly this screen exists to detect.
+ */
+function ReconciliationResultCard({ view }: { view: ReconciliationView }) {
+  const anomaly = view.evaluated && isAnomalyStatus(view.status);
+  const indeterminate = isIndeterminateStatus(view.status);
+  const direction = varianceDirection(view.variance_units);
+  // Green is reserved for a RECORDED result that says the asset reconciles. An
+  // unevaluated card is never green, whatever status a payload claims.
+  const tone = anomaly
+    ? 'integrityResultCritical'
+    : (!view.evaluated || indeterminate) ? 'integrityResultWarning' : 'integrityResultOk';
 
   return (
     <section className={`integrityCard integrityResultCard ${tone}`} aria-label="Reconciliation result">
       <header className="integrityCardHeader">
         <p className="sectionEyebrow">Reconciliation Result</p>
-        <StatusPill label={String(reconciliation?.severity || 'low')} variant={severityVariant(reconciliation?.severity)} />
+        {view.evaluated && view.severity
+          ? <StatusPill label={String(view.severity)} variant={severityVariant(view.severity)} />
+          : <StatusPill label="Not evaluated" variant="neutral" />}
       </header>
       <div className="integrityResultGrid">
         <div>
           <span className="integrityKvLabel">Status</span>
           <p className="integrityResultStatus">
-            <StatusPill label={reconciliationStatusLabel(status)} variant={reconciliationStatusVariant(status)} />
+            <StatusPill label={reconciliationStatusLabel(view.status)} variant={reconciliationStatusVariant(view.status)} />
           </p>
         </div>
         <div>
           <span className="integrityKvLabel">Variance</span>
           <p className={`integrityResultVariance integrityVariance-${direction}`}>
-            {formatVarianceUnits(reconciliation?.variance_units)}
+            {view.evaluated ? formatVarianceUnits(view.variance_units) : 'Not calculated'}
           </p>
         </div>
       </div>
-      <Row label="Reason" mono>{reasonCodeLabel(reconciliation?.reason_code)}</Row>
-      <Row label="Rule" mono>{formatRule(reconciliation?.rule_id, reconciliation?.rule_version)}</Row>
-      <Row label="Evidence">{formatEvidenceCount(reconciliation?.evidence_count)}</Row>
-      <Row label="Evaluated">{relativeTime(reconciliation?.evaluated_at)}</Row>
-      <p className="integrityResultMeaning">{reconciliationStatusMeaning(status)}</p>
+      <Row label="Reason" mono>{reasonCodeLabel(view.reason_code)}</Row>
+      <Row label="Rule" mono>{view.evaluated ? formatRule(view.rule_id, view.rule_version) : 'Not evaluated'}</Row>
+      <Row label="Evidence">{formatEvidenceCount(view.evidence_count)}</Row>
+      <Row label="Evaluated">{view.evaluated ? relativeTime(view.evaluated_at) : <Unavailable label="Never" />}</Row>
+      <p className="integrityResultMeaning">{reconciliationMeaning(view)}</p>
     </section>
   );
 }
 
 /* ── AI ASSET RISK ASSESSOR ────────────────────────────────────────── */
+/**
+ * Always renders, with or without AI. When reconciliation could not run there is
+ * nothing for a model to explain, so the narrative is deterministic and the model
+ * is never asked to infer a value the engine did not produce.
+ */
 function AiAssessorCard({
   assessment, cta, onInvestigate, investigating, actionError,
 }: {
-  assessment: any;
-  cta: ReturnType<typeof investigateCta>;
+  assessment: ReturnType<typeof assessorView>;
+  cta: ReturnType<typeof assessorCta>;
   onInvestigate: () => void;
   investigating: boolean;
   actionError: string;
@@ -213,19 +299,25 @@ function AiAssessorCard({
       <header className="integrityCardHeader">
         <p className="sectionEyebrow">AI Asset Risk Assessor</p>
         <StatusPill
-          label={assessment?.source === 'ai' ? 'AI narrative' : 'Deterministic narrative'}
-          variant={assessment?.source === 'ai' ? 'info' : 'neutral'}
+          label={assessment.source === 'ai' ? 'AI narrative' : 'Deterministic narrative'}
+          variant={assessment.source === 'ai' ? 'info' : 'neutral'}
         />
       </header>
-      <p className="integrityAiText">
-        {assessment?.explanation || 'No reconciliation result has been produced for this asset yet.'}
-      </p>
-      {assessment?.risk_impact ? (
-        <Row label="Risk Impact"><strong>{assessment.risk_impact}</strong></Row>
-      ) : null}
-      {Array.isArray(assessment?.next_steps) && assessment.next_steps.length > 0 ? (
+      <Row label="Assessment">
+        <StatusPill label={assessment.assessment} variant={assessment.assessment === 'Complete' ? 'info' : 'neutral'} />
+      </Row>
+      {assessment.assessment_reason
+        ? <Row label="Reason" mono>{reasonCodeLabel(assessment.assessment_reason)}</Row>
+        : null}
+      <Row label="Risk Impact">
+        {assessment.risk_impact
+          ? <strong>{assessment.risk_impact}</strong>
+          : <Unavailable label="Not determined" />}
+      </Row>
+      <p className="integrityAiText">{assessment.explanation}</p>
+      {assessment.next_steps.length > 0 ? (
         <ul className="integrityAiSteps">
-          {assessment.next_steps.map((step: string, i: number) => <li key={i}>{step}</li>)}
+          {assessment.next_steps.map((step, i) => <li key={i}>{step}</li>)}
         </ul>
       ) : null}
       <p className="integrityAiBoundary">
@@ -234,7 +326,12 @@ function AiAssessorCard({
       </p>
       {actionError ? <p className="statusLine" role="alert">{actionError}</p> : null}
       <div className="integrityActions">
-        {cta.destination && !investigating ? (
+        {/* Investigate Variance appears ONLY for an evidenced, persisted variance.
+            With no baseline there is no variance to investigate, so the actionable
+            step is the EXISTING Monitoring Sources workflow instead. */}
+        {cta.kind === 'none' ? (
+          <span className="integrityFooterNote">{cta.hint}</span>
+        ) : cta.destination && !investigating ? (
           <Link href={cta.destination} prefetch={false} className="btn btn-primary" title={cta.hint}>{cta.label}</Link>
         ) : (
           <button
@@ -321,6 +418,7 @@ export default function AssetIntegrityPanel({ assetId, view = 'integrity' }: Pro
   const [payload, setPayload] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [httpStatus, setHttpStatus] = useState<number | null>(null);
   const [actionError, setActionError] = useState('');
   const [investigating, setInvestigating] = useState(false);
   const [reconciling, setReconciling] = useState(false);
@@ -330,13 +428,19 @@ export default function AssetIntegrityPanel({ assetId, view = 'integrity' }: Pro
     try {
       const response = await fetch(`/api/assets/${assetId}/integrity`, { headers: { ...authHeaders() }, cache: 'no-store' });
       if (!response.ok) {
+        // A failed request is an ERROR, not a fact about the asset. The payload is
+        // cleared so nothing stale is shown as current, and the workspace below
+        // renders in its unknown state rather than disappearing.
         setPayload(null);
+        setHttpStatus(response.status);
         setError('Asset integrity state is unavailable right now.');
         return;
       }
+      setHttpStatus(null);
       setPayload(await response.json());
     } catch {
       setPayload(null);
+      setHttpStatus(null);
       setError('Asset integrity state is temporarily unavailable.');
     } finally {
       setLoading(false);
@@ -346,12 +450,17 @@ export default function AssetIntegrityPanel({ assetId, view = 'integrity' }: Pro
   useEffect(() => { setLoading(true); void load(); }, [load]);
 
   const panelState = integrityPanelState(payload, { loading, error });
-  const cta = useMemo(() => investigateCta(payload), [payload]);
+  const banner = integrityBanner({ loading, error, httpStatus });
+  // Built for EVERY payload, including a null one, so the four panels always have
+  // something truthful to render.
+  const recon = useMemo(() => reconciliationView(payload), [payload]);
+  const assessment = useMemo(() => assessorView(payload, recon), [payload, recon]);
+  const cta = useMemo(() => assessorCta(payload, recon), [payload, recon]);
 
   // Opens (or returns) the existing investigation. Repeated clicks are guarded
   // locally AND idempotent on the backend, so no duplicate incident is created.
   const investigate = useCallback(async () => {
-    if (investigating || !cta.enabled) return;
+    if (investigating || cta.kind !== 'investigate' || !cta.enabled) return;
     setInvestigating(true);
     setActionError('');
     try {
@@ -372,7 +481,7 @@ export default function AssetIntegrityPanel({ assetId, view = 'integrity' }: Pro
     } finally {
       setInvestigating(false);
     }
-  }, [assetId, authHeaders, cta.enabled, investigating, load]);
+  }, [assetId, authHeaders, cta.enabled, cta.kind, investigating, load]);
 
   const reconcile = useCallback(async () => {
     if (reconciling) return;
@@ -396,6 +505,8 @@ export default function AssetIntegrityPanel({ assetId, view = 'integrity' }: Pro
     }
   }, [assetId, authHeaders, load, reconciling]);
 
+  const retry = useCallback(() => { setLoading(true); void load(); }, [load]);
+
   if (view === 'history') return <HistoryView assetId={assetId} />;
 
   if (panelState === 'loading') {
@@ -406,44 +517,53 @@ export default function AssetIntegrityPanel({ assetId, view = 'integrity' }: Pro
       </div>
     );
   }
-  if (panelState === 'error') {
-    return <p className="statusLine" role="alert">{error || 'Asset integrity state is unavailable right now.'}</p>;
-  }
 
   const onchain = payload?.onchain_state ?? null;
   const authoritative = payload?.authoritative_state ?? null;
+  const asset = payload?.asset ?? null;
 
-  if (view === 'onchain') return <OnChainStateCard state={onchain} />;
-  if (view === 'offchain') return <AuthoritativeStateCard state={authoritative} />;
+  // The single-card views degrade the same way: the card still renders, with the
+  // failure stated above it rather than in place of it.
+  if (view === 'onchain') {
+    return (
+      <div className="integrityLayout">
+        <ErrorBanner banner={banner} onRetry={retry} />
+        <OnChainStateCard state={onchain} asset={asset} />
+      </div>
+    );
+  }
+  if (view === 'offchain') {
+    return (
+      <div className="integrityLayout">
+        <ErrorBanner banner={banner} onRetry={retry} />
+        <AuthoritativeStateCard state={authoritative} />
+      </div>
+    );
+  }
 
+  // The Integrity workspace ALWAYS renders its four panels. Missing, stale,
+  // unavailable, not-applicable and never-evaluated are all states the panels
+  // state explicitly — none of them is a reason to hide the workspace, and a
+  // failed request only adds the banner above it.
   return (
     <div className="integrityLayout">
+      <ErrorBanner banner={banner} onRetry={retry} />
+
       <div className="integrityStateGrid">
-        <OnChainStateCard state={onchain} />
+        <OnChainStateCard state={onchain} asset={asset} />
         <AuthoritativeStateCard state={authoritative} />
       </div>
 
-      {panelState === 'not_configured' ? (
-        <p className="integrityEmptyNote">
-          Operational integrity is not configured for this asset. Reconciliation needs both an on-chain supply
-          observation and an authoritative off-chain state to compare it against.
-        </p>
-      ) : panelState === 'not_evaluated' ? (
-        <p className="integrityEmptyNote">
-          No reconciliation has been recorded for this asset yet. Nothing here asserts that the asset is healthy.
-        </p>
-      ) : (
-        <div className="integrityResultGridOuter">
-          <ReconciliationResultCard reconciliation={payload.reconciliation} />
-          <AiAssessorCard
-            assessment={payload.ai_assessment}
-            cta={cta}
-            onInvestigate={investigate}
-            investigating={investigating}
-            actionError={actionError}
-          />
-        </div>
-      )}
+      <div className="integrityResultGridOuter">
+        <ReconciliationResultCard view={recon} />
+        <AiAssessorCard
+          assessment={assessment}
+          cta={cta}
+          onInvestigate={investigate}
+          investigating={investigating}
+          actionError={actionError}
+        />
+      </div>
 
       <div className="integrityFooter">
         {payload?.reconcile_enabled ? (

@@ -215,6 +215,243 @@ export function formatRule(ruleId: unknown, ruleVersion: unknown): string {
   return version ? `${id}-v${version}` : id;
 }
 
+
+/** The existing Monitoring Sources workflow. Never a new configuration system. */
+export const MONITORING_SOURCES_ROUTE = '/monitoring-sources';
+
+/* ── Availability / applicability ─────────────────────────────────── */
+
+/**
+ * Why a value is or is not there. These are DOMAIN states, and every one of them
+ * still renders the full four-panel Integrity workspace — none of them is an
+ * error. They are deliberately distinct from one another:
+ *
+ *   AVAILABLE           observed/reported and within its freshness threshold
+ *   STALE               observed/reported but too old to be treated as current
+ *   SOURCE_UNAVAILABLE  the source exists and did not return a usable state
+ *   NOT_CONFIGURED      no source/observation is configured for this asset
+ *   NOT_APPLICABLE      the field does not exist for this KIND of asset — a
+ *                       wallet has no token total supply. Showing "Unavailable"
+ *                       here would claim a collection failure that never happened.
+ *   UNKNOWN             the backend did not say (older payload); never assumed OK
+ */
+export type Availability =
+  | 'AVAILABLE'
+  | 'STALE'
+  | 'SOURCE_UNAVAILABLE'
+  | 'NOT_CONFIGURED'
+  | 'NOT_APPLICABLE'
+  | 'UNKNOWN';
+
+const AVAILABILITY_LABELS: Record<Availability, { label: string; variant: PillVariant }> = {
+  AVAILABLE: { label: 'Available', variant: 'success' },
+  STALE: { label: 'Stale', variant: 'warning' },
+  SOURCE_UNAVAILABLE: { label: 'Source unavailable', variant: 'warning' },
+  NOT_CONFIGURED: { label: 'Not configured', variant: 'neutral' },
+  NOT_APPLICABLE: { label: 'Not applicable', variant: 'neutral' },
+  UNKNOWN: { label: 'Unknown', variant: 'neutral' },
+};
+
+export function availabilityLabel(value: string | null | undefined): { label: string; variant: PillVariant } {
+  const key = String(value || '').toUpperCase() as Availability;
+  return AVAILABILITY_LABELS[key] || AVAILABILITY_LABELS.UNKNOWN;
+}
+
+/** The value a field shows when it is absent — the REASON, not a blanket "Unavailable". */
+export function absentValueLabel(availability: string | null | undefined): string {
+  return availabilityLabel(availability).label;
+}
+
+/**
+ * On-chain availability. Uses the backend's own verdict; falls back to the older
+ * `available`/`stale` fields so a frontend deployed ahead of the API still
+ * renders truthfully instead of blank.
+ */
+export function onchainAvailability(state: any): Availability {
+  const declared = String(state?.availability || '').toUpperCase();
+  if (declared && declared in AVAILABILITY_LABELS) return declared as Availability;
+  if (!state) return 'UNKNOWN';
+  if (!state.available) return 'NOT_CONFIGURED';
+  return state.stale === true ? 'STALE' : 'AVAILABLE';
+}
+
+/** Authoritative availability, with the same backward-compatible fallback. */
+export function authoritativeAvailability(state: any): Availability {
+  const declared = String(state?.availability || '').toUpperCase();
+  if (declared && declared in AVAILABILITY_LABELS) return declared as Availability;
+  if (!state) return 'UNKNOWN';
+  const sourceStatus = String(state.source_status || '').toLowerCase();
+  if (!sourceStatus || sourceStatus === 'missing') return 'NOT_CONFIGURED';
+  if (sourceStatus !== 'reported' || !state.available) return 'SOURCE_UNAVAILABLE';
+  return state.stale === true ? 'STALE' : 'AVAILABLE';
+}
+
+/** Whether a token total supply exists as a concept for this asset at all. */
+export function tokenSupplyApplicability(state: any): 'APPLICABLE' | 'NOT_APPLICABLE' {
+  return String(state?.total_supply_applicability || '').toUpperCase() === 'NOT_APPLICABLE'
+    ? 'NOT_APPLICABLE'
+    : 'APPLICABLE';
+}
+
+/* ── Always-present card models ───────────────────────────────────── */
+
+export type ReconciliationView = {
+  evaluated: boolean;
+  status: string;
+  reason_code: string | null;
+  variance_units: unknown;
+  severity: string | null;
+  rule_id: unknown;
+  rule_version: unknown;
+  evaluated_at: string | null;
+  evidence_count: unknown;
+  canonical_event_id?: string | null;
+};
+
+/**
+ * The RECONCILIATION RESULT card's model — never null, for any payload.
+ *
+ * `evaluated: false` means no reconciliation has been recorded, so the card
+ * shows WHY, with no variance, severity or rule of its own. A variance is only
+ * ever rendered from a persisted evaluation: an absent baseline can never
+ * produce one.
+ */
+export function reconciliationView(payload: any): ReconciliationView {
+  const view = payload?.reconciliation_view;
+  if (view && typeof view === 'object') {
+    return {
+      evaluated: Boolean(view.evaluated),
+      status: String(view.status || 'INSUFFICIENT_EVIDENCE'),
+      reason_code: view.reason_code ?? null,
+      // Fail-closed: a variance on an unevaluated view is never rendered.
+      variance_units: view.evaluated ? view.variance_units : null,
+      severity: view.evaluated ? (view.severity ?? null) : null,
+      rule_id: view.evaluated ? view.rule_id : null,
+      rule_version: view.evaluated ? view.rule_version : null,
+      evaluated_at: view.evaluated ? (view.evaluated_at ?? null) : null,
+      evidence_count: view.evidence_count ?? 0,
+      canonical_event_id: view.canonical_event_id ?? null,
+    };
+  }
+  // Older API (or a failed request): derive from the persisted snapshot if there
+  // is one, otherwise state the input gap the two state cards already show.
+  const snapshot = payload?.reconciliation;
+  if (snapshot && typeof snapshot === 'object') {
+    return {
+      evaluated: true,
+      status: String(snapshot.status || 'INSUFFICIENT_EVIDENCE'),
+      reason_code: snapshot.reason_code ?? null,
+      variance_units: snapshot.variance_units ?? null,
+      severity: snapshot.severity ?? null,
+      rule_id: snapshot.rule_id ?? null,
+      rule_version: snapshot.rule_version ?? null,
+      evaluated_at: snapshot.evaluated_at ?? null,
+      evidence_count: snapshot.evidence_count ?? 0,
+      canonical_event_id: snapshot.canonical_event_id ?? null,
+    };
+  }
+  return {
+    evaluated: false,
+    status: fallbackIndeterminateStatus(payload),
+    reason_code: fallbackReasonCode(payload),
+    variance_units: null,
+    severity: null,
+    rule_id: null,
+    rule_version: null,
+    evaluated_at: null,
+    evidence_count: payload ? 0 : null,
+    canonical_event_id: null,
+  };
+}
+
+/**
+ * Which indeterminate state to name when the backend sent no view. Mirrors the
+ * engine's precedence: an unusable on-chain observation is resolved before any
+ * authoritative-source gap, so the reason shown is the first real blocker.
+ */
+function fallbackIndeterminateStatus(payload: any): ReconciliationStatus {
+  if (!payload) return 'INSUFFICIENT_EVIDENCE';
+  const onchain = onchainAvailability(payload.onchain_state);
+  if (onchain !== 'AVAILABLE') return 'INSUFFICIENT_EVIDENCE';
+  const authoritative = authoritativeAvailability(payload.authoritative_state);
+  if (authoritative === 'NOT_CONFIGURED') return 'MISSING_AUTHORITATIVE_DATA';
+  if (authoritative === 'SOURCE_UNAVAILABLE') return 'SOURCE_UNAVAILABLE';
+  if (authoritative === 'STALE') return 'STALE_AUTHORITATIVE_DATA';
+  return 'INSUFFICIENT_EVIDENCE';
+}
+
+function fallbackReasonCode(payload: any): string | null {
+  if (!payload) return null;
+  switch (fallbackIndeterminateStatus(payload)) {
+    case 'MISSING_AUTHORITATIVE_DATA': return 'AUTHORITATIVE_SOURCE_MISSING';
+    case 'SOURCE_UNAVAILABLE': return 'AUTHORITATIVE_SOURCE_UNAVAILABLE';
+    case 'STALE_AUTHORITATIVE_DATA': return 'AUTHORITATIVE_SOURCE_STALE';
+    default:
+      return onchainAvailability(payload.onchain_state) === 'STALE'
+        ? 'ONCHAIN_OBSERVATION_STALE'
+        : 'ONCHAIN_OBSERVATION_MISSING';
+  }
+}
+
+/** The reason code the backend uses for "configured, but never evaluated". */
+export const RECONCILIATION_NOT_EVALUATED = 'RECONCILIATION_NOT_EVALUATED';
+
+/**
+ * The sentence under the result card.
+ *
+ * "Not enough stored evidence" is the wrong sentence for an asset whose inputs
+ * are present and fresh but which no reconciliation has ever run against — that
+ * case gets its own, and still says plainly that it is not a clean result.
+ */
+export function reconciliationMeaning(view: ReconciliationView): string {
+  if (!view.evaluated && view.reason_code === RECONCILIATION_NOT_EVALUATED) {
+    return 'No reconciliation has been recorded for this asset yet, so no verdict exists. This is not an anomaly, and not a clean bill of health.';
+  }
+  return reconciliationStatusMeaning(view.status);
+}
+
+export type AssessorView = {
+  explanation: string;
+  risk_impact: string | null;
+  next_steps: string[];
+  source: 'ai' | 'deterministic';
+  assessment: 'Complete' | 'Limited';
+  assessment_reason: string | null;
+};
+
+/**
+ * The AI ASSET RISK ASSESSOR card's model — never null, and never dependent on
+ * AI being available. With no reconciliation there is nothing for a model to
+ * explain, so the narrative is deterministic and states exactly that.
+ */
+export function assessorView(payload: any, view: ReconciliationView): AssessorView {
+  const stored = payload?.ai_assessment_view ?? payload?.ai_assessment ?? null;
+  const explanation = String(stored?.explanation || '').trim();
+  return {
+    explanation: explanation || defaultAssessorExplanation(view),
+    // No evaluation means no severity, and risk impact is derived from severity.
+    // "Not determined" is the honest answer; a default of "Low" would not be.
+    risk_impact: view.evaluated ? (stored?.risk_impact ?? null) : null,
+    next_steps: Array.isArray(stored?.next_steps) ? stored.next_steps.filter((s: unknown) => typeof s === 'string') : [],
+    source: stored?.source === 'ai' ? 'ai' : 'deterministic',
+    assessment: view.evaluated ? 'Complete' : 'Limited',
+    assessment_reason: view.evaluated ? null : (view.reason_code ?? null),
+  };
+}
+
+function defaultAssessorExplanation(view: ReconciliationView): string {
+  if (view.status === 'MISSING_AUTHORITATIVE_DATA') {
+    return 'Asset integrity reconciliation cannot be completed because no authoritative operational source is configured for this asset.';
+  }
+  if (view.status === 'SOURCE_UNAVAILABLE') {
+    return 'Asset integrity reconciliation cannot be completed because the authoritative operational source did not return a usable state on its last attempt.';
+  }
+  if (view.status === 'STALE_AUTHORITATIVE_DATA') {
+    return 'Asset integrity reconciliation cannot be treated as current because the authoritative operational source is older than its configured freshness threshold.';
+  }
+  return 'Asset integrity reconciliation cannot be completed because the evidence it requires has not been collected for this asset yet. This is not evidence that the asset is healthy.';
+}
+
 /* ── Panel state derivation ────────────────────────────────────────── */
 
 export type IntegrityPayload = {
@@ -228,6 +465,9 @@ export type IntegrityPayload = {
  * Which UI state the Integrity tab renders. Fail-closed: without a payload the
  * panel is never "evaluated", so the production UI cannot show a healthy result
  * the backend did not produce.
+ *
+ * NOTE: 'error' selects the BANNER shown above the workspace. It does not, and
+ * must not, decide whether the workspace renders — see `integrityBanner`.
  */
 export function integrityPanelState(
   payload: IntegrityPayload,
@@ -244,15 +484,40 @@ export function integrityPanelState(
 }
 
 /**
+ * The banner shown ABOVE the four panels when the request itself failed.
+ *
+ * A transport/server failure is an ERROR — genuinely different from every domain
+ * state (not configured, source unavailable, stale, not applicable, not yet
+ * evaluated), each of which is a fact about the asset and renders normally. Only
+ * a real failure produces a banner, and even then the four panels still render
+ * beneath it in their unknown state: an API outage is not evidence about the
+ * asset, so it must never blank the workspace or imply a clean result.
+ */
+export function integrityBanner(
+  { loading, error, httpStatus }: { loading: boolean; error?: string | null; httpStatus?: number | null },
+): { message: string; detail: string } | null {
+  if (loading || !error) return null;
+  const code = typeof httpStatus === 'number' && httpStatus > 0 ? ` (HTTP ${httpStatus})` : '';
+  return {
+    message: `${error}${code}`,
+    detail: 'The panels below show the last state this session could establish. Nothing here asserts that the asset is healthy.',
+  };
+}
+
+/**
  * Whether the Investigate Variance CTA is actionable, and why not when it is
  * not. Driven entirely by backend facts — the UI never decides that an
  * investigation is warranted.
  */
 export function investigateCta(payload: {
   reconciliation?: { status?: string | null; canonical_event_id?: string | null } | null;
+  reconciliation_view?: { evaluated?: boolean; status?: string | null } | null;
   investigation?: { available?: boolean; incident_id?: string | null; destination?: string | null } | null;
 } | null): { enabled: boolean; label: string; hint: string; destination: string | null } {
-  const status = payload?.reconciliation?.status ?? null;
+  // An anomaly only ever comes from a PERSISTED evaluation. A projected view is
+  // never one, so it can never enable an investigation.
+  const status = payload?.reconciliation?.status
+    ?? (payload?.reconciliation_view?.evaluated ? payload?.reconciliation_view?.status ?? null : null);
   const investigation = payload?.investigation ?? null;
 
   if (!status || !isAnomalyStatus(status)) {
@@ -313,4 +578,40 @@ export function freshnessLabel(
   if (state.stale === true) return { label: 'Stale', variant: 'warning' };
   if (state.stale === false) return { label: 'Current', variant: 'success' };
   return { label: 'Unknown', variant: 'neutral' };
+}
+
+/**
+ * The single CTA on the AI Asset Risk Assessor card.
+ *
+ * Investigate Variance is offered ONLY for an evidenced, persisted variance —
+ * offering it when no baseline was ever established would imply a variance that
+ * does not exist. When reconciliation could not run, the actionable step is
+ * configuring the source, so the card links into the EXISTING Monitoring Sources
+ * workflow rather than a second configuration surface. A healthy result needs no
+ * action, so it gets no CTA.
+ */
+export function assessorCta(
+  payload: any,
+  view: ReconciliationView,
+): { kind: 'investigate' | 'configure' | 'none'; enabled: boolean; label: string; hint: string; destination: string | null } {
+  if (view.evaluated && isAnomalyStatus(view.status)) {
+    const cta = investigateCta(payload);
+    return { kind: 'investigate', ...cta };
+  }
+  if (isHealthyStatus(view.status)) {
+    return {
+      kind: 'none',
+      enabled: false,
+      label: 'No action required',
+      hint: 'Reconciliation found no variance to act on.',
+      destination: null,
+    };
+  }
+  return {
+    kind: 'configure',
+    enabled: true,
+    label: 'Configure Monitoring Source',
+    hint: 'Opens Monitoring Sources, where the source this asset reconciles against is configured.',
+    destination: MONITORING_SOURCES_ROUTE,
+  };
 }
