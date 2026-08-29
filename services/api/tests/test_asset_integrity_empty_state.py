@@ -296,7 +296,9 @@ def test_an_observed_supply_is_applicable_whatever_the_asset_type(integrity_get)
 # Availability mapping (error vs domain state)
 # --------------------------------------------------------------------------
 def test_availability_distinguishes_not_configured_unavailable_and_stale(integrity_get):
-    nothing = integrity_get(FakeConn())
+    # A TOKEN asset: supply reconciliation applies, so an absent source really is
+    # a configuration gap the operator can close.
+    nothing = integrity_get(FakeConn(asset=TOKEN_ASSET))
     assert nothing['authoritative_state']['availability'] == endpoints.AVAILABILITY_NOT_CONFIGURED
     assert nothing['onchain_state']['availability'] == endpoints.AVAILABILITY_NOT_CONFIGURED
 
@@ -495,7 +497,9 @@ def test_the_demo_anomaly_fixture_produces_the_variance_the_same_ui_renders(inte
 # AI assessment is always present and never asked to infer
 # --------------------------------------------------------------------------
 def test_the_assessor_payload_exists_without_ai_and_without_a_snapshot(integrity_get):
-    view = integrity_get(FakeConn())['ai_assessment_view']
+    # A token asset with nothing collected yet: a verdict is still owed once the
+    # evidence arrives, so the assessment is Limited.
+    view = integrity_get(FakeConn(asset=TOKEN_ASSET))['ai_assessment_view']
     assert view['source'] == 'deterministic'
     assert view['assessment'] == 'Limited'
     # No severity was computed, so no risk impact is claimed.
@@ -538,3 +542,97 @@ def test_the_assessor_cta_is_investigate_only_for_a_persisted_anomaly(integrity_
 def test_the_assessor_never_claims_a_risk_impact_it_cannot_evidence(integrity_get):
     for conn in (FakeConn(), FakeConn(onchain=_onchain_row())):
         assert integrity_get(conn)['ai_assessment_view']['risk_impact'] is None
+
+
+# --------------------------------------------------------------------------
+# NOT_APPLICABLE is a terminal state, not a configuration to-do
+#
+# "Not configured" is an instruction: connect a transfer agent, register an
+# expected-unit ledger. That instruction is false for an asset supply
+# reconciliation does not apply to — no system of record gives a wallet address a
+# token total supply — so requirement is resolved from the SAME canonical
+# applicability fact the verdict uses, before availability is described at all.
+# --------------------------------------------------------------------------
+def test_a_wallet_needs_no_authoritative_ledger_so_none_is_reported_missing(integrity_get):
+    authoritative = integrity_get(FakeConn())['authoritative_state']
+    assert authoritative['requirement'] == endpoints.REQUIREMENT_NOT_REQUIRED
+    assert authoritative['availability'] == endpoints.AVAILABILITY_NOT_APPLICABLE
+    # Never "not configured": that would name a setup step that changes nothing.
+    assert authoritative['availability'] != endpoints.AVAILABILITY_NOT_CONFIGURED
+    # And still no fabricated expected supply behind it.
+    assert authoritative['expected_total_supply'] is None
+
+
+def test_a_token_asset_with_no_source_is_genuinely_not_configured(integrity_get):
+    """The distinction the wallet case must not erase: where reconciliation DOES
+    apply, an absent system of record is a real gap the operator can close."""
+    authoritative = integrity_get(FakeConn(asset=TOKEN_ASSET))['authoritative_state']
+    assert authoritative['requirement'] == endpoints.REQUIREMENT_REQUIRED
+    assert authoritative['availability'] == endpoints.AVAILABILITY_NOT_CONFIGURED
+
+
+def test_a_recorded_authoritative_source_is_reported_on_its_own_terms(integrity_get):
+    """Applicability never hides recorded state: a source that exists is always
+    described by what it reported, whatever the asset type says."""
+    payload = integrity_get(FakeConn(authoritative=_authoritative_row()))
+    authoritative = payload['authoritative_state']
+    assert authoritative['availability'] == endpoints.AVAILABILITY_AVAILABLE
+    assert authoritative['expected_total_supply'] is not None
+
+
+def test_the_wallet_assessment_is_terminal_rather_than_limited(integrity_get):
+    """"Limited" promises a verdict once the missing evidence arrives. Nothing is
+    owed here, so the assessment says so — and still claims no risk impact."""
+    view = integrity_get(FakeConn())['ai_assessment_view']
+    assert view['assessment'] == 'Not applicable'
+    assert view['assessment'] not in ('Complete', 'Limited')
+    assert view['assessment_reason'] == engine.SUPPLY_RECONCILIATION_NOT_APPLICABLE
+    assert view['risk_impact'] is None
+    assert view['cta'] is None
+
+
+def test_a_persisted_not_applicable_snapshot_is_never_reported_as_complete(integrity_get):
+    """A RECORDED not-applicable result is still not a verdict: the check never
+    ran, so there is nothing to have completed and nothing to investigate."""
+    snapshot = _snapshot_row(
+        status=engine.NOT_APPLICABLE, reason_code=engine.SUPPLY_RECONCILIATION_NOT_APPLICABLE,
+        severity='low', variance_units=None, observed_supply=None, expected_supply=None,
+    )
+    view = integrity_get(FakeConn(snapshot=snapshot))['ai_assessment_view']
+    assert view['assessment'] == 'Not applicable'
+    assert view['cta'] is None
+    # The engine's severity for a non-applicable dimension is 'low'; mapping that
+    # to a "Low" risk impact would read as a clean bill of health it never gave.
+    assert view['risk_impact'] is None
+
+
+def test_the_deterministic_narrative_gives_a_not_applicable_result_no_risk_impact():
+    from services.api.app.domains.asset_integrity import ai_explanation as ai
+
+    not_applicable = ai.build_deterministic_summary({
+        'asset_name': 'Test MetaMask Wallet', 'status': engine.NOT_APPLICABLE,
+        'reason_code': engine.SUPPLY_RECONCILIATION_NOT_APPLICABLE, 'severity': 'low',
+        'variance_units': None, 'evidence_count': 0,
+    })
+    assert not_applicable['risk_impact'] is None
+    assert 'does not apply' in not_applicable['explanation']
+    # A genuinely reconciled asset still reports its Low impact.
+    reconciled = ai.build_deterministic_summary({
+        'asset_name': 'Demo Seed Tokenized Bond', 'status': engine.RECONCILED,
+        'reason_code': engine.SUPPLY_MATCHES_AUTHORITATIVE_STATE, 'severity': 'low',
+        'variance_units': 0, 'evidence_count': 3,
+    })
+    assert reconciled['risk_impact'] == 'Low'
+
+
+def test_applicability_is_asset_driven_not_hardcoded_to_one_asset(integrity_get):
+    """The renderer must be driven by asset type + backend status. A future
+    tokenized treasury reaches the reconciliation workflow with no code change."""
+    treasury = {**WALLET_ASSET, 'id': 'cccc', 'name': 'Tokenized Treasury 2028',
+                'asset_type': 'contract', 'rwa_asset_type': 'tokenized_treasury',
+                'token_contract_address': '0x' + 'd' * 40}
+    payload = integrity_get(FakeConn(asset=treasury))
+    assert payload['onchain_state']['total_supply_applicability'] == endpoints.APPLICABILITY_APPLICABLE
+    assert payload['authoritative_state']['requirement'] == endpoints.REQUIREMENT_REQUIRED
+    assert payload['reconciliation_view']['status'] != engine.NOT_APPLICABLE
+    assert payload['ai_assessment_view']['assessment'] == 'Limited'

@@ -25,16 +25,23 @@ import {
   absentValueLabel,
   assessorCta,
   assessorView,
+  authoritativeApplicabilityRow,
   authoritativeAvailability,
+  authoritativeCardState,
+  authoritativeRequirement,
   availabilityLabel,
+  freshnessLabel,
   integrityBanner,
   isAnomalyStatus,
   isHealthyStatus,
   onchainAvailability,
+  reconcileAction,
+  reconciliationResultTone,
   reconciliationStatusLabel,
   reconciliationStatusVariant,
   reconciliationMeaning,
   reconciliationView,
+  riskImpactAbsentLabel,
   tokenSupplyApplicability,
 } from '../app/asset-integrity-presentation';
 
@@ -324,7 +331,11 @@ test('an unevaluated view can never smuggle a variance, severity or rule through
 test('an unevaluated result card is never styled as a healthy one', () => {
   // Green is reserved for a recorded RECONCILED verdict — a card that was never
   // evaluated cannot borrow it, whatever status a malformed payload claims.
-  expect(panelSrc).toContain("(!view.evaluated || indeterminate) ? 'integrityResultWarning' : 'integrityResultOk'");
+  const claimsHealth = { ...reconciliationView(sourceMissingPayload), status: 'RECONCILED' };
+  expect(claimsHealth.evaluated).toBe(false);
+  expect(reconciliationResultTone(claimsHealth)).not.toBe('integrityResultOk');
+  expect(reconciliationResultTone(reconciliationView(sourceMissingPayload))).toBe('integrityResultWarning');
+  expect(panelSrc).toContain('const tone = reconciliationResultTone(view);');
   expect(panelSrc).toContain('<StatusPill label="Not evaluated" variant="neutral" />');
 });
 
@@ -423,7 +434,12 @@ test('risk impact is Not determined when no severity was ever computed', () => {
   // A default of "Low" would read as a clean result the engine never produced.
   const view = reconciliationView(walletPayload);
   expect(assessorView(walletPayload, view).risk_impact).toBeNull();
-  expect(panelSrc).toContain('label="Not determined"');
+  expect(riskImpactAbsentLabel('INSUFFICIENT_EVIDENCE')).toBe('Not determined');
+  expect(riskImpactAbsentLabel('MISSING_AUTHORITATIVE_DATA')).toBe('Not determined');
+  // ...and a check that does not apply has no risk impact to determine at all.
+  expect(riskImpactAbsentLabel('NOT_APPLICABLE')).toBe('Not applicable');
+  expect(riskImpactAbsentLabel('NOT_APPLICABLE')).not.toBe('Low');
+  expect(panelSrc).toContain('riskImpactAbsentLabel(status)');
 });
 
 test('an AI narrative is labelled as one, and cannot change the verdict', () => {
@@ -527,7 +543,11 @@ test('a not-applicable asset is offered no dead-end Configure CTA', () => {
   expect(cta.kind).toBe('none');
   expect(cta.destination).toBeNull();
   expect(cta.label).not.toContain('Investigate');
+  expect(cta.label).not.toContain('Configure');
   expect(cta.hint).toContain('does not apply');
+  // ...and the state is still not reported as a clean result.
+  expect(cta.hint).toContain('not a clean bill of health');
+  expect(cta.hint).toContain('Other monitoring controls still apply');
 });
 
 test('the not-applicable narrative never claims data is missing', () => {
@@ -540,7 +560,10 @@ test('the not-applicable narrative never claims data is missing', () => {
   // Still never a clean bill of health for the asset itself.
   expect(withoutAi.explanation).toContain('not a clean bill of health');
   expect(withoutAi.risk_impact).toBeNull();
-  expect(withoutAi.assessment).toBe('Limited');
+  // Not "Limited": nothing further is owed, so the assessment is terminal.
+  expect(withoutAi.assessment).toBe('Not applicable');
+  expect(withoutAi.assessment).not.toBe('Complete');
+  expect(withoutAi.assessment_reason).toBe('SUPPLY_RECONCILIATION_NOT_APPLICABLE');
 });
 
 test('the on-chain card does not promise a fix that cannot exist', () => {

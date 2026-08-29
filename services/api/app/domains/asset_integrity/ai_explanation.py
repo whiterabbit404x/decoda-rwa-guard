@@ -133,7 +133,11 @@ def build_deterministic_summary(facts: dict[str, Any]) -> dict[str, Any]:
 
     return {
         'explanation': _clip(explanation),
-        'risk_impact': _RISK_IMPACT_BY_SEVERITY.get(severity, 'Low'),
+        # A check that does not apply produced no risk verdict. The engine's
+        # severity is 'low' there only because a non-applicable dimension is not a
+        # data-quality gap to chase — printing "Low" would read as a clean bill of
+        # health this control never gave.
+        'risk_impact': None if status == 'NOT_APPLICABLE' else _RISK_IMPACT_BY_SEVERITY.get(severity, 'Low'),
         'next_steps': [_clip(s, 200) for s in next_steps][:4],
         'source': 'deterministic',
         'schema_version': SUMMARY_SCHEMA_VERSION,

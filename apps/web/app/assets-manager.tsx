@@ -1483,17 +1483,24 @@ function AssetDetailsDrawer({
           </>
         )) : null}
 
+        {/* The drawer's primary action belongs to the workflow the open tab shows.
+            The risk-assessment run ("Run again") is offered on the assessment-backed
+            tabs only: sitting under the Integrity tab's own reconciliation control it
+            read as a second button for the same workflow, and the two are different
+            runs entirely — one re-scores asset risk, the other reconciles supply. */}
         <div className="drawerActions">
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={assessDisplay.actionDisabled}
-            aria-busy={assessDisplay.actionBusy}
-            title={assessDisplay.hint}
-            onClick={() => { if (!assessDisplay.actionDisabled) void onRunAssessment().then(() => loadDetail()); }}
-          >
-            {assessDisplay.actionLabel}
-          </button>
+          {ASSESSMENT_BACKED_TABS.includes(tab) ? (
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={assessDisplay.actionDisabled}
+              aria-busy={assessDisplay.actionBusy}
+              title={assessDisplay.hint}
+              onClick={() => { if (!assessDisplay.actionDisabled) void onRunAssessment().then(() => loadDetail()); }}
+            >
+              {assessDisplay.actionLabel}
+            </button>
+          ) : null}
           {nextAction === 'Verify asset' ? (
             <button type="button" className="btn btn-secondary" disabled={actionLoading} onClick={() => onVerify(asset, nextAction)}>Verify asset</button>
           ) : (

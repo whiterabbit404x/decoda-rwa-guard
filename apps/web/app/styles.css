@@ -8161,29 +8161,32 @@ a.mktTrustBadge:hover {
 }
 .integrityCardHeader .sectionEyebrow { margin: 0; }
 .integrityCardTag {
-  font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.06em;
+  font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em;
   color: var(--text-muted); white-space: nowrap;
 }
 
 .integrityKvRow {
   display: flex; justify-content: space-between; align-items: center; gap: 0.75rem;
-  padding: 0.25rem 0; font-size: 0.82rem; color: var(--text-secondary);
+  padding: 0.27rem 0; font-size: 0.88rem; color: var(--text-secondary);
 }
 .integrityKvLabel {
-  font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.05em;
+  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em;
   color: var(--text-muted); white-space: nowrap;
 }
-.integrityKvValue { color: var(--text-primary); text-align: right; min-width: 0; overflow-wrap: anywhere; }
+.integrityKvValue { color: var(--text-primary); text-align: right; min-width: 0; overflow-wrap: anywhere; font-weight: 500; }
 .integrityKvValue strong { font-variant-numeric: tabular-nums; }
-.integrityMono { font-family: monospace; font-size: 0.74rem; }
+.integrityMono { font-family: monospace; font-size: 0.8rem; }
 
-/* A value the backend could not establish. Deliberately muted — never styled
-   as a healthy value and never rendered as a zero. */
-.integrityUnavailable { color: var(--text-muted); font-style: italic; }
+/* A field with no number behind it — because it could not be established, or
+   because it does not apply to this asset. Italic keeps it visibly distinct from
+   a real value; it is never styled as a healthy one and never rendered as a
+   zero. Secondary rather than muted: "Not applicable" is a real answer and has
+   to be readable. */
+.integrityUnavailable { color: var(--text-secondary); font-style: italic; }
 
 .integrityEmptyNote,
 .integrityWarnNote {
-  margin: 0.5rem 0 0; font-size: 0.78rem; color: var(--text-secondary); line-height: 1.5;
+  margin: 0.5rem 0 0; font-size: 0.84rem; color: var(--text-secondary); line-height: 1.55;
 }
 .integrityWarnNote {
   color: var(--warning-fg); background: var(--warning-bg);
@@ -8202,7 +8205,7 @@ a.mktTrustBadge:hover {
   margin: 0; font-size: 0.82rem; font-weight: 600; color: var(--danger-fg);
 }
 .integrityErrorBannerDetail {
-  margin: 0; font-size: 0.74rem; color: var(--text-secondary); line-height: 1.5;
+  margin: 0; font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5;
 }
 
 /* ── Reconciliation result ─────────────────────────────────── */
@@ -8210,14 +8213,19 @@ a.mktTrustBadge:hover {
 .integrityResultCritical { border-color: var(--danger-bdr); background: var(--danger-bg); }
 .integrityResultWarning  { border-color: var(--warning-bdr); background: var(--warning-bg); }
 .integrityResultOk       { border-color: var(--success-bdr); background: var(--success-bg); }
+/* NOT_APPLICABLE. Deliberately colourless: nothing is wrong, nothing is missing,
+   and nothing is healthy — amber would invent a gap for the operator to chase. */
+.integrityResultNeutral  { border-color: var(--border); background: var(--surface-subtle, rgba(255, 255, 255, 0.02)); }
 
 .integrityResultGrid {
   display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 0.75rem; margin-bottom: 0.6rem;
 }
 .integrityResultStatus { margin: 0.25rem 0 0; }
+/* The verdict and the variance are the two figures the operator reads first. */
+.integrityResultStatus .sharedStatusPill { font-size: 0.88rem; padding: 0.28rem 0.7rem; }
 .integrityResultVariance {
-  margin: 0.25rem 0 0; font-size: 1.15rem; font-weight: 600;
+  margin: 0.25rem 0 0; font-size: 1.3rem; font-weight: 600;
   font-variant-numeric: tabular-nums; color: var(--text-primary);
 }
 .integrityVariance-positive { color: var(--danger-fg); }
@@ -8227,17 +8235,17 @@ a.mktTrustBadge:hover {
 
 .integrityResultMeaning {
   margin: 0.6rem 0 0; padding-top: 0.5rem; border-top: 1px solid var(--border);
-  font-size: 0.74rem; color: var(--text-secondary); line-height: 1.5;
+  font-size: 0.82rem; color: var(--text-secondary); line-height: 1.55;
 }
 
 /* ── AI assessor ───────────────────────────────────────────── */
 .integrityAiCard { display: flex; flex-direction: column; }
-.integrityAiText { margin: 0 0 0.5rem; font-size: 0.82rem; color: var(--text-primary); line-height: 1.55; }
-.integrityAiSteps { margin: 0.4rem 0 0; padding-left: 1.1rem; font-size: 0.76rem; color: var(--text-secondary); }
+.integrityAiText { margin: 0 0 0.5rem; font-size: 0.9rem; color: var(--text-primary); line-height: 1.6; }
+.integrityAiSteps { margin: 0.4rem 0 0; padding-left: 1.1rem; font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5; }
 .integrityAiSteps li { margin-bottom: 0.2rem; }
 .integrityAiBoundary {
   margin: 0.6rem 0 0; padding-top: 0.5rem; border-top: 1px solid var(--border);
-  font-size: 0.68rem; color: var(--text-muted); line-height: 1.45;
+  font-size: 0.74rem; color: var(--text-muted); line-height: 1.5;
 }
 .integrityActions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; }
 
@@ -8245,14 +8253,14 @@ a.mktTrustBadge:hover {
   display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
   padding-top: 0.6rem; border-top: 1px solid var(--border);
 }
-.integrityFooterNote { font-size: 0.7rem; color: var(--text-muted); }
+.integrityFooterNote { font-size: 0.78rem; color: var(--text-secondary); line-height: 1.5; }
 
 /* ── History ───────────────────────────────────────────────── */
 .integrityHistoryWrap { overflow-x: auto; }
-.integrityHistoryTable { width: 100%; border-collapse: collapse; font-size: 0.76rem; }
+.integrityHistoryTable { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .integrityHistoryTable th {
   text-align: left; padding: 0.4rem 0.5rem; color: var(--text-muted);
-  font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.05em;
+  font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em;
   border-bottom: 1px solid var(--border); white-space: nowrap;
 }
 .integrityHistoryTable td {
