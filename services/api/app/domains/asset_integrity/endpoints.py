@@ -64,6 +64,17 @@ AVAILABILITY_AVAILABLE = 'AVAILABLE'
 AVAILABILITY_STALE = 'STALE'
 AVAILABILITY_SOURCE_UNAVAILABLE = 'SOURCE_UNAVAILABLE'
 AVAILABILITY_NOT_CONFIGURED = 'NOT_CONFIGURED'
+AVAILABILITY_NOT_APPLICABLE = 'NOT_APPLICABLE'
+
+# Is an authoritative supply ledger REQUIRED for this asset at all?
+#
+#   REQUIRED      supply reconciliation applies, so an absent system of record is
+#                 a real configuration gap ("Not configured" — a to-do)
+#   NOT_REQUIRED  supply reconciliation does not apply, so no transfer agent or
+#                 expected-unit ledger is owed. Nothing is missing, and the UI
+#                 must not imply a setup step that would change nothing.
+REQUIREMENT_REQUIRED = 'REQUIRED'
+REQUIREMENT_NOT_REQUIRED = 'NOT_REQUIRED'
 
 # Canonical in ``service`` so the read path and the persist path share ONE
 # applicability fact; re-exported here for the payload builders below.
@@ -225,13 +236,28 @@ def _onchain_state_payload(
     }
 
 
-def _authoritative_state_payload(row: Optional[dict[str, Any]], *, now: Any, config: dict[str, Any]) -> dict[str, Any]:
+def _authoritative_state_payload(
+    row: Optional[dict[str, Any]], *, now: Any, config: dict[str, Any],
+    supply_applicable: bool = True,
+) -> dict[str, Any]:
     """AUTHORITATIVE business state — deliberately a separate object from the
-    on-chain observation so the UI can never blur the two."""
+    on-chain observation so the UI can never blur the two.
+
+    ``requirement`` is resolved from the SAME canonical applicability fact as the
+    verdict. An absent source is only NOT_CONFIGURED — a to-do — when one is
+    required; when supply reconciliation does not apply, nothing is missing, so
+    the absence is NOT_APPLICABLE and no configuration step is implied. A source
+    that DOES exist is always reported on its own terms, whatever applicability
+    says: recorded state is never hidden behind "not applicable".
+    """
+    requirement = REQUIREMENT_REQUIRED if supply_applicable else REQUIREMENT_NOT_REQUIRED
     if row is None:
         return {
             'available': False,
-            'availability': AVAILABILITY_NOT_CONFIGURED,
+            'requirement': requirement,
+            'availability': (
+                AVAILABILITY_NOT_CONFIGURED if supply_applicable else AVAILABILITY_NOT_APPLICABLE
+            ),
             'source_status': 'missing',
             'expected_total_supply': None, 'settlement_state': None, 'source_name': None,
             'source_kind': None, 'source_error': None, 'external_reference': None,
@@ -253,6 +279,7 @@ def _authoritative_state_payload(row: Optional[dict[str, Any]], *, now: Any, con
         availability = AVAILABILITY_AVAILABLE
     return {
         'available': reported,
+        'requirement': requirement,
         'availability': availability,
         'source_status': source_status,
         'expected_total_supply': pilot._json_safe_value(row.get('expected_total_supply')),
@@ -391,8 +418,21 @@ def _ai_assessment_view(
     built deterministically from the SAME reason code the result card shows. The
     model is never asked to infer a missing value.
     """
+    status = str(view.get('status') or '')
+    not_applicable = status == engine.NOT_APPLICABLE
     persisted = _ai_assessment_payload(snapshot, asset)
     if persisted is not None:
+        # A RECORDED not-applicable result is terminal, not "Complete": the check
+        # never ran, so there is no verdict to have completed, no risk impact to
+        # report, and nothing to investigate.
+        if not_applicable:
+            return {
+                **persisted,
+                'risk_impact': None,
+                'assessment': 'Not applicable',
+                'assessment_reason': view.get('reason_code'),
+                'cta': None,
+            }
         return {**persisted, 'assessment': 'Complete', 'cta': 'investigate_variance'}
     summary = ai_explanation.build_deterministic_summary({
         'asset_name': asset.get('name'),
@@ -410,11 +450,16 @@ def _ai_assessment_view(
         # Reconciliation never ran, so there is no severity to map a risk impact
         # from. "Not determined" is the truthful answer; "Low" would not be.
         'risk_impact': None,
-        'assessment': 'Limited',
+        # "Limited" promises a verdict once the missing evidence arrives. Nothing
+        # is owed for a dimension that does not apply, so that state is terminal
+        # rather than limited — and still not a clean bill of health.
+        'assessment': 'Not applicable' if not_applicable else 'Limited',
         'assessment_reason': view.get('reason_code'),
+        # No source configuration gives a wallet a token total supply, so the
+        # configure CTA is deliberately withheld for NOT_APPLICABLE.
         'cta': ('configure_monitoring_source'
-                if view.get('status') in (engine.MISSING_AUTHORITATIVE_DATA, engine.SOURCE_UNAVAILABLE,
-                                          engine.STALE_AUTHORITATIVE_DATA, engine.INSUFFICIENT_EVIDENCE)
+                if status in (engine.MISSING_AUTHORITATIVE_DATA, engine.SOURCE_UNAVAILABLE,
+                              engine.STALE_AUTHORITATIVE_DATA, engine.INSUFFICIENT_EVIDENCE)
                 else None),
     }
 
@@ -518,7 +563,9 @@ def integrity_state_endpoint(asset_id: str, request: Any) -> dict[str, Any]:
         payload = {
             'asset': _asset_summary(asset),
             'onchain_state': _onchain_state_payload(onchain_row, now=now, config=cfg, asset=asset),
-            'authoritative_state': _authoritative_state_payload(authoritative_row, now=now, config=cfg),
+            'authoritative_state': _authoritative_state_payload(
+                authoritative_row, now=now, config=cfg, supply_applicable=supply_applicable,
+            ),
             # The persisted snapshot (null when none exists) — unchanged contract.
             'reconciliation': _reconciliation_payload(snapshot),
             'ai_assessment': _ai_assessment_payload(snapshot, asset),

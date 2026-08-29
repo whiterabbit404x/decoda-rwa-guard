@@ -302,6 +302,60 @@ export function tokenSupplyApplicability(state: any): 'APPLICABLE' | 'NOT_APPLIC
     : 'APPLICABLE';
 }
 
+export type AuthoritativeRequirement = 'REQUIRED' | 'NOT_REQUIRED';
+
+/**
+ * Is an authoritative supply ledger REQUIRED for this asset at all?
+ *
+ * "Not configured" is a to-do: it tells the operator to go and connect a
+ * transfer agent or expected-unit ledger. That instruction is false for an asset
+ * supply reconciliation does not apply to — no system of record would give a
+ * wallet address a token total supply — so requirement is resolved BEFORE
+ * availability, from the same canonical applicability fact the verdict uses.
+ */
+export function authoritativeRequirement(payload: any): AuthoritativeRequirement {
+  const declared = String(payload?.authoritative_state?.requirement || '').toUpperCase();
+  if (declared === 'REQUIRED' || declared === 'NOT_REQUIRED') return declared as AuthoritativeRequirement;
+  return tokenSupplyApplicability(payload?.onchain_state) === 'NOT_APPLICABLE' ? 'NOT_REQUIRED' : 'REQUIRED';
+}
+
+/**
+ * The AUTHORITATIVE STATE card's applicability + availability, together.
+ *
+ * A genuinely absent source is only "Not configured" when one is REQUIRED. When
+ * it is not required, the absence is NOT_APPLICABLE — nothing is missing, so no
+ * configuration step is implied. A source that DOES exist is always reported on
+ * its own terms (available / stale / unavailable), whatever applicability says:
+ * real recorded state is never hidden behind "not applicable".
+ */
+export function authoritativeCardState(payload: any): {
+  availability: Availability;
+  requirement: AuthoritativeRequirement;
+} {
+  const requirement = authoritativeRequirement(payload);
+  const availability = authoritativeAvailability(payload?.authoritative_state);
+  if (availability === 'NOT_CONFIGURED' && requirement === 'NOT_REQUIRED') {
+    return { availability: 'NOT_APPLICABLE', requirement };
+  }
+  return { availability, requirement };
+}
+
+/**
+ * The card's final summary row. It states APPLICABILITY when no ledger is
+ * required, and AVAILABILITY when one is — the two answer different questions,
+ * and only one of them is ever the operator's business.
+ */
+export function authoritativeApplicabilityRow(card: {
+  availability: Availability;
+  requirement: AuthoritativeRequirement;
+}): { label: string; value: string; variant: PillVariant } {
+  if (card.requirement === 'NOT_REQUIRED' && card.availability === 'NOT_APPLICABLE') {
+    return { label: 'Applicability', value: 'Not required', variant: 'neutral' };
+  }
+  const badge = availabilityLabel(card.availability);
+  return { label: 'Availability', value: badge.label, variant: badge.variant };
+}
+
 /* ── Always-present card models ───────────────────────────────────── */
 
 export type ReconciliationView = {
@@ -427,9 +481,21 @@ export type AssessorView = {
   risk_impact: string | null;
   next_steps: string[];
   source: 'ai' | 'deterministic';
-  assessment: 'Complete' | 'Limited';
+  // "Limited" means a verdict is still owed once evidence arrives. NOT_APPLICABLE
+  // owes nothing, so it is neither Limited nor Complete — it is its own terminal
+  // answer, and it is still not a clean bill of health for the asset.
+  assessment: 'Complete' | 'Limited' | 'Not applicable';
   assessment_reason: string | null;
 };
+
+/**
+ * What the Risk Impact row says when the engine produced no severity to map.
+ * "Not determined" means one is still owed; "Not applicable" means none exists
+ * for this check. Neither is ever "Low" — that would read as a clean result.
+ */
+export function riskImpactAbsentLabel(status: string | null | undefined): string {
+  return String(status || '').toUpperCase() === 'NOT_APPLICABLE' ? 'Not applicable' : 'Not determined';
+}
 
 /**
  * The AI ASSET RISK ASSESSOR card's model — never null, and never dependent on
@@ -439,15 +505,21 @@ export type AssessorView = {
 export function assessorView(payload: any, view: ReconciliationView): AssessorView {
   const stored = payload?.ai_assessment_view ?? payload?.ai_assessment ?? null;
   const explanation = String(stored?.explanation || '').trim();
+  const notApplicable = view.status === 'NOT_APPLICABLE';
   return {
     explanation: explanation || defaultAssessorExplanation(view),
     // No evaluation means no severity, and risk impact is derived from severity.
     // "Not determined" is the honest answer; a default of "Low" would not be.
-    risk_impact: view.evaluated ? (stored?.risk_impact ?? null) : null,
+    // A not-applicable check has no risk impact at all, even when a persisted
+    // snapshot carries the engine's low severity — printing "Low" there would
+    // read as a clean bill of health this control never gave.
+    risk_impact: view.evaluated && !notApplicable ? (stored?.risk_impact ?? null) : null,
     next_steps: Array.isArray(stored?.next_steps) ? stored.next_steps.filter((s: unknown) => typeof s === 'string') : [],
     source: stored?.source === 'ai' ? 'ai' : 'deterministic',
-    assessment: view.evaluated ? 'Complete' : 'Limited',
-    assessment_reason: view.evaluated ? null : (view.reason_code ?? null),
+    assessment: notApplicable ? 'Not applicable' : view.evaluated ? 'Complete' : 'Limited',
+    // The reason code is shown for both — a terminal not-applicable result still
+    // names the rule that made it terminal.
+    assessment_reason: notApplicable || !view.evaluated ? (view.reason_code ?? null) : null,
   };
 }
 
@@ -583,7 +655,13 @@ export function freshnessLabel(
     stale?: boolean | null;
     source_status?: string | null;
   } | null | undefined,
+  availability?: string | null,
 ): { label: string; variant: PillVariant } {
+  // Nothing is required here, so nothing can be out of date: "Not configured"
+  // would name a setup step this asset does not have.
+  if (String(availability || '').toUpperCase() === 'NOT_APPLICABLE') {
+    return { label: '\u2014', variant: 'neutral' };
+  }
   if (!state) return { label: 'Unknown', variant: 'neutral' };
   const status = state.source_status == null ? null : String(state.source_status).toLowerCase();
   if (status === 'missing') return { label: 'Not configured', variant: 'neutral' };
@@ -605,10 +683,15 @@ export function freshnessLabel(
  * workflow rather than a second configuration surface. A healthy result needs no
  * action, so it gets no CTA.
  */
-export function assessorCta(
-  payload: any,
-  view: ReconciliationView,
-): { kind: 'investigate' | 'configure' | 'none'; enabled: boolean; label: string; hint: string; destination: string | null } {
+export type AssessorCta = {
+  kind: 'investigate' | 'configure' | 'none';
+  enabled: boolean;
+  label: string;
+  hint: string;
+  destination: string | null;
+};
+
+export function assessorCta(payload: any, view: ReconciliationView): AssessorCta {
   if (view.evaluated && isAnomalyStatus(view.status)) {
     const cta = investigateCta(payload);
     return { kind: 'investigate', ...cta };
@@ -623,13 +706,20 @@ export function assessorCta(
     };
   }
   // No monitoring source gives a wallet address a token total supply, so
-  // offering to configure one would send the operator after a dead end.
+  // "Configure Monitoring Source" would send the operator after a dead end, and
+  // a second Monitoring Sources link would only duplicate the one the asset
+  // drawer already carries. The card states the fact instead — including that a
+  // check which does not apply is NOT a clean bill of health, because the
+  // asset's other monitoring controls still apply to it and can still detect
+  // risk. The one thing that would make supply reconciliation apply — a
+  // registered token contract — is named on the On-Chain card, where the
+  // missing field is.
   if (view.status === 'NOT_APPLICABLE') {
     return {
       kind: 'none',
       enabled: false,
-      label: 'No action required',
-      hint: 'Supply reconciliation does not apply to this asset, so there is nothing to configure for it here.',
+      label: 'No action required for this check',
+      hint: 'Supply reconciliation does not apply to this asset, so there is nothing to configure for it here. Other monitoring controls still apply to the asset — this is not a clean bill of health.',
       destination: null,
     };
   }
@@ -639,5 +729,62 @@ export function assessorCta(
     label: 'Configure Monitoring Source',
     hint: 'Opens Monitoring Sources, where the source this asset reconciles against is configured.',
     destination: MONITORING_SOURCES_ROUTE,
+  };
+}
+
+/* ── Reconciliation result tone + the run action ──────────────── */
+
+/**
+ * The RECONCILIATION RESULT card's tone class.
+ *
+ *   red     an evidenced, persisted UNEXPLAINED_VARIANCE
+ *   amber   a data-quality gap: insufficient/stale/missing/unavailable, and any
+ *           card with no recorded evaluation behind it
+ *   neutral NOT_APPLICABLE — nothing is wrong, nothing is missing, and nothing
+ *           is healthy, so a warning colour would invent a gap to chase
+ *   green   a recorded verdict that says the asset reconciles
+ */
+export function reconciliationResultTone(view: ReconciliationView): string {
+  if (view.evaluated && isAnomalyStatus(view.status)) return 'integrityResultCritical';
+  if (view.status === 'NOT_APPLICABLE') return 'integrityResultNeutral';
+  if (!view.evaluated || isIndeterminateStatus(view.status)) return 'integrityResultWarning';
+  return 'integrityResultOk';
+}
+
+export type ReconcileAction = {
+  /** False when on-demand reconciliation is disabled for the workspace. */
+  visible: boolean;
+  enabled: boolean;
+  label: string;
+  hint: string;
+};
+
+/**
+ * The Run reconciliation control.
+ *
+ * Running it against an asset the dimension does not apply to can only ever
+ * re-record NOT_APPLICABLE, so offering it as a live action implies a verdict is
+ * one click away. It stays visible — disappearing controls read as a bug — but
+ * disabled, with the reason stated beside it.
+ *
+ * Driven by the deterministic backend STATUS, never by an asset-type check in
+ * the UI: a token asset that later becomes reconcilable re-enables it with no
+ * frontend change.
+ */
+export function reconcileAction(payload: any, view: ReconciliationView): ReconcileAction {
+  const visible = Boolean(payload?.reconcile_enabled);
+  if (view.status === 'NOT_APPLICABLE') {
+    return {
+      visible,
+      enabled: false,
+      label: 'Run reconciliation',
+      hint: 'Supply reconciliation does not apply to this asset type.',
+    };
+  }
+  return {
+    visible,
+    enabled: true,
+    label: 'Run reconciliation',
+    hint: 'Runs the deterministic engine over stored evidence and records the result.',
   };
 }

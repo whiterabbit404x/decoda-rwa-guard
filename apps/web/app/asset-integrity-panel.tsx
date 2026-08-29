@@ -26,7 +26,8 @@ import {
   absentValueLabel,
   assessorCta,
   assessorView,
-  authoritativeAvailability,
+  authoritativeApplicabilityRow,
+  authoritativeCardState,
   availabilityLabel,
   formatEvidenceCount,
   formatRule,
@@ -35,21 +36,22 @@ import {
   freshnessLabel,
   integrityBanner,
   integrityPanelState,
-  isAnomalyStatus,
-  isIndeterminateStatus,
   onchainAvailability,
   reasonCodeLabel,
+  reconcileAction,
+  reconciliationResultTone,
   reconciliationStatusLabel,
   reconciliationMeaning,
   reconciliationStatusVariant,
   reconciliationView,
   relativeTime,
+  riskImpactAbsentLabel,
   severityVariant,
   tokenSupplyApplicability,
   truncateHex,
   varianceDirection,
 } from './asset-integrity-presentation';
-import type { ReconciliationView } from './asset-integrity-presentation';
+import type { AuthoritativeRequirement, Availability, ReconciliationView } from './asset-integrity-presentation';
 
 type Props = {
   assetId: string;
@@ -166,7 +168,7 @@ function OnChainStateCard({ state, asset }: { state: any; asset?: any }) {
       {!supplyApplies ? (
         <p className="integrityEmptyNote">
           This asset has no token total supply, so supply reconciliation does not apply to it. Register a
-          token contract on the asset if it should be reconciled against one.
+          token contract if it should be reconciled against one.
         </p>
       ) : !observed ? (
         <p className="integrityEmptyNote">
@@ -183,15 +185,23 @@ function OnChainStateCard({ state, asset }: { state: any; asset?: any }) {
  * Always renders every row. An absent system of record is a CONFIGURATION fact
  * ("Not configured"), a source that failed is a TRANSIENT fact ("Source
  * unavailable"), and neither is ever an implied clean result.
+ *
+ * A third case is neither: when supply reconciliation does not apply to the
+ * asset, no authoritative ledger is REQUIRED, so the rows read "Not applicable"
+ * and the summary row states applicability instead of availability. "Not
+ * configured" there would be a to-do the operator can never usefully complete.
  */
-function AuthoritativeStateCard({ state }: { state: any }) {
-  const availability = authoritativeAvailability(state);
-  const configured = availability !== 'NOT_CONFIGURED' && availability !== 'UNKNOWN';
+function AuthoritativeStateCard({
+  state, card,
+}: { state: any; card: { availability: Availability; requirement: AuthoritativeRequirement } }) {
+  const availability = card.availability;
+  const notRequired = card.requirement === 'NOT_REQUIRED' && availability === 'NOT_APPLICABLE';
+  const configured = availability !== 'NOT_CONFIGURED' && availability !== 'UNKNOWN' && !notRequired;
   const reported = availability === 'AVAILABLE' || availability === 'STALE';
   const sourceStatus = String(state?.source_status || 'missing').toLowerCase();
   // Freshness is the BACKEND's staleness verdict, not a timestamp the UI judged.
-  const freshness = freshnessLabel(state);
-  const badge = availabilityLabel(availability);
+  const freshness = freshnessLabel(state, availability);
+  const summary = authoritativeApplicabilityRow(card);
 
   return (
     <section className="integrityCard" aria-label="Authoritative state">
@@ -222,9 +232,14 @@ function AuthoritativeStateCard({ state }: { state: any }) {
         {state?.stale ? <> <StatusPill label="Stale" variant="warning" /></> : null}
       </Row>
       <Row label="Freshness"><StatusPill label={freshness.label} variant={freshness.variant} /></Row>
-      <Row label="Availability"><StatusPill label={badge.label} variant={badge.variant} /></Row>
+      <Row label={summary.label}><StatusPill label={summary.value} variant={summary.variant} /></Row>
 
-      {!configured ? (
+      {notRequired ? (
+        <p className="integrityEmptyNote">
+          No authoritative supply ledger is required because supply reconciliation does not apply to this
+          asset. Nothing is missing here.
+        </p>
+      ) : !configured ? (
         <p className="integrityEmptyNote">
           No authoritative off-chain state is recorded for this asset. Without a system of record there is
           nothing to reconcile the chain against.
@@ -247,14 +262,11 @@ function AuthoritativeStateCard({ state }: { state: any }) {
  * variance anyway would fabricate the very anomaly this screen exists to detect.
  */
 function ReconciliationResultCard({ view }: { view: ReconciliationView }) {
-  const anomaly = view.evaluated && isAnomalyStatus(view.status);
-  const indeterminate = isIndeterminateStatus(view.status);
   const direction = varianceDirection(view.variance_units);
-  // Green is reserved for a RECORDED result that says the asset reconciles. An
-  // unevaluated card is never green, whatever status a payload claims.
-  const tone = anomaly
-    ? 'integrityResultCritical'
-    : (!view.evaluated || indeterminate) ? 'integrityResultWarning' : 'integrityResultOk';
+  // Green is reserved for a RECORDED result that says the asset reconciles; an
+  // unevaluated card is never green, whatever status a payload claims. Not
+  // applicable is neutral rather than amber — there is no gap to chase.
+  const tone = reconciliationResultTone(view);
 
   return (
     <section className={`integrityCard integrityResultCard ${tone}`} aria-label="Reconciliation result">
@@ -294,10 +306,12 @@ function ReconciliationResultCard({ view }: { view: ReconciliationView }) {
  * is never asked to infer a value the engine did not produce.
  */
 function AiAssessorCard({
-  assessment, cta, onInvestigate, investigating, actionError,
+  assessment, cta, status, onInvestigate, investigating, actionError,
 }: {
   assessment: ReturnType<typeof assessorView>;
   cta: ReturnType<typeof assessorCta>;
+  /** The deterministic reconciliation status this narrative explains. */
+  status: string;
   onInvestigate: () => void;
   investigating: boolean;
   actionError: string;
@@ -320,7 +334,7 @@ function AiAssessorCard({
       <Row label="Risk Impact">
         {assessment.risk_impact
           ? <strong>{assessment.risk_impact}</strong>
-          : <Unavailable label="Not determined" />}
+          : <Unavailable label={riskImpactAbsentLabel(status)} />}
       </Row>
       <p className="integrityAiText">{assessment.explanation}</p>
       {assessment.next_steps.length > 0 ? (
@@ -464,6 +478,11 @@ export default function AssetIntegrityPanel({ assetId, view = 'integrity' }: Pro
   const recon = useMemo(() => reconciliationView(payload), [payload]);
   const assessment = useMemo(() => assessorView(payload, recon), [payload, recon]);
   const cta = useMemo(() => assessorCta(payload, recon), [payload, recon]);
+  // Applicability is resolved from the SAME canonical fact as the verdict, so
+  // the Authoritative card can never say "Not configured" while the result card
+  // says the dimension does not apply.
+  const authoritativeCard = useMemo(() => authoritativeCardState(payload), [payload]);
+  const runReconciliation = useMemo(() => reconcileAction(payload, recon), [payload, recon]);
 
   // Opens (or returns) the existing investigation. Repeated clicks are guarded
   // locally AND idempotent on the backend, so no duplicate incident is created.
@@ -492,7 +511,9 @@ export default function AssetIntegrityPanel({ assetId, view = 'integrity' }: Pro
   }, [assetId, authHeaders, cta.enabled, cta.kind, investigating, load]);
 
   const reconcile = useCallback(async () => {
-    if (reconciling) return;
+    // Guarded here as well as on the button: reconciliation that cannot produce a
+    // verdict is never started, however the click arrives.
+    if (reconciling || !runReconciliation.enabled) return;
     setReconciling(true);
     setActionError('');
     try {
@@ -511,7 +532,7 @@ export default function AssetIntegrityPanel({ assetId, view = 'integrity' }: Pro
     } finally {
       setReconciling(false);
     }
-  }, [assetId, authHeaders, load, reconciling]);
+  }, [assetId, authHeaders, load, reconciling, runReconciliation.enabled]);
 
   const retry = useCallback(() => { setLoading(true); void load(); }, [load]);
 
@@ -544,7 +565,7 @@ export default function AssetIntegrityPanel({ assetId, view = 'integrity' }: Pro
     return (
       <div className="integrityLayout">
         <ErrorBanner banner={banner} onRetry={retry} />
-        <AuthoritativeStateCard state={authoritative} />
+        <AuthoritativeStateCard state={authoritative} card={authoritativeCard} />
       </div>
     );
   }
@@ -559,7 +580,7 @@ export default function AssetIntegrityPanel({ assetId, view = 'integrity' }: Pro
 
       <div className="integrityStateGrid">
         <OnChainStateCard state={onchain} asset={asset} />
-        <AuthoritativeStateCard state={authoritative} />
+        <AuthoritativeStateCard state={authoritative} card={authoritativeCard} />
       </div>
 
       <div className="integrityResultGridOuter">
@@ -567,17 +588,32 @@ export default function AssetIntegrityPanel({ assetId, view = 'integrity' }: Pro
         <AiAssessorCard
           assessment={assessment}
           cta={cta}
+          status={recon.status}
           onInvestigate={investigate}
           investigating={investigating}
           actionError={actionError}
         />
       </div>
 
+      {/* Run reconciliation stays visible but DISABLED where reconciliation
+          cannot produce a verdict — running it could only ever re-record "not
+          applicable", so offering it live would imply a verdict is one click
+          away. The reason is stated beside it rather than left to a tooltip. */}
       <div className="integrityFooter">
-        {payload?.reconcile_enabled ? (
-          <button type="button" className="btn btn-secondary" disabled={reconciling} aria-busy={reconciling} onClick={reconcile}>
-            {reconciling ? 'Reconciling…' : 'Run reconciliation'}
+        {runReconciliation.visible ? (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={reconciling || !runReconciliation.enabled}
+            aria-busy={reconciling}
+            title={runReconciliation.hint}
+            onClick={reconcile}
+          >
+            {reconciling ? 'Reconciling…' : runReconciliation.label}
           </button>
+        ) : null}
+        {runReconciliation.visible && !runReconciliation.enabled ? (
+          <span className="integrityFooterNote">{runReconciliation.hint}</span>
         ) : null}
         <span className="integrityFooterNote">
           Reconciliation policy {formatRule(payload?.rule?.rule_id, payload?.rule?.rule_version)}. Viewing this

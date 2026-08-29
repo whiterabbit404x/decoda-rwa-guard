@@ -461,7 +461,14 @@ test('Freshness renders for every authoritative state, configured or not', () =>
   expect(occurrences.length).toBe(1);
   // One unconditional row, outside any branch — it cannot be skipped.
   expect(panelSrc).toContain('<Row label="Freshness"><StatusPill label={freshness.label} variant={freshness.variant} /></Row>');
-  expect(panelSrc).toContain('const freshness = freshnessLabel(state);');
+  expect(panelSrc).toContain('const freshness = freshnessLabel(state, availability);');
+  // Where no ledger is required nothing can be out of date, so freshness reads
+  // as a dash rather than as a "Not configured" setup step.
+  expect(freshnessLabel({ source_status: 'missing', stale: null }, 'NOT_APPLICABLE'))
+    .toEqual({ label: '\u2014', variant: 'neutral' });
+  // Every other state is unaffected by the new argument.
+  expect(freshnessLabel({ source_status: 'reported', stale: false }, 'AVAILABLE'))
+    .toEqual({ label: 'Current', variant: 'success' });
 });
 
 test('a missing authoritative source never renders an expected supply', () => {
