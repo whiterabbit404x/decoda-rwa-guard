@@ -515,6 +515,80 @@ def _evidence_coverage(connection: Any, *, workspace_id: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 # Canonical builder
 # --------------------------------------------------------------------------
+def _operational_integrity_block(
+    connection: Any, *, workspace_id: str, window_start: Any, now: Any,
+) -> dict[str, Any]:
+    """The Operational Integrity lane's own truthful capability + coverage state.
+
+    Kept as its own block rather than folded into detections_by_type: the
+    Overview card describes the behavioral/cyber detectors, and mixing a
+    business-reconciliation detector into that list would make "0" mean two
+    different things in one column.
+
+    Every count here is a real query result. Every unsupported detector says WHY,
+    so a detector whose authoritative source does not exist is never reported as
+    "evaluated, found none".
+    """
+    from services.api.app.domains.operational_integrity import config as oic
+    from services.api.app.domains.operational_integrity import service as ois
+
+    support = oic.detector_support()
+    counts: dict[str, int] = {}
+    if _table_exists(connection, 'threat_detections'):
+        try:
+            rows = connection.execute(
+                '''
+                SELECT td.detection_type AS type_key, COUNT(*) AS n
+                FROM threat_detections td
+                WHERE td.workspace_id = %s
+                  AND td.status = ANY(%s)
+                  AND td.detected_at >= %s
+                  AND COALESCE(NULLIF(td.category, ''), %s) = %s
+                GROUP BY td.detection_type
+                ''',
+                (
+                    workspace_id, list(_ACTIVE_STATUSES), window_start,
+                    tdc.CATEGORY_CYBER_SECURITY, tdc.CATEGORY_OPERATIONAL_INTEGRITY,
+                ),
+            ).fetchall()
+            counts = {str(r.get('type_key')): int(r.get('n') or 0) for r in rows}
+        except Exception:  # noqa: BLE001 - a read failure is reported, never faked as zero
+            counts = {}
+
+    by_type = [
+        {
+            'type': dtype,
+            'label': oic.DETECTION_TYPE_LABELS.get(dtype, dtype),
+            'count': counts.get(dtype, 0),
+            'supported': bool(support.get(dtype, {}).get('supported')),
+            'unsupported_reason': (
+                None if support.get(dtype, {}).get('supported') else support.get(dtype, {}).get('reason')
+            ),
+        }
+        for dtype in oic.DETECTION_TYPES
+    ]
+
+    try:
+        coverage = ois.telemetry_coverage(connection, workspace_id=workspace_id, now=now)
+    except Exception:  # noqa: BLE001 - an unreadable coverage state is UNAVAILABLE, never LIVE
+        coverage = {
+            'state': ois.COVERAGE_UNAVAILABLE, 'telemetry_source': None,
+            'telemetry_stage': 'UNKNOWN', 'last_issuance_telemetry_at': None,
+            'authoritative_sources': 0, 'authorized_records': 0,
+            'preconfirmation_available': False, 'reasons': ['coverage_unreadable'],
+        }
+
+    return {
+        'category': tdc.CATEGORY_OPERATIONAL_INTEGRITY,
+        'label': tdc.CATEGORY_LABELS[tdc.CATEGORY_OPERATIONAL_INTEGRITY],
+        'detection_count': sum(counts.get(t, 0) for t in oic.DETECTION_TYPES),
+        'by_type': by_type,
+        'detector_support': support,
+        'matcher_version': oic.MATCHER_VERSION,
+        'coverage': coverage,
+    }
+
+
 def build_threat_summary(connection: Any, *, workspace_id: str, config: dict[str, Any] | None = None, window_days: int = 7, window: str | None = None) -> dict[str, Any]:
     from services.api.app import pilot
 
@@ -658,6 +732,14 @@ def build_threat_summary(connection: Any, *, workspace_id: str, config: dict[str
         'degraded_reasons': degraded_reasons,
         'detector_support': tdc.detector_support(),
         'detector_version': tdc.DETECTOR_VERSION,
+        # Both lanes a detection can belong to, so the Detections filter renders
+        # real backend categories rather than a hard-coded frontend list.
+        'detection_categories': [
+            {'value': key, 'label': tdc.CATEGORY_LABELS[key]} for key in tdc.DETECTION_CATEGORIES
+        ],
+        'operational_integrity': _operational_integrity_block(
+            connection, workspace_id=workspace_id, window_start=window_start, now=now,
+        ),
         'engine_panel': _build_engine_panel(
             top, data_freshness, degraded_reasons, worker, counts,
             next_action=next_action, worker_status=worker_status, ingestion_health=ingestion_health,

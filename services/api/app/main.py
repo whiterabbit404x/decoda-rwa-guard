@@ -5005,11 +5005,16 @@ def threat_monitoring_detections(
     window: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    # Detection lane: CYBER_SECURITY | OPERATIONAL_INTEGRITY. Optional and
+    # backward compatible — omitting it returns both lanes exactly as before.
+    category: str | None = None,
+    search: str | None = None,
 ) -> dict[str, Any]:
     return with_auth_schema_json(
         lambda: threat_detection_endpoints.detections_endpoint(
             request, detection_type=detection_type, severity=severity, status_value=status_value,
             asset_id=asset_id, min_confidence=min_confidence, window_days=window_days, window=window, limit=limit, offset=offset,
+            category=category, search=search,
         )
     )
 
@@ -5044,10 +5049,13 @@ def threat_monitoring_anomalies(
     window: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    category: str | None = None,
+    search: str | None = None,
 ) -> dict[str, Any]:
     return with_auth_schema_json(
         lambda: threat_detection_endpoints.anomalies_endpoint(
             request, detection_type=detection_type, asset_id=asset_id, window_days=window_days, window=window, limit=limit, offset=offset,
+            category=category, search=search,
         )
     )
 

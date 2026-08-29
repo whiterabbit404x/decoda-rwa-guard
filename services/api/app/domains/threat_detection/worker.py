@@ -20,6 +20,8 @@ import socket
 from typing import Any
 
 from services.api.app import pilot
+from services.api.app.domains.operational_integrity import config as oic
+from services.api.app.domains.operational_integrity import service as operational_service
 from services.api.app.domains.threat_detection import config as tdc
 from services.api.app.domains.threat_detection import service
 
@@ -92,7 +94,13 @@ def run_threat_detection_worker_once(config: dict[str, Any] | None = None) -> di
         record_heartbeat(connection, worker_name=worker_name)
         due = _due_workspaces(connection, config=cfg)
 
-    totals = {'workspaces_due': len(due), 'workspaces_processed': 0, 'detections_created': 0, 'detections_updated': 0, 'anomalies': 0, 'alerts_upserted': 0, 'failed': 0}
+    totals = {
+        'workspaces_due': len(due), 'workspaces_processed': 0, 'detections_created': 0,
+        'detections_updated': 0, 'anomalies': 0, 'alerts_upserted': 0, 'failed': 0,
+        'operational_integrity_created': 0, 'operational_integrity_updated': 0,
+        'operational_integrity_failed': 0,
+    }
+    operational_cfg = oic.engine_config()
     for workspace_id in due:
         try:
             stats = service.run_detection_for_workspace(workspace_id, config=cfg)
@@ -104,6 +112,22 @@ def run_threat_detection_worker_once(config: dict[str, Any] | None = None) -> di
         except Exception as exc:  # noqa: BLE001 - one workspace must not stop the cycle
             totals['failed'] += 1
             service.log_event('threat_detection_workspace_failed', workspace_id=workspace_id, error=type(exc).__name__)
+
+        # Operational-integrity reconciliation runs as its OWN guarded step: a
+        # failure in the business-reconciliation lane must never take down the
+        # behavioral detectors (or vice versa), and the cyber lane's counters stay
+        # separately readable.
+        if not operational_cfg.get('enabled'):
+            continue
+        try:
+            op_stats = operational_service.run_for_workspace(workspace_id, config=operational_cfg)
+            totals['operational_integrity_created'] += int(op_stats.get('created') or 0)
+            totals['operational_integrity_updated'] += int(op_stats.get('updated') or 0)
+        except Exception as exc:  # noqa: BLE001 - one lane must not stop the other
+            totals['operational_integrity_failed'] += 1
+            service.log_event(
+                'operational_integrity_workspace_failed', workspace_id=workspace_id, error=type(exc).__name__,
+            )
 
     with pilot.pg_connection() as connection:
         record_heartbeat(connection, worker_name=worker_name, cycle_summary=totals)

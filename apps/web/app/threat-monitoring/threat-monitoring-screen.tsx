@@ -19,6 +19,7 @@ import {
   EVIDENCE_QUALITY_TOOLTIP,
   MTTD_TOOLTIP,
   RUN_SOURCE_DIAGNOSTIC_LABEL,
+  SEVERITY_TOOLTIP,
   SOURCE_DIAGNOSTIC_HREF,
   TELEMETRY_TOOLTIP,
   WINDOW_OPTIONS,
@@ -57,6 +58,18 @@ import {
   type TrendMetric,
   type WindowKey,
 } from './presentation';
+import DetectionDetailPanels from './detection-detail-panels';
+import {
+  CATEGORY_OPERATIONAL_INTEGRITY,
+  EMPTY_STATE_BODY,
+  categoryLabel,
+  categoryOptions,
+  coverageNotice as operationalCoverageNotice,
+  coverageSourceLine,
+  formatAmount,
+  isOperationalIntegrity,
+  reasonCodeLabel,
+} from './operational-integrity';
 import ThreatDetectionEngineerPanel from './threat-detection-engineer-panel';
 
 const TABS: Array<{ key: TabKey; label: string }> = [
@@ -253,7 +266,7 @@ function ThreatMonitoringScreenInner() {
 
       {activeTab === 'telemetry' ? <TelemetryTab authHeaders={authHeaders} windowKey={windowKey} /> : null}
       {activeTab === 'detections' ? (
-        <DetectionsTab authHeaders={authHeaders} windowKey={windowKey} stale={stale} nextAction={nextAction} onInvestigate={onInvestigate} investigatingId={investigatingId} investigateError={investigateError} />
+        <DetectionsTab authHeaders={authHeaders} windowKey={windowKey} stale={stale} nextAction={nextAction} onInvestigate={onInvestigate} investigatingId={investigatingId} investigateError={investigateError} summary={summary} />
       ) : null}
       {activeTab === 'anomalies' ? <AnomaliesTab authHeaders={authHeaders} windowKey={windowKey} stale={stale} /> : null}
     </div>
@@ -480,7 +493,7 @@ function WatchlistCard({ summary, loading, onViewEvidence, liveCoverageFresh }: 
 
 /* ── Detections tab ─────────────────────────────────────────────── */
 function DetectionsTab({
-  authHeaders, windowKey, stale, nextAction, onInvestigate, investigatingId, investigateError,
+  authHeaders, windowKey, stale, nextAction, onInvestigate, investigatingId, investigateError, summary,
 }: {
   authHeaders: () => Record<string, string>;
   windowKey: WindowKey;
@@ -489,6 +502,7 @@ function DetectionsTab({
   onInvestigate: (id: string) => void;
   investigatingId: string | null;
   investigateError: string;
+  summary: ThreatSummary | null;
 }) {
   const [rows, setRows] = useState<DetectionRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -498,8 +512,20 @@ function DetectionsTab({
   const [severity, setSeverity] = useState('');
   const [type, setType] = useState('');
   const [statusValue, setStatusValue] = useState('');
-  const filtersKey = `${severity}|${type}|${statusValue}|${windowKey}|${offset}`;
+  // Category is a first-class filter over a stored backend column, not a
+  // frontend label: selecting it narrows real detection records.
+  const [category, setCategory] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  const [search, setSearch] = useState('');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const filtersKey = `${severity}|${type}|${statusValue}|${category}|${search}|${windowKey}|${offset}`;
   const reqId = useRef(0);
+
+  // Debounced search — one request per pause in typing, never per keystroke.
+  useEffect(() => {
+    const handle = window.setTimeout(() => { setSearch(searchInput.trim()); setOffset(0); }, 350);
+    return () => window.clearTimeout(handle);
+  }, [searchInput]);
 
   useEffect(() => {
     const id = ++reqId.current;
@@ -509,6 +535,8 @@ function DetectionsTab({
     if (severity) params.set('severity', severity);
     if (type) params.set('detection_type', type);
     if (statusValue) params.set('status_value', statusValue);
+    if (category) params.set('category', category);
+    if (search) params.set('search', search);
     fetch(`/api/threat-monitoring/detections?${params.toString()}`, { headers: { ...authHeaders() }, cache: 'no-store' })
       .then(async (res) => {
         if (id !== reqId.current) return;
@@ -522,16 +550,39 @@ function DetectionsTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtersKey, authHeaders]);
 
+  // A row that is no longer in the result set must not keep a detail panel open.
+  useEffect(() => {
+    if (selectedId && !rows.some((r) => r.id === selectedId)) setSelectedId(null);
+  }, [rows, selectedId]);
+
+  const operationalSelected = category === CATEGORY_OPERATIONAL_INTEGRITY;
+  const operational = summary?.operational_integrity ?? null;
+  const operationalNotice = operationalSelected ? operationalCoverageNotice(operational?.coverage ?? null) : null;
+  // Observed/Expected only carry meaning for the operational lane; the columns
+  // appear when that lane is in view rather than adding two permanently empty columns to
+  // every cyber detection.
+  const showAmounts = operationalSelected || rows.some((r) => isOperationalIntegrity(r.category));
+
   return (
     <div role="tabpanel" aria-label="Detections" style={{ marginTop: '0.75rem' }}>
       <DetectionFilterBar
         severity={severity}
         type={type}
         statusValue={statusValue}
+        category={category}
+        categories={categoryOptions(summary?.detection_categories)}
+        search={searchInput}
         onSeverity={(v) => { setSeverity(v); setOffset(0); }}
         onType={(v) => { setType(v); setOffset(0); }}
         onStatus={(v) => { setStatusValue(v); setOffset(0); }}
+        onCategory={(v) => { setCategory(v); setType(''); setOffset(0); setSelectedId(null); }}
+        onSearch={setSearchInput}
       />
+
+      {operationalSelected ? (
+        <OperationalCoverageStrip notice={operationalNotice} operational={operational} />
+      ) : null}
+
       {investigateError ? <p className="statusLine" role="alert" style={{ color: 'var(--danger-fg)' }}>{investigateError}</p> : null}
       {loading ? (
         <p className="muted" style={{ padding: '1.5rem 0' }}>Loading detections…</p>
@@ -539,41 +590,126 @@ function DetectionsTab({
         <p className="statusLine" role="alert" style={{ color: 'var(--danger-fg)' }}>{err}</p>
       ) : rows.length === 0 ? (
         <StaleEmptyState
-          title="No detections"
-          body="No promoted threat detections match the current filters during this period."
+          title={operationalSelected ? 'No operational integrity detections' : 'No detections'}
+          body={operationalSelected ? EMPTY_STATE_BODY : 'No promoted threat detections match the current filters during this period.'}
           stale={stale}
           staleWarning="Detection coverage may be incomplete because fresh telemetry is unavailable."
           nextAction={nextAction}
         />
       ) : (
         <>
-          <TableShell headers={['Detection', 'Type', 'Severity', 'Confidence', 'Asset', 'Evidence', 'First seen', 'Last seen', 'Status', 'Action']} compact>
-            {rows.map((d) => (
-              <tr key={d.id} id={`detection-${d.id}`}>
-                <td>{d.title || (d.detection_type_label || detectionTypeLabel(d.detection_type))}</td>
-                <td>{d.detection_type_label || detectionTypeLabel(d.detection_type)}</td>
-                <td title="Potential impact if valid."><StatusPill label={severityLabel(d.severity)} variant={severityVariant(d.severity)} /></td>
-                <td title={CONFIDENCE_TOOLTIP}><StatusPill label={`${confidencePercent(d.confidence)} (${confidenceBand(d.confidence)})`} variant={confidenceVariant(d.confidence)} /></td>
-                <td>{d.asset_name ?? '—'}</td>
-                <td>{d.evidence_count}</td>
-                <td style={{ whiteSpace: 'nowrap' }}>{relativeTime(d.first_seen_at)}</td>
-                <td style={{ whiteSpace: 'nowrap' }}>{relativeTime(d.last_seen_at)}</td>
-                <td><StatusPill label={detectionStatusLabel(d.status)} variant={detectionStatusVariant(d.status)} /></td>
-                <td>
-                  {d.status === 'open' ? (
-                    <button type="button" className="btn btn-secondary" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }} disabled={investigatingId === d.id} onClick={() => onInvestigate(d.id)}>
-                      {investigatingId === d.id ? 'Opening…' : 'Investigate'}
-                    </button>
-                  ) : (
-                    <span className="muted" style={{ fontSize: '0.82rem' }}>{detectionStatusLabel(d.status)}</span>
-                  )}
-                </td>
-              </tr>
-            ))}
+          <TableShell
+            headers={[
+              'Severity', 'Detection', 'Asset',
+              ...(showAmounts ? ['Observed', 'Expected'] : []),
+              'Status', 'Confidence', 'First seen', 'Action',
+            ]}
+            compact
+          >
+            {rows.map((d) => {
+              const operationalRow = isOperationalIntegrity(d.category);
+              const selected = selectedId === d.id;
+              return (
+                <tr
+                  key={d.id}
+                  id={`detection-${d.id}`}
+                  data-testid={`detection-row-${d.id}`}
+                  data-category={String(d.category ?? '')}
+                  aria-selected={selected}
+                  onClick={() => setSelectedId(selected ? null : d.id)}
+                  style={{ cursor: 'pointer', background: selected ? 'var(--surface-raised, rgba(148,163,184,0.08))' : undefined }}
+                >
+                  <td title={SEVERITY_TOOLTIP}><StatusPill label={severityLabel(d.severity)} variant={severityVariant(d.severity)} /></td>
+                  <td>
+                    <span style={{ display: 'block', fontWeight: 600 }}>
+                      {d.detection_type_label || detectionTypeLabel(d.detection_type)}
+                    </span>
+                    <span className="muted" style={{ fontSize: '0.76rem' }}>
+                      {operationalRow
+                        ? reasonCodeLabel(d.deterministic_reason_code)
+                        : categoryLabel(d.category ?? 'CYBER_SECURITY')}
+                    </span>
+                  </td>
+                  <td>{d.asset_name ?? '—'}</td>
+                  {showAmounts ? (
+                    <>
+                      <td style={{ whiteSpace: 'nowrap' }} data-testid="observed-amount">
+                        {operationalRow
+                          ? formatAmount(d.observed_amount, d.amount_decimals, { signed: true, unit: d.amount_unit })
+                          : '—'}
+                      </td>
+                      <td style={{ whiteSpace: 'nowrap' }} data-testid="expected-amount">
+                        {operationalRow
+                          ? formatAmount(d.expected_amount, d.amount_decimals, { unit: d.amount_unit })
+                          : '—'}
+                      </td>
+                    </>
+                  ) : null}
+                  <td><StatusPill label={detectionStatusLabel(d.status)} variant={detectionStatusVariant(d.status)} /></td>
+                  <td title={CONFIDENCE_TOOLTIP}><StatusPill label={`${confidencePercent(d.confidence)} (${confidenceBand(d.confidence)})`} variant={confidenceVariant(d.confidence)} /></td>
+                  <td style={{ whiteSpace: 'nowrap' }}>{relativeTime(d.first_seen_at)}</td>
+                  <td onClick={(e) => e.stopPropagation()}>
+                    {d.status === 'open' ? (
+                      <button type="button" className="btn btn-secondary" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }} disabled={investigatingId === d.id} onClick={() => onInvestigate(d.id)}>
+                        {investigatingId === d.id ? 'Opening…' : 'Investigate'}
+                      </button>
+                    ) : (
+                      <span className="muted" style={{ fontSize: '0.82rem' }}>{detectionStatusLabel(d.status)}</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </TableShell>
           <Pager offset={offset} total={total} onPrev={() => setOffset(Math.max(0, offset - PAGE_SIZE))} onNext={() => setOffset(offset + PAGE_SIZE)} />
+          {selectedId ? (
+            <DetectionDetailPanels
+              detectionId={selectedId}
+              authHeaders={authHeaders}
+              onClose={() => setSelectedId(null)}
+            />
+          ) : null}
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * What the Operational Integrity lane can honestly claim: which telemetry lane
+ * is feeding it, and which detectors are NOT evaluated because their
+ * authoritative source does not exist. A provider failure is never allowed to
+ * read as "no threats detected".
+ */
+function OperationalCoverageStrip({
+  notice, operational,
+}: {
+  notice: { tone: 'info' | 'warning'; text: string } | null;
+  operational: ThreatSummary['operational_integrity'];
+}) {
+  const unsupported = (operational?.by_type ?? []).filter((t) => !t.supported);
+  return (
+    <div style={{ marginBottom: '0.75rem' }}>
+      {notice ? (
+        <p
+          className={notice.tone === 'warning' ? 'statusLine statusLine-warning' : 'statusLine'}
+          role="status"
+          data-testid="operational-coverage-notice"
+          data-tone={notice.tone}
+          style={{ marginBottom: '0.5rem' }}
+        >
+          {notice.text}
+        </p>
+      ) : null}
+      <p className="muted" style={{ fontSize: '0.8rem', margin: 0 }} data-testid="operational-telemetry-source">
+        {coverageSourceLine(operational?.coverage ?? null)}
+      </p>
+      {unsupported.length > 0 ? (
+        <p className="muted" style={{ fontSize: '0.78rem', margin: '0.3rem 0 0', lineHeight: 1.45 }} data-testid="operational-unsupported-note">
+          <strong style={{ fontWeight: 600 }}>Not evaluated</strong>: {unsupported.map((t) => t.label).join(', ')}. These
+          detectors need an authoritative source this workspace does not have; a count of zero would not mean they ran.
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -783,12 +919,45 @@ function StaleEmptyState({ title, body, stale, staleWarning, nextAction }: { tit
 }
 
 /* ── Shared: filter bars + pager ────────────────────────────────── */
-function DetectionFilterBar({ severity, type, statusValue, onSeverity, onType, onStatus }: {
-  severity: string; type: string; statusValue: string;
+function DetectionFilterBar({
+  severity, type, statusValue, category, categories, search,
+  onSeverity, onType, onStatus, onCategory, onSearch,
+}: {
+  severity: string; type: string; statusValue: string; category: string; search: string;
+  categories: Array<{ value: string; label: string }>;
   onSeverity: (v: string) => void; onType: (v: string) => void; onStatus: (v: string) => void;
+  onCategory: (v: string) => void; onSearch: (v: string) => void;
 }) {
+  const operational = category === CATEGORY_OPERATIONAL_INTEGRITY;
+  // The type list follows the selected lane so a cyber detector is never
+  // offered as a filter for a business-reconciliation view (and vice versa).
+  const typeOptions = operational
+    ? [
+        { value: '', label: 'All types' },
+        { value: 'unmatched_issuance', label: 'Unmatched Issuance' },
+        { value: 'settlement_timeout', label: 'Settlement Timeout' },
+        { value: 'nav_valuation_drift', label: 'NAV / Valuation Drift' },
+        { value: 'transfer_agent_mismatch', label: 'Transfer-Agent Mismatch' },
+        { value: 'unauthorized_admin_change', label: 'Unauthorized Admin Change' },
+      ]
+    : [
+        { value: '', label: 'All types' },
+        { value: 'unusual_transfer', label: 'Unusual Transfer' },
+        { value: 'coordinated_activity', label: 'Coordinated Activity' },
+        { value: 'mint_burn_irregularity', label: 'Mint/Burn Irregularity' },
+        { value: 'privileged_action', label: 'Privileged/Admin Action' },
+      ];
   return (
-    <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
+    <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.75rem', flexWrap: 'wrap', alignItems: 'flex-end' }} data-testid="detection-filter-bar">
+      <FilterField label="Category">
+        <Select
+          value={category}
+          onValueChange={onCategory}
+          ariaLabel="Filter by detection category"
+          testId="category-filter"
+          options={categories}
+        />
+      </FilterField>
       <FilterField label="Severity">
         <Select
           value={severity}
@@ -808,13 +977,7 @@ function DetectionFilterBar({ severity, type, statusValue, onSeverity, onType, o
           value={type}
           onValueChange={onType}
           ariaLabel="Filter by detection type"
-          options={[
-            { value: '', label: 'All types' },
-            { value: 'unusual_transfer', label: 'Unusual Transfer' },
-            { value: 'coordinated_activity', label: 'Coordinated Activity' },
-            { value: 'mint_burn_irregularity', label: 'Mint/Burn Irregularity' },
-            { value: 'privileged_action', label: 'Privileged/Admin Action' },
-          ]}
+          options={typeOptions}
         />
       </FilterField>
       <FilterField label="Status">
@@ -829,6 +992,29 @@ function DetectionFilterBar({ severity, type, statusValue, onSeverity, onType, o
             { value: 'resolved', label: 'Resolved' },
             { value: 'dismissed', label: 'Dismissed' },
           ]}
+        />
+      </FilterField>
+      <FilterField label="Search">
+        <input
+          type="search"
+          className="input"
+          value={search}
+          onChange={(e) => onSearch(e.target.value)}
+          placeholder="Search detections..."
+          aria-label="Search detections"
+          data-testid="detection-search"
+          // Matches the Evidence & Audit search field so the toolbar reads as
+          // one control row rather than a new input style.
+          style={{
+            width: '100%',
+            minWidth: '180px',
+            padding: '0.45rem 0.6rem',
+            fontSize: '0.85rem',
+            background: 'rgba(15,23,42,0.6)',
+            border: '1px solid rgba(148,163,184,0.2)',
+            borderRadius: '6px',
+            color: 'inherit',
+          }}
         />
       </FilterField>
     </div>
