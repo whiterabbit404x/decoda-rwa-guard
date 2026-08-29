@@ -32,11 +32,30 @@ def summary_endpoint(request: Any, *, window_days: int = 7, window: Optional[str
     return summary.build_summary_for_request(request, window_days=window_days, window=window)
 
 
+def _amount(value: Any) -> Optional[str]:
+    """Base-unit amounts cross the wire as STRINGS.
+
+    They are uint256-range integers; serializing them as JSON numbers would push
+    them through a double and silently corrupt a reconciliation value. The
+    frontend formats the string and never does arithmetic on it."""
+    if value is None:
+        return None
+    try:
+        return str(int(value))
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def _serialize_detection_row(row: dict[str, Any]) -> dict[str, Any]:
+    detection_type = str(row.get('detection_type') or '')
+    labels = tdc.all_detection_type_labels()
     return {
         'id': str(row['id']),
         'detection_type': row.get('detection_type'),
-        'detection_type_label': tdc.DETECTION_TYPE_LABELS.get(str(row.get('detection_type')), row.get('detection_type')),
+        'detection_type_label': labels.get(detection_type, row.get('detection_type')),
+        # Category is a stored fact; the default only covers rows written before
+        # the column existed, so a filter can never silently mis-bucket a row.
+        'category': str(row.get('category') or tdc.default_category(detection_type)),
         'title': row.get('title'),
         'severity': row.get('severity'),
         'confidence': _num(row.get('confidence')),
@@ -61,6 +80,23 @@ def _serialize_detection_row(row: dict[str, Any]) -> dict[str, Any]:
         'first_seen_at': _iso(row.get('first_seen_at')),
         'last_seen_at': _iso(row.get('last_seen_at')),
         'detected_at': _iso(row.get('detected_at')),
+        # --- Operational Integrity (null for cyber-lane rows) ---------------
+        'deterministic_reason_code': row.get('deterministic_reason_code'),
+        'operational_checks': row.get('operational_checks') or {},
+        'matcher_version': row.get('matcher_version'),
+        'observed_amount': _amount(row.get('observed_amount')),
+        'expected_amount': _amount(row.get('expected_amount')),
+        'variance_amount': _amount(row.get('variance_amount')),
+        'amount_decimals': row.get('amount_decimals'),
+        'amount_unit': row.get('amount_unit'),
+        'operation': row.get('operation'),
+        'tx_hash': row.get('tx_hash'),
+        'block_number': row.get('block_number'),
+        'telemetry_source': row.get('telemetry_source'),
+        'telemetry_stage': row.get('telemetry_stage'),
+        'telemetry_observed_at': _iso(row.get('telemetry_observed_at')),
+        'preconfirmation_received_at': _iso(row.get('preconfirmation_received_at')),
+        'provenance': row.get('provenance') or {},
     }
 
 
@@ -77,6 +113,8 @@ def _list_detections(
     window: Optional[str],
     limit: int,
     offset: int,
+    category: Optional[str] = None,
+    search: Optional[str] = None,
 ) -> dict[str, Any]:
     from services.api.app import pilot
 
@@ -101,10 +139,17 @@ def _list_detections(
             effective_statuses = [sv] if sv in statuses or statuses == _VALID_STATUSES else effective_statuses
             if sv not in effective_statuses:
                 effective_statuses = [sv]
-        if detection_type and str(detection_type).strip().lower() not in tdc.DETECTION_TYPES:
+        if detection_type and str(detection_type).strip().lower() not in tdc.all_detection_types():
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid detection type filter.')
         if severity and str(severity).strip().lower() not in _VALID_SEVERITIES:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid severity filter.')
+        # Category is a first-class filter over a stored column, not a cosmetic
+        # label: selecting Operational Integrity narrows real backend records.
+        category_filter: Optional[str] = None
+        if category:
+            category_filter = tdc.normalize_category(category)
+            if category_filter is None:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid detection category filter.')
 
         # One canonical selected window (24h / 7d / 30d), shared with the summary.
         window_clause_seconds: Optional[int] = None
@@ -125,13 +170,44 @@ def _list_detections(
         if min_confidence is not None:
             where.append('td.confidence >= %s')
             params.append(float(min_confidence))
+        if category_filter is not None:
+            # COALESCE covers rows written before the category column existed;
+            # the default mirrors tdc.default_category so the SQL and the
+            # serializer can never disagree about which lane a row is in.
+            where.append(
+                "COALESCE(NULLIF(td.category, ''), CASE WHEN td.detection_type = ANY(%s) THEN %s ELSE %s END) = %s"
+            )
+            params.extend([
+                list(tdc.OPERATIONAL_INTEGRITY_TYPES),
+                tdc.CATEGORY_OPERATIONAL_INTEGRITY,
+                tdc.CATEGORY_CYBER_SECURITY,
+                category_filter,
+            ])
+        search_term = str(search or '').strip()
+        if search_term:
+            # Free-text search over the customer-visible identifiers only. Bound
+            # as a parameter (never interpolated) and length-capped.
+            like = f'%{search_term[:120].lower()}%'
+            where.append(
+                '(lower(td.title) LIKE %s OR lower(COALESCE(td.detection_type, \'\')) LIKE %s '
+                "OR lower(COALESCE(td.deterministic_reason_code, '')) LIKE %s "
+                "OR lower(COALESCE(td.tx_hash, '')) LIKE %s "
+                "OR lower(COALESCE(a.name, '')) LIKE %s)"
+            )
+            params.extend([like, like, like, like, like])
         if window_clause_seconds is not None:
             where.append("td.detected_at >= NOW() - (%s || ' seconds')::interval")
             params.append(str(window_clause_seconds))
         where_sql = ' AND '.join(where)
 
         total_row = connection.execute(
-            f'SELECT COUNT(*) AS n FROM threat_detections td WHERE {where_sql}', tuple(params)
+            f'''
+            SELECT COUNT(*) AS n
+            FROM threat_detections td
+            LEFT JOIN assets a ON a.id = td.primary_asset_id AND a.workspace_id = td.workspace_id
+            WHERE {where_sql}
+            ''',
+            tuple(params),
         ).fetchone() or {}
         total = int(total_row.get('n') or 0)
 
@@ -168,12 +244,15 @@ def detections_endpoint(
     window: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
+    category: Optional[str] = None,
+    search: Optional[str] = None,
 ) -> dict[str, Any]:
     """Promoted detections (excludes sub-threshold anomalies)."""
     return _list_detections(
         request, statuses=_PROMOTED_STATUSES, detection_type=detection_type, severity=severity,
         status_value=status_value, asset_id=asset_id, min_confidence=min_confidence,
         window_days=window_days, window=window, limit=limit, offset=offset,
+        category=category, search=search,
     )
 
 
@@ -186,12 +265,15 @@ def anomalies_endpoint(
     window: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
+    category: Optional[str] = None,
+    search: Optional[str] = None,
 ) -> dict[str, Any]:
     """Sub-threshold anomalies that have NOT crossed detection criteria."""
     result = _list_detections(
         request, statuses=('anomaly',), detection_type=detection_type, severity=None,
         status_value=None, asset_id=asset_id, min_confidence=None,
         window_days=window_days, window=window, limit=limit, offset=offset,
+        category=category, search=search,
     )
     # Anomaly-specific framing: why each has not been promoted.
     for row in result.get('detections', []):
@@ -231,6 +313,12 @@ def detection_detail_endpoint(detection_id: str, request: Any) -> dict[str, Any]
         detection = _serialize_detection_row(dict(row))
         detection['score_inputs'] = dict(row).get('score_inputs') or {}
         detection['cluster_key'] = dict(row).get('cluster_key')
+        # The Operational Integrity Analysis panel renders BACKEND FACTS. The
+        # checks were decided by the deterministic matcher when the detection was
+        # written; nothing is recomputed here and no model is consulted.
+        analysis = operational_analysis(dict(row))
+        if analysis is not None:
+            detection['operational_analysis'] = analysis
 
         evidence_rows = connection.execute(
             '''
@@ -258,6 +346,84 @@ def detection_detail_endpoint(detection_id: str, request: Any) -> dict[str, Any]
             for e in evidence_rows
         ]
         return {'detection': detection, 'evidence': evidence}
+
+
+def operational_analysis(row: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Structured operational-integrity analysis for one stored detection.
+
+    Returns None for a cyber-lane detection (there is nothing operational to
+    show) and for an operational row written before the checks column existed —
+    an absent analysis is reported as absent, never rendered as all-clear.
+    """
+    from services.api.app.domains.operational_integrity import config as oic
+    from services.api.app.domains.operational_integrity import explanation, schemas
+
+    detection_type = str(row.get('detection_type') or '')
+    category = str(row.get('category') or tdc.default_category(detection_type))
+    if category != tdc.CATEGORY_OPERATIONAL_INTEGRITY:
+        return None
+
+    stored = row.get('operational_checks')
+    checks = stored if isinstance(stored, dict) else {}
+    ordered = [checks[key] for key in schemas.CHECK_ORDER if isinstance(checks.get(key), dict)]
+    severity = str(row.get('severity') or '')
+    conclusion = _conclusion_from_stored(ordered, severity)
+
+    facts = {
+        'detection_type': detection_type,
+        'category': category,
+        'severity': severity,
+        'conclusion': conclusion,
+        'deterministic_reason_code': row.get('deterministic_reason_code'),
+        'confidence': _num(row.get('confidence')),
+        'operation': row.get('operation'),
+        'observed_amount': _amount(row.get('observed_amount')),
+        'expected_amount': _amount(row.get('expected_amount')),
+        'variance_amount': _amount(row.get('variance_amount')),
+        'operational_checks': checks,
+        'telemetry_source': row.get('telemetry_source'),
+        'telemetry_stage': row.get('telemetry_stage'),
+        'tx_hash': row.get('tx_hash'),
+        'provenance': row.get('provenance') or {},
+    }
+    narrative = explanation.build_deterministic_narrative(facts)
+    return {
+        'checks': ordered,
+        'checks_available': bool(ordered),
+        'conclusion': conclusion,
+        'deterministic_reason_code': row.get('deterministic_reason_code'),
+        'confidence': _num(row.get('confidence')),
+        'matcher_version': row.get('matcher_version'),
+        'detection_type_label': oic.DETECTION_TYPE_LABELS.get(detection_type, row.get('detection_type')),
+        # AI text is a narrative field. It is stored beside the verdict, never
+        # inside it, and the authority label says so on screen.
+        'narrative': narrative,
+        'ai_summary': row.get('ai_summary'),
+        'ai_summary_source': row.get('ai_summary_source') or 'deterministic',
+        'ai_authority': explanation.AI_AUTHORITY_LABEL,
+    }
+
+
+def _conclusion_from_stored(ordered_checks: list[dict[str, Any]], severity: str) -> str:
+    """Conclusion derived from the STORED check statuses.
+
+    Kept in one place so the panel heading and the checks below it can never
+    contradict each other. An empty check set is INDETERMINATE — an operational
+    row with no recorded checks has proven nothing, and must not read as clear."""
+    from services.api.app.domains.operational_integrity import schemas
+
+    statuses = {str(c.get('status') or '').upper() for c in ordered_checks}
+    if not statuses:
+        return schemas.CONCLUSION_INDETERMINATE
+    if schemas.FAIL in statuses:
+        return (
+            schemas.CONCLUSION_CRITICAL_OPERATIONAL_ANOMALY
+            if str(severity or '').lower() == 'critical'
+            else schemas.CONCLUSION_OPERATIONAL_ANOMALY
+        )
+    if schemas.UNKNOWN in statuses:
+        return schemas.CONCLUSION_INDETERMINATE
+    return schemas.CONCLUSION_OPERATIONALLY_AUTHORIZED
 
 
 def investigate_endpoint(detection_id: str, request: Any) -> dict[str, Any]:

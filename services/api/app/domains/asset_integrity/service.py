@@ -28,6 +28,8 @@ from services.api.app.domains.asset_integrity import ai_explanation
 from services.api.app.domains.asset_integrity import config as aic
 from services.api.app.domains.asset_integrity import reconciliation as engine
 from services.api.app.domains.asset_risk import config as arc
+from services.api.app.domains.operational_integrity import matcher as op_matcher
+from services.api.app.domains.operational_integrity import schemas as op_schemas
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +69,16 @@ def _iso(value: Any) -> Optional[str]:
         return value.isoformat()
     except AttributeError:
         return str(value)
+
+
+def _amount_str(value: Any) -> Optional[str]:
+    """Base-unit supply values bind to NUMERIC(78, 0) as exact strings — a uint256
+    amount must never pass through a float on its way into the database."""
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return str(int(value)) if value == value.to_integral_value() else str(value)
+    return str(value)
 
 
 # --------------------------------------------------------------------------
@@ -357,31 +369,46 @@ def emit_canonical_event(
         (workspace_id, key),
     ).fetchone()
 
+    # Canonical operational-integrity facts carried on the SAME row Screen 5
+    # reads, so the Screen 3 verdict and the Screen 5 detection are one object
+    # rather than two that can disagree.
+    checks = op_matcher.checks_from_reconciliation(
+        result, onchain_row=onchain_row,
+        authoritative_source=str((authoritative_row or {}).get('source_name') or '') or None,
+    )
+    checks_json = op_schemas.checks_as_dict(checks)
+
     if existing is None:
         event_id = str(uuid.uuid4())
         connection.execute(
             '''
             INSERT INTO threat_detections (
-                id, workspace_id, cluster_key, detection_type, title, severity, confidence, status,
+                id, workspace_id, cluster_key, category, detection_type, title, severity, confidence, status,
                 primary_asset_id, evidence_source, evidence_quality, event_count, actor_count,
                 transaction_count, evidence_count, score_inputs, explanation, recommended_next_step,
-                alert_eligible, detector_version, ai_summary, ai_summary_source,
+                alert_eligible, detector_version, deterministic_reason_code, operational_checks,
+                observed_amount, expected_amount, variance_amount, tx_hash, ai_summary, ai_summary_source,
                 first_seen_at, last_seen_at, detected_at, created_at, updated_at
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, 'open',
+                %s, %s, %s, %s, %s, %s, %s, %s, 'open',
                 %s, %s, 'normalized_telemetry', 1, 0,
                 %s, %s, %s::jsonb, %s, %s,
-                %s, %s, NULL, 'deterministic',
+                %s, %s, %s, %s::jsonb,
+                %s, %s, %s, %s, NULL, 'deterministic',
                 %s, %s, %s, %s, %s
             )
             ON CONFLICT (workspace_id, cluster_key) DO NOTHING
             ''',
             (
-                event_id, workspace_id, key, CANONICAL_DETECTION_TYPE, title, result.severity, 1.0,
+                event_id, workspace_id, key, CANONICAL_EVENT_CATEGORY, CANONICAL_DETECTION_TYPE,
+                title, result.severity, 1.0,
                 asset_id, evidence_source,
                 1 if (onchain_row or {}).get('tx_hash') else 0, len(evidence_refs),
                 pilot._json_dumps(score_inputs), explanation, recommended,
                 evidence_source == 'live', f'{result.rule_id}-v{result.rule_version}',
+                result.reason_code, pilot._json_dumps(checks_json),
+                _amount_str(result.observed_supply), _amount_str(result.expected_supply),
+                _amount_str(result.variance_units), (onchain_row or {}).get('tx_hash'),
                 now, now, now, now, now,
             ),
         )
@@ -400,16 +427,26 @@ def emit_canonical_event(
         connection.execute(
             '''
             UPDATE threat_detections SET
+                category = %s,
                 severity = %s,
                 evidence_count = %s,
                 score_inputs = %s::jsonb,
                 explanation = %s,
+                deterministic_reason_code = %s,
+                operational_checks = %s::jsonb,
+                observed_amount = %s,
+                expected_amount = %s,
+                variance_amount = %s,
                 last_seen_at = GREATEST(last_seen_at, %s),
                 updated_at = %s
             WHERE id = %s AND workspace_id = %s
             ''',
             (
-                result.severity, len(evidence_refs), pilot._json_dumps(score_inputs), explanation,
+                CANONICAL_EVENT_CATEGORY, result.severity, len(evidence_refs),
+                pilot._json_dumps(score_inputs), explanation,
+                result.reason_code, pilot._json_dumps(checks_json),
+                _amount_str(result.observed_supply), _amount_str(result.expected_supply),
+                _amount_str(result.variance_units),
                 now, now, event_id, workspace_id,
             ),
         )

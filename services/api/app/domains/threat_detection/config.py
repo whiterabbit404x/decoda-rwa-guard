@@ -292,6 +292,85 @@ DETECTION_TYPE_LABELS: dict[str, str] = {
 }
 
 
+# --------------------------------------------------------------------------
+# Detection CATEGORY — the first-class lane a detection belongs to.
+#
+# Cyber Security detections answer "does this look like an exploit or abnormal
+# behaviour?". Operational Integrity detections answer a different question:
+# "the chain accepted this, but did the BUSINESS authorize it?". A transaction
+# can be cryptographically valid and still be operationally unauthorized, so the
+# two lanes must stay separately filterable and separately labelled.
+#
+# The category is stored per row (threat_detections.category) rather than derived
+# from detection_type, because the same type can be reached from either lane.
+# The map below only supplies the DEFAULT for a row that predates the column.
+# --------------------------------------------------------------------------
+CATEGORY_CYBER_SECURITY = 'CYBER_SECURITY'
+CATEGORY_OPERATIONAL_INTEGRITY = 'OPERATIONAL_INTEGRITY'
+DETECTION_CATEGORIES = (CATEGORY_CYBER_SECURITY, CATEGORY_OPERATIONAL_INTEGRITY)
+
+CATEGORY_LABELS: dict[str, str] = {
+    CATEGORY_CYBER_SECURITY: 'Cyber Security',
+    CATEGORY_OPERATIONAL_INTEGRITY: 'Operational Integrity',
+}
+
+# Detection types that belong to the operational-integrity lane by construction.
+OPERATIONAL_INTEGRITY_TYPES = (
+    'unmatched_issuance',
+    'settlement_timeout',
+    'nav_valuation_drift',
+    'transfer_agent_mismatch',
+    'unauthorized_admin_change',
+)
+
+
+def normalize_category(value: Any) -> str | None:
+    """Accept 'operational_integrity' or 'OPERATIONAL_INTEGRITY'. Anything else
+    (including an empty string) is None, meaning 'no category filter'."""
+    key = str(value or '').strip().upper()
+    return key if key in DETECTION_CATEGORIES else None
+
+
+def default_category(detection_type: Any) -> str:
+    """Category for a row that has none stored (pre-migration rows)."""
+    return (
+        CATEGORY_OPERATIONAL_INTEGRITY
+        if str(detection_type or '').strip().lower() in OPERATIONAL_INTEGRITY_TYPES
+        else CATEGORY_CYBER_SECURITY
+    )
+
+
+def all_detection_types() -> tuple[str, ...]:
+    """Every canonical detection type across both lanes (stable order)."""
+    return DETECTION_TYPES + OPERATIONAL_INTEGRITY_TYPES
+
+
+def all_detection_type_labels() -> dict[str, str]:
+    from services.api.app.domains.operational_integrity import config as oic
+
+    labels = dict(DETECTION_TYPE_LABELS)
+    labels.update(oic.DETECTION_TYPE_LABELS)
+    return labels
+
+
+def all_detector_support() -> dict[str, dict[str, Any]]:
+    """Support map across both lanes.
+
+    The cyber entries keep their existing shape; the operational entries carry
+    their own truthful supported/reason, so a detector whose authoritative source
+    does not exist is never counted as "evaluated, found none"."""
+    from services.api.app.domains.operational_integrity import config as oic
+
+    combined: dict[str, dict[str, Any]] = {}
+    for key, meta in detector_support().items():
+        entry = dict(meta)
+        entry.setdefault('category', CATEGORY_CYBER_SECURITY)
+        combined[key] = entry
+    for key, meta in oic.detector_support().items():
+        combined[key] = dict(meta)
+    return combined
+
+
 def detector_support() -> dict[str, dict[str, Any]]:
     """Which detectors are *supported* by the evidence this platform actually has.
 

@@ -92,6 +92,26 @@ export type EnginePanel = {
   fields: EnginePanelFields;
 };
 
+export type DetectionCategoryOption = { value: string; label: string };
+
+export type OperationalIntegrityBlock = {
+  category: string;
+  label: string;
+  detection_count: number;
+  by_type: Array<{ type: string; label: string; count: number; supported: boolean; unsupported_reason: string | null }>;
+  matcher_version: string | null;
+  coverage: {
+    state: string;
+    telemetry_source: string | null;
+    telemetry_stage: string | null;
+    last_issuance_telemetry_at: string | null;
+    authoritative_sources: number;
+    authorized_records: number;
+    preconfirmation_available: boolean;
+    reasons: string[];
+  } | null;
+};
+
 export type ThreatSummary = {
   workspace_id: string;
   generated_at: string | null;
@@ -139,12 +159,18 @@ export type ThreatSummary = {
   detector_support: DetectorSupport;
   detector_version: string;
   engine_panel: EnginePanel;
+  /** Both detection lanes, from the backend, so the filter never invents one. */
+  detection_categories?: DetectionCategoryOption[];
+  /** Operational Integrity capability + telemetry coverage for this workspace. */
+  operational_integrity?: OperationalIntegrityBlock | null;
 };
 
 export type DetectionRow = {
   id: string;
   detection_type: string;
   detection_type_label: string;
+  /** Detection lane: CYBER_SECURITY | OPERATIONAL_INTEGRITY. Stored server-side. */
+  category?: string | null;
   title: string;
   severity: string;
   confidence: number | null;
@@ -162,6 +188,25 @@ export type DetectionRow = {
   detected_at: string | null;
   linked_alert_id: string | null;
   linked_incident_id: string | null;
+  // --- Operational Integrity fields (null on cyber-lane rows) ----------------
+  // Amounts are base-unit STRINGS: they are uint256-range integers, so parsing
+  // one into a JS number would silently lose precision on a real reconciliation
+  // value. Format them, never do arithmetic on them.
+  deterministic_reason_code?: string | null;
+  observed_amount?: string | null;
+  expected_amount?: string | null;
+  variance_amount?: string | null;
+  amount_decimals?: number | null;
+  amount_unit?: string | null;
+  operation?: string | null;
+  tx_hash?: string | null;
+  block_number?: number | string | null;
+  telemetry_source?: string | null;
+  telemetry_stage?: string | null;
+  telemetry_observed_at?: string | null;
+  preconfirmation_received_at?: string | null;
+  matcher_version?: string | null;
+  provenance?: Record<string, unknown> | null;
 };
 
 export type TelemetryRow = {
@@ -284,6 +329,13 @@ const DETECTION_TYPE_LABELS: Record<string, string> = {
   reentrancy_pattern: 'Possible Reentrancy',
   flash_loan_pattern: 'Flash-Loan-Assisted Sequence',
   other: 'Other',
+  // Operational Integrity lane — a business-authorization finding, not a
+  // behavioral one. Same label map so one helper covers both lanes.
+  unmatched_issuance: 'Unmatched Issuance',
+  settlement_timeout: 'Settlement Timeout',
+  nav_valuation_drift: 'NAV / Valuation Drift',
+  transfer_agent_mismatch: 'Transfer-Agent Mismatch',
+  unauthorized_admin_change: 'Unauthorized Admin Change',
 };
 
 export function detectionTypeLabel(type: string | null | undefined): string {
