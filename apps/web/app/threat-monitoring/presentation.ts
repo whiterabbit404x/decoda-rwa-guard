@@ -365,6 +365,19 @@ export function evidenceSourceVariant(source: string | null | undefined): PillVa
 // --------------------------------------------------------------------------
 // MTTD + data freshness
 // --------------------------------------------------------------------------
+/**
+ * A KPI count, rendered honestly.
+ *
+ * `String(summary.detection_count)` turns a count the backend did not send into
+ * the literal text "undefined" on the card. A count that is not a real number is
+ * a count we do not have, so it renders as the same em dash the loading and
+ * no-summary states use — never as a value, and never as a zero, which would
+ * read as "we looked and found none".
+ */
+export function metricCount(value: number | null | undefined): string {
+  return typeof value === 'number' && Number.isFinite(value) ? String(value) : '\u2014';
+}
+
 export function formatMttd(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined || Number.isNaN(seconds)) return '—';
   if (seconds < 60) return `${Math.round(seconds)}s`;

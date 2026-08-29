@@ -38,6 +38,7 @@ import {
   evidenceSourceLabel,
   evidenceSourceVariant,
   formatMttd,
+  metricCount,
   investigateOutcomeMessage,
   nextActionLabel,
   relativeTime,
@@ -290,7 +291,7 @@ function KpiRow({ summary, loading, windowKey, liveCoverageFresh }: { summary: T
     >
       <Kpi
         label="Telemetry Events"
-        value={loading || !summary ? '—' : String(summary.telemetry_events_count)}
+        value={loading || !summary ? '—' : metricCount(summary.telemetry_events_count)}
         tooltip={TELEMETRY_TOOLTIP}
         metric="telemetry"
         changePercent={summary?.telemetry_change_percent}
@@ -300,7 +301,7 @@ function KpiRow({ summary, loading, windowKey, liveCoverageFresh }: { summary: T
       />
       <Kpi
         label="Detections"
-        value={loading || !summary ? '—' : String(summary.detection_count)}
+        value={loading || !summary ? '—' : metricCount(summary.detection_count)}
         tooltip={DETECTIONS_TOOLTIP}
         metric="detections"
         changePercent={summary?.detection_change_percent}
@@ -308,7 +309,7 @@ function KpiRow({ summary, loading, windowKey, liveCoverageFresh }: { summary: T
       />
       <Kpi
         label="Anomalies"
-        value={loading || !summary ? '—' : String(summary.anomaly_count)}
+        value={loading || !summary ? '—' : metricCount(summary.anomaly_count)}
         tooltip={ANOMALIES_TOOLTIP}
         metric="anomalies"
         changePercent={summary?.anomaly_change_percent}
