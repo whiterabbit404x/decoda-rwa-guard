@@ -35,12 +35,15 @@ import type { LoadState } from './governance-view-model';
 import { loadStateFor } from './governance-view-model';
 import {
   GovernancePolicy,
+  PolicyDraft,
   PolicyEvaluation,
   PolicyListState,
   PolicyVersionRow,
+  PolicyVocabulary,
   SimulationState,
   allowedWindowLabel,
   businessEventLabel,
+  canOfferPolicyCreation,
   checkGlyph,
   checkStatusLabel,
   checkStatusTone,
@@ -48,8 +51,11 @@ import {
   formatDecimalString,
   isDemoSeeded,
   maximumIssuanceLabel,
+  createPolicyMessage,
   operationLabel,
+  policyCreateBody,
   policyListMessage,
+  policyTemplateDraft,
   policyStatusLabel,
   policyStatusTone,
   reasonCodeLabel,
@@ -99,6 +105,127 @@ function Field({ label, children, htmlFor }: { label: string; children: ReactNod
   );
 }
 
+type CreateMessage = { tone: 'success' | 'error' | 'conflict'; text: string } | null;
+
+// Defined at module scope, not inside the panel, so it keeps its DOM (and the
+// operator's half-typed input) across the panel's re-renders. It is rendered
+// from BOTH the empty-state branch and the loaded branch, because the empty
+// state is exactly where a first policy gets created.
+function CreatePolicyDialog({
+  draft,
+  vocabulary,
+  saving,
+  message,
+  onChange,
+  onClose,
+  onSubmit,
+}: {
+  draft: PolicyDraft | null;
+  vocabulary: PolicyVocabulary | null;
+  saving: boolean;
+  message: CreateMessage;
+  onChange: (next: PolicyDraft) => void;
+  onClose: () => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <GovernanceDialog
+      open={Boolean(draft)}
+      title="Create governance policy"
+      onClose={onClose}
+      maxWidth={700}
+      footer={draft ? (
+        <>
+          <button className="btn btn-ghost" type="button" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" type="button" disabled={saving} onClick={onSubmit} data-testid="create-policy-submit">
+            {saving ? 'Creating…' : 'Create policy'}
+          </button>
+        </>
+      ) : undefined}
+    >
+      {draft ? (
+        <div>
+          <p className="muted" style={{ marginTop: 0, fontSize: '0.82rem' }}>
+            These are starting values, not a policy. Nothing is stored until you create it, and the
+            deterministic engine evaluates operations against the stored policy only. The policy is
+            created in this workspace; the backend binds it to your authenticated workspace and
+            enforces the {'{'}security.manage{'}'} permission regardless of what this form shows.
+          </p>
+          <Field label="Policy ID (A-Z, 0-9, hyphen or underscore)" htmlFor="create-policy-key">
+            <input
+              id="create-policy-key"
+              value={draft.policy_key}
+              onChange={(e) => onChange({ ...draft, policy_key: e.target.value.toUpperCase() })}
+              style={INPUT_STYLE}
+            />
+          </Field>
+          <Field label="Policy name" htmlFor="create-name">
+            <input id="create-name" value={draft.name} onChange={(e) => onChange({ ...draft, name: e.target.value })} style={INPUT_STYLE} />
+          </Field>
+          <Field label="Operation" htmlFor="create-operation">
+            <select id="create-operation" value={draft.operation} onChange={(e) => onChange(policyTemplateDraft(vocabulary, e.target.value))} style={INPUT_STYLE}>
+              {(vocabulary?.operations ?? []).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </Field>
+          <Field label="Status" htmlFor="create-status">
+            <select id="create-status" value={draft.status} onChange={(e) => onChange({ ...draft, status: e.target.value })} style={INPUT_STYLE}>
+              {(vocabulary?.statuses ?? []).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </Field>
+          <Field label="Required business event" htmlFor="create-business-event">
+            <select id="create-business-event" value={draft.required_business_event} onChange={(e) => onChange({ ...draft, required_business_event: e.target.value })} style={INPUT_STYLE}>
+              <option value="">Not constrained</option>
+              {(vocabulary?.business_events ?? []).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </Field>
+          <Field label="Settlement requirement" htmlFor="create-settlement">
+            <select id="create-settlement" value={draft.settlement_requirement} onChange={(e) => onChange({ ...draft, settlement_requirement: e.target.value })} style={INPUT_STYLE}>
+              <option value="">Not constrained</option>
+              {(vocabulary?.settlement_requirements ?? []).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </Field>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 0.75rem' }}>
+            <Field label="Allowed window start (UTC, HH:MM)" htmlFor="create-window-start">
+              <input id="create-window-start" placeholder="08:00" value={draft.window_start} onChange={(e) => onChange({ ...draft, window_start: e.target.value })} style={INPUT_STYLE} />
+            </Field>
+            <Field label="Allowed window end (UTC, HH:MM)" htmlFor="create-window-end">
+              <input id="create-window-end" placeholder="18:00" value={draft.window_end} onChange={(e) => onChange({ ...draft, window_end: e.target.value })} style={INPUT_STYLE} />
+            </Field>
+          </div>
+          <Field label="Maximum issuance (USD / day)" htmlFor="create-max-issuance">
+            <input id="create-max-issuance" inputMode="decimal" placeholder="Not constrained" value={draft.maximum_daily_amount_usd} onChange={(e) => onChange({ ...draft, maximum_daily_amount_usd: e.target.value })} style={INPUT_STYLE} />
+          </Field>
+          <fieldset style={{ border: '1px solid #30363d', borderRadius: 8, padding: '0.6rem 0.8rem', margin: '0 0 0.7rem' }}>
+            <legend style={{ fontSize: '0.78rem', color: '#8b949e', fontWeight: 600, padding: '0 0.35rem' }}>Required roles</legend>
+            {(vocabulary?.governance_roles ?? []).map((role) => (
+              <label key={role.value} style={{ display: 'block', fontSize: '0.82rem', padding: '0.2rem 0' }}>
+                <input
+                  type="checkbox"
+                  checked={draft.required_roles.includes(role.value)}
+                  onChange={(e) => onChange({
+                    ...draft,
+                    required_roles: e.target.checked
+                      ? [...draft.required_roles, role.value]
+                      : draft.required_roles.filter((r) => r !== role.value),
+                  })}
+                  style={{ marginRight: '0.5rem' }}
+                />
+                {role.label}
+                {role.permission ? <span className="muted" style={{ marginLeft: '0.4rem', fontSize: '0.74rem' }}>({role.permission})</span> : null}
+              </label>
+            ))}
+          </fieldset>
+          {message ? (
+            <p role={message.tone === 'success' ? 'status' : 'alert'} data-testid="create-policy-message" style={{ fontSize: '0.82rem', color: message.tone === 'success' ? '#4ade80' : message.tone === 'conflict' ? '#fbbf24' : '#f87171' }}>
+              {message.text}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </GovernanceDialog>
+  );
+}
+
 export default function SettingsPoliciesPanel({
   call,
   ensureCsrf,
@@ -142,6 +269,12 @@ export default function SettingsPoliciesPanel({
   }>(null);
   const [saving, setSaving] = useState(false);
   const [editMessage, setEditMessage] = useState<{ tone: 'success' | 'error' | 'conflict'; text: string } | null>(null);
+
+  // Create Policy. A non-null draft is an OPEN FORM, never stored state: no
+  // request is issued until the operator submits it.
+  const [createDraft, setCreateDraft] = useState<PolicyDraft | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [createMessage, setCreateMessage] = useState<CreateMessage>(null);
 
   async function loadPolicies() {
     if (!hasWorkspace) {
@@ -228,6 +361,55 @@ export default function SettingsPoliciesPanel({
       // A failed request is never an ALLOW.
       setSimulation(simulationFailureState(0));
     }
+  }
+
+  // Opens the FORM. It writes nothing: a policy exists only after createPolicy()
+  // succeeds against the backend, which enforces security.manage on its own.
+  function openCreate() {
+    setCreateMessage(null);
+    setCreateDraft(policyTemplateDraft(list.vocabulary, list.policies[0]?.operation || 'MINT'));
+  }
+
+  function closeCreate() {
+    setCreateDraft(null);
+    setCreateMessage(null);
+  }
+
+  async function createPolicy() {
+    if (!createDraft) return;
+    setCreating(true);
+    setCreateMessage(null);
+    await ensureCsrf();
+    let res: Response;
+    try {
+      res = await call('/workspace/governance/policies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(policyCreateBody(createDraft)),
+      });
+    } catch {
+      setCreating(false);
+      setCreateMessage(createPolicyMessage(0));
+      return;
+    }
+    setCreating(false);
+    if (res.ok) {
+      setCreateDraft(null);
+      setCreateMessage(null);
+      // A new policy invalidates any decision shown against the previous one.
+      setSimulation({ state: 'idle' });
+      const payload = await res.json().catch(() => ({}));
+      if (payload?.policy?.policy_id) setSelectedRef(String(payload.policy.policy_id));
+      void loadPolicies();
+      return;
+    }
+    const body = await res.json().catch(() => ({}));
+    const detail = body?.detail;
+    const message = typeof detail === 'string' ? detail : detail?.message;
+    setCreateMessage(createPolicyMessage(res.status, message));
+    // 409 means the policy is already there. Show it rather than leaving the
+    // operator with an error over a workspace that is in fact provisioned.
+    if (res.status === 409) void loadPolicies();
   }
 
   async function openHistory() {
@@ -325,13 +507,48 @@ export default function SettingsPoliciesPanel({
   const display = simulationDisplay(simulation);
   const evaluation = simulation.state === 'complete' ? simulation.evaluation : null;
 
+  // A genuinely empty workspace is the one state that invites provisioning.
+  // 'loading', 'permission_denied' and 'error' must not: offering to create a
+  // policy over an unknown would present a failure as an absence.
+  const emptyAndLoaded = list.state === 'loaded' && list.policies.length === 0;
+  const canCreate = canOfferPolicyCreation(list);
+
   if (listMessage) {
     return (
       <section className="featureSection">
         <article className="dataCard" style={{ marginTop: '1rem', padding: '2rem 1.25rem', textAlign: 'center' }}>
           <h3 style={{ marginTop: 0, fontSize: '1rem' }}>{listMessage.title}</h3>
-          <p className="muted" style={{ marginBottom: 0 }}>{listMessage.message}</p>
+          <p className="muted" style={{ marginBottom: emptyAndLoaded ? '1.25rem' : 0 }}>{listMessage.message}</p>
+          {emptyAndLoaded ? (
+            <>
+              <button
+                className="btn btn-primary"
+                type="button"
+                onClick={openCreate}
+                disabled={!canCreate}
+                data-testid="create-policy"
+                title={canCreate ? 'Create a governance policy' : `Requires the ${list.editPermission || 'security.manage'} permission`}
+                style={{ opacity: canCreate ? 1 : 0.5, cursor: canCreate ? 'pointer' : 'not-allowed' }}
+              >
+                Create Policy
+              </button>
+              {!canCreate ? (
+                <p className="muted" style={{ fontSize: '0.78rem', margin: '0.75rem 0 0' }}>
+                  Creating a policy requires the {list.editPermission || 'security.manage'} permission, which the backend enforces independently.
+                </p>
+              ) : null}
+            </>
+          ) : null}
         </article>
+        <CreatePolicyDialog
+          draft={createDraft}
+          vocabulary={list.vocabulary}
+          saving={creating}
+          message={createMessage}
+          onChange={setCreateDraft}
+          onClose={closeCreate}
+          onSubmit={() => void createPolicy()}
+        />
       </section>
     );
   }
@@ -707,6 +924,16 @@ export default function SettingsPoliciesPanel({
           </div>
         ) : null}
       </GovernanceDialog>
+
+      <CreatePolicyDialog
+        draft={createDraft}
+        vocabulary={list.vocabulary}
+        saving={creating}
+        message={createMessage}
+        onChange={setCreateDraft}
+        onClose={closeCreate}
+        onSubmit={() => void createPolicy()}
+      />
     </section>
   );
 }

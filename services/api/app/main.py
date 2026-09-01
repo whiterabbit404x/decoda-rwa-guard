@@ -3873,6 +3873,12 @@ def governance_policies_list(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: governance_policy_endpoints.list_policies_endpoint(request))
 
 
+@app.post('/workspace/governance/policies', status_code=201,
+          summary='Create a governance policy (security.manage)')
+def governance_policy_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: governance_policy_endpoints.create_policy_endpoint(payload, request))
+
+
 @app.get('/workspace/governance/policies/{policy_ref}', summary='Get one governance policy')
 def governance_policy_get(policy_ref: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: governance_policy_endpoints.policy_detail_endpoint(policy_ref, request))

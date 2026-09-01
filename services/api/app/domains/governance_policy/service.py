@@ -332,6 +332,121 @@ def build_context(
 # --------------------------------------------------------------------------
 # Writes
 # --------------------------------------------------------------------------
+def count_policies(connection: Any, *, workspace_id: str) -> int:
+    """How many policies this workspace already holds (for the guard rail)."""
+    row = connection.execute(
+        f'SELECT COUNT(*) AS total FROM {POLICIES_TABLE} WHERE workspace_id = %s',
+        (workspace_id,),
+    ).fetchone()
+    if row is None:
+        return 0
+    try:
+        return int(dict(row).get('total') or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def create_policy(
+    connection: Any,
+    *,
+    workspace_id: str,
+    values: dict[str, Any],
+    user_id: str,
+    now: datetime,
+    origin: str = gpc.ORIGIN_CUSTOMER,
+) -> dict[str, Any]:
+    """Insert a policy at version 1 plus its immutable version-1 history row.
+
+    ``workspace_id`` is a PARAMETER, never read from ``values``: the tenant comes
+    from the resolved session, so a workspace_id in a request body cannot bind
+    the write to someone else\'s workspace (§19).
+
+    The INSERT is guarded by the (workspace_id, policy_key) unique index rather
+    than a preceding SELECT, so two concurrent creators cannot both win. A
+    ``None`` return means the key was already taken and NOTHING was written —
+    reported as a duplicate rather than followed by a history row for an insert
+    that did not happen, the same failure ``apply_policy_update`` guards against.
+
+    Returns {\'status\': \'created\', \'policy_id\': ...} or
+            {\'status\': \'duplicate\', \'policy_key\': ...}. The caller commits.
+    """
+    policy_id = str(uuid.uuid4())
+    policy_key = str(values['policy_key'])
+    cap = values.get('maximum_daily_amount_usd')
+    roles = list(values.get('required_roles') or [])
+    row = connection.execute(
+        f'''INSERT INTO {POLICIES_TABLE} (
+                id, workspace_id, policy_key, name, operation, status, version,
+                asset_id, required_business_event, settlement_requirement,
+                allowed_window_start_utc, allowed_window_end_utc,
+                maximum_daily_amount_usd, required_roles, violation_action, origin,
+                created_by_user_id, updated_by_user_id, created_at, updated_at
+            ) VALUES (
+                %s::uuid, %s, %s, %s, %s, %s, %s,
+                %s::uuid, %s, %s, %s, %s, %s, %s::jsonb, %s, %s,
+                %s::uuid, %s::uuid, %s, %s
+            )
+            ON CONFLICT (workspace_id, policy_key) DO NOTHING
+            RETURNING id''',
+        (
+            policy_id, workspace_id, policy_key, values['name'],
+            values['operation'], values['status'], 1,
+            values.get('asset_id'),
+            values.get('required_business_event'), values.get('settlement_requirement'),
+            values.get('allowed_window_start_utc'), values.get('allowed_window_end_utc'),
+            str(cap) if cap is not None else None,
+            json.dumps(roles),
+            values.get('violation_action') or gpc.VIOLATION_ACTION_DENY, origin,
+            user_id, user_id, now, now,
+        ),
+    ).fetchone()
+    if row is None:
+        return {'status': 'duplicate', 'policy_key': policy_key}
+
+    # Version 1 is the policy AS CREATED. Recording it means the history view has
+    # a real first row instead of an unexplained gap before the first edit.
+    if _table_exists(connection, VERSIONS_TABLE):
+        snapshot = {
+            'policy_key': policy_key,
+            'name': values['name'],
+            'operation': values['operation'],
+            'status': values['status'],
+            'version': 1,
+            'required_business_event': values.get('required_business_event'),
+            'settlement_requirement': values.get('settlement_requirement'),
+            'allowed_window_utc': (
+                {'start': values.get('allowed_window_start_utc'), 'end': values.get('allowed_window_end_utc')}
+                if values.get('allowed_window_start_utc') and values.get('allowed_window_end_utc') else None
+            ),
+            'maximum_daily_amount_usd': str(cap) if cap is not None else None,
+            'required_roles': roles,
+            'violation_action': values.get('violation_action') or gpc.VIOLATION_ACTION_DENY,
+            'origin': origin,
+        }
+        connection.execute(
+            f'''INSERT INTO {VERSIONS_TABLE} (
+                    id, workspace_id, policy_id, version, status, snapshot,
+                    previous_values, new_values, change_summary, changed_by_user_id, changed_at
+                ) VALUES (%s::uuid, %s, %s::uuid, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s::uuid, %s)''',
+            (
+                str(uuid.uuid4()), workspace_id, policy_id, 1, values['status'],
+                json.dumps(snapshot, default=str),
+                json.dumps({}),
+                json.dumps({k: _json_value(v) for k, v in snapshot.items()}, default=str),
+                _CREATED_SUMMARY.get(origin, 'Policy created.'), user_id, now,
+            ),
+        )
+    return {'status': 'created', 'policy_id': policy_id, 'policy_key': policy_key, 'origin': origin}
+
+
+#: The history row\'s first line. A seeded policy says so in its own audit trail,
+#: not only in the UI badge.
+_CREATED_SUMMARY = {
+    gpc.ORIGIN_CUSTOMER: 'Policy created.',
+    gpc.ORIGIN_DEMO_SEED: 'Policy created (demo scenario seed).',
+}
+
+
 def record_evaluation(
     connection: Any,
     *,

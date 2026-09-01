@@ -21,9 +21,7 @@ under the same gate.
 
 from __future__ import annotations
 
-import json
 import logging
-import uuid
 from typing import Any
 
 from services.api.app import pilot
@@ -52,65 +50,34 @@ def seed_demo_policy(
     if not service.storage_ready(connection):
         return {'seeded': False, 'reason': 'schema_provisioning'}
 
-    existing = connection.execute(
-        f'SELECT id FROM {service.POLICIES_TABLE} WHERE workspace_id = %s AND policy_key = %s',
-        (workspace_id, DEMO_POLICY_KEY),
-    ).fetchone()
-    if existing is not None:
+    now = now or pilot.utc_now()
+    # The SAME writer the Create Policy endpoint uses, so a seeded policy and an
+    # authored one differ in exactly one field — origin — and nowhere else. The
+    # guarded INSERT makes "already present" a return value rather than a race.
+    outcome = service.create_policy(
+        connection,
+        workspace_id=workspace_id,
+        values={
+            'policy_key': DEMO_POLICY_KEY,
+            'name': DEMO_POLICY_NAME,
+            'operation': gpc.OPERATION_MINT,
+            'status': gpc.STATUS_ACTIVE,
+            'required_business_event': gpc.BUSINESS_EVENT_SUBSCRIPTION,
+            'settlement_requirement': gpc.REQUIREMENT_CLEARED,
+            'allowed_window_start_utc': '08:00',
+            'allowed_window_end_utc': '18:00',
+            'maximum_daily_amount_usd': '10000000.00',
+            'required_roles': [gpc.ROLE_TREASURY_OPERATOR, gpc.ROLE_COMPLIANCE_APPROVER],
+            'violation_action': gpc.VIOLATION_ACTION_DENY,
+        },
+        user_id=user_id,
+        now=now,
+        origin=gpc.ORIGIN_DEMO_SEED,
+    )
+    if outcome['status'] == 'duplicate':
         return {'seeded': False, 'reason': 'already_present', 'policy_key': DEMO_POLICY_KEY}
 
-    now = now or pilot.utc_now()
-    policy_id = str(uuid.uuid4())
-    connection.execute(
-        f'''INSERT INTO {service.POLICIES_TABLE} (
-                id, workspace_id, policy_key, name, operation, status, version,
-                required_business_event, settlement_requirement,
-                allowed_window_start_utc, allowed_window_end_utc,
-                maximum_daily_amount_usd, required_roles, violation_action, origin,
-                created_by_user_id, updated_by_user_id, created_at, updated_at
-            ) VALUES (
-                %s::uuid, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s::jsonb, %s, %s,
-                %s::uuid, %s::uuid, %s, %s
-            )''',
-        (
-            policy_id, workspace_id, DEMO_POLICY_KEY, DEMO_POLICY_NAME,
-            gpc.OPERATION_MINT, gpc.STATUS_ACTIVE, 1,
-            gpc.BUSINESS_EVENT_SUBSCRIPTION, gpc.REQUIREMENT_CLEARED,
-            '08:00', '18:00', '10000000.00',
-            json.dumps([gpc.ROLE_TREASURY_OPERATOR, gpc.ROLE_COMPLIANCE_APPROVER]),
-            gpc.VIOLATION_ACTION_DENY, gpc.ORIGIN_DEMO_SEED,
-            user_id, user_id, now, now,
-        ),
-    )
-    # Version 1 is the policy AS CREATED. Recording it means the history view has
-    # a real first row instead of an unexplained gap before the first edit.
-    connection.execute(
-        f'''INSERT INTO {service.VERSIONS_TABLE} (
-                id, workspace_id, policy_id, version, status, snapshot,
-                previous_values, new_values, change_summary, changed_by_user_id, changed_at
-            ) VALUES (%s::uuid, %s, %s::uuid, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s::uuid, %s)''',
-        (
-            str(uuid.uuid4()), workspace_id, policy_id, 1, gpc.STATUS_ACTIVE,
-            json.dumps({
-                'policy_key': DEMO_POLICY_KEY,
-                'name': DEMO_POLICY_NAME,
-                'operation': gpc.OPERATION_MINT,
-                'status': gpc.STATUS_ACTIVE,
-                'version': 1,
-                'required_business_event': gpc.BUSINESS_EVENT_SUBSCRIPTION,
-                'settlement_requirement': gpc.REQUIREMENT_CLEARED,
-                'allowed_window_utc': {'start': '08:00', 'end': '18:00'},
-                'maximum_daily_amount_usd': '10000000.00',
-                'required_roles': [gpc.ROLE_TREASURY_OPERATOR, gpc.ROLE_COMPLIANCE_APPROVER],
-                'violation_action': gpc.VIOLATION_ACTION_DENY,
-                'origin': gpc.ORIGIN_DEMO_SEED,
-            }),
-            json.dumps({}), json.dumps({}),
-            'Policy created (demo scenario seed).', user_id, now,
-        ),
-    )
     logger.info(
         'event=governance_policy_demo_seeded workspace_id=%s policy_key=%s', workspace_id, DEMO_POLICY_KEY,
     )
-    return {'seeded': True, 'policy_id': policy_id, 'policy_key': DEMO_POLICY_KEY, 'origin': gpc.ORIGIN_DEMO_SEED}
+    return {'seeded': True, 'policy_id': outcome['policy_id'], 'policy_key': DEMO_POLICY_KEY, 'origin': gpc.ORIGIN_DEMO_SEED}

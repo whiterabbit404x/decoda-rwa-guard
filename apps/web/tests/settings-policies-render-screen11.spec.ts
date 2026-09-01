@@ -65,6 +65,17 @@ type MountOptions = {
   /** Version rows returned by GET …/history. */
   history?: unknown[];
   canManage?: boolean;
+  /** Status returned by POST /api/workspace/governance/policies. */
+  createStatus?: number;
+  /** Detail object returned when the create is refused. */
+  createDetail?: unknown;
+  /** After a successful create, the next list GET returns the policy. */
+  policiesAfterCreate?: boolean;
+  /** Serve the real list payload — vocabulary included — with zero policies. */
+  emptyPolicies?: boolean;
+  /** The deployment diagnostic /api/runtime-config reports. */
+  runtimeDiagnostic?: string | null;
+  runtimeConfigured?: boolean;
 };
 
 /**
@@ -94,7 +105,8 @@ async function mountPolicies(page: Page, options: MountOptions = {}) {
         if (p === '/api/runtime-config') {
           return json({
             apiUrl: 'https://api.example.test', liveModeEnabled: true, apiTimeoutMs: 15000,
-            configured: true, diagnostic: null,
+            configured: opts.runtimeConfigured !== false,
+            diagnostic: opts.runtimeDiagnostic ?? null,
             source: { apiUrl: 'API_URL', liveModeEnabled: 'LIVE_MODE_ENABLED', apiTimeoutMs: 'default' },
           });
         }
@@ -116,11 +128,18 @@ async function mountPolicies(page: Page, options: MountOptions = {}) {
               full_name: 'Acme Admin', role: 'admin', created_at: '2026-01-01T00:00:00Z' },
           ] });
         }
+        if (p === '/api/workspace/governance/policies' && (init?.method ?? 'GET').toUpperCase() === 'POST') {
+          const createStatus = opts.createStatus ?? 201;
+          if (createStatus >= 300) return json({ detail: opts.createDetail ?? { code: 'policy_already_exists', message: 'exists' } }, createStatus);
+          w.__created = true;
+          return json({ status: 'created', policy: fixture.policy, can_manage: true }, createStatus);
+        }
         if (p === '/api/workspace/governance/policies') {
           if (opts.policiesStatus && opts.policiesStatus !== 200) return json({ detail: 'nope' }, opts.policiesStatus);
-          return json(opts.policies ?? {
+          const listEmpty = Boolean(opts.emptyPolicies) && !w.__created;
+          return json(opts.policies && !(opts.policiesAfterCreate && w.__created) ? opts.policies : {
             workspace_id: 'fixture-ws',
-            policies: [fixture.policy],
+            policies: listEmpty ? [] : [fixture.policy],
             can_manage: opts.canManage !== false,
             edit_permission: 'security.manage',
             vocabulary: {
@@ -146,6 +165,16 @@ async function mountPolicies(page: Page, options: MountOptions = {}) {
               decision_authority: 'Deterministic Policy Engine',
               ai_authority: 'Recommend only',
               engine_version: 'governance-policy-engine-v1',
+              // Form defaults the backend serves. Mirrors config.POLICY_TEMPLATES.
+              policy_templates: {
+                MINT: {
+                  policy_key: 'POL-MINT-007', name: 'RWA Mint Policy', operation: 'MINT', status: 'ACTIVE',
+                  required_business_event: 'SUBSCRIPTION', settlement_requirement: 'CLEARED',
+                  allowed_window_utc: { start: '08:00', end: '18:00' },
+                  maximum_daily_amount_usd: '10000000.00',
+                  required_roles: ['TREASURY_OPERATOR', 'COMPLIANCE_APPROVER'], violation_action: 'DENY',
+                },
+              },
             },
           });
         }
@@ -417,4 +446,161 @@ test('the other Settings tabs still render after Policies is added', async ({ pa
   await page.getByRole('tab', { name: 'Notifications' }).click();
   await expect(page.getByText('Alert Notifications')).toBeVisible();
   expect(await page.evaluate(() => (window as any).__renderError)).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// Create Policy — the flow that ends "No policies configured"
+// ---------------------------------------------------------------------------
+
+test('an empty workspace offers Create Policy to an authorized user', async ({ page }) => {
+  await mountPolicies(page, { emptyPolicies: true });
+  await expect(page.getByText('No policies configured')).toBeVisible();
+  const button = page.getByTestId('create-policy');
+  await expect(button).toBeVisible();
+  await expect(button).toBeEnabled();
+});
+
+test('an unauthorized user never gets an enabled Create Policy button', async ({ page }) => {
+  await mountPolicies(page, { emptyPolicies: true, canManage: false });
+  const button = page.getByTestId('create-policy');
+  await expect(button).toBeVisible();
+  await expect(button).toBeDisabled();
+  await expect(page.getByText(/Creating a policy requires the security\.manage permission/)).toBeVisible();
+});
+
+test('a policy read failure is never an invitation to provision', async ({ page }) => {
+  // "Unavailable" means we do not KNOW whether policies exist. Offering to
+  // create one there would present a failure as an absence.
+  await mountPolicies(page, { policiesStatus: 500 });
+  await expect(page.getByText('Policies unavailable')).toBeVisible();
+  await expect(page.getByTestId('create-policy')).toHaveCount(0);
+});
+
+test('a restricted read is never an invitation to provision', async ({ page }) => {
+  await mountPolicies(page, { policiesStatus: 403 });
+  await expect(page.getByText('Policies restricted')).toBeVisible();
+  await expect(page.getByTestId('create-policy')).toHaveCount(0);
+});
+
+test('the create form opens pre-filled from the BACKEND template', async ({ page }) => {
+  await mountPolicies(page, { emptyPolicies: true });
+  await page.getByTestId('create-policy').click();
+
+  await expect(page.locator('#create-policy-key')).toHaveValue('POL-MINT-007');
+  await expect(page.locator('#create-name')).toHaveValue('RWA Mint Policy');
+  await expect(page.locator('#create-operation')).toHaveValue('MINT');
+  await expect(page.locator('#create-status')).toHaveValue('ACTIVE');
+  await expect(page.locator('#create-business-event')).toHaveValue('SUBSCRIPTION');
+  await expect(page.locator('#create-settlement')).toHaveValue('CLEARED');
+  await expect(page.locator('#create-window-start')).toHaveValue('08:00');
+  await expect(page.locator('#create-window-end')).toHaveValue('18:00');
+  await expect(page.locator('#create-max-issuance')).toHaveValue('10000000.00');
+
+  // Opening the form must not have written anything.
+  const posts = await page.evaluate(() => (window as any).__requests.filter((r: any) => r.method === 'POST'));
+  expect(posts).toHaveLength(0);
+});
+
+test('a workspace with no policies stays empty until the operator submits', async ({ page }) => {
+  // §6: no policy is fabricated merely because the page loaded.
+  await mountPolicies(page, { emptyPolicies: true });
+  await expect(page.getByText('No policies configured')).toBeVisible();
+  const writes = await page.evaluate(() =>
+    (window as any).__requests.filter((r: any) => r.method !== 'GET'));
+  expect(writes.filter((r: any) => r.url.includes('governance/policies'))).toHaveLength(0);
+});
+
+test('submitting creates the policy and the policy workspace renders', async ({ page }) => {
+  await mountPolicies(page, { emptyPolicies: true, policiesAfterCreate: true });
+  await page.getByTestId('create-policy').click();
+  await page.getByTestId('create-policy-submit').click();
+
+  // The header, Policy Details and the simulator all render from the reloaded list.
+  await expect(page.getByRole('heading', { name: /RWA Mint Policy/ })).toBeVisible();
+  await expect(page.getByText('POL-MINT-007')).toBeVisible();
+  await expect(page.getByText('Policy Details')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Run Simulation' })).toBeVisible();
+  await expect(page.getByText('No policies configured')).toHaveCount(0);
+});
+
+test('the create request carries no workspace_id and exactly one POST is issued', async ({ page }) => {
+  // §9: the server binds the row to the authenticated workspace. The browser
+  // must not be able to name one.
+  await mountPolicies(page, { emptyPolicies: true, policiesAfterCreate: true });
+  await page.getByTestId('create-policy').click();
+  await page.getByTestId('create-policy-submit').click();
+  await expect(page.getByText('Policy Details')).toBeVisible();
+
+  const posts = await page.evaluate(() => (window as any).__requests.filter(
+    (r: any) => r.method === 'POST' && r.url === '/api/workspace/governance/policies'));
+  expect(posts).toHaveLength(1);
+  const body = JSON.parse(posts[0].body);
+  expect(body).not.toHaveProperty('workspace_id');
+  expect(body).not.toHaveProperty('origin');
+  expect(body).not.toHaveProperty('version');
+  expect(body.policy_id).toBe('POL-MINT-007');
+  expect(body.operation).toBe('MINT');
+  expect(body.required_roles).toEqual(['TREASURY_OPERATOR', 'COMPLIANCE_APPROVER']);
+});
+
+test('a refused create says plainly that no policy was created', async ({ page }) => {
+  await mountPolicies(page, { emptyPolicies: true, createStatus: 409 });
+  await page.getByTestId('create-policy').click();
+  await page.getByTestId('create-policy-submit').click();
+
+  const message = page.getByTestId('create-policy-message');
+  await expect(message).toBeVisible();
+  await expect(message).toContainText('No policy was created.');
+  // And the workspace still reports the truth about itself.
+  await expect(page.locator('#create-policy-key')).toHaveValue('POL-MINT-007');
+});
+
+test('a create refused for permission is reported as permission, not as a bad request', async ({ page }) => {
+  await mountPolicies(page, { emptyPolicies: true, createStatus: 403 });
+  await page.getByTestId('create-policy').click();
+  await page.getByTestId('create-policy-submit').click();
+  await expect(page.getByTestId('create-policy-message'))
+    .toContainText('You do not have permission to create governance policies.');
+});
+
+// ---------------------------------------------------------------------------
+// The production debug label. Source contracts live in
+// settings-diagnostic-leak.spec.ts; these assert the rendered DOM, because
+// "not visible in production" is a claim about the page, not about the source.
+// ---------------------------------------------------------------------------
+test('a healthy deployment renders no "API URL source" text anywhere on Settings', async ({ page }) => {
+  // This is the exact payload production serves: configured, and carrying the
+  // provenance note runtime-config.ts always attaches.
+  await mountPolicies(page, {
+    emptyPolicies: true,
+    runtimeConfigured: true,
+    runtimeDiagnostic: 'API URL source: NEXT_PUBLIC_API_URL.',
+  });
+  await expect(page.getByText('No policies configured')).toBeVisible();
+  await expect(page.getByText(/API URL source/)).toHaveCount(0);
+  await expect(page.getByText(/NEXT_PUBLIC_API_URL/)).toHaveCount(0);
+  expect(await page.locator('body').innerText()).not.toContain('API URL source');
+});
+
+test('even a broken deployment never names an environment variable to the customer', async ({ page }) => {
+  await mountPolicies(page, {
+    emptyPolicies: true,
+    runtimeConfigured: false,
+    runtimeDiagnostic: 'API URL source: missing. API_URL or NEXT_PUBLIC_API_URL is required.',
+  });
+  const body = await page.locator('body').innerText();
+  expect(body).not.toContain('API URL source');
+  expect(body).not.toContain('NEXT_PUBLIC_API_URL');
+  expect(body).not.toContain('ALLOW_LOCAL_API_FALLBACK');
+});
+
+test('a real customer-facing error is still shown on Settings', async ({ page }) => {
+  // The filter must not silence genuine errors — that would trade one
+  // truthfulness failure for another.
+  await mountPolicies(page, {
+    emptyPolicies: true,
+    runtimeConfigured: false,
+    runtimeDiagnostic: 'The workspace could not be loaded. Sign in again.',
+  });
+  await expect(page.getByText('The workspace could not be loaded. Sign in again.')).toBeVisible();
 });

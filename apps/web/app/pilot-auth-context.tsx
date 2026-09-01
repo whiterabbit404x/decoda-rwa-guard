@@ -309,7 +309,11 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
           return;
         }
         setRuntimeConfig(nextRuntimeConfig);
-        if (nextRuntimeConfig.diagnostic) {
+        // Only a config that is actually unusable is an error. describeApiUrlSource()
+        // always returns a string, so `diagnostic` is non-null even on a perfectly
+        // healthy deployment — promoting that made every user's session carry a
+        // truthy `error`, which surfaced as red text in the product UI.
+        if (nextRuntimeConfig.diagnostic && !nextRuntimeConfig.configured) {
           setError((currentError) => currentError ?? nextRuntimeConfig.diagnostic);
         }
       })
