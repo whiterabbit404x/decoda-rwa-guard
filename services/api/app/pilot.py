@@ -19988,6 +19988,7 @@ def _record_action_approval_decision(
     note: str | None,
     required_quorum: int,
     policy: str | None,
+    approval_role: str | None = None,
 ) -> str:
     """Persist ONE response-action approval decision and return its id.
 
@@ -20026,6 +20027,26 @@ def _record_action_approval_decision(
             },
         )
     decision_id = str(uuid.uuid4())
+    # The governance role a decision covers is written only when migration 0148 has
+    # been applied. During the bootstrap window the decision is still recorded (it
+    # counts toward the numeric quorum) — a role is never inferred for it, because an
+    # inferred role would close a quorum nobody actually signed.
+    if approval_role and _response_action_approval_role_column_ready(connection):
+        connection.execute(
+            '''
+            INSERT INTO response_action_approvals (
+                id, workspace_id, subject_domain, subject_id, action_version,
+                approver_user_id, approver_role, decision, note, required_quorum, policy,
+                approval_role
+            ) VALUES (%s, %s, %s, %s::uuid, %s, %s::uuid, %s, %s, %s, %s, %s, %s)
+            ''',
+            (
+                decision_id, workspace_id, subject_domain, subject_id, action_version,
+                approver_user_id, approver_role, decision, note, required_quorum, policy,
+                approval_role,
+            ),
+        )
+        return decision_id
     connection.execute(
         '''
         INSERT INTO response_action_approvals (
@@ -20039,6 +20060,13 @@ def _record_action_approval_decision(
         ),
     )
     return decision_id
+
+
+def _response_action_approval_role_column_ready(connection: Any) -> bool:
+    """True when migration 0148's ``approval_role`` column exists. Fail-closed."""
+    from services.api.app.domains.response_gate import service as _rg_service
+
+    return _rg_service._column_exists(connection, RESPONSE_ACTION_APPROVAL_TABLE, 'approval_role')
 
 
 def _approve_ai_recommendation_backed_action(
@@ -20266,7 +20294,55 @@ def _reject_ai_recommendation_backed_action(
     return payload
 
 
-def approve_enforcement_action(action_id: str, request: Request) -> dict[str, Any]:
+def _resolve_approval_role(
+    connection: Any,
+    *,
+    workspace_id: str,
+    workspace_context: dict[str, Any],
+    payload: dict[str, Any] | None,
+) -> str | None:
+    """Which governance role this approval is being cast FOR, verified server-side.
+
+    The request may NAME a role; it may not assert that the caller holds it. The
+    named role is checked against the canonical governance-role -> workspace
+    permission map using the caller's membership, exactly as Screen 11 resolves
+    operator authority. A role the caller cannot evidence is a 403, never a
+    silently-downgraded role-less approval — otherwise a crafted payload could
+    close a quorum the operator was never entitled to close.
+
+    Returns None when the request named no role (the pre-existing role-agnostic
+    approval, which counts toward the numeric quorum only).
+    """
+    from services.api.app.domains.response_gate import config as _rgc
+    from services.api.app.domains.response_gate import service as _rg_service
+
+    raw = (payload or {}).get('approval_role') if isinstance(payload, dict) else None
+    if raw is None or not str(raw).strip():
+        return None
+    role = _rgc.normalize_approver_role(raw)
+    if role is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={'code': 'UNKNOWN_APPROVAL_ROLE',
+                    'message': 'approval_role must be one of: '
+                               + ', '.join(_rgc.APPROVER_ROLES) + '.'},
+        )
+    if not _rg_service.approver_holds_role(
+        connection, workspace_id=workspace_id,
+        workspace_role=workspace_context.get('role'), role=role,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={'code': 'APPROVAL_ROLE_NOT_HELD',
+                    'message': f'Your workspace role does not evidence '
+                               f'{_rgc.approver_role_label(role)} authority.'},
+        )
+    return role
+
+
+def approve_enforcement_action(
+    action_id: str, request: Request, payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
@@ -20327,6 +20403,15 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
             action_type=str(row.get('action_type') or ''), action_version=action_version,
             operation='approve', incident_id=str(row.get('incident_id') or '') or None,
         )
+        # Which REQUIRED GOVERNANCE ROLE this decision covers, verified against the
+        # caller's own membership. Persisting it is what lets the execution gate
+        # report `missing_roles` from facts instead of inferring them — and because
+        # one approver may record at most one decision per action version, a single
+        # person can never close two required roles.
+        approval_role = _resolve_approval_role(
+            connection, workspace_id=workspace_context['workspace_id'],
+            workspace_context=workspace_context, payload=payload,
+        )
         approval_decision_id: str | None = None
         if _response_action_approvals_schema_ready(connection):
             approval_decision_id = _record_action_approval_decision(
@@ -20341,6 +20426,7 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
                 note=None,
                 required_quorum=required_quorum,
                 policy='owner_admin_single_approver',
+                approval_role=approval_role,
             )
             approval = _action_approval_summary(
                 connection, workspace_id=workspace_context['workspace_id'],
@@ -20727,6 +20813,17 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             metadata['step_up'] = _require_live_action_step_up_auth(request, user=user)
         elif mode == 'live':
             metadata['step_up'] = {'required': False, 'source': 'governance_delegated'}
+        # DETERMINISTIC EXECUTION GATE — the last authorization step, before any
+        # provider is contacted and before any execution state is written.
+        # Frontend disabling is not authorization: the same gate Screen 8 renders
+        # is re-evaluated here from canonical state (Screen 11's policy verdict,
+        # the role-scoped human quorum, expiry, cancellation, incident state), so
+        # a direct API call that skips the UI hits exactly the same lock. Nothing
+        # an AI produced is an input to it.
+        _enforce_execution_gate(
+            connection, action, workspace_id=workspace_context['workspace_id'],
+            workspace_context=workspace_context, user=user, request=request,
+        )
         execution_state = 'simulated'
         next_status = 'executed'
         result_summary = 'Action simulated. No on-chain transaction was submitted.'
@@ -21613,6 +21710,9 @@ def list_enforcement_actions(
         # correctly shown a disabled Approve + a "verify session" prompt, never an
         # enabled control that the command would then reject with a bare reauth error.
         session_mfa_satisfied = _session_approval_stepup_satisfied(connection, request, workspace_id)
+        # Per-request memo for the gate's schema probes, so building a gate for
+        # every row does not re-probe the same tables once per action.
+        gate_cache: dict[str, Any] = {}
         rows = connection.execute(
             '''
             SELECT id, action_type, mode, status, result_status, execution_state, result_summary, operator_notes, created_at, approved_at, executed_at, failed_at, rolled_back_at, incident_id, alert_id, safe_tx_hash, tx_hash, execution_metadata, created_by_user_id
@@ -21640,6 +21740,14 @@ def list_enforcement_actions(
                 action.get('action_type'), mode=str(action.get('mode') or ''),
             )
             payload = _response_action_payload(action)
+            # ONE canonical deterministic execution gate per action. The frontend
+            # renders `can_execute` and the reason codes; it never re-derives them,
+            # and the execute command re-evaluates the same gate server-side.
+            payload['execution_gate'] = response_action_execution_gate(
+                connection, action, workspace_id=workspace_id,
+                workspace_context=workspace_context,
+                lifecycle=payload.get('lifecycle'), cache=gate_cache,
+            )
             # Resolve the caller's approval permission (role + separation of duties)
             # so the UI shows Approve/Reject only when authorized, with a truthful
             # read-only reason otherwise. Backend commands re-check this — button
@@ -23418,6 +23526,295 @@ def response_action_approval_gate(
     }
 
 
+# ── Deterministic execution gate (Screen 8) ───────────────────────────────────
+# "AI may recommend. Deterministic policy controls execution."
+#
+# The gate composes the facts that decide whether ONE response action may run:
+# Screen 11's policy verdict (reflected verbatim, never recalculated here), the
+# role-scoped human quorum, RBAC, expiry, cancellation and incident state. The
+# decision itself is made by domains.response_gate.engine.evaluate_gate — a pure
+# function with no database handle, no clock it did not receive, and no import
+# path that reaches ai_providers. These helpers only resolve the inputs and carry
+# the result onto the DTO and into the audit trail.
+
+
+def response_action_execution_gate(
+    connection: Any,
+    action: dict[str, Any],
+    *,
+    workspace_id: str,
+    workspace_context: dict[str, Any] | None = None,
+    lifecycle: dict[str, Any] | None = None,
+    requester_authorized: bool | None = None,
+    now: Any = None,
+    cache: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the canonical execution gate for one response action.
+
+    Returns the gate as a plain dict (its wire form). Never raises: a read that
+    cannot be completed leaves the gate LOCKED with an explicit reason code,
+    because a gate that failed to establish a fact must never report ALLOW.
+    """
+    from services.api.app.domains.response_gate import config as _rgc
+    from services.api.app.domains.response_gate import service as _rg_service
+
+    lifecycle = lifecycle or response_action_lifecycle(action)
+    action_type = _normalize_response_action_type(action.get('action_type'))
+    capability = resolve_response_action_capability(action_type, str(action.get('mode') or ''))
+    live_path = str(capability.get('live_execution_path') or 'unsupported')
+    if requester_authorized is None:
+        # RBAC is resolved server-side from the caller's workspace role; the
+        # browser's claim about a role is never consulted.
+        role_str = str((workspace_context or {}).get('role') or '').strip().lower()
+        normalized_role = ROLE_CANONICAL_MAP.get(role_str, role_str)
+        requester_authorized = (not normalized_role) or normalized_role in LIVE_ACTION_APPROVER_ROLES
+    # Some live paths delegate authorization to an EXTERNAL deterministic
+    # authority (the governance module's own signer quorum) rather than to
+    # workspace approvers. That is the same predicate the executor already
+    # applies; the gate names the authority instead of silently treating a
+    # delegated approval as an operator sign-off.
+    _delegated_path = live_path in {'governance', 'unsupported', 'manual_only'}
+    _quorum_authority = (
+        'delegated_governance'
+        if (_delegated_path
+            and str(action.get('mode') or '') == 'live'
+            and not str(action.get('approved_by_user_id') or '').strip())
+        else 'workspace_approvers'
+    )
+    try:
+        gate = _rg_service.build_gate(
+            connection,
+            workspace_id=workspace_id,
+            action=action,
+            lifecycle=lifecycle,
+            required_quorum=_required_approval_quorum('response_action', action),
+            action_version=_action_version_for('response_action', action),
+            requester_authorized=bool(requester_authorized),
+            execution_authority_available=live_path != 'unsupported',
+            execution_adapter_label=live_path,
+            quorum_authority=_quorum_authority,
+            now=now,
+            cache=cache,
+        )
+        return gate.as_dict()
+    except Exception:  # pragma: no cover - fail closed, never fail open
+        logger.exception('response_action_execution_gate_failed action_id=%s', action.get('id'))
+        return {
+            'decision': _rgc.GATE_LOCKED,
+            'decision_label': _rgc.GATE_DECISION_LABELS[_rgc.GATE_LOCKED],
+            'can_execute': False,
+            'policy_decision': _rgc.POLICY_NOT_EVALUATED,
+            'policy_decision_label': _rgc.POLICY_DECISION_LABELS[_rgc.POLICY_NOT_EVALUATED],
+            'required_quorum': 0,
+            'approvals_collected': 0,
+            'required_roles': [],
+            'satisfied_roles': [],
+            'missing_roles': [],
+            'missing_role_labels': [],
+            'approvers': [],
+            'reason_codes': [_rgc.POLICY_EVALUATION_MISSING],
+            'reasons': [{'code': _rgc.POLICY_EVALUATION_MISSING,
+                         'label': _rgc.reason_label(_rgc.POLICY_EVALUATION_MISSING)}],
+            'ai_authority': _rgc.AI_AUTHORITY,
+            'ai_authority_mode': _rgc.AI_AUTHORITY_MODE,
+            'execution_authority': _rgc.EXECUTION_AUTHORITY,
+            'execution_authority_mode': _rgc.EXECUTION_AUTHORITY_MODE,
+            'gate_version': _rgc.GATE_VERSION,
+        }
+
+
+#: Reason codes on which the EXECUTE command refuses outright.
+#:
+#: These are the deterministic authorization facts the GATE establishes. The
+#: codes deliberately NOT listed are the ones an existing, more specific
+#: fail-closed path already enforces with its own truthful error and audit
+#: record — RBAC_FORBIDDEN (403 from the mode/role policy),
+#: EXECUTION_AUTHORITY_MISSING (the unsupported-executor path, which persists a
+#: failed attempt), and EXECUTION_ADAPTER_NOT_CONFIGURED (dry-run only, §18).
+#: Those still appear on the gate DTO so the UI states them, but the gate does
+#: not pre-empt the handler that reports them better. Nothing here weakens an
+#: existing check: this set is purely additive blocking.
+_GATE_BLOCKING_REASON_CODES = frozenset({
+    'POLICY_DENIED',
+    'POLICY_VERSION_MISMATCH',
+    'POLICY_EVALUATION_MISSING',
+    'HUMAN_QUORUM_INCOMPLETE',
+    'REQUIRED_ROLE_MISSING',
+    'APPROVAL_REJECTED',
+    'ACTION_EXPIRED',
+    'ACTION_ALREADY_EXECUTED',
+    'ACTION_CANCELLED',
+    'INCIDENT_CLOSED',
+})
+
+
+def _execution_gate_audit_details(
+    action: dict[str, Any], gate: dict[str, Any], *, event_type: str, display_label: str,
+    result_summary: str, reason_codes: list[Any] | None = None,
+) -> dict[str, Any]:
+    """Structured audit detail for ONE execution-gate transition.
+
+    Every field is a machine fact from the gate — the policy that decided, the
+    version that decided it, the quorum, the roles still outstanding, and the
+    reason codes. No AI prose stands in for any of them (§13).
+    """
+    action_id = str(action.get('id') or '')
+    return {
+        'event_type': event_type,
+        'display_label': display_label,
+        'type_label': 'Execution Gate',
+        'action_id': action_id,
+        'action_key': _normalize_response_action_type(action.get('action_type')),
+        'incident_id': str(action.get('incident_id') or '') or None,
+        'decision': gate.get('decision'),
+        'policy_decision': gate.get('policy_decision'),
+        'policy_id': gate.get('policy_id'),
+        'policy_key': gate.get('policy_key'),
+        'policy_version': gate.get('policy_version'),
+        'evaluation_id': gate.get('evaluation_id'),
+        'required_quorum': gate.get('required_quorum'),
+        'approvals_collected': gate.get('approvals_collected'),
+        'required_roles': gate.get('required_roles'),
+        'missing_roles': gate.get('missing_roles'),
+        'quorum_authority': gate.get('quorum_authority'),
+        'reason_codes': list(reason_codes if reason_codes is not None else (gate.get('reason_codes') or [])),
+        'result_summary': result_summary,
+        'execution_authority': gate.get('execution_authority'),
+        'ai_authority': gate.get('ai_authority'),
+        'gate_version': gate.get('gate_version'),
+        'chain_linked_ids': gate.get('chain_linked_ids'),
+    }
+
+
+def _record_execution_gate_authorized(
+    connection: Any,
+    action: dict[str, Any],
+    gate: dict[str, Any],
+    *,
+    workspace_id: str,
+    user: dict[str, Any] | None,
+    request: Request | None,
+) -> None:
+    """Record that the deterministic gate authorized this execution."""
+    action_id = str(action.get('id') or '')
+    try:
+        details = _execution_gate_audit_details(
+            action, gate, event_type='execution_gate_authorized',
+            display_label='Execution Gate Authorized', result_summary='Authorized',
+        )
+        write_action_history(
+            connection, workspace_id=workspace_id, actor_type='user',
+            actor_id=(user or {}).get('id'), object_type='response_action',
+            object_id=action_id, action_type='response_action.execution_gate_authorized',
+            details=details,
+        )
+        append_incident_timeline_event(
+            connection, workspace_id=workspace_id,
+            incident_id=str(action.get('incident_id') or ''),
+            event_type='response_action.execution_gate_authorized',
+            message='Deterministic execution gate authorized this response action.',
+            actor_user_id=(user or {}).get('id'),
+            metadata={'response_action_id': action_id, **details},
+        )
+        if request is not None:
+            log_audit(
+                connection, action='response_action.execution_gate_authorized',
+                entity_type='response_action', entity_id=action_id, request=request,
+                user_id=(user or {}).get('id'), workspace_id=workspace_id,
+                metadata={'policy_decision': gate.get('policy_decision'),
+                          'policy_id': gate.get('policy_id'),
+                          'policy_version': gate.get('policy_version'),
+                          'required_quorum': gate.get('required_quorum'),
+                          'approvals_collected': gate.get('approvals_collected')},
+            )
+    except Exception:  # pragma: no cover - audit writing never blocks a valid run
+        logger.warning('execution_gate_authorized_audit_failed action_id=%s', action_id)
+
+
+def _enforce_execution_gate(
+    connection: Any,
+    action: dict[str, Any],
+    *,
+    workspace_id: str,
+    workspace_context: dict[str, Any],
+    user: dict[str, Any] | None = None,
+    request: Request | None = None,
+) -> dict[str, Any]:
+    """Server-side execution gate. Raises 409 when the gate is not satisfied.
+
+    This is the enforcement point that makes the lock on Screen 8 real: a direct
+    API call that skips the UI hits exactly the same deterministic evaluation. A
+    blocked attempt is recorded as its own audit event, so an execution that was
+    refused can never be mistaken for one that never happened.
+    """
+    gate = response_action_execution_gate(
+        connection, action, workspace_id=workspace_id, workspace_context=workspace_context,
+    )
+    blocking = [
+        code for code in (gate.get('reason_codes') or [])
+        if str(code).strip().upper() in _GATE_BLOCKING_REASON_CODES
+    ]
+    if not blocking:
+        # Every gate condition this command owns is satisfied. A gate that is
+        # still not `can_execute` is one an existing, more specific handler
+        # further down enforces and reports (see _GATE_BLOCKING_REASON_CODES).
+        # The crossing of the trust boundary is itself an audited transition, so
+        # an execution can always be traced back to the authorization that
+        # permitted it. Written into the SAME transaction as the execution — it
+        # is not committed separately, so it can never outlive a rolled-back run.
+        _record_execution_gate_authorized(
+            connection, action, gate, workspace_id=workspace_id, user=user, request=request,
+        )
+        return gate
+    action_id = str(action.get('id') or '')
+    details = _execution_gate_audit_details(
+        action, gate, event_type='execution_gate_locked',
+        display_label='Execution Gate Locked', result_summary='Blocked',
+        reason_codes=blocking or list(gate.get('reason_codes') or []),
+    )
+    try:
+        write_action_history(
+            connection,
+            workspace_id=workspace_id,
+            actor_type='user',
+            actor_id=(user or {}).get('id'),
+            object_type='response_action',
+            object_id=action_id,
+            action_type='response_action.execution_gate_locked',
+            details=details,
+        )
+        append_incident_timeline_event(
+            connection,
+            workspace_id=workspace_id,
+            incident_id=str(action.get('incident_id') or ''),
+            event_type='response_action.execution_gate_locked',
+            message='Execution remains locked: the deterministic gate was not satisfied.',
+            actor_user_id=(user or {}).get('id'),
+            metadata={'response_action_id': action_id, **details},
+        )
+        if request is not None:
+            log_audit(
+                connection, action='response_action.execution_gate_locked',
+                entity_type='response_action', entity_id=action_id, request=request,
+                user_id=(user or {}).get('id'), workspace_id=workspace_id,
+                metadata={'reason_codes': blocking or gate.get('reason_codes'),
+                          'policy_decision': gate.get('policy_decision'),
+                          'missing_roles': gate.get('missing_roles')},
+            )
+        connection.commit()
+    except Exception:  # pragma: no cover - never let audit writing mask the block
+        logger.warning('execution_gate_block_audit_failed action_id=%s', action_id)
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            'code': 'EXECUTION_GATE_LOCKED',
+            'message': 'Execution is locked by the deterministic policy gate.',
+            'execution_gate': gate,
+            'reason_codes': blocking or list(gate.get('reason_codes') or []),
+        },
+    )
+
+
 def _require_action_approval_session_mfa(
     connection: Any,
     request: Request,
@@ -23835,6 +24232,46 @@ def response_action_safety_checks(action_id: str, request: Request) -> dict[str,
             'summary': summarize_safety_checks(checks),
             'playbook': profile,
             'live_execution_configured': env_flag('LIVE_ACTION_EXECUTION_ENABLED', default=False),
+            'evaluated_at': utc_now_iso(),
+        }
+
+
+def response_action_execution_gate_view(action_id: str, request: Request) -> dict[str, Any]:
+    """Read-only deterministic execution gate for a single response action.
+
+    GET-only semantics: never generates, mutates, or executes anything. Workspace
+    scoped — an action belonging to another workspace is a 404, never a gate.
+    """
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        workspace_id = workspace_context['workspace_id']
+        row = connection.execute(
+            '''SELECT id, workspace_id, incident_id, alert_id, action_type, mode, status,
+                      execution_state, execution_metadata, approved_at, approved_by_user_id,
+                      created_by_user_id, rolled_back_at, created_at
+               FROM response_actions WHERE id = %s::uuid AND workspace_id = %s''',
+            (action_id, workspace_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Response action not found.')
+        action = _json_safe_value(dict(row))
+        action['playbook'] = response_action_playbook_profile(
+            action.get('action_type'), mode=str(action.get('mode') or ''),
+        )
+        lifecycle = response_action_lifecycle(action)
+        gate = response_action_execution_gate(
+            connection, action, workspace_id=workspace_id,
+            workspace_context=workspace_context, lifecycle=lifecycle,
+        )
+        return {
+            'action_id': action_id,
+            'incident_id': action.get('incident_id'),
+            'execution_gate': gate,
+            'lifecycle': lifecycle,
+            'playbook': action['playbook'],
             'evaluated_at': utc_now_iso(),
         }
 
