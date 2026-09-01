@@ -15,7 +15,7 @@
  */
 import { expect, test } from '@playwright/test';
 
-import { GET as listPolicies } from '../app/api/workspace/governance/policies/route';
+import { GET as listPolicies, POST as createPolicy } from '../app/api/workspace/governance/policies/route';
 import { GET as getPolicy, PATCH as patchPolicy } from '../app/api/workspace/governance/policies/[policyRef]/route';
 import { GET as getHistory } from '../app/api/workspace/governance/policies/[policyRef]/history/route';
 import { POST as simulate } from '../app/api/workspace/governance/policies/[policyRef]/simulate/route';
@@ -184,6 +184,77 @@ test('an unconfigured backend URL is a proxy error, never a fabricated success',
       expect(body.code).toBe('invalid_runtime_config');
       // Critically: no decision field at all, so nothing downstream can read ALLOW.
       expect(body.decision).toBeUndefined();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Create — the write that ends "No policies configured"
+// ---------------------------------------------------------------------------
+const CREATE_BODY = {
+  policy_id: 'POL-MINT-007',
+  name: 'RWA Mint Policy',
+  operation: 'MINT',
+  status: 'ACTIVE',
+  required_business_event: 'SUBSCRIPTION',
+  settlement_requirement: 'CLEARED',
+  allowed_window_utc: { start: '08:00', end: '18:00' },
+  maximum_daily_amount_usd: '10000000.00',
+  required_roles: ['TREASURY_OPERATOR', 'COMPLIANCE_APPROVER'],
+};
+
+test('POST /api/workspace/governance/policies forwards the create to the backend', async () => {
+  await withEnv({ NODE_ENV: 'production', API_URL: BACKEND }, async () => {
+    await withMockBackend(201, { status: 'created', policy: { policy_key: POLICY } }, async (getSeen) => {
+      const res = await createPolicy(authed('POST', CREATE_BODY, true));
+      expect(res.status).toBe(201);
+      const seen = getSeen();
+      expect(seen?.url).toBe(`${BACKEND}/workspace/governance/policies`);
+      expect(seen?.method).toBe('POST');
+      expect(seen?.auth).toBe(TOKEN);
+      // The BACKEND resolves the workspace and enforces security.manage; the
+      // proxy only relays what it needs to do so.
+      expect(seen?.workspace).toBe(WORKSPACE);
+      expect(seen?.csrf).toBe(CSRF);
+      expect(JSON.parse(seen?.body ?? '{}')).toMatchObject({ policy_id: 'POL-MINT-007', operation: 'MINT' });
+    });
+  });
+});
+
+test('the create proxy relays the body without adding a workspace of its own', async () => {
+  await withEnv({ NODE_ENV: 'production', API_URL: BACKEND }, async () => {
+    await withMockBackend(201, { status: 'created' }, async (getSeen) => {
+      await createPolicy(authed('POST', CREATE_BODY, true));
+      const body = JSON.parse(getSeen()?.body ?? '{}');
+      for (const owned of ['workspace_id', 'origin', 'version', 'can_manage']) {
+        expect(body).not.toHaveProperty(owned);
+      }
+    });
+  });
+});
+
+test('the create proxy preserves every backend status verbatim', async () => {
+  // A 403 must arrive as a 403 and a 409 as a 409: the panel's truthful copy is
+  // chosen from the status, so a proxy that flattened them would make an
+  // unauthorized create look like a validation error.
+  for (const status of [201, 400, 401, 403, 409, 503]) {
+    await withEnv({ NODE_ENV: 'production', API_URL: BACKEND }, async () => {
+      await withMockBackend(status, { detail: { code: 'x', message: 'y' } }, async () => {
+        const res = await createPolicy(authed('POST', CREATE_BODY, true));
+        expect(res.status).toBe(status);
+      });
+    });
+  }
+});
+
+test('an unauthenticated create never reaches the backend', async () => {
+  await withEnv({ NODE_ENV: 'production', API_URL: BACKEND }, async () => {
+    await withMockBackend(201, { status: 'created' }, async (getSeen) => {
+      const res = await createPolicy(new Request('http://localhost/api/x', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(CREATE_BODY),
+      }));
+      expect(res.status).toBe(401);
+      expect(getSeen()).toBeNull();
     });
   });
 });

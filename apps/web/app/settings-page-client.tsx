@@ -6,6 +6,7 @@ import type { ReactNode } from 'react';
 
 import { usePilotAuth } from 'app/pilot-auth-context';
 import { BillingRuntime, billingDisabledMessage, billingEnabled, billingProviderLabel } from './billing-capability';
+import { containsDiagnosticEnvVars } from './diagnostic-message';
 import { GovernanceDialog } from './components/governance-dialog';
 import SettingsPoliciesPanel from './settings-policies-panel';
 import {
@@ -1325,7 +1326,9 @@ export default function SettingsPageClient() {
         </section>
       ) : null}
 
-      {error ? <p style={{ marginTop: '1rem', color: '#f87171', fontSize: '0.82rem' }}>{error}</p> : null}
+      {/* A deployment diagnostic ('API URL source: ...') is operator telemetry, not
+          a customer-facing error. Same filter the app shell applies to this value. */}
+      {error && !containsDiagnosticEnvVars(error) ? <p style={{ marginTop: '1rem', color: '#f87171', fontSize: '0.82rem' }}>{error}</p> : null}
     </main>
   );
 }

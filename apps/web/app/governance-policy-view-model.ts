@@ -24,6 +24,22 @@ export type CheckStatus = 'PASS' | 'FAIL' | 'NOT_APPLICABLE';
 
 export type VocabularyOption = { value: string; label: string; permission?: string };
 
+// Starter values for the CREATE FORM, served by the backend so the numbers a
+// customer sees were never authored in React. A template is not a policy: it
+// pre-fills an editable form and nothing exists until the operator submits it.
+export type PolicyTemplate = {
+  policy_key: string;
+  name: string;
+  operation: string;
+  status: string;
+  required_business_event: string | null;
+  settlement_requirement: string | null;
+  allowed_window_utc: { start: string; end: string } | null;
+  maximum_daily_amount_usd: string | null;
+  required_roles: string[];
+  violation_action: string;
+};
+
 export type PolicyVocabulary = {
   operations: VocabularyOption[];
   business_events: VocabularyOption[];
@@ -34,6 +50,7 @@ export type PolicyVocabulary = {
   decision_authority: string;
   ai_authority: string;
   engine_version: string;
+  policy_templates?: Record<string, PolicyTemplate>;
 };
 
 export type GovernancePolicy = {
@@ -427,6 +444,120 @@ export function policyListMessage(state: PolicyListState): { title: string; mess
     return { title: 'No policies configured', message: 'No governance policy has been configured for this workspace. Operations are not evaluated against a policy until one exists.' };
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Create Policy. The form's shape and its outcome copy live here so the panel
+// holds no policy values of its own and no verdict-shaped strings.
+// ---------------------------------------------------------------------------
+
+// The Create/Edit dialog's working copy. Strings throughout: an amount is never
+// parsed into a JS number on its way to a NUMERIC(38, 2) column.
+export type PolicyDraft = {
+  policy_key: string;
+  name: string;
+  operation: string;
+  status: string;
+  required_business_event: string;
+  settlement_requirement: string;
+  window_start: string;
+  window_end: string;
+  maximum_daily_amount_usd: string;
+  required_roles: string[];
+};
+
+export function emptyPolicyDraft(operation = ''): PolicyDraft {
+  return {
+    policy_key: '', name: '', operation, status: '',
+    required_business_event: '', settlement_requirement: '',
+    window_start: '', window_end: '', maximum_daily_amount_usd: '', required_roles: [],
+  };
+}
+
+// Seed the create form from the backend's starter template for an operation.
+// When the backend served none, the form opens BLANK rather than inventing
+// values — a template the backend did not send is not one the UI may supply.
+export function policyTemplateDraft(
+  vocabulary: PolicyVocabulary | null | undefined,
+  operation: string,
+): PolicyDraft {
+  const template = vocabulary?.policy_templates?.[operation];
+  if (!template) {
+    return emptyPolicyDraft(operation);
+  }
+  return {
+    policy_key: String(template.policy_key ?? ''),
+    name: String(template.name ?? ''),
+    operation: String(template.operation ?? operation),
+    status: String(template.status ?? ''),
+    required_business_event: template.required_business_event ?? '',
+    settlement_requirement: template.settlement_requirement ?? '',
+    window_start: template.allowed_window_utc?.start ?? '',
+    window_end: template.allowed_window_utc?.end ?? '',
+    maximum_daily_amount_usd: template.maximum_daily_amount_usd ?? '',
+    required_roles: [...(template.required_roles ?? [])],
+  };
+}
+
+// The JSON body a create submits. policy_key is sent as policy_id because that
+// is what the form calls it; the backend accepts either. workspace_id is NOT
+// sent: the server binds the row to the session's workspace.
+export function policyCreateBody(draft: PolicyDraft): Record<string, unknown> {
+  return {
+    policy_id: draft.policy_key.trim().toUpperCase(),
+    name: draft.name.trim(),
+    operation: draft.operation,
+    status: draft.status,
+    required_business_event: draft.required_business_event || null,
+    settlement_requirement: draft.settlement_requirement || null,
+    allowed_window_utc: draft.window_start && draft.window_end
+      ? { start: draft.window_start, end: draft.window_end }
+      : null,
+    maximum_daily_amount_usd: draft.maximum_daily_amount_usd || null,
+    required_roles: draft.required_roles,
+  };
+}
+
+export type CreateOutcome = { tone: 'success' | 'error' | 'conflict'; text: string };
+
+//: Every failure ends with this. A backend message explains WHY the request was
+//: refused; it does not always say what happened to the workspace, and an
+//: operator reading "A policy with this ID already exists" must not be left
+//: wondering whether a second one was written anyway.
+const NOTHING_CREATED = 'No policy was created.';
+
+// What a create attempt actually did. The backend's reason is preferred where it
+// has one — it is more specific than anything the UI could guess — but the
+// outcome sentence is always appended, so a failed request can never read as a
+// provisioned workspace.
+export function createPolicyMessage(httpStatus: number, message?: string | null): CreateOutcome {
+  if (httpStatus >= 200 && httpStatus < 300) {
+    return { tone: 'success', text: 'Policy created.' };
+  }
+  const withOutcome = (reason: string): string =>
+    reason.trim().endsWith(NOTHING_CREATED) ? reason.trim() : `${reason.trim()} ${NOTHING_CREATED}`;
+
+  if (httpStatus === 400 || httpStatus === 422) {
+    return { tone: 'error', text: withOutcome(message || 'The policy could not be validated.') };
+  }
+  if (httpStatus === 401 || httpStatus === 403) {
+    return { tone: 'error', text: withOutcome('You do not have permission to create governance policies.') };
+  }
+  if (httpStatus === 409) {
+    return { tone: 'conflict', text: withOutcome(message || 'A policy with this ID already exists in this workspace.') };
+  }
+  if (httpStatus === 503) {
+    return { tone: 'error', text: withOutcome('Policy storage is provisioning.') };
+  }
+  return { tone: 'error', text: withOutcome(message || 'The policy service could not be reached.') };
+}
+
+// May this viewer be offered an ENABLED Create Policy action? Only on a list
+// that actually loaded and is genuinely empty — never over a load failure, a
+// permission denial, or a list still loading, where an invitation to provision
+// would misrepresent an unknown as an absence.
+export function canOfferPolicyCreation(state: PolicyListState): boolean {
+  return state.state === 'loaded' && state.policies.length === 0 && state.canManage;
 }
 
 // Which policy the panel opens on: the first ACTIVE one, else the first listed.

@@ -288,6 +288,74 @@ ORIGIN_DEMO_SEED = 'demo_seed'
 
 
 # --------------------------------------------------------------------------
+# Starter templates — the values the Create Policy FORM opens with.
+#
+# A template is NOT a policy. Nothing here is stored, evaluated, or rendered as
+# policy state; it only pre-fills an editable form, and a row appears only when
+# an authorized operator submits it. That is why a created policy carries
+# origin='customer': a person authored it, template or not.
+#
+# They live here rather than in the frontend for the same reason the simulator
+# vocabulary does — so the UI can never offer a starting point the engine cannot
+# evaluate, and so the numbers a customer sees came from the backend.
+#
+# Only MINT ships with constraints. BURN and TRANSFER open unconstrained, which
+# is honest: an unconfigured constraint reads as "not constrained" in Policy
+# Details and the author narrows it. A permissive default that LOOKED
+# constrained would be the dangerous option.
+# --------------------------------------------------------------------------
+POLICY_TEMPLATES: dict[str, dict[str, Any]] = {
+    OPERATION_MINT: {
+        'policy_key': 'POL-MINT-007',
+        'name': 'RWA Mint Policy',
+        'operation': OPERATION_MINT,
+        'status': STATUS_ACTIVE,
+        'required_business_event': BUSINESS_EVENT_SUBSCRIPTION,
+        'settlement_requirement': REQUIREMENT_CLEARED,
+        'allowed_window_utc': {'start': '08:00', 'end': '18:00'},
+        'maximum_daily_amount_usd': '10000000.00',
+        'required_roles': [ROLE_TREASURY_OPERATOR, ROLE_COMPLIANCE_APPROVER],
+        'violation_action': VIOLATION_ACTION_DENY,
+    },
+    OPERATION_BURN: {
+        'policy_key': 'POL-BURN-001',
+        'name': 'RWA Burn Policy',
+        'operation': OPERATION_BURN,
+        'status': STATUS_DRAFT,
+        'required_business_event': BUSINESS_EVENT_REDEMPTION,
+        'settlement_requirement': None,
+        'allowed_window_utc': None,
+        'maximum_daily_amount_usd': None,
+        'required_roles': [ROLE_TREASURY_OPERATOR],
+        'violation_action': VIOLATION_ACTION_DENY,
+    },
+    OPERATION_TRANSFER: {
+        'policy_key': 'POL-XFER-001',
+        'name': 'RWA Transfer Policy',
+        'operation': OPERATION_TRANSFER,
+        'status': STATUS_DRAFT,
+        'required_business_event': None,
+        'settlement_requirement': None,
+        'allowed_window_utc': None,
+        'maximum_daily_amount_usd': None,
+        'required_roles': [ROLE_TREASURY_OPERATOR],
+        'violation_action': VIOLATION_ACTION_DENY,
+    },
+}
+
+
+def policy_templates_payload() -> dict[str, dict[str, Any]]:
+    """A defensive copy, keyed by operation, for the vocabulary block."""
+    return {
+        operation: {
+            key: (dict(value) if isinstance(value, dict) else list(value) if isinstance(value, list) else value)
+            for key, value in template.items()
+        }
+        for operation, template in POLICY_TEMPLATES.items()
+    }
+
+
+# --------------------------------------------------------------------------
 # Environment configuration.
 # --------------------------------------------------------------------------
 def _env_int(name: str, default: int) -> int:

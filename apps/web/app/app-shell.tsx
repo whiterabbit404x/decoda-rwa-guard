@@ -5,6 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useRef } from 'react';
 
 import AppNavigation from './app-navigation';
+import { containsDiagnosticEnvVars } from './diagnostic-message';
 import { usePilotAuth } from 'app/pilot-auth-context';
 import RuntimeBanner from './components/runtime-banner';
 import { RuntimeSummaryProvider } from './runtime-summary-context';
@@ -100,10 +101,6 @@ function RouteTransitionLogger({ pathname }: { pathname: string }) {
   }, [isDev, pathname]);
 
   return null;
-}
-
-function containsDiagnosticEnvVars(message: string): boolean {
-  return /API_URL|NEXT_PUBLIC|ALLOW_LOCAL_API_FALLBACK/i.test(message);
 }
 
 export default function AppShell({ children, topBanner }: { children: React.ReactNode; topBanner?: React.ReactNode }) {

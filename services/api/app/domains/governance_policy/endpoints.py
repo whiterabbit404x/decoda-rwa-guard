@@ -41,6 +41,7 @@ deterministic DENY / POLICY_NOT_FOUND rather than a silent success.
 from __future__ import annotations
 
 import logging
+import re
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
@@ -84,6 +85,12 @@ def _not_found() -> HTTPException:
     )
 
 
+def _conflict(code: str, message: str, **extra: Any) -> HTTPException:
+    detail: dict[str, Any] = {'code': code, 'message': message}
+    detail.update(extra)
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
+
 def _read_context(connection: Any, request: Any) -> tuple[dict[str, Any], dict[str, Any], bool]:
     """Authenticate, resolve the workspace, and report edit authority.
 
@@ -123,6 +130,9 @@ def simulator_vocabulary() -> dict[str, Any]:
         'decision_authority': schemas.DECISION_AUTHORITY,
         'ai_authority': schemas.AI_AUTHORITY,
         'engine_version': gpc.ENGINE_VERSION,
+        # Starter values for the Create Policy FORM only. Not a policy, not
+        # policy state, and never persisted until an authorized operator submits.
+        'policy_templates': gpc.policy_templates_payload(),
     }
 
 
@@ -343,9 +353,14 @@ def simulate_endpoint(policy_ref: str, payload: dict[str, Any], request: Any) ->
 # --------------------------------------------------------------------------
 # Edit — versioned, RBAC-gated
 # --------------------------------------------------------------------------
-def _validate_update_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Validate a policy edit. Only known governance fields are accepted; an
-    unknown key is ignored rather than written blindly."""
+def _validate_policy_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the governance fields present in a payload.
+
+    Shared by create and update so one vocabulary, one range check and one error
+    code govern both — a value the editor rejects cannot enter through create.
+    Only known governance fields are read; an unknown key is ignored rather than
+    written blindly.
+    """
     if not isinstance(payload, dict):
         raise _bad_request('invalid_payload', 'A JSON object is required.')
     changes: dict[str, Any] = {}
@@ -446,9 +461,126 @@ def _validate_update_payload(payload: dict[str, Any]) -> dict[str, Any]:
                                f'violation_action must be one of: {", ".join(gpc.VIOLATION_ACTIONS)}.')
         changes['violation_action'] = action
 
+    return changes
+
+
+def _validate_update_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate a policy edit. At least one editable field must be supplied."""
+    changes = _validate_policy_fields(payload)
     if not changes:
         raise _bad_request('no_changes', 'No editable policy field was supplied.')
     return changes
+
+
+#: A customer-facing policy identifier. Constrained so it stays quotable in an
+#: audit record and in a URL path segment.
+_POLICY_KEY_PATTERN = re.compile(r'^[A-Z0-9][A-Z0-9._-]{2,63}$')
+
+
+def _validate_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate a new policy.
+
+    Note what is NOT read from the body: ``workspace_id`` (the tenant comes from
+    the authenticated session), ``origin`` (a created policy is always
+    ``customer`` — a client cannot label its own row as a demo seed, or launder a
+    seeded one into customer configuration), ``version`` and ``id``. Supplying
+    them is not an error; they are simply ignored, as unknown keys already are.
+    """
+    values = _validate_policy_fields(payload)
+
+    policy_key = str(payload.get('policy_key') or payload.get('policy_id') or '').strip().upper()
+    if not _POLICY_KEY_PATTERN.match(policy_key):
+        raise _bad_request(
+            'invalid_policy_key',
+            'policy_id must be 3-64 characters of A-Z, 0-9, dot, underscore or hyphen (for example POL-MINT-007).',
+        )
+    values['policy_key'] = policy_key
+
+    if 'name' not in values:
+        raise _bad_request('invalid_name', 'name is required.')
+    if 'operation' not in values:
+        raise _bad_request(
+            'invalid_operation', f'operation is required and must be one of: {", ".join(gpc.OPERATIONS)}.',
+        )
+    # A policy that does not say otherwise starts as a DRAFT, which the engine
+    # denies. An unstated status must never default to one that can authorize.
+    values.setdefault('status', gpc.STATUS_DRAFT)
+    values.setdefault('violation_action', gpc.VIOLATION_ACTION_DENY)
+    values.setdefault('required_roles', [])
+    for field in (
+        'asset_id', 'required_business_event', 'settlement_requirement',
+        'allowed_window_start_utc', 'allowed_window_end_utc', 'maximum_daily_amount_usd',
+    ):
+        values.setdefault(field, None)
+    return values
+
+
+def create_policy_endpoint(payload: dict[str, Any], request: Any) -> dict[str, Any]:
+    """Create a governance policy.
+
+    Backend-enforced RBAC: ``security.manage`` is required here regardless of
+    what the frontend rendered, and the gate runs before anything is read or
+    written. The workspace is the one the SESSION resolves to, never one the
+    body names, so a policy cannot be planted in another tenant.
+
+    Nothing about this path runs on page load: a policy exists because an
+    authorized person submitted this request.
+    """
+    pilot.require_live_mode()
+    cfg = gpc.engine_config()
+
+    with pilot.pg_connection() as connection:
+        pilot.ensure_pilot_schema(connection)
+        # RBAC gate FIRST, before the payload is even validated. Note this
+        # deliberately differs from update_policy_endpoint, which validates
+        # first: a caller without security.manage must learn that they may not
+        # create a policy, not which of their fields were malformed.
+        user, workspace_context = pilot._require_workspace_permission(
+            connection, request, gpc.POLICY_EDIT_PERMISSION,
+        )
+        workspace_id = workspace_context['workspace_id']
+        if not service.storage_ready(connection):
+            raise _storage_unavailable()
+        values = _validate_create_payload(payload)
+
+        # A guard rail, not a business limit: two concurrent creators can both
+        # pass this count and overshoot by one. The unique index remains the only
+        # hard constraint, which is the one that actually protects correctness.
+        limit = int(cfg['max_policies_per_workspace'])
+        if service.count_policies(connection, workspace_id=workspace_id) >= limit:
+            raise _conflict(
+                'policy_limit_reached',
+                f'This workspace already holds the maximum of {limit} governance policies.',
+                limit=limit,
+            )
+
+        outcome = service.create_policy(
+            connection, workspace_id=workspace_id, values=values,
+            user_id=str(user['id']), now=pilot.utc_now(),
+        )
+        if outcome['status'] == 'duplicate':
+            raise _conflict(
+                'policy_already_exists',
+                'A policy with this ID already exists in this workspace. Open it instead of creating a second one.',
+                policy_key=outcome['policy_key'],
+            )
+
+        created = service.get_policy(
+            connection, workspace_id=workspace_id, policy_ref=outcome['policy_id'],
+        )
+        if created is None:
+            raise _storage_unavailable()
+        service.audit_policy_event(
+            connection, action='governance_policy.created', policy=created,
+            workspace_id=workspace_id, user_id=str(user['id']), request=request,
+            metadata={'origin': created.origin, 'version': created.version},
+        )
+        connection.commit()
+        service.log_event(
+            'governance_policy_created', workspace_id=workspace_id,
+            policy_key=created.policy_key, version=created.version, origin=created.origin,
+        )
+        return {'status': 'created', 'policy': created.as_dict(), 'can_manage': True}
 
 
 def update_policy_endpoint(policy_ref: str, payload: dict[str, Any], request: Any) -> dict[str, Any]:

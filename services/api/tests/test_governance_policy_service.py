@@ -741,3 +741,277 @@ def test_a_malformed_lifecycle_identifier_is_a_400_not_a_database_error(api, fie
     assert getattr(exc.value, 'status_code', None) == 400
     assert getattr(exc.value, 'detail', {}).get('code') == f'invalid_{field}'
     assert api['conn'].writes == []
+
+
+# --------------------------------------------------------------------------
+# Creating a policy (§2, §3, §6, §9) — the path that ends "No policies configured"
+#
+# A workspace renders the empty state because no row exists, not because a query
+# hid one. These cover the only writer that can end that state, and the ways it
+# must refuse to.
+# --------------------------------------------------------------------------
+def _create_conn(*, created=True, existing_count=0, **overrides):
+    """A connection whose guarded INSERT reports success or a taken key."""
+    matchers = [
+        (f'INSERT INTO {service.POLICIES_TABLE}', [{'id': POLICY_ID}] if created else []),
+        ('SELECT COUNT(*) AS total', [{'total': existing_count}]),
+    ]
+    matchers = list(overrides.pop('matchers', [])) + matchers
+    return _conn(matchers=matchers, **overrides)
+
+
+def _authorized(monkeypatch, role='admin'):
+    monkeypatch.setattr(
+        pilot, '_require_workspace_permission',
+        lambda c, r, p, **k: ({'id': USER_ID}, {'workspace_id': WS, 'role': role}),
+    )
+
+
+VALID_CREATE = {
+    'policy_id': 'POL-MINT-007',
+    'name': 'RWA Mint Policy',
+    'operation': 'MINT',
+    'status': 'ACTIVE',
+    'required_business_event': 'SUBSCRIPTION',
+    'settlement_requirement': 'CLEARED',
+    'allowed_window_utc': {'start': '08:00', 'end': '18:00'},
+    'maximum_daily_amount_usd': '10000000.00',
+    'required_roles': ['TREASURY_OPERATOR', 'COMPLIANCE_APPROVER'],
+    'violation_action': 'DENY',
+}
+
+
+def test_creating_a_policy_writes_the_row_its_first_version_and_one_audit(api, monkeypatch):
+    api['conn'] = _create_conn()
+    _authorized(monkeypatch)
+    result = endpoints.create_policy_endpoint(dict(VALID_CREATE), _Request())
+
+    assert result['status'] == 'created'
+    conn = api['conn']
+    policy_writes = conn.writes_matching(f'INSERT INTO {service.POLICIES_TABLE}')
+    version_writes = conn.writes_matching(f'INSERT INTO {service.VERSIONS_TABLE}')
+    assert len(policy_writes) == 1, 'exactly one policy row'
+    assert len(version_writes) == 1, 'and its version-1 history row, in the same transaction'
+
+    params = policy_writes[0][1]
+    assert WS in params, 'the row is bound to the session workspace'
+    assert 'POL-MINT-007' in params
+    assert 'customer' in params, "a person authored it, so origin is 'customer'"
+    assert 1 in params, 'a created policy starts at version 1'
+    assert str(version_writes[0][1][3]) == '1'
+
+    audits = api.get('audits') or []
+    assert [a['action'] for a in audits] == ['governance_policy.created']
+    assert audits[0]['entity_type'] == 'governance_policy'
+    assert audits[0]['workspace_id'] == WS
+    assert conn.committed, 'one commit, after the policy, the version and the audit'
+
+
+def test_the_created_policy_is_bound_to_the_session_workspace_not_the_body(api, monkeypatch):
+    """§9. The browser may name a workspace; the server must not believe it."""
+    api['conn'] = _create_conn()
+    _authorized(monkeypatch)
+    endpoints.create_policy_endpoint({**VALID_CREATE, 'workspace_id': OTHER_WS}, _Request())
+
+    for _query, params in api['conn'].writes:
+        assert OTHER_WS not in params, 'a body-supplied workspace must never reach the write'
+        assert WS in params
+
+
+def test_a_body_cannot_forge_the_origin_the_version_or_the_id(api, monkeypatch):
+    """A client must not be able to label its own row as a demo seed, nor launder
+    a seeded one into customer configuration, nor start at a fabricated version."""
+    api['conn'] = _create_conn()
+    _authorized(monkeypatch)
+    endpoints.create_policy_endpoint(
+        {**VALID_CREATE, 'origin': 'demo_seed', 'version': 99, 'id': 'forged'}, _Request(),
+    )
+    params = api['conn'].writes_matching(f'INSERT INTO {service.POLICIES_TABLE}')[0][1]
+    assert 'demo_seed' not in params
+    assert 'customer' in params
+    assert 99 not in params
+    assert 'forged' not in params
+
+
+def test_an_unauthorized_user_cannot_create_a_policy(api, monkeypatch):
+    denied = {}
+
+    def _require(connection, request, permission, **kwargs):
+        denied['permission'] = permission
+        raise pilot.HTTPException(status_code=403, detail={'code': 'PERMISSION_DENIED'})
+
+    api['conn'] = _create_conn()
+    monkeypatch.setattr(pilot, '_require_workspace_permission', _require)
+    with pytest.raises(Exception) as exc:
+        endpoints.create_policy_endpoint(dict(VALID_CREATE), _Request())
+
+    assert getattr(exc.value, 'status_code', None) == 403
+    assert denied['permission'] == 'security.manage'
+    assert denied['permission'] in pilot.WORKSPACE_PERMISSIONS
+    assert api['conn'].writes == [], 'a denied create writes nothing'
+
+
+def test_the_create_path_authorizes_before_it_validates(api, monkeypatch):
+    """An unauthorized caller learns they may not create a policy — not which of
+    their fields were malformed. 403, never 400."""
+    api['conn'] = _create_conn()
+    monkeypatch.setattr(
+        pilot, '_require_workspace_permission',
+        lambda c, r, p, **k: (_ for _ in ()).throw(
+            pilot.HTTPException(status_code=403, detail={'code': 'PERMISSION_DENIED'})),
+    )
+    with pytest.raises(Exception) as exc:
+        endpoints.create_policy_endpoint({'policy_id': 'nope!', 'operation': 'TELEPORT'}, _Request())
+    assert getattr(exc.value, 'status_code', None) == 403
+
+
+def test_a_duplicate_policy_key_is_a_409_and_writes_no_history(api, monkeypatch):
+    """§3: reuse the existing policy rather than creating a duplicate. The guarded
+    INSERT matched no row, so no version row may be appended for it either."""
+    api['conn'] = _create_conn(created=False)
+    _authorized(monkeypatch)
+    with pytest.raises(Exception) as exc:
+        endpoints.create_policy_endpoint(dict(VALID_CREATE), _Request())
+
+    assert getattr(exc.value, 'status_code', None) == 409
+    assert exc.value.detail['code'] == 'policy_already_exists'
+    assert exc.value.detail['policy_key'] == 'POL-MINT-007'
+    assert api['conn'].writes_matching(f'INSERT INTO {service.VERSIONS_TABLE}') == []
+    assert not api['conn'].committed
+
+
+def test_the_workspace_policy_limit_is_enforced(api, monkeypatch):
+    api['conn'] = _create_conn(existing_count=200)
+    _authorized(monkeypatch)
+    monkeypatch.setenv('GOVERNANCE_POLICY_MAX_PER_WORKSPACE', '200')
+    with pytest.raises(Exception) as exc:
+        endpoints.create_policy_endpoint(dict(VALID_CREATE), _Request())
+    assert getattr(exc.value, 'status_code', None) == 409
+    assert exc.value.detail['code'] == 'policy_limit_reached'
+    assert api['conn'].writes == []
+
+
+def test_an_omitted_status_creates_a_draft_never_an_active_policy(api, monkeypatch):
+    """Fail closed: an unstated status must not default to one that can ALLOW."""
+    api['conn'] = _create_conn()
+    _authorized(monkeypatch)
+    payload = {k: v for k, v in VALID_CREATE.items() if k != 'status'}
+    endpoints.create_policy_endpoint(payload, _Request())
+    params = api['conn'].writes_matching(f'INSERT INTO {service.POLICIES_TABLE}')[0][1]
+    assert gpc.STATUS_DRAFT in params
+    assert gpc.STATUS_ACTIVE not in params
+
+
+@pytest.mark.parametrize('payload,code', [
+    ({}, 'invalid_policy_key'),
+    ({'policy_id': 'ab'}, 'invalid_policy_key'),
+    ({'policy_id': 'POL MINT 007'}, 'invalid_policy_key'),
+    ({'policy_id': 'POL-MINT-007'}, 'invalid_name'),
+    ({'policy_id': 'POL-MINT-007', 'name': 'X'}, 'invalid_operation'),
+    ({'policy_id': 'POL-MINT-007', 'name': 'X', 'operation': 'TELEPORT'}, 'invalid_operation'),
+    ({'policy_id': 'POL-MINT-007', 'name': 'X', 'operation': 'MINT', 'status': 'LIVE'}, 'invalid_status'),
+    ({'policy_id': 'POL-MINT-007', 'name': 'X', 'operation': 'MINT',
+      'allowed_window_utc': {'start': '25:00', 'end': '18:00'}}, 'invalid_allowed_window'),
+    ({'policy_id': 'POL-MINT-007', 'name': 'X', 'operation': 'MINT',
+      'maximum_daily_amount_usd': '-1'}, 'invalid_maximum_daily_amount'),
+    ({'policy_id': 'POL-MINT-007', 'name': 'X', 'operation': 'MINT',
+      'required_roles': ['SUPREME_LEADER']}, 'invalid_required_roles'),
+])
+def test_an_invalid_create_is_rejected_and_writes_nothing(api, monkeypatch, payload, code):
+    api['conn'] = _create_conn()
+    _authorized(monkeypatch)
+    with pytest.raises(Exception) as exc:
+        endpoints.create_policy_endpoint(payload, _Request())
+    assert getattr(exc.value, 'status_code', None) == 400
+    assert exc.value.detail['code'] == code
+    assert api['conn'].writes == []
+
+
+def test_a_lowercase_policy_key_cannot_become_a_second_identical_looking_policy(api, monkeypatch):
+    api['conn'] = _create_conn()
+    _authorized(monkeypatch)
+    endpoints.create_policy_endpoint({**VALID_CREATE, 'policy_id': 'pol-mint-007'}, _Request())
+    params = api['conn'].writes_matching(f'INSERT INTO {service.POLICIES_TABLE}')[0][1]
+    assert 'POL-MINT-007' in params
+
+
+def test_the_duplicate_check_is_the_unique_index_not_a_racy_pre_read(api, monkeypatch):
+    """SELECT-then-INSERT races, and a raised UniqueViolation would abort the
+    transaction and turn a 409 into a 500. The guarded INSERT never raises."""
+    api['conn'] = _create_conn()
+    _authorized(monkeypatch)
+    endpoints.create_policy_endpoint(dict(VALID_CREATE), _Request())
+    insert = api['conn'].writes_matching(f'INSERT INTO {service.POLICIES_TABLE}')[0][0]
+    assert 'ON CONFLICT (workspace_id, policy_key) DO NOTHING' in insert
+    assert 'RETURNING id' in insert
+
+
+# --------------------------------------------------------------------------
+# Starter templates — form defaults, never policy state (§6)
+# --------------------------------------------------------------------------
+def test_the_vocabulary_serves_the_mint_starter_template():
+    template = endpoints.simulator_vocabulary()['policy_templates']['MINT']
+    assert template['policy_key'] == 'POL-MINT-007'
+    assert template['name'] == 'RWA Mint Policy'
+    assert template['operation'] == 'MINT'
+    assert template['status'] == 'ACTIVE'
+    assert template['required_business_event'] == 'SUBSCRIPTION'
+    assert template['settlement_requirement'] == 'CLEARED'
+    assert template['allowed_window_utc'] == {'start': '08:00', 'end': '18:00'}
+    assert template['maximum_daily_amount_usd'] == '10000000.00'
+    assert template['required_roles'] == ['TREASURY_OPERATOR', 'COMPLIANCE_APPROVER']
+    assert template['violation_action'] == 'DENY'
+
+
+def test_a_template_is_never_a_policy(api, monkeypatch):
+    """A workspace with no policies reports none, however many templates the
+    form has available. Loading the page provisions nothing."""
+    api['conn'] = _conn(matchers=[(f'FROM {service.POLICIES_TABLE} WHERE workspace_id', [])])
+    payload = endpoints.list_policies_endpoint(_Request())
+    assert payload['policies'] == []
+    assert payload['vocabulary']['policy_templates'], 'templates are still offered'
+    for template in payload['vocabulary']['policy_templates'].values():
+        for owned in ('policy_id', 'version', 'origin', 'created_at', 'updated_at'):
+            assert owned not in template, f'a template must not look like a stored policy ({owned})'
+    assert api['conn'].writes == [], 'a read must never provision'
+
+
+def test_every_template_uses_vocabulary_the_engine_understands():
+    for operation, template in gpc.POLICY_TEMPLATES.items():
+        assert operation in gpc.OPERATIONS
+        assert template['status'] in gpc.STATUSES
+        assert template['violation_action'] in gpc.VIOLATION_ACTIONS
+        if template['required_business_event'] is not None:
+            assert template['required_business_event'] in gpc.BUSINESS_EVENTS
+        if template['settlement_requirement'] is not None:
+            assert template['settlement_requirement'] in gpc.SETTLEMENT_REQUIREMENTS
+        for role in template['required_roles']:
+            assert role in gpc.GOVERNANCE_ROLES
+
+
+def test_the_demo_seed_and_the_create_endpoint_share_one_writer():
+    """Structural: one INSERT statement in the codebase, so a seeded policy and
+    an authored one differ in exactly one column — origin."""
+    import inspect
+
+    from services.api.app.domains.governance_policy import demo_seed
+
+    source = inspect.getsource(demo_seed)
+    assert 'service.create_policy' in source
+    assert 'INSERT INTO' not in source
+
+
+def test_a_seeded_policy_is_still_labelled_as_seeded(api):
+    """The shared writer must not launder a demo seed into customer config."""
+    conn = _create_conn()
+    outcome = service.create_policy(
+        conn, workspace_id=WS,
+        values={**{k: v for k, v in VALID_CREATE.items() if k not in ('policy_id', 'allowed_window_utc')},
+                'policy_key': 'POL-MINT-DEMO',
+                'allowed_window_start_utc': '08:00', 'allowed_window_end_utc': '18:00'},
+        user_id=USER_ID, now=NOW, origin=gpc.ORIGIN_DEMO_SEED,
+    )
+    assert outcome['status'] == 'created'
+    params = conn.writes_matching(f'INSERT INTO {service.POLICIES_TABLE}')[0][1]
+    assert gpc.ORIGIN_DEMO_SEED in params
+    assert gpc.ORIGIN_CUSTOMER not in params

@@ -20,18 +20,22 @@ import {
   PolicyListState,
   allowedWindowLabel,
   businessEventLabel,
+  canOfferPolicyCreation,
   checkGlyph,
   checkStatusLabel,
   checkStatusTone,
+  createPolicyMessage,
   defaultPolicyKey,
   fetchPolicyList,
   formatDecimalString,
   isDemoSeeded,
   maximumIssuanceLabel,
   operationLabel,
+  policyCreateBody,
   policyListMessage,
   policyStatusLabel,
   policyStatusTone,
+  policyTemplateDraft,
   reasonCodeLabel,
   requiredRolesLabel,
   roleLabel,
@@ -527,4 +531,146 @@ test('the existing governance routes are untouched by the Policies tab', () => {
   expect(src).toContain("call('/workspace/governance/evaluate', { method: 'POST' })");
   // The Screen 11 governance read path still runs through the shared view-model.
   expect(src).toContain('fetchGovernanceState({ hasWorkspace, call })');
+});
+
+// ---------------------------------------------------------------------------
+// Create Policy — the provisioning flow's presentation logic
+// ---------------------------------------------------------------------------
+const MINT_TEMPLATE = {
+  policy_key: 'POL-MINT-007',
+  name: 'RWA Mint Policy',
+  operation: 'MINT',
+  status: 'ACTIVE',
+  required_business_event: 'SUBSCRIPTION',
+  settlement_requirement: 'CLEARED',
+  allowed_window_utc: { start: '08:00', end: '18:00' },
+  maximum_daily_amount_usd: '10000000.00',
+  required_roles: ['TREASURY_OPERATOR', 'COMPLIANCE_APPROVER'],
+  violation_action: 'DENY',
+};
+
+function vocabularyWithTemplates(templates: Record<string, any> | undefined) {
+  return {
+    operations: [{ value: 'MINT', label: 'Mint' }],
+    business_events: [], settlement_states: [], settlement_requirements: [],
+    governance_roles: [], statuses: [],
+    decision_authority: 'Deterministic Policy Engine',
+    ai_authority: 'Recommend only',
+    engine_version: 'governance-policy-engine-v1',
+    policy_templates: templates,
+  } as any;
+}
+
+test('the create draft is seeded from the backend template, not from the component', () => {
+  const draft = policyTemplateDraft(vocabularyWithTemplates({ MINT: MINT_TEMPLATE }), 'MINT');
+  expect(draft.policy_key).toBe('POL-MINT-007');
+  expect(draft.name).toBe('RWA Mint Policy');
+  expect(draft.operation).toBe('MINT');
+  expect(draft.status).toBe('ACTIVE');
+  expect(draft.required_business_event).toBe('SUBSCRIPTION');
+  expect(draft.settlement_requirement).toBe('CLEARED');
+  expect(draft.window_start).toBe('08:00');
+  expect(draft.window_end).toBe('18:00');
+  expect(draft.maximum_daily_amount_usd).toBe('10000000.00');
+  expect(draft.required_roles).toEqual(['TREASURY_OPERATOR', 'COMPLIANCE_APPROVER']);
+});
+
+test('a template the backend did not send opens a BLANK form, never an invented one', () => {
+  for (const vocabulary of [null, vocabularyWithTemplates(undefined), vocabularyWithTemplates({})]) {
+    const draft = policyTemplateDraft(vocabulary as any, 'MINT');
+    expect(draft.policy_key).toBe('');
+    expect(draft.name).toBe('');
+    expect(draft.status).toBe('');
+    expect(draft.maximum_daily_amount_usd).toBe('');
+    expect(draft.required_roles).toEqual([]);
+    // The operation the operator picked is still honoured — that is their input.
+    expect(draft.operation).toBe('MINT');
+  }
+});
+
+test('the create body carries the policy only — the server owns the rest', () => {
+  const body = policyCreateBody(policyTemplateDraft(vocabularyWithTemplates({ MINT: MINT_TEMPLATE }), 'MINT'));
+  expect(Object.keys(body).sort()).toEqual([
+    'allowed_window_utc', 'maximum_daily_amount_usd', 'name', 'operation',
+    'policy_id', 'required_business_event', 'required_roles', 'settlement_requirement', 'status',
+  ]);
+  // The workspace, the provenance and the version are resolved server-side.
+  for (const owned of ['workspace_id', 'origin', 'version', 'id', 'created_by_user_id', 'can_manage']) {
+    expect(body).not.toHaveProperty(owned);
+  }
+  expect(body.policy_id).toBe('POL-MINT-007');
+});
+
+test('a lowercase policy id is normalized so it cannot become a look-alike policy', () => {
+  const draft = { ...policyTemplateDraft(vocabularyWithTemplates({ MINT: MINT_TEMPLATE }), 'MINT'), policy_key: ' pol-mint-007 ' };
+  expect(policyCreateBody(draft).policy_id).toBe('POL-MINT-007');
+});
+
+test('an unconstrained window or cap is sent as null, never as an empty string', () => {
+  const draft = { ...policyTemplateDraft(null, 'BURN'), policy_key: 'POL-BURN-001', name: 'Burn' };
+  const body = policyCreateBody(draft);
+  expect(body.allowed_window_utc).toBeNull();
+  expect(body.maximum_daily_amount_usd).toBeNull();
+  expect(body.required_business_event).toBeNull();
+  expect(body.settlement_requirement).toBeNull();
+});
+
+test('every create failure states that no policy was created', () => {
+  for (const status of [0, 400, 401, 403, 409, 422, 500, 502, 503]) {
+    const outcome = createPolicyMessage(status);
+    expect(outcome.tone).not.toBe('success');
+    expect(outcome.text).toContain('No policy was created.');
+  }
+});
+
+test('a backend reason is kept but never displaces the outcome', () => {
+  const outcome = createPolicyMessage(409, 'A policy with this ID already exists in this workspace.');
+  expect(outcome.tone).toBe('conflict');
+  expect(outcome.text).toContain('already exists');
+  expect(outcome.text).toContain('No policy was created.');
+  // And it is not doubled when the backend already says it.
+  const already = createPolicyMessage(400, 'Bad key. No policy was created.');
+  expect(already.text.match(/No policy was created\./g)).toHaveLength(1);
+});
+
+test('only a 2xx is reported as created', () => {
+  expect(createPolicyMessage(201).tone).toBe('success');
+  expect(createPolicyMessage(200).tone).toBe('success');
+  expect(createPolicyMessage(409).tone).toBe('conflict');
+});
+
+test('creation is offered only over a list that truly loaded and is truly empty', () => {
+  const empty = { state: 'loaded' as const, policies: [], canManage: true, vocabulary: null, editPermission: 'security.manage' };
+  expect(canOfferPolicyCreation(empty)).toBe(true);
+  // An unauthorized viewer is never offered it.
+  expect(canOfferPolicyCreation({ ...empty, canManage: false })).toBe(false);
+  // And an unknown is never treated as an absence.
+  for (const state of ['loading', 'idle', 'error', 'permission_denied'] as const) {
+    expect(canOfferPolicyCreation({ ...empty, state })).toBe(false);
+  }
+  // A workspace that already has a policy is not empty.
+  expect(canOfferPolicyCreation({ ...empty, policies: [policy] })).toBe(false);
+});
+
+test('a starter template is never merged into the rendered policy list', () => {
+  // §6/§11: templates travel in the same payload as policies. If one ever became
+  // a fallback for an empty list, unauthored configuration would be presented as
+  // customer configuration.
+  const src = panel();
+  expect(src).toContain('policyTemplateDraft(');
+  const templateUses = src.match(/policy_templates/g) ?? [];
+  expect(templateUses).toHaveLength(0);
+  expect(src).not.toMatch(/policies\s*[:=][^;]*template/i);
+});
+
+test('the panel posts the create through the same-origin proxy and decides nothing', () => {
+  const src = panel();
+  expect(src).toContain("call('/workspace/governance/policies'");
+  expect(src).toContain("method: 'POST'");
+  expect(src).toContain('policyCreateBody(createDraft)');
+  expect(src).toContain('await ensureCsrf()');
+  // The button's authority comes from the backend's can_manage, not from a role
+  // string the component reasons about.
+  expect(src).toContain('canOfferPolicyCreation(list)');
+  expect(src).toContain('disabled={!canCreate}');
 });
