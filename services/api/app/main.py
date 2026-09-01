@@ -31,6 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from services.api.app.domains import alert_stream, alert_delivery
 from services.api.app.domains.asset_risk import registry as asset_risk_registry
 from services.api.app.domains.asset_integrity import endpoints as asset_integrity_endpoints
+from services.api.app.domains.governance_policy import endpoints as governance_policy_endpoints
 from services.api.app.domains.threat_detection import endpoints as threat_detection_endpoints
 from services.api.app.domains.alert_triage import endpoints as alert_triage_endpoints
 from services.api.app.domains.rate_limit import rate_limit_connectivity
@@ -3857,6 +3858,39 @@ def governance_approval_decision(request_id: str, payload: dict[str, Any], reque
 @app.post('/workspace/governance/evaluate', summary='Run deterministic access-anomaly evaluation')
 def governance_evaluate(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: governance_guard.evaluate_governance(request))
+
+
+# --- Screen 11: Governance & Policy (deterministic operation policies) ---------
+# The GET routes are strictly side-effect free. /simulate is READ-ONLY predictive
+# evaluation: it authorizes nothing, executes nothing, and its only write is one
+# governance_policy_evaluations row stamped simulation=TRUE, which is excluded
+# from every production counter. The ALLOW/DENY verdict is produced by
+# domains/governance_policy/engine.evaluate_policy — a pure function with no I/O
+# and no model in its import graph. AI may only attach a narrative to the
+# finished decision.
+@app.get('/workspace/governance/policies', summary='List workspace governance policies')
+def governance_policies_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: governance_policy_endpoints.list_policies_endpoint(request))
+
+
+@app.get('/workspace/governance/policies/{policy_ref}', summary='Get one governance policy')
+def governance_policy_get(policy_ref: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: governance_policy_endpoints.policy_detail_endpoint(policy_ref, request))
+
+
+@app.get('/workspace/governance/policies/{policy_ref}/history', summary='Immutable policy version history')
+def governance_policy_history(policy_ref: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: governance_policy_endpoints.policy_history_endpoint(policy_ref, request))
+
+
+@app.post('/workspace/governance/policies/{policy_ref}/simulate', summary='Deterministic, read-only policy simulation')
+def governance_policy_simulate(policy_ref: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: governance_policy_endpoints.simulate_endpoint(policy_ref, payload, request))
+
+
+@app.patch('/workspace/governance/policies/{policy_ref}', summary='Update a governance policy (versioned, security.manage)')
+def governance_policy_update(policy_ref: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: governance_policy_endpoints.update_policy_endpoint(policy_ref, payload, request))
 
 
 @app.get('/workspace/sso/oidc', summary='Get workspace OIDC configuration')

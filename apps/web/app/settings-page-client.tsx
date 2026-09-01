@@ -7,6 +7,7 @@ import type { ReactNode } from 'react';
 import { usePilotAuth } from 'app/pilot-auth-context';
 import { BillingRuntime, billingDisabledMessage, billingEnabled, billingProviderLabel } from './billing-capability';
 import { GovernanceDialog } from './components/governance-dialog';
+import SettingsPoliciesPanel from './settings-policies-panel';
 import {
   Approval,
   ChangeLogItem,
@@ -23,12 +24,13 @@ import {
   riskPillVariant,
 } from './governance-view-model';
 
-type TabKey = 'general' | 'team' | 'security' | 'billing' | 'notifications';
+type TabKey = 'general' | 'team' | 'security' | 'policies' | 'billing' | 'notifications';
 
 const TABS: Array<{ key: TabKey; label: string }> = [
   { key: 'general', label: 'General' },
   { key: 'team', label: 'Team' },
   { key: 'security', label: 'Security' },
+  { key: 'policies', label: 'Policies' },
   { key: 'billing', label: 'Billing' },
   { key: 'notifications', label: 'Notifications' },
 ];
@@ -1145,6 +1147,19 @@ export default function SettingsPageClient() {
       ) : null}
 
       
+      {/* Screen 11 — Governance & Policy. The deterministic engine lives on the
+          backend; this panel renders its decision and never constructs one. */}
+      {activeTab === 'policies' ? (
+        <SettingsPoliciesPanel
+          call={call}
+          ensureCsrf={ensureCsrf}
+          hasWorkspace={hasWorkspace}
+          loading={loading}
+          members={members}
+          currentUserId={user?.id ? String(user.id) : null}
+        />
+      ) : null}
+
       {activeTab === 'billing' ? (
         <section className="featureSection">
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1rem', marginTop: '1rem' }}>

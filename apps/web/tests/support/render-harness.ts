@@ -29,7 +29,8 @@ import http from 'node:http';
 import path from 'node:path';
 import ts from 'typescript';
 
-const APP_DIR = path.join(__dirname, '..', '..', 'app');
+const WEB_DIR = path.join(__dirname, '..', '..');
+const APP_DIR = path.join(WEB_DIR, 'app');
 const REPO_ROOT = path.join(__dirname, '..', '..', '..', '..');
 const NODE_MODULES = path.join(REPO_ROOT, 'node_modules');
 
@@ -37,7 +38,20 @@ const NODE_MODULES = path.join(REPO_ROOT, 'node_modules');
 const EXTENSIONS = ['.tsx', '.ts', '.jsx', '.js'];
 
 function resolveModuleFile(fromFile: string, specifier: string): string | null {
-  const base = path.resolve(path.dirname(fromFile), specifier);
+  return probe(path.resolve(path.dirname(fromFile), specifier));
+}
+
+/**
+ * The app's tsconfig sets `baseUrl: "."`, so a module under apps/web can import
+ * a sibling as `app/pilot-auth-context` rather than by relative path — and the
+ * Settings page and its panels do exactly that. Resolve those the way the
+ * bundler does, from apps/web, instead of rejecting them as bare specifiers.
+ */
+function resolveBaseUrlFile(specifier: string): string | null {
+  return probe(path.resolve(WEB_DIR, specifier));
+}
+
+function probe(base: string): string | null {
   for (const ext of EXTENSIONS) {
     if (fs.existsSync(base + ext)) return base + ext;
   }
@@ -81,10 +95,21 @@ function rewriteSpecifiers(code: string, sourceFile: string): string {
 
   const resolve = (specifier: string): string => {
     if (VENDOR[specifier]) return VENDOR[specifier];
-    if (specifier.startsWith('.')) {
-      const target = resolveModuleFile(sourceFile, specifier);
-      if (!target) throw new Error(`render-harness: cannot resolve "${specifier}" from ${sourceFile}`);
-      return `/app/${path.relative(APP_DIR, target).split(path.sep).join('/')}`;
+    const target = specifier.startsWith('.')
+      ? resolveModuleFile(sourceFile, specifier)
+      : specifier === 'app' || specifier.startsWith('app/')
+        ? resolveBaseUrlFile(specifier)
+        : null;
+    if (target) {
+      const served = path.relative(APP_DIR, target);
+      // Only files inside apps/web/app are served; anything else is a real gap.
+      if (served.startsWith('..') || path.isAbsolute(served)) {
+        throw new Error(`render-harness: "${specifier}" resolves outside apps/web/app (${target})`);
+      }
+      return `/app/${served.split(path.sep).join('/')}`;
+    }
+    if (specifier.startsWith('.') || specifier.startsWith('app/')) {
+      throw new Error(`render-harness: cannot resolve "${specifier}" from ${sourceFile}`);
     }
     throw new Error(
       `render-harness: unsupported bare import "${specifier}" in ${sourceFile}. ` +

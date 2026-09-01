@@ -1,0 +1,262 @@
+{
+  "allow_evaluation": {
+    "ai_authority": "Recommend only",
+    "ai_explanation": "This mint would be allowed: POL-MINT-007 version 7 evaluated every requirement it imposes and each one was met.",
+    "ai_explanation_authority": "AI Analysis: Explanation only",
+    "ai_explanation_source": "deterministic",
+    "ai_next_step": "No policy blocker remains. Execution still follows the response authorization gate.",
+    "amount_usd": "5000000",
+    "approval_permissions": {
+      "COMPLIANCE_APPROVER": "response.approve",
+      "TREASURY_OPERATOR": "response.propose"
+    },
+    "asset_id": null,
+    "canonical_event_id": "EVT-928181",
+    "checks": [
+      {
+        "detail": "Policy POL-MINT-007 version 7 governs this operation.",
+        "key": "policy_exists",
+        "label": "Policy exists",
+        "reason_code": null,
+        "status": "PASS"
+      },
+      {
+        "detail": "Policy status is ACTIVE.",
+        "key": "policy_active",
+        "label": "Policy is active",
+        "reason_code": null,
+        "status": "PASS"
+      },
+      {
+        "detail": "Operation is MINT.",
+        "key": "operation_matches",
+        "label": "Operation matches policy",
+        "reason_code": null,
+        "status": "PASS"
+      },
+      {
+        "detail": "Business event is SUBSCRIPTION.",
+        "key": "business_event",
+        "label": "Required business event",
+        "reason_code": null,
+        "status": "PASS"
+      },
+      {
+        "detail": "Settlement is CLEARED; the policy requires CLEARED.",
+        "key": "settlement",
+        "label": "Settlement requirement",
+        "reason_code": null,
+        "status": "PASS"
+      },
+      {
+        "detail": "10:42 UTC is inside 08:00-18:00 UTC.",
+        "key": "allowed_window",
+        "label": "Allowed window (UTC)",
+        "reason_code": null,
+        "status": "PASS"
+      },
+      {
+        "detail": "5000000 USD is within the 10000000.00 USD daily limit.",
+        "key": "daily_limit",
+        "label": "Daily issuance limit",
+        "reason_code": null,
+        "status": "PASS"
+      },
+      {
+        "detail": "Operator f1x7u4e0-0000-0000-0000-0000000000u1 holds response.propose in this workspace.",
+        "key": "operator_role",
+        "label": "Required operator role",
+        "reason_code": null,
+        "status": "PASS"
+      },
+      {
+        "detail": "A compliance approval is present for this operation.",
+        "key": "compliance_approval",
+        "label": "Compliance approval",
+        "reason_code": null,
+        "status": "PASS"
+      }
+    ],
+    "decision": "ALLOW",
+    "decision_authority": "Deterministic Policy Engine",
+    "engine_version": "governance-policy-engine-v1",
+    "evaluated_at": "2026-09-01T10:42:18+00:00",
+    "evaluation_id": "f1x7u4e0-0000-0000-0000-000000000002",
+    "incident_id": null,
+    "operation": "MINT",
+    "policy_id": "f1x7u4e0-0000-0000-0000-0000000000a1",
+    "policy_key": "POL-MINT-007",
+    "policy_version": 7,
+    "reason_codes": [
+      "POLICY_SATISFIED"
+    ],
+    "required_approvals": [],
+    "required_roles": [
+      "TREASURY_OPERATOR",
+      "COMPLIANCE_APPROVER"
+    ],
+    "simulation": true,
+    "violation_action": "DENY"
+  },
+  "deny_evaluation": {
+    "ai_authority": "Recommend only",
+    "ai_explanation": "This mint would be denied because POL-MINT-007 version 7 was not satisfied: the policy requires a Compliance Approver before issuance and none is present.",
+    "ai_explanation_authority": "AI Analysis: Explanation only",
+    "ai_explanation_source": "deterministic",
+    "ai_next_step": "Obtain sign-off from: Compliance Approver, then re-evaluate.",
+    "amount_usd": "5000000",
+    "approval_permissions": {
+      "COMPLIANCE_APPROVER": "response.approve",
+      "TREASURY_OPERATOR": "response.propose"
+    },
+    "asset_id": null,
+    "canonical_event_id": "EVT-928181",
+    "checks": [
+      {
+        "detail": "Policy POL-MINT-007 version 7 governs this operation.",
+        "key": "policy_exists",
+        "label": "Policy exists",
+        "reason_code": null,
+        "status": "PASS"
+      },
+      {
+        "detail": "Policy status is ACTIVE.",
+        "key": "policy_active",
+        "label": "Policy is active",
+        "reason_code": null,
+        "status": "PASS"
+      },
+      {
+        "detail": "Operation is MINT.",
+        "key": "operation_matches",
+        "label": "Operation matches policy",
+        "reason_code": null,
+        "status": "PASS"
+      },
+      {
+        "detail": "Business event is SUBSCRIPTION.",
+        "key": "business_event",
+        "label": "Required business event",
+        "reason_code": null,
+        "status": "PASS"
+      },
+      {
+        "detail": "Settlement is CLEARED; the policy requires CLEARED.",
+        "key": "settlement",
+        "label": "Settlement requirement",
+        "reason_code": null,
+        "status": "PASS"
+      },
+      {
+        "detail": "10:42 UTC is inside 08:00-18:00 UTC.",
+        "key": "allowed_window",
+        "label": "Allowed window (UTC)",
+        "reason_code": null,
+        "status": "PASS"
+      },
+      {
+        "detail": "5000000 USD is within the 10000000.00 USD daily limit.",
+        "key": "daily_limit",
+        "label": "Daily issuance limit",
+        "reason_code": null,
+        "status": "PASS"
+      },
+      {
+        "detail": "Operator f1x7u4e0-0000-0000-0000-0000000000u1 holds response.propose in this workspace.",
+        "key": "operator_role",
+        "label": "Required operator role",
+        "reason_code": null,
+        "status": "PASS"
+      },
+      {
+        "detail": "The policy requires a Compliance Approver before issuance; no compliance approval is present.",
+        "key": "compliance_approval",
+        "label": "Compliance approval",
+        "reason_code": "COMPLIANCE_APPROVAL_MISSING",
+        "status": "FAIL"
+      }
+    ],
+    "decision": "DENY",
+    "decision_authority": "Deterministic Policy Engine",
+    "engine_version": "governance-policy-engine-v1",
+    "evaluated_at": "2026-09-01T10:42:18+00:00",
+    "evaluation_id": "f1x7u4e0-0000-0000-0000-000000000001",
+    "incident_id": null,
+    "operation": "MINT",
+    "policy_id": "f1x7u4e0-0000-0000-0000-0000000000a1",
+    "policy_key": "POL-MINT-007",
+    "policy_version": 7,
+    "reason_codes": [
+      "COMPLIANCE_APPROVAL_MISSING"
+    ],
+    "required_approvals": [
+      "COMPLIANCE_APPROVER"
+    ],
+    "required_roles": [
+      "TREASURY_OPERATOR",
+      "COMPLIANCE_APPROVER"
+    ],
+    "simulation": true,
+    "violation_action": "DENY"
+  },
+  "history": [
+    {
+      "change_summary": "Maximum issuance changed: 5000000.00 \u2192 10000000.00",
+      "changed_at": "2026-08-30T09:15:00+00:00",
+      "changed_by": "admin@acme.test",
+      "changed_by_user_id": "f1x7u4e0-0000-0000-0000-0000000000u1",
+      "new_values": {
+        "maximum_daily_amount_usd": "10000000.00"
+      },
+      "previous_values": {
+        "maximum_daily_amount_usd": "5000000.00"
+      },
+      "status": "ACTIVE",
+      "version": 7
+    },
+    {
+      "change_summary": "Required roles changed: TREASURY_OPERATOR \u2192 TREASURY_OPERATOR, COMPLIANCE_APPROVER",
+      "changed_at": "2026-08-12T14:02:00+00:00",
+      "changed_by": "admin@acme.test",
+      "changed_by_user_id": "f1x7u4e0-0000-0000-0000-0000000000u1",
+      "new_values": {
+        "required_roles": [
+          "TREASURY_OPERATOR",
+          "COMPLIANCE_APPROVER"
+        ]
+      },
+      "previous_values": {
+        "required_roles": [
+          "TREASURY_OPERATOR"
+        ]
+      },
+      "status": "ACTIVE",
+      "version": 6
+    }
+  ],
+  "policy": {
+    "allowed_window_utc": {
+      "end": "18:00",
+      "start": "08:00"
+    },
+    "asset_id": null,
+    "created_at": null,
+    "maximum_daily_amount_usd": "10000000.00",
+    "name": "RWA Mint Policy",
+    "operation": "MINT",
+    "origin": "customer",
+    "policy_id": "f1x7u4e0-0000-0000-0000-0000000000a1",
+    "policy_key": "POL-MINT-007",
+    "required_business_event": "SUBSCRIPTION",
+    "required_roles": [
+      "TREASURY_OPERATOR",
+      "COMPLIANCE_APPROVER"
+    ],
+    "settlement_requirement": "CLEARED",
+    "status": "ACTIVE",
+    "updated_at": "2026-09-01T10:42:18+00:00",
+    "updated_by": null,
+    "version": 7,
+    "violation_action": "DENY"
+  }
+}
