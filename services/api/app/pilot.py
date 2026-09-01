@@ -6608,6 +6608,18 @@ def seed_demo_workspace(email: str, password: str, workspace_name: str, full_nam
         except Exception:
             logger.exception('asset_integrity_demo_seed_failed workspace_id=%s', workspace_id)
             integrity_bootstrap = {'seeded': False, 'reason': 'seed_error'}
+        # Screen 11 governance policy demo scenario. Marked origin='demo_seed'
+        # and no-op in production; the domain module owns the logic.
+        try:
+            from services.api.app.domains.governance_policy import demo_seed as governance_policy_demo_seed
+
+            policy_bootstrap = governance_policy_demo_seed.seed_demo_policy(
+                connection, workspace_id=workspace_id, user_id=user_id,
+                allowed=_demo_monitoring_bootstrap_allowed(),
+            )
+        except Exception:
+            logger.exception('governance_policy_demo_seed_failed workspace_id=%s', workspace_id)
+            policy_bootstrap = {'seeded': False, 'reason': 'seed_error'}
         connection.commit()
         user = build_user_response(connection, user_id)
         return {
@@ -6620,6 +6632,7 @@ def seed_demo_workspace(email: str, password: str, workspace_name: str, full_nam
             'user_created': created_user,
             'monitoring_bootstrap': monitoring_bootstrap,
             'asset_integrity_bootstrap': integrity_bootstrap,
+            'governance_policy_bootstrap': policy_bootstrap,
         }
 
 
