@@ -36,6 +36,7 @@ const ACCEPTANCE_GATE = {
   policy_decision_label: 'Allow',
   required_quorum: 3,
   approvals_collected: 2,
+  approval_required: true,
   required_roles: ['SECURITY_LEAD', 'TREASURY_OPERATOR', 'COMPLIANCE_APPROVER'],
   satisfied_roles: ['SECURITY_LEAD', 'TREASURY_OPERATOR'],
   missing_roles: ['COMPLIANCE_APPROVER'],
@@ -51,7 +52,10 @@ const ACCEPTANCE_GATE = {
     },
     {
       role: 'TREASURY_OPERATOR',
-      role_label: 'Treasury Manager',
+      // The canonical label for this governance role in this codebase. The
+      // acceptance scenario's "Treasury Manager" is this role — Screen 8 renders
+      // whatever label the BACKEND sends, so the two screens can never drift.
+      role_label: 'Treasury Operator',
       approver_user_id: 'u2',
       approver: 'treasury@example.com',
       decision: 'approved',
@@ -60,8 +64,13 @@ const ACCEPTANCE_GATE = {
   ],
   quorum_authority: 'workspace_approvers',
   quorum_authority_label: 'Workspace approvers',
-  reason_codes: ['REQUIRED_ROLE_MISSING'],
-  reasons: [{ code: 'REQUIRED_ROLE_MISSING', label: 'A required approver role has not signed off.' }],
+  // Mirrors the backend exactly: an unmet quorum ALWAYS reports the general fact,
+  // and REQUIRED_ROLE_MISSING refines it by naming which role is outstanding.
+  reason_codes: ['HUMAN_QUORUM_INCOMPLETE', 'REQUIRED_ROLE_MISSING'],
+  reasons: [
+    { code: 'HUMAN_QUORUM_INCOMPLETE', label: 'The required human approval quorum has not been collected.' },
+    { code: 'REQUIRED_ROLE_MISSING', label: 'A required approver role has not signed off.' },
+  ],
   policy_id: 'pol-1',
   policy_key: 'POL-MINT-007',
   policy_version: 7,
@@ -144,7 +153,7 @@ test('the authorization roster lists every required role with its persisted deci
   const rows = authorizationRows(normalizeExecutionGate(ACCEPTANCE_GATE));
   expect(rows.map((r) => [r.roleLabel, r.statusLabel])).toEqual([
     ['Security Lead', 'Approved'],
-    ['Treasury Manager', 'Approved'],
+    ['Treasury Operator', 'Approved'],
     ['Compliance Approver', 'Pending'],
   ]);
   // The approved rows carry the PERSISTED decision time; the pending one carries none.
@@ -333,7 +342,7 @@ test('the Execute control is gated on the BACKEND gate, not local state', () => 
   expect(src).toContain('normalizeExecutionGate(input?.execution_gate)');
 });
 
-test('the AI Playbook Execution Agent panel exposes no execute control', () => {
+test('the AI Playbook Advisor panel exposes no execute control', () => {
   const src = pageSource();
   const panelStart = src.indexOf('function PlaybookAgentPanel(');
   expect(panelStart).toBeGreaterThan(-1);

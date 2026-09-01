@@ -45,11 +45,15 @@ class _TrackingConnection:
     present is treated as "no existing action" so an INSERT happens.
     """
 
-    def __init__(self, incident_row=None, alert_row=None, existing_by_type=None):
+    def __init__(self, incident_row=None, alert_row=None, existing_by_type=None,
+                 insert_conflicts=False):
         self.executed: list[tuple[str, object]] = []
         self._incident_row = incident_row
         self._alert_row = alert_row
         self._existing_by_type = existing_by_type or {}
+        #: When True every INSERT hits the unique index and returns no row, as it
+        #: would for the loser of a concurrent recommend race.
+        self.insert_conflicts = insert_conflicts
         self.committed = False
 
     def execute(self, statement, params=None):
@@ -63,6 +67,14 @@ class _TrackingConnection:
             # params = (incident_id, workspace_id, action_type)
             action_type = params[2] if isinstance(params, (tuple, list)) and len(params) >= 3 else None
             return _Result(self._existing_by_type.get(action_type))
+        if 'INSERT INTO response_actions' in normalized:
+            # The INSERT is `... ON CONFLICT DO NOTHING RETURNING id`, so the
+            # driver hands back the new row — or NOTHING when a concurrent caller
+            # already inserted it. `insert_conflicts` models that second case,
+            # which is the race the dedup index exists to close.
+            if self.insert_conflicts:
+                return _Result(None)
+            return _Result({'id': (params or {}).get('id') if isinstance(params, dict) else None})
         return _Result()
 
     def commit(self):
@@ -202,6 +214,8 @@ def test_recommend_idempotent_no_duplicates(monkeypatch):
             if 'INSERT INTO response_actions' in normalized:
                 assert isinstance(params, dict)
                 stored[params['action_type']] = {'id': params['id']}
+                # `RETURNING id` hands the new row back to the caller.
+                return _Result({'id': params['id']})
             return _Result()
 
         def commit(self):

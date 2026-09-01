@@ -36,8 +36,8 @@ EXECUTION_AUTHORITY_MODE = 'DETERMINISTIC_POLICY_ENGINE'
 AI_AUTHORITY = _POLICY_AI_AUTHORITY                 # 'Recommend only'
 EXECUTION_AUTHORITY = _POLICY_DECISION_AUTHORITY    # 'Deterministic Policy Engine'
 
-#: What an AI layer may and may not do on Screen 8. Rendered verbatim by the AI
-#: Playbook Execution Agent panel, and asserted by the tests, so the boundary is
+#: What an AI layer may and may not do on Screen 8. Rendered verbatim by the
+#: AI Playbook Advisor panel, and asserted by the tests, so the boundary is
 #: stated by the backend rather than by UI copy.
 AI_PERMITTED = (
     'recommend_playbook',

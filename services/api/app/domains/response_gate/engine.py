@@ -108,12 +108,22 @@ class GateInputs:
     evaluation_id: Optional[str] = None
     evaluated_at: Optional[str] = None
 
-    #: Approver roles the policy still requires (Screen 11 required_approvals).
+    #: Approver roles the governing policy names (Screen 11 ``required_roles``,
+    #: falling back to ``required_approvals`` on a pre-0149 evaluation record).
+    #: Every one needs a persisted human decision before this action may execute.
     required_roles: tuple[str, ...] = ()
     #: Every persisted decision for THIS action version.
     approvals: tuple[ApprovalRecord, ...] = ()
     #: Numeric quorum from the action's own approval policy.
     required_quorum: int = 0
+    #: Whether a human approval is required for this action AT ALL — the canonical
+    #: lifecycle fact (``response_action_lifecycle.requires_approval``), derived
+    #: from the deterministic playbook profile. When it is False and no policy
+    #: role is outstanding there is NO quorum, and the gate reports quorum 0 so
+    #: the UI can never print "0 / 1" beside "Requires Approval: No". A policy
+    #: that names approver roles still binds: it raises the requirement, and this
+    #: flag can never lower it.
+    approval_required: bool = True
     #: The canonical lifecycle approval status when no approval rows exist yet
     #: ('approved' / 'pending' / 'rejected' / 'not_required').
     lifecycle_approval_status: str = 'not_required'
@@ -169,6 +179,9 @@ class ExecutionGate:
     policy_decision: str
     required_quorum: int
     approvals_collected: int
+    #: Whether ANY human approval is required. False means required_quorum is 0
+    #: and no roster row exists — the two can never disagree.
+    approval_required: bool
     required_roles: tuple[str, ...]
     satisfied_roles: tuple[str, ...]
     missing_roles: tuple[str, ...]
@@ -208,6 +221,7 @@ class ExecutionGate:
             ),
             'required_quorum': int(self.required_quorum),
             'approvals_collected': int(self.approvals_collected),
+            'approval_required': bool(self.approval_required),
             'required_roles': list(self.required_roles),
             'satisfied_roles': list(self.satisfied_roles),
             'missing_roles': list(self.missing_roles),
@@ -277,7 +291,15 @@ def _quorum_facts(inputs: GateInputs) -> tuple[int, int, tuple[str, ...], tuple[
 
     # The binding quorum is whichever requirement is larger: the roles the policy
     # demands, or the action's own numeric quorum. Never smaller than either.
-    numeric_quorum = max(0, int(inputs.required_quorum or 0))
+    #
+    # The numeric quorum applies ONLY when the action's canonical lifecycle says a
+    # human approval is required. An action whose profile requires none has no
+    # numeric quorum to report, so the gate never publishes "0 / 1" beside a
+    # "Requires Approval: No" — the exact contradiction this composition removes.
+    # A policy that names approver roles still binds: len(required_roles) is
+    # applied unconditionally, so a policy can RAISE the requirement and the
+    # lifecycle flag can never lower it.
+    numeric_quorum = max(0, int(inputs.required_quorum or 0)) if inputs.approval_required else 0
     required_quorum = max(numeric_quorum, len(required_roles))
     return required_quorum, len(approved_ids), tuple(satisfied), missing, tuple(approvers)
 
@@ -296,6 +318,11 @@ def _quorum_met(
     """
     if missing_roles:
         return False
+    if required_quorum <= 0:
+        # No role is outstanding and no numeric quorum applies: there is nothing
+        # left for a human to satisfy. Reported as approval_required=False, so the
+        # UI states "no approval quorum" rather than an empty progress fraction.
+        return True
     if str(inputs.quorum_authority or '') == QUORUM_AUTHORITY_DELEGATED:
         # This action's own execution path IS the approval authority (an external
         # governance module with its own signer quorum). Reported as such on the
@@ -368,10 +395,16 @@ def evaluate_gate(inputs: GateInputs) -> ExecutionGate:
     quorum_met = _quorum_met(
         inputs, required_quorum=required_quorum, collected=collected, missing_roles=missing_roles,
     )
+    # An unmet quorum ALWAYS reports HUMAN_QUORUM_INCOMPLETE — it is the fact that
+    # keeps the lock closed. REQUIRED_ROLE_MISSING is added on top when the gate can
+    # also name WHICH role is outstanding; it refines the reason, it never replaces
+    # it. (Previously the two were mutually exclusive, so a role-scoped quorum
+    # reported only the specific code and the general one was unreachable — an
+    # export or an alert filtering on HUMAN_QUORUM_INCOMPLETE silently missed it.)
+    if not quorum_met:
+        reason_codes.append(rgc.HUMAN_QUORUM_INCOMPLETE)
     if missing_roles:
         reason_codes.append(rgc.REQUIRED_ROLE_MISSING)
-    if not quorum_met and not missing_roles:
-        reason_codes.append(rgc.HUMAN_QUORUM_INCOMPLETE)
 
     # ── Context ───────────────────────────────────────────────────────────
     if not rgc.incident_state_allows_response(inputs.incident_status):
@@ -423,6 +456,9 @@ def evaluate_gate(inputs: GateInputs) -> ExecutionGate:
         policy_decision=policy_decision,
         required_quorum=required_quorum,
         approvals_collected=collected,
+        # Authoritative: a policy role list makes approval required even when the
+        # action's own profile did not, so the roster and the quorum always agree.
+        approval_required=bool(required_quorum > 0),
         required_roles=tuple(
             r for r in (rgc.normalize_approver_role(role) for role in inputs.required_roles) if r
         ),

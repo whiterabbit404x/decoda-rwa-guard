@@ -18679,6 +18679,7 @@ RESPONSE_ACTION_TYPES = {
     'freeze_wallet',
     'pause_mint_redeem',
     'pause_asset_transfers',
+    'request_contract_pause',
     'block_transaction',
     'revoke_approval',
     'escalate_to_issuer',
@@ -18708,6 +18709,7 @@ RESPONSE_ACTION_MODE_POLICY: dict[str, tuple[str, ...]] = {
     'notify_team': ('simulated', 'recommended', 'live'),
     'block_transaction': ('simulated', 'recommended', 'live'),
     'pause_asset_transfers': ('simulated', 'recommended', 'live'),
+    'request_contract_pause': ('simulated', 'recommended', 'live'),
     'escalate_multisig': ('simulated', 'recommended', 'live'),
     'disable_integration': ('simulated', 'recommended', 'live'),
     'isolate_provider': ('simulated', 'recommended', 'live'),
@@ -18724,6 +18726,10 @@ RESPONSE_ACTION_LIVE_EXECUTION_DEFAULTS: dict[str, tuple[str, str | None]] = {
     'generate_regulator_auditor_package': ('manual_only', 'Manual-only in live mode'),
     'pause_mint_redeem': ('manual_only', 'Manual-only in live mode'),
     'pause_asset_transfers': ('manual_only', 'Manual-only in live mode'),
+    # A contract pause is REQUESTED here and executed by the asset's own
+    # governance path. No adapter is claimed: 'manual_only' is what the executor
+    # honours, and Screen 8 states EXECUTION_ADAPTER_NOT_CONFIGURED for it.
+    'request_contract_pause': ('manual_only', 'Manual-only in live mode'),
     'disable_monitored_system': ('manual_only', 'Manual-only in live mode'),
     'disable_integration': ('manual_only', 'Manual-only in live mode'),
     'isolate_provider': ('manual_only', 'Manual-only in live mode'),
@@ -18760,6 +18766,7 @@ RESPONSE_ACTION_INTENTS: dict[str, str] = {
     'disable_integration': 'disable vulnerable integration',
     'rotate_credential': 'rotate compromised credential',
     'pause_asset_transfers': 'pause asset transfers recommendation',
+    'request_contract_pause': 'request contract pause',
 }
 ENFORCEMENT_STATUSES = {'pending', 'executed', 'failed', 'canceled'}
 LIVE_ACTION_APPROVER_ROLES = {'owner', 'admin'}
@@ -19587,11 +19594,17 @@ def recommend_response_action_for_incident(incident_id: str, request: Request) -
 
         created_ids: list[str] = []
         action_ids_by_type: dict[str, str] = {}
+        recommended_dedupe_ready = _response_actions_recommended_dedupe_ready(connection)
         for action_type in plan:
             existing = connection.execute(
                 """SELECT id FROM response_actions
                    WHERE incident_id = %s::uuid AND workspace_id = %s AND action_type = %s AND mode = 'recommended'
-                   ORDER BY created_at DESC LIMIT 1""",
+                     AND superseded_at IS NULL
+                   ORDER BY created_at ASC LIMIT 1"""
+                if recommended_dedupe_ready else
+                """SELECT id FROM response_actions
+                   WHERE incident_id = %s::uuid AND workspace_id = %s AND action_type = %s AND mode = 'recommended'
+                   ORDER BY created_at ASC LIMIT 1""",
                 (incident_id, workspace_id, action_type),
             ).fetchone()
             if existing:
@@ -19622,8 +19635,18 @@ def recommend_response_action_for_incident(incident_id: str, request: Request) -
                     })
                 ],
             })
-            connection.execute(
-                '''INSERT INTO response_actions (
+            # ON CONFLICT DO NOTHING against the 0149 partial unique index, not
+            # SELECT-then-INSERT alone: the SELECT above narrows the common case,
+            # but two concurrent recommend calls for the same incident both find
+            # nothing and both insert. Because the deterministic plan ALWAYS
+            # contains 'notify_team', that race is exactly what produces repeated
+            # "Notify Security Team" rows on ONE incident. A raised UniqueViolation
+            # would abort the whole transaction, so the conflict is absorbed here
+            # and the row that won is read back below. Nothing is created twice,
+            # and no history/timeline event is written for an insert that did not
+            # happen.
+            inserted = connection.execute(
+                f'''INSERT INTO response_actions (
                     id, workspace_id, incident_id, alert_id, action_type, mode, status, result_summary, operator_notes,
                     chain_network, target_wallet, token_contract, spender, calldata,
                     execution_state, execution_metadata, execution_artifacts, provider_receipts, error_code, result_status, tx_hash, created_by_user_id
@@ -19632,7 +19655,8 @@ def recommend_response_action_for_incident(incident_id: str, request: Request) -
                     %(result_summary)s, %(operator_notes)s, %(chain_network)s, %(target_wallet)s, %(token_contract)s, %(spender)s, %(calldata)s,
                     %(execution_state)s, %(execution_metadata)s::jsonb, %(execution_artifacts)s::jsonb, %(provider_receipts)s::jsonb,
                     %(error_code)s, %(result_status)s, %(tx_hash)s, %(created_by_user_id)s
-                )''',
+                ){_RECOMMENDED_ACTION_ON_CONFLICT if recommended_dedupe_ready else ''}
+                RETURNING id''',
                 {
                     'id': action_id,
                     'workspace_id': workspace_id,
@@ -19657,7 +19681,20 @@ def recommend_response_action_for_incident(incident_id: str, request: Request) -
                     'tx_hash': None,
                     'created_by_user_id': user['id'],
                 },
-            )
+            ).fetchone()
+            if not inserted:
+                # A concurrent caller won the race. Reuse THEIR row rather than
+                # reporting a creation that did not occur.
+                winner = connection.execute(
+                    """SELECT id FROM response_actions
+                       WHERE incident_id = %s::uuid AND workspace_id = %s AND action_type = %s
+                         AND mode = 'recommended' AND superseded_at IS NULL
+                       ORDER BY created_at ASC LIMIT 1""",
+                    (incident_id, workspace_id, action_type),
+                ).fetchone()
+                if winner:
+                    action_ids_by_type[action_type] = str(winner['id'])
+                continue
             action_ids_by_type[action_type] = action_id
             created_ids.append(action_id)
             write_action_history(
@@ -21359,6 +21396,33 @@ def _ai_recommendation_review_schema_ready(connection: Any) -> bool:
 AI_RECOMMENDATION_DEDUP_INDEX = 'uq_ai_recommendations_canonical'
 
 
+#: The 0149 partial unique index that makes recommended-plan generation
+#: idempotent, and the ON CONFLICT clause that arbitrates against it.
+RESPONSE_ACTION_RECOMMENDED_DEDUP_INDEX = 'uq_response_actions_recommended_plan'
+_RECOMMENDED_ACTION_ON_CONFLICT = (
+    ' ON CONFLICT (workspace_id, incident_id, action_type)'
+    " WHERE superseded_at IS NULL AND mode = 'recommended' AND incident_id IS NOT NULL"
+    ' DO NOTHING'
+)
+
+
+def _response_actions_recommended_dedupe_ready(connection: Any) -> bool:
+    """True when the 0149 recommended-plan dedup index is present.
+
+    Gates BOTH the ON CONFLICT arbiter and the `superseded_at` predicate, so a
+    deploy that has not applied 0149 keeps the previous behavior instead of
+    erroring on a column that does not exist yet.
+    """
+    try:
+        row = connection.execute(
+            'SELECT to_regclass(%s) IS NOT NULL AS present',
+            (f'public.{RESPONSE_ACTION_RECOMMENDED_DEDUP_INDEX}',),
+        ).fetchone()
+        return bool((row or {}).get('present'))
+    except Exception:  # pragma: no cover - any probe failure is treated as not-ready
+        return False
+
+
 def _ai_recommendations_dedup_ready(connection: Any) -> bool:
     """True when the ai_recommendations canonical dedup index (0138) is present."""
     try:
@@ -21713,12 +21777,21 @@ def list_enforcement_actions(
         # Per-request memo for the gate's schema probes, so building a gate for
         # every row does not re-probe the same tables once per action.
         gate_cache: dict[str, Any] = {}
+        # Collapsed duplicate rows (0149) are retired, never deleted: they stay
+        # queryable for audit but must not appear as a second, identical
+        # "Notify Security Team" beside the row that carries the real decision.
+        # Rows from DIFFERENT incidents are not duplicates and are all returned.
+        superseded_filter = (
+            'AND superseded_at IS NULL'
+            if _response_actions_recommended_dedupe_ready(connection) else ''
+        )
         rows = connection.execute(
-            '''
+            f'''
             SELECT id, action_type, mode, status, result_status, execution_state, result_summary, operator_notes, created_at, approved_at, executed_at, failed_at, rolled_back_at, incident_id, alert_id, safe_tx_hash, tx_hash, execution_metadata, created_by_user_id
                  , execution_artifacts, provider_receipts, provider_request_id, provider_response_id, error_reason, error_code
             FROM response_actions
             WHERE workspace_id = %s
+              {superseded_filter}
               AND (%s::uuid IS NULL OR id = %s::uuid)
               AND (%s::uuid IS NULL OR incident_id = %s::uuid)
               AND (%s::uuid IS NULL OR alert_id = %s::uuid)
@@ -22639,6 +22712,7 @@ def simulate_response_action(action_id: str, request: Request) -> dict[str, Any]
 DESTRUCTIVE_ACTION_TYPES = frozenset({
     'freeze_wallet',
     'pause_mint_redeem',
+    'request_contract_pause',
     'block_transaction',
     'revoke_approval',
     'disable_monitored_system',
@@ -22825,6 +22899,18 @@ RESPONSE_ACTION_RUNBOOKS: dict[str, dict[str, Any]] = {
             'Record the escalation on the incident timeline',
         ],
     },
+    'request_contract_pause': {
+        'runbook_id': 'RBK-CT-05', 'name': 'Request contract pause', 'category': 'Containment',
+        'priority': 'critical', 'blast_radius': 'contract_wide', 'reversibility': 'reversible',
+        'requires_approval': True,
+        'steps': [
+            'Confirm the incident implicates the deployed asset contract itself',
+            'Identify the contract pause authority and its signer set',
+            'Preserve evidence before requesting any contract-wide change',
+            'Collect every approver role the governing policy requires',
+            'Submit the pause request to the contract governance path for execution',
+        ],
+    },
     'pause_asset_transfers': {
         'runbook_id': 'RBK-CT-04', 'name': 'Pause asset transfers', 'category': 'Containment',
         'priority': 'critical', 'blast_radius': 'contract_wide', 'reversibility': 'reversible',
@@ -22962,6 +23048,10 @@ RESPONSE_ACTION_DEFINITIONS: dict[str, dict[str, str]] = {
     'pause_asset_transfers': {
         'display_title': 'Pause Asset Transfers',
         'display_description': 'Pause transfers on the affected tokenized asset.',
+    },
+    'request_contract_pause': {
+        'display_title': 'Request Contract Pause',
+        'display_description': 'Request a contract-wide pause on the affected asset contract through its governance path.',
     },
     'block_transaction': {
         'display_title': 'Block Transaction',
@@ -23589,6 +23679,10 @@ def response_action_execution_gate(
             lifecycle=lifecycle,
             required_quorum=_required_approval_quorum('response_action', action),
             action_version=_action_version_for('response_action', action),
+            # The canonical lifecycle fact, so the gate's quorum and the DTO's
+            # "Requires Approval" can never disagree. An action whose playbook
+            # profile requires no approval reports quorum 0, not "0 of 1".
+            approval_required=bool(lifecycle.get('requires_approval')),
             requester_authorized=bool(requester_authorized),
             execution_authority_available=live_path != 'unsupported',
             execution_adapter_label=live_path,
@@ -23607,6 +23701,7 @@ def response_action_execution_gate(
             'policy_decision_label': _rgc.POLICY_DECISION_LABELS[_rgc.POLICY_NOT_EVALUATED],
             'required_quorum': 0,
             'approvals_collected': 0,
+            'approval_required': False,
             'required_roles': [],
             'satisfied_roles': [],
             'missing_roles': [],
@@ -23645,6 +23740,13 @@ _GATE_BLOCKING_REASON_CODES = frozenset({
     'ACTION_ALREADY_EXECUTED',
     'ACTION_CANCELLED',
     'INCIDENT_CLOSED',
+    # A canonical authorization fact the gate could not READ. Unlike the codes
+    # left out above, NO other handler enforces this one, and an unreadable fact
+    # produces no other blocking code either (an unreadable evaluation looks like
+    # "no policy applies"; unreadable approvals fall back to the lifecycle
+    # status). Without it a database outage could reach the provider call with the
+    # gate recorded as authorized. A fact we could not look up is not an ALLOW.
+    'GATE_FACTS_UNAVAILABLE',
 })
 
 

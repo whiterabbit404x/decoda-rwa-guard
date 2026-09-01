@@ -10,16 +10,20 @@ function pageSource(): string {
   return appSource('(product)/response-actions-page-client.tsx');
 }
 
-// ── Playbook Execution Agent panel ──────────────────────────────────────────
+// ── AI Playbook Advisor panel ───────────────────────────────────────────────
 
-// The panel is titled "AI Playbook Execution Agent" — the Screen 8 reference name.
-// It is explanatory ONLY: it may read the authoritative execution gate, but it
-// never produces a decision, and it exposes no execute control of its own.
-test('AI Playbook Execution Agent panel exists with the reference title', () => {
+// The panel is titled "AI Playbook Advisor" — named for what the AI layer is
+// PERMITTED to do. It is explanatory ONLY: it may read the authoritative
+// execution gate, but it never produces a decision, and it exposes no execute
+// control of its own. The former name ("Execution Agent") described a capability
+// the backend structurally refuses to grant it.
+test('AI Playbook Advisor panel exists and is named for its authority', () => {
   const src = pageSource();
-  expect(src).toContain('AI Playbook Execution Agent');
-  expect(src).toContain('aria-label="AI Playbook Execution Agent"');
+  expect(src).toContain('AI Playbook Advisor');
+  expect(src).toContain('aria-label="AI Playbook Advisor"');
   expect(src).toContain('PlaybookAgentPanel');
+  // The old name must not survive anywhere in the operator-facing surface.
+  expect(src).not.toContain('AI Playbook Execution Agent');
 });
 
 test('agent summary rows are derived from persisted rows, not hardcoded', () => {

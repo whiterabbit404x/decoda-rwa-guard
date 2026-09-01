@@ -37,7 +37,7 @@ test('a dev-time invariant asserts the summary and the rows agree', () => {
   expect(src).toContain('backendSummary.pendingApproval !== rowPendingApproval');
 });
 
-test('the Playbook Execution Agent panel reconciles the same count as the cards', () => {
+test('the AI Playbook Advisor panel reconciles the same count as the cards', () => {
   const src = pageSource();
   expect(src).toContain('summary={backendSummary}');
   expect(src).toContain('reconcileCount(\n    summary?.pendingApproval,');

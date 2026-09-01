@@ -806,6 +806,11 @@ export type ExecutionGate = {
   policyDecisionLabel: string;
   requiredQuorum: number;
   approvalsCollected: number;
+  /** Whether ANY human approval is required. When false the quorum is 0 and no
+   *  progress fraction is rendered, so "Requires Approval: No" can never sit
+   *  beside a "0 / 1". Authoritative: the backend composes it from the action's
+   *  canonical lifecycle AND the roles the governing policy names. */
+  approvalRequired: boolean;
   requiredRoles: string[];
   satisfiedRoles: string[];
   missingRoles: string[];
@@ -885,6 +890,13 @@ export function normalizeExecutionGate(input: unknown): ExecutionGate | null {
     policyDecisionLabel: gateStr(raw.policy_decision_label) ?? 'Not evaluated',
     requiredQuorum: gateNum(raw.required_quorum),
     approvalsCollected: gateNum(raw.approvals_collected),
+    // Trust the backend flag when it is present. A LEGACY payload that predates
+    // it is read from the quorum it did send, so an older API still renders the
+    // roster instead of silently dropping an approval requirement.
+    approvalRequired:
+      raw.approval_required === true ||
+      gateNum(raw.required_quorum) > 0 ||
+      list(raw.required_roles).length > 0,
     requiredRoles: list(raw.required_roles),
     satisfiedRoles: list(raw.satisfied_roles),
     missingRoles: list(raw.missing_roles),
@@ -1055,10 +1067,107 @@ export function authorizationRows(gate: ExecutionGate | null | undefined): Autho
 }
 
 /** "2 / 3 approvals collected" — from the backend counts only. Returns null when
- *  no quorum is required, so a bare "0 / 0" is never rendered. */
+ *  no approval is required, so a bare "0 / 0" is never rendered and an action
+ *  marked "Requires Approval: No" never shows a quorum fraction beside it. */
 export function quorumProgressLabel(gate: ExecutionGate | null | undefined): string | null {
-  if (!gate || gate.requiredQuorum <= 0) return null;
+  if (!gate || !gate.approvalRequired || gate.requiredQuorum <= 0) return null;
   return `${gate.approvalsCollected} / ${gate.requiredQuorum} approvals collected`;
+}
+
+/**
+ * The ONE approval-progress fact the detail panel renders, so the "Approval"
+ * lifecycle row and the Required Authorization roster can never state different
+ * numbers for the same action.
+ *
+ * The deterministic execution gate is the authority when present: it already
+ * folds the action's numeric quorum together with the roles the governing policy
+ * demands, so reading the approval gate separately is what let the two disagree.
+ * `show` is false whenever approval is not required — never inferred from a
+ * label, never from the action title.
+ */
+export function approvalProgress(
+  gate: ExecutionGate | null | undefined,
+  fallback?: { requiredApprovalCount?: number | null; currentApprovalCount?: number | null; requiresApproval?: boolean | null },
+): { required: number; collected: number; show: boolean } {
+  if (gate) {
+    return {
+      required: gate.requiredQuorum,
+      collected: gate.approvalsCollected,
+      show: gate.approvalRequired && gate.requiredQuorum > 0,
+    };
+  }
+  const required = typeof fallback?.requiredApprovalCount === 'number' ? fallback.requiredApprovalCount : 0;
+  const collected = typeof fallback?.currentApprovalCount === 'number' ? fallback.currentApprovalCount : 0;
+  // No gate: only a payload that BOTH requires approval and names a quorum may
+  // render a fraction. Anything less renders nothing rather than a made-up one.
+  return { required, collected, show: fallback?.requiresApproval === true && required > 0 };
+}
+
+export type PolicyEvaluationRow = { key: string; label: string; value: string; missing: boolean };
+
+/**
+ * The Screen 11 policy-evaluation record as Screen 8 states it: the same field
+ * names the governance engine produced, rendered verbatim.
+ *
+ * Every row is present on every gate. A field the backend did not send reads
+ * "Not recorded" and is flagged `missing` — it is NEVER blank and NEVER filled
+ * in with a favourable default, because an absent policy fact is exactly the
+ * condition POLICY_EVALUATION_MISSING exists to report.
+ */
+export function policyEvaluationRows(gate: ExecutionGate | null | undefined): PolicyEvaluationRow[] {
+  const absent = 'Not recorded';
+  if (!gate) {
+    return [
+      { key: 'policy_id', label: 'policy_id', value: absent, missing: true },
+      { key: 'policy_version', label: 'policy_version', value: absent, missing: true },
+      { key: 'policy_decision', label: 'policy_decision', value: 'NOT_EVALUATED', missing: true },
+      { key: 'required_quorum', label: 'required_quorum', value: absent, missing: true },
+      { key: 'approvals_collected', label: 'approvals_collected', value: absent, missing: true },
+      { key: 'missing_roles', label: 'missing_roles', value: absent, missing: true },
+      { key: 'execution_decision', label: 'execution decision', value: 'LOCKED', missing: false },
+      { key: 'reason_codes', label: 'reason_codes', value: absent, missing: true },
+    ];
+  }
+  const missingRoles = gate.missingRoles.length
+    ? gate.missingRoles.join(', ')
+    : gate.approvalRequired
+      ? 'None outstanding'
+      : 'Not applicable';
+  return [
+    {
+      key: 'policy_id',
+      label: 'policy_id',
+      value: gate.policyId ?? gate.policyKey ?? absent,
+      missing: !gate.policyId && !gate.policyKey,
+    },
+    {
+      key: 'policy_version',
+      label: 'policy_version',
+      value: typeof gate.policyVersion === 'number' ? `v${gate.policyVersion}` : absent,
+      missing: typeof gate.policyVersion !== 'number',
+    },
+    { key: 'policy_decision', label: 'policy_decision', value: gate.policyDecision, missing: false },
+    {
+      key: 'required_quorum',
+      label: 'required_quorum',
+      value: gate.approvalRequired ? String(gate.requiredQuorum) : 'Not applicable',
+      missing: false,
+    },
+    {
+      key: 'approvals_collected',
+      label: 'approvals_collected',
+      value: gate.approvalRequired ? String(gate.approvalsCollected) : 'Not applicable',
+      missing: false,
+    },
+    { key: 'missing_roles', label: 'missing_roles', value: missingRoles, missing: false },
+    { key: 'execution_decision', label: 'execution decision', value: gate.decision, missing: false },
+    {
+      key: 'reason_codes',
+      label: 'reason_codes',
+      value: gate.reasonCodes.length ? gate.reasonCodes.join(', ') : absent,
+      missing: gate.reasonCodes.length === 0,
+    },
+  ];
 }
 
 /** The canonical GET endpoint for one action's execution gate (same-origin proxy). */
