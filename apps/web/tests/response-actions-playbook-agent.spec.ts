@@ -12,10 +12,13 @@ function pageSource(): string {
 
 // ── Playbook Execution Agent panel ──────────────────────────────────────────
 
-test('Playbook Execution Agent panel exists with the reference title', () => {
+// The panel is titled "AI Playbook Execution Agent" — the Screen 8 reference name.
+// It is explanatory ONLY: it may read the authoritative execution gate, but it
+// never produces a decision, and it exposes no execute control of its own.
+test('AI Playbook Execution Agent panel exists with the reference title', () => {
   const src = pageSource();
-  expect(src).toContain('Playbook Execution Agent');
-  expect(src).toContain('aria-label="Playbook Execution Agent"');
+  expect(src).toContain('AI Playbook Execution Agent');
+  expect(src).toContain('aria-label="AI Playbook Execution Agent"');
   expect(src).toContain('PlaybookAgentPanel');
 });
 

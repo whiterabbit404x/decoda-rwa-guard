@@ -24,7 +24,7 @@ from contextlib import asynccontextmanager
 
 import hmac as _hmac_mod
 import uuid as _uuid_mod
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -219,6 +219,7 @@ from services.api.app.pilot import (
     create_incident_report_export,
     simulate_response_action,
     simulate_all_eligible_response_actions,
+    response_action_execution_gate_view,
     response_action_safety_checks,
     create_evidence_package_from_response_action,
     get_mttd_metrics,
@@ -5286,8 +5287,17 @@ def enforcement_actions_approve(action_id: str, request: Request) -> dict[str, A
     return with_auth_schema_json(lambda: _normalize_action_route_response(approve_enforcement_action(action_id, request)))
 
 @app.post('/response/actions/{action_id}/approve', summary='Approve a planned response action')
-def response_actions_approve(action_id: str, request: Request) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: _normalize_action_route_response(approve_enforcement_action(action_id, request)))
+def response_actions_approve(
+    action_id: str,
+    request: Request,
+    payload: dict[str, Any] | None = Body(default=None),
+) -> dict[str, Any]:
+    # The optional body may NAME the governance role this approval is cast for
+    # (`approval_role`). It may not assert that the caller holds it: the backend
+    # verifies the role against the caller's own workspace membership before
+    # recording the decision, so a crafted payload can never close a quorum the
+    # operator was not entitled to close.
+    return with_auth_schema_json(lambda: _normalize_action_route_response(approve_enforcement_action(action_id, request, payload)))
 
 
 @app.post('/enforcement/actions/{action_id}/reject', summary='Reject a planned enforcement action (reason required)')
@@ -5396,6 +5406,18 @@ def response_actions_simulate_all(request: Request, incident_id: str | None = No
 @app.get('/response/actions/{action_id}/safety-checks', summary='Deterministic, read-only safety checks for a response action')
 def response_action_safety_checks_route(action_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: response_action_safety_checks(action_id, request))
+
+
+@app.get('/response/actions/{action_id}/execution-gate', summary='Deterministic execution gate for a response action')
+def response_action_execution_gate_route(action_id: str, request: Request) -> dict[str, Any]:
+    """Screen 8's execution gate: the deterministic answer to "may this run?".
+
+    Read-only. It composes Screen 11's policy verdict (reflected verbatim), the
+    role-scoped human quorum, RBAC, expiry, cancellation and incident state into
+    one normalized result. The POST /execute command re-evaluates the SAME gate
+    server-side, so this endpoint informs the UI without ever being the authority.
+    """
+    return with_auth_schema_json(lambda: response_action_execution_gate_view(action_id, request))
 
 
 @app.post('/response/actions/{action_id}/evidence-package', summary='Create evidence package from response action (idempotent)')

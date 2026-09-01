@@ -771,3 +771,297 @@ export function formatExactTimestamp(value?: string | null): string {
     timeZoneName: 'short',
   });
 }
+
+/* ── Screen 8 deterministic execution gate ────────────────────────────────────
+   "AI may recommend. Deterministic policy controls execution."
+
+   Everything below is a PURE READ of the backend's `execution_gate` DTO. There is
+   deliberately no function here that decides whether an action may execute: the
+   gate is composed server-side (policy verdict + role-scoped human quorum + RBAC +
+   expiry + incident state), re-enforced by the execute command, and the client only
+   renders it. A client that ignored this module entirely would still hit the lock. */
+
+/** The two authority statements, used ONLY when a legacy payload omits them. The
+ *  backend is the source of truth for both; these keep the trust boundary visible
+ *  rather than blank against an older API. */
+export const AI_AUTHORITY_FALLBACK = 'Recommend only';
+export const EXECUTION_AUTHORITY_FALLBACK = 'Deterministic Policy Engine';
+
+export type GateDecision = 'AUTHORIZED' | 'LOCKED' | 'DENIED';
+
+export type GateApprover = {
+  role: string | null;
+  roleLabel: string | null;
+  approverUserId: string | null;
+  approver: string | null;
+  decision: string;
+  decidedAt: string | null;
+};
+
+export type ExecutionGate = {
+  decision: GateDecision;
+  decisionLabel: string;
+  canExecute: boolean;
+  policyDecision: string;
+  policyDecisionLabel: string;
+  requiredQuorum: number;
+  approvalsCollected: number;
+  requiredRoles: string[];
+  satisfiedRoles: string[];
+  missingRoles: string[];
+  missingRoleLabels: string[];
+  approvers: GateApprover[];
+  quorumAuthority: string | null;
+  quorumAuthorityLabel: string | null;
+  reasonCodes: string[];
+  reasons: Array<{ code: string; label: string }>;
+  policyId: string | null;
+  policyKey: string | null;
+  policyVersion: number | null;
+  evaluationId: string | null;
+  evaluatedAt: string | null;
+  expiresAt: string | null;
+  executionAdapterConfigured: boolean;
+  executionAdapterLabel: string | null;
+  aiAuthority: string;
+  executionAuthority: string;
+  gateVersion: string | null;
+};
+
+const GATE_DECISIONS = new Set<string>(['AUTHORIZED', 'LOCKED', 'DENIED']);
+
+function gateStr(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const trimmed = v.trim();
+  return trimmed ? trimmed : null;
+}
+
+function gateNum(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+}
+
+/** Normalize the backend `execution_gate` DTO. Returns null when the payload is
+ *  absent or unusable — the caller then renders an "unavailable" state.
+ *
+ *  Fail-closed by construction: `canExecute` is true ONLY when the backend said
+ *  `can_execute === true` AND named the AUTHORIZED decision. A malformed, partial,
+ *  or optimistic payload can never unlock the UI. */
+export function normalizeExecutionGate(input: unknown): ExecutionGate | null {
+  if (!input || typeof input !== 'object') return null;
+  const raw = input as Record<string, unknown>;
+  const decisionRaw = String(raw.decision ?? '').trim().toUpperCase();
+  if (!GATE_DECISIONS.has(decisionRaw)) return null;
+  const decision = decisionRaw as GateDecision;
+  const list = (v: unknown): string[] =>
+    Array.isArray(v) ? v.map((x) => String(x)).filter(Boolean) : [];
+  const approvers: GateApprover[] = Array.isArray(raw.approvers)
+    ? (raw.approvers as unknown[]).map((a) => {
+        const row = (a && typeof a === 'object' ? a : {}) as Record<string, unknown>;
+        return {
+          role: gateStr(row.role),
+          roleLabel: gateStr(row.role_label),
+          approverUserId: gateStr(row.approver_user_id),
+          approver: gateStr(row.approver),
+          decision: String(row.decision ?? '').trim().toLowerCase(),
+          decidedAt: gateStr(row.decided_at),
+        };
+      })
+    : [];
+  const reasons = Array.isArray(raw.reasons)
+    ? (raw.reasons as unknown[])
+        .map((r) => {
+          const row = (r && typeof r === 'object' ? r : {}) as Record<string, unknown>;
+          const code = gateStr(row.code);
+          return code ? { code, label: gateStr(row.label) ?? code } : null;
+        })
+        .filter((r): r is { code: string; label: string } => r !== null)
+    : [];
+  return {
+    decision,
+    decisionLabel: gateStr(raw.decision_label) ?? decision,
+    // The ONLY place canExecute is set. Both the boolean AND the decision must agree.
+    canExecute: raw.can_execute === true && decision === 'AUTHORIZED',
+    policyDecision: gateStr(raw.policy_decision) ?? 'NOT_EVALUATED',
+    policyDecisionLabel: gateStr(raw.policy_decision_label) ?? 'Not evaluated',
+    requiredQuorum: gateNum(raw.required_quorum),
+    approvalsCollected: gateNum(raw.approvals_collected),
+    requiredRoles: list(raw.required_roles),
+    satisfiedRoles: list(raw.satisfied_roles),
+    missingRoles: list(raw.missing_roles),
+    missingRoleLabels: list(raw.missing_role_labels),
+    approvers,
+    quorumAuthority: gateStr(raw.quorum_authority),
+    quorumAuthorityLabel: gateStr(raw.quorum_authority_label),
+    reasonCodes: list(raw.reason_codes),
+    reasons,
+    policyId: gateStr(raw.policy_id),
+    policyKey: gateStr(raw.policy_key),
+    policyVersion: typeof raw.policy_version === 'number' ? raw.policy_version : null,
+    evaluationId: gateStr(raw.evaluation_id),
+    evaluatedAt: gateStr(raw.evaluated_at),
+    expiresAt: gateStr(raw.expires_at),
+    executionAdapterConfigured: raw.execution_adapter_configured === true,
+    executionAdapterLabel: gateStr(raw.execution_adapter_label),
+    aiAuthority: gateStr(raw.ai_authority) ?? AI_AUTHORITY_FALLBACK,
+    executionAuthority: gateStr(raw.execution_authority) ?? EXECUTION_AUTHORITY_FALLBACK,
+    gateVersion: gateStr(raw.gate_version),
+  };
+}
+
+export type ExecutionLock = {
+  locked: boolean;
+  icon: '🔒' | '🔓';
+  title: string;
+  subtitle: string;
+  variant: PillVariantLike;
+};
+
+// Kept structurally compatible with the shared StatusPill variants without
+// importing the component into a pure module.
+type PillVariantLike = 'success' | 'warning' | 'danger' | 'info' | 'neutral';
+
+/** The physical execution lock, derived ONLY from the backend gate.
+ *
+ *  A null gate is LOCKED, not unknown-and-therefore-fine: an execution state the
+ *  product could not read is never presented as authorized. */
+export function executionLockPresentation(gate: ExecutionGate | null | undefined): ExecutionLock {
+  if (!gate) {
+    return {
+      locked: true,
+      icon: '🔒',
+      title: 'Execution Locked',
+      subtitle: 'The deterministic execution gate could not be read for this action.',
+      variant: 'warning',
+    };
+  }
+  if (gate.decision === 'DENIED') {
+    return {
+      locked: true,
+      icon: '🔒',
+      title: 'Execution Denied by Policy',
+      subtitle:
+        gate.reasons.find((r) => r.code === 'POLICY_DENIED')?.label ??
+        'The deterministic policy engine returned DENY for this operation.',
+      variant: 'danger',
+    };
+  }
+  if (!gate.canExecute) {
+    return {
+      locked: true,
+      icon: '🔒',
+      title: 'Execution Locked',
+      subtitle: executionLockSubtitle(gate),
+      variant: 'warning',
+    };
+  }
+  return {
+    locked: false,
+    icon: '🔓',
+    title: 'Execution Authorized',
+    subtitle: gate.executionAdapterConfigured
+      ? 'Deterministic policy checks passed. Human quorum satisfied.'
+      : 'Deterministic policy checks passed. Human quorum satisfied. No execution adapter is configured, so this action is dry-run only.',
+    variant: gate.executionAdapterConfigured ? 'success' : 'info',
+  };
+}
+
+/** The most specific reason the lock is closed, preferring the human quorum
+ *  (the operator's actionable next step) over advisory codes. */
+export function executionLockSubtitle(gate: ExecutionGate): string {
+  if (gate.missingRoles.length > 0) {
+    const labels = gate.missingRoleLabels.length ? gate.missingRoleLabels : gate.missingRoles;
+    return `Waiting for required approvals: ${labels.join(', ')}.`;
+  }
+  const priority = [
+    'APPROVAL_REJECTED',
+    'ACTION_EXPIRED',
+    'ACTION_CANCELLED',
+    'ACTION_ALREADY_EXECUTED',
+    'INCIDENT_CLOSED',
+    'POLICY_VERSION_MISMATCH',
+    'POLICY_EVALUATION_MISSING',
+    'HUMAN_QUORUM_INCOMPLETE',
+    'RBAC_FORBIDDEN',
+    'EXECUTION_AUTHORITY_MISSING',
+  ];
+  for (const code of priority) {
+    const hit = gate.reasons.find((r) => r.code === code);
+    if (hit) return hit.label;
+  }
+  return gate.reasons[0]?.label ?? 'Waiting for required approvals.';
+}
+
+/** The operator's next required step, in the reference's words. Derived from the
+ *  gate — never from an AI suggestion. */
+export function gateNextStep(gate: ExecutionGate | null | undefined): string {
+  if (!gate) return 'Execution gate unavailable. Reload the action to re-evaluate.';
+  if (gate.decision === 'DENIED') {
+    return 'Policy denied this operation. Resolve the policy violation, then re-evaluate.';
+  }
+  if (gate.missingRoles.length > 0) {
+    const labels = gate.missingRoleLabels.length ? gate.missingRoleLabels : gate.missingRoles;
+    return `Awaiting ${labels.join(' and ')} approval.`;
+  }
+  if (gate.reasonCodes.includes('HUMAN_QUORUM_INCOMPLETE')) {
+    return `Awaiting ${Math.max(0, gate.requiredQuorum - gate.approvalsCollected)} more approval(s).`;
+  }
+  if (gate.reasonCodes.includes('POLICY_EVALUATION_MISSING')) {
+    return 'Awaiting a deterministic policy evaluation for this action.';
+  }
+  if (gate.canExecute && !gate.executionAdapterConfigured) {
+    return 'Authorized. No execution adapter is configured, so this action remains dry-run only.';
+  }
+  if (gate.canExecute) return 'Authorized. An operator with execute permission may run this action.';
+  return executionLockSubtitle(gate);
+}
+
+export type AuthorizationRow = {
+  role: string;
+  roleLabel: string;
+  status: 'approved' | 'rejected' | 'pending';
+  statusLabel: string;
+  decidedAt: string | null;
+  approver: string | null;
+};
+
+/** The Required Authorization roster: one row per role the POLICY requires, with
+ *  the decision actually persisted for it.
+ *
+ *  A role with no persisted decision is Pending — never blank and never assumed. */
+export function authorizationRows(gate: ExecutionGate | null | undefined): AuthorizationRow[] {
+  if (!gate) return [];
+  return gate.requiredRoles.map((role) => {
+    const decision = gate.approvers.find((a) => a.role === role);
+    const status: AuthorizationRow['status'] =
+      decision?.decision === 'approved'
+        ? 'approved'
+        : decision?.decision === 'rejected'
+          ? 'rejected'
+          : 'pending';
+    return {
+      role,
+      roleLabel:
+        decision?.roleLabel ??
+        role
+          .split('_')
+          .map((w) => (w ? w.charAt(0) + w.slice(1).toLowerCase() : w))
+          .join(' '),
+      status,
+      statusLabel: status === 'approved' ? 'Approved' : status === 'rejected' ? 'Rejected' : 'Pending',
+      decidedAt: status === 'pending' ? null : decision?.decidedAt ?? null,
+      approver: decision?.approver ?? null,
+    };
+  });
+}
+
+/** "2 / 3 approvals collected" — from the backend counts only. Returns null when
+ *  no quorum is required, so a bare "0 / 0" is never rendered. */
+export function quorumProgressLabel(gate: ExecutionGate | null | undefined): string | null {
+  if (!gate || gate.requiredQuorum <= 0) return null;
+  return `${gate.approvalsCollected} / ${gate.requiredQuorum} approvals collected`;
+}
+
+/** The canonical GET endpoint for one action's execution gate (same-origin proxy). */
+export function executionGateEndpoint(actionId: string): string {
+  return `/api/response/actions/${encodeURIComponent(actionId)}/execution-gate`;
+}

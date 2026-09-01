@@ -16,24 +16,32 @@ import {
 import { resolveApiUrl } from '../dashboard-data';
 import { usePilotAuth } from '../pilot-auth-context';
 import {
+  AI_AUTHORITY_FALLBACK,
+  EXECUTION_AUTHORITY_FALLBACK,
   approvalErrorRequiresStepUp,
   approvalResultMessage,
+  authorizationRows,
   canonicalLifecycleState,
   compareHistoryRecency,
   completeMfaHref,
   deriveRowApproval,
+  executionLockPresentation,
   formatExactTimestamp,
   formatRelativeTime,
+  gateNextStep,
   historyOutcome,
   isApprovalDecided,
   isApprovalHistoryEvent,
   isSessionVerificationRequired,
   lifecycleLabelFor,
   normalizeApprovalGate,
+  normalizeExecutionGate,
   normalizeHistoryEventDto,
+  quorumProgressLabel,
   reconcileCount,
   responseActionApprovalEndpoint,
   type ApprovalGate,
+  type ExecutionGate,
 } from './response-actions-presentation';
 import { useRuntimeSummary } from '../runtime-summary-context';
 import { fetchRuntimeStatusDeduped } from '../runtime-status-client';
@@ -106,6 +114,11 @@ type ActionRow = {
   // quorum, composed by the backend. Drives the contextual approval-blocked UI so
   // the client never re-derives the MFA policy or the action's risk wording.
   approvalGate?: ApprovalGate | null;
+  // Canonical DETERMINISTIC EXECUTION GATE. The backend composes Screen 11's
+  // policy verdict, the role-scoped human quorum, RBAC, expiry and incident
+  // state into one result; the UI renders it and never re-derives it. The
+  // execute command re-evaluates the same gate, so the lock is not cosmetic.
+  executionGate?: ExecutionGate | null;
   // Distinct target so same-title actions across incidents are disambiguated.
   targetLabel?: string | null;
 };
@@ -519,6 +532,10 @@ function normalizeActionRow(input: any, validIncidentIds: Set<string>): ActionRo
     // Canonical approval gate (backend authority). Read from the top-level payload;
     // absent on legacy payloads, in which case the older permission-only path renders.
     approvalGate: normalizeApprovalGate(input?.approval_gate),
+    // Canonical DETERMINISTIC EXECUTION GATE (backend authority): the policy
+    // verdict, the role-scoped human quorum, and the reason codes that keep the
+    // lock closed. Never re-derived here — a null gate renders as LOCKED.
+    executionGate: normalizeExecutionGate(input?.execution_gate),
     targetLabel,
   };
 }
@@ -1178,6 +1195,55 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
             ctaLabel={blocker.ctaLabel}
           />
         ) : (
+          <>
+          {/* ── The Screen 8 trust boundary, in three columns ─────────────────
+              LEFT   the deterministic playbook and the actions it recommends
+              CENTER the selected action, its required authorization, the
+                     Approve / Reject controls, and the physical execution lock
+              RIGHT  the AI Playbook Execution Agent — explanatory only
+
+              Rendered above the working table when an action is selected, so the
+              authorization path is the first thing on the page. Both other
+              surfaces below are unchanged. */}
+          {tab === 'recommended' && selectedAction ? (
+            <div
+              aria-label="Response authorization gate"
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+                gap: '1rem',
+                alignItems: 'start',
+                marginBottom: '1.25rem',
+              }}
+            >
+              <RecommendedPlaybookPanel
+                rows={recommendedRows}
+                selectedAction={selectedAction}
+                onSelect={setSelectedId}
+              />
+              <ActionDetailPanel
+                action={selectedAction}
+                workspaceEvidenceSource={workspaceEvidenceSource}
+                reviewFilter={approvalFilter}
+                onMessage={setMessage}
+                apiUrl={apiUrl}
+                authHeaders={authHeaders}
+                refreshCsrfToken={refreshCsrfToken}
+                onDataChanged={reloadActions}
+              />
+              <PlaybookAgentPanel
+                rows={recommendedRows}
+                summary={backendSummary}
+                incidentIdFilter={incidentIdFilter}
+                selectedAction={selectedAction}
+                liveExecutionAllowed={liveExecutionAllowed}
+                apiUrl={apiUrl}
+                authHeaders={authHeaders}
+                onMessage={setMessage}
+                onDataChanged={reloadActions}
+              />
+            </div>
+          ) : null}
           <div className="twoColumnSection" style={{ marginTop: 0, alignItems: 'start' }}>
             <div>
               <TabStrip
@@ -1381,32 +1447,38 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
               ) : null}
             </div>
 
-            <div style={{ display: 'grid', gap: '1rem' }}>
-              <PlaybookAgentPanel
-                rows={recommendedRows}
-                summary={backendSummary}
-                incidentIdFilter={incidentIdFilter}
-                selectedAction={selectedAction}
-                liveExecutionAllowed={liveExecutionAllowed}
-                apiUrl={apiUrl}
-                authHeaders={authHeaders}
-                onMessage={setMessage}
-                onDataChanged={reloadActions}
-              />
-              {selectedAction ? (
-                <ActionDetailPanel
-                  action={selectedAction}
-                  workspaceEvidenceSource={workspaceEvidenceSource}
-                  reviewFilter={approvalFilter}
-                  onMessage={setMessage}
+            {/* The agent panel keeps its place beside the table whenever the
+                three-column gate section above is not rendering it, so no
+                surface is duplicated and none is lost. */}
+            {tab === 'recommended' && selectedAction ? null : (
+              <div style={{ display: 'grid', gap: '1rem' }}>
+                <PlaybookAgentPanel
+                  rows={recommendedRows}
+                  summary={backendSummary}
+                  incidentIdFilter={incidentIdFilter}
+                  selectedAction={selectedAction}
+                  liveExecutionAllowed={liveExecutionAllowed}
                   apiUrl={apiUrl}
                   authHeaders={authHeaders}
-                  refreshCsrfToken={refreshCsrfToken}
+                  onMessage={setMessage}
                   onDataChanged={reloadActions}
                 />
-              ) : null}
-            </div>
+                {selectedAction ? (
+                  <ActionDetailPanel
+                    action={selectedAction}
+                    workspaceEvidenceSource={workspaceEvidenceSource}
+                    reviewFilter={approvalFilter}
+                    onMessage={setMessage}
+                    apiUrl={apiUrl}
+                    authHeaders={authHeaders}
+                    refreshCsrfToken={refreshCsrfToken}
+                    onDataChanged={reloadActions}
+                  />
+                ) : null}
+              </div>
+            )}
           </div>
+          </>
         )}
 
         {message ? (
@@ -1561,6 +1633,218 @@ function humanizeApprovalPolicy(policy: string): string {
     .join(' ');
 }
 
+/* ── Recommended Playbook (left card) ────────────────────────────────────────
+   The playbook the deterministic profile assigned to the selected incident's
+   actions, and the actions it recommends. Selecting one only CHANGES THE
+   SELECTION — it never executes, approves, or unlocks anything. */
+function RecommendedPlaybookPanel({
+  rows,
+  selectedAction,
+  onSelect,
+}: {
+  rows: ActionRow[];
+  selectedAction: ActionRow | null;
+  onSelect: (id: string) => void;
+}) {
+  // The playbook of the selected action, or of the highest-priority row when
+  // nothing is selected yet. Derived from the backend runbook profile only.
+  const anchor = selectedAction ?? rows[0] ?? null;
+  const runbookId = anchor?.runbookId ?? null;
+  const runbookName = anchor?.runbookName ?? null;
+  // Actions recommended under the SAME playbook, so the list is the playbook's
+  // own steps rather than an unrelated mix.
+  const playbookActions = runbookId ? rows.filter((r) => r.runbookId === runbookId) : rows;
+  return (
+    <aside className="dataCard sharedSurfaceCard" style={{ padding: '1rem' }} aria-label="Recommended Playbook">
+      <p className="eyebrow" style={{ marginBottom: '0.15rem', fontSize: '0.7rem' }}>
+        Deterministic runbook
+      </p>
+      <h4 style={{ marginBottom: '0.35rem', fontSize: '0.95rem' }}>Recommended Playbook</h4>
+      {runbookId || runbookName ? (
+        <>
+          <p style={{ margin: 0, fontFamily: 'monospace', fontSize: '0.85rem', fontWeight: 700 }}>
+            {runbookId ?? '—'}
+          </p>
+          <p style={{ margin: '0.1rem 0 0.35rem', fontSize: '0.85rem' }}>{runbookName ?? anchor?.action}</p>
+          {anchor?.displayDescription ? (
+            <p className="muted" style={{ fontSize: '0.76rem', margin: '0 0 0.6rem' }}>
+              {anchor.displayDescription}
+            </p>
+          ) : null}
+        </>
+      ) : (
+        // Truthful absence: no runbook is claimed for an action the backend did
+        // not map to one.
+        <p className="muted" style={{ fontSize: '0.78rem', margin: '0 0 0.6rem' }}>
+          No versioned runbook is mapped to the selected action.
+        </p>
+      )}
+
+      <p className="tableMeta" style={{ marginBottom: '0.3rem' }}>Recommended Actions</p>
+      {playbookActions.length === 0 ? (
+        <p className="muted" style={{ fontSize: '0.78rem', margin: 0 }}>
+          No recommended actions for the current filters.
+        </p>
+      ) : (
+        <ol style={{ margin: 0, paddingLeft: '1.1rem', display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+          {playbookActions.slice(0, 8).map((row) => {
+            const isSelected = selectedAction?.id === row.id;
+            return (
+              <li key={row.id} style={{ fontSize: '0.8rem' }}>
+                <button
+                  type="button"
+                  aria-pressed={isSelected}
+                  onClick={() => onSelect(row.id)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    padding: 0,
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                    fontSize: '0.8rem',
+                    fontWeight: isSelected ? 700 : 400,
+                    color: isSelected ? 'var(--accent, #3b82f6)' : 'inherit',
+                  }}
+                >
+                  {row.action}
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+      <p className="muted" style={{ fontSize: '0.72rem', margin: '0.6rem 0 0' }}>
+        Selecting an action opens its authorization detail. It does not execute anything.
+      </p>
+    </aside>
+  );
+}
+
+/* ── Required Authorization roster ───────────────────────────────────────────
+   One row per approver role the POLICY requires, with the decision actually
+   persisted for it. The roles and the quorum come from the backend's execution
+   gate — never a hardcoded "2 / 3". A role with no decision reads Pending, never
+   blank and never assumed satisfied. */
+function RequiredAuthorization({ gate }: { gate: ExecutionGate | null | undefined }) {
+  const rows = authorizationRows(gate);
+  const progress = quorumProgressLabel(gate);
+  const delegated = gate?.quorumAuthority === 'delegated_governance';
+  return (
+    <div style={{ marginBottom: '0.75rem' }} aria-label="Required Authorization">
+      <p className="tableMeta" style={{ marginBottom: '0.25rem' }}>Required Authorization</p>
+      {progress ? (
+        <p style={{ fontSize: '0.82rem', fontWeight: 700, margin: '0 0 0.4rem' }}>{progress}</p>
+      ) : (
+        <p className="muted" style={{ fontSize: '0.78rem', margin: '0 0 0.4rem' }}>
+          No approval quorum is required for this action.
+        </p>
+      )}
+      {delegated ? (
+        // Truthful attribution: an authorization satisfied by an external
+        // governance signer quorum is never displayed as an operator sign-off.
+        <p className="muted" style={{ fontSize: '0.75rem', margin: '0 0 0.4rem' }}>
+          Authorization is delegated to {gate?.quorumAuthorityLabel ?? 'an external governance authority'}.
+        </p>
+      ) : null}
+      {rows.length > 0 ? (
+        <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+          {rows.map((row) => (
+            <li
+              key={row.role}
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}
+            >
+              <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{row.roleLabel}</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                <StatusPill
+                  label={row.statusLabel}
+                  variant={row.status === 'approved' ? 'success' : row.status === 'rejected' ? 'danger' : 'warning'}
+                />
+                <span
+                  className="muted"
+                  style={{ fontSize: '0.72rem', fontVariantNumeric: 'tabular-nums' }}
+                  title={row.decidedAt ? formatExactTimestamp(row.decidedAt) : undefined}
+                >
+                  {/* The PERSISTED decision time, never a page-load timestamp. */}
+                  {row.decidedAt ? formatRelativeTime(row.decidedAt) : '—'}
+                </span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+/* ── Physical execution lock ─────────────────────────────────────────────────
+   The strongest visual element on Screen 8 and the visible half of a real trust
+   boundary. It renders the BACKEND gate: `canExecute` comes from the server, and
+   POST /execute re-evaluates the identical gate, so a client that bypassed this
+   component would still be refused. The lock is never opened by local state. */
+function ExecutionLockPanel({ gate }: { gate: ExecutionGate | null | undefined }) {
+  const lock = executionLockPresentation(gate);
+  const palette = lock.locked
+    ? gate?.decision === 'DENIED'
+      ? { border: 'rgba(239, 68, 68, 0.55)', bg: 'rgba(239, 68, 68, 0.12)', fg: 'var(--danger-fg, #dc2626)' }
+      : { border: 'rgba(245, 158, 11, 0.55)', bg: 'rgba(245, 158, 11, 0.12)', fg: 'var(--warning-fg, #d97706)' }
+    : { border: 'rgba(34, 197, 94, 0.55)', bg: 'rgba(34, 197, 94, 0.12)', fg: 'var(--success-fg, #16a34a)' };
+  return (
+    <div
+      role="status"
+      aria-label="Execution lock"
+      data-execution-lock={lock.locked ? 'locked' : 'authorized'}
+      style={{
+        border: `2px solid ${palette.border}`,
+        background: palette.bg,
+        borderRadius: '12px',
+        padding: '0.85rem 0.9rem',
+        marginTop: '0.75rem',
+      }}
+    >
+      <p style={{ margin: 0, fontWeight: 800, fontSize: '0.95rem', color: palette.fg }}>
+        {lock.icon} {lock.title}
+      </p>
+      <p style={{ margin: '0.2rem 0 0', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+        {lock.subtitle}
+      </p>
+      {gate ? (
+        <dl
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'minmax(120px, max-content) 1fr',
+            gap: '0.2rem 0.75rem',
+            margin: '0.6rem 0 0',
+            fontSize: '0.76rem',
+          }}
+        >
+          <dt className="muted">Policy decision</dt>
+          <dd style={{ margin: 0 }}>
+            {gate.policyDecisionLabel}
+            {gate.policyKey ? ` · ${gate.policyKey}` : ''}
+            {typeof gate.policyVersion === 'number' ? ` v${gate.policyVersion}` : ''}
+          </dd>
+          <dt className="muted">Execution authority</dt>
+          <dd style={{ margin: 0 }}>{gate.executionAuthority}</dd>
+          <dt className="muted">AI authority</dt>
+          <dd style={{ margin: 0 }}>{gate.aiAuthority}</dd>
+        </dl>
+      ) : null}
+      {gate && gate.reasonCodes.length > 0 ? (
+        <div style={{ marginTop: '0.5rem' }}>
+          <p className="tableMeta" style={{ marginBottom: '0.2rem' }}>Reason codes</p>
+          <ul style={{ margin: 0, paddingLeft: '1rem', listStyle: 'disc' }}>
+            {gate.reasons.map((reason) => (
+              <li key={reason.code} className="muted" style={{ fontSize: '0.73rem', lineHeight: 1.4 }}>
+                <code style={{ fontSize: '0.72rem' }}>{reason.code}</code> — {reason.label}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ActionDetailPanel({
   action,
   workspaceEvidenceSource,
@@ -1602,9 +1886,18 @@ function ActionDetailPanel({
   // is not authorization. Execute is only offered when the backend's
   // allowed_commands includes it; otherwise the specific blocked reason is shown.
   const allowedCommands = action.allowedCommands ?? [];
+  // The DETERMINISTIC EXECUTION GATE (backend authority). A missing gate is
+  // treated as LOCKED — an execution state the product could not read is never
+  // rendered as authorized.
+  const executionGate = action.executionGate ?? null;
+  const gateAuthorized = executionGate?.canExecute === true;
+  const gateBlockedReason = executionGate && !gateAuthorized ? executionLockPresentation(executionGate).subtitle : null;
   const executeBlockedReason =
-    (action.blockedReasons ?? []).find((b) => b.command === 'execute')?.reason ?? null;
-  const canExecute = !isAiReview && allowedCommands.includes('execute');
+    (action.blockedReasons ?? []).find((b) => b.command === 'execute')?.reason ?? gateBlockedReason;
+  // Execute requires BOTH the command eligibility (simulation, adapter, lifecycle)
+  // AND the deterministic gate. Disabling here is a courtesy, not the control:
+  // POST /execute re-evaluates the same gate server-side.
+  const canExecute = !isAiReview && allowedCommands.includes('execute') && gateAuthorized;
   const canSimulate = !isAiReview && (allowedCommands.includes('simulate') || allowedCommands.includes('retry_simulation'));
 
   const approvalBlocked = action.approvalStatus === 'pending';
@@ -2353,6 +2646,9 @@ function ActionDetailPanel({
           {/* Read-only approval explanation for the OTHER blocked cases (wrong role /
               already decided): say WHY rather than hiding the controls with no reason. */}
           {approvalReadOnlyNotice}
+          {/* Required Authorization — the roles the POLICY demands and the
+              decisions actually persisted against them. */}
+          <RequiredAuthorization gate={executionGate} />
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
             {/* Approve / Reject appear when the backend says approval is the next
                 step AND the full approval gate (role + MFA + quorum) is satisfied.
@@ -2408,6 +2704,9 @@ function ActionDetailPanel({
               Evidence Export
             </button>
           </div>
+          {/* THE PHYSICAL EXECUTION LOCK — directly underneath the Approve /
+              Reject controls, as the trust boundary the operator must cross. */}
+          <ExecutionLockPanel gate={executionGate} />
         </div>
       )}
     </aside>
@@ -2432,7 +2731,13 @@ type SafetyChecksPayload = {
   checks?: SafetyCheck[];
   summary?: { overall?: string; total?: number; counts?: Record<string, number> };
   live_execution_configured?: boolean;
-  playbook?: { runbook_id?: string | null; runbook_name?: string | null };
+  playbook?: {
+    runbook_id?: string | null;
+    runbook_name?: string | null;
+    // The deterministic runbook steps, used verbatim as the "Why this playbook?"
+    // rationale so the explanation is backend content, not model prose.
+    runbook_steps?: string[];
+  };
 };
 
 function safetyStatusPill(status: string): { label: string; variant: PillVariant } {
@@ -2587,6 +2892,29 @@ function PlaybookAgentPanel({
     }
   }
 
+  // The two authority statements. Read from the SELECTED action's backend gate so
+  // the panel quotes the server, falling back to the canonical constants (never a
+  // blank trust boundary) when a legacy payload omits them.
+  const selectedGate = selectedAction?.executionGate ?? null;
+  const aiAuthority = selectedGate?.aiAuthority ?? AI_AUTHORITY_FALLBACK;
+  const executionAuthority = selectedGate?.executionAuthority ?? EXECUTION_AUTHORITY_FALLBACK;
+  // The operator's next required step, derived from the deterministic gate — the
+  // agent reports it, it does not decide it.
+  const nextStep = gateNextStep(selectedGate);
+  // "Why this playbook?" — the deterministic runbook steps for the selected
+  // action, plus the policy reason codes that produced the current verdict. Both
+  // come from the backend; no model output is rendered as a finding here.
+  const whyThisPlaybook: string[] = selectedAction
+    ? [
+        ...(checksState === 'ready' && checks?.playbook?.runbook_steps
+          ? checks.playbook.runbook_steps.slice(0, 3)
+          : []),
+        ...(selectedGate?.reasons ?? [])
+          .filter((r) => r.code !== 'EXECUTION_AUTHORIZED')
+          .map((r) => r.label),
+      ].slice(0, 5)
+    : [];
+
   const summaryRows: Array<[string, number]> = [
     ['Actions recommended', recommended],
     ['Awaiting approval', awaitingApproval],
@@ -2600,15 +2928,62 @@ function PlaybookAgentPanel({
     <aside
       className="dataCard sharedSurfaceCard"
       style={{ padding: '1rem' }}
-      aria-label="Playbook Execution Agent"
+      aria-label="AI Playbook Execution Agent"
     >
       <p className="eyebrow" style={{ marginBottom: '0.15rem', fontSize: '0.7rem' }}>
         Autonomous operations
       </p>
-      <h4 style={{ marginBottom: '0.25rem', fontSize: '0.95rem' }}>Playbook Execution Agent</h4>
+      <h4 style={{ marginBottom: '0.25rem', fontSize: '0.95rem' }}>AI Playbook Execution Agent</h4>
       <p className="muted" style={{ fontSize: '0.76rem', margin: '0 0 0.75rem' }}>
         Deterministic execution. Runbooks are version-controlled and peer-reviewed; nothing executes without passing safety checks and required approval.
       </p>
+
+      {/* THE TRUST BOUNDARY, stated by the backend. This panel is explanatory
+          only: it may read the authoritative gate but never creates a decision,
+          and it deliberately exposes no execute control of its own. */}
+      <div
+        aria-label="Execution authority statement"
+        style={{
+          border: '1px solid rgba(148, 163, 184, 0.35)',
+          borderRadius: '10px',
+          padding: '0.6rem 0.7rem',
+          marginBottom: '0.85rem',
+        }}
+      >
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(110px, max-content) 1fr', gap: '0.2rem 0.6rem' }}>
+          <span className="muted" style={{ fontSize: '0.75rem' }}>AI Authority</span>
+          <span style={{ fontSize: '0.78rem', fontWeight: 700 }}>{aiAuthority}</span>
+          <span className="muted" style={{ fontSize: '0.75rem' }}>Execution Authority</span>
+          <span style={{ fontSize: '0.78rem', fontWeight: 700 }}>{executionAuthority}</span>
+        </div>
+      </div>
+
+      {/* Recommended playbook + WHY, for the selected action. The reasons are the
+          deterministic runbook steps and the gate's own reason codes — never
+          model prose presented as a finding. */}
+      {selectedAction ? (
+        <div style={{ marginBottom: '0.85rem' }} aria-label="Recommended playbook rationale">
+          <p className="tableMeta" style={{ marginBottom: '0.15rem' }}>Recommended Playbook</p>
+          <p style={{ fontSize: '0.82rem', margin: 0, fontWeight: 600 }}>
+            {selectedAction.runbookId ? `${selectedAction.runbookId} — ` : ''}
+            {selectedAction.runbookName ?? selectedAction.action}
+          </p>
+          {whyThisPlaybook.length > 0 ? (
+            <>
+              <p className="tableMeta" style={{ margin: '0.5rem 0 0.15rem' }}>Why this playbook?</p>
+              <ul style={{ margin: 0, paddingLeft: '1rem', listStyle: 'disc' }}>
+                {whyThisPlaybook.map((reason) => (
+                  <li key={reason} className="muted" style={{ fontSize: '0.74rem', lineHeight: 1.4 }}>
+                    {reason}
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+          <p className="tableMeta" style={{ margin: '0.5rem 0 0.15rem' }}>Next Step</p>
+          <p style={{ fontSize: '0.78rem', margin: 0 }}>{nextStep}</p>
+        </div>
+      ) : null}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', rowGap: '0.3rem', columnGap: '0.75rem', marginBottom: '0.85rem' }}>
         {summaryRows.map(([label, value]) => (
