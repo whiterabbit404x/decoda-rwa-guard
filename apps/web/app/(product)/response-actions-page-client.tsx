@@ -20,6 +20,7 @@ import {
   EXECUTION_AUTHORITY_FALLBACK,
   approvalErrorRequiresStepUp,
   approvalResultMessage,
+  approvalProgress,
   authorizationRows,
   canonicalLifecycleState,
   compareHistoryRecency,
@@ -37,6 +38,7 @@ import {
   normalizeApprovalGate,
   normalizeExecutionGate,
   normalizeHistoryEventDto,
+  policyEvaluationRows,
   quorumProgressLabel,
   reconcileCount,
   responseActionApprovalEndpoint,
@@ -913,7 +915,7 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
   );
 
   // Summary-card counts come from the ONE canonical backend summary so the cards,
-  // the Approval Required banner, and the Playbook Execution Agent panel can never
+  // the Approval Required banner, and the AI Playbook Advisor panel can never
   // disagree with each other or with the rows. The row-derived values are kept as
   // a fallback (older backend without a summary) AND as a dev-time consistency
   // assertion — a mismatch means the backend and the rows have diverged.
@@ -1200,7 +1202,7 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
               LEFT   the deterministic playbook and the actions it recommends
               CENTER the selected action, its required authorization, the
                      Approve / Reject controls, and the physical execution lock
-              RIGHT  the AI Playbook Execution Agent — explanatory only
+              RIGHT  the AI Playbook Advisor — explanatory only
 
               Rendered above the working table when an action is selected, so the
               authorization path is the first thing on the page. Both other
@@ -1807,28 +1809,45 @@ function ExecutionLockPanel({ gate }: { gate: ExecutionGate | null | undefined }
       <p style={{ margin: '0.2rem 0 0', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
         {lock.subtitle}
       </p>
-      {gate ? (
+      {/* THE POLICY EVALUATION RECORD, in Screen 11's own field names.
+          Screen 8 renders the governance engine's decision object verbatim; it
+          has no branch that constructs one. A field the backend did not send
+          reads "Not recorded" — never blank, and never a favourable default. */}
+      <div style={{ marginTop: '0.6rem' }} aria-label="Policy evaluation">
+        <p className="tableMeta" style={{ marginBottom: '0.2rem' }}>Policy evaluation</p>
         <dl
           style={{
             display: 'grid',
-            gridTemplateColumns: 'minmax(120px, max-content) 1fr',
+            gridTemplateColumns: 'minmax(140px, max-content) 1fr',
             gap: '0.2rem 0.75rem',
-            margin: '0.6rem 0 0',
+            margin: 0,
             fontSize: '0.76rem',
           }}
         >
-          <dt className="muted">Policy decision</dt>
-          <dd style={{ margin: 0 }}>
-            {gate.policyDecisionLabel}
-            {gate.policyKey ? ` · ${gate.policyKey}` : ''}
-            {typeof gate.policyVersion === 'number' ? ` v${gate.policyVersion}` : ''}
-          </dd>
+          {policyEvaluationRows(gate).map((row) => (
+            <div key={row.key} style={{ display: 'contents' }}>
+              <dt className="muted">
+                <code style={{ fontSize: '0.72rem' }}>{row.label}</code>
+              </dt>
+              <dd
+                style={{
+                  margin: 0,
+                  fontWeight: row.missing ? 400 : 600,
+                  color: row.missing ? 'var(--text-secondary)' : undefined,
+                }}
+              >
+                {row.value}
+              </dd>
+            </div>
+          ))}
           <dt className="muted">Execution authority</dt>
-          <dd style={{ margin: 0 }}>{gate.executionAuthority}</dd>
+          <dd style={{ margin: 0, fontWeight: 600 }}>
+            {gate?.executionAuthority ?? EXECUTION_AUTHORITY_FALLBACK}
+          </dd>
           <dt className="muted">AI authority</dt>
-          <dd style={{ margin: 0 }}>{gate.aiAuthority}</dd>
+          <dd style={{ margin: 0, fontWeight: 600 }}>{gate?.aiAuthority ?? AI_AUTHORITY_FALLBACK}</dd>
         </dl>
-      ) : null}
+      </div>
       {gate && gate.reasonCodes.length > 0 ? (
         <div style={{ marginTop: '0.5rem' }}>
           <p className="tableMeta" style={{ marginBottom: '0.2rem' }}>Reason codes</p>
@@ -1936,9 +1955,20 @@ function ActionDetailPanel({
     incidentId: action.linkedIncident,
     approvalFilter: reviewFilter || 'yes',
   });
-  const approvalDenominator =
-    gate?.requiredApprovalCount ?? action.requiredApprovalCount ?? (action.requiresApproval ? 1 : 0);
-  const approvalNumerator = gate?.currentApprovalCount ?? action.currentApprovalCount ?? 0;
+  // ONE approval-progress fact for the whole panel. The deterministic EXECUTION
+  // gate is the authority when present — it already folds the action's numeric
+  // quorum together with the roles the governing policy demands — so the
+  // "Approval" lifecycle row and the Required Authorization roster can never
+  // state different numbers. Reading the approval gate here separately is what
+  // let "Requires Approval: No" appear beside "0 of 1 approved".
+  const approvalCounts = approvalProgress(executionGate, {
+    requiredApprovalCount: gate?.requiredApprovalCount ?? action.requiredApprovalCount,
+    currentApprovalCount: gate?.currentApprovalCount ?? action.currentApprovalCount,
+    requiresApproval: action.requiresApproval,
+  });
+  const approvalDenominator = approvalCounts.required;
+  const approvalNumerator = approvalCounts.collected;
+  const showApprovalProgress = approvalCounts.show;
 
   async function handleVerifySession() {
     // Submit ONLY the current authenticator code to the dedicated, CSRF-protected
@@ -2383,7 +2413,12 @@ function ActionDetailPanel({
         </div>
         <div>
           <p className="tableMeta" style={{ marginBottom: '0.15rem' }}>Requires Approval</p>
-          <p style={{ fontSize: '0.8rem', margin: 0 }}>{action.requiresApproval ? 'Yes' : 'No'}</p>
+          {/* The deterministic gate's own approval_required, not a re-derivation:
+              a policy that names approver roles makes approval required even when
+              the action's playbook profile alone would not. */}
+          <p style={{ fontSize: '0.8rem', margin: 0 }}>
+            {(executionGate?.approvalRequired ?? action.requiresApproval) ? 'Yes' : 'No'}
+          </p>
         </div>
       </div>
 
@@ -2445,7 +2480,7 @@ function ActionDetailPanel({
                   ? 'Awaiting Approval'
                   : 'Not required'}
           </p>
-          {approvalDenominator > 0 ? (
+          {showApprovalProgress ? (
             <>
               <p className="tableMeta" style={{ marginTop: '0.4rem', marginBottom: '0.1rem' }}>Approval Progress</p>
               <p style={{ fontSize: '0.8rem', margin: 0 }}>
@@ -2493,8 +2528,10 @@ function ActionDetailPanel({
                       ? 'Rejected'
                       : 'Not required'}
               </p>
-              {/* Approval quorum progress (0 of 1, 1 of 2, …) from canonical counts. */}
-              {approvalDenominator > 0 ? (
+              {/* Approval quorum progress (1 of 2, 2 of 3, …) from canonical counts.
+                  Rendered ONLY when the backend says approval is required, so it can
+                  never contradict the "Requires Approval" field above. */}
+              {showApprovalProgress ? (
                 <p className="muted" style={{ fontSize: '0.68rem', margin: '0.1rem 0 0' }}>
                   {approvalNumerator} of {approvalDenominator} approved
                 </p>
@@ -2713,7 +2750,7 @@ function ActionDetailPanel({
   );
 }
 
-/* ── Playbook Execution Agent panel ──────────────────────────────────────────
+/* ── AI Playbook Advisor panel ───────────────────────────────────────────────
    The right-side agent surface from the Screen 8 reference. Every number here is
    derived from PERSISTED action state (the rows the backend returned) or from the
    read-only safety-checks endpoint — nothing is fabricated. "Simulate All" hits
@@ -2928,34 +2965,50 @@ function PlaybookAgentPanel({
     <aside
       className="dataCard sharedSurfaceCard"
       style={{ padding: '1rem' }}
-      aria-label="AI Playbook Execution Agent"
+      aria-label="AI Playbook Advisor"
     >
       <p className="eyebrow" style={{ marginBottom: '0.15rem', fontSize: '0.7rem' }}>
-        Autonomous operations
+        Advisory only
       </p>
-      <h4 style={{ marginBottom: '0.25rem', fontSize: '0.95rem' }}>AI Playbook Execution Agent</h4>
+      {/* Named for what it is permitted to do. This panel reads the deterministic
+          gate and explains it; it recommends a playbook and never authorizes,
+          approves, or executes one. The old name ("Execution Agent") described a
+          capability the AI layer does not have and the backend refuses to grant. */}
+      <h4 style={{ marginBottom: '0.25rem', fontSize: '0.95rem' }}>AI Playbook Advisor</h4>
       <p className="muted" style={{ fontSize: '0.76rem', margin: '0 0 0.75rem' }}>
-        Deterministic execution. Runbooks are version-controlled and peer-reviewed; nothing executes without passing safety checks and required approval.
+        Recommendations only. Runbooks are version-controlled and peer-reviewed; execution is decided by the deterministic policy engine, never by this advisor.
       </p>
 
-      {/* THE TRUST BOUNDARY, stated by the backend. This panel is explanatory
-          only: it may read the authoritative gate but never creates a decision,
-          and it deliberately exposes no execute control of its own. */}
+      {/* THE TRUST BOUNDARY, stated by the backend and made unmistakable. This
+          panel is explanatory only: it may read the authoritative gate but never
+          creates a decision, and it deliberately exposes no execute control. */}
       <div
         aria-label="Execution authority statement"
+        data-trust-boundary="ai-recommend-only"
         style={{
-          border: '1px solid rgba(148, 163, 184, 0.35)',
+          border: '2px solid rgba(59, 130, 246, 0.55)',
+          background: 'rgba(59, 130, 246, 0.08)',
           borderRadius: '10px',
-          padding: '0.6rem 0.7rem',
+          padding: '0.65rem 0.7rem',
           marginBottom: '0.85rem',
         }}
       >
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(110px, max-content) 1fr', gap: '0.2rem 0.6rem' }}>
+        <p
+          className="eyebrow"
+          style={{ margin: '0 0 0.35rem', fontSize: '0.68rem', letterSpacing: '0.06em' }}
+        >
+          Trust boundary
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(130px, max-content) 1fr', gap: '0.3rem 0.6rem', alignItems: 'center' }}>
           <span className="muted" style={{ fontSize: '0.75rem' }}>AI Authority</span>
-          <span style={{ fontSize: '0.78rem', fontWeight: 700 }}>{aiAuthority}</span>
+          <span style={{ fontSize: '0.82rem', fontWeight: 800 }}>🤖 {aiAuthority}</span>
           <span className="muted" style={{ fontSize: '0.75rem' }}>Execution Authority</span>
-          <span style={{ fontSize: '0.78rem', fontWeight: 700 }}>{executionAuthority}</span>
+          <span style={{ fontSize: '0.82rem', fontWeight: 800 }}>⚖️ {executionAuthority}</span>
         </div>
+        <p className="muted" style={{ margin: '0.4rem 0 0', fontSize: '0.72rem', lineHeight: 1.4 }}>
+          This advisor cannot approve, satisfy a quorum, or execute. Every control that can
+          is governed by the deterministic policy engine and re-checked server-side.
+        </p>
       </div>
 
       {/* Recommended playbook + WHY, for the selected action. The reasons are the

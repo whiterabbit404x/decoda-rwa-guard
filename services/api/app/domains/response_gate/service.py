@@ -157,11 +157,16 @@ def latest_policy_evaluation(
     asset = str(asset_id or '').strip() or None
     if not any((event_id, incident, asset)):
         return None
+    # 0149 added the authoritative role list. Degrade to the pre-migration shape
+    # rather than failing the read; build_gate_inputs then falls back to the
+    # outstanding `required_approvals` list, which is exactly the old behavior.
+    has_required_roles = _column_exists(connection, EVALUATIONS_TABLE, 'required_roles', cache)
+    roles_select = 'required_roles' if has_required_roles else "'[]'::jsonb AS required_roles"
     try:
         row = connection.execute(
             f'''SELECT id, policy_id, policy_key, policy_version, decision, reason_codes,
-                       required_approvals, asset_id, incident_id, canonical_event_id,
-                       operation, evaluated_at
+                       required_approvals, {roles_select}, asset_id, incident_id,
+                       canonical_event_id, operation, evaluated_at
                 FROM {EVALUATIONS_TABLE}
                 WHERE workspace_id = %s
                   AND simulation = FALSE
@@ -313,8 +318,18 @@ def approver_holds_role(
 # --------------------------------------------------------------------------
 # Incident state
 # --------------------------------------------------------------------------
-def incident_status(connection: Any, *, workspace_id: str, incident_id: Optional[str]) -> Optional[str]:
-    """The linked incident's canonical status, or None when there is no incident."""
+def incident_status(
+    connection: Any, *, workspace_id: str, incident_id: Optional[str],
+    cache: Optional[dict[str, Any]] = None,
+) -> Optional[str]:
+    """The linked incident's canonical status, or None when there is no incident.
+
+    A read that FAILS is recorded as an unreadable fact so the gate closes. The
+    ``cache`` this writes into is the caller's; without it the failure would be
+    indistinguishable from "this action has no incident", which is an answer that
+    permits execution. (The handler previously named a ``cache`` this function
+    never took, so a real outage raised NameError instead of failing closed.)
+    """
     key = str(incident_id or '').strip()
     if not key:
         return None
@@ -343,6 +358,7 @@ def build_gate_inputs(
     required_quorum: int,
     action_version: int,
     subject_domain: str = 'response_action',
+    approval_required: bool = True,
     requester_authorized: bool = True,
     requester_permission_reason: Optional[str] = None,
     execution_authority_available: bool = True,
@@ -373,7 +389,17 @@ def build_gate_inputs(
         current_version = _current_policy_version(
             connection, workspace_id=workspace_id, policy_id=policy_id, cache=cache,
         )
-        required_roles = tuple(str(r) for r in _json_list(evaluation.get('required_approvals')))
+        # The AUTHORITATIVE role list is every role the governing policy names
+        # (0149). `required_approvals` is only what the policy engine could not
+        # evidence at evaluation time — empty on an ALLOW — so reading it alone
+        # made the role-scoped human quorum unreachable in the one case it
+        # matters: a policy that permits the operation but still demands named
+        # sign-offs before the response runs. Falls back to the outstanding list
+        # for a pre-0149 evaluation row, which is the previous behavior.
+        policy_roles = tuple(str(r) for r in _json_list(evaluation.get('required_roles')))
+        required_roles = policy_roles or tuple(
+            str(r) for r in _json_list(evaluation.get('required_approvals'))
+        )
         policy_reason_codes = tuple(str(c) for c in _json_list(evaluation.get('reason_codes')))
         try:
             policy_version = int(evaluation.get('policy_version'))
@@ -388,7 +414,18 @@ def build_gate_inputs(
         governed = _policy_governs(
             connection, workspace_id=workspace_id, asset_id=asset_id, cache=cache,
         )
-        policy_decision = rgc.POLICY_NOT_EVALUATED if governed else rgc.POLICY_NOT_APPLICABLE
+        # ...and never claim the SECOND when the read itself failed. "No policy
+        # applies" is a positive finding about the workspace; a query that could
+        # not run establishes nothing, so it reports NOT_EVALUATED. The gate is
+        # closed either way by GATE_FACTS_UNAVAILABLE, but the two states are
+        # exported and audited, and only one of them is true.
+        policy_read_failed = any(
+            fact in {'policy_evaluation', 'policy_scope', f'table:{EVALUATIONS_TABLE}', f'table:{POLICIES_TABLE}'}
+            for fact in unreadable_facts(cache)
+        )
+        policy_decision = (
+            rgc.POLICY_NOT_EVALUATED if (governed or policy_read_failed) else rgc.POLICY_NOT_APPLICABLE
+        )
         policy_id = policy_key = evaluation_id = evaluated_at = None
         policy_version = current_version = None
         required_roles = ()
@@ -405,6 +442,13 @@ def build_gate_inputs(
     # read as "unknown".
     expires_at = _iso(metadata.get('expires_at') or action.get('expires_at'))
 
+    # Resolved BEFORE the GateInputs literal so `unreadable_facts` below observes
+    # a failure here too. Relying on keyword-argument evaluation order for that
+    # would make a fail-closed guarantee depend on the order of the lines.
+    linked_incident_status = incident_status(
+        connection, workspace_id=workspace_id, incident_id=incident_id, cache=cache,
+    )
+
     return GateInputs(
         action_id=action_id,
         policy_decision=policy_decision,
@@ -418,6 +462,7 @@ def build_gate_inputs(
         required_roles=required_roles,
         approvals=approvals,
         required_quorum=int(required_quorum or 0),
+        approval_required=bool(approval_required),
         lifecycle_approval_status=str(lifecycle.get('approval_status') or 'not_required'),
         quorum_authority=str(quorum_authority or 'workspace_approvers'),
         action_status=str(action.get('status') or 'pending'),
@@ -427,7 +472,7 @@ def build_gate_inputs(
         expires_at=expires_at,
         now=now,
         incident_id=incident_id,
-        incident_status=incident_status(connection, workspace_id=workspace_id, incident_id=incident_id),
+        incident_status=linked_incident_status,
         requester_authorized=bool(requester_authorized),
         requester_permission_reason=requester_permission_reason,
         unreadable_facts=unreadable_facts(cache),

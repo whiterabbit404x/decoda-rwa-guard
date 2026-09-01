@@ -23,6 +23,7 @@ import pytest
 from fastapi import HTTPException
 
 from services.api.app import pilot
+from services.api.app.domains.governance_policy import config as gpc
 from services.api.app.domains.response_gate import config as rgc
 from services.api.app.domains.response_gate.engine import (
     ApprovalRecord,
@@ -35,8 +36,12 @@ OTHER_WORKSPACE = 'ws-2'
 ACTION_ID = 'b2222222-2222-4222-8222-222222222222'
 INCIDENT_ID = 'c537b73f-1976-4a44-b589-946194794399'
 
-TREASURY = rgc.APPROVER_ROLES[0]   # TREASURY_OPERATOR
-COMPLIANCE = rgc.APPROVER_ROLES[1]  # COMPLIANCE_APPROVER
+# Named, never indexed: the governance vocabulary is a set of keys, not an
+# ordered list, and a test that reads position 0 silently retargets itself when a
+# role is added to it.
+SECURITY_LEAD = gpc.ROLE_SECURITY_LEAD
+TREASURY = gpc.ROLE_TREASURY_OPERATOR
+COMPLIANCE = gpc.ROLE_COMPLIANCE_APPROVER
 
 NOW = datetime(2026, 9, 1, 10, 43, 0, tzinfo=timezone.utc)
 
@@ -306,7 +311,8 @@ class _GateConn:
     evaluation Screen 11 recorded, the approval decisions, and the incident."""
 
     def __init__(self, *, action_row, evaluation=None, approvals=None,
-                 incident_status='investigating', policy_version=None, tables=None):
+                 incident_status='investigating', policy_version=None, tables=None,
+                 policy_governs=None, fail_on=None):
         self.executed: list[tuple[str, object]] = []
         self.committed = 0
         self._action_row = action_row
@@ -314,6 +320,13 @@ class _GateConn:
         self._approvals = approvals or []
         self._incident_status = incident_status
         self._policy_version = policy_version
+        #: Whether an ACTIVE policy governs this workspace/asset. Defaults to
+        #: "yes iff an evaluation exists"; set explicitly to build the state that
+        #: separates POLICY_EVALUATION_MISSING from NOT_APPLICABLE.
+        self._policy_governs = policy_governs
+        #: Substrings of a statement that must RAISE, so a specific canonical fact
+        #: becomes unreadable while every other read still succeeds.
+        self._fail_on = tuple(fail_on or ())
         self._tables = tables if tables is not None else {
             'public.governance_policy_evaluations', 'public.governance_policies',
             'public.response_action_approvals',
@@ -322,6 +335,9 @@ class _GateConn:
     def execute(self, statement, params=None):
         n = ' '.join(str(statement).split())
         self.executed.append((n, params))
+        for marker in self._fail_on:
+            if marker in n:
+                raise RuntimeError(f'read failed: {marker}')
         if 'to_regclass' in n:
             return _Result(row={'present': str(params[0]) in self._tables})
         if 'information_schema.columns' in n:
@@ -335,7 +351,8 @@ class _GateConn:
         if 'FROM governance_policies WHERE id' in n:
             return _Result(row={'version': self._policy_version} if self._policy_version else None)
         if 'FROM governance_policies' in n:
-            return _Result(row={'present': True} if self._evaluation else None)
+            governs = self._policy_governs if self._policy_governs is not None else bool(self._evaluation)
+            return _Result(row={'present': True} if governs else None)
         if 'FROM response_action_approvals' in n:
             return _Result(rows=list(self._approvals))
         if 'FROM incidents WHERE id' in n:
@@ -616,3 +633,321 @@ def test_absent_approval_role_stays_role_agnostic():
         connection, workspace_id=WORKSPACE,
         workspace_context={'role': 'admin'}, payload={},
     ) is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The acceptance scenario: Request Contract Pause, 2 of 3 human approvals.
+#
+#   Security Lead       Approved
+#   Treasury Operator   Approved
+#   Compliance Approver Pending
+#   -> 2 / 3 approvals, execution LOCKED, HUMAN_QUORUM_INCOMPLETE
+#
+# Both halves are proved: the pure engine (no database), and the same scenario
+# read end-to-end out of backend rows. Nothing is asserted from a UI label, and
+# no number below is authored in the frontend.
+# ─────────────────────────────────────────────────────────────────────────────
+ACCEPTANCE_ROLES = (SECURITY_LEAD, TREASURY, COMPLIANCE)
+
+#: An ALLOW that still names three approver roles. `required_approvals` is EMPTY
+#: on an ALLOW by construction (it is the outstanding list), which is exactly why
+#: the gate must read `required_roles` — the authoritative set the policy names.
+ACCEPTANCE_EVALUATION = {
+    'id': 'eval-pause-1',
+    'policy_id': 'pol-pause-1',
+    'policy_key': 'POL-PAUSE-014',
+    'policy_version': 3,
+    'decision': 'ALLOW',
+    'reason_codes': ['POLICY_SATISFIED'],
+    'required_approvals': [],
+    'required_roles': list(ACCEPTANCE_ROLES),
+    'asset_id': None,
+    'incident_id': INCIDENT_ID,
+    'canonical_event_id': 'EVT-928181',
+    'operation': 'MINT',
+    'evaluated_at': '2026-09-01T10:42:18+00:00',
+}
+
+
+def test_acceptance_two_of_three_roles_signed_keeps_execution_locked():
+    gate = evaluate_gate(_allow(
+        required_roles=ACCEPTANCE_ROLES,
+        approvals=(
+            _approved('sec-1', SECURITY_LEAD, '2026-09-01T10:43:02+00:00'),
+            _approved('tre-1', TREASURY, '2026-09-01T10:43:17+00:00'),
+        ),
+        required_quorum=3,
+        lifecycle_approval_status='pending',
+        approval_required=True,
+    ))
+
+    assert gate.approvals_collected == 2
+    assert gate.required_quorum == 3
+    assert gate.satisfied_roles == (SECURITY_LEAD, TREASURY)
+    assert gate.missing_roles == (COMPLIANCE,)
+    assert gate.decision == rgc.GATE_LOCKED
+    assert gate.can_execute is False
+    # The general fact AND the specific one. An unmet quorum always reports
+    # HUMAN_QUORUM_INCOMPLETE; REQUIRED_ROLE_MISSING refines it, never replaces it.
+    assert rgc.HUMAN_QUORUM_INCOMPLETE in gate.reason_codes
+    assert rgc.REQUIRED_ROLE_MISSING in gate.reason_codes
+
+    payload = gate.as_dict()
+    assert payload['approval_required'] is True
+    assert payload['missing_role_labels'] == ['Compliance Approver']
+    # The roster the operator reads: one row per role, each with its real decision.
+    by_role = {a['role']: a['decision'] for a in payload['approvers']}
+    assert by_role == {SECURITY_LEAD: 'approved', TREASURY: 'approved'}
+
+
+def test_acceptance_scenario_is_read_from_backend_rows(monkeypatch):
+    """The same 2 / 3 verdict, composed from persisted state rather than a fixture
+    the frontend could have authored."""
+    connection = _GateConn(
+        action_row=_live_action_row(action_type='request_contract_pause'),
+        evaluation=ACCEPTANCE_EVALUATION,
+        policy_version=3,
+        approvals=[
+            {'approver_user_id': 'sec-1', 'approver_role': 'owner', 'decision': 'approved',
+             'created_at': '2026-09-01T10:43:02+00:00', 'approval_role': SECURITY_LEAD},
+            {'approver_user_id': 'tre-1', 'approver_role': 'admin', 'decision': 'approved',
+             'created_at': '2026-09-01T10:43:17+00:00', 'approval_role': TREASURY},
+        ],
+    )
+    gate = pilot.response_action_execution_gate(
+        connection, _live_action_row(action_type='request_contract_pause'),
+        workspace_id=WORKSPACE, workspace_context={'role': 'admin'},
+    )
+
+    assert gate['policy_id'] == 'pol-pause-1'
+    assert gate['policy_version'] == 3
+    assert gate['policy_decision'] == 'ALLOW'
+    assert gate['required_quorum'] == 3
+    assert gate['approvals_collected'] == 2
+    assert gate['missing_roles'] == [COMPLIANCE]
+    assert gate['decision'] == rgc.GATE_LOCKED
+    assert gate['can_execute'] is False
+    assert rgc.HUMAN_QUORUM_INCOMPLETE in gate['reason_codes']
+    # §18 — no adapter is claimed for a contract pause, and the gate says so
+    # rather than implying a transaction could be submitted.
+    assert rgc.EXECUTION_ADAPTER_NOT_CONFIGURED in gate['reason_codes']
+
+
+def test_acceptance_execute_endpoint_refuses_the_same_scenario(monkeypatch):
+    """§21 — the lock is real: the direct API call is refused with the same codes
+    the screen displays, regardless of any frontend state."""
+    connection = _GateConn(
+        action_row=_live_action_row(action_type='request_contract_pause'),
+        evaluation=ACCEPTANCE_EVALUATION,
+        policy_version=3,
+        approvals=[
+            {'approver_user_id': 'sec-1', 'approver_role': 'owner', 'decision': 'approved',
+             'created_at': '2026-09-01T10:43:02+00:00', 'approval_role': SECURITY_LEAD},
+            {'approver_user_id': 'tre-1', 'approver_role': 'admin', 'decision': 'approved',
+             'created_at': '2026-09-01T10:43:17+00:00', 'approval_role': TREASURY},
+        ],
+    )
+    _patch_common(monkeypatch, connection)
+    request = SimpleNamespace(headers={'x-workspace-id': WORKSPACE})
+
+    with pytest.raises(HTTPException) as exc:
+        pilot.execute_enforcement_action(ACTION_ID, request)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail['code'] == 'EXECUTION_GATE_LOCKED'
+    assert rgc.HUMAN_QUORUM_INCOMPLETE in exc.value.detail['reason_codes']
+    assert exc.value.detail['execution_gate']['approvals_collected'] == 2
+    assert exc.value.detail['execution_gate']['required_quorum'] == 3
+
+
+def test_request_contract_pause_is_a_high_risk_action_with_no_live_adapter():
+    """The action the acceptance scenario uses is real, high-risk, and honest
+    about having no execution adapter."""
+    profile = pilot.response_action_playbook_profile('request_contract_pause')
+    assert profile['requires_approval'] is True
+    assert profile['priority'] == 'critical'
+    assert profile['blast_radius'] == 'contract_wide'
+    assert 'request_contract_pause' in pilot.DESTRUCTIVE_ACTION_TYPES
+
+    presentation = pilot.response_action_presentation('request_contract_pause')
+    assert presentation['display_title'] == 'Request Contract Pause'
+
+    capability = pilot.response_action_capability('request_contract_pause')
+    # Never 'safe': no blockchain execution path is claimed for a contract pause.
+    assert capability['live_execution_path'] == 'manual_only'
+
+    # It is MFA-step-up classified as destructive from its profile, not its title.
+    security = pilot.response_action_approval_security('request_contract_pause')
+    assert security['approval_security_classification'] == 'destructive'
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Approval consistency: approval_required and the quorum are ONE fact.
+# ─────────────────────────────────────────────────────────────────────────────
+def test_action_that_requires_no_approval_reports_no_quorum():
+    """approval_required=False must never publish an x / y quorum. The numeric
+    quorum is suppressed, so a UI reading the gate cannot print "0 / 1" beside
+    "Requires Approval: No"."""
+    gate = evaluate_gate(_allow(
+        approval_required=False,
+        required_quorum=1,          # the action's default numeric policy
+        lifecycle_approval_status='not_required',
+    ))
+    assert gate.approval_required is False
+    assert gate.required_quorum == 0
+    assert gate.required_roles == ()
+    assert gate.can_execute is True
+    assert gate.as_dict()['approval_required'] is False
+
+
+def test_a_policy_role_makes_approval_required_even_without_a_profile_requirement():
+    """The flag can only be RAISED by the policy, never lowered by the action."""
+    gate = evaluate_gate(_allow(
+        approval_required=False,
+        required_quorum=0,
+        required_roles=(COMPLIANCE,),
+        lifecycle_approval_status='not_required',
+    ))
+    assert gate.approval_required is True
+    assert gate.required_quorum == 1
+    assert gate.missing_roles == (COMPLIANCE,)
+    assert gate.can_execute is False
+    assert rgc.HUMAN_QUORUM_INCOMPLETE in gate.reason_codes
+
+
+def test_gate_reports_no_quorum_for_a_notify_action_end_to_end(monkeypatch):
+    """A communication action carries no approval requirement, so the gate it
+    publishes carries no quorum for the UI to render."""
+    connection = _GateConn(action_row=_live_action_row(action_type='notify_team'))
+    gate = pilot.response_action_execution_gate(
+        connection, _live_action_row(action_type='notify_team'),
+        workspace_id=WORKSPACE, workspace_context={'role': 'admin'},
+    )
+    assert gate['approval_required'] is False
+    assert gate['required_quorum'] == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# §21 — backend enforcement. The execute endpoint is called DIRECTLY, with no
+# frontend involved, for each condition that must fail closed.
+# ─────────────────────────────────────────────────────────────────────────────
+def test_execute_is_refused_when_a_policy_governs_but_none_was_evaluated(monkeypatch):
+    """POLICY MISSING. A policy applies to this workspace and no enforcement
+    decision was recorded for the action: that is not an ALLOW and never becomes
+    one by calling the API directly."""
+    connection = _GateConn(
+        action_row=_live_action_row(), evaluation=None, policy_governs=True,
+    )
+    _patch_common(monkeypatch, connection)
+    request = SimpleNamespace(headers={'x-workspace-id': WORKSPACE})
+
+    with pytest.raises(HTTPException) as exc:
+        pilot.execute_enforcement_action(ACTION_ID, request)
+
+    assert exc.value.status_code == 409
+    gate = exc.value.detail['execution_gate']
+    assert gate['policy_decision'] == rgc.POLICY_NOT_EVALUATED
+    assert gate['can_execute'] is False
+    assert rgc.POLICY_EVALUATION_MISSING in exc.value.detail['reason_codes']
+
+
+def test_execute_is_refused_when_an_authorization_fact_cannot_be_read(monkeypatch):
+    """ADAPTER/DATABASE OUTAGE. The approvals read fails while every other read
+    succeeds. Without GATE_FACTS_UNAVAILABLE in the blocking set this is the
+    dangerous case: the missing approvals look like "none recorded", the
+    lifecycle status reads not_required, and no other blocking code is produced —
+    so an outage would have reached the provider call with the gate recorded as
+    AUTHORIZED."""
+    allow_evaluation = {**DENY_EVALUATION, 'decision': 'ALLOW',
+                        'reason_codes': ['POLICY_SATISFIED'], 'required_approvals': []}
+    connection = _GateConn(
+        action_row=_live_action_row(), evaluation=allow_evaluation, policy_version=7,
+        fail_on=('FROM response_action_approvals',),
+    )
+    _patch_common(monkeypatch, connection)
+    request = SimpleNamespace(headers={'x-workspace-id': WORKSPACE})
+
+    with pytest.raises(HTTPException) as exc:
+        pilot.execute_enforcement_action(ACTION_ID, request)
+
+    assert exc.value.status_code == 409
+    assert rgc.GATE_FACTS_UNAVAILABLE in exc.value.detail['reason_codes']
+    assert exc.value.detail['execution_gate']['can_execute'] is False
+    # The refusal is recorded as its own event: a run that was STOPPED must never
+    # be indistinguishable from one that was never attempted.
+    history = [p for stmt, p in connection.executed if 'INSERT INTO action_history' in stmt]
+    assert any(p[6] == 'response_action.execution_gate_locked' for p in history)
+    assert not any(p[6] == 'response_action.execution_gate_authorized' for p in history)
+
+
+def test_unreadable_incident_state_closes_the_gate(monkeypatch):
+    """The incident read is the one whose failure handler used to raise instead of
+    failing closed. A failed read is now an unreadable FACT, not a crash and not
+    an absent incident."""
+    allow_evaluation = {**DENY_EVALUATION, 'decision': 'ALLOW',
+                        'reason_codes': ['POLICY_SATISFIED'], 'required_approvals': []}
+    connection = _GateConn(
+        action_row=_live_action_row(), evaluation=allow_evaluation, policy_version=7,
+        fail_on=('FROM incidents WHERE id',),
+    )
+    gate = pilot.response_action_execution_gate(
+        connection, _live_action_row(), workspace_id=WORKSPACE,
+        workspace_context={'role': 'admin'},
+    )
+    assert gate['can_execute'] is False
+    assert rgc.GATE_FACTS_UNAVAILABLE in gate['reason_codes']
+
+
+def test_execute_is_refused_for_a_denied_policy_whatever_the_quorum(monkeypatch):
+    """POLICY DENY. A full human quorum does not overturn a deterministic DENY."""
+    connection = _GateConn(
+        action_row=_live_action_row(), evaluation=DENY_EVALUATION, policy_version=7,
+        approvals=[
+            {'approver_user_id': 'u1', 'approver_role': 'admin', 'decision': 'approved',
+             'created_at': '2026-09-01T10:43:02+00:00', 'approval_role': COMPLIANCE},
+        ],
+    )
+    _patch_common(monkeypatch, connection)
+    request = SimpleNamespace(headers={'x-workspace-id': WORKSPACE})
+
+    with pytest.raises(HTTPException) as exc:
+        pilot.execute_enforcement_action(ACTION_ID, request)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail['execution_gate']['decision'] == rgc.GATE_DENIED
+    assert rgc.POLICY_DENIED in exc.value.detail['reason_codes']
+
+
+def test_no_execution_adapter_is_ever_reported_as_a_submitted_transaction(monkeypatch):
+    """ADAPTER UNAVAILABLE. §18 — an authorized action with no adapter is stated
+    as dry-run only. It is never presented as a blockchain submission, and no
+    action type in the catalogue claims a live path it does not have."""
+    monkeypatch.delenv('LIVE_ACTION_EXECUTION_ENABLED', raising=False)
+    assert rgc.live_execution_configured() is False
+
+    connection = _GateConn(action_row=_live_action_row(action_type='request_contract_pause'))
+    gate = pilot.response_action_execution_gate(
+        connection, _live_action_row(action_type='request_contract_pause'),
+        workspace_id=WORKSPACE, workspace_context={'role': 'admin'},
+    )
+    assert gate['execution_adapter_configured'] is False
+    assert rgc.EXECUTION_ADAPTER_NOT_CONFIGURED in gate['reason_codes']
+
+    # The executor honours the SAME fact: a contract pause routes to manual_only,
+    # so no provider is contacted and no transaction hash can be produced.
+    capability = pilot.resolve_response_action_capability('request_contract_pause', 'live')
+    assert capability['live_execution_path'] == 'manual_only'
+    assert capability['reason'] == 'Manual-only in live mode'
+
+
+def test_every_response_action_type_declares_an_honest_live_path():
+    """No action type may claim a 'safe' on-chain adapter unless one is actually
+    configured for this deployment."""
+    monkeypatch_free_paths = {
+        pilot.response_action_capability(t)['live_execution_path']
+        for t in pilot.RESPONSE_ACTION_TYPES
+    }
+    assert monkeypatch_free_paths <= {'governance', 'manual_only', 'unsupported', 'safe'}
+    # revoke_approval is the only type with a real adapter, and only when the Safe
+    # execution environment is configured.
+    assert pilot.response_action_capability('request_contract_pause')['live_execution_path'] != 'safe'

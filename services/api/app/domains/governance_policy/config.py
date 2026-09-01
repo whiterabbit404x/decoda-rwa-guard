@@ -143,25 +143,34 @@ def normalize_business_event(value: Any) -> str | None:
 # workspace permission. The operator's role is resolved SERVER-SIDE from
 # workspace_members; the client never asserts it.
 # --------------------------------------------------------------------------
+ROLE_SECURITY_LEAD = 'SECURITY_LEAD'
 ROLE_TREASURY_OPERATOR = 'TREASURY_OPERATOR'
 ROLE_COMPLIANCE_APPROVER = 'COMPLIANCE_APPROVER'
-GOVERNANCE_ROLES = (ROLE_TREASURY_OPERATOR, ROLE_COMPLIANCE_APPROVER)
+GOVERNANCE_ROLES = (ROLE_SECURITY_LEAD, ROLE_TREASURY_OPERATOR, ROLE_COMPLIANCE_APPROVER)
 
 GOVERNANCE_ROLE_LABELS: dict[str, str] = {
+    ROLE_SECURITY_LEAD: 'Security Lead',
     ROLE_TREASURY_OPERATOR: 'Treasury Operator',
     ROLE_COMPLIANCE_APPROVER: 'Compliance Approver',
 }
 
 #: The workspace permission that evidences each governance role.
 ROLE_PERMISSIONS: dict[str, str] = {
+    ROLE_SECURITY_LEAD: 'security.manage',
     ROLE_TREASURY_OPERATOR: 'response.propose',
     ROLE_COMPLIANCE_APPROVER: 'response.approve',
 }
 
 #: How each role is satisfied at evaluation time.
 #:   'operator'  — the submitting operator must hold the mapped permission.
-#:   'approval'  — a separate compliance approval artifact must be present.
+#:   'approval'  — a separate approval artifact must be present, recorded BY a
+#:                 human FOR that role (Screen 8 records one per approver per
+#:                 action version). The policy engine has no evidence source for
+#:                 such a role on its own, so it leaves it outstanding — which is
+#:                 why a policy that names it can only be satisfied by a real
+#:                 recorded sign-off, never by the submitter's own permissions.
 ROLE_SATISFACTION: dict[str, str] = {
+    ROLE_SECURITY_LEAD: 'approval',
     ROLE_TREASURY_OPERATOR: 'operator',
     ROLE_COMPLIANCE_APPROVER: 'approval',
 }
@@ -196,6 +205,7 @@ AMOUNT_INVALID = 'AMOUNT_INVALID'
 DAILY_TOTAL_UNAVAILABLE = 'DAILY_TOTAL_UNAVAILABLE'
 TREASURY_OPERATOR_MISSING = 'TREASURY_OPERATOR_MISSING'
 COMPLIANCE_APPROVAL_MISSING = 'COMPLIANCE_APPROVAL_MISSING'
+SECURITY_LEAD_APPROVAL_MISSING = 'SECURITY_LEAD_APPROVAL_MISSING'
 REQUIRED_ROLE_MISSING = 'REQUIRED_ROLE_MISSING'
 
 REASON_CODES = (
@@ -215,12 +225,14 @@ REASON_CODES = (
     DAILY_TOTAL_UNAVAILABLE,
     TREASURY_OPERATOR_MISSING,
     COMPLIANCE_APPROVAL_MISSING,
+    SECURITY_LEAD_APPROVAL_MISSING,
     REQUIRED_ROLE_MISSING,
 )
 
 #: Reason code emitted when a required role is not evidenced. Keeps the two
 #: roles the product names first-class while staying extensible.
 ROLE_MISSING_REASON: dict[str, str] = {
+    ROLE_SECURITY_LEAD: SECURITY_LEAD_APPROVAL_MISSING,
     ROLE_TREASURY_OPERATOR: TREASURY_OPERATOR_MISSING,
     ROLE_COMPLIANCE_APPROVER: COMPLIANCE_APPROVAL_MISSING,
 }

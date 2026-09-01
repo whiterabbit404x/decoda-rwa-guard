@@ -74,6 +74,21 @@ def _table_exists(connection: Any, name: str) -> bool:
     return bool((row or {}).get('ok'))
 
 
+def _column_exists(connection: Any, table: str, column: str) -> bool:
+    """Whether an optional column has been migrated in yet. Fail-closed: an
+    unreadable catalogue is treated as ABSENT, so the write degrades to the
+    pre-migration column set rather than raising."""
+    try:
+        row = connection.execute(
+            '''SELECT 1 AS ok FROM information_schema.columns
+               WHERE table_name = %s AND column_name = %s''',
+            (table, column),
+        ).fetchone()
+    except Exception:
+        return False
+    return bool((row or {}).get('ok'))
+
+
 def storage_ready(connection: Any) -> bool:
     """True only when every policy table this domain writes exists."""
     return all(_table_exists(connection, t) for t in (POLICIES_TABLE, VERSIONS_TABLE, EVALUATIONS_TABLE))
@@ -463,14 +478,26 @@ def record_evaluation(
     """
     if not _table_exists(connection, EVALUATIONS_TABLE):
         return False
+    # `required_roles` (0149) is every role the policy NAMES; `required_approvals`
+    # is only the subset this evaluation could not evidence. Screen 8's execution
+    # gate needs the first — an ALLOW leaves the second empty, and an empty list
+    # is not "no sign-off required". Both are stored so neither screen has to
+    # re-derive the other's. Omitted on a pre-0149 schema so a deploy that has not
+    # applied the migration keeps recording evaluations instead of failing them.
+    has_required_roles = _column_exists(connection, EVALUATIONS_TABLE, 'required_roles')
+    roles_column = ', required_roles' if has_required_roles else ''
+    roles_placeholder = ', %s::jsonb' if has_required_roles else ''
+    roles_value = (json.dumps(list(decision.required_roles)),) if has_required_roles else ()
     connection.execute(
         f'''INSERT INTO {EVALUATIONS_TABLE} (
                 id, workspace_id, policy_id, policy_key, policy_version, asset_id, incident_id,
                 canonical_event_id, operation, decision, reason_codes, required_approvals, checks,
-                amount_usd, input_snapshot, simulation, engine_version, evaluated_by_user_id, evaluated_at
+                amount_usd, input_snapshot, simulation, engine_version, evaluated_by_user_id,
+                evaluated_at{roles_column}
             ) VALUES (
                 %s::uuid, %s, %s::uuid, %s, %s, %s::uuid, %s::uuid, %s, %s, %s,
-                %s::jsonb, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s, %s, %s::uuid, %s
+                %s::jsonb, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s, %s, %s::uuid,
+                %s{roles_placeholder}
             )''',
         (
             decision.evaluation_id, workspace_id, decision.policy_id, decision.policy_key,
@@ -482,6 +509,7 @@ def record_evaluation(
             str(decision.amount_usd) if decision.amount_usd is not None else None,
             json.dumps(context.as_snapshot(), default=str),
             bool(decision.simulation), decision.engine_version, user_id, decision.evaluated_at,
+            *roles_value,
         ),
     )
     return True
