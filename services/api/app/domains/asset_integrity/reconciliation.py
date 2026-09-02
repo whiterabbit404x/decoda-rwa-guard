@@ -136,6 +136,17 @@ def to_units(value: Any) -> Optional[Decimal]:
     return parsed
 
 
+def normalize_operation(value: Any) -> Optional[str]:
+    """'mint' / 'burn', or None for anything this module cannot name.
+
+    Fail-closed on purpose: an unrecognized operation must not be passed on as a
+    real one, because the governing-policy lookup is keyed on it and a wrong key
+    would select the wrong policy.
+    """
+    key = str(value or '').strip().lower()
+    return key if key in ('mint', 'burn') else None
+
+
 def _norm_reference(value: Any) -> str:
     return str(value or '').strip().upper()
 
@@ -263,6 +274,14 @@ class ReconciliationResult:
     rule_config: dict[str, Any]
     match: MatchResult
     matched_issuance_id: Optional[str] = None
+    #: The token operation this variance is about — 'mint' or 'burn'. Resolved by
+    #: ``evaluate`` from the on-chain delta, or failing that from the direction of
+    #: the variance itself, and CARRIED here rather than recomputed downstream.
+    #: It is the key Screen 11's governing-policy lookup is made on, so a canonical
+    #: event that does not carry it cannot be governed by any policy at all. None
+    #: means the operation was never established (an indeterminate verdict, or a
+    #: variance of exactly zero) — never a guess.
+    operation: Optional[str] = None
     onchain_age_seconds: Optional[int] = None
     authoritative_age_seconds: Optional[int] = None
     data_gaps: list[str] = field(default_factory=list)
@@ -477,6 +496,10 @@ def evaluate(
             rule_config=rules.as_config(),
             match=match,
             matched_issuance_id=(match.matched.id if match.matched else None),
+            # The operation was resolved above to compute the severity; it is the
+            # same fact Screen 11 selects a policy with, so it is stored rather
+            # than discarded and re-derived (less precisely) by every consumer.
+            operation=normalize_operation(operation),
             onchain_age_seconds=kw.pop('onchain_age_seconds', None),
             authoritative_age_seconds=kw.pop('authoritative_age_seconds', None),
             data_gaps=list(data_gaps),

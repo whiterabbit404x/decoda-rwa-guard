@@ -415,6 +415,7 @@ def resolve_action_facts(
     operation: Optional[str] = None
     amount: Optional[Decimal] = None
     external_reference: Optional[str] = None
+    authorization_id: Optional[str] = None
     detection = resolve_threat_detection(
         connection, workspace_id=workspace_id, detection_id=detection_id,
         alert_id=alert_id, incident_id=incident_id, unreadable=unreadable,
@@ -427,25 +428,47 @@ def resolve_action_facts(
         asset_id = asset_id or _text(detection.get('primary_asset_id'))
         canonical_event_id = canonical_event_id or _text(detection.get('tx_hash'))
         provenance = detection.get('provenance') if isinstance(detection.get('provenance'), dict) else {}
+        # The authorization THIS detection is about, named by the detection itself.
+        # Either identifier is an explicit link; neither is inferred.
         external_reference = _text(provenance.get('external_reference'))
+        authorization_id = _text(provenance.get('authorization_id'))
 
     # -- authorized issuance: the off-chain record -------------------------
     # This is the AUTHORITATIVE business-event and settlement fact. Absent means
     # "no authorization backs this operation", which is exactly the anomaly the
     # policy is meant to deny — it is never treated as a satisfied requirement.
+    #
+    # Read ONLY through an identifier the detection itself carries. The previous
+    # predicate degraded to "the most recently authorized issuance for this asset"
+    # whenever the detection named none — which is every unmatched-issuance and
+    # every supply-variance event, because a detection is STORED only when no
+    # authorization matched it. An unauthorized mint was therefore handed an
+    # unrelated cleared subscription, and the engine, shown a satisfied business
+    # event and a CLEARED settlement, recorded a `simulation = FALSE` ALLOW for an
+    # operation nobody authorized. An authorization that cannot be named is not
+    # this operation's authorization, so none is read and both facts stay absent.
     business_event: Optional[str] = None
     settlement_status: Optional[str] = None
-    if asset_id and _table_exists(connection, 'asset_authorized_issuances', unreadable):
+    issuance_lookup: Optional[tuple[str, tuple[Any, ...]]] = None
+    if asset_id and authorization_id:
+        issuance_lookup = (
+            '''SELECT id, operation, amount, settlement_state, external_reference
+               FROM asset_authorized_issuances
+               WHERE workspace_id = %s AND asset_id = %s::uuid AND id = %s::uuid''',
+            (workspace_id, asset_id, authorization_id),
+        )
+    elif asset_id and external_reference:
+        issuance_lookup = (
+            '''SELECT id, operation, amount, settlement_state, external_reference
+               FROM asset_authorized_issuances
+               WHERE workspace_id = %s AND asset_id = %s::uuid AND external_reference = %s::text
+               ORDER BY authorized_at DESC
+               LIMIT 1''',
+            (workspace_id, asset_id, external_reference),
+        )
+    if issuance_lookup and _table_exists(connection, 'asset_authorized_issuances', unreadable):
         try:
-            issuance = _row_dict(connection.execute(
-                '''SELECT id, operation, amount, settlement_state, external_reference
-                   FROM asset_authorized_issuances
-                   WHERE workspace_id = %s AND asset_id = %s::uuid
-                     AND (%s::text IS NULL OR external_reference = %s::text)
-                   ORDER BY authorized_at DESC
-                   LIMIT 1''',
-                (workspace_id, asset_id, external_reference, external_reference),
-            ).fetchone())
+            issuance = _row_dict(connection.execute(*issuance_lookup).fetchone())
         except Exception:
             logger.exception('governance_enforcement_issuance_read_failed workspace_id=%s', workspace_id)
             unreadable.append('asset_authorized_issuance')

@@ -1718,3 +1718,232 @@ def test_17_k_an_action_is_shown_its_own_evaluation_not_a_siblings():
     # And the gate passes the action it is building a verdict for.
     gate_source = inspect.getsource(rg_service.build_gate_inputs)
     assert 'response_action_id=action_id' in gate_source
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 18. THE OPERATION THE VERDICT WAS NEVER TOLD
+#
+# With the producer wired in and the identifiers matching, a newly created action
+# STILL reached Screen 8 as
+#
+#     policy_decision = NOT_EVALUATED
+#     execution_decision = LOCKED
+#     reason_codes = POLICY_EVALUATION_MISSING
+#
+# because the one fact the governing-policy lookup is keyed on never reached the
+# canonical row. `governing_policy` selects on (workspace, ACTIVE, OPERATION,
+# asset); with no operation it returns None, the producer records nothing by
+# design (`STATUS_NO_POLICY`), and the gate's own scope probe — which is
+# operation-agnostic — sees an ACTIVE policy for the workspace and reports an
+# evaluation as MISSING. A permanent dead end: re-posting the on-demand endpoint
+# walks the identical path.
+#
+# The operation WAS resolved — by the Screen 3 reconciliation engine, from the
+# on-chain delta or the direction of the variance, one line before the verdict
+# was built. `result()` popped it, spent it on the severity, and dropped it:
+# `ReconciliationResult` had no field for it, so `emit_canonical_event` had
+# nothing to write into `threat_detections.operation`, and every response action
+# raised from a supply-variance event was ungovernable.
+#
+# The second half of the same defect ran the other way. `resolve_action_facts`
+# read the authorized issuance with `(%s::text IS NULL OR external_reference = %s)`
+# — which degrades to "the most recently authorized issuance for this asset"
+# whenever the detection names none. A detection is STORED only when nothing
+# matched it, so that is every unauthorized mint: the engine was shown an
+# unrelated cleared subscription and recorded a `simulation = FALSE` ALLOW for an
+# operation nobody authorized. Stamping the operation without also fixing this
+# would have converted every LOCKED action into a fabricated ALLOW.
+# ═════════════════════════════════════════════════════════════════════════════
+def test_18_a_the_reconciliation_verdict_carries_the_operation_it_resolved():
+    """The engine resolves the operation; the result must still carry it."""
+    from decimal import Decimal
+
+    from services.api.app.domains.asset_integrity import reconciliation as recon
+
+    minted = recon.evaluate(
+        onchain=recon.OnChainObservation(
+            total_supply=Decimal('5000000'), observed_at=NOW,
+            last_delta=Decimal('500000'), last_delta_operation='mint', last_delta_at=NOW),
+        authoritative=recon.AuthoritativeState(expected_total_supply=Decimal('4500000'), observed_at=NOW),
+        now=NOW,
+    )
+    assert minted.status == recon.UNEXPLAINED_VARIANCE
+    assert minted.operation == 'mint'
+
+    # No discrete event captured: the DIRECTION of the variance still names it.
+    burned = recon.evaluate(
+        onchain=recon.OnChainObservation(total_supply=Decimal('4000000'), observed_at=NOW),
+        authoritative=recon.AuthoritativeState(expected_total_supply=Decimal('4500000'), observed_at=NOW),
+        now=NOW,
+    )
+    assert burned.operation == 'burn'
+
+    # A verdict that established no variance names neither, and never guesses.
+    not_applicable = recon.evaluate(onchain=None, authoritative=None, now=NOW, supply_applicable=False)
+    assert not_applicable.operation is None
+    assert recon.normalize_operation('transfer') is None
+    assert recon.normalize_operation(None) is None
+
+
+def test_18_b_the_canonical_event_row_is_stamped_with_that_operation():
+    """`threat_detections.operation` is what makes the event governable at all."""
+    import inspect
+    import re
+
+    from services.api.app.domains.asset_integrity import service as ai_service
+
+    source = inspect.getsource(ai_service.emit_canonical_event)
+    insert = re.search(r'INSERT INTO threat_detections \((.*?)\) VALUES \((.*?)\)', source, re.S)
+    columns = [c.strip() for c in insert.group(1).replace('\n', ' ').split(',') if c.strip()]
+    values = [v.strip() for v in insert.group(2).replace('\n', ' ').split(',') if v.strip()]
+    assert 'operation' in columns
+    # The arity guard from 17.a, applied to the statement this change edits: a
+    # column list that outruns its VALUES list is rejected by psycopg before
+    # Postgres ever sees it, and then nothing is detected, alerted or evaluated.
+    assert len(columns) == len(values)
+    assert values[columns.index('operation')] == '%s'
+    # And the refresh never erases an operation an earlier cycle established.
+    assert 'operation = COALESCE(%s, operation)' in source
+
+
+def test_18_c_the_stamped_operation_comes_from_one_resolver():
+    """Evidence filtering and the stored column cannot disagree about the operation."""
+    import inspect
+    from decimal import Decimal
+
+    from services.api.app.domains.asset_integrity import reconciliation as recon
+    from services.api.app.domains.asset_integrity import service as ai_service
+
+    result = recon.evaluate(
+        onchain=recon.OnChainObservation(
+            total_supply=Decimal('5000000'), observed_at=NOW,
+            last_delta=Decimal('500000'), last_delta_operation='mint', last_delta_at=NOW),
+        authoritative=recon.AuthoritativeState(expected_total_supply=Decimal('4500000'), observed_at=NOW),
+        now=NOW,
+    )
+    assert ai_service.governed_operation(result) == 'mint'
+    assert 'governed_operation(result)' in inspect.getsource(ai_service.build_evidence_refs)
+    assert 'governed_operation(result)' in inspect.getsource(ai_service.emit_canonical_event)
+
+
+def test_18_d_an_unstamped_detection_records_nothing_and_never_authorizes():
+    """The reported symptom, reproduced: no operation, no policy, no evaluation.
+
+    This is the Screen 3 canonical event exactly as its writer used to store it —
+    no operation, and (because a detection is stored only when NO authorization
+    matched) no authorization to recover one from. Fail-closed is preserved:
+    nothing is written and nothing is authorized. But the action is parked at
+    POLICY_EVALUATION_MISSING with no path forward, which is why the operation
+    has to reach the row.
+    """
+    connection = _EnforcementConn(
+        policy_row=_policy_row(),
+        detection={**MINT_DETECTION, 'operation': None, 'provenance': {}},
+        issuance=CLEARED_ISSUANCE,
+    )
+    outcome = enforcement.evaluate_response_action(
+        connection, workspace_id=WORKSPACE, action=_action_row(), now=NOW, user_id='operator-1',
+    )
+    assert outcome.status == enforcement.STATUS_NO_POLICY
+    assert outcome.recorded is False
+    assert connection.inserted_evaluations == []
+
+    gate = pilot.response_action_execution_gate(
+        _EnforcementConn(evaluation=None, policy_row=_policy_row()),
+        _action_row(), workspace_id=WORKSPACE, workspace_context={'role': 'admin'},
+    )
+    assert gate['policy_decision'] == rgc.POLICY_NOT_EVALUATED
+    assert rgc.POLICY_EVALUATION_MISSING in gate['reason_codes']
+    assert gate['can_execute'] is False
+
+
+def test_18_e_the_stamped_operation_produces_the_enforcement_row_screen_8_reads():
+    """Stamped, the same action reaches a real `simulation = FALSE` decision."""
+    connection = _EnforcementConn(
+        policy_row=_policy_row(), detection=MINT_DETECTION, issuance=CLEARED_ISSUANCE,
+    )
+    outcome = enforcement.evaluate_response_action(
+        connection, workspace_id=WORKSPACE, action=_action_row(), now=NOW, user_id='operator-1',
+    )
+    assert outcome.status == enforcement.STATUS_RECORDED
+    assert outcome.decision.decision in (gpc.DECISION_ALLOW, gpc.DECISION_DENY)
+
+    stored = _evaluation_row_from_insert(connection)
+    assert stored['operation'] == gpc.OPERATION_MINT
+    assert stored['simulation'] is False
+    assert stored['policy_id'] == POLICY_ID and stored['policy_version'] == 7
+
+    gate = pilot.response_action_execution_gate(
+        _EnforcementConn(evaluation=stored, policy_row=_policy_row()),
+        _action_row(), workspace_id=WORKSPACE, workspace_context={'role': 'admin'},
+    )
+    assert gate['policy_decision'] == outcome.decision.decision
+    assert gate['evaluation_id'] == stored['id']
+    assert gate['policy_id'] == POLICY_ID and gate['policy_version'] == 7
+
+
+def test_18_f_an_unrelated_authorized_issuance_is_never_this_operations_authorization():
+    """A detection that names no authorization is not handed the newest one.
+
+    This is the fabricated-ALLOW half. An unauthorized mint has no authorization
+    by construction; reading the asset's most recent one supplied a SUBSCRIPTION
+    and a CLEARED settlement the operation never had, and the engine — shown two
+    satisfied requirements — recorded an enforcement ALLOW.
+    """
+    detection = {**MINT_DETECTION, 'provenance': {}}
+    connection = _EnforcementConn(
+        policy_row=_policy_row(), detection=detection, issuance=CLEARED_ISSUANCE,
+    )
+    facts = enforcement.resolve_action_facts(
+        connection, workspace_id=WORKSPACE, action=_action_row(),
+    )
+    # Not "read and ignored" — never read at all.
+    assert connection.statements('FROM asset_authorized_issuances') == []
+    assert facts.business_event is None
+    assert facts.settlement_status is None
+    assert 'authorized_issuance_id' not in facts.sources
+
+    outcome = enforcement.evaluate_response_action(
+        connection, workspace_id=WORKSPACE, action=_action_row(), now=NOW, user_id='operator-1',
+    )
+    assert outcome.decision.decision == gpc.DECISION_DENY
+    assert gpc.BUSINESS_EVENT_MISSING in outcome.decision.reason_codes
+
+
+def test_18_g_the_issuance_is_read_only_by_an_identifier_the_detection_names():
+    """Both canonical links are honoured, and each is workspace + asset scoped."""
+    by_reference = _EnforcementConn(
+        policy_row=_policy_row(), detection=MINT_DETECTION, issuance=CLEARED_ISSUANCE,
+    )
+    facts = enforcement.resolve_action_facts(
+        by_reference, workspace_id=WORKSPACE, action=_action_row(),
+    )
+    statement, params = by_reference.statements('FROM asset_authorized_issuances')[0]
+    assert 'external_reference = %s::text' in statement
+    assert params == (WORKSPACE, ASSET_ID, 'SUB-1001')
+    assert facts.settlement_status == gpc.SETTLEMENT_CLEARED
+    assert facts.business_event == gpc.BUSINESS_EVENT_SUBSCRIPTION
+
+    # The settlement-timeout lane names the authorization by id instead.
+    by_id = _EnforcementConn(
+        policy_row=_policy_row(),
+        detection={**MINT_DETECTION, 'provenance': {'authorization_id': CLEARED_ISSUANCE['id']}},
+        issuance=CLEARED_ISSUANCE,
+    )
+    enforcement.resolve_action_facts(by_id, workspace_id=WORKSPACE, action=_action_row())
+    statement, params = by_id.statements('FROM asset_authorized_issuances')[0]
+    assert 'id = %s::uuid' in statement
+    assert params == (WORKSPACE, ASSET_ID, CLEARED_ISSUANCE['id'])
+
+
+def test_18_h_an_unreadable_issuance_still_records_nothing():
+    """Keying the lookup must not turn a failed read into an absent fact."""
+    connection = _EnforcementConn(
+        policy_row=_policy_row(), detection=MINT_DETECTION, issuance=CLEARED_ISSUANCE,
+        fail_on=('FROM asset_authorized_issuances',),
+    )
+    outcome = enforcement.evaluate_response_action(
+        connection, workspace_id=WORKSPACE, action=_action_row(), now=NOW, user_id='operator-1',
+    )
+    assert outcome.status == enforcement.STATUS_FACTS_UNAVAILABLE
+    assert connection.inserted_evaluations == []
