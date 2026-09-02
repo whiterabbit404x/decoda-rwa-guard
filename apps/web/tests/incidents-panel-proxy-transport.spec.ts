@@ -58,7 +58,11 @@ test.describe('Incidents page same-origin proxy transport', () => {
     expect(panel).toContain('const anyAlerts = alertsExist || activeAlerts > 0;');
     expect(panel).toContain('Alerts exist, but no incident has been opened yet.');
     // alertsExist comes from a real /alerts probe, not frontend-only runtime counters alone.
-    expect(panel).toContain('`${apiUrl}/alerts?limit=1`');
+    // The probe now reads a page of alerts rather than a single row, because the same
+    // response also resolves the Create Incident escalation candidate — the page size is
+    // incidental; going through the same-origin /alerts proxy is the contract.
+    expect(panel).toContain('`${apiUrl}/alerts?limit=${ESCALATION_CANDIDATE_SCAN_LIMIT}`');
+    expect(panel).toContain('setAlertsExist(rows.length > 0);');
   });
 
   test('read-path diagnostics and a bug-visible filtered-out guard are logged', () => {
