@@ -192,6 +192,30 @@ def _to_authorizations(rows: list[dict[str, Any]]) -> list[engine.AuthorizedIssu
 # --------------------------------------------------------------------------
 # Evidence references — real stored rows, counted, never a hardcoded number
 # --------------------------------------------------------------------------
+def governed_operation(result: engine.ReconciliationResult) -> Optional[str]:
+    """The token operation this reconciliation verdict is about, or None.
+
+    ONE resolution, used both to filter the authorization candidates recorded as
+    evidence and to stamp ``threat_detections.operation`` — the column Screen 11's
+    governing-policy lookup, and therefore Screen 8's execution gate, is keyed on.
+
+    Order of authority: the matched authorization names the operation outright;
+    otherwise the engine's own resolution (``result.operation``, taken from the
+    on-chain delta or, failing that, the direction of the variance); otherwise the
+    variance sign here. A variance of exactly zero, or a verdict that established
+    no variance at all, names neither operation and returns None rather than a
+    guess — an evaluation under the WRONG policy would be worse than none.
+    """
+    if result.match.matched is not None:
+        return engine.normalize_operation(result.match.matched.operation)
+    resolved = engine.normalize_operation(result.operation)
+    if resolved:
+        return resolved
+    if result.variance_units is None or result.variance_units == 0:
+        return None
+    return 'mint' if result.variance_units > 0 else 'burn'
+
+
 def build_evidence_refs(
     *,
     onchain_row: Optional[dict[str, Any]],
@@ -236,11 +260,7 @@ def build_evidence_refs(
             'evidence_source': str(authoritative_row.get('evidence_source') or 'live'),
         })
     # Authorization records the matcher actually examined (same operation only).
-    operation = None
-    if result.match.matched is not None:
-        operation = str(result.match.matched.operation or '').lower()
-    elif result.variance_units is not None:
-        operation = 'mint' if result.variance_units > 0 else 'burn'
+    operation = governed_operation(result)
     for row in authorization_rows:
         if operation and str(row.get('operation') or '').lower() != operation:
             continue
@@ -377,6 +397,15 @@ def emit_canonical_event(
         authoritative_source=str((authoritative_row or {}).get('source_name') or '') or None,
     )
     checks_json = op_schemas.checks_as_dict(checks)
+    # The governed OPERATION, carried onto the canonical row. Screen 11 selects the
+    # policy that governs an action by (workspace, ACTIVE, operation, asset), and
+    # Screen 8's execution gate consumes only the evaluation that lookup produces.
+    # Left unstamped, this event resolved to no operation, so no policy governed it,
+    # so no `simulation = FALSE` evaluation was ever written — and every response
+    # action raised from it sat at POLICY_EVALUATION_MISSING / LOCKED with no path
+    # to an authorization. `COALESCE` on the refresh below never erases an operation
+    # a previous cycle established.
+    operation = governed_operation(result)
 
     if existing is None:
         event_id = str(uuid.uuid4())
@@ -387,14 +416,15 @@ def emit_canonical_event(
                 primary_asset_id, evidence_source, evidence_quality, event_count, actor_count,
                 transaction_count, evidence_count, score_inputs, explanation, recommended_next_step,
                 alert_eligible, detector_version, deterministic_reason_code, operational_checks,
-                observed_amount, expected_amount, variance_amount, tx_hash, ai_summary, ai_summary_source,
+                observed_amount, expected_amount, variance_amount, operation, tx_hash,
+                ai_summary, ai_summary_source,
                 first_seen_at, last_seen_at, detected_at, created_at, updated_at
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, 'open',
                 %s, %s, 'normalized_telemetry', 1, 0,
                 %s, %s, %s::jsonb, %s, %s,
                 %s, %s, %s, %s::jsonb,
-                %s, %s, %s, %s, NULL, 'deterministic',
+                %s, %s, %s, %s, %s, NULL, 'deterministic',
                 %s, %s, %s, %s, %s
             )
             ON CONFLICT (workspace_id, cluster_key) DO NOTHING
@@ -408,7 +438,7 @@ def emit_canonical_event(
                 evidence_source == 'live', f'{result.rule_id}-v{result.rule_version}',
                 result.reason_code, pilot._json_dumps(checks_json),
                 _amount_str(result.observed_supply), _amount_str(result.expected_supply),
-                _amount_str(result.variance_units), (onchain_row or {}).get('tx_hash'),
+                _amount_str(result.variance_units), operation, (onchain_row or {}).get('tx_hash'),
                 now, now, now, now, now,
             ),
         )
@@ -437,6 +467,7 @@ def emit_canonical_event(
                 observed_amount = %s,
                 expected_amount = %s,
                 variance_amount = %s,
+                operation = COALESCE(%s, operation),
                 last_seen_at = GREATEST(last_seen_at, %s),
                 updated_at = %s
             WHERE id = %s AND workspace_id = %s
@@ -446,7 +477,7 @@ def emit_canonical_event(
                 pilot._json_dumps(score_inputs), explanation,
                 result.reason_code, pilot._json_dumps(checks_json),
                 _amount_str(result.observed_supply), _amount_str(result.expected_supply),
-                _amount_str(result.variance_units),
+                _amount_str(result.variance_units), operation,
                 now, now, event_id, workspace_id,
             ),
         )

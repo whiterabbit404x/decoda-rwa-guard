@@ -232,6 +232,53 @@ def test_anomaly_emits_the_canonical_operational_integrity_event():
     assert 'critical' in inserts[0][1]
 
 
+def test_the_canonical_event_carries_the_operation_the_verdict_resolved():
+    """`threat_detections.operation` is the key Screen 11 selects a policy with.
+
+    Left unstamped, this event resolved to no operation, so no governing policy
+    was found, so no `simulation = FALSE` evaluation was ever produced — and every
+    response action raised from it sat at POLICY_EVALUATION_MISSING / LOCKED.
+    """
+    conn = _conn(onchain=_onchain_row(), authoritative=_authoritative_row())
+    out = service.evaluate_and_persist(
+        conn, workspace_id='ws-1', asset_id='asset-1', asset_name='Bond', now=NOW,
+    )
+    assert out['result'].operation == 'mint'
+    params = conn.writes_matching('INSERT INTO threat_detections')[0][1]
+    assert 'mint' in params
+
+
+def test_a_refresh_never_erases_an_operation_an_earlier_cycle_established():
+    existing = {'id': 'evt-1', 'status': 'open', 'linked_alert_id': None, 'linked_incident_id': None}
+    conn = _conn(onchain=_onchain_row(), authoritative=_authoritative_row(), detection=existing)
+    service.evaluate_and_persist(conn, workspace_id='ws-1', asset_id='asset-1', now=NOW)
+    statement, params = conn.writes_matching('UPDATE threat_detections SET')[0]
+    assert 'operation = COALESCE(%s, operation)' in statement
+    assert 'mint' in params
+
+
+def test_the_stored_operation_and_the_evidence_filter_share_one_resolver():
+    """Two derivations of the same fact could disagree; one cannot."""
+    result = engine.evaluate(
+        onchain=engine.OnChainObservation(
+            total_supply=Decimal('4000000'), observed_at=NOW,
+            last_delta=Decimal('500000'), last_delta_operation='burn', last_delta_at=NOW),
+        authoritative=engine.AuthoritativeState(expected_total_supply=Decimal('4500000'), observed_at=NOW),
+        now=NOW,
+    )
+    assert result.operation == 'burn'
+    assert service.governed_operation(result) == 'burn'
+
+
+def test_an_operation_that_cannot_be_named_is_never_guessed():
+    """A wrong operation would select the WRONG policy — worse than none."""
+    not_applicable = engine.evaluate(
+        onchain=None, authoritative=None, now=NOW, supply_applicable=False,
+    )
+    assert not_applicable.operation is None
+    assert service.governed_operation(not_applicable) is None
+
+
 def test_a_healthy_result_emits_no_canonical_event():
     conn = _conn(
         onchain=_onchain_row(total_supply=Decimal('4500000'), last_delta=None, last_delta_operation=None),
