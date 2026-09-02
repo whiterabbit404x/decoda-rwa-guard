@@ -94,6 +94,10 @@ type AlertRow = {
   title?: string | null;
   severity?: string | null;
   status?: string | null;
+  // Canonical alert→incident linkage from the backend list serializer. An alert carrying
+  // either of these is ALREADY escalated, so it is never offered as a creation candidate.
+  incident_id?: string | null;
+  linked_incident_id?: string | null;
   detected_by?: string | null;
   payload?: {
     detection_type?: string | null;
@@ -227,9 +231,37 @@ function incidentStatus(incident: IncidentRow): string {
   return incident.workflow_status ?? incident.status ?? 'unknown';
 }
 
+// Statuses that make an alert ineligible for escalation. 'suppressed' mirrors the backend
+// guard in escalate_alert_to_incident (a suppressed alert returns 404), so the UI never
+// offers a candidate the API is guaranteed to reject.
+const NON_ESCALATABLE_ALERT_STATUSES = new Set(['suppressed']);
+
+/**
+ * Newest alert that can still become an incident: not suppressed, and not already linked
+ * to one. Returns null when every alert is already escalated — that is a truthful "nothing
+ * to create from" state, NOT an error, and it keeps Create Incident disabled for the right
+ * reason instead of unconditionally.
+ *
+ * Alerts arrive newest-first from GET /alerts, so the first match is the newest candidate.
+ */
+function firstEscalatableAlert(rows: AlertRow[]): AlertRow | null {
+  for (const row of rows) {
+    if (!row?.id) continue;
+    if (row.incident_id || row.linked_incident_id) continue;
+    if (NON_ESCALATABLE_ALERT_STATUSES.has(String(row.status ?? '').toLowerCase())) continue;
+    return row;
+  }
+  return null;
+}
+
 /* ── Constants ──────────────────────────────────────────────────── */
 
 const INCIDENT_TABLE_HEADERS = ['Incident ID', 'Severity', 'Title', 'Asset', 'Status', 'Created', 'Action'];
+
+// One page of recent alerts is scanned for an escalation candidate. The previous limit=1
+// probe could only answer "do alerts exist?"; it could not tell an already-escalated alert
+// from an escalatable one, so it could not gate a creation control truthfully.
+const ESCALATION_CANDIDATE_SCAN_LIMIT = 50;
 
 const DETAIL_TABS = [
   { key: 'overview',          label: 'Overview' },
@@ -254,6 +286,11 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
   const [selectedId, setSelectedId] = useState(initialSelectedId ?? '');
   const [alertsExist, setAlertsExist] = useState(false);
+  // Newest alert that has not been escalated yet — the only thing the backend can turn into
+  // an incident. null = nothing to escalate (Create Incident stays disabled, truthfully).
+  const [escalatableAlert, setEscalatableAlert] = useState<AlertRow | null>(null);
+  const [creatingIncident, setCreatingIncident] = useState(false);
+  const [createIncidentError, setCreateIncidentError] = useState('');
   const [search, setSearch] = useState('');
   const [severityFilter, setSeverityFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
@@ -278,6 +315,62 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
   const detectionOk = (counts?.detections ?? 0) > 0 || !!(summary as any).last_detection_at;
   const activeAlerts: number =
     (counts?.active_alerts as number | undefined) ?? summary.active_alerts_count ?? 0;
+
+  // Create Incident. There is NO standalone POST /incidents in the backend: an incident is
+  // only ever created by escalating an alert (POST /alerts/{id}/escalate), which is what
+  // preserves the canonical detection → alert → incident → action chain. This control runs
+  // that same canonical endpoint the Alerts screen uses — it does not invent a second
+  // creation path, and it does not fabricate an incident with no alert behind it.
+  //
+  // RBAC is unchanged and still enforced server-side (escalation requires the workspace
+  // 'members.manage' permission). A 403 is surfaced verbatim rather than hidden, so a user
+  // without the permission is told why instead of seeing a control that silently does
+  // nothing. The endpoint is idempotent: an alert already linked to an incident returns that
+  // incident with created=false, so a double click can never produce a duplicate.
+  const handleCreateIncident = useCallback(async () => {
+    if (!escalatableAlert?.id || creatingIncident) return;
+    setCreatingIncident(true);
+    setCreateIncidentError('');
+    setMessage('');
+    try {
+      const res = await fetch(`${apiUrl}/alerts/${encodeURIComponent(escalatableAlert.id)}/escalate`, {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify({
+          title: `Escalated alert: ${escalatableAlert.title ?? escalatableAlert.id}`,
+          summary: escalatableAlert.title ?? 'Escalated from alert',
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        incident_id?: string;
+        created?: boolean;
+        detail?: unknown;
+        message?: unknown;
+      };
+      if (!res.ok) {
+        const detail = data.detail;
+        const detailText = typeof detail === 'string'
+          ? detail
+          : (detail && typeof detail === 'object' && 'message' in detail
+            ? String((detail as Record<string, unknown>).message)
+            : '');
+        setCreateIncidentError(detailText || String(data.message ?? '') || 'Unable to create the incident. Please retry.');
+        return;
+      }
+      if (!data.incident_id) {
+        setCreateIncidentError('The alert was escalated but no incident id was returned.');
+        return;
+      }
+      // Land on the persisted incident the backend actually created/linked, so the operator
+      // sees the real row (never an optimistic client-side placeholder).
+      router.push(`/incidents/${encodeURIComponent(data.incident_id)}`);
+    } catch {
+      setCreateIncidentError('Network error. Failed to reach the server.');
+    } finally {
+      setCreatingIncident(false);
+    }
+  }, [escalatableAlert, creatingIncident, apiUrl, authHeaders, router]);
 
   const handleRecommend = useCallback(async () => {
     if (!selectedId || recommending) return;
@@ -374,17 +467,29 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
   // *active* alerts, so a resolved/linked alert would wrongly read as zero and surface the
   // detection-stage message; this fetch keeps the copy truthful (CLAUDE.md: never claim no alert
   // when alerts exist). One linked alert is enough to know escalation is the next step.
+  //
+  // The same page also resolves the newest ESCALATABLE alert — one that is not suppressed and
+  // does not already point at an incident — because the backend has no standalone POST
+  // /incidents: an incident is only ever born from an alert via POST /alerts/{id}/escalate.
+  // That candidate is what makes "Create Incident" a real, truthful control instead of a dead
+  // one: enabled only when the workflow prerequisite genuinely exists, disabled with the
+  // reason when it does not (CLAUDE.md: fail-closed, never claim a capability that is absent).
   useEffect(() => {
     if (runtimeLoading) return;
     let cancelled = false;
-    void fetch(`${apiUrl}/alerts?limit=1`, { headers: authHeaders(), cache: 'no-store' })
+    void fetch(`${apiUrl}/alerts?limit=${ESCALATION_CANDIDATE_SCAN_LIMIT}`, { headers: authHeaders(), cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : null))
       .then((json) => {
         if (cancelled) return;
-        const rows = ((json as Record<string, unknown> | null)?.alerts ?? []) as unknown[];
+        const rows = ((json as Record<string, unknown> | null)?.alerts ?? []) as AlertRow[];
         setAlertsExist(rows.length > 0);
+        setEscalatableAlert(firstEscalatableAlert(rows));
       })
-      .catch(() => { if (!cancelled) setAlertsExist(false); });
+      .catch(() => {
+        if (cancelled) return;
+        setAlertsExist(false);
+        setEscalatableAlert(null);
+      });
     return () => { cancelled = true; };
   }, [apiUrl, authHeaders, runtimeLoading]);
 
@@ -593,11 +698,28 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
         </select>
         <input placeholder="Assignee user ID..." value={assigneeFilter} onChange={(e) => setAssigneeFilter(e.target.value)}
           style={{ width: '180px' }} aria-label="Assignee filter" />
-        <button type="button" className="btn btn-primary" disabled style={{ opacity: 0.45 }}
-          title="Incident creation from alert requires alert escalation — use View Alert → Open Incident">
-          Create Incident
+        {/* Create Incident runs the canonical alert-escalation path (POST /alerts/{id}/escalate).
+            It is disabled ONLY when the workflow prerequisite is genuinely absent — no alert is
+            left to escalate — never unconditionally. RBAC still lives on the backend; a denied
+            request surfaces its reason below instead of being pre-empted here, because workspace
+            role permissions are DB-overridable and cannot be inferred client-side. */}
+        <button type="button" className="btn btn-primary" data-testid="create-incident"
+          disabled={creatingIncident || !escalatableAlert}
+          style={{ opacity: creatingIncident || !escalatableAlert ? 0.45 : 1 }}
+          title={escalatableAlert
+            ? `Open an incident from the latest un-escalated alert (${escalatableAlert.title ?? escalatableAlert.id})`
+            : 'No alert is available to escalate. Incidents are created from alerts — open an alert first.'}
+          onClick={() => void handleCreateIncident()}>
+          {creatingIncident ? 'Creating…' : 'Create Incident'}
         </button>
       </div>
+
+      {/* The backend's own refusal (403 PERMISSION_DENIED, suppressed alert, …) is shown
+          verbatim — the control never fails silently and never claims a success it did not get. */}
+      {createIncidentError ? (
+        <p className="statusLine" role="alert" data-testid="create-incident-error"
+          style={{ marginBottom: '0.75rem' }}>{createIncidentError}</p>
+      ) : null}
 
       {/* ── Content ─────────────────────────────────────────────── */}
       {blocker ? (
