@@ -12,7 +12,6 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from services.api.app.domains.governance_policy import config as gpc
 from services.api.app.domains.response_gate import config as rgc
 from services.api.app.domains.response_gate.engine import (
     ApprovalRecord,
@@ -318,23 +317,28 @@ def _policy_governs(
     governs but no enforcement decision exists, the gate reports
     POLICY_EVALUATION_MISSING and stays locked; when nothing governs, it reports
     NOT_APPLICABLE — never ALLOW in either case.
+
+    Delegated to ``governance_policy.enforcement.policy_scope_governed`` rather
+    than re-running the query here, so the ENFORCEMENT PRODUCER and this gate
+    read the identical predicate. When the two drifted apart the producer wrote
+    no evaluation for an action the gate considered governed, and the action sat
+    at POLICY_EVALUATION_MISSING with nothing able to clear it.
     """
     if not _table_exists(connection, POLICIES_TABLE, cache):
         return False
-    asset = str(asset_id or '').strip() or None
-    try:
-        row = connection.execute(
-            f'''SELECT 1 AS present FROM {POLICIES_TABLE}
-                WHERE workspace_id = %s AND status = %s
-                  AND (asset_id IS NULL OR (%s::uuid IS NOT NULL AND asset_id = %s::uuid))
-                LIMIT 1''',
-            (workspace_id, gpc.STATUS_ACTIVE, asset, asset),
-        ).fetchone()
-    except Exception:
-        logger.exception('response_gate_policy_scope_read_failed workspace_id=%s', workspace_id)
+    # Local import: governance_policy.service imports pilot at module scope, and
+    # this module is imported from inside pilot's own call paths.
+    from services.api.app.domains.governance_policy import enforcement as gp_enforcement
+
+    governed = gp_enforcement.policy_scope_governed(
+        connection, workspace_id=workspace_id, asset_id=asset_id,
+    )
+    if governed is None:
+        # The probe could not be read. Recorded so build_gate_inputs reports
+        # NOT_EVALUATED rather than the positive finding "no policy applies".
         _note_unreadable(cache, 'policy_scope')
         return False
-    return bool(_row_dict(row).get('present'))
+    return bool(governed)
 
 
 # --------------------------------------------------------------------------

@@ -19841,7 +19841,7 @@ def recommend_response_action_for_incident(incident_id: str, request: Request) -
             )
             connection.commit()
 
-        # The DETERMINISTIC ENFORCEMENT EVALUATION for each newly planned action.
+        # The DETERMINISTIC ENFORCEMENT EVALUATION for each action in the plan.
         # This is the producer of the `simulation = FALSE` record Screen 8's gate
         # consumes: without it every recommended action would sit at
         # POLICY_EVALUATION_MISSING and no operator could ever reach an
@@ -19850,15 +19850,26 @@ def recommend_response_action_for_incident(incident_id: str, request: Request) -
         # created the action — the plan above is deterministic, and either way an
         # AI recommendation is not one of the rows the resolver reads.
         #
+        # EVERY action the plan resolved, not only the ones this call created.
+        # Recommending is idempotent, so the second call for an incident creates
+        # nothing and used to evaluate nothing — which left every action created
+        # before an evaluation could be produced for it stranded at
+        # POLICY_EVALUATION_MISSING with no endpoint that would ever revisit it.
+        # The evaluator is itself idempotent (unchanged facts under an unchanged
+        # policy version return `already_evaluated` and write no second row), so
+        # re-evaluating a pre-existing action costs one read and can never
+        # duplicate a decision or double-consume a policy's daily cap.
+        #
         # Best-effort by design: a failure here writes NOTHING, which leaves the
         # gate LOCKED with POLICY_EVALUATION_MISSING. Recommending a plan must not
         # fail because a policy could not be evaluated, and an unevaluated action
         # must never be treated as an authorized one.
-        for created_action_id in created_ids:
-            _record_response_action_enforcement_evaluation(
-                connection, workspace_id=workspace_id, action_id=created_action_id,
-                user_id=str(user['id']),
-            )
+        for planned_action_id in (action_ids_by_type.get(t) for t in plan):
+            if planned_action_id:
+                _record_response_action_enforcement_evaluation(
+                    connection, workspace_id=workspace_id, action_id=planned_action_id,
+                    user_id=str(user['id']),
+                )
 
         # Anchor the caller on the primary mitigation (the first context-specific
         # action after evidence preservation), stable across repeated calls.

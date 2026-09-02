@@ -274,6 +274,7 @@ const REASON_LABELS: Record<string, string> = {
   POLICY_DISABLED: 'Policy is disabled',
   POLICY_NOT_ACTIVE: 'Policy is not active',
   OPERATION_MISMATCH: 'Policy governs a different operation',
+  OPERATION_NOT_ESTABLISHED: 'The governed operation could not be established',
   BUSINESS_EVENT_MISSING: 'Required business event missing',
   BUSINESS_EVENT_MISMATCH: 'Business event type does not match',
   SETTLEMENT_NOT_CLEARED: 'Settlement has not cleared',
