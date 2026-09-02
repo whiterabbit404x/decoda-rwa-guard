@@ -10,7 +10,6 @@ redeclared, so Screen 8 and Screen 11 can never state a different authority.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from services.api.app.domains.governance_policy import config as gpc
@@ -112,6 +111,13 @@ INCIDENT_CLOSED = 'INCIDENT_CLOSED'
 EXECUTION_AUTHORITY_MISSING = 'EXECUTION_AUTHORITY_MISSING'
 RBAC_FORBIDDEN = 'RBAC_FORBIDDEN'
 EXECUTION_ADAPTER_NOT_CONFIGURED = 'EXECUTION_ADAPTER_NOT_CONFIGURED'
+#: A quorum was declared satisfied by an EXTERNAL authority rather than by
+#: recorded human approvals, and this deployment has no verifiable delegation
+#: mechanism that could evidence it. A string naming an authority is not an
+#: approver identity, so the requirement stays outstanding and the gate stays
+#: closed. Distinct from HUMAN_QUORUM_INCOMPLETE so an audit can tell "nobody has
+#: signed yet" from "something claimed a signature nobody can verify".
+DELEGATED_AUTHORITY_NOT_VERIFIED = 'DELEGATED_AUTHORITY_NOT_VERIFIED'
 #: A canonical fact the gate needs could not be READ (a failed query, an outage).
 #: Deliberately distinct from a fact that is absent: "we could not look" is not
 #: the same answer as "there is none", and neither one is an authorization.
@@ -132,6 +138,7 @@ REASON_CODES = (
     EXECUTION_AUTHORITY_MISSING,
     RBAC_FORBIDDEN,
     EXECUTION_ADAPTER_NOT_CONFIGURED,
+    DELEGATED_AUTHORITY_NOT_VERIFIED,
     GATE_FACTS_UNAVAILABLE,
 )
 
@@ -153,6 +160,10 @@ REASON_LABELS: dict[str, str] = {
     EXECUTION_AUTHORITY_MISSING: 'No deterministic execution authority is available for this action.',
     RBAC_FORBIDDEN: 'Your workspace role does not permit executing response actions.',
     EXECUTION_ADAPTER_NOT_CONFIGURED: 'No execution adapter is configured; this action is dry-run only.',
+    DELEGATED_AUTHORITY_NOT_VERIFIED: (
+        'This action names an external governance authority for its approval quorum, but no '
+        'verifiable delegation record evidences it. Collect the required human approvals.'
+    ),
     GATE_FACTS_UNAVAILABLE: 'A required authorization fact could not be read, so the gate stays closed.',
 }
 
@@ -210,17 +221,38 @@ def incident_state_allows_response(status_value: Any) -> bool:
     return key not in INCIDENT_CLOSED_STATES
 
 
-def _env_flag(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return str(raw).strip().lower() in {'1', 'true', 'yes', 'on'}
-
-
 def live_execution_configured() -> bool:
     """Whether a real execution adapter is configured for this deployment.
 
-    Read from the SAME flag the existing executor honours, so Screen 8 can never
-    report an adapter the execution path does not have.
+    Delegates to ``response_action_executor.is_live_execution_enabled`` — the ONE
+    definition of this flag in the product — rather than re-reading the
+    environment here. Screen 8 therefore cannot report an adapter the execution
+    path does not have, and there is no second readiness rule to drift from the
+    first. A failed import is treated as NOT configured: the gate must never
+    claim an adapter it could not confirm.
     """
-    return _env_flag('LIVE_ACTION_EXECUTION_ENABLED', default=False)
+    try:
+        from services.api.app.response_action_executor import is_live_execution_enabled
+    except Exception:  # pragma: no cover - fail closed, never fail open
+        return False
+    return bool(is_live_execution_enabled())
+
+
+#: Live execution paths that reach an EXTERNAL provider. An action running one of
+#: these needs a configured adapter before any run may be attempted; every other
+#: path (a simulation, a recommendation, a manual-only containment request)
+#: contacts nothing and therefore needs no adapter.
+EXTERNAL_PROVIDER_EXECUTION_PATHS = frozenset({'safe', 'governance'})
+
+
+def execution_adapter_required(*, mode: Any, live_execution_path: Any) -> bool:
+    """Whether RUNNING this action would contact an external provider.
+
+    The distinction the gate depends on: POLICY AUTHORIZATION is not EXECUTION
+    CAPABILITY. A simulated action is authorized and runnable with no adapter at
+    all; a live Safe/governance submission is authorized but NOT runnable until
+    one is configured, because the run itself would have to call out.
+    """
+    if str(mode or '').strip().lower() != 'live':
+        return False
+    return str(live_execution_path or '').strip().lower() in EXTERNAL_PROVIDER_EXECUTION_PATHS

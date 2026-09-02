@@ -31,6 +31,24 @@ execution decision even by accident: there is no seam through which one could be
 called. AI output is not an input to this function — the engine has no parameter
 that could carry it.
 
+Authorization is not capability
+-------------------------------
+The gate reports two separate facts. ``authorization_decision`` is the verdict on
+whether this action MAY run — policy, human quorum, RBAC, lifecycle, incident
+state. ``execution_ready`` is whether the run could actually be carried out on
+this deployment: an action that would contact an external provider needs a
+configured adapter, and one that contacts nothing (a simulation, a
+recommendation, a manual-only containment request) needs none. ``can_execute`` is
+both. Keeping them apart is what lets a missing adapter close the gate without
+rewriting a valid policy ALLOW into a DENY.
+
+Human approval is human
+-----------------------
+``quorum_authority`` names WHO the action claims as its approval authority. It is
+never evidence FROM that authority: a numeric quorum is satisfied only by
+recorded human decisions, and no external authority substitutes for them while
+this deployment has no verifiable delegation record.
+
 Fail-closed
 -----------
 Every path that cannot establish a fact leaves the gate LOCKED with an explicit

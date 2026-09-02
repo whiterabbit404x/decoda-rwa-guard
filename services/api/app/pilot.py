@@ -769,6 +769,20 @@ def run_startup_migrations_if_enabled(*, process_role: str = 'api') -> dict[str,
                 plan['all_applied_versions'] = sorted(all_applied)
             except Exception:
                 pass
+            # Integrity migrations whose absence degrades a guarantee SILENTLY
+            # (the app keeps serving; only the constraint is gone). Asserted
+            # against the artefact each one creates, and surfaced on the startup
+            # status so a deploy that skipped one is visible rather than inferred.
+            integrity = integrity_migration_status(connection)
+            plan['integrity_migrations'] = integrity
+            if not integrity['ready']:
+                logger.warning(
+                    'startup_integrity_migration_not_verified status=%s missing=%s unverified=%s '
+                    'action=run_migrations',
+                    integrity['status'],
+                    ','.join(integrity['missing_migrations']) or 'none',
+                    ','.join(integrity['unverified_migrations']) or 'none',
+                )
     except Exception:
         logger.exception(
             'startup_monitoring_runtime_schema_check_failed migration_hints=%s',
@@ -19128,17 +19142,88 @@ def _enforce_action_policy_per_mode(
         )
 
 
-def _fallback_governance_action(payload: dict[str, Any]) -> dict[str, Any]:
-    action_type = str(payload.get('action_type') or 'governance_action')
-    target_id = str(payload.get('target_id') or payload.get('target_wallet') or 'target')
+def _record_response_action_enforcement_evaluation(
+    connection: Any, *, workspace_id: str, action_id: str, user_id: str | None = None,
+) -> str:
+    """Run and persist the deterministic policy ENFORCEMENT evaluation for one action.
+
+    Returns the outcome status (see ``governance_policy.enforcement``). Never
+    raises: a failure records nothing, so the execution gate stays LOCKED with
+    POLICY_EVALUATION_MISSING rather than receiving a verdict nobody could
+    establish. The caller decides whether to commit; this commits only its own
+    successful write, so a failed evaluation cannot roll back the action it was
+    evaluating.
+    """
+    try:
+        from services.api.app.domains.governance_policy import enforcement as _enforcement
+
+        row = connection.execute(
+            '''SELECT id, workspace_id, incident_id, alert_id, action_type, mode, status,
+                      execution_state, execution_metadata, created_by_user_id, created_at
+               FROM response_actions WHERE id = %s::uuid AND workspace_id = %s''',
+            (action_id, workspace_id),
+        ).fetchone()
+        if row is None:
+            return _enforcement.STATUS_FACTS_UNAVAILABLE
+        outcome = _enforcement.evaluate_response_action(
+            connection, workspace_id=workspace_id, action=_json_safe_value(dict(row)),
+            now=utc_now(), user_id=user_id,
+        )
+        if outcome.recorded:
+            connection.commit()
+        return outcome.status
+    except Exception:  # pragma: no cover - never let an evaluation failure fail the caller
+        logger.warning(
+            'response_action_enforcement_evaluation_failed workspace_id=%s action_id=%s',
+            workspace_id, action_id,
+        )
+        try:
+            connection.rollback()
+        except Exception:
+            pass
+        from services.api.app.domains.governance_policy import enforcement as _enforcement
+        return _enforcement.STATUS_FACTS_UNAVAILABLE
+
+
+#: Why a governance submission produced no provider receipt.
+#:   EXECUTION_ADAPTER_NOT_CONFIGURED — no COMPLIANCE_SERVICE_URL: this deployment
+#:                                      has no governance adapter at all.
+#:   PROVIDER_UNAVAILABLE            — an adapter IS configured and the call to it
+#:                                      failed (network, timeout, bad response).
+GOVERNANCE_ADAPTER_NOT_CONFIGURED = 'EXECUTION_ADAPTER_NOT_CONFIGURED'
+GOVERNANCE_PROVIDER_UNAVAILABLE = 'PROVIDER_UNAVAILABLE'
+
+
+def _unsubmitted_governance_action(payload: dict[str, Any], *, reason_code: str, detail: str) -> dict[str, Any]:
+    """A truthful record that NO governance action was submitted.
+
+    This replaces a fallback that manufactured an ``action_id``, an
+    ``attestation_hash`` and a submitted status when the compliance service was
+    absent or unreachable. Those are provider receipts: storing invented ones made
+    a deployment with no adapter — and a failed network call — indistinguishable
+    from a real external execution, in the customer's evidence and in an export.
+
+    What is returned instead states exactly what happened: nothing was contacted,
+    nothing was submitted, no attestation exists. It is explicitly labelled a
+    simulation artifact so it can never be read as a receipt.
+    """
     return {
         **payload,
-        'action_id': f'gov-fallback-{secrets.token_hex(6)}',
+        'action_id': None,
         'created_at': utc_now_iso(),
-        'status': 'submitted',
-        'attestation_hash': f'fallback-{action_type}-{target_id}',
-        'policy_effects': [f'Fallback governance action {action_type} submitted for {target_id}.'],
-        'source': 'fallback',
+        'status': 'not_submitted',
+        'submitted': False,
+        # No hash: an attestation is a PROVIDER's signature over a real action.
+        'attestation_hash': None,
+        'tx_hash': None,
+        'policy_effects': [],
+        'source': 'simulation',
+        'simulation': True,
+        'provider_contacted': False,
+        'receipt_type': 'simulation',
+        'response_code': None,
+        'error_code': reason_code,
+        'error_reason': detail,
         'degraded': True,
     }
 
@@ -19155,7 +19240,10 @@ def _submit_freeze_wallet_governance_action(action: dict[str, Any], workspace_co
     }
     compliance_service_url = os.getenv('COMPLIANCE_SERVICE_URL', '').strip().rstrip('/')
     if not compliance_service_url:
-        return _fallback_governance_action(payload)
+        return _unsubmitted_governance_action(
+            payload, reason_code=GOVERNANCE_ADAPTER_NOT_CONFIGURED,
+            detail='No governance execution adapter is configured (COMPLIANCE_SERVICE_URL is unset).',
+        )
     request = UrlRequest(
         f'{compliance_service_url}/governance/actions',
         data=_json_dumps(payload).encode('utf-8'),
@@ -19164,9 +19252,24 @@ def _submit_freeze_wallet_governance_action(action: dict[str, Any], workspace_co
     )
     try:
         with urlopen(request, timeout=10) as response:
-            return _json_safe_value(json.loads(response.read().decode('utf-8')))
-    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError):
-        return _fallback_governance_action(payload)
+            submitted = _json_safe_value(json.loads(response.read().decode('utf-8')))
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
+        logger.warning(
+            'governance_action_submit_failed error=%s action_type=%s',
+            exc.__class__.__name__, payload.get('action_type'),
+        )
+        return _unsubmitted_governance_action(
+            payload, reason_code=GOVERNANCE_PROVIDER_UNAVAILABLE,
+            detail='The governance provider could not be reached, so no action was submitted.',
+        )
+    if isinstance(submitted, dict):
+        # A real receipt: the provider WAS contacted and answered. Marked as such
+        # so the execution path can tell one apart from the artifact above without
+        # inspecting individual fields.
+        submitted.setdefault('provider_contacted', True)
+        submitted.setdefault('receipt_type', 'provider')
+        submitted.setdefault('response_code', 200)
+    return submitted
 
 
 def _safe_signer_key() -> str:
@@ -19719,6 +19822,25 @@ def recommend_response_action_for_incident(incident_id: str, request: Request) -
                 },
             )
             connection.commit()
+
+        # The DETERMINISTIC ENFORCEMENT EVALUATION for each newly planned action.
+        # This is the producer of the `simulation = FALSE` record Screen 8's gate
+        # consumes: without it every recommended action would sit at
+        # POLICY_EVALUATION_MISSING and no operator could ever reach an
+        # authorization. It runs on canonical facts only (see
+        # governance_policy.enforcement) and never on the recommendation that
+        # created the action — the plan above is deterministic, and either way an
+        # AI recommendation is not one of the rows the resolver reads.
+        #
+        # Best-effort by design: a failure here writes NOTHING, which leaves the
+        # gate LOCKED with POLICY_EVALUATION_MISSING. Recommending a plan must not
+        # fail because a policy could not be evaluated, and an unevaluated action
+        # must never be treated as an authorized one.
+        for created_action_id in created_ids:
+            _record_response_action_enforcement_evaluation(
+                connection, workspace_id=workspace_id, action_id=created_action_id,
+                user_id=str(user['id']),
+            )
 
         # Anchor the caller on the primary mitigation (the first context-specific
         # action after evidence preservation), stable across repeated calls.
@@ -20793,10 +20915,7 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         mode = str(action.get('mode') or 'simulated')
         capability = resolve_response_action_capability(str(action.get('action_type') or ''), str(action.get('mode') or ''))
         _live_execution_path = capability.get('live_execution_path')
-        _is_safe_execution = _live_execution_path == 'safe'
-        _is_delegated_execution = _live_execution_path in {'governance', 'unsupported', 'manual_only'}
         approver_user_id = str(action.get('approved_by_user_id') or '') or None
-        _is_governance_self_approving = _is_delegated_execution and not approver_user_id and mode == 'live'
         if mode == 'live' and not approver_user_id:
             logger.warning('execute_blocked_missing_approval action_id=%s mode=%s', action_id, mode)
             blocked_marker = 'execute_blocked_missing_approval'
@@ -20829,10 +20948,16 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
                 ),
             )
             connection.commit()
+        # A LIVE action's approver is a human identity or it does not exist. The
+        # execution path's own name ('governance', 'manual_only', ...) used to be
+        # substituted here when no approver had signed, which satisfied the
+        # approver check with a string nobody could be held to: no RBAC to verify,
+        # no step-up to complete, no identity to attribute in the audit record.
+        # A delegated path is now the SAME requirement as any other live action —
+        # a real approver — and stands down closed until one exists.
         _effective_approver = (
-            (_live_execution_path or 'governance_delegated')
-            if _is_governance_self_approving
-            else (approver_user_id if mode == 'live' else (approver_user_id or _live_execution_path or 'delegated'))
+            approver_user_id if mode == 'live'
+            else (approver_user_id or _live_execution_path or 'delegated')
         )
         _enforce_action_policy_per_mode(
             mode=mode,
@@ -20841,15 +20966,13 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             workspace_context=workspace_context,
             approver_user_id=_effective_approver,
         )
-        if mode == 'live' and not _is_governance_self_approving:
+        if mode == 'live':
             _verify_live_action_approver_role(connection, workspace_id=workspace_context['workspace_id'], approver_user_id=approver_user_id)
             if approver_user_id and str(action.get('created_by_user_id') or '') == str(approver_user_id):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Live action proposer and approver must be different identities.')
             if str(action.get('approved_by_user_id')) == str(user.get('id')):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Live action execution requires a separate approver and executor.')
             metadata['step_up'] = _require_live_action_step_up_auth(request, user=user)
-        elif mode == 'live':
-            metadata['step_up'] = {'required': False, 'source': 'governance_delegated'}
         # DETERMINISTIC EXECUTION GATE — the last authorization step, before any
         # provider is contacted and before any execution state is written.
         # Frontend disabling is not authorization: the same gate Screen 8 renders
@@ -20875,6 +20998,7 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         elif mode != 'live':
             metadata['execution_mode'] = 'simulation'
         elif capability.get('live_execution_path') == 'safe':
+            _require_execution_adapter(action_id=action_id, live_execution_path='safe')
             safe_response = _propose_safe_transaction(
                 action_id,
                 to=str(action.get('token_contract') or ''),
@@ -20918,40 +21042,81 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             next_status = 'pending'
             result_summary = 'Safe transaction proposed; awaiting wallet execution.'
         elif capability.get('live_execution_path') == 'governance':
+            _require_execution_adapter(action_id=action_id, live_execution_path='governance')
             if str(action.get('action_type') or '') == 'freeze_wallet':
                 governance_response = _submit_freeze_wallet_governance_action(action, workspace_context, user)
+                # Whether an EXTERNAL provider actually answered. A response that
+                # did not come from one is a simulation artifact, never a receipt:
+                # it gets no response code, no attestation, and no provider entry
+                # in the evidence trail. (This branch used to stamp 200 and the
+                # fabricated attestation hash unconditionally, so an unconfigured
+                # or unreachable adapter was recorded as a successful submission.)
+                _provider_contacted = bool(governance_response.get('provider_contacted', True))
                 metadata['governance_action'] = governance_response
                 metadata['external_governance_action_id'] = governance_response.get('action_id')
                 metadata['attestation_hash'] = governance_response.get('attestation_hash')
                 metadata['policy_effects'] = governance_response.get('policy_effects') or []
-                provider_request_id = str(governance_response.get('action_id') or '').strip() or None
-                provider_response_id = provider_request_id
-                result_code = 200
-                provider_name = 'governance'
-                artifacts = {
-                    **artifacts,
-                    'provider': {
-                        'kind': 'governance',
-                        'external_request_id': provider_request_id,
-                        'response_code': 200,
-                        'payload': governance_response,
-                    },
-                }
-                provider_receipts.append(
-                    {
-                        'provider': 'governance',
-                        'tx_hash': governance_response.get('tx_hash'),
-                        'external_request_id': provider_request_id,
-                        'response_code': result_code,
-                        'received_at': utc_now_iso(),
-                    }
+                metadata['provider_contacted'] = _provider_contacted
+                metadata['receipt_type'] = str(
+                    governance_response.get('receipt_type') or ('provider' if _provider_contacted else 'simulation')
                 )
-                metadata['execution_mode'] = 'governance_submitted'
-                execution_tx_hash = str(governance_response.get('tx_hash') or '').strip() or None
-                metadata['execution_state'] = 'proposed'
-                execution_state = 'proposed'
-                next_status = 'pending'
-                result_summary = 'Freeze wallet governance action submitted; awaiting governance execution.'
+                provider_name = 'governance'
+                if _provider_contacted:
+                    provider_request_id = str(governance_response.get('action_id') or '').strip() or None
+                    provider_response_id = provider_request_id
+                    result_code = int(governance_response.get('response_code') or 200)
+                    artifacts = {
+                        **artifacts,
+                        'provider': {
+                            'kind': 'governance',
+                            'external_request_id': provider_request_id,
+                            'response_code': result_code,
+                            'provider_contacted': True,
+                            'receipt_type': 'provider',
+                            'payload': governance_response,
+                        },
+                    }
+                    provider_receipts.append(
+                        {
+                            'provider': 'governance',
+                            'tx_hash': governance_response.get('tx_hash'),
+                            'external_request_id': provider_request_id,
+                            'response_code': result_code,
+                            'provider_contacted': True,
+                            'receipt_type': 'provider',
+                            'received_at': utc_now_iso(),
+                        }
+                    )
+                    metadata['execution_mode'] = 'governance_submitted'
+                    execution_tx_hash = str(governance_response.get('tx_hash') or '').strip() or None
+                    metadata['execution_state'] = 'proposed'
+                    execution_state = 'proposed'
+                    next_status = 'pending'
+                    result_summary = 'Freeze wallet governance action submitted; awaiting governance execution.'
+                else:
+                    error_code = str(governance_response.get('error_code') or GOVERNANCE_PROVIDER_UNAVAILABLE)
+                    error_reason = str(
+                        governance_response.get('error_reason')
+                        or 'No governance provider was contacted, so no action was submitted.'
+                    )
+                    result_code = None
+                    result_summary = error_reason
+                    metadata['execution_mode'] = 'governance_not_submitted'
+                    metadata['execution_state'] = 'failed'
+                    execution_state = 'failed'
+                    next_status = 'failed'
+                    artifacts = {
+                        **artifacts,
+                        'provider': {
+                            'kind': 'governance',
+                            'external_request_id': None,
+                            'response_code': None,
+                            'provider_contacted': False,
+                            'receipt_type': 'simulation',
+                            'error_code': error_code,
+                            'payload': governance_response,
+                        },
+                    }
             else:
                 metadata['execution_mode'] = 'governance'
                 metadata['execution_state'] = 'proposed'
@@ -21421,6 +21586,87 @@ def _response_actions_recommended_dedupe_ready(connection: Any) -> bool:
         return bool((row or {}).get('present'))
     except Exception:  # pragma: no cover - any probe failure is treated as not-ready
         return False
+
+
+#: Migrations whose ABSENCE silently degrades a data-integrity guarantee rather
+#: than producing an obvious error. Each names the artefact that proves it ran, so
+#: readiness is asserted against the database rather than against a version string
+#: a failed run could still have written.
+#:
+#: 0149 is the response-action duplicate-generation fix: without its partial
+#: unique index, `recommend_response_action_for_incident` degrades to
+#: SELECT-then-INSERT and two concurrent calls for one incident can each create a
+#: "Notify Security Team" row again. The application keeps working, which is
+#: exactly why the missing migration has to be SURFACED instead of inferred.
+REQUIRED_INTEGRITY_MIGRATIONS: tuple[dict[str, str], ...] = (
+    {
+        'migration': '0149_screen8_consistency_pass.sql',
+        'artifact': RESPONSE_ACTION_RECOMMENDED_DEDUP_INDEX,
+        'artifact_kind': 'index',
+        'guarantee': 'response_action_duplicate_generation',
+        'detail': (
+            'Response-action duplicate generation is not constrained: two concurrent '
+            'recommend calls for one incident can create duplicate planned actions.'
+        ),
+    },
+)
+
+
+def integrity_migration_status(connection: Any) -> dict[str, Any]:
+    """Whether every REQUIRED integrity migration has actually been applied.
+
+    Checked against the artefact each migration creates, not against the
+    `schema_migrations` row: a partially-applied migration can leave the version
+    recorded while the constraint that carries the guarantee is missing, and the
+    guarantee is the thing that matters.
+
+    Fail-closed: a probe that cannot run reports ``status='unknown'`` and
+    ``ready=False``. An integrity guarantee we could not confirm is not one we may
+    claim — the same rule the execution gate applies to an unreadable fact.
+    """
+    checks: list[dict[str, Any]] = []
+    for required in REQUIRED_INTEGRITY_MIGRATIONS:
+        entry = {
+            'migration': required['migration'],
+            'artifact': required['artifact'],
+            'guarantee': required['guarantee'],
+            'applied': False,
+            'status': 'unknown',
+            'detail': required['detail'],
+        }
+        try:
+            row = connection.execute(
+                'SELECT to_regclass(%s) IS NOT NULL AS present',
+                (f'public.{required["artifact"]}',),
+            ).fetchone()
+        except Exception:
+            logger.warning(
+                'integrity_migration_probe_failed migration=%s artifact=%s',
+                required['migration'], required['artifact'],
+            )
+            checks.append(entry)
+            continue
+        applied = bool((row or {}).get('present'))
+        entry['applied'] = applied
+        entry['status'] = 'applied' if applied else 'missing'
+        checks.append(entry)
+
+    missing = [c['migration'] for c in checks if c['status'] == 'missing']
+    unknown = [c['migration'] for c in checks if c['status'] == 'unknown']
+    if missing:
+        status_value = 'degraded'
+    elif unknown:
+        status_value = 'unknown'
+    else:
+        status_value = 'ready'
+    return {
+        'ready': status_value == 'ready',
+        'status': status_value,
+        'checks': checks,
+        'missing_migrations': missing,
+        'unverified_migrations': unknown,
+        'required_migrations': [c['migration'] for c in REQUIRED_INTEGRITY_MIGRATIONS],
+    }
 
 
 def _ai_recommendations_dedup_ready(connection: Any) -> bool:
@@ -23671,6 +23917,13 @@ def response_action_execution_gate(
             and not str(action.get('approved_by_user_id') or '').strip())
         else 'workspace_approvers'
     )
+    # Whether RUNNING this action would call an external provider. A simulated or
+    # recommended action, and a manual-only containment request, contact nothing —
+    # an absent adapter must not block those. A live Safe/governance submission
+    # cannot proceed without one, and the gate (not the browser) is what says so.
+    _adapter_required = _rgc.execution_adapter_required(
+        mode=action.get('mode'), live_execution_path=live_path,
+    )
     try:
         gate = _rg_service.build_gate(
             connection,
@@ -23686,6 +23939,7 @@ def response_action_execution_gate(
             requester_authorized=bool(requester_authorized),
             execution_authority_available=live_path != 'unsupported',
             execution_adapter_label=live_path,
+            execution_adapter_required=_adapter_required,
             quorum_authority=_quorum_authority,
             now=now,
             cache=cache,
@@ -23697,6 +23951,10 @@ def response_action_execution_gate(
             'decision': _rgc.GATE_LOCKED,
             'decision_label': _rgc.GATE_DECISION_LABELS[_rgc.GATE_LOCKED],
             'can_execute': False,
+            'authorization_decision': _rgc.GATE_LOCKED,
+            'authorization_decision_label': _rgc.GATE_DECISION_LABELS[_rgc.GATE_LOCKED],
+            'execution_ready': False,
+            'execution_adapter_required': True,
             'policy_decision': _rgc.POLICY_NOT_EVALUATED,
             'policy_decision_label': _rgc.POLICY_DECISION_LABELS[_rgc.POLICY_NOT_EVALUATED],
             'required_quorum': 0,
@@ -23723,17 +23981,23 @@ def response_action_execution_gate(
 #: These are the deterministic authorization facts the GATE establishes. The
 #: codes deliberately NOT listed are the ones an existing, more specific
 #: fail-closed path already enforces with its own truthful error and audit
-#: record — RBAC_FORBIDDEN (403 from the mode/role policy),
+#: record — RBAC_FORBIDDEN (403 from the mode/role policy) and
 #: EXECUTION_AUTHORITY_MISSING (the unsupported-executor path, which persists a
-#: failed attempt), and EXECUTION_ADAPTER_NOT_CONFIGURED (dry-run only, §18).
-#: Those still appear on the gate DTO so the UI states them, but the gate does
-#: not pre-empt the handler that reports them better. Nothing here weakens an
-#: existing check: this set is purely additive blocking.
+#: failed attempt). Those still appear on the gate DTO so the UI states them, but
+#: the gate does not pre-empt the handler that reports them better. Nothing here
+#: weakens an existing check: this set is purely additive blocking.
+#:
+#: EXECUTION_ADAPTER_NOT_CONFIGURED is deliberately absent from this SET and
+#: enforced separately, on the gate's `execution_ready` flag: the code is
+#: advisory for an action that contacts no provider (a dry run is a legitimate
+#: run) and fatal only for one whose run WOULD have to call out. Blocking on the
+#: code alone would refuse every simulation on a deployment with no adapter.
 _GATE_BLOCKING_REASON_CODES = frozenset({
     'POLICY_DENIED',
     'POLICY_VERSION_MISMATCH',
     'POLICY_EVALUATION_MISSING',
     'HUMAN_QUORUM_INCOMPLETE',
+    'DELEGATED_AUTHORITY_NOT_VERIFIED',
     'REQUIRED_ROLE_MISSING',
     'APPROVAL_REJECTED',
     'ACTION_EXPIRED',
@@ -23833,6 +24097,41 @@ def _record_execution_gate_authorized(
         logger.warning('execution_gate_authorized_audit_failed action_id=%s', action_id)
 
 
+def _require_execution_adapter(*, action_id: str, live_execution_path: str) -> None:
+    """Refuse a run that would contact an external provider with no adapter.
+
+    The deterministic gate already blocks this (``execution_ready`` is False, so
+    ``can_execute`` is False and ``_enforce_execution_gate`` raises). This guard
+    sits immediately before the provider call as the last line of the same rule,
+    so the invariant holds structurally: on a deployment with no adapter, the
+    execute command CANNOT reach an external provider, whatever path led here.
+
+    Readiness comes from ``response_action_executor.is_live_execution_enabled`` —
+    the one definition of the flag — via the gate's config module, so there is no
+    second readiness rule that could drift from the first.
+    """
+    from services.api.app.domains.response_gate import config as _rgc
+
+    if _rgc.live_execution_configured():
+        return
+    logger.warning(
+        'execute_blocked_adapter_not_configured action_id=%s live_execution_path=%s',
+        action_id, live_execution_path,
+    )
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            'code': _rgc.EXECUTION_ADAPTER_NOT_CONFIGURED,
+            'message': (
+                'No execution adapter is configured for this deployment, so this action '
+                'cannot contact an external provider. It is dry-run only.'
+            ),
+            'live_execution_path': live_execution_path,
+            'reason_codes': [_rgc.EXECUTION_ADAPTER_NOT_CONFIGURED],
+        },
+    )
+
+
 def _enforce_execution_gate(
     connection: Any,
     action: dict[str, Any],
@@ -23856,6 +24155,17 @@ def _enforce_execution_gate(
         code for code in (gate.get('reason_codes') or [])
         if str(code).strip().upper() in _GATE_BLOCKING_REASON_CODES
     ]
+    # EXECUTION CAPABILITY, enforced here rather than in the frontend. When the
+    # run would contact an external provider and no adapter is configured, there
+    # is nothing to run against: refusing here is what guarantees the provider is
+    # never reached, whatever the caller does. The AUTHORIZATION verdict is left
+    # untouched — a valid ALLOW is not rewritten into a DENY because a deployment
+    # lacks an adapter; the gate reports authorization_decision=AUTHORIZED,
+    # execution_ready=False, can_execute=False.
+    if gate.get('execution_ready') is False:
+        from services.api.app.domains.response_gate import config as _rgc
+        if _rgc.EXECUTION_ADAPTER_NOT_CONFIGURED not in blocking:
+            blocking.append(_rgc.EXECUTION_ADAPTER_NOT_CONFIGURED)
     if not blocking:
         # Every gate condition this command owns is satisfied. A gate that is
         # still not `can_execute` is one an existing, more specific handler
@@ -24336,6 +24646,108 @@ def response_action_safety_checks(action_id: str, request: Request) -> dict[str,
             'live_execution_configured': env_flag('LIVE_ACTION_EXECUTION_ENABLED', default=False),
             'evaluated_at': utc_now_iso(),
         }
+
+
+def evaluate_response_action_policy(action_id: str, request: Request) -> dict[str, Any]:
+    """Run the DETERMINISTIC enforcement evaluation for one response action.
+
+    This is the producer of the ``simulation = FALSE`` evaluation Screen 8's
+    execution gate consumes. The request names an action id and nothing else:
+    there is no body, so a browser cannot supply a decision, a policy version, an
+    amount, a settlement state, or an operator authority. Every fact comes from
+    canonical rows (see ``governance_policy.enforcement``), and the verdict comes
+    from ``engine.evaluate_policy``.
+
+    Workspace-scoped: an action in another workspace is a 404, never an
+    evaluation. Gated on ``response.propose`` — producing the authorization
+    record for an action is part of proposing a response, not of viewing one.
+
+    The gate is returned alongside the decision so the caller sees the SAME
+    object Screen 8 renders, re-read after the write rather than predicted.
+    """
+    require_live_mode()
+    from services.api.app.domains.governance_policy import enforcement as _enforcement
+
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(connection, request, 'response.propose')
+        workspace_id = workspace_context['workspace_id']
+        row = connection.execute(
+            '''SELECT id, workspace_id, incident_id, alert_id, action_type, mode, status,
+                      execution_state, execution_metadata, approved_at, approved_by_user_id,
+                      created_by_user_id, rolled_back_at, created_at
+               FROM response_actions WHERE id = %s::uuid AND workspace_id = %s''',
+            (action_id, workspace_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Response action not found.')
+        action = _json_safe_value(dict(row))
+        outcome = _enforcement.evaluate_response_action(
+            connection, workspace_id=workspace_id, action=action,
+            now=utc_now(), user_id=str(user.get('id') or '') or None,
+        )
+        if outcome.recorded:
+            # §13 — the authorization record is an audited transition, carrying the
+            # policy that decided and the version it decided under. Written in the
+            # same transaction as the evaluation itself.
+            decision = outcome.decision
+            details = {
+                'event_type': 'policy_enforcement_evaluated',
+                'display_label': 'Policy Enforcement Evaluated',
+                'action_id': action_id,
+                'incident_id': str(action.get('incident_id') or '') or None,
+                'policy_id': decision.policy_id,
+                'policy_key': decision.policy_key,
+                'policy_version': decision.policy_version,
+                'evaluation_id': decision.evaluation_id,
+                'decision': decision.decision,
+                'reason_codes': list(decision.reason_codes),
+                'required_roles': list(decision.required_roles),
+                'simulation': False,
+                'engine_version': decision.engine_version,
+                'decision_authority': decision.as_dict()['decision_authority'],
+            }
+            write_action_history(
+                connection, workspace_id=workspace_id, actor_type='user',
+                actor_id=user.get('id'), object_type='response_action', object_id=action_id,
+                action_type='response_action.policy_enforcement_evaluated', details=details,
+            )
+            if action.get('incident_id'):
+                append_incident_timeline_event(
+                    connection, workspace_id=workspace_id,
+                    incident_id=str(action.get('incident_id')),
+                    event_type='response_action.policy_enforcement_evaluated',
+                    message='Deterministic policy enforcement evaluation recorded for this response action.',
+                    actor_user_id=user.get('id'),
+                    metadata={'response_action_id': action_id, **details},
+                )
+            log_audit(
+                connection, action='response_action.policy_enforcement_evaluated',
+                entity_type='response_action', entity_id=action_id, request=request,
+                user_id=user.get('id'), workspace_id=workspace_id,
+                metadata={'decision': decision.decision, 'policy_id': decision.policy_id,
+                          'policy_version': decision.policy_version,
+                          'evaluation_id': decision.evaluation_id},
+            )
+            connection.commit()
+
+        action['playbook'] = response_action_playbook_profile(
+            action.get('action_type'), mode=str(action.get('mode') or ''),
+        )
+        lifecycle = response_action_lifecycle(action)
+        gate = response_action_execution_gate(
+            connection, action, workspace_id=workspace_id,
+            workspace_context=workspace_context, lifecycle=lifecycle,
+        )
+        payload = outcome.as_dict()
+        payload.update({
+            'action_id': action_id,
+            'incident_id': action.get('incident_id'),
+            'execution_gate': gate,
+            'lifecycle': lifecycle,
+            'evaluated_at': utc_now_iso(),
+        })
+        return payload
 
 
 def response_action_execution_gate_view(action_id: str, request: Request) -> dict[str, Any]:

@@ -363,6 +363,7 @@ def build_gate_inputs(
     requester_permission_reason: Optional[str] = None,
     execution_authority_available: bool = True,
     execution_adapter_label: Optional[str] = None,
+    execution_adapter_required: bool = False,
     quorum_authority: str = 'workspace_approvers',
     now: Optional[datetime] = None,
     cache: Optional[dict[str, Any]] = None,
@@ -478,6 +479,7 @@ def build_gate_inputs(
         unreadable_facts=unreadable_facts(cache),
         execution_authority_available=bool(execution_authority_available),
         execution_adapter_configured=rgc.live_execution_configured(),
+        execution_adapter_required=bool(execution_adapter_required),
         execution_adapter_label=execution_adapter_label,
         chain={
             'event_id': canonical_event_id,

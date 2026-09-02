@@ -30,6 +30,8 @@ cannot read can never yield ALLOW.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -176,11 +178,33 @@ class EvaluationContext:
     incident_id: Optional[str] = None
     canonical_event_id: Optional[str] = None
     simulation: bool = True
+    #: The response action this evaluation governs, when one exists. Set only on
+    #: the ENFORCEMENT path, so an evaluation can be traced to the action it
+    #: authorized rather than only to the incident.
+    response_action_id: Optional[str] = None
+    #: Digest of the OBSERVED FACTS alone — no clock, no derived running total.
+    #: Two evaluations of the same action under the same policy version with the
+    #: same facts share it, which is what makes the enforcement producer
+    #: idempotent: re-running it returns the existing decision instead of writing
+    #: a second ALLOW that would consume the policy's daily cap twice. Facts that
+    #: actually CHANGED (a settlement that cleared) produce a different digest and
+    #: therefore a new, correct evaluation.
+    fact_digest: Optional[str] = None
+    #: WHERE each authoritative fact came from — the canonical row ids the
+    #: enforcement resolver read. Resolved server-side and stored with the
+    #: decision so an auditor can reproduce it from the same rows. A Screen 11
+    #: simulation leaves this empty: its facts came from the request body.
+    fact_sources: dict[str, Any] = field(default_factory=dict)
 
     def as_snapshot(self) -> dict[str, Any]:
         """The input snapshot stored alongside the decision, so the verdict is
-        reproducible. Carries no credentials."""
-        return {
+        reproducible. Carries no credentials.
+
+        ``input_hash`` is a digest over the resolved inputs only (never over the
+        decision), so a stored evaluation can be shown to be the one those exact
+        facts produced.
+        """
+        inputs = {
             'operation': self.operation,
             'amount_usd': _num(self.amount_usd),
             'operator_id': self.operator_id,
@@ -195,6 +219,14 @@ class EvaluationContext:
             'canonical_event_id': self.canonical_event_id,
             'simulation': bool(self.simulation),
         }
+        snapshot = dict(inputs)
+        snapshot['response_action_id'] = self.response_action_id
+        snapshot['fact_digest'] = self.fact_digest
+        snapshot['fact_sources'] = dict(self.fact_sources or {})
+        snapshot['input_hash'] = hashlib.sha256(
+            json.dumps(inputs, sort_keys=True, default=str).encode('utf-8')
+        ).hexdigest()
+        return snapshot
 
 
 @dataclass(frozen=True)
