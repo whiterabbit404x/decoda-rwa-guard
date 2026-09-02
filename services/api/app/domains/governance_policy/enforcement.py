@@ -274,6 +274,84 @@ def _table_exists(connection: Any, name: str, unreadable: list[str]) -> bool:
 # --------------------------------------------------------------------------
 # Fact resolution — canonical rows only
 # --------------------------------------------------------------------------
+#: The columns the policy engine needs from the Screen 5 detection. They exist
+#: only on ``threat_detections`` (migration 0146); the legacy ``detections``
+#: table has no operation, amount, tx_hash or provenance at all.
+_DETECTION_COLUMNS = 'id, operation, observed_amount, primary_asset_id, tx_hash, provenance'
+
+
+def resolve_threat_detection(
+    connection: Any,
+    *,
+    workspace_id: str,
+    detection_id: Optional[str],
+    alert_id: Optional[str],
+    incident_id: Optional[str],
+    unreadable: list[str],
+) -> dict[str, Any]:
+    """The Screen 5 threat detection behind this response action, or ``{}``.
+
+    Three lookups, most specific first, all workspace-scoped:
+
+      1. an explicit ``chain_linked_ids.detection_id`` on the action;
+      2. ``threat_detections.linked_alert_id`` — the column
+         ``threat_detection.service.ensure_alert_for_detection`` stamps when it
+         raises the canonical alert for a detection cluster;
+      3. ``threat_detections.linked_incident_id`` — the same link at incident
+         level, for an action attached to the incident rather than to the alert.
+
+    ``alerts.detection_id`` is deliberately NOT one of them. That column
+    references ``detections(id)`` (migration 0042) — a DIFFERENT table, with a
+    different id space and none of the columns above — and the Screen 5 writer
+    never populates it, because the link it owns runs the other way
+    (``threat_detections.linked_alert_id``). Reading it as a threat-detection id
+    could only ever miss, and a miss left ``operation`` unresolved, which made
+    ``governing_policy`` return nothing, wrote no enforcement row, and parked
+    every response action at POLICY_EVALUATION_MISSING / LOCKED.
+
+    Fail-closed: a read that RAISES is recorded in ``unreadable`` and abandons
+    the pass, so an unreadable detection can never be mistaken for an absent one.
+    """
+    if not (detection_id or alert_id or incident_id):
+        return {}
+    if not _table_exists(connection, 'threat_detections', unreadable):
+        return {}
+
+    attempts: list[tuple[str, tuple[Any, ...]]] = []
+    if detection_id:
+        attempts.append((
+            f"""SELECT {_DETECTION_COLUMNS} FROM threat_detections
+                WHERE id = %s::uuid AND workspace_id = %s""",
+            (detection_id, workspace_id),
+        ))
+    if alert_id:
+        attempts.append((
+            f"""SELECT {_DETECTION_COLUMNS} FROM threat_detections
+                WHERE linked_alert_id = %s::uuid AND workspace_id = %s
+                ORDER BY detected_at DESC, id ASC LIMIT 1""",
+            (alert_id, workspace_id),
+        ))
+    if incident_id:
+        attempts.append((
+            f"""SELECT {_DETECTION_COLUMNS} FROM threat_detections
+                WHERE linked_incident_id = %s::uuid AND workspace_id = %s
+                ORDER BY detected_at DESC, id ASC LIMIT 1""",
+            (incident_id, workspace_id),
+        ))
+
+    for statement, params in attempts:
+        try:
+            row = _row_dict(connection.execute(statement, params).fetchone())
+        except Exception:
+            logger.exception('governance_enforcement_detection_read_failed workspace_id=%s', workspace_id)
+            if 'threat_detection' not in unreadable:
+                unreadable.append('threat_detection')
+            return {}
+        if row:
+            return row
+    return {}
+
+
 def resolve_action_facts(
     connection: Any, *, workspace_id: str, action: dict[str, Any],
 ) -> EnforcementFacts:
@@ -281,7 +359,9 @@ def resolve_action_facts(
 
     The chain walked, all workspace-scoped:
 
-        response action -> alert -> threat detection   (operation, amount, asset)
+        response action -> alert -> target             (asset)
+                        -> threat detection            (operation, amount, asset)
+                           via threat_detections' OWN linkage columns
                         -> incident                    (lifecycle linkage)
         asset + operation -> asset_authorized_issuances (business event,
                                                          settlement state)
@@ -303,22 +383,21 @@ def resolve_action_facts(
     detection_id = _text(chain.get('detection_id'))
     sources['response_action_id'] = action_id
 
-    # -- alert -> detection ------------------------------------------------
-    if alert_id and not detection_id and _table_exists(connection, 'alerts', unreadable):
+    # -- alert -> target -> asset ------------------------------------------
+    if alert_id and not asset_id and _table_exists(connection, 'alerts', unreadable):
         try:
             row = _row_dict(connection.execute(
-                'SELECT detection_id, target_id FROM alerts WHERE id = %s::uuid AND workspace_id = %s',
+                'SELECT target_id FROM alerts WHERE id = %s::uuid AND workspace_id = %s',
                 (alert_id, workspace_id),
             ).fetchone())
         except Exception:
             logger.exception('governance_enforcement_alert_read_failed workspace_id=%s', workspace_id)
             unreadable.append('alert')
             row = {}
-        detection_id = detection_id or _text(row.get('detection_id'))
         target_id = _text(row.get('target_id'))
         if target_id:
             sources['target_id'] = target_id
-            if not asset_id and _table_exists(connection, 'targets', unreadable):
+            if _table_exists(connection, 'targets', unreadable):
                 try:
                     target = _row_dict(connection.execute(
                         'SELECT asset_id FROM targets WHERE id = %s::uuid AND workspace_id = %s',
@@ -336,25 +415,19 @@ def resolve_action_facts(
     operation: Optional[str] = None
     amount: Optional[Decimal] = None
     external_reference: Optional[str] = None
-    if detection_id and _table_exists(connection, 'threat_detections', unreadable):
-        try:
-            detection = _row_dict(connection.execute(
-                '''SELECT id, operation, observed_amount, primary_asset_id, tx_hash, provenance
-                   FROM threat_detections WHERE id = %s::uuid AND workspace_id = %s''',
-                (detection_id, workspace_id),
-            ).fetchone())
-        except Exception:
-            logger.exception('governance_enforcement_detection_read_failed workspace_id=%s', workspace_id)
-            unreadable.append('threat_detection')
-            detection = {}
-        if detection:
-            sources['detection_id'] = detection_id
-            operation = gpc.normalize_operation(detection.get('operation'))
-            amount = _decimal(detection.get('observed_amount'))
-            asset_id = asset_id or _text(detection.get('primary_asset_id'))
-            canonical_event_id = canonical_event_id or _text(detection.get('tx_hash'))
-            provenance = detection.get('provenance') if isinstance(detection.get('provenance'), dict) else {}
-            external_reference = _text(provenance.get('external_reference'))
+    detection = resolve_threat_detection(
+        connection, workspace_id=workspace_id, detection_id=detection_id,
+        alert_id=alert_id, incident_id=incident_id, unreadable=unreadable,
+    )
+    if detection:
+        detection_id = _text(detection.get('id')) or detection_id
+        sources['detection_id'] = detection_id
+        operation = gpc.normalize_operation(detection.get('operation'))
+        amount = _decimal(detection.get('observed_amount'))
+        asset_id = asset_id or _text(detection.get('primary_asset_id'))
+        canonical_event_id = canonical_event_id or _text(detection.get('tx_hash'))
+        provenance = detection.get('provenance') if isinstance(detection.get('provenance'), dict) else {}
+        external_reference = _text(provenance.get('external_reference'))
 
     # -- authorized issuance: the off-chain record -------------------------
     # This is the AUTHORITATIVE business-event and settlement fact. Absent means

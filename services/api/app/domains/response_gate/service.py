@@ -140,6 +140,7 @@ def latest_policy_evaluation(
     incident_id: Optional[str] = None,
     canonical_event_id: Optional[str] = None,
     asset_id: Optional[str] = None,
+    response_action_id: Optional[str] = None,
     cache: Optional[dict[str, Any]] = None,
 ) -> Optional[dict[str, Any]]:
     """The most recent ENFORCEMENT decision Screen 11 recorded for this context.
@@ -155,7 +156,14 @@ def latest_policy_evaluation(
     event_id = str(canonical_event_id or '').strip() or None
     incident = str(incident_id or '').strip() or None
     asset = str(asset_id or '').strip() or None
-    if not any((event_id, incident, asset)):
+    # The evaluation produced FOR THIS ACTION, when one exists. The lifecycle
+    # identifiers below are shared: two actions on one incident, or two on one
+    # asset, match the same rows, so an action could otherwise be shown a verdict
+    # reached for a sibling. The producer stamps the action it evaluated into the
+    # snapshot, so the specific match is PREFERRED over the shared ones rather
+    # than replacing them — a row without that stamp still resolves as before.
+    action = str(response_action_id or '').strip() or None
+    if not any((event_id, incident, asset, action)):
         return None
     # 0149 added the authoritative role list. Degrade to the pre-migration shape
     # rather than failing the read; build_gate_inputs then falls back to the
@@ -171,13 +179,17 @@ def latest_policy_evaluation(
                 WHERE workspace_id = %s
                   AND simulation = FALSE
                   AND (
-                        (%s::text IS NOT NULL AND canonical_event_id = %s::text)
+                        (%s::text IS NOT NULL AND input_snapshot->>'response_action_id' = %s::text)
+                     OR (%s::text IS NOT NULL AND canonical_event_id = %s::text)
                      OR (%s::uuid IS NOT NULL AND incident_id = %s::uuid)
                      OR (%s::uuid IS NOT NULL AND asset_id = %s::uuid)
                   )
-                ORDER BY evaluated_at DESC
+                ORDER BY (%s::text IS NOT NULL
+                          AND input_snapshot->>'response_action_id' = %s::text) DESC,
+                         evaluated_at DESC
                 LIMIT 1''',
-            (workspace_id, event_id, event_id, incident, incident, asset, asset),
+            (workspace_id, action, action, event_id, event_id, incident, incident,
+             asset, asset, action, action),
         ).fetchone()
     except Exception:
         logger.exception('response_gate_evaluation_read_failed workspace_id=%s', workspace_id)
@@ -208,6 +220,92 @@ def _current_policy_version(
         return int(raw)
     except (TypeError, ValueError):
         return None
+
+
+def resolve_action_asset_id(
+    connection: Any,
+    *,
+    workspace_id: str,
+    alert_id: Optional[str],
+    incident_id: Optional[str],
+    cache: Optional[dict[str, Any]] = None,
+) -> Optional[str]:
+    """The asset this action's operation concerns, read from canonical rows.
+
+    Screen 8 took the asset ONLY from the action's own ``chain_linked_ids``, and
+    no writer populates that key. An ASSET-SCOPED governance policy was therefore
+    invisible to ``_policy_governs``, which matched workspace-wide policies alone
+    — so an action such a policy governs was reported NOT_APPLICABLE ("no policy
+    applies"), and the engine treats NOT_APPLICABLE as passing. That is the
+    fail-open direction: an asset nobody resolved is not evidence that nothing
+    governs the action.
+
+    Walks the same canonical links the enforcement resolver walks, all
+    workspace-scoped:
+
+        alert -> target -> asset
+        threat_detections.primary_asset_id, via that table's own
+        linked_alert_id / linked_incident_id
+
+    Fail-closed: a read that RAISES is recorded as unreadable, which makes
+    ``build_gate_inputs`` report NOT_EVALUATED rather than NOT_APPLICABLE.
+    """
+    alert = str(alert_id or '').strip() or None
+    incident = str(incident_id or '').strip() or None
+    if not (alert or incident):
+        return None
+    key = f'asset_for:{alert or ""}:{incident or ""}'
+    if cache is not None and key in cache:
+        return cache[key]
+
+    asset: Optional[str] = None
+    if alert and _table_exists(connection, 'alerts', cache):
+        try:
+            row = _row_dict(connection.execute(
+                'SELECT target_id FROM alerts WHERE id = %s::uuid AND workspace_id = %s',
+                (alert, workspace_id),
+            ).fetchone())
+        except Exception:
+            logger.exception('response_gate_alert_read_failed workspace_id=%s', workspace_id)
+            _note_unreadable(cache, 'action_asset')
+            row = {}
+        target_id = str(row.get('target_id') or '').strip() or None
+        if target_id and _table_exists(connection, 'targets', cache):
+            try:
+                target = _row_dict(connection.execute(
+                    'SELECT asset_id FROM targets WHERE id = %s::uuid AND workspace_id = %s',
+                    (target_id, workspace_id),
+                ).fetchone())
+            except Exception:
+                logger.exception('response_gate_target_read_failed workspace_id=%s', workspace_id)
+                _note_unreadable(cache, 'action_asset')
+                target = {}
+            asset = str(target.get('asset_id') or '').strip() or None
+
+    if not asset and _table_exists(connection, 'threat_detections', cache):
+        # The detection's own linkage columns — never alerts.detection_id, which
+        # references the unrelated `detections` table (migration 0042).
+        for column, value in (('linked_alert_id', alert), ('linked_incident_id', incident)):
+            if not value:
+                continue
+            try:
+                row = _row_dict(connection.execute(
+                    f"""SELECT primary_asset_id FROM threat_detections
+                        WHERE {column} = %s::uuid AND workspace_id = %s
+                        ORDER BY detected_at DESC, id ASC LIMIT 1""",
+                    (value, workspace_id),
+                ).fetchone())
+            except Exception:
+                logger.exception('response_gate_detection_read_failed workspace_id=%s', workspace_id)
+                _note_unreadable(cache, 'action_asset')
+                break
+            asset = str(row.get('primary_asset_id') or '').strip() or None
+            if asset:
+                break
+
+    if cache is not None:
+        cache[key] = asset
+    return asset
 
 
 def _policy_governs(
@@ -377,12 +475,22 @@ def build_gate_inputs(
     metadata = action.get('execution_metadata') if isinstance(action.get('execution_metadata'), dict) else {}
     chain = metadata.get('chain_linked_ids') if isinstance(metadata.get('chain_linked_ids'), dict) else {}
     incident_id = str(action.get('incident_id') or chain.get('incident_id') or '').strip() or None
+    alert_id = str(action.get('alert_id') or chain.get('alert_id') or '').strip() or None
     asset_id = str(metadata.get('asset_id') or chain.get('asset_id') or '').strip() or None
     canonical_event_id = str(metadata.get('event_id') or chain.get('event_id') or '').strip() or None
+    if not asset_id:
+        # Resolved from canonical rows, because no writer fills chain_linked_ids
+        # with an asset — and without it an asset-scoped policy is invisible to
+        # the scope probe below, which reports NOT_APPLICABLE and passes.
+        asset_id = resolve_action_asset_id(
+            connection, workspace_id=workspace_id, alert_id=alert_id,
+            incident_id=incident_id, cache=cache,
+        )
 
     evaluation = latest_policy_evaluation(
         connection, workspace_id=workspace_id, incident_id=incident_id,
-        canonical_event_id=canonical_event_id, asset_id=asset_id, cache=cache,
+        canonical_event_id=canonical_event_id, asset_id=asset_id,
+        response_action_id=action_id, cache=cache,
     )
     if evaluation:
         policy_decision = str(evaluation.get('decision') or '').strip().upper() or rgc.POLICY_NOT_EVALUATED
@@ -421,7 +529,8 @@ def build_gate_inputs(
         # closed either way by GATE_FACTS_UNAVAILABLE, but the two states are
         # exported and audited, and only one of them is true.
         policy_read_failed = any(
-            fact in {'policy_evaluation', 'policy_scope', f'table:{EVALUATIONS_TABLE}', f'table:{POLICIES_TABLE}'}
+            fact in {'policy_evaluation', 'policy_scope', 'action_asset',
+                     f'table:{EVALUATIONS_TABLE}', f'table:{POLICIES_TABLE}'}
             for fact in unreadable_facts(cache)
         )
         policy_decision = (

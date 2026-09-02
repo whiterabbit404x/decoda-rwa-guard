@@ -108,7 +108,15 @@ def _action_row(**overrides):
         'mode': 'simulated',
         'action_type': 'pause_mint_redeem',
         'execution_state': 'proposed',
-        'execution_metadata': {'chain_linked_ids': {'detection_id': DETECTION_ID}},
+        # Exactly what create_enforcement_action and
+        # recommend_response_action_for_incident write: the incident and the
+        # alert, and NOTHING else. No production writer puts a detection_id in
+        # chain_linked_ids, so a fixture that supplies one tests a shape the
+        # product never produces — which is how the identifier mismatch below
+        # stayed invisible.
+        'execution_metadata': {'chain_linked_ids': {
+            'incident_id': INCIDENT_ID, 'alert_id': ALERT_ID,
+        }},
         'incident_id': INCIDENT_ID,
         'alert_id': ALERT_ID,
         'approved_by_user_id': 'approver-1',
@@ -140,6 +148,8 @@ class _EnforcementConn:
         tables=None,
         fail_on=None,
         honour_simulation_filter=True,
+        linked_alert_id=ALERT_ID,
+        linked_incident_id=INCIDENT_ID,
     ):
         self.executed: list[tuple[str, object]] = []
         self.inserted_evaluations: list[dict] = []
@@ -147,8 +157,17 @@ class _EnforcementConn:
         self._action_row = action_row if action_row is not None else _action_row()
         self._policy_row = policy_row
         self._detection = detection
+        #: Which alert / incident the detection row is linked to, i.e. the values
+        #: threat_detection.service stamped on it.
+        self._linked_alert_id = str(linked_alert_id or '') or None
+        self._linked_incident_id = str(linked_incident_id or '') or None
         self._issuance = issuance
-        self._alert = alert if alert is not None else {'detection_id': DETECTION_ID, 'target_id': None}
+        # `ensure_alert_for_detection` never sets alerts.detection_id (it is a
+        # `detections(id)`, migration 0042); it stamps
+        # threat_detections.linked_alert_id instead. The fake mirrors that.
+        self._alert = alert if alert is not None else {
+            'id': ALERT_ID, 'incident_id': INCIDENT_ID, 'target_id': None,
+        }
         self._approvals = approvals or []
         #: The row `latest_policy_evaluation` finds, if the query is allowed to.
         self._evaluation = evaluation
@@ -185,8 +204,18 @@ class _EnforcementConn:
             return _Result(row=self._alert)
         if 'FROM targets WHERE id' in n:
             return _Result(row={'asset_id': ASSET_ID})
-        if 'FROM threat_detections WHERE id' in n:
-            return _Result(row=self._detection)
+        if 'FROM threat_detections' in n:
+            # Postgres-faithful. `threat_detections` is reachable ONLY by its own
+            # id or its own linkage columns. A lookup keyed on alerts.detection_id
+            # (a `detections(id)`) matches nothing here, exactly as in production.
+            detection = self._detection or {}
+            if 'WHERE id = %s::uuid' in n:
+                return _Result(row=self._detection if str(params[0]) == str(detection.get('id')) else None)
+            if 'linked_alert_id = %s::uuid' in n:
+                return _Result(row=self._detection if str(params[0]) == self._linked_alert_id else None)
+            if 'linked_incident_id = %s::uuid' in n:
+                return _Result(row=self._detection if str(params[0]) == self._linked_incident_id else None)
+            return _Result()
         if 'FROM asset_authorized_issuances' in n:
             return _Result(row=self._issuance)
         if "input_snapshot->>'fact_digest'" in n:
@@ -217,7 +246,10 @@ class _EnforcementConn:
         if 'FROM response_action_approvals' in n:
             return _Result(rows=list(self._approvals))
         if 'FROM incidents WHERE id' in n:
-            return _Result(row={'status': self._incident_status})
+            return _Result(row={
+                'id': INCIDENT_ID, 'source_alert_id': ALERT_ID,
+                'status': self._incident_status,
+            })
         if 'FROM workspace_role_permissions' in n:
             return _Result(row={'granted': True})
         if 'FROM workspace_members' in n:
@@ -1299,3 +1331,390 @@ def test_16_f_the_0149_migration_retires_duplicates_rather_than_deleting_them():
     assert 'superseded_at' in sql
     assert 'DELETE FROM' not in sql.upper()
     assert 'DROP TABLE' not in sql.upper()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 17. THE RUNTIME WIRING — the producer runs, on identifiers that actually match
+#
+# Everything in section 2 was true of the engine and false of the deployment: the
+# enforcement producer existed, but for an action created the way the product
+# creates one it either never ran or ran on an identifier that could not resolve.
+# Three separate breaks, each on its own sufficient to park every action at
+# POLICY_EVALUATION_MISSING / LOCKED:
+#
+#   a. `POST /response/actions` — how an action ENTERS Screen 8 from the Incident,
+#      Alert and Threat-operations consoles — never invoked the producer at all.
+#   b. Its INSERT carried 23 placeholders for 22 columns, so psycopg rejected the
+#      statement before it reached Postgres.
+#   c. The resolver keyed `threat_detections` with `alerts.detection_id`. That
+#      column is a `detections(id)` (migration 0042) — a different table, a
+#      different id space, and one with no operation/amount/tx_hash column at
+#      all — and the Screen 5 writer never sets it, because the link it owns runs
+#      the other way (`threat_detections.linked_alert_id`). The lookup could only
+#      miss, leaving `operation` unresolved, `governing_policy` empty, and no row
+#      written.
+# ═════════════════════════════════════════════════════════════════════════════
+def test_17_a_the_create_endpoint_insert_is_well_formed():
+    """A statement psycopg rejects creates nothing — and evaluates nothing.
+
+    Guards the exact defect: the VALUES list carried one more placeholder than the
+    column list, so every `POST /response/actions` raised before the INSERT ran.
+    """
+    import inspect
+    import re
+
+    source = inspect.getsource(pilot.create_enforcement_action)
+    match = re.search(
+        r'INSERT INTO response_actions \((.*?)\)\s*VALUES \((.*?)\)', source, re.S,
+    )
+    assert match, 'the create INSERT was not found'
+    columns = [c.strip() for c in match.group(1).replace('\n', ' ').split(',') if c.strip()]
+    placeholders = match.group(2).count('%s')
+    assert placeholders == len(columns), (
+        f'{placeholders} placeholders for {len(columns)} columns'
+    )
+
+
+def test_17_b_the_detection_is_resolved_by_threat_detections_own_linkage():
+    """The production shape: nothing hands the resolver a detection id.
+
+    `create_enforcement_action` and `recommend_response_action_for_incident` write
+    an incident id and an alert id and nothing else, and
+    `ensure_alert_for_detection` leaves `alerts.detection_id` NULL. The canonical
+    operation must still resolve — through `threat_detections.linked_alert_id`,
+    which is the link the Screen 5 writer actually stamps.
+    """
+    connection = _EnforcementConn(
+        policy_row=_policy_row(), detection=MINT_DETECTION, issuance=CLEARED_ISSUANCE,
+        alert={'target_id': None},
+    )
+    action = _action_row(execution_metadata={'chain_linked_ids': {
+        'incident_id': INCIDENT_ID, 'alert_id': ALERT_ID,
+    }})
+    facts = enforcement.resolve_action_facts(
+        connection, workspace_id=WORKSPACE, action=action,
+    )
+    assert facts.readable
+    assert facts.operation == gpc.OPERATION_MINT
+    assert facts.asset_id == ASSET_ID
+    assert facts.canonical_event_id == MINT_DETECTION['tx_hash']
+    assert facts.sources['detection_id'] == DETECTION_ID
+
+    outcome = enforcement.evaluate_response_action(
+        connection, workspace_id=WORKSPACE, action=action, now=NOW, user_id='operator-1',
+    )
+    assert outcome.status == enforcement.STATUS_RECORDED
+    assert outcome.decision.simulation is False
+
+
+def test_17_b2_the_incident_link_resolves_an_action_with_no_alert():
+    """`threat_detections.linked_incident_id` is the same link at incident level."""
+    connection = _EnforcementConn(
+        policy_row=_policy_row(), detection=MINT_DETECTION, issuance=CLEARED_ISSUANCE,
+    )
+    action = _action_row(
+        alert_id=None,
+        execution_metadata={'chain_linked_ids': {'incident_id': INCIDENT_ID}},
+    )
+    facts = enforcement.resolve_action_facts(
+        connection, workspace_id=WORKSPACE, action=action,
+    )
+    assert facts.operation == gpc.OPERATION_MINT
+    assert facts.sources['detection_id'] == DETECTION_ID
+
+
+def test_17_c_alerts_detection_id_is_never_used_as_a_threat_detection_id():
+    """The identifier mismatch, pinned at the statement level.
+
+    `alerts.detection_id` references `detections(id)`. Selecting it in order to
+    key `threat_detections` is the bug this section exists to prevent, so the
+    resolver must not read that column, and every `threat_detections` lookup must
+    be keyed on that table's own id or its own linkage columns.
+    """
+    connection = _EnforcementConn(
+        policy_row=_policy_row(), detection=MINT_DETECTION, issuance=CLEARED_ISSUANCE,
+    )
+    enforcement.resolve_action_facts(
+        connection, workspace_id=WORKSPACE,
+        action=_action_row(execution_metadata={'chain_linked_ids': {
+            'incident_id': INCIDENT_ID, 'alert_id': ALERT_ID,
+        }}),
+    )
+    alert_reads = connection.statements('FROM alerts WHERE id')
+    assert alert_reads, 'the alert was never read'
+    assert all('detection_id' not in stmt for stmt, _ in alert_reads)
+
+    detection_reads = connection.statements('FROM threat_detections')
+    assert detection_reads, 'the detection was never looked up'
+    for stmt, _ in detection_reads:
+        assert ('WHERE id = %s::uuid' in stmt
+                or 'linked_alert_id = %s::uuid' in stmt
+                or 'linked_incident_id = %s::uuid' in stmt), stmt
+
+
+def test_17_c2_an_unreadable_detection_still_records_nothing():
+    """Fail-closed is preserved by the new lookup: a failed read abandons the pass."""
+    connection = _EnforcementConn(
+        policy_row=_policy_row(), detection=MINT_DETECTION, issuance=CLEARED_ISSUANCE,
+        fail_on=('FROM threat_detections',),
+    )
+    outcome = enforcement.evaluate_response_action(
+        connection, workspace_id=WORKSPACE,
+        action=_action_row(execution_metadata={'chain_linked_ids': {
+            'incident_id': INCIDENT_ID, 'alert_id': ALERT_ID,
+        }}),
+        now=NOW, user_id='operator-1',
+    )
+    assert outcome.status == enforcement.STATUS_FACTS_UNAVAILABLE
+    assert connection.inserted_evaluations == []
+
+
+class _CreatePathConn(_EnforcementConn):
+    """Answers the reads `create_enforcement_action` itself makes, and remembers
+    the row it INSERTED so the producer's read-back runs on the NEW action id
+    rather than on a fixture standing in for it."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.created_actions: list[dict] = []
+
+    def execute(self, statement, params=None):
+        n = ' '.join(str(statement).split())
+        if 'INSERT INTO response_actions' in n:
+            self.executed.append((n, params))
+            assert n.count('%s') == len(params), (
+                f'{n.count("%s")} placeholders for {len(params)} parameters'
+            )
+            self.created_actions.append({
+                'id': params[0], 'workspace_id': params[1],
+                'incident_id': params[2], 'alert_id': params[3],
+                'action_type': params[4], 'mode': params[5], 'status': params[6],
+                'execution_state': params[14],
+                'execution_metadata': json.loads(params[15]),
+                'created_by_user_id': params[21],
+            })
+            return _Result()
+        if 'FROM response_actions WHERE id = %s::uuid AND workspace_id = %s' in n and self.created_actions:
+            row = self.created_actions[-1]
+            match = str(params[0]) == str(row['id']) and str(params[1]) == WORKSPACE
+            self.executed.append((n, params))
+            return _Result(row=row if match else None)
+        return super().execute(statement, params)
+
+
+def test_17_d_creating_a_response_action_produces_its_enforcement_evaluation(monkeypatch):
+    """THE PROOF, on one newly created action.
+
+        canonical facts (detection -> alert -> incident -> action, + issuance)
+          -> deterministic enforcement evaluation
+          -> persisted governance_policy_evaluations row, simulation = FALSE
+          -> Screen 8's latest_policy_evaluation retrieves it
+          -> the gate reports ALLOW and applies quorum / adapter rules
+
+    Every link is exercised against what the code actually wrote: the action row
+    read by the producer is the one the endpoint INSERTed, and the evaluation the
+    gate reads is rebuilt from the INSERT the producer issued.
+    """
+    connection = _CreatePathConn(
+        policy_row=_policy_row(), detection=MINT_DETECTION, issuance=CLEARED_ISSUANCE,
+    )
+    _patch_command(monkeypatch, connection)
+
+    created = pilot.create_enforcement_action(
+        {
+            'action_type': 'pause_mint_redeem',
+            'mode': 'simulated',
+            'incident_id': INCIDENT_ID,
+            'alert_id': ALERT_ID,
+        },
+        SimpleNamespace(headers={'x-workspace-id': WORKSPACE}),
+    )
+    # 1. The action exists.
+    assert connection.created_actions, 'no response action was created'
+    new_action = connection.created_actions[-1]
+    assert created['id'] == new_action['id']
+
+    # 2. An enforcement evaluation was produced FOR IT, from canonical facts.
+    assert connection.inserted_evaluations, 'no enforcement evaluation was persisted'
+    snapshot = json.loads(connection.inserted_evaluations[-1]['params'][14])
+    assert snapshot['response_action_id'] == new_action['id']
+    assert snapshot['fact_sources']['detection_id'] == DETECTION_ID
+    assert snapshot['fact_sources']['alert_id'] == ALERT_ID
+    assert snapshot['fact_sources']['incident_id'] == INCIDENT_ID
+
+    # 3. It is an ENFORCEMENT row, not a simulation.
+    stored = _evaluation_row_from_insert(connection)
+    assert stored['simulation'] is False
+    assert stored['decision'] in {gpc.DECISION_ALLOW, gpc.DECISION_DENY}
+
+    # 4. Screen 8 retrieves it, and reports a real verdict instead of MISSING.
+    gate_conn = _EnforcementConn(evaluation=stored, policy_row=_policy_row())
+    gate = pilot.response_action_execution_gate(
+        gate_conn, new_action, workspace_id=WORKSPACE, workspace_context={'role': 'admin'},
+    )
+    assert gate['policy_decision'] == gpc.DECISION_ALLOW
+    assert rgc.POLICY_EVALUATION_MISSING not in gate['reason_codes']
+
+    # 5. The execution gate still applies its own rules on top of the verdict.
+    assert gate['authorization_decision'] in {rgc.GATE_AUTHORIZED, rgc.GATE_LOCKED}
+    assert 'required_quorum' in gate and 'execution_adapter_required' in gate
+    assert gate['can_execute'] is (gate['authorization_decision'] == rgc.GATE_AUTHORIZED
+                                   and gate['execution_ready'])
+
+
+def test_17_e_a_denied_policy_reaches_screen_08_as_a_deny(monkeypatch):
+    """The same wiring carries a refusal. No ALLOW is fabricated when the facts
+    do not support one: an unsettled issuance denies, and the gate stays locked."""
+    connection = _CreatePathConn(
+        policy_row=_policy_row(), detection=MINT_DETECTION,
+        issuance={**CLEARED_ISSUANCE, 'settlement_state': 'pending'},
+    )
+    _patch_command(monkeypatch, connection)
+    pilot.create_enforcement_action(
+        {'action_type': 'pause_mint_redeem', 'mode': 'simulated',
+         'incident_id': INCIDENT_ID, 'alert_id': ALERT_ID},
+        SimpleNamespace(headers={'x-workspace-id': WORKSPACE}),
+    )
+    stored = _evaluation_row_from_insert(connection)
+    assert stored['simulation'] is False
+    assert stored['decision'] == gpc.DECISION_DENY
+
+    gate_conn = _EnforcementConn(evaluation=stored, policy_row=_policy_row())
+    gate = pilot.response_action_execution_gate(
+        gate_conn, connection.created_actions[-1], workspace_id=WORKSPACE,
+        workspace_context={'role': 'admin'},
+    )
+    assert gate['policy_decision'] == gpc.DECISION_DENY
+    assert gate['can_execute'] is False
+    # A policy refusal is reported as DENIED, not as the weaker LOCKED: the gate
+    # names the authority that refused rather than a missing fact.
+    assert gate['decision'] == rgc.GATE_DENIED
+
+
+def test_17_f_a_failed_evaluation_never_fails_the_creation_and_never_authorizes(monkeypatch):
+    """Best-effort in the safe direction only.
+
+    A producer failure must not abort creating the action, and must not leave a
+    verdict behind. The gate then reports POLICY_EVALUATION_MISSING and stays
+    locked, which is the honest state.
+    """
+    connection = _CreatePathConn(
+        policy_row=_policy_row(), detection=MINT_DETECTION, issuance=CLEARED_ISSUANCE,
+        fail_on=('FROM threat_detections',),
+    )
+    _patch_command(monkeypatch, connection)
+    created = pilot.create_enforcement_action(
+        {'action_type': 'pause_mint_redeem', 'mode': 'simulated',
+         'incident_id': INCIDENT_ID, 'alert_id': ALERT_ID},
+        SimpleNamespace(headers={'x-workspace-id': WORKSPACE}),
+    )
+    assert created['id'] and connection.created_actions
+    assert connection.inserted_evaluations == []
+
+    gate_conn = _EnforcementConn(policy_row=_policy_row())
+    gate = pilot.response_action_execution_gate(
+        gate_conn, connection.created_actions[-1], workspace_id=WORKSPACE,
+        workspace_context={'role': 'admin'},
+    )
+    assert gate['policy_decision'] == rgc.POLICY_NOT_EVALUATED
+    assert rgc.POLICY_EVALUATION_MISSING in gate['reason_codes']
+    assert gate['can_execute'] is False
+
+
+def test_17_g_every_path_that_creates_a_screen_8_action_evaluates_it():
+    """The producer is invoked wherever an action ENTERS the Screen 8 workflow."""
+    import inspect
+
+    for command in (
+        pilot.create_enforcement_action,
+        pilot.recommend_response_action_for_incident,
+        pilot.rollback_enforcement_action,
+    ):
+        assert '_record_response_action_enforcement_evaluation' in inspect.getsource(command), (
+            f'{command.__name__} creates a response action without evaluating it'
+        )
+
+
+def test_17_h_an_asset_scoped_policy_is_visible_to_the_gates_scope_probe():
+    """An unresolved asset is not evidence that no policy applies.
+
+    Screen 8 read the asset only from `chain_linked_ids`, which no writer fills,
+    so `_policy_governs` saw asset=None and matched workspace-wide policies only.
+    An action governed by an ASSET-SCOPED policy therefore reported
+    NOT_APPLICABLE — which the engine treats as passing — and an action with no
+    enforcement decision at all came back AUTHORIZED. The asset is now resolved
+    from canonical rows, so the probe sees the policy and the gate locks.
+    """
+    from services.api.app.domains.response_gate import service as rg_service
+
+    action = _action_row(execution_metadata={'chain_linked_ids': {
+        'incident_id': INCIDENT_ID, 'alert_id': ALERT_ID,
+    }})
+    connection = _EnforcementConn(
+        # An ACTIVE policy scoped to ASSET_ID, and no enforcement evaluation.
+        policy_row=_policy_row(), evaluation=None,
+        detection=MINT_DETECTION, alert={'target_id': 'target-1'},
+    )
+    resolved = rg_service.resolve_action_asset_id(
+        connection, workspace_id=WORKSPACE, alert_id=ALERT_ID, incident_id=INCIDENT_ID,
+    )
+    assert resolved == ASSET_ID
+
+    gate = pilot.response_action_execution_gate(
+        connection, action, workspace_id=WORKSPACE, workspace_context={'role': 'admin'},
+    )
+    assert gate['policy_decision'] == rgc.POLICY_NOT_EVALUATED
+    assert rgc.POLICY_EVALUATION_MISSING in gate['reason_codes']
+    assert gate['can_execute'] is False
+    assert gate['decision'] == rgc.GATE_LOCKED
+
+
+def test_17_i_an_unreadable_asset_is_never_reported_as_no_policy_applies():
+    """Fail-closed: a walk that could not run reports NOT_EVALUATED, not NOT_APPLICABLE."""
+    connection = _EnforcementConn(
+        policy_row=None, evaluation=None, detection=MINT_DETECTION,
+        fail_on=('FROM alerts WHERE id',),
+    )
+    gate = pilot.response_action_execution_gate(
+        connection,
+        _action_row(execution_metadata={'chain_linked_ids': {
+            'incident_id': INCIDENT_ID, 'alert_id': ALERT_ID,
+        }}),
+        workspace_id=WORKSPACE, workspace_context={'role': 'admin'},
+    )
+    assert gate['policy_decision'] == rgc.POLICY_NOT_EVALUATED
+    assert gate['can_execute'] is False
+
+
+def test_17_j_the_gate_asset_walk_uses_the_same_canonical_links():
+    """It must not reintroduce the identifier mismatch it exists to survive."""
+    import inspect
+    from services.api.app.domains.response_gate import service as rg_service
+
+    source = inspect.getsource(rg_service.resolve_action_asset_id)
+    assert 'linked_alert_id' in source and 'linked_incident_id' in source
+    assert 'a.detection_id' not in source
+    assert 'SELECT detection_id' not in source
+
+
+def test_17_k_an_action_is_shown_its_own_evaluation_not_a_siblings():
+    """Two actions on one incident must not share one verdict by accident.
+
+    The lifecycle identifiers the lookup matches on (incident, asset, event) are
+    shared between sibling actions, so the producer's per-action stamp is what
+    keeps them apart. The specific match is preferred; the shared ones remain the
+    fallback for rows written before the stamp existed.
+    """
+    import inspect
+    from services.api.app.domains.response_gate import service as rg_service
+
+    source = inspect.getsource(rg_service.latest_policy_evaluation)
+    assert "input_snapshot->>'response_action_id'" in source
+    assert 'ORDER BY' in source and 'simulation = FALSE' in source
+    # The shared identifiers are still matched — this narrows nothing away.
+    for shared in ('canonical_event_id =', 'incident_id =', 'asset_id ='):
+        assert shared in source
+
+    # And the gate passes the action it is building a verdict for.
+    gate_source = inspect.getsource(rg_service.build_gate_inputs)
+    assert 'response_action_id=action_id' in gate_source

@@ -19506,7 +19506,7 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
                 chain_network, target_wallet, token_contract, spender, calldata,
                 execution_state, execution_metadata, execution_artifacts, provider_receipts, error_code, result_status, tx_hash, created_by_user_id
             )
-            VALUES (%s, %s, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s, %s)
             ''',
             (
                 action_id,
@@ -19584,6 +19584,24 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
         log_audit(connection, action='enforcement.action.create', entity_type='response_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'action_type': action_type, 'mode': mode})
         connection.commit()
         logger.info('response_action_created action_id=%s type=%s mode=%s status=%s', action_id, action_type, mode, status_value)
+
+        # The DETERMINISTIC ENFORCEMENT EVALUATION for the action just created.
+        # This endpoint is how an action ENTERS Screen 8 from the Incident, Alert
+        # and Threat-operations consoles, and nothing on this path produced the
+        # `simulation = FALSE` record the execution gate consumes — so every
+        # action created here reached the gate at POLICY_EVALUATION_MISSING and
+        # LOCKED, with no path to an authorization. It runs on canonical facts
+        # only (see governance_policy.enforcement); the request body above
+        # supplies none of them.
+        #
+        # After the commit and best-effort by design: a failure writes NOTHING,
+        # which leaves the gate LOCKED. Creating an action must not fail because
+        # a policy could not be evaluated, and an unevaluated action must never
+        # be treated as an authorized one.
+        _record_response_action_enforcement_evaluation(
+            connection, workspace_id=workspace_context['workspace_id'],
+            action_id=action_id, user_id=str(user['id']),
+        )
         return _response_action_payload(
             {
                 'id': action_id,
@@ -21521,6 +21539,14 @@ def rollback_enforcement_action(action_id: str, request: Request) -> dict[str, A
         )
         log_audit(connection, action='enforcement.action.rollback', entity_type='enforcement_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'compensating_action_id': rollback_id})
         connection.commit()
+        # The compensating action is a response action like any other: Screen 8
+        # gates it, so it needs its own enforcement evaluation. Same best-effort
+        # contract as the create path — a failure records nothing and leaves the
+        # gate LOCKED.
+        _record_response_action_enforcement_evaluation(
+            connection, workspace_id=workspace_context['workspace_id'],
+            action_id=rollback_id, user_id=str(user['id']),
+        )
         return {'id': action_id, 'status': 'canceled', 'compensating_action_id': rollback_id, 'compensating_action_type': compensating_type}
 
 
