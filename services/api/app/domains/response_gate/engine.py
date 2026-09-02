@@ -33,10 +33,18 @@ from typing import Any, Optional
 from services.api.app.domains.response_gate import config as rgc
 
 
-#: Who satisfies the human approval requirement for an action.
+#: Who the action NAMES as the authority for its human approval requirement.
 #:   workspace_approvers   — named operators recording decisions on Screen 8.
-#:   delegated_governance  — an external governance module whose own signer
-#:                           quorum is the authority for this execution path.
+#:   delegated_governance  — an external governance module is named as the
+#:                           authority for this execution path.
+#:
+#: Naming an authority is not evidence FROM it. This deployment has no
+#: verifiable delegation record — no signed attestation, no persisted signer
+#: set, no identity that could be attributed in an audit — so
+#: ``delegated_governance`` can never substitute for the approvals a numeric
+#: quorum requires. It is reported on the gate so an operator can see WHICH
+#: authority the action claims, and the quorum is still collected from real
+#: humans. See ``_quorum_met``.
 QUORUM_AUTHORITY_WORKSPACE = 'workspace_approvers'
 QUORUM_AUTHORITY_DELEGATED = 'delegated_governance'
 QUORUM_AUTHORITY_LABELS: dict[str, str] = {
@@ -152,6 +160,11 @@ class GateInputs:
     execution_authority_available: bool = True
     #: A real execution adapter is configured for this deployment.
     execution_adapter_configured: bool = False
+    #: Whether RUNNING this action would contact an external provider, so a
+    #: configured adapter is a precondition for the run. False for a simulation,
+    #: a recommendation, or a manual-only containment request: those contact
+    #: nothing, and an absent adapter must not block them.
+    execution_adapter_required: bool = False
     execution_adapter_label: Optional[str] = None
 
     #: Canonical facts the caller tried to read and could NOT (a failed query, a
@@ -186,6 +199,17 @@ class ExecutionGate:
     satisfied_roles: tuple[str, ...]
     missing_roles: tuple[str, ...]
     approvers: tuple[dict[str, Any], ...]
+    #: The AUTHORIZATION verdict on its own — policy, quorum, RBAC, lifecycle.
+    #: Deliberately separate from ``decision``: an action can be fully authorized
+    #: and still not runnable because this deployment has no adapter to run it
+    #: with. Collapsing the two would either hide a missing adapter behind an
+    #: AUTHORIZED badge or misreport a capability gap as a policy refusal.
+    authorization_decision: str = rgc.GATE_LOCKED
+    #: Whether an execution attempt could actually be carried out here: either the
+    #: action contacts no external provider, or the adapter it needs is configured.
+    execution_ready: bool = False
+    #: Whether running this action would contact an external provider at all.
+    execution_adapter_required: bool = False
     quorum_authority: str = QUORUM_AUTHORITY_WORKSPACE
     policy_id: Optional[str] = None
     policy_key: Optional[str] = None
@@ -215,6 +239,16 @@ class ExecutionGate:
             'decision': self.decision,
             'decision_label': rgc.GATE_DECISION_LABELS.get(self.decision, self.decision),
             'can_execute': bool(self.can_execute),
+            # POLICY AUTHORIZATION is not EXECUTION CAPABILITY. Both are on the
+            # wire, separately, so a missing adapter is never rendered as a policy
+            # refusal and an authorization is never rendered as a run that could
+            # actually happen.
+            'authorization_decision': self.authorization_decision,
+            'authorization_decision_label': rgc.GATE_DECISION_LABELS.get(
+                self.authorization_decision, self.authorization_decision,
+            ),
+            'execution_ready': bool(self.execution_ready),
+            'execution_adapter_required': bool(self.execution_adapter_required),
             'policy_decision': self.policy_decision,
             'policy_decision_label': rgc.POLICY_DECISION_LABELS.get(
                 self.policy_decision, self.policy_decision,
@@ -311,10 +345,16 @@ def _quorum_met(
 
     Precedence, highest first:
       1. Any required approver role still missing -> not met.
-      2. Recorded decisions exist -> the numeric quorum must be reached.
-      3. No decisions recorded -> fall back to the action's canonical lifecycle
-         approval status, which is the same fact the pre-existing approval path
-         enforces ('not_required' or 'approved').
+      2. A positive numeric quorum -> that many VALID approvals must exist.
+      3. No quorum at all -> nothing is outstanding.
+
+    There is no authority that can substitute for those approvals. A
+    ``quorum_authority`` of ``delegated_governance`` NAMES an external governance
+    module; it is not a signed attestation from one, carries no approver identity,
+    and cannot be attributed in an audit — so it satisfies nothing here. (It
+    previously short-circuited this function, which made 0-of-2 approvals report
+    AUTHORIZED.) Until a verifiable delegation record exists, such an action
+    collects the same human approvals as any other and fails closed meanwhile.
     """
     if missing_roles:
         return False
@@ -323,17 +363,15 @@ def _quorum_met(
         # left for a human to satisfy. Reported as approval_required=False, so the
         # UI states "no approval quorum" rather than an empty progress fraction.
         return True
-    if str(inputs.quorum_authority or '') == QUORUM_AUTHORITY_DELEGATED:
-        # This action's own execution path IS the approval authority (an external
-        # governance module with its own signer quorum). Reported as such on the
-        # gate, so it never reads as a workspace approver's sign-off.
-        return True
     if inputs.approvals:
         return collected >= required_quorum
     status_value = str(inputs.lifecycle_approval_status or '').strip().lower()
     if status_value in {'not_required', 'approved'}:
+        # No approval ROWS exist, so the canonical lifecycle status is the only
+        # record of a decision. It is a human decision either way — the
+        # pre-existing single-approver path writes it — never a delegated claim.
         return True
-    return required_quorum <= 0
+    return False
 
 
 def evaluate_gate(inputs: GateInputs) -> ExecutionGate:
@@ -395,6 +433,15 @@ def evaluate_gate(inputs: GateInputs) -> ExecutionGate:
     quorum_met = _quorum_met(
         inputs, required_quorum=required_quorum, collected=collected, missing_roles=missing_roles,
     )
+    # An action that NAMES an external governance authority for a quorum it has
+    # not collected is reported as exactly that. The code is additive: the quorum
+    # is still incomplete below, and this only says WHY the claimed substitute did
+    # not close it.
+    delegated_claim_unverified = (
+        str(inputs.quorum_authority or '') == QUORUM_AUTHORITY_DELEGATED
+        and required_quorum > 0
+        and not quorum_met
+    )
     # An unmet quorum ALWAYS reports HUMAN_QUORUM_INCOMPLETE — it is the fact that
     # keeps the lock closed. REQUIRED_ROLE_MISSING is added on top when the gate can
     # also name WHICH role is outstanding; it refines the reason, it never replaces
@@ -403,6 +450,8 @@ def evaluate_gate(inputs: GateInputs) -> ExecutionGate:
     # export or an alert filtering on HUMAN_QUORUM_INCOMPLETE silently missed it.)
     if not quorum_met:
         reason_codes.append(rgc.HUMAN_QUORUM_INCOMPLETE)
+    if delegated_claim_unverified:
+        reason_codes.append(rgc.DELEGATED_AUTHORITY_NOT_VERIFIED)
     if missing_roles:
         reason_codes.append(rgc.REQUIRED_ROLE_MISSING)
 
@@ -421,12 +470,16 @@ def evaluate_gate(inputs: GateInputs) -> ExecutionGate:
     if facts_unavailable:
         reason_codes.append(rgc.GATE_FACTS_UNAVAILABLE)
     if not inputs.execution_adapter_configured:
-        # Reported, never fatal to AUTHORIZATION: §18 requires the missing
-        # adapter be stated truthfully rather than presented as a submitted
-        # transaction. Whether a run may be attempted is the command's question.
+        # Never fatal to AUTHORIZATION: §18 requires the missing adapter be stated
+        # truthfully rather than presented as a submitted transaction. It IS fatal
+        # to CAPABILITY when running this action would have to call a provider —
+        # see execution_ready below.
         reason_codes.append(rgc.EXECUTION_ADAPTER_NOT_CONFIGURED)
 
-    can_execute = bool(
+    # ── Authorization: may this action run at all? ─────────────────────────
+    # Policy, quorum, RBAC, lifecycle and incident state. Nothing about whether
+    # this DEPLOYMENT happens to be able to carry the run out.
+    authorized = bool(
         not facts_unavailable
         and policy_satisfied
         and quorum_met
@@ -439,19 +492,42 @@ def evaluate_gate(inputs: GateInputs) -> ExecutionGate:
         and incident_allows
     )
 
+    # ── Capability: could the run actually be carried out here? ────────────
+    # An action that contacts no external provider is always ready. One that
+    # WOULD contact a provider is ready only when an adapter is configured — and
+    # when it is not, `can_execute` is False so neither the UI nor the execute
+    # command can attempt a run that would have nothing to run against.
+    execution_ready = bool(
+        (not inputs.execution_adapter_required) or inputs.execution_adapter_configured
+    )
+    can_execute = bool(authorized and execution_ready)
+
+    if authorized:
+        authorization_decision = rgc.GATE_AUTHORIZED
+    elif policy_decision == rgc.POLICY_DENY:
+        authorization_decision = rgc.GATE_DENIED
+    else:
+        authorization_decision = rgc.GATE_LOCKED
+
     if can_execute:
         decision = rgc.GATE_AUTHORIZED
         # An authorized gate reports the authorization plus any advisory code
         # (today only the adapter state), never a bare empty payload.
         reason_codes = [rgc.EXECUTION_AUTHORIZED] + reason_codes
-    elif policy_decision == rgc.POLICY_DENY:
+    elif authorization_decision == rgc.GATE_DENIED:
         decision = rgc.GATE_DENIED
     else:
+        # Includes the authorized-but-not-runnable case: the authorization is
+        # preserved verbatim on `authorization_decision`, and the reason codes
+        # already name EXECUTION_ADAPTER_NOT_CONFIGURED as what closed the gate.
         decision = rgc.GATE_LOCKED
 
     return ExecutionGate(
         decision=decision,
         can_execute=can_execute,
+        authorization_decision=authorization_decision,
+        execution_ready=execution_ready,
+        execution_adapter_required=bool(inputs.execution_adapter_required),
         reason_codes=tuple(reason_codes),
         policy_decision=policy_decision,
         required_quorum=required_quorum,

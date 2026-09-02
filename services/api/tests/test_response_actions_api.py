@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from types import SimpleNamespace
 
+import pytest
 from fastapi import HTTPException
 
 from services.api.app import pilot
@@ -412,6 +413,10 @@ def test_execute_live_revoke_approval_returns_proposed_state_with_safe_tx_hash_a
         yield _Connection()
 
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    # A deployment WITH a live execution adapter. Without this the gate is
+    # correctly closed (execution_ready=False) and no provider is contacted:
+    # these tests assert the configured-adapter path, so they configure one.
+    monkeypatch.setenv('LIVE_ACTION_EXECUTION_ENABLED', 'true')
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
     monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
@@ -501,6 +506,10 @@ def test_execute_live_freeze_wallet_writes_governance_metadata_and_timeline(monk
         yield _Connection()
 
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    # A deployment WITH a live execution adapter. Without this the gate is
+    # correctly closed (execution_ready=False) and no provider is contacted:
+    # these tests assert the configured-adapter path, so they configure one.
+    monkeypatch.setenv('LIVE_ACTION_EXECUTION_ENABLED', 'true')
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
     monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
@@ -686,6 +695,10 @@ def test_execute_live_action_success_includes_execution_evidence_fields(monkeypa
         yield _Connection()
 
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    # A deployment WITH a live execution adapter. Without this the gate is
+    # correctly closed (execution_ready=False) and no provider is contacted:
+    # these tests assert the configured-adapter path, so they configure one.
+    monkeypatch.setenv('LIVE_ACTION_EXECUTION_ENABLED', 'true')
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
     monkeypatch.setattr(pilot, '_require_workspace_permission', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
@@ -759,8 +772,16 @@ def test_recommended_actions_for_context_is_deterministic() -> None:
 
 
 def test_execute_live_action_requires_explicit_approval(monkeypatch):
-    # Governance-path actions (freeze_wallet) proceed without a separate approver;
-    # the governance workflow itself handles approval externally.
+    """A governance-path live action still needs a REAL human approver.
+
+    It previously proceeded without one: the execution path's own name
+    ('governance') was substituted for the missing approver, which satisfied the
+    approver check with a string that has no RBAC to verify, no step-up to
+    complete, and no identity to attribute in the audit record. "The governance
+    workflow handles approval externally" is not a verifiable delegation
+    mechanism, and this deployment has none — so the action fails closed until a
+    named approver has signed, exactly like every other live action.
+    """
     class _Result:
         def __init__(self, row=None):
             self._row = row
@@ -810,9 +831,14 @@ def test_execute_live_action_requires_explicit_approval(monkeypatch):
         lambda *_a, **_k: {'action_id': 'gov-auto', 'attestation_hash': 'att-auto', 'policy_effects': ['Wallet frozen']},
     )
     monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+    monkeypatch.setenv('LIVE_ACTION_EXECUTION_ENABLED', 'true')
     request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
-    response = pilot.execute_enforcement_action('act-live', request)
-    assert response['execution_state'] == 'proposed'
+
+    with pytest.raises(HTTPException) as exc:
+        pilot.execute_enforcement_action('act-live', request)
+
+    assert exc.value.status_code == 409
+    assert 'approval' in str(exc.value.detail).lower()
 
 
 def test_execute_live_action_denied_for_unauthorized_workspace_role(monkeypatch):
@@ -972,6 +998,10 @@ def test_execute_live_action_success_writes_audit_trail_and_provenance(monkeypat
         yield _Connection()
 
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    # A deployment WITH a live execution adapter. Without this the gate is
+    # correctly closed (execution_ready=False) and no provider is contacted:
+    # these tests assert the configured-adapter path, so they configure one.
+    monkeypatch.setenv('LIVE_ACTION_EXECUTION_ENABLED', 'true')
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
     monkeypatch.setattr(
@@ -1063,6 +1093,10 @@ def test_execute_live_action_persists_execution_evidence_for_approved_path(monke
         yield _Connection()
 
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    # A deployment WITH a live execution adapter. Without this the gate is
+    # correctly closed (execution_ready=False) and no provider is contacted:
+    # these tests assert the configured-adapter path, so they configure one.
+    monkeypatch.setenv('LIVE_ACTION_EXECUTION_ENABLED', 'true')
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
     monkeypatch.setattr(

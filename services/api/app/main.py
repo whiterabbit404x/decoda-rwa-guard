@@ -219,6 +219,7 @@ from services.api.app.pilot import (
     create_incident_report_export,
     simulate_response_action,
     simulate_all_eligible_response_actions,
+    evaluate_response_action_policy,
     response_action_execution_gate_view,
     response_action_safety_checks,
     create_evidence_package_from_response_action,
@@ -5406,6 +5407,19 @@ def response_actions_simulate_all(request: Request, incident_id: str | None = No
 @app.get('/response/actions/{action_id}/safety-checks', summary='Deterministic, read-only safety checks for a response action')
 def response_action_safety_checks_route(action_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: response_action_safety_checks(action_id, request))
+
+
+@app.post('/response/actions/{action_id}/policy-evaluation', summary='Run the deterministic policy ENFORCEMENT evaluation for a response action')
+def response_action_policy_evaluation_route(action_id: str, request: Request) -> dict[str, Any]:
+    """Produce the enforcement evaluation Screen 8's gate consumes.
+
+    The deterministic policy engine is run here against canonical backend facts,
+    and the verdict is persisted with ``simulation = FALSE``. There is NO request
+    body: the browser names an action and nothing else, so it cannot supply a
+    decision, a policy version, an operator authority, or an amount. A Screen 11
+    simulation is never copied into this record.
+    """
+    return with_auth_schema_json(lambda: evaluate_response_action_policy(action_id, request))
 
 
 @app.get('/response/actions/{action_id}/execution-gate', summary='Deterministic execution gate for a response action')

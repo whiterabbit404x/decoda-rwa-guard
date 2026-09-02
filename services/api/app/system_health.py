@@ -1080,6 +1080,51 @@ def _check_detection(connection: Any, workspace_id: str | None) -> dict[str, Any
     )
 
 
+def _check_integrity_migrations(connection: Any) -> dict[str, Any]:
+    """Whether the REQUIRED data-integrity migrations have actually been applied.
+
+    These are the migrations whose absence degrades a guarantee silently — the API
+    keeps serving, only the constraint is gone — so nothing else would surface it.
+    Reported as degraded (not healthy) when one is missing, and as unavailable
+    when the probe itself could not run: an integrity guarantee we could not
+    confirm is never reported as one we have.
+    """
+    from services.api.app.pilot import integrity_migration_status
+
+    try:
+        result = integrity_migration_status(connection)
+    except Exception as exc:  # pragma: no cover - defensive
+        return _component(
+            'unavailable',
+            f'Integrity migration status could not be read ({_sanitize_error(exc)}).',
+            action='Check database connectivity, then run migrations.',
+        )
+    required = result.get('required_migrations') or []
+    if result.get('ready'):
+        return _component(
+            'healthy',
+            'Required data-integrity migrations are applied.',
+            metric=f'{len(required)}/{len(required)} applied',
+        )
+    missing = result.get('missing_migrations') or []
+    if missing:
+        return _component(
+            'degraded',
+            'A required data-integrity migration has not been applied: '
+            + ', '.join(missing)
+            + '. '
+            + '; '.join(c['detail'] for c in result.get('checks', []) if c.get('status') == 'missing'),
+            metric=f'{len(required) - len(missing)}/{len(required)} applied',
+            action='Run the pending database migrations, then restart the API.',
+        )
+    return _component(
+        'unavailable',
+        'Required data-integrity migrations could not be verified: '
+        + ', '.join(result.get('unverified_migrations') or []),
+        action='Check database connectivity, then run migrations.',
+    )
+
+
 def _check_alert_delivery() -> dict[str, Any]:
     try:
         from services.api.app.domains import alert_delivery
@@ -1786,6 +1831,7 @@ def build_system_health_snapshot(
             components['telemetry'] = _check_telemetry(connection, workspace_id)
             components['detection'] = _check_detection(connection, workspace_id)
             components['alert_delivery'] = _check_alert_delivery()
+            components['integrity_migrations'] = _check_integrity_migrations(connection)
 
             chain_monitoring = _build_live_chain_monitoring(connection, workspace_id, rpc_check=base_rpc_check)
             events = _build_events(connection, workspace_id)
@@ -1811,6 +1857,9 @@ def build_system_health_snapshot(
         components.setdefault('telemetry', _component('unavailable', 'Cannot check telemetry: database unavailable.'))
         components.setdefault('detection', _component('unavailable', 'Cannot check detection: database unavailable.'))
         components.setdefault('alert_delivery', _check_alert_delivery())
+        components.setdefault('integrity_migrations', _component(
+            'unavailable', 'Cannot verify integrity migrations: database unavailable.',
+            action='Verify DATABASE_URL, then run migrations.'))
         _fallback_worker_state = _worker_enabled_state()
         chain_monitoring = {
             'expected_chain_id': 8453,

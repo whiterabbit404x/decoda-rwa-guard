@@ -29,6 +29,12 @@ Modules:
   service     — workspace-scoped DB reads/writes: policies, immutable version
                 history, the server-resolved evaluation context, and the
                 evaluation record Screen 8 consumes.
+  enforcement — the ENFORCEMENT producer. Runs the same ``engine`` against facts
+                read from canonical rows (detection -> alert -> incident ->
+                response action, plus the authorized issuance) and persists the
+                verdict with ``simulation = FALSE``. This is the only writer of
+                the rows Screen 8's execution gate consumes; it copies no
+                simulation and accepts no decision from a caller.
   endpoints   — request handlers. RBAC and tenant isolation reuse the canonical
                 pilot helpers; nothing here invents a permission model.
 
@@ -46,13 +52,21 @@ code. A missing policy, a disabled policy, an unreadable settlement state, an
 unresolvable daily total under a capped policy — all DENY. There is no code path
 in which an error, an outage, or absent data produces ALLOW.
 
-Simulation
-----------
+Simulation vs enforcement
+-------------------------
 A Screen 11 simulation is predictive and read-only. It queries policy and
 configuration state, and it writes exactly one row: a
 ``governance_policy_evaluations`` record stamped ``simulation = TRUE``, which is
 excluded from every production counter. It cannot execute an action, approve
 anything, or mutate policy, incident, or settlement state.
+
+An ENFORCEMENT evaluation (``enforcement.evaluate_response_action``) is the other
+kind, and the only one that can authorize anything downstream. It runs the SAME
+deterministic engine, but its inputs come from canonical backend rows rather than
+from a request body, and its row is stamped ``simulation = FALSE``. A simulation
+is never copied, relabelled, or promoted into one: the two are produced by
+different call paths reading different inputs, and Screen 8 reads only the
+second.
 
 This package must not import from services.api.app.main. It may import
 services.api.app.pilot for shared DB/auth utilities, matching the existing
