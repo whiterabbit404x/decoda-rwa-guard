@@ -193,6 +193,13 @@ POLICY_NOT_FOUND = 'POLICY_NOT_FOUND'
 POLICY_DISABLED = 'POLICY_DISABLED'
 POLICY_NOT_ACTIVE = 'POLICY_NOT_ACTIVE'
 OPERATION_MISMATCH = 'OPERATION_MISMATCH'
+#: The governed operation could not be established from any canonical row, so no
+#: policy could be matched to it. Deliberately distinct from OPERATION_MISMATCH
+#: ("this policy governs MINT, the operation is a BURN"): that one names a
+#: conflict between two KNOWN values, while this one says the platform never
+#: established the operation at all. Both DENY; only this one tells an operator
+#: that the missing link is the detection, not the policy.
+OPERATION_NOT_ESTABLISHED = 'OPERATION_NOT_ESTABLISHED'
 
 BUSINESS_EVENT_MISSING = 'BUSINESS_EVENT_MISSING'
 BUSINESS_EVENT_MISMATCH = 'BUSINESS_EVENT_MISMATCH'
@@ -214,6 +221,7 @@ REASON_CODES = (
     POLICY_DISABLED,
     POLICY_NOT_ACTIVE,
     OPERATION_MISMATCH,
+    OPERATION_NOT_ESTABLISHED,
     BUSINESS_EVENT_MISSING,
     BUSINESS_EVENT_MISMATCH,
     SETTLEMENT_NOT_CLEARED,

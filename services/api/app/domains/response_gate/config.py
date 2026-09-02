@@ -165,6 +165,15 @@ REASON_LABELS: dict[str, str] = {
         'verifiable delegation record evidences it. Collect the required human approvals.'
     ),
     GATE_FACTS_UNAVAILABLE: 'A required authorization fact could not be read, so the gate stays closed.',
+    # A Screen 11 policy reason code, reflected verbatim when a DENY reaches
+    # this gate. Captioned here because Screen 8 renders the label THIS map
+    # produces, and the code says something an operator must act on: the
+    # governed operation was never established, so the missing link is the
+    # detection behind the incident, not the policy.
+    gpc.OPERATION_NOT_ESTABLISHED: (
+        'The governed operation behind this action could not be established from any '
+        'canonical record, so no policy could be matched to it.'
+    ),
 }
 
 

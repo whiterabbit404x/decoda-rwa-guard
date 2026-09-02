@@ -1826,18 +1826,69 @@ def test_18_c_the_stamped_operation_comes_from_one_resolver():
     assert 'governed_operation(result)' in inspect.getsource(ai_service.emit_canonical_event)
 
 
-def test_18_d_an_unstamped_detection_records_nothing_and_never_authorizes():
-    """The reported symptom, reproduced: no operation, no policy, no evaluation.
+def test_18_d_an_unstamped_detection_records_a_fail_closed_deny_and_never_authorizes():
+    """No operation, no governing policy — and a RECORDED deny, not silence.
 
-    This is the Screen 3 canonical event exactly as its writer used to store it —
-    no operation, and (because a detection is stored only when NO authorization
-    matched) no authorization to recover one from. Fail-closed is preserved:
-    nothing is written and nothing is authorized. But the action is parked at
-    POLICY_EVALUATION_MISSING with no path forward, which is why the operation
-    has to reach the row.
+    This is the Screen 3 canonical event with no operation on it, and (because a
+    detection is stored only when NO authorization matched) no authorization to
+    recover one from. The producer cannot resolve a governing policy. It used to
+    return without writing anything, which parked the action at
+    POLICY_EVALUATION_MISSING forever: the gate's own scope probe says a policy
+    governs this workspace/asset, so the gate stayed LOCKED waiting for a row
+    nothing would ever write.
+
+    Now the same absent facts produce an explicit deterministic DENY that names
+    what could not be established. Fail-closed is strengthened, not weakened:
+    the verdict is DENY, the gate is DENIED, and nothing is executable.
     """
     connection = _EnforcementConn(
         policy_row=_policy_row(),
+        detection={**MINT_DETECTION, 'operation': None, 'provenance': {}},
+        issuance=CLEARED_ISSUANCE,
+    )
+    outcome = enforcement.evaluate_response_action(
+        connection, workspace_id=WORKSPACE, action=_action_row(), now=NOW, user_id='operator-1',
+    )
+    assert outcome.status == enforcement.STATUS_RECORDED_FAIL_CLOSED
+    assert outcome.recorded is True
+    assert outcome.decision.decision == gpc.DECISION_DENY
+    # The engine's own terminal code, plus the one that names the missing link.
+    assert outcome.decision.reason_codes == (
+        gpc.POLICY_NOT_FOUND, gpc.OPERATION_NOT_ESTABLISHED,
+    )
+    assert len(connection.inserted_evaluations) == 1
+
+    # It is an ENFORCEMENT row, and it carries no policy attribution: no policy
+    # decided it, so none is named as having decided it.
+    stored = _evaluation_row_from_insert(connection)
+    assert stored['simulation'] is False
+    assert stored['policy_id'] is None
+    assert stored['policy_version'] is None
+    assert stored['decision'] == gpc.DECISION_DENY
+
+    # And Screen 8 reads back THAT row: a stated DENY, not "not evaluated".
+    gate = pilot.response_action_execution_gate(
+        _EnforcementConn(evaluation=stored, policy_row=_policy_row()),
+        _action_row(), workspace_id=WORKSPACE, workspace_context={'role': 'admin'},
+    )
+    assert gate['policy_decision'] == rgc.POLICY_DENY
+    assert gate['decision'] == rgc.GATE_DENIED
+    assert rgc.POLICY_DENIED in gate['reason_codes']
+    assert gpc.OPERATION_NOT_ESTABLISHED in gate['reason_codes']
+    assert rgc.POLICY_EVALUATION_MISSING not in gate['reason_codes']
+    assert gate['can_execute'] is False
+
+
+def test_18_d2_nothing_governing_the_workspace_still_records_nothing():
+    """The other half of the branch: no ACTIVE policy in scope at all.
+
+    Here "no evaluation" is the honest answer AND it blocks nothing — the gate
+    reports NOT_APPLICABLE from the same scope probe the producer consulted, so
+    there is no POLICY_EVALUATION_MISSING state to clear. Writing a refusal for
+    an action the workspace never chose to govern would invent one.
+    """
+    connection = _EnforcementConn(
+        policy_row=None,
         detection={**MINT_DETECTION, 'operation': None, 'provenance': {}},
         issuance=CLEARED_ISSUANCE,
     )
@@ -1848,13 +1899,39 @@ def test_18_d_an_unstamped_detection_records_nothing_and_never_authorizes():
     assert outcome.recorded is False
     assert connection.inserted_evaluations == []
 
+    # The gate states NOT_APPLICABLE and is not waiting on an evaluation. What
+    # decides executability here is the quorum and the adapter, not this branch:
+    # an action nobody has approved stays locked on the quorum.
     gate = pilot.response_action_execution_gate(
-        _EnforcementConn(evaluation=None, policy_row=_policy_row()),
-        _action_row(), workspace_id=WORKSPACE, workspace_context={'role': 'admin'},
+        _EnforcementConn(evaluation=None, policy_row=None),
+        _action_row(approved_by_user_id=None), workspace_id=WORKSPACE,
+        workspace_context={'role': 'admin'},
     )
-    assert gate['policy_decision'] == rgc.POLICY_NOT_EVALUATED
-    assert rgc.POLICY_EVALUATION_MISSING in gate['reason_codes']
+    assert gate['policy_decision'] == rgc.POLICY_NOT_APPLICABLE
+    assert gate['policy_id'] is None
+    assert rgc.POLICY_EVALUATION_MISSING not in gate['reason_codes']
+    assert rgc.HUMAN_QUORUM_INCOMPLETE in gate['reason_codes']
     assert gate['can_execute'] is False
+
+
+def test_18_d3_an_unreadable_policy_scope_records_nothing_and_stays_locked():
+    """A probe that could not RUN is not "nothing governs", and not a verdict.
+
+    Denying on it would freeze a verdict built on a fact nobody established, so
+    the producer records nothing and the gate stays closed.
+    """
+    connection = _EnforcementConn(
+        policy_row=_policy_row(),
+        detection={**MINT_DETECTION, 'operation': None, 'provenance': {}},
+        issuance=CLEARED_ISSUANCE,
+        fail_on=('SELECT 1 AS present FROM governance_policies',),
+    )
+    outcome = enforcement.evaluate_response_action(
+        connection, workspace_id=WORKSPACE, action=_action_row(), now=NOW, user_id='operator-1',
+    )
+    assert outcome.status == enforcement.STATUS_FACTS_UNAVAILABLE
+    assert outcome.recorded is False
+    assert connection.inserted_evaluations == []
 
 
 def test_18_e_the_stamped_operation_produces_the_enforcement_row_screen_8_reads():

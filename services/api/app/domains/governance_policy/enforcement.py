@@ -41,6 +41,26 @@ POLICY_EVALUATION_MISSING and LOCKED. A fact that is genuinely ABSENT is passed
 to the engine as absent, and the engine fails closed on any mandatory constraint
 it cannot show to be satisfied. Neither path can produce an ALLOW.
 
+Absent facts are RECORDED, not skipped
+--------------------------------------
+Being unable to resolve the governing policy is itself a verdict, and it is
+written down. When the operation behind a response action cannot be established
+— no threat detection stands behind the incident, or the one that does names no
+operation, which is the ordinary shape of an incident opened from an operational
+alert — no policy can be matched to it, and the producer used to return without
+writing anything at all. Screen 8's gate meanwhile asks a WIDER question ("does
+any ACTIVE policy cover this workspace/asset?"), answers yes, and therefore
+reports POLICY_EVALUATION_MISSING / LOCKED. The action was then unauthorizable
+forever: the only thing that could clear that state was the row the producer had
+declined to write, and no operator action could produce it.
+
+So whenever this workspace/asset IS inside an ACTIVE policy's scope
+(``policy_scope_governed`` — the same predicate the gate uses, called from here
+so the two can never disagree), a deterministic DENY is recorded with the reason
+codes naming what could not be established. When NOTHING governs the
+workspace/asset, nothing is written and the gate reports NOT_APPLICABLE from that
+same probe, which blocks nothing and needs no row.
+
 Every read carries the workspace id. There is no cross-tenant query here.
 """
 
@@ -49,7 +69,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
@@ -64,11 +84,17 @@ from services.api.app.domains.governance_policy.schemas import (
 
 logger = logging.getLogger(__name__)
 
-#: Outcome statuses. Only ``recorded`` writes a row.
+#: Outcome statuses. ``recorded`` and ``recorded_fail_closed`` write a row.
 STATUS_RECORDED = 'recorded'
-#: No ACTIVE policy governs this workspace/asset/operation. Screen 8 reports
-#: NOT_APPLICABLE from its own scope probe; nothing is written here, because an
-#: evaluation of a policy that does not exist is not an authorization.
+#: A DETERMINISTIC FAIL-CLOSED DENY was recorded because the governing policy for
+#: this operation could not be resolved WHILE the workspace/asset is inside an
+#: ACTIVE policy's scope. See ``evaluate_response_action``: this is the row that
+#: stops such an action from sitting at POLICY_EVALUATION_MISSING forever.
+STATUS_RECORDED_FAIL_CLOSED = 'recorded_fail_closed'
+#: NOTHING governs this workspace/asset at all — not this operation, not any
+#: other. Screen 8 reports NOT_APPLICABLE from the same scope probe used here,
+#: and nothing is written, because an evaluation of a policy that does not exist
+#: is not an authorization and the gate is not blocked on one.
 STATUS_NO_POLICY = 'no_governing_policy'
 #: A canonical fact could not be read. Nothing is written: the gate must stay at
 #: POLICY_EVALUATION_MISSING rather than receive a verdict built on a guess.
@@ -550,8 +576,93 @@ def governing_policy(
     return service.policy_from_row(row) if row else None
 
 
+def policy_scope_governed(
+    connection: Any, *, workspace_id: str, asset_id: Optional[str],
+) -> Optional[bool]:
+    """Does ANY ACTIVE policy govern this workspace/asset, whatever the operation?
+
+    THE single definition of that predicate. Screen 8's gate calls this same
+    function (``response_gate.service._policy_governs``) rather than running its
+    own copy of the query, because the producer and the gate disagreeing about it
+    is exactly the defect this function exists to prevent:
+
+        governing_policy() asks "which ACTIVE policy governs THIS OPERATION?"
+        this asks           "is this workspace/asset inside ANY ACTIVE policy?"
+
+    When the operation cannot be established the first returns None while the
+    second still returns True. The producer used to write nothing in that case
+    and the gate reported POLICY_EVALUATION_MISSING — a state no operator could
+    ever clear, because the only thing that could clear it was the row the
+    producer had declined to write. ``evaluate_response_action`` now records a
+    deterministic fail-closed DENY there instead.
+
+    Returns None when the probe could not be READ. "We could not look" is not
+    "there is none", and neither is an authorization.
+    """
+    asset = str(asset_id or '').strip() or None
+    try:
+        row = connection.execute(
+            f"""SELECT 1 AS present FROM {service.POLICIES_TABLE}
+                WHERE workspace_id = %s AND status = %s
+                  AND (asset_id IS NULL OR (%s::uuid IS NOT NULL AND asset_id = %s::uuid))
+                LIMIT 1""",
+            (workspace_id, gpc.STATUS_ACTIVE, asset, asset),
+        ).fetchone()
+    except Exception:
+        logger.exception('governance_enforcement_policy_scope_read_failed workspace_id=%s', workspace_id)
+        return None
+    return bool(_row_dict(row).get('present'))
+
+
+def scope_policy_refs(
+    connection: Any, *, workspace_id: str, asset_id: Optional[str], limit: int = 20,
+) -> tuple[dict[str, Any], ...]:
+    """The ACTIVE policies covering this workspace/asset, as audit references.
+
+    Stored in a fail-closed row's input snapshot so the record answers the
+    operator's next question — "which policies were in force, and why did none
+    of them decide this?" — from the row itself rather than from a later query
+    against state that may have changed since.
+
+    These are REFERENCES, not an attribution. None of them governs the operation
+    (that is why the row is fail-closed), so none is written to the evaluation's
+    ``policy_id``: naming one there would report a verdict a policy did not
+    reach. Best-effort — a failed read yields no references and never blocks the
+    fail-closed DENY, which is the fact that actually matters.
+    """
+    asset = str(asset_id or '').strip() or None
+    try:
+        rows = connection.execute(
+            f"""SELECT id, policy_key, version, operation, asset_id
+                FROM {service.POLICIES_TABLE}
+                WHERE workspace_id = %s AND status = %s
+                  AND (asset_id IS NULL OR (%s::uuid IS NOT NULL AND asset_id = %s::uuid))
+                ORDER BY (asset_id IS NOT NULL) DESC, updated_at DESC
+                LIMIT %s""",
+            (workspace_id, gpc.STATUS_ACTIVE, asset, asset, int(limit)),
+        ).fetchall()
+    except Exception:
+        logger.warning(
+            'governance_enforcement_policy_scope_refs_failed workspace_id=%s', workspace_id,
+        )
+        return ()
+    refs: list[dict[str, Any]] = []
+    for row in rows or ():
+        data = _row_dict(row)
+        if not data:
+            continue
+        refs.append({
+            'policy_id': _text(data.get('id')),
+            'policy_key': _text(data.get('policy_key')),
+            'policy_version': data.get('version'),
+            'operation': _text(data.get('operation')),
+            'asset_scoped': bool(data.get('asset_id')),
+        })
+    return tuple(refs)
+
+
 def existing_evaluation(
-    connection: Any, *, workspace_id: str, policy_id: str, fact_digest: str,
+    connection: Any, *, workspace_id: str, policy_id: Optional[str], fact_digest: str,
 ) -> Optional[dict[str, Any]]:
     """An ENFORCEMENT evaluation already recorded for exactly these facts.
 
@@ -560,6 +671,11 @@ def existing_evaluation(
     the caller then evaluates and writes, which is the safe direction: a missed
     match records a duplicate decision, while a false match would suppress a real
     re-evaluation.
+
+    ``policy_id`` is NULL for a fail-closed row (no policy could be matched to the
+    operation), so the comparison is IS NOT DISTINCT FROM rather than ``=``:
+    ``policy_id = NULL`` is never true, and a plain ``=`` would make every
+    re-evaluation of such an action append another identical DENY.
     """
     if not fact_digest:
         return None
@@ -567,7 +683,8 @@ def existing_evaluation(
         row = connection.execute(
             f'''SELECT id, decision, policy_version, evaluated_at
                 FROM {service.EVALUATIONS_TABLE}
-                WHERE workspace_id = %s AND policy_id = %s::uuid AND simulation = FALSE
+                WHERE workspace_id = %s AND policy_id IS NOT DISTINCT FROM %s::uuid
+                  AND simulation = FALSE
                   AND input_snapshot->>'fact_digest' = %s
                 ORDER BY evaluated_at DESC
                 LIMIT 1''',
@@ -597,6 +714,12 @@ def evaluate_response_action(
     Persists the verdict as an ENFORCEMENT evaluation (``simulation = FALSE``)
     that Screen 8's gate reads through the existing ``latest_policy_evaluation``
     semantics. The caller owns the transaction and commits.
+
+    A verdict is recorded whenever one can be reached deterministically — which
+    includes the case where the governing policy could NOT be resolved but an
+    ACTIVE policy covers this workspace/asset. That records a fail-closed DENY
+    (``STATUS_RECORDED_FAIL_CLOSED``) rather than nothing, because "nothing" is
+    what the gate reports as POLICY_EVALUATION_MISSING and no operator can clear.
 
     ``user_id`` is recorded as WHO TRIGGERED the evaluation. It is not an input to
     the decision, and it is never offered to the policy as the operation's
@@ -629,28 +752,73 @@ def evaluate_response_action(
                 **{**facts.__dict__, 'unreadable': facts.unreadable + ('governing_policy',)},
             ),
         )
+
+    # No policy could be matched to this OPERATION. That is two different
+    # situations, and conflating them is what parked every recommended action at
+    # POLICY_EVALUATION_MISSING:
+    #
+    #   nothing governs this workspace/asset at all
+    #       -> write nothing. Screen 8's gate reports NOT_APPLICABLE from this
+    #          same probe and is not blocked on an evaluation, so there is no
+    #          state to clear and a recorded refusal would invent one for an
+    #          action the workspace never chose to govern.
+    #
+    #   an ACTIVE policy DOES cover this workspace/asset, but the operation it
+    #   would be judged against could not be established (no threat detection
+    #   behind the incident, or one that names no operation — the ordinary case
+    #   for an incident opened from an operational alert), or no ACTIVE policy
+    #   governs the operation that WAS established
+    #       -> record a deterministic FAIL-CLOSED DENY. The gate's scope probe
+    #          says a policy governs, so it reports POLICY_EVALUATION_MISSING and
+    #          LOCKED until an enforcement row exists; declining to write one left
+    #          the action permanently unauthorizable, with no operator action that
+    #          could change it. The row states exactly what could not be
+    #          established and denies on it. It is produced by the same engine,
+    #          on the same absent facts — never a relabelled simulation, and never
+    #          an ALLOW.
+    fail_closed = False
     if policy is None:
-        # Nothing governs this operation. An evaluation of a policy that does not
-        # exist would be a DENY/POLICY_NOT_FOUND row, and storing one would turn
-        # "no policy applies" into a recorded refusal for an action the workspace
-        # never chose to govern. Screen 8 reports NOT_APPLICABLE from its own
-        # scope probe instead.
-        service.log_event(
-            'governance_policy_enforcement_no_policy', workspace_id=workspace_id,
-            action_id=str(action.get('id') or ''), operation=facts.operation,
+        governed = policy_scope_governed(
+            connection, workspace_id=workspace_id, asset_id=facts.asset_id,
         )
-        return EnforcementOutcome(status=STATUS_NO_POLICY, facts=facts)
+        if governed is None:
+            # The probe itself could not be read, so which of the two situations
+            # holds is unknown. Record nothing rather than deny on a fact nobody
+            # established; the gate stays closed either way.
+            return EnforcementOutcome(
+                status=STATUS_FACTS_UNAVAILABLE,
+                facts=EnforcementFacts(
+                    **{**facts.__dict__, 'unreadable': facts.unreadable + ('policy_scope',)},
+                ),
+            )
+        if not governed:
+            service.log_event(
+                'governance_policy_enforcement_no_policy', workspace_id=workspace_id,
+                action_id=str(action.get('id') or ''), operation=facts.operation,
+            )
+            return EnforcementOutcome(status=STATUS_NO_POLICY, facts=facts)
+        fail_closed = True
+        # Recorded in the snapshot, NOT in policy_id: see scope_policy_refs.
+        facts = replace(facts, sources={
+            **dict(facts.sources or {}),
+            'scope_policies': list(scope_policy_refs(
+                connection, workspace_id=workspace_id, asset_id=facts.asset_id,
+            )),
+        })
 
     action_id = str(action.get('id') or '') or None
     fact_digest = facts.digest(
-        policy_id=policy.policy_id, policy_version=policy.version, response_action_id=action_id,
+        policy_id=policy.policy_id if policy else None,
+        policy_version=policy.version if policy else None,
+        response_action_id=action_id,
     )
     # Idempotency. Re-evaluating an action whose facts and governing version have
     # not changed must NOT write a second decision: under a capped policy the
     # duplicate ALLOW would consume the day's issuance limit twice for one
     # operation, and the second write would eventually deny a legitimate one.
     already = existing_evaluation(
-        connection, workspace_id=workspace_id, policy_id=policy.policy_id, fact_digest=fact_digest,
+        connection, workspace_id=workspace_id,
+        policy_id=policy.policy_id if policy else None, fact_digest=fact_digest,
     )
     if already:
         return EnforcementOutcome(
@@ -675,7 +843,20 @@ def evaluate_response_action(
     )
 
     # THE decision. The same pure function Screen 11 calls, on canonical facts.
+    # With no policy it takes its own step-1 terminal branch and returns
+    # DENY / POLICY_NOT_FOUND — the fail-closed row is that verdict, not a
+    # separately invented one, and not a simulation copied across.
     decision = engine.evaluate_policy(policy, context, now=now)
+    if fail_closed and facts.operation is None:
+        # Name the missing link. POLICY_NOT_FOUND alone reads as "the workspace
+        # authored no policy for this", which is not what happened: policies
+        # exist, and the operation to match one against is what could not be
+        # established. Appended, never substituted, so the engine's own code is
+        # still the first one an auditor sees.
+        decision = replace(
+            decision,
+            reason_codes=decision.reason_codes + (gpc.OPERATION_NOT_ESTABLISHED,),
+        )
     recorded = service.record_evaluation(
         connection, workspace_id=workspace_id, decision=decision,
         context=context, user_id=user_id,
@@ -685,9 +866,15 @@ def evaluate_response_action(
         action_id=str(action.get('id') or ''), policy_key=decision.policy_key,
         policy_version=decision.policy_version, decision=decision.decision,
         evaluation_id=decision.evaluation_id, recorded=recorded,
+        fail_closed=fail_closed or None,
         reason_codes=','.join(decision.reason_codes) or None,
     )
+    if not recorded:
+        return EnforcementOutcome(
+            status=STATUS_STORAGE_UNAVAILABLE, decision=decision, policy=policy,
+            facts=facts, recorded=False,
+        )
     return EnforcementOutcome(
-        status=STATUS_RECORDED if recorded else STATUS_STORAGE_UNAVAILABLE,
-        decision=decision, policy=policy, facts=facts, recorded=recorded,
+        status=STATUS_RECORDED_FAIL_CLOSED if fail_closed else STATUS_RECORDED,
+        decision=decision, policy=policy, facts=facts, recorded=True,
     )
