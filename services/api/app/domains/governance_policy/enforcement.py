@@ -35,11 +35,32 @@ produce a new digest, so a re-evaluation still yields the new decision.
 
 Fail-closed
 -----------
-A fact that could not be READ is not a fact. Any failed query abandons the
-evaluation and records nothing, which leaves Screen 8's gate at
-POLICY_EVALUATION_MISSING and LOCKED. A fact that is genuinely ABSENT is passed
-to the engine as absent, and the engine fails closed on any mandatory constraint
-it cannot show to be satisfied. Neither path can produce an ALLOW.
+A fact that could not be READ is not a fact, and no failed read can ever widen an
+authorization. What DIFFERS is whether the failure leaves anything worth
+recording, and conflating the two is what made a producer-only outage invisible:
+
+  MATERIAL fact unreadable (workspace/action identity, the ASSET that decides
+  which policies are in scope, policy storage) — the evaluation is abandoned and
+  NOTHING is recorded. There is no scope to reason inside, so there is no verdict
+  to state. Screen 8 reports POLICY_EVALUATION_MISSING and stays LOCKED.
+
+  SUPPLEMENTARY fact unreadable (the detection's operation/amount/provenance, the
+  authorized issuance, the settlement state) — the action is still known to be in
+  governed scope, so a deterministic fail-closed DENY IS recorded, naming the
+  facts that could not be established (AUTHORITATIVE_FACTS_UNAVAILABLE plus
+  DETECTION_FACTS_UNAVAILABLE / ISSUANCE_FACTS_UNAVAILABLE). No policy is matched
+  from an incomplete context, so this can never reach an ALLOW.
+
+The second case is the one that mattered in production. This producer reads MORE
+facts than Screen 8's gate does — the gate never touches threat_detections or
+asset_authorized_issuances — so a read failure here left the gate seeing a
+perfectly healthy chain, finding no evaluation, and reporting
+POLICY_EVALUATION_MISSING forever. The only thing that could clear that state was
+the row this module had declined to write, and no operator action produced it.
+
+A fact that is genuinely ABSENT is passed to the engine as absent, and the engine
+fails closed on any mandatory constraint it cannot show to be satisfied. No path
+here can produce an ALLOW from a fact nobody established.
 
 Absent facts are RECORDED, not skipped
 --------------------------------------
@@ -69,6 +90,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -104,6 +126,85 @@ STATUS_STORAGE_UNAVAILABLE = 'storage_unavailable'
 #: An enforcement evaluation for THESE facts under THIS policy version already
 #: exists. Nothing is written: see ``existing_evaluation``.
 STATUS_ALREADY_EVALUATED = 'already_evaluated'
+#: A verdict was reached but the INSERT did not land (storage vanished between the
+#: readiness probe and the write).
+STATUS_WRITE_FAILED = 'write_failed'
+#: The producer raised. Recorded by the caller, never by this module.
+STATUS_EXCEPTION = 'exception'
+
+#: Every terminal status this module can return. Enumerated so a caller can
+#: report one without hard-coding the set, and so the diagnostic payload the
+#: recommend endpoint returns is drawn from a closed vocabulary.
+STATUSES = (
+    STATUS_RECORDED,
+    STATUS_RECORDED_FAIL_CLOSED,
+    STATUS_NO_POLICY,
+    STATUS_FACTS_UNAVAILABLE,
+    STATUS_STORAGE_UNAVAILABLE,
+    STATUS_ALREADY_EVALUATED,
+    STATUS_WRITE_FAILED,
+    STATUS_EXCEPTION,
+)
+
+# --------------------------------------------------------------------------
+# MATERIAL vs SUPPLEMENTARY facts
+# --------------------------------------------------------------------------
+#: Not every unreadable fact is equally fatal, and treating them as one class is
+#: what made a producer-only read failure invisible.
+#:
+#: A MATERIAL fact is one without which no trustworthy decision exists at all:
+#: the workspace and action identity, the ASSET identity (it decides which
+#: policies are in scope), and the policy storage itself. When one of those
+#: cannot be read, this module records NOTHING — there is no verdict to record,
+#: and inventing one would state a conclusion about a scope nobody established.
+#:
+#: A SUPPLEMENTARY fact is a business fact ABOUT an action already known to be in
+#: governed scope: the detection's operation, amount and provenance, the
+#: authorized issuance behind it, the settlement state. Losing one of those does
+#: not stop this module from knowing that a policy governs this action — so
+#: silence is the wrong answer. Silence leaves Screen 8 at
+#: POLICY_EVALUATION_MISSING, a state no operator can clear, while every fact the
+#: GATE reads is healthy. A deterministic fail-closed DENY is recorded instead,
+#: naming exactly which authoritative fact could not be established.
+#:
+#: The classification is fail-safe: anything not listed here is treated as
+#: MATERIAL, so a fact added later cannot silently become a recordable gap.
+SUPPLEMENTARY_FACTS = frozenset({
+    'threat_detection',
+    'table:threat_detections',
+    'asset_authorized_issuance',
+    'table:asset_authorized_issuances',
+})
+
+#: The reason code that names each supplementary gap in the recorded verdict.
+_FACT_REASON_CODES: dict[str, str] = {
+    'threat_detection': gpc.DETECTION_FACTS_UNAVAILABLE,
+    'table:threat_detections': gpc.DETECTION_FACTS_UNAVAILABLE,
+    'asset_authorized_issuance': gpc.ISSUANCE_FACTS_UNAVAILABLE,
+    'table:asset_authorized_issuances': gpc.ISSUANCE_FACTS_UNAVAILABLE,
+}
+
+
+def is_supplementary_fact(fact: Any) -> bool:
+    """Whether an unreadable-fact key is SUPPLEMENTARY. Unknown keys are MATERIAL."""
+    return str(fact or '').strip() in SUPPLEMENTARY_FACTS
+
+
+def facts_unavailable_reason_codes(facts: Any) -> tuple[str, ...]:
+    """Reason codes naming the supplementary facts that could not be read.
+
+    Always led by the generic ``AUTHORITATIVE_FACTS_UNAVAILABLE`` so a consumer
+    can recognize the class without enumerating its members, followed by the
+    specific code for each gap, in a stable order.
+    """
+    specific: list[str] = []
+    for fact in facts or ():
+        code = _FACT_REASON_CODES.get(str(fact or '').strip())
+        if code and code not in specific:
+            specific.append(code)
+    if not specific:
+        return ()
+    return (gpc.AUTHORITATIVE_FACTS_UNAVAILABLE, *specific)
 
 #: The business event that justifies each operation. Screen 3/5 vocabulary,
 #: reused rather than redeclared, so the enforcement path and the reconciliation
@@ -122,6 +223,48 @@ _SETTLEMENT_CLEARED_STATES = frozenset({
 })
 _SETTLEMENT_PENDING_STATES = frozenset({'pending', 'in_progress', 'processing', 'submitted'})
 _SETTLEMENT_FAILED_STATES = frozenset({'failed', 'rejected', 'cancelled', 'canceled', 'reversed'})
+
+
+#: Re-exported so this module's readers find the predicate beside the scopes that
+#: use it. Defined in ``service`` because that is the lower-level module of the
+#: two, and ``enforcement`` already depends on it.
+transaction_aborted = service.transaction_aborted
+
+
+@contextmanager
+def read_scope(connection: Any):
+    """A SAVEPOINT around ONE canonical read that is allowed to fail and continue.
+
+    Catching a database exception in Python does not undo what it did to the
+    TRANSACTION. On PostgreSQL a failed statement aborts the whole transaction,
+    and every statement after it fails with InFailedSqlTransaction until someone
+    rolls back — so a producer that caught a failed detection read and carried on
+    was, from that point, running a sequence of guaranteed failures. That is what
+    turned ONE unreadable supplementary fact into "no evaluation was written at
+    all, and the next action in the plan could not be evaluated either".
+
+    Scoping each such read to its own savepoint means the rollback is exactly as
+    wide as the statement that failed: the connection is immediately usable
+    again, this module can still record the fail-closed verdict the failure
+    implies, and the caller's surrounding transaction is untouched.
+
+    Test fakes that do not implement ``transaction()`` fall through to a
+    passthrough — they carry no real transaction semantics, and every caller
+    below still handles the exception itself. Mirrors the existing
+    ``pilot._reconcile_target_savepoint`` convention.
+    """
+    tx = getattr(connection, 'transaction', None)
+    if callable(tx) and not transaction_aborted(connection):
+        with tx():
+            yield
+    else:
+        # Either no real transaction semantics (a fake), or the transaction is
+        # ALREADY aborted, in which case a savepoint cannot be opened and trying
+        # would corrupt psycopg's nesting for the rest of the request (see
+        # ``transaction_aborted``). The statement below will fail with
+        # InFailedSqlTransaction and the caller records it as unreadable, which is
+        # the correct answer: nothing here can be read until someone rolls back.
+        yield
 
 
 def _row_dict(row: Any) -> dict[str, Any]:
@@ -198,6 +341,24 @@ class EnforcementFacts:
     def readable(self) -> bool:
         return not self.unreadable
 
+    @property
+    def material_unreadable(self) -> tuple[str, ...]:
+        """Unreadable facts without which NO trustworthy decision exists.
+
+        Any entry abandons the pass and records nothing: see
+        ``SUPPLEMENTARY_FACTS`` for why the two classes are not the same answer.
+        """
+        return tuple(f for f in self.unreadable if not is_supplementary_fact(f))
+
+    @property
+    def supplementary_unreadable(self) -> tuple[str, ...]:
+        """Unreadable BUSINESS facts about an action already in governed scope.
+
+        Any entry forces a recorded fail-closed DENY rather than silence, and can
+        never be reasoned past into an ALLOW.
+        """
+        return tuple(f for f in self.unreadable if is_supplementary_fact(f))
+
     def digest(self, *, policy_id: str, policy_version: Any, response_action_id: Optional[str]) -> str:
         """A stable fingerprint of WHAT WAS OBSERVED, under WHICH policy version.
 
@@ -227,6 +388,15 @@ class EnforcementFacts:
             'operator_id': self.operator_id,
             'proposer_user_id': self.proposer_user_id,
             'sources': dict(self.sources or {}),
+            # Which facts could not be READ is itself material. Without it, the
+            # row recorded for "no detection stands behind this incident" and the
+            # row for "the detection could not be read" share a digest, and the
+            # idempotency check below would return the first as the answer to the
+            # second — two different verdicts, with different reason codes,
+            # collapsed into one. It also means a retry AFTER the outage clears
+            # produces a new digest, so the real decision is reached rather than
+            # a stale refusal being served forever.
+            'unreadable': sorted(self.unreadable or ()),
         }
         return hashlib.sha256(
             json.dumps(material, sort_keys=True, default=str).encode('utf-8')
@@ -277,6 +447,13 @@ class EnforcementOutcome:
             'policy_key': self.policy.policy_key if self.policy else None,
             'policy_version': self.policy.version if self.policy else None,
             'unreadable_facts': list((self.facts.unreadable if self.facts else ()) or ()),
+            # Which class of fact was lost, so a caller can tell "nothing could be
+            # established" from "an action in governed scope was denied for want
+            # of a business fact" without re-deriving the classification.
+            'material_facts_unavailable': list(
+                (self.facts.material_unreadable if self.facts else ()) or ()),
+            'supplementary_facts_unavailable': list(
+                (self.facts.supplementary_unreadable if self.facts else ()) or ()),
             # Stated by the backend on every enforcement result, like the gate.
             'decision_authority': engine.schemas.DECISION_AUTHORITY,
             'ai_authority': engine.schemas.AI_AUTHORITY,
@@ -286,9 +463,10 @@ class EnforcementOutcome:
 def _table_exists(connection: Any, name: str, unreadable: list[str]) -> bool:
     """Fail-closed table probe. A probe that RAISES is recorded as unreadable."""
     try:
-        row = connection.execute(
-            'SELECT to_regclass(%s) IS NOT NULL AS present', (f'public.{name}',),
-        ).fetchone()
+        with read_scope(connection):
+            row = connection.execute(
+                'SELECT to_regclass(%s) IS NOT NULL AS present', (f'public.{name}',),
+            ).fetchone()
     except Exception:
         logger.exception('governance_enforcement_table_probe_failed table=%s', name)
         if f'table:{name}' not in unreadable:
@@ -367,7 +545,8 @@ def resolve_threat_detection(
 
     for statement, params in attempts:
         try:
-            row = _row_dict(connection.execute(statement, params).fetchone())
+            with read_scope(connection):
+                row = _row_dict(connection.execute(statement, params).fetchone())
         except Exception:
             logger.exception('governance_enforcement_detection_read_failed workspace_id=%s', workspace_id)
             if 'threat_detection' not in unreadable:
@@ -412,10 +591,11 @@ def resolve_action_facts(
     # -- alert -> target -> asset ------------------------------------------
     if alert_id and not asset_id and _table_exists(connection, 'alerts', unreadable):
         try:
-            row = _row_dict(connection.execute(
-                'SELECT target_id FROM alerts WHERE id = %s::uuid AND workspace_id = %s',
-                (alert_id, workspace_id),
-            ).fetchone())
+            with read_scope(connection):
+                row = _row_dict(connection.execute(
+                    'SELECT target_id FROM alerts WHERE id = %s::uuid AND workspace_id = %s',
+                    (alert_id, workspace_id),
+                ).fetchone())
         except Exception:
             logger.exception('governance_enforcement_alert_read_failed workspace_id=%s', workspace_id)
             unreadable.append('alert')
@@ -425,10 +605,11 @@ def resolve_action_facts(
             sources['target_id'] = target_id
             if _table_exists(connection, 'targets', unreadable):
                 try:
-                    target = _row_dict(connection.execute(
-                        'SELECT asset_id FROM targets WHERE id = %s::uuid AND workspace_id = %s',
-                        (target_id, workspace_id),
-                    ).fetchone())
+                    with read_scope(connection):
+                        target = _row_dict(connection.execute(
+                            'SELECT asset_id FROM targets WHERE id = %s::uuid AND workspace_id = %s',
+                            (target_id, workspace_id),
+                        ).fetchone())
                 except Exception:
                     logger.exception('governance_enforcement_target_read_failed workspace_id=%s', workspace_id)
                     unreadable.append('target')
@@ -494,7 +675,8 @@ def resolve_action_facts(
         )
     if issuance_lookup and _table_exists(connection, 'asset_authorized_issuances', unreadable):
         try:
-            issuance = _row_dict(connection.execute(*issuance_lookup).fetchone())
+            with read_scope(connection):
+                issuance = _row_dict(connection.execute(*issuance_lookup).fetchone())
         except Exception:
             logger.exception('governance_enforcement_issuance_read_failed workspace_id=%s', workspace_id)
             unreadable.append('asset_authorized_issuance')
@@ -562,14 +744,15 @@ def governing_policy(
     if not normalized:
         return None
     try:
-        row = connection.execute(
-            f'''SELECT {service._POLICY_COLUMNS} FROM {service.POLICIES_TABLE}
-                WHERE workspace_id = %s AND status = %s AND operation = %s
-                  AND (asset_id IS NULL OR (%s::uuid IS NOT NULL AND asset_id = %s::uuid))
-                ORDER BY (asset_id IS NOT NULL) DESC, updated_at DESC
-                LIMIT 1''',
-            (workspace_id, gpc.STATUS_ACTIVE, normalized, asset_id, asset_id),
-        ).fetchone()
+        with read_scope(connection):
+            row = connection.execute(
+                f'''SELECT {service._POLICY_COLUMNS} FROM {service.POLICIES_TABLE}
+                    WHERE workspace_id = %s AND status = %s AND operation = %s
+                      AND (asset_id IS NULL OR (%s::uuid IS NOT NULL AND asset_id = %s::uuid))
+                    ORDER BY (asset_id IS NOT NULL) DESC, updated_at DESC
+                    LIMIT 1''',
+                (workspace_id, gpc.STATUS_ACTIVE, normalized, asset_id, asset_id),
+            ).fetchone()
     except Exception:
         logger.exception('governance_enforcement_policy_read_failed workspace_id=%s', workspace_id)
         raise
@@ -601,13 +784,14 @@ def policy_scope_governed(
     """
     asset = str(asset_id or '').strip() or None
     try:
-        row = connection.execute(
-            f"""SELECT 1 AS present FROM {service.POLICIES_TABLE}
-                WHERE workspace_id = %s AND status = %s
-                  AND (asset_id IS NULL OR (%s::uuid IS NOT NULL AND asset_id = %s::uuid))
-                LIMIT 1""",
-            (workspace_id, gpc.STATUS_ACTIVE, asset, asset),
-        ).fetchone()
+        with read_scope(connection):
+            row = connection.execute(
+                f"""SELECT 1 AS present FROM {service.POLICIES_TABLE}
+                    WHERE workspace_id = %s AND status = %s
+                      AND (asset_id IS NULL OR (%s::uuid IS NOT NULL AND asset_id = %s::uuid))
+                    LIMIT 1""",
+                (workspace_id, gpc.STATUS_ACTIVE, asset, asset),
+            ).fetchone()
     except Exception:
         logger.exception('governance_enforcement_policy_scope_read_failed workspace_id=%s', workspace_id)
         return None
@@ -632,15 +816,16 @@ def scope_policy_refs(
     """
     asset = str(asset_id or '').strip() or None
     try:
-        rows = connection.execute(
-            f"""SELECT id, policy_key, version, operation, asset_id
-                FROM {service.POLICIES_TABLE}
-                WHERE workspace_id = %s AND status = %s
-                  AND (asset_id IS NULL OR (%s::uuid IS NOT NULL AND asset_id = %s::uuid))
-                ORDER BY (asset_id IS NOT NULL) DESC, updated_at DESC
-                LIMIT %s""",
-            (workspace_id, gpc.STATUS_ACTIVE, asset, asset, int(limit)),
-        ).fetchall()
+        with read_scope(connection):
+            rows = connection.execute(
+                f"""SELECT id, policy_key, version, operation, asset_id
+                    FROM {service.POLICIES_TABLE}
+                    WHERE workspace_id = %s AND status = %s
+                      AND (asset_id IS NULL OR (%s::uuid IS NOT NULL AND asset_id = %s::uuid))
+                    ORDER BY (asset_id IS NOT NULL) DESC, updated_at DESC
+                    LIMIT %s""",
+                (workspace_id, gpc.STATUS_ACTIVE, asset, asset, int(limit)),
+            ).fetchall()
     except Exception:
         logger.warning(
             'governance_enforcement_policy_scope_refs_failed workspace_id=%s', workspace_id,
@@ -680,16 +865,17 @@ def existing_evaluation(
     if not fact_digest:
         return None
     try:
-        row = connection.execute(
-            f'''SELECT id, decision, policy_version, evaluated_at
-                FROM {service.EVALUATIONS_TABLE}
-                WHERE workspace_id = %s AND policy_id IS NOT DISTINCT FROM %s::uuid
-                  AND simulation = FALSE
-                  AND input_snapshot->>'fact_digest' = %s
-                ORDER BY evaluated_at DESC
-                LIMIT 1''',
-            (workspace_id, policy_id, fact_digest),
-        ).fetchone()
+        with read_scope(connection):
+            row = connection.execute(
+                f'''SELECT id, decision, policy_version, evaluated_at
+                    FROM {service.EVALUATIONS_TABLE}
+                    WHERE workspace_id = %s AND policy_id IS NOT DISTINCT FROM %s::uuid
+                      AND simulation = FALSE
+                      AND input_snapshot->>'fact_digest' = %s
+                    ORDER BY evaluated_at DESC
+                    LIMIT 1''',
+                (workspace_id, policy_id, fact_digest),
+            ).fetchone()
     except Exception:
         logger.warning(
             'governance_enforcement_idempotency_lookup_failed workspace_id=%s', workspace_id,
@@ -730,28 +916,53 @@ def evaluate_response_action(
         return EnforcementOutcome(status=STATUS_STORAGE_UNAVAILABLE)
 
     facts = resolve_action_facts(connection, workspace_id=workspace_id, action=action)
-    if not facts.readable:
-        # A fact we could not read is not a fact. Record nothing: Screen 8 then
-        # reports POLICY_EVALUATION_MISSING and stays LOCKED, which is the honest
-        # answer, rather than an ALLOW built on a fact nobody established.
+    if facts.material_unreadable:
+        # A MATERIAL fact we could not read is not a fact, and without it there is
+        # no scope to reason inside. Record nothing: Screen 8 then reports
+        # POLICY_EVALUATION_MISSING and stays LOCKED, which is the honest answer,
+        # rather than an ALLOW — or a DENY — built on a scope nobody established.
         service.log_event(
             'governance_policy_enforcement_facts_unavailable', workspace_id=workspace_id,
-            action_id=str(action.get('id') or ''), unreadable=','.join(facts.unreadable),
+            action_id=str(action.get('id') or ''),
+            unreadable=','.join(facts.material_unreadable),
+            fact_class='material',
         )
         return EnforcementOutcome(status=STATUS_FACTS_UNAVAILABLE, facts=facts)
 
-    try:
-        policy = governing_policy(
-            connection, workspace_id=workspace_id,
-            operation=facts.operation, asset_id=facts.asset_id,
-        )
-    except Exception:
-        return EnforcementOutcome(
-            status=STATUS_FACTS_UNAVAILABLE,
-            facts=EnforcementFacts(
-                **{**facts.__dict__, 'unreadable': facts.unreadable + ('governing_policy',)},
-            ),
-        )
+    # A SUPPLEMENTARY fact that could not be read leaves the operation CONTEXT
+    # incomplete while the action's scope is still known. Two consequences, and
+    # both matter:
+    #
+    #   1. No policy is matched from that context. The observed operation, amount,
+    #      business event and settlement state are precisely what a policy would
+    #      be judged against, and half of them are missing — so this takes the
+    #      same branch as "the operation could not be established", which records
+    #      a fail-closed DENY rather than a verdict under rules the facts could
+    #      not be checked against. A missing fact can therefore never become an
+    #      ALLOW, which is the whole point.
+    #
+    #   2. Something IS still written. Declining to write is what left a
+    #      producer-only read failure invisible: the GATE reads fewer facts than
+    #      this producer does, so it saw a healthy chain, found no evaluation, and
+    #      reported POLICY_EVALUATION_MISSING — a state no operator could clear,
+    #      because the only thing that could clear it was the row this module had
+    #      declined to write.
+    supplementary_gap = facts.supplementary_unreadable
+
+    policy: Optional[PolicyDefinition] = None
+    if not supplementary_gap:
+        try:
+            policy = governing_policy(
+                connection, workspace_id=workspace_id,
+                operation=facts.operation, asset_id=facts.asset_id,
+            )
+        except Exception:
+            # The policy read is MATERIAL: without it neither branch below can be
+            # told apart, so nothing is recorded.
+            return EnforcementOutcome(
+                status=STATUS_FACTS_UNAVAILABLE,
+                facts=replace(facts, unreadable=facts.unreadable + ('governing_policy',)),
+            )
 
     # No policy could be matched to this OPERATION. That is two different
     # situations, and conflating them is what parked every recommended action at
@@ -792,9 +1003,15 @@ def evaluate_response_action(
                 ),
             )
         if not governed:
+            # NOTHING governs this workspace/asset — not this operation, not any
+            # other. True whether or not a supplementary fact was readable: the
+            # scope probe reads none of them. Screen 8 reports NOT_APPLICABLE from
+            # this same probe and is not blocked on an evaluation, so no row is
+            # owed and a recorded refusal would invent one.
             service.log_event(
                 'governance_policy_enforcement_no_policy', workspace_id=workspace_id,
                 action_id=str(action.get('id') or ''), operation=facts.operation,
+                unreadable=','.join(supplementary_gap) or None,
             )
             return EnforcementOutcome(status=STATUS_NO_POLICY, facts=facts)
         fail_closed = True
@@ -847,7 +1064,19 @@ def evaluate_response_action(
     # DENY / POLICY_NOT_FOUND — the fail-closed row is that verdict, not a
     # separately invented one, and not a simulation copied across.
     decision = engine.evaluate_policy(policy, context, now=now)
-    if fail_closed and facts.operation is None:
+    if supplementary_gap:
+        # Name what could not be READ, distinctly from what was read and found
+        # wanting. Appended rather than substituted, so the engine's own
+        # POLICY_NOT_FOUND is still the first code an auditor sees, and the row
+        # states plainly that this is a refusal for want of facts.
+        decision = replace(
+            decision,
+            reason_codes=decision.reason_codes + tuple(
+                code for code in facts_unavailable_reason_codes(supplementary_gap)
+                if code not in decision.reason_codes
+            ),
+        )
+    if fail_closed and facts.operation is None and not supplementary_gap:
         # Name the missing link. POLICY_NOT_FOUND alone reads as "the workspace
         # authored no policy for this", which is not what happened: policies
         # exist, and the operation to match one against is what could not be
@@ -871,7 +1100,7 @@ def evaluate_response_action(
     )
     if not recorded:
         return EnforcementOutcome(
-            status=STATUS_STORAGE_UNAVAILABLE, decision=decision, policy=policy,
+            status=STATUS_WRITE_FAILED, decision=decision, policy=policy,
             facts=facts, recorded=False,
         )
     return EnforcementOutcome(

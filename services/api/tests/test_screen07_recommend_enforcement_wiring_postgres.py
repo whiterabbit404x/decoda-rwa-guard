@@ -451,3 +451,248 @@ def test_re_recommending_evaluates_pre_existing_actions_without_duplicating(live
             'WHERE workspace_id = %s AND simulation = FALSE', (workspace_id,),
         ).fetchone()['total']
     assert final == first, 'idempotency must hold across repeated recommend calls'
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# The rest of the §19 matrix, on the SAME production route.
+#
+# Everything above proves the happy path and the fail-closed path. What follows
+# covers the cases where the DIFFERENCE between "authorized" and "not" is the
+# thing at risk: a simulation that must not authorize, another workspace's
+# evaluation, a sibling action's ALLOW, and an adapter that locks execution
+# independently of the policy verdict.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _gate_for_action(conn, pilot, *, workspace_id: str, action_id: str) -> dict:
+    stored = pilot._json_safe_value(dict(conn.execute(
+        'SELECT * FROM response_actions WHERE id = %s::uuid AND workspace_id = %s',
+        (action_id, workspace_id),
+    ).fetchone()))
+    return pilot.response_action_execution_gate(
+        conn, stored, workspace_id=workspace_id,
+        workspace_context={'workspace_id': workspace_id, 'role': 'owner'},
+    )
+
+
+# ── F. A simulation can never authorize ──────────────────────────────────────
+
+@_needs_pg
+def test_a_simulation_allow_cannot_authorize_a_response_action(live):
+    """Screen 11's what-if is predictive. It authorizes nothing, ever.
+
+    An ALLOW stored with `simulation = TRUE` — stamped with this exact action, so
+    the ONLY thing disqualifying it is that it is a simulation.
+    """
+    from psycopg.rows import dict_row
+
+    from services.api.app import pilot
+
+    out = _run_recommend_chain(with_detection=True)
+    workspace_id = out['workspace_id']
+    action_id = str(out['actions'][0]['id'])
+
+    with psycopg.connect(_DSN, row_factory=dict_row) as conn:
+        # Remove the real enforcement rows so ONLY the simulation could match.
+        conn.execute(
+            'DELETE FROM governance_policy_evaluations WHERE workspace_id = %s', (workspace_id,),
+        )
+        conn.execute(
+            '''INSERT INTO governance_policy_evaluations (
+                   id, workspace_id, policy_id, policy_key, policy_version, asset_id, incident_id,
+                   canonical_event_id, operation, decision, reason_codes, required_approvals,
+                   checks, amount_usd, input_snapshot, simulation, engine_version, evaluated_at,
+                   required_roles
+               ) VALUES (%s::uuid, %s, %s::uuid, 'POL-SIM', 1, %s::uuid, %s::uuid, NULL, 'MINT',
+                         'ALLOW', '["POLICY_SATISFIED"]'::jsonb, '[]'::jsonb, '[]'::jsonb, NULL,
+                         %s::jsonb, TRUE, 'policy-engine-v1', NOW(), '[]'::jsonb)''',
+            (str(uuid.uuid4()), workspace_id, out['policy_id'], out['asset_id'],
+             out['incident_id'], f'{{"response_action_id": "{action_id}"}}'),
+        )
+        conn.commit()
+        gate = _gate_for_action(conn, pilot, workspace_id=workspace_id, action_id=action_id)
+
+    assert gate['policy_decision'] != 'ALLOW'
+    assert gate['decision'] != 'AUTHORIZED'
+    assert gate['can_execute'] is False
+    assert 'POLICY_EVALUATION_MISSING' in gate['reason_codes']
+
+
+# ── G. Workspace isolation ───────────────────────────────────────────────────
+
+@_needs_pg
+def test_another_workspaces_allow_cannot_authorize_this_workspaces_action(live):
+    """Every evaluation read is workspace-scoped. A tenant boundary is not a filter
+    that can be talked around by sharing an incident or asset id."""
+    from psycopg.rows import dict_row
+
+    from services.api.app import pilot
+
+    mine = _run_recommend_chain(with_detection=True)
+    theirs = _run_recommend_chain(with_detection=True)
+    assert mine['workspace_id'] != theirs['workspace_id']
+
+    my_action = str(mine['actions'][0]['id'])
+
+    with psycopg.connect(_DSN, row_factory=dict_row) as conn:
+        conn.execute(
+            'DELETE FROM governance_policy_evaluations WHERE workspace_id = %s',
+            (mine['workspace_id'],),
+        )
+        # The other tenant holds an ALLOW that NAMES my action id and my incident.
+        # It must still be invisible here: the read is scoped by workspace first.
+        conn.execute(
+            '''INSERT INTO governance_policy_evaluations (
+                   id, workspace_id, policy_id, policy_key, policy_version, asset_id, incident_id,
+                   canonical_event_id, operation, decision, reason_codes, required_approvals,
+                   checks, amount_usd, input_snapshot, simulation, engine_version, evaluated_at,
+                   required_roles
+               ) VALUES (%s::uuid, %s, %s::uuid, 'POL-OTHER', 1, %s::uuid, NULL, NULL, 'MINT',
+                         'ALLOW', '["POLICY_SATISFIED"]'::jsonb, '[]'::jsonb, '[]'::jsonb, NULL,
+                         %s::jsonb, FALSE, 'policy-engine-v1', NOW(), '[]'::jsonb)''',
+            (str(uuid.uuid4()), theirs['workspace_id'], theirs['policy_id'], theirs['asset_id'],
+             f'{{"response_action_id": "{my_action}"}}'),
+        )
+        conn.commit()
+        gate = _gate_for_action(conn, pilot, workspace_id=mine['workspace_id'], action_id=my_action)
+
+    assert gate['policy_decision'] != 'ALLOW'
+    assert gate['can_execute'] is False
+    assert gate['decision'] != 'AUTHORIZED'
+
+
+# ── I. A sibling's ALLOW, through the real recommend route ───────────────────
+
+@_needs_pg
+def test_a_sibling_actions_allow_cannot_authorize_an_unevaluated_action(live):
+    """The inherited-ALLOW fail-open, reproduced on the production route.
+
+    One recommend call creates several actions on ONE incident, all sharing its
+    incident id and asset id. Deleting one action's own evaluation must leave that
+    action unauthorized — not quietly promoted by a sibling's verdict.
+    """
+    from psycopg.rows import dict_row
+
+    from services.api.app import pilot
+
+    out = _run_recommend_chain(with_detection=True)
+    workspace_id = out['workspace_id']
+    assert len(out['actions']) >= 2, 'this plan should contain more than one action'
+    victim = str(out['actions'][0]['id'])
+    sibling = str(out['actions'][1]['id'])
+
+    with psycopg.connect(_DSN, row_factory=dict_row) as conn:
+        # Make the sibling's verdict an ALLOW, and strip the victim's own row.
+        conn.execute(
+            """UPDATE governance_policy_evaluations
+               SET decision = 'ALLOW', reason_codes = '["POLICY_SATISFIED"]'::jsonb
+               WHERE workspace_id = %s AND input_snapshot->>'response_action_id' = %s""",
+            (workspace_id, sibling),
+        )
+        conn.execute(
+            """DELETE FROM governance_policy_evaluations
+               WHERE workspace_id = %s AND input_snapshot->>'response_action_id' = %s""",
+            (workspace_id, victim),
+        )
+        conn.commit()
+
+        victim_gate = _gate_for_action(conn, pilot, workspace_id=workspace_id, action_id=victim)
+        sibling_gate = _gate_for_action(conn, pilot, workspace_id=workspace_id, action_id=sibling)
+
+    # The sibling keeps its own ALLOW — the legitimate path is untouched.
+    assert sibling_gate['policy_decision'] == 'ALLOW'
+    assert sibling_gate['policy_match_provenance'] == 'ACTION_SPECIFIC'
+
+    # The victim borrows nothing.
+    assert victim_gate['policy_decision'] == 'NOT_EVALUATED'
+    assert victim_gate['decision'] != 'AUTHORIZED'
+    assert victim_gate['can_execute'] is False
+    assert victim_gate['policy_id'] is None
+    assert victim_gate['evaluation_id'] is None
+    assert 'POLICY_EVALUATION_NOT_ACTION_SPECIFIC' in victim_gate['reason_codes']
+
+
+@_needs_pg
+def test_the_recovery_endpoint_restores_an_actions_own_evaluation(live):
+    """The Screen 8 recovery path, end to end on the real endpoint.
+
+    An action whose evaluation was lost is NOT_EVALUATED; POSTing the existing
+    policy-evaluation endpoint produces its own row and the gate reflects it. The
+    request carries no body, so nothing about the outcome came from the caller.
+    """
+    from psycopg.rows import dict_row
+
+    from services.api.app import pilot
+
+    out = _run_recommend_chain(with_detection=True)
+    workspace_id = out['workspace_id']
+    victim = str(out['actions'][0]['id'])
+
+    with psycopg.connect(_DSN, row_factory=dict_row) as conn:
+        conn.execute(
+            """DELETE FROM governance_policy_evaluations
+               WHERE workspace_id = %s AND input_snapshot->>'response_action_id' = %s""",
+            (workspace_id, victim),
+        )
+        conn.commit()
+        before = _gate_for_action(conn, pilot, workspace_id=workspace_id, action_id=victim)
+    assert before['policy_decision'] == 'NOT_EVALUATED'
+
+    payload = pilot.evaluate_response_action_policy(
+        victim,
+        _Request(out['token'], workspace_id, f'/response/actions/{victim}/policy-evaluation'),
+    )
+    # The endpoint returns the gate it re-read AFTER the write, not a prediction.
+    assert payload['action_id'] == victim
+    assert payload['execution_gate']['can_execute'] is False
+
+    with psycopg.connect(_DSN, row_factory=dict_row) as conn:
+        rows = conn.execute(
+            """SELECT decision, simulation FROM governance_policy_evaluations
+               WHERE workspace_id = %s AND input_snapshot->>'response_action_id' = %s""",
+            (workspace_id, victim),
+        ).fetchall()
+        after = _gate_for_action(conn, pilot, workspace_id=workspace_id, action_id=victim)
+
+    assert rows, 'the recovery endpoint recorded no evaluation'
+    assert all(r['simulation'] is False for r in rows)
+    assert after['policy_decision'] in ('ALLOW', 'DENY')
+    assert after['policy_match_provenance'] == 'ACTION_SPECIFIC'
+    assert 'POLICY_EVALUATION_MISSING' not in after['reason_codes']
+
+
+# ── H. The execution adapter locks independently of the policy verdict ───────
+
+@_needs_pg
+def test_execution_adapter_absence_locks_without_denying_the_policy(live):
+    """POLICY AUTHORIZATION is not EXECUTION CAPABILITY.
+
+    A live action that would contact an external provider is not runnable without
+    a configured adapter — and that is reported as a capability gap, never as a
+    policy refusal.
+    """
+    from services.api.app.domains.response_gate import config as rgc
+    from services.api.app.domains.response_gate.engine import GateInputs, evaluate_gate
+
+    inputs = GateInputs(
+        action_id=str(uuid.uuid4()),
+        policy_decision=rgc.POLICY_ALLOW,
+        policy_match_provenance=rgc.MATCH_ACTION_SPECIFIC,
+        policy_id=str(uuid.uuid4()), policy_version=1, policy_current_version=1,
+        required_quorum=0, approval_required=False,
+        lifecycle_approval_status='not_required',
+        execution_authority_available=True,
+        execution_adapter_configured=False,
+        execution_adapter_required=True,
+    )
+    gate = evaluate_gate(inputs)
+
+    # Policy said ALLOW and the authorization stands...
+    assert gate.policy_decision == rgc.POLICY_ALLOW
+    assert gate.authorization_decision == rgc.GATE_AUTHORIZED
+    # ...but nothing can actually run, and the gate says exactly why.
+    assert gate.execution_ready is False
+    assert gate.can_execute is False
+    assert gate.decision == rgc.GATE_LOCKED
+    assert rgc.EXECUTION_ADAPTER_NOT_CONFIGURED in gate.reason_codes
+    # Not a policy refusal.
+    assert rgc.POLICY_DENIED not in gate.reason_codes

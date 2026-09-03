@@ -56,6 +56,12 @@ def _allow(**overrides) -> GateInputs:
     base = dict(
         action_id=ACTION_ID,
         policy_decision=rgc.POLICY_ALLOW,
+        # The provenance the service supplies for an evaluation reached FOR this
+        # action. There is deliberately no permissive default: an ALLOW that does
+        # not say which action it was reached for is treated as borrowed and
+        # cannot authorize (see the inherited-ALLOW tests at the end of this
+        # file), so the satisfied-in-every-respect fixture has to state it.
+        policy_match_provenance=rgc.MATCH_ACTION_SPECIFIC,
         policy_id='pol-1',
         policy_key='POL-MINT-007',
         policy_version=7,
@@ -398,6 +404,11 @@ def _patch_common(monkeypatch, connection, role='admin'):
 
 DENY_EVALUATION = {
     'id': 'eval-deny-1',
+    # What `input_snapshot->>'response_action_id'` projects: the stamp saying
+    # WHICH action this verdict was reached for. Present on every row the
+    # producer writes; without it the gate reads the row as a sibling's and
+    # refuses to let it authorize (see the inherited-ALLOW tests below).
+    'snapshot_action_id': ACTION_ID,
     'policy_id': 'pol-1',
     'policy_key': 'POL-MINT-007',
     'policy_version': 7,
@@ -654,6 +665,7 @@ ACCEPTANCE_ROLES = (SECURITY_LEAD, TREASURY, COMPLIANCE)
 #: the gate must read `required_roles` — the authoritative set the policy names.
 ACCEPTANCE_EVALUATION = {
     'id': 'eval-pause-1',
+    'snapshot_action_id': ACTION_ID,
     'policy_id': 'pol-pause-1',
     'policy_key': 'POL-PAUSE-014',
     'policy_version': 3,
@@ -951,3 +963,76 @@ def test_every_response_action_type_declares_an_honest_live_path():
     # revoke_approval is the only type with a real adapter, and only when the Safe
     # execution environment is configured.
     assert pilot.response_action_capability('request_contract_pause')['live_execution_path'] != 'safe'
+
+
+# ── An ALLOW authorizes the action it was reached FOR, and nothing else ──────
+#
+# `latest_policy_evaluation` matches on shared lifecycle identifiers (incident,
+# asset, canonical event) as well as on the response action id, so an action that
+# was never evaluated still resolves a SIBLING's decision. The service declines to
+# adopt a borrowed ALLOW; the engine refuses it independently, so an ALLOW
+# assembled by any other caller cannot authorize an action it never examined.
+
+def test_an_allow_from_another_action_on_the_same_incident_cannot_authorize():
+    gate = evaluate_gate(_allow(policy_match_provenance=rgc.MATCH_INCIDENT_SHARED))
+    assert gate.can_execute is False
+    assert gate.decision != rgc.GATE_AUTHORIZED
+    assert gate.policy_decision == rgc.POLICY_NOT_EVALUATED
+    assert rgc.POLICY_EVALUATION_NOT_ACTION_SPECIFIC in gate.reason_codes
+    assert rgc.POLICY_EVALUATION_MISSING in gate.reason_codes
+
+
+def test_an_allow_from_another_action_on_the_same_asset_cannot_authorize():
+    gate = evaluate_gate(_allow(policy_match_provenance=rgc.MATCH_ASSET_SHARED))
+    assert gate.can_execute is False
+    assert gate.policy_decision == rgc.POLICY_NOT_EVALUATED
+
+
+def test_an_allow_from_another_action_on_the_same_event_cannot_authorize():
+    gate = evaluate_gate(_allow(policy_match_provenance=rgc.MATCH_EVENT_SHARED))
+    assert gate.can_execute is False
+    assert gate.policy_decision == rgc.POLICY_NOT_EVALUATED
+
+
+def test_an_allow_with_no_stated_provenance_cannot_authorize():
+    """Fail-closed by DEFAULT: silence about provenance is not action-specific."""
+    gate = evaluate_gate(_allow(policy_match_provenance=rgc.MATCH_NONE))
+    assert gate.can_execute is False
+    assert gate.policy_decision == rgc.POLICY_NOT_EVALUATED
+
+
+def test_an_unrecognized_provenance_cannot_authorize():
+    """An unknown value is not a permissive one."""
+    gate = evaluate_gate(_allow(policy_match_provenance='SOMETHING_NEW'))
+    assert gate.can_execute is False
+    assert gate.policy_decision == rgc.POLICY_NOT_EVALUATED
+
+
+def test_the_action_specific_allow_still_authorizes():
+    """The legitimate path is untouched: an action's OWN ALLOW still works."""
+    gate = evaluate_gate(_allow(policy_match_provenance=rgc.MATCH_ACTION_SPECIFIC))
+    assert gate.can_execute is True
+    assert gate.decision == rgc.GATE_AUTHORIZED
+    assert gate.policy_decision == rgc.POLICY_ALLOW
+
+
+def test_a_shared_deny_still_denies():
+    """Fail-closed is asymmetric on purpose: a borrowed DENY only narrows."""
+    gate = evaluate_gate(_allow(
+        policy_decision=rgc.POLICY_DENY,
+        policy_match_provenance=rgc.MATCH_INCIDENT_SHARED,
+    ))
+    assert gate.can_execute is False
+    assert gate.policy_decision == rgc.POLICY_DENY
+    assert rgc.POLICY_DENIED in gate.reason_codes
+
+
+def test_the_gate_reports_how_its_evaluation_matched():
+    """Audit output. Reported, never accepted as an input."""
+    gate = evaluate_gate(_allow(policy_match_provenance=rgc.MATCH_INCIDENT_SHARED))
+    payload = gate.as_dict()
+    assert payload['policy_match_provenance'] == rgc.MATCH_INCIDENT_SHARED
+    assert payload['policy_match_provenance_label'] == (
+        rgc.MATCH_PROVENANCE_LABELS[rgc.MATCH_INCIDENT_SHARED]
+    )
+    assert payload['can_execute'] is False

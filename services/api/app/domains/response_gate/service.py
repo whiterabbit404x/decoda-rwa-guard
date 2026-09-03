@@ -173,7 +173,8 @@ def latest_policy_evaluation(
         row = connection.execute(
             f'''SELECT id, policy_id, policy_key, policy_version, decision, reason_codes,
                        required_approvals, {roles_select}, asset_id, incident_id,
-                       canonical_event_id, operation, evaluated_at
+                       canonical_event_id, operation, evaluated_at,
+                       input_snapshot->>'response_action_id' AS snapshot_action_id
                 FROM {EVALUATIONS_TABLE}
                 WHERE workspace_id = %s
                   AND simulation = FALSE
@@ -194,7 +195,51 @@ def latest_policy_evaluation(
         logger.exception('response_gate_evaluation_read_failed workspace_id=%s', workspace_id)
         _note_unreadable(cache, 'policy_evaluation')
         return None
-    return _row_dict(row) or None
+    resolved = _row_dict(row) or None
+    if resolved is None:
+        return None
+    # HOW this row matched, decided here from the row itself and the identifiers
+    # this action carries — never from anything a caller passed in for the
+    # purpose. `build_gate_inputs` uses it to refuse a borrowed ALLOW.
+    resolved['match_provenance'] = evaluation_match_provenance(
+        resolved, response_action_id=action, canonical_event_id=event_id,
+        incident_id=incident, asset_id=asset,
+    )
+    return resolved
+
+
+def evaluation_match_provenance(
+    evaluation: dict[str, Any],
+    *,
+    response_action_id: Optional[str],
+    canonical_event_id: Optional[str] = None,
+    incident_id: Optional[str] = None,
+    asset_id: Optional[str] = None,
+) -> str:
+    """Which identifier this evaluation row matched the action ON.
+
+    ACTION_SPECIFIC only when the producer stamped THIS response action id into
+    the evaluation's input snapshot — that is the one identifier that names a
+    single action. The rest are shared lifecycle identifiers, checked in
+    descending order of specificity purely so the reported provenance is the
+    narrowest true one; every one of them is equally disqualifying for an ALLOW.
+
+    Fail-closed: a row that matches nothing recognizable is UNATTRIBUTED, never
+    ACTION_SPECIFIC.
+    """
+    def _same(left: Any, right: Any) -> bool:
+        a, b = str(left or '').strip(), str(right or '').strip()
+        return bool(a) and a == b
+
+    if _same(evaluation.get('snapshot_action_id'), response_action_id):
+        return rgc.MATCH_ACTION_SPECIFIC
+    if _same(evaluation.get('canonical_event_id'), canonical_event_id):
+        return rgc.MATCH_EVENT_SHARED
+    if _same(evaluation.get('incident_id'), incident_id):
+        return rgc.MATCH_INCIDENT_SHARED
+    if _same(evaluation.get('asset_id'), asset_id):
+        return rgc.MATCH_ASSET_SHARED
+    return rgc.MATCH_UNATTRIBUTED
 
 
 def _current_policy_version(
@@ -325,6 +370,26 @@ def _policy_governs(
     at POLICY_EVALUATION_MISSING with nothing able to clear it.
     """
     if not _table_exists(connection, POLICIES_TABLE, cache):
+        # The policy store is NOT PROVISIONED (migration 0147 has not run here).
+        #
+        # That is emphatically not the finding "no policy applies to this action".
+        # "No policy applies" is a positive statement about a workspace that CAN
+        # govern and chose not to; this deployment cannot record an enforcement
+        # evaluation or read one back at all. Returning a bare False reported
+        # NOT_APPLICABLE — an authorization-shaped answer produced by a table that
+        # does not exist — for every action in the product.
+        #
+        # Recorded as an unreadable fact so `build_gate_inputs` reports
+        # NOT_EVALUATED and the engine closes the gate on GATE_FACTS_UNAVAILABLE.
+        # Logged at error level because it is a deployment defect, not a workspace
+        # state: `pilot.integrity_migration_status` surfaces the same gap on
+        # System Health.
+        _note_unreadable(cache, f'table:{POLICIES_TABLE}')
+        logger.error(
+            'response_gate_governance_storage_missing table=%s workspace_id=%s '
+            'detail=governance policy storage is not provisioned; execution fails closed',
+            POLICIES_TABLE, workspace_id,
+        )
         return False
     # Local import: governance_policy.service imports pilot at module scope, and
     # this module is imported from inside pilot's own call paths.
@@ -496,6 +561,42 @@ def build_gate_inputs(
         canonical_event_id=canonical_event_id, asset_id=asset_id,
         response_action_id=action_id, cache=cache,
     )
+    # HOW that row matched, computed server-side from the persisted row. Never
+    # supplied by, or influenced by, the request.
+    match_provenance = (
+        str(evaluation.get('match_provenance') or rgc.MATCH_UNATTRIBUTED)
+        if evaluation else rgc.MATCH_NONE
+    )
+    # ── An ALLOW authorizes the action it was reached FOR, and nothing else ──
+    #
+    # The lookup above matches on shared lifecycle identifiers as well as on the
+    # action id, so an action that was never evaluated still resolves a sibling's
+    # decision — every action on one incident shares its incident id, and every
+    # action on one asset shares its asset id. Reflecting a borrowed ALLOW made
+    # Action B executable on a policy verdict that had examined Action A.
+    #
+    # A borrowed ALLOW is therefore discarded here, at the point the fact enters
+    # the gate, rather than being carried in and filtered later: nothing
+    # downstream sees a policy id, a version, a role list or an evaluation id
+    # belonging to another action's decision, so no part of the gate — and no DTO
+    # built from it — can present one as this action's own.
+    #
+    # A borrowed DENY is KEPT. Fail-closed is deliberately asymmetric: the
+    # dangerous direction is the one that widens authorization, and a shared DENY
+    # only ever narrows it.
+    inherited_allow = (
+        bool(evaluation)
+        and str(evaluation.get('decision') or '').strip().upper() == rgc.POLICY_ALLOW
+        and not rgc.match_is_action_specific(match_provenance)
+    )
+    if inherited_allow:
+        logger.warning(
+            'response_gate_inherited_allow_rejected workspace_id=%s action_id=%s '
+            'evaluation_id=%s match_provenance=%s',
+            workspace_id, action_id, evaluation.get('id'), match_provenance,
+        )
+        evaluation = None
+
     if evaluation:
         policy_decision = str(evaluation.get('decision') or '').strip().upper() or rgc.POLICY_NOT_EVALUATED
         policy_id = str(evaluation.get('policy_id') or '') or None
@@ -538,12 +639,19 @@ def build_gate_inputs(
             for fact in unreadable_facts(cache)
         )
         policy_decision = (
-            rgc.POLICY_NOT_EVALUATED if (governed or policy_read_failed) else rgc.POLICY_NOT_APPLICABLE
+            rgc.POLICY_NOT_EVALUATED
+            if (governed or policy_read_failed or inherited_allow)
+            else rgc.POLICY_NOT_APPLICABLE
         )
         policy_id = policy_key = evaluation_id = evaluated_at = None
         policy_version = current_version = None
         required_roles = ()
-        policy_reason_codes = ()
+        # Say WHY, rather than leaving an operator to wonder why a sibling action
+        # on the same incident is evaluated and this one is not. Additive: the
+        # engine still reports POLICY_EVALUATION_MISSING for the missing row.
+        policy_reason_codes = (
+            (rgc.POLICY_EVALUATION_NOT_ACTION_SPECIFIC,) if inherited_allow else ()
+        )
 
     approvals = approval_records(
         connection, workspace_id=workspace_id, subject_domain=subject_domain,
@@ -566,6 +674,7 @@ def build_gate_inputs(
     return GateInputs(
         action_id=action_id,
         policy_decision=policy_decision,
+        policy_match_provenance=match_provenance,
         policy_reason_codes=policy_reason_codes,
         policy_id=policy_id,
         policy_key=policy_key,

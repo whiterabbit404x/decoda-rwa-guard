@@ -106,6 +106,13 @@ class GateInputs:
     action_id: str
     #: Screen 11's verdict, reflected verbatim. Never recalculated here.
     policy_decision: str = rgc.POLICY_NOT_APPLICABLE
+    #: HOW the enforcement evaluation behind ``policy_decision`` matched THIS
+    #: action, resolved server-side from the persisted row (see
+    #: ``response_gate.config`` and ``service.evaluation_match_provenance``).
+    #: Only ACTION_SPECIFIC names one action; the rest matched a SHARED incident,
+    #: asset or event id and therefore belong to some other action's decision.
+    #: Never client-supplied — the gate publishes it, nothing asserts it.
+    policy_match_provenance: str = rgc.MATCH_NONE
     policy_reason_codes: tuple[str, ...] = ()
     policy_id: Optional[str] = None
     policy_key: Optional[str] = None
@@ -211,6 +218,10 @@ class ExecutionGate:
     #: Whether running this action would contact an external provider at all.
     execution_adapter_required: bool = False
     quorum_authority: str = QUORUM_AUTHORITY_WORKSPACE
+    #: HOW the policy evaluation behind this gate matched the action. Reported for
+    #: audit, so a reader can tell an action's OWN verdict from a sibling's that
+    #: was refused. An output only: nothing reads it back as an authorization.
+    policy_match_provenance: str = rgc.MATCH_NONE
     policy_id: Optional[str] = None
     policy_key: Optional[str] = None
     policy_version: Optional[int] = None
@@ -252,6 +263,12 @@ class ExecutionGate:
             'policy_decision': self.policy_decision,
             'policy_decision_label': rgc.POLICY_DECISION_LABELS.get(
                 self.policy_decision, self.policy_decision,
+            ),
+            # Audit metadata, never an authorization input. The gate STATES how
+            # its evaluation matched; no caller may assert it back.
+            'policy_match_provenance': self.policy_match_provenance,
+            'policy_match_provenance_label': rgc.MATCH_PROVENANCE_LABELS.get(
+                self.policy_match_provenance, self.policy_match_provenance,
             ),
             'required_quorum': int(self.required_quorum),
             'approvals_collected': int(self.approvals_collected),
@@ -409,6 +426,18 @@ def evaluate_gate(inputs: GateInputs) -> ExecutionGate:
     if policy_decision not in rgc.POLICY_DECISIONS:
         # An unreadable verdict is not an ALLOW.
         policy_decision = rgc.POLICY_NOT_EVALUATED
+    # An ALLOW may only come from an evaluation reached FOR THIS ACTION. The
+    # service already declines to adopt a borrowed one, and this is the same rule
+    # applied independently at the point can_execute is decided — so an ALLOW
+    # assembled by any other caller, or reached through a lookup that later grows
+    # a new shared identifier, still cannot authorize an action it never examined.
+    # Fail-closed: an unrecognized or absent provenance is treated as shared.
+    if policy_decision == rgc.POLICY_ALLOW and not rgc.match_is_action_specific(
+        inputs.policy_match_provenance
+    ):
+        policy_decision = rgc.POLICY_NOT_EVALUATED
+        if rgc.POLICY_EVALUATION_NOT_ACTION_SPECIFIC not in reason_codes:
+            reason_codes.append(rgc.POLICY_EVALUATION_NOT_ACTION_SPECIFIC)
     if policy_decision == rgc.POLICY_DENY:
         reason_codes.append(rgc.POLICY_DENIED)
         for code in inputs.policy_reason_codes:
@@ -417,6 +446,12 @@ def evaluate_gate(inputs: GateInputs) -> ExecutionGate:
                 reason_codes.append(key)
     elif policy_decision == rgc.POLICY_NOT_EVALUATED:
         reason_codes.append(rgc.POLICY_EVALUATION_MISSING)
+        # Why there is no evaluation, when the caller established one — a
+        # sibling's verdict was available and was refused.
+        for code in inputs.policy_reason_codes:
+            key = str(code or '').strip().upper()
+            if key and key not in reason_codes:
+                reason_codes.append(key)
     version_mismatch = (
         policy_decision in {rgc.POLICY_ALLOW, rgc.POLICY_DENY}
         and inputs.policy_version is not None
@@ -530,6 +565,7 @@ def evaluate_gate(inputs: GateInputs) -> ExecutionGate:
         execution_adapter_required=bool(inputs.execution_adapter_required),
         reason_codes=tuple(reason_codes),
         policy_decision=policy_decision,
+        policy_match_provenance=str(inputs.policy_match_provenance or rgc.MATCH_NONE),
         required_quorum=required_quorum,
         approvals_collected=collected,
         # Authoritative: a policy role list makes approval required even when the
