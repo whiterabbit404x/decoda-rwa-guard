@@ -17,8 +17,8 @@ test('localhost:3000 renders the Feature 4 dashboard section without a fatal cra
 
   expect(response?.ok()).toBeTruthy();
   await expect(page.locator('h1')).toContainText('Detect threats.');
-  await expect(page.locator('text=Start pilot')).toBeVisible();
-  await expect(page.locator('text=Contact sales')).toBeVisible();
+  await expect(page.locator('text=Request Pilot').first()).toBeVisible();
+  await expect(page.locator('text=Contact Sales').first()).toBeVisible();
   await expect(page.locator('body')).not.toContainText('Application error');
   await expect(page.locator('body')).not.toContainText('Unhandled Runtime Error');
   await expect(page.locator('body')).not.toContainText('This page could not be found');

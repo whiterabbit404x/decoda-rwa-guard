@@ -5823,10 +5823,21 @@ td .tableMeta {
   letter-spacing: -0.02em;
 }
 
+.pricingTierPrice--label {
+  font-size: 1.5rem;
+  letter-spacing: -0.01em;
+  display: flex;
+  align-items: center;
+  min-height: 2.4rem;
+}
+
 .pricingTierPriceSub {
   font-size: 0.77rem;
   color: #5a6478;
   margin-bottom: 0.35rem;
+  /* Reserve the line even when a plan has no sub-price, so the cards in the
+     grid keep the same vertical rhythm and their CTAs stay aligned. */
+  min-height: 1.2em;
 }
 
 .pricingTierDesc {
@@ -5867,6 +5878,30 @@ td .tableMeta {
 .pricingTierCta--featured:hover {
   background: #2563eb;
   border-color: #2563eb;
+}
+
+.pricingTierFeatures {
+  list-style: none;
+  margin: 1.25rem 0 0;
+  padding: 1.15rem 0 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.pricingTierFeature {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: #9ba7b4;
+}
+
+.pricingTierFeature svg {
+  flex: none;
+  margin-top: 0.15rem;
 }
 
 .pricingComparisonSection {

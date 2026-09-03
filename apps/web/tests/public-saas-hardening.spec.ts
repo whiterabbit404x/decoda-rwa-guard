@@ -6,9 +6,12 @@ import { fetchDashboardPageData } from '../app/dashboard-data';
 
 test('customer-facing routes remove demo wording', async () => {
   const content = fs.readFileSync(path.join(__dirname, '..', 'app', 'page.tsx'), 'utf-8');
-  expect(content).toContain('Start pilot');
-  expect(content).toContain('Contact sales');
-  expect(content).not.toContain('Start free trial');
+  const plans = fs.readFileSync(path.join(__dirname, '..', 'app', 'pricing-plans.ts'), 'utf-8');
+  // The homepage renders pricing from the canonical shared config.
+  expect(content).toContain('PRICING_PLANS');
+  expect(plans).toContain('Request Pilot');
+  expect(plans).toContain('Contact Sales');
+  expect(plans).not.toContain('Start free trial');
 });
 
 test('production mode does not silently render sample dashboard payloads', async () => {

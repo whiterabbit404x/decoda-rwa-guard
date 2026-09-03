@@ -16,9 +16,12 @@ test('keeps the route split between marketing / and authenticated /dashboard', a
   // Marketing `/` composes the public homepage sections and drives conversion
   // to sign-up; it must not pull in the authenticated dashboard data path.
   expect(marketingPage).toContain('HeroSection');
-  expect(marketingPage).toContain('Start pilot');
-  expect(marketingPage).toContain('/sign-up');
+  expect(marketingPage).toContain('PRICING_PLANS');
   expect(marketingPage).not.toContain('fetchDashboardPageData');
+
+  // Conversion routes live in the canonical pricing config the homepage reads.
+  const pricingPlans = readFileSync(join(appDir, 'pricing-plans.ts'), 'utf8');
+  expect(pricingPlans).toContain('/sign-up');
   expect(dashboardPage).toContain('DashboardLiveHydrator');
   expect(dashboardPage).toContain('fetchDashboardPageData');
 });

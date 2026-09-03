@@ -28,6 +28,9 @@ function homepageSource(): string {
     path.join(HOME_DIR, 'policy-automation-section.tsx'),
     path.join(HOME_DIR, 'teams-section.tsx'),
     path.join(HOME_DIR, 'final-cta.tsx'),
+    // Pricing copy lives in the canonical shared config consumed by both the
+    // homepage pricing section and the standalone /pricing page.
+    path.join(APP_DIR, 'pricing-plans.ts'),
   ];
   return files.map((file) => fs.readFileSync(file, 'utf-8')).join('\n');
 }
@@ -43,8 +46,8 @@ test('homepage carries the canonical marketing copy across its sections', () => 
     'From a blockchain signal',
     'AI that has to',
     'Human-controlled',
-    'Start pilot',
-    'Contact sales',
+    'Request Pilot',
+    'Contact Sales',
   ];
   for (const phrase of required) {
     expect(source, `expected homepage source to contain "${phrase}"`).toContain(phrase);
@@ -126,11 +129,17 @@ test('homepage links point at real existing routes only', () => {
   expect(dataFile).toContain("startMonitoring: '/sign-up'");
   expect(dataFile).toContain("demoMailto: 'mailto:sales@decodasecurity.com'");
 
+  // Pricing CTAs come from the canonical shared config; both the homepage and
+  // /pricing render the same labels and the same real, existing routes.
+  const plans = read(APP_DIR, 'pricing-plans.ts');
+  expect(plans).toContain('Request Pilot');
+  expect(plans).toContain('Contact Sales');
+  expect(plans).toContain("ctaHref: '/sign-up'");
+  expect(plans).toContain("ctaHref: 'mailto:sales@decodasecurity.com'");
+  expect(plans).not.toContain('Start free trial');
+
   const page = read(APP_DIR, 'page.tsx');
-  // Real pricing CTAs are reused verbatim; no invented plan wording.
-  expect(page).toContain('Start pilot');
-  expect(page).toContain('Contact sales');
-  expect(page).not.toContain('Start free trial');
+  expect(page).toContain('PRICING_PLANS');
 });
 
 test('public support contact uses the official decodasecurity.com address', () => {
@@ -147,7 +156,10 @@ test('public sales/contact CTAs use the official decodasecurity.com domain', () 
   // demo@) are intentionally out of scope and handled by mail configuration.
   const page = read(APP_DIR, 'page.tsx');
   const dataFile = read(HOME_DIR, 'home-data.ts');
-  expect(page).toContain('mailto:sales@decodasecurity.com');
+  // The homepage sales CTA is served by the canonical pricing config.
+  const plans = read(APP_DIR, 'pricing-plans.ts');
+  expect(plans).toContain('mailto:sales@decodasecurity.com');
+  expect(plans).not.toContain('sales@decoda.app');
   expect(page).not.toContain('sales@decoda.app');
   expect(dataFile).not.toContain('@decoda.app');
 });

@@ -6,6 +6,9 @@ import styles from './home.module.css';
 export interface PricingTier {
   tier: string;
   price: string;
+  /** True when `price` is a word label rather than a currency amount. */
+  priceIsLabel?: boolean;
+  /** Secondary line beside the price. Empty when the tier has none. */
   per: string;
   description: string;
   featured: boolean;
@@ -41,8 +44,10 @@ export function PricingSection({ tiers, note }: { tiers: PricingTier[]; note: st
               {tier.badge && <span className={styles.priceBadge}>{tier.badge}</span>}
               <div className={styles.priceTier}>{tier.tier}</div>
               <div className={styles.priceAmountRow}>
-                <span className={styles.priceAmount}>{tier.price}</span>
-                <span className={styles.pricePer}>{tier.per}</span>
+                <span className={tier.priceIsLabel ? styles.priceAmountLabel : styles.priceAmount}>
+                  {tier.price}
+                </span>
+                {tier.per && <span className={styles.pricePer}>{tier.per}</span>}
               </div>
               <p className={styles.priceDesc}>{tier.description}</p>
               {isExternal(tier.ctaHref) ? (
