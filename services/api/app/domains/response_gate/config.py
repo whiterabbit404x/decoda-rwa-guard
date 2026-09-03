@@ -91,6 +91,77 @@ POLICY_DECISION_LABELS: dict[str, str] = {
 }
 
 # --------------------------------------------------------------------------
+# HOW an enforcement evaluation matched the action it is being read for.
+#
+# `latest_policy_evaluation` resolves a decision by matching on the response
+# action id OR the canonical event id OR the incident id OR the asset id. Only
+# the FIRST of those identifies one action. The other three are SHARED lifecycle
+# identifiers: every action recommended for one incident carries the same
+# incident id, and every action touching one asset carries the same asset id.
+#
+# So a decision reached for Action A also matches Action B, and an Action B that
+# had never been evaluated could be shown — and authorized by — A's ALLOW. That
+# is a policy verdict about a DIFFERENT operation, silently borrowed to unlock
+# this one. An ALLOW authorizes the action it was reached FOR, and nothing else.
+#
+# The provenance is computed SERVER-SIDE from the persisted row (see
+# response_gate.service.evaluation_match_provenance). It is never accepted from a
+# request: it is an output the gate publishes for audit, not an input anything
+# may assert.
+# --------------------------------------------------------------------------
+#: The evaluation names THIS response action in its input snapshot. Only this
+#: provenance may contribute an ALLOW toward execution authorization.
+MATCH_ACTION_SPECIFIC = 'ACTION_SPECIFIC'
+#: Matched only on the shared canonical (on-chain) event id.
+MATCH_EVENT_SHARED = 'EVENT_SHARED'
+#: Matched only on the shared incident id — a sibling action on the same incident.
+MATCH_INCIDENT_SHARED = 'INCIDENT_SHARED'
+#: Matched only on the shared asset id — any action anywhere on the same asset.
+MATCH_ASSET_SHARED = 'ASSET_SHARED'
+#: A row was returned but matched on no identifier this action carries. Treated
+#: exactly like the shared cases: never action-specific, so never an ALLOW.
+MATCH_UNATTRIBUTED = 'UNATTRIBUTED'
+#: No evaluation row at all.
+MATCH_NONE = 'NONE'
+
+MATCH_PROVENANCES = (
+    MATCH_ACTION_SPECIFIC,
+    MATCH_EVENT_SHARED,
+    MATCH_INCIDENT_SHARED,
+    MATCH_ASSET_SHARED,
+    MATCH_UNATTRIBUTED,
+    MATCH_NONE,
+)
+
+#: Every provenance that is NOT attributable to the exact response action. An
+#: ALLOW carrying one of these can never authorize.
+SHARED_MATCH_PROVENANCES = frozenset({
+    MATCH_EVENT_SHARED,
+    MATCH_INCIDENT_SHARED,
+    MATCH_ASSET_SHARED,
+    MATCH_UNATTRIBUTED,
+})
+
+MATCH_PROVENANCE_LABELS: dict[str, str] = {
+    MATCH_ACTION_SPECIFIC: 'Evaluated for this action',
+    MATCH_EVENT_SHARED: 'Evaluated for another action on the same on-chain event',
+    MATCH_INCIDENT_SHARED: 'Evaluated for another action on the same incident',
+    MATCH_ASSET_SHARED: 'Evaluated for another action on the same asset',
+    MATCH_UNATTRIBUTED: 'Not attributable to this action',
+    MATCH_NONE: 'No enforcement evaluation recorded',
+}
+
+
+def match_is_action_specific(provenance: Any) -> bool:
+    """Whether an evaluation was reached FOR the action reading it.
+
+    Fail-closed: anything this function does not recognize as ACTION_SPECIFIC is
+    treated as shared, so an unknown or absent provenance can never authorize.
+    """
+    return str(provenance or '').strip().upper() == MATCH_ACTION_SPECIFIC
+
+
+# --------------------------------------------------------------------------
 # Deterministic reason codes. Stable machine keys — never natural language.
 #
 # Every LOCKED / DENIED gate carries at least one. An AUTHORIZED gate carries
@@ -101,6 +172,12 @@ EXECUTION_AUTHORIZED = 'EXECUTION_AUTHORIZED'
 POLICY_DENIED = 'POLICY_DENIED'
 POLICY_VERSION_MISMATCH = 'POLICY_VERSION_MISMATCH'
 POLICY_EVALUATION_MISSING = 'POLICY_EVALUATION_MISSING'
+#: The only enforcement evaluation that matched this action was reached for a
+#: DIFFERENT one, through a shared incident / asset / event id. It is reported
+#: rather than silently discarded, so an operator sees WHY the action is not
+#: evaluated when a sibling plainly is — and so an audit can tell this apart from
+#: "no evaluation exists anywhere".
+POLICY_EVALUATION_NOT_ACTION_SPECIFIC = 'POLICY_EVALUATION_NOT_ACTION_SPECIFIC'
 HUMAN_QUORUM_INCOMPLETE = 'HUMAN_QUORUM_INCOMPLETE'
 REQUIRED_ROLE_MISSING = 'REQUIRED_ROLE_MISSING'
 APPROVAL_REJECTED = 'APPROVAL_REJECTED'
@@ -128,6 +205,7 @@ REASON_CODES = (
     POLICY_DENIED,
     POLICY_VERSION_MISMATCH,
     POLICY_EVALUATION_MISSING,
+    POLICY_EVALUATION_NOT_ACTION_SPECIFIC,
     HUMAN_QUORUM_INCOMPLETE,
     REQUIRED_ROLE_MISSING,
     APPROVAL_REJECTED,
@@ -150,6 +228,10 @@ REASON_LABELS: dict[str, str] = {
     POLICY_DENIED: 'The deterministic policy engine returned DENY for this operation.',
     POLICY_VERSION_MISMATCH: 'The governing policy changed after this evaluation; re-evaluate before executing.',
     POLICY_EVALUATION_MISSING: 'A policy governs this action but no enforcement evaluation was recorded.',
+    POLICY_EVALUATION_NOT_ACTION_SPECIFIC: (
+        'The only policy evaluation available was reached for a different response action, so it '
+        'cannot authorize this one. Run a policy evaluation for this action.'
+    ),
     HUMAN_QUORUM_INCOMPLETE: 'The required human approval quorum has not been collected.',
     REQUIRED_ROLE_MISSING: 'A required approver role has not signed off.',
     APPROVAL_REJECTED: 'An approver rejected this action.',

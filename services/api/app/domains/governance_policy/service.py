@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
@@ -66,9 +67,62 @@ def log_event(event: str, **fields: Any) -> None:
     logger.info('event=%s %s', event, ordered)
 
 
+def transaction_aborted(connection: Any) -> bool:
+    """Whether this connection's transaction is already in PostgreSQL's ERROR state.
+
+    Once a statement fails, the transaction is aborted and every statement after it
+    fails with InFailedSqlTransaction until someone rolls back. Crucially a
+    SAVEPOINT cannot be opened on an aborted transaction either — and psycopg
+    pushes its nested-transaction bookkeeping BEFORE issuing the SAVEPOINT, so an
+    attempt that fails is never popped. From then on the nesting level is wrong
+    permanently: even ``connection.commit()`` raises "Explicit commit() forbidden
+    within a Transaction context", and every later statement in the request fails
+    with it. Checking first is what stops one aborted read from corrupting a whole
+    recommend plan.
+
+    Fail-safe: a connection that cannot report its status (a test fake) is treated
+    as NOT aborted, which is exactly the behavior those fakes model.
+    """
+    try:
+        from psycopg import pq
+
+        return connection.info.transaction_status == pq.TransactionStatus.INERROR
+    except Exception:
+        return False
+
+
+@contextmanager
+def read_scope(connection: Any):
+    """A SAVEPOINT around ONE probe that is allowed to fail and continue.
+
+    Catching a database exception does not undo what it did to the TRANSACTION: on
+    PostgreSQL the failed statement aborts it, and everything after fails with
+    InFailedSqlTransaction until something rolls back. A catalogue probe that
+    swallowed its own error therefore poisoned every later statement in the same
+    request, including the evaluation INSERT the probe was clearing the way for.
+
+    Scoped this way the rollback is exactly as wide as the failed statement.
+    Fakes without ``transaction()`` fall through; each caller still handles the
+    exception itself.
+    """
+    tx = getattr(connection, 'transaction', None)
+    if callable(tx) and not transaction_aborted(connection):
+        with tx():
+            yield
+    else:
+        # No real transaction semantics, or the transaction is already aborted —
+        # a savepoint cannot be opened on one, and the attempt would corrupt
+        # psycopg's nesting for the rest of the request. The probe below fails and
+        # the caller treats the table as absent, which is already fail-closed.
+        yield
+
+
 def _table_exists(connection: Any, name: str) -> bool:
     try:
-        row = connection.execute('SELECT to_regclass(%s) IS NOT NULL AS ok', (f'public.{name}',)).fetchone()
+        with read_scope(connection):
+            row = connection.execute(
+                'SELECT to_regclass(%s) IS NOT NULL AS ok', (f'public.{name}',),
+            ).fetchone()
     except Exception:
         return False
     return bool((row or {}).get('ok'))
@@ -79,11 +133,12 @@ def _column_exists(connection: Any, table: str, column: str) -> bool:
     unreadable catalogue is treated as ABSENT, so the write degrades to the
     pre-migration column set rather than raising."""
     try:
-        row = connection.execute(
-            '''SELECT 1 AS ok FROM information_schema.columns
-               WHERE table_name = %s AND column_name = %s''',
-            (table, column),
-        ).fetchone()
+        with read_scope(connection):
+            row = connection.execute(
+                '''SELECT 1 AS ok FROM information_schema.columns
+                   WHERE table_name = %s AND column_name = %s''',
+                (table, column),
+            ).fetchone()
     except Exception:
         return False
     return bool((row or {}).get('ok'))

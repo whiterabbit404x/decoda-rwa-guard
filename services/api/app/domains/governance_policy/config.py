@@ -201,6 +201,29 @@ OPERATION_MISMATCH = 'OPERATION_MISMATCH'
 #: that the missing link is the detection, not the policy.
 OPERATION_NOT_ESTABLISHED = 'OPERATION_NOT_ESTABLISHED'
 
+#: A canonical fact the evaluation reasons on could not be READ — a failed query,
+#: an outage, a table that is not provisioned. Distinct from every code above,
+#: which reports a fact that WAS read and did not satisfy the policy: this one
+#: says the platform could not look. A read that failed is never an authorization,
+#: so an evaluation carrying any of these is always a fail-closed DENY.
+#:
+#: The generic code, always present alongside whichever specific one applies, so a
+#: consumer can recognize the whole class without enumerating its members.
+AUTHORITATIVE_FACTS_UNAVAILABLE = 'AUTHORITATIVE_FACTS_UNAVAILABLE'
+#: The Screen 5 threat detection behind this action could not be read, so the
+#: operation, the observed amount and the provenance it carries are unestablished.
+DETECTION_FACTS_UNAVAILABLE = 'DETECTION_FACTS_UNAVAILABLE'
+#: The authorized-issuance record could not be read, so the business event and the
+#: settlement state that back this operation are unestablished.
+ISSUANCE_FACTS_UNAVAILABLE = 'ISSUANCE_FACTS_UNAVAILABLE'
+
+#: Every reason code in the "we could not read this fact" class.
+FACTS_UNAVAILABLE_REASON_CODES = (
+    AUTHORITATIVE_FACTS_UNAVAILABLE,
+    DETECTION_FACTS_UNAVAILABLE,
+    ISSUANCE_FACTS_UNAVAILABLE,
+)
+
 BUSINESS_EVENT_MISSING = 'BUSINESS_EVENT_MISSING'
 BUSINESS_EVENT_MISMATCH = 'BUSINESS_EVENT_MISMATCH'
 SETTLEMENT_NOT_CLEARED = 'SETTLEMENT_NOT_CLEARED'
@@ -222,6 +245,9 @@ REASON_CODES = (
     POLICY_NOT_ACTIVE,
     OPERATION_MISMATCH,
     OPERATION_NOT_ESTABLISHED,
+    AUTHORITATIVE_FACTS_UNAVAILABLE,
+    DETECTION_FACTS_UNAVAILABLE,
+    ISSUANCE_FACTS_UNAVAILABLE,
     BUSINESS_EVENT_MISSING,
     BUSINESS_EVENT_MISMATCH,
     SETTLEMENT_NOT_CLEARED,

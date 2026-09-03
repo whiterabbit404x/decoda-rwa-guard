@@ -1783,7 +1783,104 @@ function RequiredAuthorization({ gate }: { gate: ExecutionGate | null | undefine
    boundary. It renders the BACKEND gate: `canExecute` comes from the server, and
    POST /execute re-evaluates the identical gate, so a client that bypassed this
    component would still be refused. The lock is never opened by local state. */
-function ExecutionLockPanel({ gate }: { gate: ExecutionGate | null | undefined }) {
+/* ── Policy evaluation RECOVERY control ──────────────────────────────────────
+   Not an execution path, and not the normal one. Recommending an action already
+   runs the deterministic enforcement evaluation automatically; this exists for
+   the case where that evaluation did not land — a transient outage on a fact the
+   producer reads — leaving the action at NOT_EVALUATED with no way forward.
+
+   It is offered ONLY for NOT_EVALUATED. An ALLOW or a DENY is a decision the
+   engine has already reached, and re-running it from the UI is not the
+   operator's call: policy is re-evaluated when the FACTS change, not when
+   somebody presses a button hoping for a better answer.
+
+   What it does NOT do: it sends no policy decision, no gate state and no
+   authorization of any kind (the endpoint has no request body at all), and it
+   never writes an outcome into React state. It POSTs, waits, then re-reads the
+   authoritative gate from the backend and renders what came back. A failure
+   leaves the action exactly as locked as it was. */
+function RunPolicyEvaluationControl({
+  actionId,
+  gate,
+  authHeaders,
+  onMessage,
+  onDataChanged,
+}: {
+  actionId: string;
+  gate: ExecutionGate | null | undefined;
+  authHeaders: () => Record<string, string>;
+  onMessage: (msg: string) => void;
+  onDataChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  // The backend's own verdict decides whether recovery is even a question.
+  if (gate?.policyDecision !== 'NOT_EVALUATED') return null;
+
+  async function runPolicyEvaluation() {
+    setBusy(true);
+    onMessage('Running deterministic policy evaluation…');
+    try {
+      // No body: the browser names an action and nothing else, so it cannot
+      // supply a decision, a policy version, an operator authority or an amount.
+      // The SAME-ORIGIN /api proxy, like every other mutation on this screen.
+      // A direct `${apiUrl}/…` fetch silently fails here: NEXT_PUBLIC_API_URL is
+      // unset client-side, so `apiUrl` is '' and the request hits the Next server
+      // instead of the backend (see the reads above).
+      const res = await fetch(`/api/response/actions/${actionId}/policy-evaluation`, {
+        method: 'POST',
+        headers: authHeaders(),
+      });
+      if (!res.ok) {
+        onMessage('Policy evaluation could not be completed. The action stays locked.');
+        return;
+      }
+      // Deliberately NOT read into local state as an authorization. The refetch
+      // below re-reads the gate the backend built from the persisted evaluation,
+      // so what the operator sees is the stored decision, never a predicted one.
+      await res.json().catch(() => null);
+      onMessage('Policy evaluation recorded. Reloading the execution gate…');
+      onDataChanged();
+    } catch {
+      onMessage('Policy evaluation request failed. Check network connection.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ marginTop: '0.6rem' }}>
+      <button
+        type="button"
+        className="btn btn-secondary"
+        data-testid="run-policy-evaluation"
+        style={{ fontSize: '0.78rem' }}
+        disabled={busy}
+        onClick={() => void runPolicyEvaluation()}
+      >
+        {busy ? 'Running Policy Evaluation…' : 'Run Policy Evaluation'}
+      </button>
+      <p className="muted" style={{ margin: '0.3rem 0 0', fontSize: '0.72rem', lineHeight: 1.4 }}>
+        No enforcement evaluation is recorded for this action. Running one asks the
+        deterministic policy engine to decide from canonical backend facts; it does not
+        approve, authorize, or execute anything.
+      </p>
+    </div>
+  );
+}
+
+function ExecutionLockPanel({
+  gate,
+  actionId,
+  authHeaders,
+  onMessage,
+  onDataChanged,
+}: {
+  gate: ExecutionGate | null | undefined;
+  actionId?: string;
+  authHeaders?: () => Record<string, string>;
+  onMessage?: (msg: string) => void;
+  onDataChanged?: () => void;
+}) {
   const lock = executionLockPresentation(gate);
   const palette = lock.locked
     ? gate?.decision === 'DENIED'
@@ -1859,6 +1956,15 @@ function ExecutionLockPanel({ gate }: { gate: ExecutionGate | null | undefined }
             ))}
           </ul>
         </div>
+      ) : null}
+      {actionId && authHeaders && onMessage && onDataChanged ? (
+        <RunPolicyEvaluationControl
+          actionId={actionId}
+          gate={gate}
+          authHeaders={authHeaders}
+          onMessage={onMessage}
+          onDataChanged={onDataChanged}
+        />
       ) : null}
     </div>
   );
@@ -2743,7 +2849,13 @@ function ActionDetailPanel({
           </div>
           {/* THE PHYSICAL EXECUTION LOCK — directly underneath the Approve /
               Reject controls, as the trust boundary the operator must cross. */}
-          <ExecutionLockPanel gate={executionGate} />
+          <ExecutionLockPanel
+            gate={executionGate}
+            actionId={action.id}
+            authHeaders={authHeaders}
+            onMessage={onMessage}
+            onDataChanged={onDataChanged}
+          />
         </div>
       )}
     </aside>

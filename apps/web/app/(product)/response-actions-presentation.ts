@@ -820,6 +820,13 @@ export type ExecutionGate = {
   quorumAuthorityLabel: string | null;
   reasonCodes: string[];
   reasons: Array<{ code: string; label: string }>;
+  /** HOW the backend's policy evaluation matched THIS action. Computed
+   *  server-side and reported for audit only — the browser never sends it, and
+   *  no client-side branch may treat it as authorization. 'ACTION_SPECIFIC' is
+   *  the only value that names this action; the rest belong to a sibling's
+   *  decision and the backend has already refused them. */
+  policyMatchProvenance: string | null;
+  policyMatchProvenanceLabel: string | null;
   policyId: string | null;
   policyKey: string | null;
   policyVersion: number | null;
@@ -906,6 +913,8 @@ export function normalizeExecutionGate(input: unknown): ExecutionGate | null {
     quorumAuthorityLabel: gateStr(raw.quorum_authority_label),
     reasonCodes: list(raw.reason_codes),
     reasons,
+    policyMatchProvenance: gateStr(raw.policy_match_provenance),
+    policyMatchProvenanceLabel: gateStr(raw.policy_match_provenance_label),
     policyId: gateStr(raw.policy_id),
     policyKey: gateStr(raw.policy_key),
     policyVersion: typeof raw.policy_version === 'number' ? raw.policy_version : null,

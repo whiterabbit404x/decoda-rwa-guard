@@ -297,6 +297,12 @@ def _evaluation_row_from_insert(conn) -> dict:
      _amount, _snapshot, simulation, _engine, _user, evaluated_at, *rest) = params
     return {
         'id': evaluation_id,
+        # What `input_snapshot->>'response_action_id' AS snapshot_action_id`
+        # projects in the real query — the stamp that says WHICH action this
+        # verdict was reached for. Read from the snapshot the producer actually
+        # wrote, so the round trip proves the stamp is there rather than assuming
+        # it: without it the gate treats the row as a sibling's and refuses it.
+        'snapshot_action_id': json.loads(_snapshot).get('response_action_id'),
         'policy_id': policy_id,
         'policy_key': policy_key,
         'policy_version': policy_version,
@@ -466,8 +472,15 @@ def test_2_d_a_recommended_action_gets_its_enforcement_evaluation_on_creation():
 
 
 def test_2_e_a_failed_enforcement_evaluation_never_fails_the_caller():
-    """Recommending a plan must not break because a policy could not be read —
-    and the unevaluated action must not be treated as authorized either."""
+    """Recommending a plan must not break because a fact could not be read —
+    and the action must not be treated as authorized either.
+
+    The detection is a SUPPLEMENTARY fact: losing it does not stop the producer
+    knowing that an ACTIVE policy governs this workspace/asset, so the honest
+    answer is a recorded fail-closed DENY naming what could not be established,
+    not silence. Silence is what left Screen 8 at POLICY_EVALUATION_MISSING with
+    nothing an operator could do about it.
+    """
     connection = _EnforcementConn(
         policy_row=_policy_row(), detection=MINT_DETECTION,
         fail_on=('FROM threat_detections',),
@@ -475,8 +488,16 @@ def test_2_e_a_failed_enforcement_evaluation_never_fails_the_caller():
     status_value = pilot._record_response_action_enforcement_evaluation(
         connection, workspace_id=WORKSPACE, action_id=ACTION_ID, user_id='operator-1',
     )
-    assert status_value == enforcement.STATUS_FACTS_UNAVAILABLE
-    assert connection.inserted_evaluations == []
+    assert status_value == enforcement.STATUS_RECORDED_FAIL_CLOSED
+    # Recorded, and recorded as a REFUSAL.
+    assert len(connection.inserted_evaluations) == 1
+    stored = _evaluation_row_from_insert(connection)
+    assert stored['decision'] == gpc.DECISION_DENY
+    assert stored['simulation'] is False
+    assert gpc.AUTHORITATIVE_FACTS_UNAVAILABLE in stored['reason_codes']
+    assert gpc.DETECTION_FACTS_UNAVAILABLE in stored['reason_codes']
+    # No policy reached this verdict, so none is named as having reached it.
+    assert stored['policy_id'] is None
 
 
 def test_2_f_nothing_is_recorded_when_no_active_policy_governs_the_operation():
@@ -596,11 +617,13 @@ def test_4_a_missing_enforcement_evaluation_fails_closed(monkeypatch):
     assert rgc.POLICY_EVALUATION_MISSING in exc.value.detail['reason_codes']
 
 
-def test_4_b_unreadable_facts_record_no_evaluation_at_all():
-    """A failed canonical read abandons the pass rather than guessing.
+def test_4_b_an_unreadable_supplementary_fact_records_an_explicit_refusal():
+    """A failed canonical read never becomes an ALLOW — and never becomes silence.
 
-    Recording a verdict here would be worse than recording nothing: it would look
-    exactly like a real enforcement decision to every downstream consumer.
+    The issuance is a SUPPLEMENTARY fact. Losing it leaves the action inside a
+    governed scope the producer CAN still establish, so the truthful record is a
+    deterministic DENY that names the fact nobody could read. It must not be
+    mistakable for a policy that examined the operation and permitted it.
     """
     connection = _EnforcementConn(
         policy_row=_policy_row(), detection=MINT_DETECTION, issuance=CLEARED_ISSUANCE,
@@ -609,8 +632,39 @@ def test_4_b_unreadable_facts_record_no_evaluation_at_all():
     outcome = enforcement.evaluate_response_action(
         connection, workspace_id=WORKSPACE, action=_action_row(), now=NOW, user_id='operator-1',
     )
+    assert outcome.status == enforcement.STATUS_RECORDED_FAIL_CLOSED
+    assert outcome.recorded is True
+    assert outcome.decision.decision == gpc.DECISION_DENY
+    assert outcome.decision.simulation is False
+    assert gpc.ISSUANCE_FACTS_UNAVAILABLE in outcome.decision.reason_codes
+    assert outcome.as_dict()['supplementary_facts_unavailable'] == ['asset_authorized_issuance']
+    assert outcome.as_dict()['material_facts_unavailable'] == []
+    stored = _evaluation_row_from_insert(connection)
+    assert stored['simulation'] is False and stored['decision'] == gpc.DECISION_DENY
+
+
+def test_4_b1_an_unreadable_material_fact_still_records_nothing():
+    """The other half of the split: without the ASSET there is no scope at all.
+
+    Nothing here establishes which policies are even in force, so there is no
+    verdict to state and none is invented. The gate stays at
+    POLICY_EVALUATION_MISSING, which is the honest answer.
+    """
+    connection = _EnforcementConn(
+        policy_row=_policy_row(), detection=MINT_DETECTION, issuance=CLEARED_ISSUANCE,
+        fail_on=('FROM alerts WHERE id',),
+    )
+    outcome = enforcement.evaluate_response_action(
+        connection, workspace_id=WORKSPACE,
+        action=_action_row(execution_metadata={'chain_linked_ids': {
+            'incident_id': INCIDENT_ID, 'alert_id': ALERT_ID,
+        }}),
+        now=NOW, user_id='operator-1',
+    )
     assert outcome.status == enforcement.STATUS_FACTS_UNAVAILABLE
     assert outcome.recorded is False
+    assert 'alert' in outcome.facts.material_unreadable
+    assert outcome.facts.supplementary_unreadable == ()
     assert connection.inserted_evaluations == []
 
 
@@ -805,6 +859,11 @@ def _gate(**overrides) -> GateInputs:
     base = dict(
         action_id=ACTION_ID,
         policy_decision=rgc.POLICY_ALLOW,
+        # What the service supplies for an evaluation reached FOR this action.
+        # The field has no permissive default: an ALLOW whose provenance is not
+        # stated is treated as borrowed and cannot authorize (test 8_d below), so
+        # the legitimate path has to say so explicitly here too.
+        policy_match_provenance=rgc.MATCH_ACTION_SPECIFIC,
         policy_id=POLICY_ID, policy_key='POL-MINT-007',
         policy_version=7, policy_current_version=7, evaluation_id='eval-1',
         approvals=(), required_quorum=0, lifecycle_approval_status='pending',
@@ -1452,8 +1511,13 @@ def test_17_c_alerts_detection_id_is_never_used_as_a_threat_detection_id():
                 or 'linked_incident_id = %s::uuid' in stmt), stmt
 
 
-def test_17_c2_an_unreadable_detection_still_records_nothing():
-    """Fail-closed is preserved by the new lookup: a failed read abandons the pass."""
+def test_17_c2_an_unreadable_detection_records_a_fail_closed_deny_never_an_allow():
+    """Fail-closed is preserved by the new lookup, and is now VISIBLE.
+
+    A failed detection read can never be reasoned past into an ALLOW: no policy
+    is matched from an incomplete operation context. What changed is that the
+    refusal is written down instead of leaving the action silently unevaluated.
+    """
     connection = _EnforcementConn(
         policy_row=_policy_row(), detection=MINT_DETECTION, issuance=CLEARED_ISSUANCE,
         fail_on=('FROM threat_detections',),
@@ -1465,8 +1529,13 @@ def test_17_c2_an_unreadable_detection_still_records_nothing():
         }}),
         now=NOW, user_id='operator-1',
     )
-    assert outcome.status == enforcement.STATUS_FACTS_UNAVAILABLE
-    assert connection.inserted_evaluations == []
+    assert outcome.status == enforcement.STATUS_RECORDED_FAIL_CLOSED
+    assert outcome.decision.decision == gpc.DECISION_DENY
+    assert gpc.DETECTION_FACTS_UNAVAILABLE in outcome.decision.reason_codes
+    # The unreadable detection is NOT reported as "the operation was established
+    # to be absent" — the producer could not look, and says so.
+    assert gpc.OPERATION_NOT_ESTABLISHED not in outcome.decision.reason_codes
+    assert len(connection.inserted_evaluations) == 1
 
 
 class _CreatePathConn(_EnforcementConn):
@@ -1594,9 +1663,10 @@ def test_17_e_a_denied_policy_reaches_screen_08_as_a_deny(monkeypatch):
 def test_17_f_a_failed_evaluation_never_fails_the_creation_and_never_authorizes(monkeypatch):
     """Best-effort in the safe direction only.
 
-    A producer failure must not abort creating the action, and must not leave a
-    verdict behind. The gate then reports POLICY_EVALUATION_MISSING and stays
-    locked, which is the honest state.
+    A producer failure must not abort creating the action, and must never leave an
+    ALLOW behind. What it DOES leave behind is a deterministic refusal naming the
+    fact that could not be read: the detection is supplementary, so the action's
+    governed scope is still established and a verdict is owed.
     """
     connection = _CreatePathConn(
         policy_row=_policy_row(), detection=MINT_DETECTION, issuance=CLEARED_ISSUANCE,
@@ -1608,17 +1678,30 @@ def test_17_f_a_failed_evaluation_never_fails_the_creation_and_never_authorizes(
          'incident_id': INCIDENT_ID, 'alert_id': ALERT_ID},
         SimpleNamespace(headers={'x-workspace-id': WORKSPACE}),
     )
+    # The action is created regardless — creating it never depended on the policy.
     assert created['id'] and connection.created_actions
-    assert connection.inserted_evaluations == []
+    stored = _evaluation_row_from_insert(connection)
+    assert stored['decision'] == gpc.DECISION_DENY
+    assert gpc.DETECTION_FACTS_UNAVAILABLE in stored['reason_codes']
 
-    gate_conn = _EnforcementConn(policy_row=_policy_row())
+    # Screen 8 reads back THAT row and stays locked on it.
+    gate_conn = _EnforcementConn(evaluation=stored, policy_row=_policy_row())
     gate = pilot.response_action_execution_gate(
         gate_conn, connection.created_actions[-1], workspace_id=WORKSPACE,
         workspace_context={'role': 'admin'},
     )
-    assert gate['policy_decision'] == rgc.POLICY_NOT_EVALUATED
-    assert rgc.POLICY_EVALUATION_MISSING in gate['reason_codes']
+    assert gate['policy_decision'] == rgc.POLICY_DENY
+    assert rgc.POLICY_DENIED in gate['reason_codes']
     assert gate['can_execute'] is False
+
+    # With NO row at all the gate is still closed — the other honest state.
+    bare = pilot.response_action_execution_gate(
+        _EnforcementConn(policy_row=_policy_row()), connection.created_actions[-1],
+        workspace_id=WORKSPACE, workspace_context={'role': 'admin'},
+    )
+    assert bare['policy_decision'] == rgc.POLICY_NOT_EVALUATED
+    assert rgc.POLICY_EVALUATION_MISSING in bare['reason_codes']
+    assert bare['can_execute'] is False
 
 
 def test_17_g_every_path_that_creates_a_screen_8_action_evaluates_it():
@@ -2013,8 +2096,12 @@ def test_18_g_the_issuance_is_read_only_by_an_identifier_the_detection_names():
     assert params == (WORKSPACE, ASSET_ID, CLEARED_ISSUANCE['id'])
 
 
-def test_18_h_an_unreadable_issuance_still_records_nothing():
-    """Keying the lookup must not turn a failed read into an absent fact."""
+def test_18_h_an_unreadable_issuance_is_never_an_absent_fact_and_never_an_allow():
+    """Keying the lookup must not turn a failed read into an absent fact.
+
+    An ABSENT issuance and an UNREADABLE one both deny, but they are different
+    findings and the recorded row says which happened.
+    """
     connection = _EnforcementConn(
         policy_row=_policy_row(), detection=MINT_DETECTION, issuance=CLEARED_ISSUANCE,
         fail_on=('FROM asset_authorized_issuances',),
@@ -2022,5 +2109,6 @@ def test_18_h_an_unreadable_issuance_still_records_nothing():
     outcome = enforcement.evaluate_response_action(
         connection, workspace_id=WORKSPACE, action=_action_row(), now=NOW, user_id='operator-1',
     )
-    assert outcome.status == enforcement.STATUS_FACTS_UNAVAILABLE
-    assert connection.inserted_evaluations == []
+    assert outcome.status == enforcement.STATUS_RECORDED_FAIL_CLOSED
+    assert outcome.decision.decision == gpc.DECISION_DENY
+    assert gpc.ISSUANCE_FACTS_UNAVAILABLE in outcome.decision.reason_codes

@@ -19142,47 +19142,152 @@ def _enforce_action_policy_per_mode(
         )
 
 
+@contextmanager
+def _enforcement_evaluation_savepoint(connection: Any):
+    """Per-evaluation SAVEPOINT scope.
+
+    On a real psycopg connection this opens a NESTED transaction, so one action's
+    evaluation can fail and be rolled back to its own savepoint while everything
+    around it survives: the response_action rows already inserted and committed,
+    the incident state, any sibling action's successful evaluation, and any
+    unrelated work the request has done on this connection.
+
+    Why not ``connection.rollback()``. That is the connection-wide undo, and this
+    function runs inside a REQUEST that is doing other things. When action A's
+    evaluation failed, a broad rollback discarded whatever else was pending on the
+    same connection — and, worse, an aborted transaction that was never scoped
+    made every later statement fail with InFailedSqlTransaction, so action B's
+    evaluation could not run either. One unreadable fact for one action silently
+    poisoned the rest of the plan. A savepoint contains the failure to the
+    statement that caused it and leaves the connection usable for the next action.
+
+    Follows the existing ``_reconcile_target_savepoint`` convention: test fakes
+    that do not implement ``transaction()`` fall through to a passthrough — they
+    carry no real transaction semantics, and the caller's try/except still
+    isolates the failure.
+    """
+    from services.api.app.domains.governance_policy import service as _gp_service
+
+    def _recover_if_aborted() -> None:
+        """Restore a connection whose transaction PostgreSQL has already aborted.
+
+        This is NOT the broad `connection.rollback()` this design rejects. That
+        one ran unconditionally in an exception handler and discarded whatever
+        else the request had pending. This one fires only when the transaction is
+        ALREADY in the ERROR state — a state in which PostgreSQL has itself
+        invalidated every statement in it, nothing is committable, and every
+        later statement fails with InFailedSqlTransaction. There is no work left
+        to preserve at that point; there is only a connection that must be made
+        usable again so the NEXT action in the plan can be evaluated.
+
+        In the recommend flow the caller has already committed the response
+        actions before this loop runs, so nothing of the request survives here to
+        be lost.
+        """
+        if not _gp_service.transaction_aborted(connection):
+            return
+        try:
+            connection.rollback()
+        except Exception:  # pragma: no cover - nothing further can be done here
+            logger.warning('enforcement_evaluation_transaction_recovery_failed', exc_info=True)
+
+    tx = getattr(connection, 'transaction', None)
+    if not callable(tx):
+        yield
+        return
+    # Entering a savepoint on an ALREADY-aborted transaction is not possible, and
+    # attempting it corrupts psycopg's nesting for the rest of the request (see
+    # governance_policy.service.transaction_aborted). Clear the state first, so
+    # this action starts from a usable connection whatever the last one did.
+    _recover_if_aborted()
+    try:
+        with tx():
+            yield
+    finally:
+        # And leave one behind, so the failure cannot reach the next action even
+        # if something inside aborted the transaction without scoping itself.
+        _recover_if_aborted()
+
+
 def _record_response_action_enforcement_evaluation(
     connection: Any, *, workspace_id: str, action_id: str, user_id: str | None = None,
 ) -> str:
     """Run and persist the deterministic policy ENFORCEMENT evaluation for one action.
 
     Returns the outcome status (see ``governance_policy.enforcement``). Never
-    raises: a failure records nothing, so the execution gate stays LOCKED with
-    POLICY_EVALUATION_MISSING rather than receiving a verdict nobody could
-    establish. The caller decides whether to commit; this commits only its own
-    successful write, so a failed evaluation cannot roll back the action it was
-    evaluating.
-    """
-    try:
-        from services.api.app.domains.governance_policy import enforcement as _enforcement
+    raises: a failure records nothing for THIS action, so the execution gate stays
+    LOCKED with POLICY_EVALUATION_MISSING rather than receiving a verdict nobody
+    could establish.
 
-        row = connection.execute(
-            '''SELECT id, workspace_id, incident_id, alert_id, action_type, mode, status,
-                      execution_state, execution_metadata, created_by_user_id, created_at
-               FROM response_actions WHERE id = %s::uuid AND workspace_id = %s''',
-            (action_id, workspace_id),
-        ).fetchone()
-        if row is None:
-            return _enforcement.STATUS_FACTS_UNAVAILABLE
-        outcome = _enforcement.evaluate_response_action(
-            connection, workspace_id=workspace_id, action=_json_safe_value(dict(row)),
-            now=utc_now(), user_id=user_id,
-        )
-        if outcome.recorded:
-            connection.commit()
-        return outcome.status
-    except Exception:  # pragma: no cover - never let an evaluation failure fail the caller
+    Transaction boundary
+    --------------------
+    Every statement this evaluation runs lives inside its own SAVEPOINT (see
+    ``_enforcement_evaluation_savepoint``). A failure rolls back to that savepoint
+    and nothing else: the action being evaluated stays persisted, a sibling
+    action's recorded evaluation stays recorded, incident state stays as it was,
+    and the connection stays usable so the NEXT action in the plan still
+    evaluates. The commit below is issued only after the savepoint has been
+    released cleanly, and only when a row was actually written.
+
+    Every terminal outcome is logged with the same structured event, so an
+    operator can tell a recorded verdict from a fail-closed one from a lost fact
+    without reading the database.
+    """
+    from services.api.app.domains.governance_policy import enforcement as _enforcement
+
+    outcome_status = _enforcement.STATUS_EXCEPTION
+    recorded = False
+    failure = None
+    detail: dict[str, Any] = {}
+    try:
+        with _enforcement_evaluation_savepoint(connection):
+            row = connection.execute(
+                '''SELECT id, workspace_id, incident_id, alert_id, action_type, mode, status,
+                          execution_state, execution_metadata, created_by_user_id, created_at
+                   FROM response_actions WHERE id = %s::uuid AND workspace_id = %s''',
+                (action_id, workspace_id),
+            ).fetchone()
+            if row is None:
+                # The action itself is a MATERIAL fact. Not finding it is not an
+                # evaluation, and it is not an authorization.
+                outcome_status = _enforcement.STATUS_FACTS_UNAVAILABLE
+                failure = 'response_action_not_found'
+            else:
+                outcome = _enforcement.evaluate_response_action(
+                    connection, workspace_id=workspace_id, action=_json_safe_value(dict(row)),
+                    now=utc_now(), user_id=user_id,
+                )
+                outcome_status = outcome.status
+                recorded = bool(outcome.recorded)
+                detail = {
+                    'decision': outcome.decision.decision if outcome.decision else None,
+                    'reason_codes': ','.join(outcome.decision.reason_codes) if outcome.decision else None,
+                    'policy_id': outcome.policy.policy_id if outcome.policy else None,
+                    'unreadable': ','.join(outcome.facts.unreadable) if outcome.facts else None,
+                }
+    except Exception as exc:  # pragma: no cover - never let an evaluation failure fail the caller
+        # The savepoint has already rolled itself back on the way out, so the
+        # connection is usable and nothing outside this evaluation was undone.
+        # NO connection.rollback() here: that would discard the caller's work too.
+        outcome_status = _enforcement.STATUS_EXCEPTION
+        recorded = False
+        failure = type(exc).__name__
         logger.warning(
-            'response_action_enforcement_evaluation_failed workspace_id=%s action_id=%s',
-            workspace_id, action_id,
+            'response_action_enforcement_evaluation_failed workspace_id=%s action_id=%s error=%s',
+            workspace_id, action_id, failure, exc_info=True,
         )
-        try:
-            connection.rollback()
-        except Exception:
-            pass
-        from services.api.app.domains.governance_policy import enforcement as _enforcement
-        return _enforcement.STATUS_FACTS_UNAVAILABLE
+    else:
+        if recorded:
+            connection.commit()
+
+    logger.info(
+        'response_action_enforcement_evaluation workspace_id=%s action_id=%s status=%s '
+        'recorded=%s failure=%s decision=%s policy_id=%s unreadable=%s reason_codes=%s',
+        workspace_id, action_id, outcome_status, recorded, failure,
+        detail.get('decision'), detail.get('policy_id'),
+        detail.get('unreadable'), detail.get('reason_codes'),
+    )
+    return outcome_status
 
 
 #: Why a governance submission produced no provider receipt.
@@ -19864,11 +19969,21 @@ def recommend_response_action_for_incident(incident_id: str, request: Request) -
         # gate LOCKED with POLICY_EVALUATION_MISSING. Recommending a plan must not
         # fail because a policy could not be evaluated, and an unevaluated action
         # must never be treated as an authorized one.
+        #
+        # Each evaluation runs inside its OWN savepoint (see
+        # `_record_response_action_enforcement_evaluation`), so a failure on one
+        # action rolls back only that action's evaluation. Before, a failed read
+        # aborted the shared transaction and every later action in the plan failed
+        # with it — one unreadable fact silently cost the whole plan its
+        # enforcement rows.
+        enforcement_statuses: dict[str, str] = {}
         for planned_action_id in (action_ids_by_type.get(t) for t in plan):
             if planned_action_id:
-                _record_response_action_enforcement_evaluation(
-                    connection, workspace_id=workspace_id, action_id=planned_action_id,
-                    user_id=str(user['id']),
+                enforcement_statuses[planned_action_id] = (
+                    _record_response_action_enforcement_evaluation(
+                        connection, workspace_id=workspace_id, action_id=planned_action_id,
+                        user_id=str(user['id']),
+                    )
                 )
 
         # Anchor the caller on the primary mitigation (the first context-specific
@@ -19882,6 +19997,17 @@ def recommend_response_action_for_incident(incident_id: str, request: Request) -
             'created_count': len(created_ids),
             'action_ids': [action_ids_by_type[t] for t in plan if t in action_ids_by_type],
             'action_types': plan,
+            # DIAGNOSTIC ONLY — what the producer did for each action, so an
+            # operator (and a support engineer reading a bug report) can see that
+            # an evaluation was attempted and how it ended, instead of inferring
+            # it from a gate that says only "missing".
+            #
+            # It authorizes NOTHING. It is not read back by the execute command,
+            # it does not feed the gate, the quorum or the policy decision, and a
+            # client posting it back is ignored everywhere. The authority remains
+            # the persisted `simulation = FALSE` governance evaluation, which
+            # Screen 8 re-reads from the database on every request.
+            'enforcement_evaluations': dict(enforcement_statuses),
         }
 
 
@@ -21644,6 +21770,25 @@ REQUIRED_INTEGRITY_MIGRATIONS: tuple[dict[str, str], ...] = (
         'detail': (
             'Response-action duplicate generation is not constrained: two concurrent '
             'recommend calls for one incident can create duplicate planned actions.'
+        ),
+    },
+    # 0147 provisions the governance policy store. Without it there is nowhere to
+    # RECORD an enforcement evaluation and nowhere to READ one back, so Screen 8's
+    # scope probe finds no policies and the deployment answers "no policy applies"
+    # to every action — an authorization-shaped answer produced by a table that was
+    # never created. The gate itself now fails closed on the absence (see
+    # response_gate.service._policy_governs), and this surfaces WHY, because a
+    # deployment that cannot govern anything must not look like one that chose not
+    # to. Probed on the evaluations table: it is created last in 0147, so its
+    # presence also evidences the policies and versions tables.
+    {
+        'migration': '0147_governance_policies.sql',
+        'artifact': 'governance_policy_evaluations',
+        'artifact_kind': 'table',
+        'guarantee': 'governance_policy_enforcement_storage',
+        'detail': (
+            'Governance policy storage is not provisioned: no enforcement evaluation can be '
+            'recorded or read, so every response action fails closed at the execution gate.'
         ),
     },
 )

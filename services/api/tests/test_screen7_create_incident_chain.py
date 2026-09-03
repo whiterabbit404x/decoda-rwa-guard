@@ -28,6 +28,7 @@ import pytest
 from fastapi import HTTPException
 
 from services.api.app import pilot
+from services.api.app.domains.governance_policy import enforcement
 
 
 WS_ID = str(uuid.uuid4())
@@ -138,6 +139,19 @@ class _ChainConn:
             self.response_actions.append(row)
             return _Result({'id': row['id']})
 
+        # The enforcement producer's read-back of ONE action, by id. Answered
+        # before the listing branch below, which returns a row SET: without this
+        # the producer read a list where it expected a single row, found nothing,
+        # and reported the action missing instead of evaluating it.
+        if 'FROM response_actions WHERE id = %s::uuid AND workspace_id = %s' in norm:
+            wanted, workspace_id = str(params[0]), str(params[1])
+            match = next((
+                a for a in self.response_actions
+                if a['id'] == wanted and a['workspace_id'] == workspace_id
+            ), None)
+            return _Result(dict(match, execution_state='recommended', execution_metadata={},
+                                created_by_user_id=USER_ID, created_at=None) if match else None)
+
         # Recommend-path dedupe probe + Screen 8 listing both read response_actions.
         if 'FROM response_actions' in norm and 'SELECT' in norm:
             if params and isinstance(params, (list, tuple)) and "mode = 'recommended'" in norm:
@@ -183,7 +197,31 @@ def _bootstrap(monkeypatch, conn, *, permission_denied: str | None = None):
     monkeypatch.setattr(pilot, '_require_workspace_permission', _permission)
     monkeypatch.setattr(pilot, 'write_action_history', lambda *a, **k: None)
     monkeypatch.setattr(pilot, '_response_actions_recommended_dedupe_ready', lambda *_: False)
-    monkeypatch.setattr(pilot, '_record_response_action_enforcement_evaluation', lambda *a, **k: None)
+    # The enforcement producer is NOT stubbed out.
+    #
+    # It used to be replaced with `lambda *a, **k: None`, which made this chain
+    # test blind to the one thing that decides whether a recommended action can
+    # ever be authorized. The producer could stop running, start raising, or stop
+    # recording anything at all, and every assertion here would still pass.
+    #
+    # It runs for real now. This stub carries no governance tables, so the honest
+    # outcome is `storage_unavailable` — and that is asserted, along with the fact
+    # that the producer was invoked once per action and never raised into the
+    # route. The real database behavior is pinned separately, on the real HTTP
+    # route, in test_screen07_recommend_enforcement_wiring_postgres.py.
+    real_producer = pilot._record_response_action_enforcement_evaluation
+    conn.enforcement_calls = []
+
+    def _spy(connection, *, workspace_id, action_id, user_id=None):
+        status_value = real_producer(
+            connection, workspace_id=workspace_id, action_id=action_id, user_id=user_id,
+        )
+        conn.enforcement_calls.append({
+            'workspace_id': workspace_id, 'action_id': action_id, 'status': status_value,
+        })
+        return status_value
+
+    monkeypatch.setattr(pilot, '_record_response_action_enforcement_evaluation', _spy)
 
 
 @pytest.fixture()
@@ -310,3 +348,67 @@ def test_repeated_recommend_reuses_the_same_actions(monkeypatch, conn):
     assert len(conn.response_actions) == count_after_first, 'no duplicate actions'
     assert second['incident_id'] == first['incident_id'] == incident_id
     assert second['created'] is False
+
+
+# ── 5. The enforcement producer actually runs on this route ──────────────────
+#
+# §20 of the Screen 8 hardening pass: this suite used to replace
+# `_record_response_action_enforcement_evaluation` with a no-op, so nothing here
+# could tell a working producer from one that had stopped running entirely. The
+# tests below close that gap at the unit level; the real-database behavior is
+# pinned on the real HTTP route in
+# test_screen07_recommend_enforcement_wiring_postgres.py.
+
+def test_recommend_runs_the_enforcement_producer_for_every_action(monkeypatch, conn):
+    """Every action the plan resolved gets an evaluation ATTEMPT, not just the new ones."""
+    _bootstrap(monkeypatch, conn)
+    incident_id = pilot.escalate_alert_to_incident(ALERT_ID, {}, _make_request())['incident_id']
+
+    result = pilot.recommend_response_action_for_incident(incident_id, _make_request())
+
+    evaluated = [c['action_id'] for c in conn.enforcement_calls]
+    assert evaluated, 'the enforcement producer never ran'
+    # One attempt per action in the plan, and every one of them workspace-scoped.
+    assert sorted(evaluated) == sorted(result['action_ids'])
+    assert {c['workspace_id'] for c in conn.enforcement_calls} == {WS_ID}
+
+
+def test_recommend_reports_each_action_enforcement_status_as_diagnostics(monkeypatch, conn):
+    """The producer's outcome is kept, not discarded — but authorizes nothing.
+
+    This stub provisions no governance tables, so the truthful outcome is
+    `storage_unavailable`: nothing could be recorded, and nothing is claimed.
+    """
+    _bootstrap(monkeypatch, conn)
+    incident_id = pilot.escalate_alert_to_incident(ALERT_ID, {}, _make_request())['incident_id']
+
+    result = pilot.recommend_response_action_for_incident(incident_id, _make_request())
+
+    diagnostics = result['enforcement_evaluations']
+    assert set(diagnostics) == set(result['action_ids'])
+    assert set(diagnostics.values()) == {enforcement.STATUS_STORAGE_UNAVAILABLE}
+    # Diagnostics only: nothing here is, or implies, an authorization.
+    assert 'ALLOW' not in str(diagnostics)
+    assert 'can_execute' not in result and 'execution_gate' not in result
+
+
+def test_a_producer_failure_never_fails_the_recommend_route(monkeypatch, conn):
+    """A raising producer must not cost the operator their response plan.
+
+    The actions are still created and returned; the failure is reported as a
+    diagnostic status, and no action is treated as evaluated.
+    """
+    _bootstrap(monkeypatch, conn)
+    incident_id = pilot.escalate_alert_to_incident(ALERT_ID, {}, _make_request())['incident_id']
+
+    def _boom(_connection, **_kwargs):
+        raise RuntimeError('policy storage exploded')
+
+    # The producer imports this module inside the function, so patching the
+    # module attribute is what the real call path will see.
+    monkeypatch.setattr(enforcement, 'evaluate_response_action', _boom, raising=True)
+    result = pilot.recommend_response_action_for_incident(incident_id, _make_request())
+
+    assert result['action_ids'], 'the plan must still be returned'
+    assert conn.response_actions, 'the actions must still be persisted'
+    assert set(result['enforcement_evaluations'].values()) == {enforcement.STATUS_EXCEPTION}

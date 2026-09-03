@@ -27,6 +27,19 @@ def test_create_response_action_translates_legacy_payload_and_writes_history(mon
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
             executed.append((normalized, params))
+            # A MIGRATED deployment: governance storage (0147) exists.
+            #
+            # These tests are about the live-execution paths, not about a
+            # deployment that never provisioned the policy store. Absent
+            # governance tables are now a fail-closed deployment defect rather
+            # than the finding "no policy applies" (see
+            # response_gate.service._policy_governs), so the fake has to state
+            # which of the two it is modelling. The scope query below still
+            # returns no rows, so nothing governs these actions — which is the
+            # condition each test was written against.
+            if 'to_regclass' in normalized:
+                present = str((params or [''])[0]).startswith('public.governance_')
+                return _Result({'present': present, 'ok': present})
             if 'FROM incidents' in normalized and 'workspace_id' in normalized:
                 return _Result({'id': 'inc-1', 'source_alert_id': 'alert-1'})
             if 'FROM alerts' in normalized and 'workspace_id' in normalized:
@@ -94,6 +107,19 @@ def test_execute_response_action_returns_back_compat_dry_run_flag(monkeypatch):
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
             executed.append((normalized, params))
+            # A MIGRATED deployment: governance storage (0147) exists.
+            #
+            # These tests are about the live-execution paths, not about a
+            # deployment that never provisioned the policy store. Absent
+            # governance tables are now a fail-closed deployment defect rather
+            # than the finding "no policy applies" (see
+            # response_gate.service._policy_governs), so the fake has to state
+            # which of the two it is modelling. The scope query below still
+            # returns no rows, so nothing governs these actions — which is the
+            # condition each test was written against.
+            if 'to_regclass' in normalized:
+                present = str((params or [''])[0]).startswith('public.governance_')
+                return _Result({'present': present, 'ok': present})
             if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
                 return _Result(
                     {
@@ -185,6 +211,15 @@ def test_create_live_action_denied_for_non_approver_role(monkeypatch):
     class _Connection:
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
+            # A MIGRATED deployment: governance storage (0147) exists. Absent
+            # governance tables are now a fail-closed deployment defect rather
+            # than the finding "no policy applies", so the fake states which of
+            # the two it models. The scope query still returns no rows, so
+            # nothing governs this action — the condition the test was written
+            # against. Scoped to `governance_*` so no OTHER probe changes.
+            if 'to_regclass' in normalized:
+                present = str((params or [''])[0]).startswith('public.governance_')
+                return _Result({'present': present, 'ok': present})
             if 'FROM incidents' in normalized and 'workspace_id' in normalized:
                 return _Result({'id': 'inc-1', 'source_alert_id': 'alert-1'})
             return _Result()
@@ -228,6 +263,15 @@ def test_create_live_action_rejects_non_pending_status(monkeypatch):
     class _Connection:
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
+            # A MIGRATED deployment: governance storage (0147) exists. Absent
+            # governance tables are now a fail-closed deployment defect rather
+            # than the finding "no policy applies", so the fake states which of
+            # the two it models. The scope query still returns no rows, so
+            # nothing governs this action — the condition the test was written
+            # against. Scoped to `governance_*` so no OTHER probe changes.
+            if 'to_regclass' in normalized:
+                present = str((params or [''])[0]).startswith('public.governance_')
+                return _Result({'present': present, 'ok': present})
             if 'FROM incidents' in normalized and 'workspace_id' in normalized:
                 return _Result({'id': 'inc-1', 'source_alert_id': 'alert-1'})
             return _Result()
@@ -271,6 +315,15 @@ def test_list_response_actions_returns_supported_fields(monkeypatch):
     class _Connection:
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
+            # A MIGRATED deployment: governance storage (0147) exists. Absent
+            # governance tables are now a fail-closed deployment defect rather
+            # than the finding "no policy applies", so the fake states which of
+            # the two it models. The scope query still returns no rows, so
+            # nothing governs this action — the condition the test was written
+            # against. Scoped to `governance_*` so no OTHER probe changes.
+            if 'to_regclass' in normalized:
+                present = str((params or [''])[0]).startswith('public.governance_')
+                return _Result({'present': present, 'ok': present})
             if 'FROM response_actions' in normalized:
                 return _Result(rows=[{
                     'id': 'act-1',
@@ -318,6 +371,19 @@ def test_execute_live_unsupported_action_returns_structured_error_without_execut
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
             executed.append((normalized, params))
+            # A MIGRATED deployment: governance storage (0147) exists.
+            #
+            # These tests are about the live-execution paths, not about a
+            # deployment that never provisioned the policy store. Absent
+            # governance tables are now a fail-closed deployment defect rather
+            # than the finding "no policy applies" (see
+            # response_gate.service._policy_governs), so the fake has to state
+            # which of the two it is modelling. The scope query below still
+            # returns no rows, so nothing governs these actions — which is the
+            # condition each test was written against.
+            if 'to_regclass' in normalized:
+                present = str((params or [''])[0]).startswith('public.governance_')
+                return _Result({'present': present, 'ok': present})
             if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
                 return _Result(
                     {
@@ -385,6 +451,19 @@ def test_execute_live_revoke_approval_returns_proposed_state_with_safe_tx_hash_a
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
             executed.append((normalized, params))
+            # A MIGRATED deployment: governance storage (0147) exists.
+            #
+            # These tests are about the live-execution paths, not about a
+            # deployment that never provisioned the policy store. Absent
+            # governance tables are now a fail-closed deployment defect rather
+            # than the finding "no policy applies" (see
+            # response_gate.service._policy_governs), so the fake has to state
+            # which of the two it is modelling. The scope query below still
+            # returns no rows, so nothing governs these actions — which is the
+            # condition each test was written against.
+            if 'to_regclass' in normalized:
+                present = str((params or [''])[0]).startswith('public.governance_')
+                return _Result({'present': present, 'ok': present})
             if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
                 return _Result(
                     {
@@ -481,6 +560,19 @@ def test_execute_live_freeze_wallet_writes_governance_metadata_and_timeline(monk
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
             executed.append((normalized, params))
+            # A MIGRATED deployment: governance storage (0147) exists.
+            #
+            # These tests are about the live-execution paths, not about a
+            # deployment that never provisioned the policy store. Absent
+            # governance tables are now a fail-closed deployment defect rather
+            # than the finding "no policy applies" (see
+            # response_gate.service._policy_governs), so the fake has to state
+            # which of the two it is modelling. The scope query below still
+            # returns no rows, so nothing governs these actions — which is the
+            # condition each test was written against.
+            if 'to_regclass' in normalized:
+                present = str((params or [''])[0]).startswith('public.governance_')
+                return _Result({'present': present, 'ok': present})
             if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
                 return _Result(
                     {
@@ -559,6 +651,19 @@ def test_execute_live_manual_only_action_returns_manual_required_state(monkeypat
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
             executed.append((normalized, params))
+            # A MIGRATED deployment: governance storage (0147) exists.
+            #
+            # These tests are about the live-execution paths, not about a
+            # deployment that never provisioned the policy store. Absent
+            # governance tables are now a fail-closed deployment defect rather
+            # than the finding "no policy applies" (see
+            # response_gate.service._policy_governs), so the fake has to state
+            # which of the two it is modelling. The scope query below still
+            # returns no rows, so nothing governs these actions — which is the
+            # condition each test was written against.
+            if 'to_regclass' in normalized:
+                present = str((params or [''])[0]).startswith('public.governance_')
+                return _Result({'present': present, 'ok': present})
             if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
                 return _Result(
                     {
@@ -616,6 +721,15 @@ def test_execute_live_action_denies_same_user_as_approver(monkeypatch):
     class _Connection:
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
+            # A MIGRATED deployment: governance storage (0147) exists. Absent
+            # governance tables are now a fail-closed deployment defect rather
+            # than the finding "no policy applies", so the fake states which of
+            # the two it models. The scope query still returns no rows, so
+            # nothing governs this action — the condition the test was written
+            # against. Scoped to `governance_*` so no OTHER probe changes.
+            if 'to_regclass' in normalized:
+                present = str((params or [''])[0]).startswith('public.governance_')
+                return _Result({'present': present, 'ok': present})
             if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
                 return _Result(
                     {
@@ -665,6 +779,15 @@ def test_execute_live_action_success_includes_execution_evidence_fields(monkeypa
     class _Connection:
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
+            # A MIGRATED deployment: governance storage (0147) exists. Absent
+            # governance tables are now a fail-closed deployment defect rather
+            # than the finding "no policy applies", so the fake states which of
+            # the two it models. The scope query still returns no rows, so
+            # nothing governs this action — the condition the test was written
+            # against. Scoped to `governance_*` so no OTHER probe changes.
+            if 'to_regclass' in normalized:
+                present = str((params or [''])[0]).startswith('public.governance_')
+                return _Result({'present': present, 'ok': present})
             if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
                 return _Result(
                     {
@@ -792,6 +915,15 @@ def test_execute_live_action_requires_explicit_approval(monkeypatch):
     class _Connection:
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
+            # A MIGRATED deployment: governance storage (0147) exists. Absent
+            # governance tables are now a fail-closed deployment defect rather
+            # than the finding "no policy applies", so the fake states which of
+            # the two it models. The scope query still returns no rows, so
+            # nothing governs this action — the condition the test was written
+            # against. Scoped to `governance_*` so no OTHER probe changes.
+            if 'to_regclass' in normalized:
+                present = str((params or [''])[0]).startswith('public.governance_')
+                return _Result({'present': present, 'ok': present})
             if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
                 return _Result(
                     {
@@ -854,6 +986,15 @@ def test_execute_live_action_denied_for_unauthorized_workspace_role(monkeypatch)
     class _Connection:
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
+            # A MIGRATED deployment: governance storage (0147) exists. Absent
+            # governance tables are now a fail-closed deployment defect rather
+            # than the finding "no policy applies", so the fake states which of
+            # the two it models. The scope query still returns no rows, so
+            # nothing governs this action — the condition the test was written
+            # against. Scoped to `governance_*` so no OTHER probe changes.
+            if 'to_regclass' in normalized:
+                present = str((params or [''])[0]).startswith('public.governance_')
+                return _Result({'present': present, 'ok': present})
             executed.append(normalized)
             if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
                 return _Result(
@@ -909,6 +1050,15 @@ def test_execute_live_action_requires_step_up_when_available(monkeypatch):
     class _Connection:
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
+            # A MIGRATED deployment: governance storage (0147) exists. Absent
+            # governance tables are now a fail-closed deployment defect rather
+            # than the finding "no policy applies", so the fake states which of
+            # the two it models. The scope query still returns no rows, so
+            # nothing governs this action — the condition the test was written
+            # against. Scoped to `governance_*` so no OTHER probe changes.
+            if 'to_regclass' in normalized:
+                present = str((params or [''])[0]).startswith('public.governance_')
+                return _Result({'present': present, 'ok': present})
             if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
                 return _Result(
                     {
@@ -968,6 +1118,19 @@ def test_execute_live_action_success_writes_audit_trail_and_provenance(monkeypat
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
             executed.append((normalized, params))
+            # A MIGRATED deployment: governance storage (0147) exists.
+            #
+            # These tests are about the live-execution paths, not about a
+            # deployment that never provisioned the policy store. Absent
+            # governance tables are now a fail-closed deployment defect rather
+            # than the finding "no policy applies" (see
+            # response_gate.service._policy_governs), so the fake has to state
+            # which of the two it is modelling. The scope query below still
+            # returns no rows, so nothing governs these actions — which is the
+            # condition each test was written against.
+            if 'to_regclass' in normalized:
+                present = str((params or [''])[0]).startswith('public.governance_')
+                return _Result({'present': present, 'ok': present})
             if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
                 return _Result(
                     {
@@ -1063,6 +1226,19 @@ def test_execute_live_action_persists_execution_evidence_for_approved_path(monke
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
             executed.append((normalized, params))
+            # A MIGRATED deployment: governance storage (0147) exists.
+            #
+            # These tests are about the live-execution paths, not about a
+            # deployment that never provisioned the policy store. Absent
+            # governance tables are now a fail-closed deployment defect rather
+            # than the finding "no policy applies" (see
+            # response_gate.service._policy_governs), so the fake has to state
+            # which of the two it is modelling. The scope query below still
+            # returns no rows, so nothing governs these actions — which is the
+            # condition each test was written against.
+            if 'to_regclass' in normalized:
+                present = str((params or [''])[0]).startswith('public.governance_')
+                return _Result({'present': present, 'ok': present})
             if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
                 return _Result(
                     {
@@ -1155,6 +1331,15 @@ def test_create_response_action_rejects_cross_workspace_incident_id(monkeypatch)
     class _Connection:
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
+            # A MIGRATED deployment: governance storage (0147) exists. Absent
+            # governance tables are now a fail-closed deployment defect rather
+            # than the finding "no policy applies", so the fake states which of
+            # the two it models. The scope query still returns no rows, so
+            # nothing governs this action — the condition the test was written
+            # against. Scoped to `governance_*` so no OTHER probe changes.
+            if 'to_regclass' in normalized:
+                present = str((params or [''])[0]).startswith('public.governance_')
+                return _Result({'present': present, 'ok': present})
             if 'SELECT id, source_alert_id FROM incidents WHERE id = %s AND workspace_id = %s' in normalized:
                 return _Result(None)
             return _Result()
@@ -1188,6 +1373,15 @@ def test_create_response_action_rejects_cross_workspace_alert_id(monkeypatch):
     class _Connection:
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
+            # A MIGRATED deployment: governance storage (0147) exists. Absent
+            # governance tables are now a fail-closed deployment defect rather
+            # than the finding "no policy applies", so the fake states which of
+            # the two it models. The scope query still returns no rows, so
+            # nothing governs this action — the condition the test was written
+            # against. Scoped to `governance_*` so no OTHER probe changes.
+            if 'to_regclass' in normalized:
+                present = str((params or [''])[0]).startswith('public.governance_')
+                return _Result({'present': present, 'ok': present})
             if 'SELECT id, incident_id FROM alerts WHERE id = %s AND workspace_id = %s' in normalized:
                 return _Result(None)
             if 'SELECT id, source_alert_id FROM incidents WHERE id = %s AND workspace_id = %s' in normalized:
