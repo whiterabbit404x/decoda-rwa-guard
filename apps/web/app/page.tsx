@@ -10,73 +10,27 @@ import { TeamsSection } from 'app/components/home/teams-section';
 import { PricingSection, type PricingTier } from 'app/components/home/pricing-section';
 import { FinalCTA } from 'app/components/home/final-cta';
 import { MarketingFooter } from 'app/components/home/marketing-footer';
+import { PRICING_PLANS, PRICING_NOTE } from 'app/pricing-plans';
 import styles from 'app/components/home/home.module.css';
 
 export const dynamic = 'force-dynamic';
 
-// Canonical plan data mirrors the standalone /pricing page (Pilot / Pro /
-// Enterprise). Plan names, prices, the real 14-day Pro trial and the CTA
-// destinations are reused verbatim — no billing logic is invented here. The
-// CTA labels are intentionally kept in this file so the public-SaaS wording
-// guardrail (tests/public-saas-hardening.spec.ts) keeps asserting on them.
-const pricingTiers: PricingTier[] = [
-  {
-    tier: 'Pilot',
-    price: 'Free',
-    per: 'no credit card required',
-    description: 'Full product access for one workspace. Prove live monitoring before committing.',
-    featured: false,
-    ctaLabel: 'Start pilot →',
-    ctaHref: '/sign-up',
-    features: [
-      '1 workspace',
-      '5 monitored contracts',
-      'Base Mainnet telemetry',
-      'Threat & compliance detection',
-      'Evidence export (up to 10 packages)',
-      'Community support',
-    ],
-  },
-  {
-    tier: 'Pro',
-    price: '$299',
-    per: '/ month · 14-day trial',
-    description: 'Scale across multiple protocols with priority alerts and unlimited evidence export.',
-    featured: true,
-    badge: 'Most popular',
-    ctaLabel: 'Start Pro trial →',
-    ctaHref: '/sign-up?plan=pro',
-    features: [
-      '3 workspaces',
-      '50 monitored contracts',
-      'Base Mainnet telemetry (additional EVM on request)',
-      'Priority alert routing',
-      'Unlimited evidence packages',
-      'Incident playbooks',
-      'Priority email support',
-    ],
-  },
-  {
-    tier: 'Enterprise',
-    price: 'Custom',
-    per: 'contact us for pricing',
-    description: 'Dedicated deployment, compliance reporting, custom SLA and a dedicated support channel.',
-    featured: false,
-    ctaLabel: 'Contact sales →',
-    ctaHref: 'mailto:sales@decodasecurity.com',
-    features: [
-      'Unlimited workspaces & assets',
-      'Dedicated deployment',
-      'Custom evidence templates',
-      'Compliance & regulatory export',
-      'Configurable audit log retention',
-      'Dedicated support channel + SLA',
-    ],
-  },
-];
-
-const pricingNote =
-  'Pro includes a 14-day trial. Billing is via Paddle — cancel any time from workspace settings. Enterprise pricing is custom.';
+// Pricing renders from the canonical shared config in `app/pricing-plans.ts`,
+// which the standalone /pricing page uses as well — plan names, prices, CTA
+// labels and CTA routes cannot drift between the two surfaces. No billing
+// logic is invented here; the CTA hrefs are real, existing routes.
+const pricingTiers: PricingTier[] = PRICING_PLANS.map((plan) => ({
+  tier: plan.tier,
+  price: plan.price,
+  priceIsLabel: plan.priceIsLabel,
+  per: plan.priceSub,
+  description: plan.description,
+  featured: plan.featured,
+  badge: plan.badge,
+  ctaLabel: plan.ctaLabel,
+  ctaHref: plan.ctaHref,
+  features: plan.highlights,
+}));
 
 export default function MarketingHomePage() {
   const supportEmail = process.env.NEXT_PUBLIC_SUPPORT_EMAIL ?? 'support@decodasecurity.com';
@@ -98,7 +52,7 @@ export default function MarketingHomePage() {
         <RWASecuritySection />
         <PolicyAutomationSection />
         <TeamsSection />
-        <PricingSection tiers={pricingTiers} note={pricingNote} />
+        <PricingSection tiers={pricingTiers} note={PRICING_NOTE} />
         <FinalCTA />
       </main>
 

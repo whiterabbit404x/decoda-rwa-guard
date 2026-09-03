@@ -1040,8 +1040,11 @@
   padding: 4px 12px;
 }
 .priceTier { font-size: 14px; font-weight: 700; color: var(--ink); letter-spacing: 0.02em; }
-.priceAmountRow { display: flex; align-items: baseline; gap: 7px; margin-top: 12px; }
+/* min-height keeps the price slot the same height on every card, including
+   tiers whose price is a word label rather than a currency amount. */
+.priceAmountRow { display: flex; align-items: baseline; gap: 7px; margin-top: 12px; min-height: 48px; }
 .priceAmount { font-size: 40px; font-weight: 800; letter-spacing: -0.03em; color: #f4f7fb; }
+.priceAmountLabel { font-size: 24px; font-weight: 800; letter-spacing: -0.01em; color: #f4f7fb; align-self: center; }
 .pricePer { font-size: 13px; color: var(--ink-3); }
 .priceDesc { margin-top: 12px; font-size: 13.5px; line-height: 1.55; color: var(--ink-2); min-height: 42px; }
 .priceCta { margin-top: 18px; justify-content: center; width: 100%; }

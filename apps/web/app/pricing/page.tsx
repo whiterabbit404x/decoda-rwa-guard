@@ -1,94 +1,24 @@
 import Link from 'next/link';
 
-export const dynamic = 'force-dynamic';
+import { PRICING_PLANS } from '../pricing-plans';
 
-const tiers = [
-  {
-    tier: 'Pilot',
-    price: 'Free',
-    priceSub: 'no credit card required',
-    description: 'Full product access for one workspace. Prove live monitoring before committing.',
-    featured: false,
-    ctaLabel: 'Start pilot →',
-    ctaHref: '/sign-up',
-    features: [
-      { label: 'Workspaces', value: '1' },
-      { label: 'Monitored contracts', value: '5' },
-      { label: 'Networks', value: 'Base Mainnet' },
-      { label: 'Live EVM telemetry', value: '✓' },
-      { label: 'Threat & compliance detection', value: '✓' },
-      { label: 'Alert routing', value: 'Email' },
-      { label: 'Evidence packages', value: 'Up to 10' },
-      { label: 'Audit log retention', value: '30 days' },
-      { label: 'Webhook / Slack', value: '—' },
-      { label: 'Incident playbooks', value: '—' },
-      { label: 'Custom evidence templates', value: '—' },
-      { label: 'Support', value: 'Community' },
-    ],
-  },
-  {
-    tier: 'Pro',
-    price: '$299',
-    priceSub: 'per month · 14-day trial',
-    description: 'Scale across multiple protocols with priority alerts and unlimited evidence export.',
-    featured: true,
-    ctaLabel: 'Start Pro trial →',
-    ctaHref: '/sign-up?plan=pro',
-    features: [
-      { label: 'Workspaces', value: '3' },
-      { label: 'Monitored contracts', value: '50' },
-      { label: 'Networks', value: 'Base Mainnet · additional EVM on request' },
-      { label: 'Live EVM telemetry', value: '✓' },
-      { label: 'Threat & compliance detection', value: '✓' },
-      { label: 'Alert routing', value: 'Email + priority' },
-      { label: 'Evidence packages', value: 'Unlimited' },
-      { label: 'Audit log retention', value: '1 year' },
-      { label: 'Webhook / Slack', value: '✓' },
-      { label: 'Incident playbooks', value: '✓' },
-      { label: 'Custom evidence templates', value: '—' },
-      { label: 'Support', value: 'Priority email' },
-    ],
-  },
-  {
-    tier: 'Enterprise',
-    price: 'Custom',
-    priceSub: 'contact us for pricing',
-    description: 'Dedicated deployment, compliance reporting, custom SLA, and dedicated support.',
-    featured: false,
-    ctaLabel: 'Contact sales →',
-    ctaHref: 'mailto:sales@decodasecurity.com',
-    features: [
-      { label: 'Workspaces', value: 'Unlimited' },
-      { label: 'Monitored contracts', value: 'Unlimited' },
-      { label: 'Networks', value: 'Base Mainnet · additional EVM on request' },
-      { label: 'Live EVM telemetry', value: '✓' },
-      { label: 'Threat & compliance detection', value: '✓' },
-      { label: 'Alert routing', value: 'Custom routing rules' },
-      { label: 'Evidence packages', value: 'Unlimited' },
-      { label: 'Audit log retention', value: 'Configurable' },
-      { label: 'Webhook / Slack', value: '✓' },
-      { label: 'Incident playbooks', value: '✓' },
-      { label: 'Custom evidence templates', value: '✓' },
-      { label: 'Support', value: 'Dedicated channel + SLA' },
-    ],
-  },
-];
+export const dynamic = 'force-dynamic';
 
 const faqs = [
   {
-    q: 'Is the Pilot plan really free?',
-    a: 'Yes. No credit card required. You get full product access — monitoring, detection, alerts, incidents, and evidence export — for one workspace and up to five contracts. The free tier is not time-limited.',
+    q: 'What does the Pilot include?',
+    a: 'The Pilot is a scoped, no-cost evaluation of the full product — monitoring, detection, alerts, incidents, and evidence export — for one workspace and up to five monitored contracts. It runs against your live RWA assets so you can validate Decoda before a production rollout.',
   },
   {
-    q: 'How does the Pro trial work?',
-    a: 'You get 14 days on the Pro tier at no charge. After the trial, you are billed monthly at $299. Cancel any time from your workspace settings before the trial ends to avoid a charge.',
+    q: 'Why does Scale start "from" $999?',
+    a: 'Scale starts at $999 per month for the published limits — 3 workspaces and 25 monitored contracts. Deployments that need more workspaces, more monitored contracts, or additional networks are quoted on the Enterprise tier. Contact sales@decodasecurity.com to confirm your configuration.',
   },
   {
     q: 'What counts as a "monitored contract"?',
     a: 'Each on-chain address you register as a monitoring target in your workspace counts as one monitored contract. EOA wallets and oracle feeds each count separately.',
   },
   {
-    q: 'Can I upgrade or downgrade at any time?',
+    q: 'Can I change plans at any time?',
     a: 'Yes. Upgrades take effect immediately. Downgrades take effect at the end of the current billing period. Data and evidence packages are preserved when you downgrade.',
   },
   {
@@ -97,9 +27,13 @@ const faqs = [
   },
   {
     q: 'Is there a discount for annual billing?',
-    a: 'Annual billing is available for Pro and Enterprise plans at a 15% discount. Contact sales@decodasecurity.com to arrange.',
+    a: 'Annual billing is available for Scale and Enterprise at a 15% discount. Contact sales@decodasecurity.com to arrange.',
   },
 ];
+
+function isExternal(href: string) {
+  return href.startsWith('mailto:') || href.startsWith('http');
+}
 
 function CheckIcon({ filled }: { filled?: boolean }) {
   if (filled) {
@@ -143,7 +77,7 @@ export default function PricingPage() {
           </nav>
           <div className="mktStandaloneNavRight">
             <Link href="/sign-in" className="mktStandaloneNavSignIn" prefetch={false}>Sign in</Link>
-            <Link href="/sign-up" className="mktStandaloneNavCta" prefetch={false}>Start free →</Link>
+            <Link href="/sign-up" className="mktStandaloneNavCta" prefetch={false}>Request Pilot →</Link>
           </div>
         </div>
       </header>
@@ -152,29 +86,47 @@ export default function PricingPage() {
 
       <header className="pricingHero">
         <p className="mktSectionLabel">PRICING</p>
-        <h1 className="pricingHeroTitle">Start free. Scale when you&rsquo;re ready.</h1>
+        <h1 className="pricingHeroTitle">Evaluate on live assets. Deploy in production.</h1>
         <p className="pricingHeroSubtitle">
           Full product access on every plan. No feature gating on core monitoring, detection, or evidence export.
-          Billing via Paddle — cancel any time.
+          Paid plans are billed monthly via Paddle.
         </p>
       </header>
 
       {/* ── Pricing cards ──────────────────────────────────── */}
       <div className="pricingTierGrid">
-        {tiers.map((tier) => (
-          <article key={tier.tier} className={`pricingTierCard${tier.featured ? ' pricingTierCard--featured' : ''}`}>
-            {tier.featured && <div className="pricingTierBadge">Most popular</div>}
-            <div className="pricingTierName">{tier.tier}</div>
-            <div className="pricingTierPrice">{tier.price}</div>
-            <div className="pricingTierPriceSub">{tier.priceSub}</div>
-            <p className="pricingTierDesc">{tier.description}</p>
-            <Link
-              href={tier.ctaHref}
-              className={`pricingTierCta${tier.featured ? ' pricingTierCta--featured' : ''}`}
-              prefetch={false}
-            >
-              {tier.ctaLabel}
-            </Link>
+        {PRICING_PLANS.map((plan) => (
+          <article key={plan.key} className={`pricingTierCard${plan.featured ? ' pricingTierCard--featured' : ''}`}>
+            {plan.badge && <div className="pricingTierBadge">{plan.badge}</div>}
+            <div className="pricingTierName">{plan.tier}</div>
+            <div className={`pricingTierPrice${plan.priceIsLabel ? ' pricingTierPrice--label' : ''}`}>{plan.price}</div>
+            {/* Rendered even when empty so every card keeps the same vertical rhythm. */}
+            <div className="pricingTierPriceSub">{plan.priceSub}</div>
+            <p className="pricingTierDesc">{plan.description}</p>
+            {isExternal(plan.ctaHref) ? (
+              <a
+                href={plan.ctaHref}
+                className={`pricingTierCta${plan.featured ? ' pricingTierCta--featured' : ''}`}
+              >
+                {plan.ctaLabel}
+              </a>
+            ) : (
+              <Link
+                href={plan.ctaHref}
+                className={`pricingTierCta${plan.featured ? ' pricingTierCta--featured' : ''}`}
+                prefetch={false}
+              >
+                {plan.ctaLabel}
+              </Link>
+            )}
+            <ul className="pricingTierFeatures">
+              {plan.highlights.map((highlight) => (
+                <li key={highlight} className="pricingTierFeature">
+                  <CheckIcon filled />
+                  <span>{highlight}</span>
+                </li>
+              ))}
+            </ul>
           </article>
         ))}
       </div>
@@ -187,23 +139,23 @@ export default function PricingPage() {
             <thead>
               <tr>
                 <th className="pricingComparisonFeatureCol">Feature</th>
-                {tiers.map((t) => (
-                  <th key={t.tier} className={t.featured ? 'pricingComparisonFeaturedCol' : ''}>{t.tier}</th>
+                {PRICING_PLANS.map((plan) => (
+                  <th key={plan.key} className={plan.featured ? 'pricingComparisonFeaturedCol' : ''}>{plan.tier}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {tiers[0].features.map((f, idx) => (
-                <tr key={f.label}>
-                  <td className="pricingComparisonFeatureLabel">{f.label}</td>
-                  {tiers.map((tier) => (
-                    <td key={tier.tier} className={`pricingComparisonValue${tier.featured ? ' pricingComparisonFeaturedValue' : ''}`}>
-                      {tier.features[idx].value === '✓' ? (
+              {PRICING_PLANS[0].comparison.map((row, idx) => (
+                <tr key={row.label}>
+                  <td className="pricingComparisonFeatureLabel">{row.label}</td>
+                  {PRICING_PLANS.map((plan) => (
+                    <td key={plan.key} className={`pricingComparisonValue${plan.featured ? ' pricingComparisonFeaturedValue' : ''}`}>
+                      {plan.comparison[idx].value === '✓' ? (
                         <CheckIcon filled />
-                      ) : tier.features[idx].value === '—' ? (
+                      ) : plan.comparison[idx].value === '—' ? (
                         <span className="pricingFeatureNa">—</span>
                       ) : (
-                        <span className="pricingFeatureText">{tier.features[idx].value}</span>
+                        <span className="pricingFeatureText">{plan.comparison[idx].value}</span>
                       )}
                     </td>
                   ))}
@@ -231,18 +183,19 @@ export default function PricingPage() {
       <section className="pricingEnterpriseCallout">
         <h2 className="pricingEnterpriseTitle">Need custom requirements?</h2>
         <p className="pricingEnterpriseDesc">
-          Enterprise plans include dedicated deployment, custom evidence templates, compliance export formats,
-          configurable audit log retention, and a dedicated support channel with SLA guarantees.
+          Enterprise covers multi-network deployment, custom detection and policy controls, custom evidence
+          templates, compliance and regulatory export formats, configurable audit-log retention, enterprise
+          integrations, dedicated onboarding, and a custom SLA agreed with your team.
         </p>
         <a href="mailto:sales@decodasecurity.com" className="mktCtaPrimary">
-          Contact sales →
+          Contact Sales →
         </a>
       </section>
 
       <div className="trustFooterLinks">
         <Link href="/" prefetch={false} className="trustLink">← Home</Link>
         <Link href="/trust" prefetch={false} className="trustLink">Security &amp; Trust</Link>
-        <Link href="/sign-up" prefetch={false} className="trustLink">Start free pilot</Link>
+        <Link href="/sign-up" prefetch={false} className="trustLink">Request a pilot</Link>
         <a href="mailto:support@decodasecurity.com" className="trustLink">Support</a>
       </div>
     </main>
