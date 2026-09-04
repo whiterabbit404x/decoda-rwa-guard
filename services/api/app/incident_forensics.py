@@ -58,6 +58,14 @@ from typing import Any, Iterable
 from fastapi import HTTPException, status
 
 from services.api.app import pilot
+# Reconciliation verdict classes, imported from the engine that WRITES them so
+# Screen 7 can never invent a fourth class or quietly reclassify one. "Could not
+# establish truth" is its own state: never an anomaly, and — the rule that matters
+# here — never reported as reconciled.
+from services.api.app.domains.asset_integrity.reconciliation import (
+    ANOMALY_STATUSES as _RECON_ANOMALY_STATUSES,
+    INDETERMINATE_STATUSES as _RECON_INDETERMINATE_STATUSES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1314,6 +1322,191 @@ def build_forensic_timeline(*, incident_id: str, correlation: dict[str, Any],
 
 
 # ---------------------------------------------------------------------------
+# Case summary (the Screen 7 Overview / Case File snapshot)
+# ---------------------------------------------------------------------------
+#: The deterministic states a case-summary section can report. ``not_recorded``
+#: is a first-class answer: a section with no record says so rather than
+#: borrowing a neighbour's verdict or defaulting to a reassuring one.
+STATE_NOT_RECORDED = 'not_recorded'
+STATE_OBSERVED = 'observed'
+STATE_ANOMALY = 'anomaly'
+STATE_INDETERMINATE = 'indeterminate'
+STATE_RECONCILED = 'reconciled'
+STATE_DECIDED = 'decided'
+
+
+def _amount_fact(value: Any, *, decimals: Any, unit: Any) -> dict[str, Any] | None:
+    """One amount, carried at the precision the record stores it in.
+
+    The raw value is passed through untouched (these are exact ledger amounts;
+    re-scaling them here would be a second, divergent interpretation). The
+    decimals and unit travel with it so the UI can render it without guessing.
+    """
+    if value is None:
+        return None
+    return {'value': _text(value), 'decimals': decimals, 'unit': _text(unit)}
+
+
+def _latest_reconciliation(artifacts: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
+    """The most recent reconciliation row that concerns THIS event, if one exists.
+
+    Reads the directory rows already built for this request — no second query.
+    The directory is ordered oldest-first, so the LAST match is the current
+    verdict; an earlier re-run must never outrank the one that followed it.
+
+    An ASSET-scoped row is about the same asset but was never linked to this
+    event, so it is not allowed to stand in as this case's operational verdict.
+    """
+    latest: dict[str, Any] | None = None
+    for artifact in artifacts:
+        if artifact.get('artifact_type') != 'reconciliation_output':
+            continue
+        metadata = artifact.get('metadata') or {}
+        if metadata.get('link_scope') != LINK_SCOPE_EVENT:
+            continue
+        latest = artifact
+    return latest
+
+
+def _operational_state(reconciliation: dict[str, Any] | None, detection: dict[str, Any]) -> str:
+    """Classify the operational half of the case, fail-closed.
+
+    A reconciliation verdict, when this event has one, decides it — using the
+    engine's own anomaly/indeterminate sets. Without one, a detection that
+    recorded a deterministic reason code still evidences a mismatch (that is why
+    the incident exists), and anything else is ``not_recorded``. Nothing here can
+    produce "reconciled" without a record that says so.
+    """
+    if reconciliation is not None:
+        status = str((reconciliation.get('metadata') or {}).get('status') or '').strip().upper()
+        if status in _RECON_ANOMALY_STATUSES:
+            return STATE_ANOMALY
+        if status in _RECON_INDETERMINATE_STATUSES:
+            return STATE_INDETERMINATE
+        if status:
+            return STATE_RECONCILED
+        return STATE_INDETERMINATE
+    if _text(detection.get('deterministic_reason_code')):
+        return STATE_ANOMALY
+    return STATE_NOT_RECORDED
+
+
+def build_case_summary(*, correlation: dict[str, Any], artifacts: list[dict[str, Any]],
+                       evaluations: list[dict[str, Any]], counts: dict[str, Any],
+                       snapshot: dict[str, Any], package: dict[str, Any]) -> dict[str, Any]:
+    """The deterministic answer to "what happened, and what proves it".
+
+    A pure fold over records this request has ALREADY read — it opens no cursor
+    and adds no query. Four sections, each of which reports ``not_recorded``
+    rather than a comforting default when its record is absent:
+
+      * ``on_chain``     — what the chain recorded (transaction identity, amount);
+      * ``operational``  — what the systems of record said, and the reconciliation
+                           verdict for THIS event (never an asset-scoped one);
+      * ``policy``       — the deterministic engine's enforcement decision, taken
+                           verbatim; a Screen 11 simulation predicts and is
+                           excluded, because a what-if never gated a response;
+      * ``evidence``     — how much was collected and whether it is sealed.
+
+    The RESPONSE section is deliberately absent: response authority is Screen 8's,
+    and its live state is read from the response-actions endpoint rather than
+    re-derived here from a stale copy.
+    """
+    detection = correlation.get('detection') or {}
+    on_chain_artifacts = int(counts.get(DOMAIN_COUNT_KEYS[ON_CHAIN]) or 0)
+    tx_hash = _text(detection.get('tx_hash'))
+
+    on_chain = {
+        # A chain observation is claimed only where a transaction identity or a
+        # real chain-side artifact exists. No detection row alone asserts it.
+        'state': STATE_OBSERVED if (tx_hash or on_chain_artifacts > 0) else STATE_NOT_RECORDED,
+        'operation': _text(detection.get('operation')),
+        'observed_amount': _amount_fact(
+            detection.get('observed_amount'),
+            decimals=detection.get('amount_decimals'), unit=detection.get('amount_unit'),
+        ),
+        'tx_hash': tx_hash,
+        'block_number': _text(detection.get('block_number')),
+        'observed_at': _iso(detection.get('telemetry_observed_at')) or _iso(detection.get('detected_at')),
+        'preconfirmation_at': _iso(detection.get('preconfirmation_received_at')),
+        'source': _text(detection.get('telemetry_source')),
+        'artifact_count': on_chain_artifacts,
+    }
+
+    reconciliation = _latest_reconciliation(artifacts)
+    reconciliation_meta = (reconciliation or {}).get('metadata') or {}
+    operational = {
+        'state': _operational_state(reconciliation, detection),
+        'reason_code': _text(reconciliation_meta.get('reason_code'))
+                       or _text(detection.get('deterministic_reason_code')),
+        'reconciliation_status': _text(reconciliation_meta.get('status')),
+        'expected_amount': _amount_fact(
+            detection.get('expected_amount'),
+            decimals=detection.get('amount_decimals'), unit=detection.get('amount_unit'),
+        ),
+        'variance_amount': _amount_fact(
+            detection.get('variance_amount'),
+            decimals=detection.get('amount_decimals'), unit=detection.get('amount_unit'),
+        ),
+        'authoritative_source': _text((reconciliation or {}).get('source')),
+        'evaluated_at': _iso((reconciliation or {}).get('collected_at')),
+        'artifact_count': int(counts.get(DOMAIN_COUNT_KEYS[OPERATIONAL]) or 0),
+    }
+
+    # The verdict that actually gated this case. Simulations are filtered out
+    # here, once, so no consumer can promote a what-if into the enforcement slot.
+    enforcement = [row for row in evaluations if not row.get('simulation')]
+    latest = enforcement[0] if enforcement else None
+    policy = {
+        'state': STATE_DECIDED if (latest and _text(latest.get('decision'))) else STATE_NOT_RECORDED,
+        'decision': _text(latest.get('decision')) if latest else None,
+        'policy_key': _text(latest.get('policy_key')) if latest else None,
+        'policy_version': latest.get('policy_version') if latest else None,
+        'evaluation_id': _text(latest.get('evaluation_id')) if latest else None,
+        'evaluated_at': _text(latest.get('evaluated_at')) if latest else None,
+        'reason_codes': list(latest.get('reason_codes') or []) if latest else [],
+        'required_approvals': list(latest.get('required_approvals') or []) if latest else [],
+        'authority': 'deterministic_policy_engine',
+        'evaluation_count': len(enforcement),
+        'artifact_count': int(counts.get(DOMAIN_COUNT_KEYS[POLICY]) or 0),
+    }
+
+    evidence = {
+        'artifact_count': int(counts.get('total') or 0),
+        'counts': dict(counts),
+        'snapshot_status': _text(snapshot.get('status')),
+        'snapshot_hash_verified': snapshot.get('hash_verified'),
+        'package_id': _text(package.get('package_id')),
+        'package_number': _text(package.get('package_number')),
+        'package_integrity': _text(package.get('integrity_status')),
+        'package_route': _text(package.get('route')),
+    }
+
+    return {
+        'event_id': correlation.get('event_id'),
+        'correlation': {
+            'event_id': correlation.get('event_id'),
+            'incident_id': correlation.get('incident_id'),
+            'alert_id': correlation.get('alert_id'),
+            'detection_id': correlation.get('detection_id'),
+            'asset_id': correlation.get('asset_id'),
+        },
+        'detection': {
+            'detection_id': correlation.get('detection_id'),
+            'category': _text(detection.get('category')),
+            'detection_type': _text(detection.get('detection_type')),
+            'title': _text(detection.get('title')),
+            'severity': _text(detection.get('severity')),
+            'reason_code': _text(detection.get('deterministic_reason_code')),
+            'detected_at': _iso(detection.get('detected_at')),
+        },
+        'on_chain': on_chain,
+        'operational': operational,
+        'policy': policy,
+        'evidence': evidence,
+    }
+
+# ---------------------------------------------------------------------------
 # Route implementations
 # ---------------------------------------------------------------------------
 def get_incident_evidence(incident_id: str, request: Any) -> dict[str, Any]:
@@ -1378,27 +1571,37 @@ def get_incident_evidence(incident_id: str, request: Any) -> dict[str, Any]:
         ordered = sort_artifacts(artifacts)
         truncated = len(ordered) > ARTIFACT_CAP
         page = ordered[:ARTIFACT_CAP]
+        counts = count_domains(page)
+        snapshot_block = {
+            'status': snapshot_state(
+                snapshot_row=snapshot_row, hash_verified=hash_verified, package=package,
+            ),
+            'snapshot_id': _text(snapshot_row.get('id')) if snapshot_row else None,
+            'snapshot_hash': _text(snapshot_row.get('snapshot_hash')) if snapshot_row else None,
+            'hash_verified': hash_verified,
+            'schema_version': _text(snapshot_row.get('schema_version')) if snapshot_row else None,
+            'evidence_count': snapshot_row.get('evidence_count') if snapshot_row else None,
+            'is_complete': snapshot_row.get('is_complete') if snapshot_row else None,
+            'created_at': _iso(snapshot_row.get('created_at')) if snapshot_row else None,
+        }
         return {
             'incident_id': incident_id,
             'event_id': event_id,
             'incident': header,
-            'counts': count_domains(page),
+            'counts': counts,
             'domains': [
                 {'domain': domain, 'label': DOMAIN_LABELS[domain], 'count_key': DOMAIN_COUNT_KEYS[domain]}
                 for domain in EVIDENCE_DOMAINS
             ],
-            'snapshot': {
-                'status': snapshot_state(
-                    snapshot_row=snapshot_row, hash_verified=hash_verified, package=package,
-                ),
-                'snapshot_id': _text(snapshot_row.get('id')) if snapshot_row else None,
-                'snapshot_hash': _text(snapshot_row.get('snapshot_hash')) if snapshot_row else None,
-                'hash_verified': hash_verified,
-                'schema_version': _text(snapshot_row.get('schema_version')) if snapshot_row else None,
-                'evidence_count': snapshot_row.get('evidence_count') if snapshot_row else None,
-                'is_complete': snapshot_row.get('is_complete') if snapshot_row else None,
-                'created_at': _iso(snapshot_row.get('created_at')) if snapshot_row else None,
-            },
+            'snapshot': snapshot_block,
+            # The deterministic case summary Screen 7's Overview and Case File
+            # render: on-chain / operational / policy / evidence state folded from
+            # the records read above. No extra query, and no section that reports
+            # a verdict it has no record for.
+            'case_summary': build_case_summary(
+                correlation=correlation, artifacts=page, evaluations=evaluations,
+                counts=counts, snapshot=snapshot_block, package=package,
+            ),
             'evidence_package': pilot._json_safe_value(package),
             'policy_evaluations': evaluations,
             'artifacts': page,

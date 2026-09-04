@@ -237,10 +237,19 @@ test('linked detection does not read "none" when a canonical detection reference
   expect(noneIdx).toBeGreaterThan(refIdx);
 });
 
-test('KPIs use canonical persisted-status selectors, not local drawer state', () => {
+test('KPIs read canonical backend counters, never a fold of the loaded page', () => {
   const panel = appSource('incidents-panel.tsx');
-  expect(panel).toContain('isInInvestigationStatus(incidentStatus(i))');
-  expect(panel).toContain('isAwaitingResponseStatus(incidentStatus(i))');
+  // The counters come from the workspace-wide summary endpoint...
+  expect(panel).toContain("`${apiUrl}/incidents/summary`");
+  expect(panel).toContain('parseIncidentQueueCounts');
+  expect(panel).toContain('queueCounts?.open_incidents');
+  expect(panel).toContain('queueCounts?.critical_incidents');
+  expect(panel).toContain('queueCounts?.in_investigation');
+  expect(panel).toContain('queueCounts?.awaiting_response');
+  // ...and never from folding `incidents`, which is one capped, filtered page.
+  expect(panel).not.toContain('incidents.filter((i) =>');
+  expect(panel).not.toContain('isInInvestigationStatus(incidentStatus(i))');
+  expect(panel).not.toContain('isAwaitingResponseStatus(incidentStatus(i))');
 });
 
 test('drawer and full page share one workflow-stage source + renderer (identical states)', () => {

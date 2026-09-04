@@ -304,6 +304,7 @@ from services.api.app.monitoring_runner import (
 from services.api.app import ai_triage
 from services.api.app import forensic_investigation
 from services.api.app import incident_forensics
+from services.api.app import incident_queue_summary
 from services.api.app import onboarding_agent
 from services.api.app import dashboard_summary
 from services.api.app.workspace_monitoring_summary import build_workspace_monitoring_summary_fallback
@@ -5205,6 +5206,21 @@ def incidents_list(request: Request, severity: str | None = None, target_id: str
     except Exception as exc:
         logger.error('monitoring_list_failed path=/incidents method=%s error_type=%s error=%s', request.method, exc.__class__.__name__, exc)
         raise HTTPException(status_code=500, detail='Unable to list incidents at this time.') from None
+
+
+# DECLARATION ORDER MATTERS: '/incidents/summary' is a literal path with the same
+# shape as '/incidents/{incident_id}'. FastAPI matches in declaration order, so this
+# route MUST stay above the detail route or 'summary' would be read as an incident id.
+# services/api/tests/test_incident_queue_summary.py pins that ordering.
+@app.get('/incidents/summary', summary='Incident queue counters (Screen 7 KPI row)')
+def incidents_queue_summary(request: Request) -> dict[str, Any]:
+    """Canonical, workspace-wide counters for the Incidents queue KPI tiles.
+
+    Counted over every incident in the workspace — not the page or the filter the
+    list is showing — using the SAME active-incident definition Screen 2's Open
+    Incidents card uses, so the two screens can never disagree.
+    """
+    return with_auth_schema_json(lambda: incident_queue_summary.get_incident_queue_summary(request))
 
 
 @app.get('/incidents/{incident_id}', summary='Get incident detail')

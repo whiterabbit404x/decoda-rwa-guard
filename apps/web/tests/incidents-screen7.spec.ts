@@ -146,7 +146,15 @@ test('timeline tab columns exist', () => {
 
 test('alerts tab columns exist', () => {
   const panel = appSource('incidents-panel.tsx');
-  expect(panel).toContain("const ALERTS_TAB_HEADERS = ['Alert ID', 'Severity', 'Title', 'Detection Type', 'Detected By', 'Confidence', 'Status']");
+  expect(panel).toContain("const ALERTS_TAB_HEADERS = ['Alert ID', 'Severity', 'Title', 'Detection Type', 'Detected By', 'Confidence', 'Status', 'Action']");
+});
+
+test('the linked alert is reachable, and the link says where it actually goes', () => {
+  // Screen 6 has no per-alert route. A control promising to open "this alert" that
+  // in fact lands on the list would be a false claim, so the label names the list.
+  const panel = appSource('incidents-panel.tsx');
+  expect(panel).toContain('View in Alerts');
+  expect(panel).not.toContain('/alerts/${linkedAlert.id}');
 });
 
 test('evidence tab columns exist', () => {

@@ -223,6 +223,27 @@ export default function AiInvestigationPanel({ incidentId }: { incidentId: strin
         require human approval. No on-chain action is executed automatically.
       </p>
 
+      {/* The AI layer's authority, stated on the panel rather than left implicit.
+          This assistant summarizes and recommends over the incident's collected
+          evidence; it cannot create evidence, mark an artifact verified, change a
+          deterministic ALLOW/DENY, approve a response, or claim an execution. Those
+          remain with the policy engine (Screen 11) and the response gate (Screen 8),
+          and the Overview/Timeline/Evidence tabs state their verdicts, not this one. */}
+      <dl className="aiAuthorityNotice" aria-label="AI investigation authority">
+        <div>
+          <dt>Authority</dt>
+          <dd>Analysis &amp; recommendation only — never approval or execution</dd>
+        </div>
+        <div>
+          <dt>Evidence source</dt>
+          <dd>This incident&apos;s collected evidence record</dd>
+        </div>
+        <div>
+          <dt>Deterministic facts</dt>
+          <dd>Policy decisions, integrity states and timestamps are unchanged by AI</dd>
+        </div>
+      </dl>
+
       {loading && <p>Loading AI investigation…</p>}
       {error && <p role="alert" className="errorText">{error}</p>}
 
