@@ -8473,3 +8473,107 @@ a.mktTrustBadge:hover {
   text-transform: uppercase;
   color: var(--text-muted);
 }
+
+/* --- Screen 7 · Case summary (Overview + Case File snapshot) ---------------
+   The deterministic executive summary: detection, on-chain state, operational
+   state, policy verdict, response state, evidence state. Same institutional
+   density as the directory above it — label/value rows rather than cards, so
+   the section reads as a case record and not a marketing dashboard. In the
+   narrow Case File drawer it is a single column; the wider full-investigation
+   content area fits two. */
+.incidentCaseOverview {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.55rem;
+}
+
+/* Two columns only where the caller says it has the room — the full-investigation
+   content area. The 400px Case File drawer stays single-column at every width. */
+@media (min-width: 900px) {
+  .incidentCaseOverview-wide {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.incidentCaseSection {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(148, 163, 184, 0.04);
+  min-width: 0;
+}
+
+.incidentCaseSectionHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+/* Label above value keeps long asset names, hashes and reason codes readable in
+   the 400px drawer; the label column is fixed on wider surfaces so values align. */
+.incidentCaseLine {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.05rem;
+  min-width: 0;
+}
+
+@media (min-width: 520px) {
+  .incidentCaseLine {
+    grid-template-columns: 8.5rem minmax(0, 1fr);
+    gap: 0.15rem 0.6rem;
+    align-items: baseline;
+  }
+}
+
+.incidentCaseLineLabel {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.incidentCaseLineValue {
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+/* Identifiers stay monospace and wrap rather than truncate — an auditor copies
+   these, so a clipped hash would be worse than a wrapped one. */
+.incidentMonoValue {
+  font-family: monospace;
+  font-size: 0.74rem;
+  overflow-wrap: anywhere;
+}
+
+/* --- Screen 7 · AI investigation authority notice --------------------------
+   States what the AI layer may and may not do, next to its output. Deliberately
+   plain: it is a constraint an auditor reads, not a feature badge. */
+.aiAuthorityNotice {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.4rem 1rem;
+  margin: 0.6rem 0 0;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(148, 163, 184, 0.04);
+}
+
+.aiAuthorityNotice dt {
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.aiAuthorityNotice dd {
+  margin: 0.1rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-primary);
+}

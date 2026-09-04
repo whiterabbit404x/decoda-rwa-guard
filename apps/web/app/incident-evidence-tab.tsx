@@ -1,10 +1,9 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 
 import { StatusPill, TableShell } from './components/ui-primitives';
-import { usePilotAuth } from './pilot-auth-context';
 import {
   EVIDENCE_DOMAINS,
   artifactEvidenceSource,
@@ -25,7 +24,6 @@ import {
   integrityLabel,
   integrityVariant,
   linkScopeCaveat,
-  loadStateFor,
   policyDecisionVariant,
   shortDigest,
   showsImmutableMark,
@@ -34,32 +32,14 @@ import {
   type DomainFilter,
   type ForensicLoadState,
   type IncidentEvidenceArtifact,
-  type IncidentEvidenceCounts,
   type IncidentEvidenceDomain,
   type IncidentEvidencePackage,
   type IncidentForensicSnapshot,
   type IncidentPolicyEvaluation,
 } from './incident-forensics-presentation';
-
-// Same-origin proxy base — the Incidents UI never calls the backend directly (the
-// browser only sees NEXT_PUBLIC_API_URL, often unset in production). Every call
-// goes through the Next.js /api/* proxy, the same transport the rest of Screen 7 uses.
-const API_PROXY_BASE = '/api';
+import type { IncidentEvidenceResponse } from './use-incident-forensics';
 
 const DIRECTORY_HEADERS = ['File / Artifact', 'Type', 'Domain', 'Source', 'Collected At', 'SHA-256', 'Integrity'];
-
-type EvidenceResponse = {
-  incident_id?: string;
-  event_id?: string | null;
-  counts?: IncidentEvidenceCounts;
-  snapshot?: IncidentForensicSnapshot;
-  evidence_package?: IncidentEvidencePackage;
-  policy_evaluations?: IncidentPolicyEvaluation[];
-  artifacts?: IncidentEvidenceArtifact[];
-  truncated?: boolean;
-  partial?: boolean;
-  unreadable?: string[];
-};
 
 /**
  * Screen 7 — Evidence tab (forensic directory).
@@ -75,38 +55,18 @@ type EvidenceResponse = {
  * from a hard-coded number), hashes are the digests the backend computed (never a
  * hashed display string), and "sealed"/"immutable" appear only where the backend
  * asserted them. A domain with no records says so.
+ *
+ * Presentational: the payload is fetched once per incident by `useIncidentEvidence`
+ * and passed in, so the Case File header, the Overview summary and this directory
+ * all describe the same evidence record — and the page issues one request for it,
+ * not one per consumer.
  */
-export default function IncidentEvidenceTab({ incidentId }: { incidentId: string }) {
-  const { authHeaders } = usePilotAuth();
-  const [data, setData] = useState<EvidenceResponse | null>(null);
-  const [load, setLoad] = useState<ForensicLoadState>('idle');
+export default function IncidentEvidenceTab({ data, load, onRetry }: {
+  data: IncidentEvidenceResponse | null;
+  load: ForensicLoadState;
+  onRetry: () => void;
+}) {
   const [filter, setFilter] = useState<DomainFilter>('ALL');
-
-  const fetchEvidence = useCallback(async (): Promise<void> => {
-    setLoad('loading');
-    try {
-      const res = await fetch(`${API_PROXY_BASE}/incidents/${encodeURIComponent(incidentId)}/evidence`, {
-        headers: authHeaders(),
-        cache: 'no-store',
-      });
-      if (!res.ok) {
-        setData(null);
-        setLoad(loadStateFor(res.status, false));
-        return;
-      }
-      const json = (await res.json()) as EvidenceResponse;
-      setData(json);
-      setLoad(loadStateFor(res.status, (json.artifacts ?? []).length > 0));
-    } catch {
-      setData(null);
-      setLoad('error');
-    }
-  }, [authHeaders, incidentId]);
-
-  useEffect(() => {
-    if (!incidentId) { setData(null); setLoad('idle'); return; }
-    void fetchEvidence();
-  }, [fetchEvidence, incidentId]);
 
   const artifacts = useMemo(() => data?.artifacts ?? [], [data]);
   const visible = useMemo(() => filterArtifacts(artifacts, filter), [artifacts, filter]);
@@ -138,7 +98,7 @@ export default function IncidentEvidenceTab({ incidentId }: { incidentId: string
         <p className="muted" style={{ fontSize: '0.85rem', marginBottom: '0.5rem' }}>
           Evidence is unavailable — the evidence service could not be reached. No evidence is shown rather than a partial view presented as complete.
         </p>
-        <button type="button" className="btn btn-secondary" style={{ fontSize: '0.78rem' }} onClick={() => void fetchEvidence()}>
+        <button type="button" className="btn btn-secondary" style={{ fontSize: '0.78rem' }} onClick={onRetry}>
           Retry
         </button>
       </div>

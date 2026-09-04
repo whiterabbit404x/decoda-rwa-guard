@@ -440,11 +440,29 @@ test('no reference-design value is hard-coded into Screen 7 production code', ()
   }
 });
 
-test('the Evidence tab reads the real per-incident endpoint through the proxy', () => {
-  const src = appSource('incident-evidence-tab.tsx');
+test('the evidence record is read from the real per-incident endpoint through the proxy', () => {
+  // The fetch lives in the shared hook so the Case File header, the Overview and
+  // the directory all read ONE payload — the transport rules are unchanged.
+  const src = appSource('use-incident-forensics.ts');
   expect(src).toContain('/incidents/${encodeURIComponent(incidentId)}/evidence');
   expect(src).toContain('authHeaders()');
   expect(src).toContain("const API_PROXY_BASE = '/api'");
+  // The tab itself renders what it is handed — it must not open a second request.
+  const tab = appSource('incident-evidence-tab.tsx');
+  expect(tab).not.toContain('fetch(');
+});
+
+test('both Screen 7 surfaces fetch the evidence record exactly once per incident', () => {
+  for (const file of ['incidents-panel.tsx', 'incident-case-file-tabs.tsx']) {
+    const src = appSource(file);
+    expect(src, file).toContain('useIncidentEvidence(');
+    expect((src.match(/useIncidentEvidence\(/g) ?? []).length, file).toBe(1);
+    // …and never by calling the INCIDENT evidence endpoint directly alongside the
+    // hook. (The alert-scoped /alerts/{id}/evidence read is a different record and
+    // stays where it is.)
+    expect(src, file).not.toContain('/incidents/${encodeURIComponent(incidentId)}/evidence');
+    expect(src, file).not.toContain('/incidents/${selectedId}/evidence');
+  }
 });
 
 test('artifact table columns and rows come from backend fields only', () => {

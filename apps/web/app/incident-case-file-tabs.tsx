@@ -4,6 +4,7 @@ import { Suspense, useCallback, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
 import { TabStrip } from './components/ui-primitives';
+import IncidentCaseOverview from './incident-case-overview';
 import IncidentEvidenceTab from './incident-evidence-tab';
 import IncidentForensicTimeline from './incident-forensic-timeline';
 import {
@@ -13,6 +14,7 @@ import {
 } from './incident-forensics-presentation';
 import { usePilotAuth } from './pilot-auth-context';
 import { useRuntimeSummary } from './runtime-summary-context';
+import { useIncidentEvidence } from './use-incident-forensics';
 // Reuse the SAME Case File tab bodies the /incidents drawer renders — but without the
 // list shell (table, KPI tiles, filters, pagination, the create-incident control, or the
 // drawer itself). This is the standalone incident detail route's supplementary "case
@@ -49,6 +51,7 @@ type ForensicTimelineResponse = {
 };
 
 const CASE_FILE_TABS = [
+  { key: 'overview',         label: 'Overview' },
   { key: 'timeline',         label: 'Timeline' },
   { key: 'alerts',           label: 'Alerts' },
   { key: 'evidence',         label: 'Evidence' },
@@ -96,7 +99,7 @@ function CaseFileTabsInner({ incidentId }: { incidentId: string }) {
   // while a manual tab click still updates local state.
   const tabParam = searchParams?.get('tab') ?? null;
   const [activeTab, setActiveTab] = useState<CaseFileTabKey>(
-    isCaseFileTab(tabParam) ? tabParam : 'timeline',
+    isCaseFileTab(tabParam) ? tabParam : 'overview',
   );
   useEffect(() => {
     if (isCaseFileTab(tabParam)) setActiveTab(tabParam);
@@ -109,8 +112,15 @@ function CaseFileTabsInner({ incidentId }: { incidentId: string }) {
   const [linkedAlert, setLinkedAlert] = useState<AlertRow | null>(null);
   const [evidence, setEvidence] = useState<EvidenceRow[]>([]);
   const [responseActions, setResponseActions] = useState<ResponseActionRow[]>([]);
+  // Whether Screen 8's action records have been READ. An empty array mid-fetch must
+  // not render as "no response action recommended".
+  const [responseLoad, setResponseLoad] = useState<ForensicLoadState>('idle');
   const [recommending, setRecommending] = useState(false);
   const [recommendError, setRecommendError] = useState('');
+
+  // ONE fetch of the incident's forensic evidence record, feeding both the Overview
+  // case summary and the Evidence directory below it.
+  const incidentEvidence = useIncidentEvidence(incidentId);
 
   // Resolve the incident's source alert id (drives the Alerts + Evidence tabs). On the
   // list page this came from the selected row; here we fetch the single incident directly.
@@ -194,15 +204,23 @@ function CaseFileTabsInner({ incidentId }: { incidentId: string }) {
 
   // Response actions (executable actions only — recommendation-review records excluded)
   useEffect(() => {
-    if (!incidentId) { setResponseActions([]); return; }
+    if (!incidentId) { setResponseActions([]); setResponseLoad('idle'); return; }
     let cancelled = false;
+    setResponseLoad('loading');
     void fetch(`${apiUrl}/response/actions?incident_id=${encodeURIComponent(incidentId)}`, {
       headers: authHeaders(),
       cache: 'no-store',
     })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((json) => { if (!cancelled) setResponseActions(onlyResponseActions((json as { actions?: unknown } | null)?.actions)); })
-      .catch(() => { if (!cancelled) setResponseActions([]); });
+      .then(async (r) => {
+        if (cancelled) return;
+        if (!r.ok) { setResponseActions([]); setResponseLoad(loadStateFor(r.status, false)); return; }
+        const json = (await r.json().catch(() => null)) as { actions?: unknown } | null;
+        if (cancelled) return;
+        const rows = onlyResponseActions(json?.actions);
+        setResponseActions(rows);
+        setResponseLoad(loadStateFor(r.status, rows.length > 0));
+      })
+      .catch(() => { if (!cancelled) { setResponseActions([]); setResponseLoad('error'); } });
     return () => { cancelled = true; };
   }, [apiUrl, authHeaders, incidentId]);
 
@@ -242,13 +260,23 @@ function CaseFileTabsInner({ incidentId }: { incidentId: string }) {
     <section className="featureSection" aria-label="Incident record">
       <div className="dataCard sharedSurfaceCard" style={{ padding: '1.15rem' }}>
         <p className="sectionEyebrow" style={{ margin: 0 }}>Incident record</p>
-        <h3 style={{ margin: '0.15rem 0 0.9rem', fontSize: '1rem' }}>Timeline, alerts, evidence &amp; response actions</h3>
+        <h3 style={{ margin: '0.15rem 0 0.9rem', fontSize: '1rem' }}>Case summary, timeline, alerts, evidence &amp; response actions</h3>
         <TabStrip
           tabs={CASE_FILE_TABS.map((t) => ({ key: t.key, label: t.label }))}
           active={activeTab}
           onChange={(tab) => setActiveTab(tab as CaseFileTabKey)}
         />
         <div style={{ marginTop: '0.9rem' }}>
+          {activeTab === 'overview' && (
+            <IncidentCaseOverview
+              summary={incidentEvidence.data?.case_summary ?? null}
+              load={incidentEvidence.load}
+              responseActions={responseActions}
+              responseLoad={responseLoad}
+              incidentId={incidentId}
+              layout="wide"
+            />
+          )}
           {activeTab === 'timeline' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
               <IncidentForensicTimeline
@@ -269,7 +297,11 @@ function CaseFileTabsInner({ incidentId }: { incidentId: string }) {
           )}
           {activeTab === 'evidence' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-              <IncidentEvidenceTab incidentId={incidentId} />
+              <IncidentEvidenceTab
+                data={incidentEvidence.data}
+                load={incidentEvidence.load}
+                onRetry={incidentEvidence.refresh}
+              />
               <EvidenceTab evidence={evidence} workspaceEvidenceSource={workspaceEvidenceSource} />
             </div>
           )}

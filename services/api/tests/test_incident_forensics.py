@@ -923,3 +923,192 @@ def test_an_incident_with_no_history_gets_no_fabricated_stages(monkeypatch):
     assert 'evidence_snapshot_created' not in stages
     assert 'evidence_package_sealed' not in stages
     assert 'state_drift_detected' not in stages
+
+
+# ==========================================================================
+# 6. Case summary — the deterministic answer to "what happened, and what proves it"
+# ==========================================================================
+def test_case_summary_states_the_chain_the_business_the_policy_and_the_evidence(monkeypatch):
+    conn = _ForensicConn()
+    _install(monkeypatch, conn)
+    summary = f.get_incident_evidence(INCIDENT_ID, _request())['case_summary']
+
+    # What the chain recorded.
+    assert summary['on_chain']['state'] == f.STATE_OBSERVED
+    assert summary['on_chain']['tx_hash'] == TX_HASH
+    assert summary['on_chain']['operation'] == 'mint'
+    assert summary['on_chain']['observed_amount'] == {'value': '500000', 'decimals': 0, 'unit': 'units'}
+
+    # What the systems of record said — the reconciliation engine's own verdict.
+    assert summary['operational']['state'] == f.STATE_ANOMALY
+    assert summary['operational']['reconciliation_status'] == 'UNEXPLAINED_VARIANCE'
+    assert summary['operational']['reason_code'] == 'NO_MATCHING_AUTHORIZED_ISSUANCE'
+    assert summary['operational']['authoritative_source'] == 'Transfer Agent'
+
+    # What the deterministic engine decided.
+    assert summary['policy']['state'] == f.STATE_DECIDED
+    assert summary['policy']['decision'] == 'DENY'
+    assert summary['policy']['authority'] == 'deterministic_policy_engine'
+
+    # What proves it.
+    assert summary['evidence']['artifact_count'] == len(
+        f.get_incident_evidence(INCIDENT_ID, _request())['artifacts'])
+    assert summary['evidence']['snapshot_status']
+
+
+def test_case_summary_carries_the_canonical_correlation_ids(monkeypatch):
+    # Screen 7 correlates; it never mints an identifier. The event id is the one
+    # Screens 3/5/8/9/11 are stamped with.
+    conn = _ForensicConn()
+    _install(monkeypatch, conn)
+    payload = f.get_incident_evidence(INCIDENT_ID, _request())
+    summary = payload['case_summary']
+    assert summary['event_id'] == payload['event_id'] == TX_HASH
+    assert summary['correlation'] == {
+        'event_id': TX_HASH,
+        'incident_id': INCIDENT_ID,
+        'alert_id': ALERT_ID,
+        'detection_id': DETECTION_ID,
+        'asset_id': ASSET_ID,
+    }
+
+
+def test_case_summary_is_a_pure_fold_and_opens_no_cursor():
+    # It folds records the request already read. Taking no connection is what makes
+    # that structural: the summary cannot silently double the endpoint's cost.
+    import inspect
+
+    parameters = inspect.signature(f.build_case_summary).parameters
+    assert 'connection' not in parameters
+    assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in parameters.values())
+    assert set(parameters) == {'correlation', 'artifacts', 'evaluations', 'counts',
+                               'snapshot', 'package'}
+
+
+def test_the_evidence_endpoint_reads_each_source_once(monkeypatch):
+    # Guards the same cost invariant end to end: adding the summary must not have
+    # introduced a second read of any table the directory already queried.
+    conn = _ForensicConn()
+    _install(monkeypatch, conn)
+    f.get_incident_evidence(INCIDENT_ID, _request())
+    for table in ('FROM threat_detections', 'FROM governance_policy_evaluations',
+                  'FROM incident_evidence_snapshots', 'FROM asset_authoritative_state'):
+        assert len([s for s in conn.statements if table in ' '.join(s.split())]) <= 1, table
+
+
+def test_an_incident_with_no_records_reports_not_recorded_never_a_clean_bill(monkeypatch):
+    # The second incident has no detection, no reconciliation and no snapshot.
+    # Every section must say so rather than defaulting to a reassuring verdict.
+    conn = _ForensicConn()
+    _install(monkeypatch, conn)
+    summary = f.get_incident_evidence(OTHER_INCIDENT_ID, _request())['case_summary']
+    assert summary['on_chain']['state'] == f.STATE_NOT_RECORDED
+    assert summary['operational']['state'] == f.STATE_NOT_RECORDED
+    # Absence is never 'reconciled'.
+    assert summary['operational']['state'] != f.STATE_RECONCILED
+    assert summary['detection']['detection_type'] is None
+
+
+def test_a_simulated_policy_evaluation_never_becomes_the_case_verdict():
+    # A Screen 11 what-if predicts; it never authorized anything. Promoting one
+    # into the policy slot would misstate why the response was gated.
+    summary = f.build_case_summary(
+        correlation={'event_id': TX_HASH, 'incident_id': INCIDENT_ID, 'detection': {}},
+        artifacts=[],
+        evaluations=[{'evaluation_id': EVALUATION_ID, 'decision': 'ALLOW', 'simulation': True}],
+        counts={}, snapshot={}, package={},
+    )
+    assert summary['policy']['state'] == f.STATE_NOT_RECORDED
+    assert summary['policy']['decision'] is None
+    assert summary['policy']['evaluation_count'] == 0
+
+
+def test_an_asset_scoped_reconciliation_is_not_this_events_verdict():
+    # A record that concerns the same ASSET but was never linked to this event is
+    # a coincidence, not the case's operational verdict.
+    asset_scoped = {
+        'artifact_type': 'reconciliation_output', 'source': 'Transfer Agent',
+        'collected_at': '2026-01-01T09:00:00+00:00',
+        'metadata': {'status': 'RECONCILED', 'link_scope': f.LINK_SCOPE_ASSET},
+    }
+    summary = f.build_case_summary(
+        correlation={'event_id': TX_HASH, 'incident_id': INCIDENT_ID, 'detection': {}},
+        artifacts=[asset_scoped], evaluations=[], counts={}, snapshot={}, package={},
+    )
+    assert summary['operational']['state'] == f.STATE_NOT_RECORDED
+    assert summary['operational']['reconciliation_status'] is None
+
+
+def test_an_indeterminate_reconciliation_is_neither_reconciled_nor_an_anomaly():
+    for status in sorted(f._RECON_INDETERMINATE_STATUSES):
+        summary = f.build_case_summary(
+            correlation={'event_id': TX_HASH, 'incident_id': INCIDENT_ID, 'detection': {}},
+            artifacts=[{
+                'artifact_type': 'reconciliation_output', 'source': 'Transfer Agent',
+                'collected_at': '2026-01-01T09:00:00+00:00',
+                'metadata': {'status': status, 'link_scope': f.LINK_SCOPE_EVENT},
+            }],
+            evaluations=[], counts={}, snapshot={}, package={},
+        )
+        assert summary['operational']['state'] == f.STATE_INDETERMINATE
+
+
+def test_a_detection_alone_never_claims_a_chain_observation():
+    # A detection row is an operational record. Without a transaction identity or a
+    # chain-side artifact, "observed on chain" is not a fact this case has.
+    summary = f.build_case_summary(
+        correlation={'event_id': INCIDENT_ID, 'incident_id': INCIDENT_ID,
+                     'detection': {'id': DETECTION_ID, 'deterministic_reason_code': 'X'}},
+        artifacts=[], evaluations=[], counts={'on_chain': 0}, snapshot={}, package={},
+    )
+    assert summary['on_chain']['state'] == f.STATE_NOT_RECORDED
+    # …while the operational half still reports the mismatch the detection recorded.
+    assert summary['operational']['state'] == f.STATE_ANOMALY
+
+
+def test_case_summary_reports_no_response_state(monkeypatch):
+    # Response authority is Screen 8's. Screen 7 reads its live state from the
+    # response-actions endpoint rather than copying it into this snapshot.
+    conn = _ForensicConn()
+    _install(monkeypatch, conn)
+    summary = f.get_incident_evidence(INCIDENT_ID, _request())['case_summary']
+    assert 'response' not in summary
+
+
+def test_case_summary_is_deterministic(monkeypatch):
+    conn = _ForensicConn()
+    _install(monkeypatch, conn)
+    first = f.get_incident_evidence(INCIDENT_ID, _request())['case_summary']
+    second = f.get_incident_evidence(INCIDENT_ID, _request())['case_summary']
+    assert first == second
+
+
+def test_the_current_reconciliation_verdict_wins_over_an_earlier_re_run():
+    # The directory is ordered oldest-first, so the LAST event-linked row is the
+    # verdict that stands. An earlier run must never outrank the one that followed
+    # it — that would report a stale "reconciled" over a live mismatch.
+    earlier = {
+        'artifact_type': 'reconciliation_output', 'source': 'Transfer Agent',
+        'collected_at': '2026-01-01T09:00:00+00:00',
+        'metadata': {'status': 'RECONCILED', 'link_scope': f.LINK_SCOPE_EVENT},
+    }
+    later = {
+        'artifact_type': 'reconciliation_output', 'source': 'Transfer Agent',
+        'collected_at': '2026-01-01T10:42:18.188000+00:00',
+        'metadata': {'status': 'UNEXPLAINED_VARIANCE', 'reason_code': 'AMOUNT_MISMATCH',
+                     'link_scope': f.LINK_SCOPE_EVENT},
+    }
+    summary = f.build_case_summary(
+        correlation={'event_id': TX_HASH, 'incident_id': INCIDENT_ID, 'detection': {}},
+        artifacts=[earlier, later], evaluations=[], counts={}, snapshot={}, package={},
+    )
+    assert summary['operational']['state'] == f.STATE_ANOMALY
+    assert summary['operational']['reconciliation_status'] == 'UNEXPLAINED_VARIANCE'
+
+
+def test_the_reconciliation_classes_come_from_the_engine_that_writes_them():
+    # Screen 7 must not keep a second copy of the verdict taxonomy.
+    from services.api.app.domains.asset_integrity import reconciliation as recon
+
+    assert f._RECON_ANOMALY_STATUSES is recon.ANOMALY_STATUSES
+    assert f._RECON_INDETERMINATE_STATUSES is recon.INDETERMINATE_STATUSES

@@ -471,3 +471,257 @@ export function emptyEvidenceMessage(filter: DomainFilter): string {
   if (filter === 'ALL') return 'No evidence has been collected for this incident.';
   return `No ${domainLabel(filter).toLowerCase()} evidence has been collected for this incident.`;
 }
+
+/* ── Case summary (Overview + Case File snapshot) ─────────────────── */
+
+/**
+ * The deterministic states a case-summary section reports. `not_recorded` is a
+ * real answer, not a gap to paper over: a section with no record says so.
+ * Mirrors the backend `STATE_*` constants — this module labels them, never
+ * re-derives them.
+ */
+export type CaseSectionState =
+  | 'not_recorded' | 'observed' | 'anomaly' | 'indeterminate' | 'reconciled' | 'decided';
+
+export type CaseAmountFact = {
+  value?: string | null;
+  decimals?: number | string | null;
+  unit?: string | null;
+};
+
+export type IncidentCaseSummary = {
+  event_id?: string | null;
+  correlation?: {
+    event_id?: string | null;
+    incident_id?: string | null;
+    alert_id?: string | null;
+    detection_id?: string | null;
+    asset_id?: string | null;
+  };
+  detection?: {
+    detection_id?: string | null;
+    category?: string | null;
+    detection_type?: string | null;
+    title?: string | null;
+    severity?: string | null;
+    reason_code?: string | null;
+    detected_at?: string | null;
+  };
+  on_chain?: {
+    state?: CaseSectionState | string;
+    operation?: string | null;
+    observed_amount?: CaseAmountFact | null;
+    tx_hash?: string | null;
+    block_number?: string | null;
+    observed_at?: string | null;
+    preconfirmation_at?: string | null;
+    source?: string | null;
+    artifact_count?: number;
+  };
+  operational?: {
+    state?: CaseSectionState | string;
+    reason_code?: string | null;
+    reconciliation_status?: string | null;
+    expected_amount?: CaseAmountFact | null;
+    variance_amount?: CaseAmountFact | null;
+    authoritative_source?: string | null;
+    evaluated_at?: string | null;
+    artifact_count?: number;
+  };
+  policy?: {
+    state?: CaseSectionState | string;
+    decision?: string | null;
+    policy_key?: string | null;
+    policy_version?: number | string | null;
+    evaluation_id?: string | null;
+    evaluated_at?: string | null;
+    reason_codes?: string[];
+    required_approvals?: string[];
+    authority?: string | null;
+    evaluation_count?: number;
+    artifact_count?: number;
+  };
+  evidence?: {
+    artifact_count?: number;
+    counts?: IncidentEvidenceCounts;
+    snapshot_status?: string | null;
+    snapshot_hash_verified?: boolean | null;
+    package_id?: string | null;
+    package_number?: string | null;
+    package_integrity?: string | null;
+    package_route?: string | null;
+  };
+};
+
+const CASE_STATE_LABELS: Record<CaseSectionState, string> = {
+  not_recorded: 'Not recorded',
+  observed: 'Observed',
+  anomaly: 'Mismatch',
+  indeterminate: 'Could not be established',
+  reconciled: 'Reconciled',
+  decided: 'Decision recorded',
+};
+
+/**
+ * Operator wording for a case-section state. An unknown state from a newer
+ * backend is reported as unknown rather than guessed into a reassuring label.
+ */
+export function caseStateLabel(state: CaseSectionState | string | null | undefined): string {
+  const key = (state ?? '') as CaseSectionState;
+  return CASE_STATE_LABELS[key] ?? 'Unknown';
+}
+
+/**
+ * Colour for a case-section state. `not_recorded` and `indeterminate` are
+ * deliberately NEUTRAL, never success: absent or unestablished truth must not
+ * read as "clean" (CLAUDE.md — no data must not be shown as safe).
+ */
+export function caseStateVariant(state: CaseSectionState | string | null | undefined): PillVariant {
+  const key = (state ?? '').toString();
+  if (key === 'anomaly') return 'danger';
+  if (key === 'observed') return 'info';
+  if (key === 'reconciled') return 'success';
+  if (key === 'decided') return 'info';
+  return 'neutral';
+}
+
+/** True when a section has a real record behind it. */
+export function caseSectionRecorded(state: CaseSectionState | string | null | undefined): boolean {
+  return (state ?? 'not_recorded') !== 'not_recorded';
+}
+
+/**
+ * An amount as the record stores it, with its unit. Exact ledger values are
+ * passed through unscaled — a display-side conversion would be a second,
+ * divergent reading of the same number. Returns null when nothing was recorded.
+ */
+export function formatCaseAmount(amount: CaseAmountFact | null | undefined): string | null {
+  const raw = (amount?.value ?? '').toString().trim();
+  if (!raw) return null;
+  const unit = (amount?.unit ?? '').toString().trim();
+  return unit ? `${raw} ${unit}` : raw;
+}
+
+/** Operator label for a snake_case / SCREAMING_SNAKE backend token. */
+export function humanizeToken(token: string | null | undefined): string | null {
+  const raw = (token ?? '').trim();
+  if (!raw) return null;
+  return raw
+    .split(/[_.\s-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(' ');
+}
+
+/* ── Response state (Screen 8's facts, summarized for Screen 7) ───── */
+
+/**
+ * The response fields Screen 7 reads. These come from the SAME response-actions
+ * endpoint Screen 8 renders, so the two screens can never describe one action's
+ * approval or execution state differently. Screen 7 only reports it.
+ */
+export type CaseResponseAction = {
+  id?: string;
+  display_title?: string;
+  lifecycle_state?: string;
+  lifecycle_label?: string;
+  approval_status?: string;
+  execution_status?: string;
+};
+
+export type CaseResponseState = {
+  /** 'none' = no action recommended yet — never rendered as "nothing to do". */
+  state: 'none' | 'awaiting_approval' | 'approved' | 'executed' | 'failed' | 'recommended';
+  label: string;
+  total: number;
+  awaitingApproval: number;
+  approved: number;
+  executed: number;
+  failed: number;
+};
+
+/**
+ * Fold this incident's response actions into one truthful sentence for the Case
+ * File and Overview. Ordered by what an operator must act on first: a failure
+ * outranks a pending approval, which outranks an execution that already
+ * happened. Screen 7 states this; Screen 8 remains the only place it can change.
+ */
+export function summarizeResponseState(
+  actions: readonly CaseResponseAction[] | null | undefined,
+): CaseResponseState {
+  const rows = actions ?? [];
+  const awaitingApproval = rows.filter((a) => a.approval_status === 'pending').length;
+  const approved = rows.filter((a) => a.approval_status === 'approved').length;
+  const executed = rows.filter((a) => a.execution_status === 'executed').length;
+  const failed = rows.filter(
+    (a) => a.execution_status === 'failed' || a.lifecycle_state === 'execution_failed',
+  ).length;
+  const base = { total: rows.length, awaitingApproval, approved, executed, failed };
+  if (rows.length === 0) {
+    return { ...base, state: 'none', label: 'No response action recommended yet' };
+  }
+  if (failed > 0) return { ...base, state: 'failed', label: `${failed} execution failed` };
+  if (awaitingApproval > 0) {
+    return { ...base, state: 'awaiting_approval', label: `Awaiting approval (${awaitingApproval})` };
+  }
+  if (executed > 0) return { ...base, state: 'executed', label: `${executed} executed` };
+  if (approved > 0) return { ...base, state: 'approved', label: `${approved} approved, not executed` };
+  return { ...base, state: 'recommended', label: `${rows.length} recommended` };
+}
+
+export function responseStateVariant(state: CaseResponseState['state']): PillVariant {
+  if (state === 'failed') return 'danger';
+  if (state === 'awaiting_approval') return 'warning';
+  if (state === 'executed') return 'success';
+  if (state === 'approved' || state === 'recommended') return 'info';
+  return 'neutral';
+}
+
+/* ── Incident queue counters (Screen 7 KPI row) ───────────────────── */
+
+/**
+ * The four canonical queue counters, as the backend computes them over the WHOLE
+ * workspace. The browser does not re-derive them from the page of rows it is
+ * holding: that page is capped and already narrowed by the list filters, so
+ * counting it would report a subset as the total — and would disagree with the
+ * Dashboard's Open Incidents card, which uses this same lifecycle definition.
+ */
+export type IncidentQueueCounts = {
+  open_incidents: number;
+  critical_incidents: number;
+  in_investigation: number;
+  awaiting_response: number;
+  total: number;
+};
+
+function counterValue(source: Record<string, unknown>, key: string): number | null {
+  const raw = source[key];
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  if (typeof raw === 'string' && raw.trim() !== '' && Number.isFinite(Number(raw))) return Number(raw);
+  return null;
+}
+
+/**
+ * Read the counters off `GET /incidents/summary`. Returns null when the payload
+ * does not carry all four — a KPI tile must show "unavailable", never a zero an
+ * operator would read as "nothing is open" (CLAUDE.md: no data must not be shown
+ * as safe).
+ */
+export function parseIncidentQueueCounts(payload: unknown): IncidentQueueCounts | null {
+  const root = (payload ?? null) as Record<string, unknown> | null;
+  if (!root || typeof root !== 'object') return null;
+  const counts = (root.counts ?? root) as Record<string, unknown>;
+  if (!counts || typeof counts !== 'object') return null;
+  const open = counterValue(counts, 'open_incidents');
+  const critical = counterValue(counts, 'critical_incidents');
+  const investigating = counterValue(counts, 'in_investigation');
+  const awaiting = counterValue(counts, 'awaiting_response');
+  if (open === null || critical === null || investigating === null || awaiting === null) return null;
+  return {
+    open_incidents: open,
+    critical_incidents: critical,
+    in_investigation: investigating,
+    awaiting_response: awaiting,
+    total: counterValue(counts, 'total') ?? 0,
+  };
+}
