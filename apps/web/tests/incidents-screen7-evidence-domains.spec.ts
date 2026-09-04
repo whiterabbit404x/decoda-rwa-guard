@@ -484,21 +484,28 @@ test('artifact type labels replace raw snake_case keys without inventing meaning
 
 /* ───────────────── 11. Wiring + layout ────────────────────────────────── */
 
-test('both Screen 7 surfaces render the forensic evidence directory and timeline', () => {
-  for (const file of ['incidents-panel.tsx', 'incident-case-file-tabs.tsx']) {
-    const src = appSource(file);
-    expect(src, file).toContain('IncidentEvidenceTab');
-    expect(src, file).toContain('IncidentForensicTimeline');
-  }
+test('the full investigation renders the forensic evidence directory and timeline', () => {
+  // The directory (a 720px-min table) and the lifecycle chronology need the main
+  // content width; they live on the full investigation, not in the ~360px Case File.
+  const src = appSource('incident-case-file-tabs.tsx');
+  expect(src).toContain('IncidentEvidenceTab');
+  expect(src).toContain('IncidentForensicTimeline');
+  // The Case File summarises the SAME evidence record (one shared fetch) and links
+  // to the full investigation rather than compressing the directory into the column.
+  const panel = appSource('incidents-panel.tsx');
+  expect(panel).toContain('useIncidentEvidence(');
+  expect(panel).toContain('buildIntegritySummary(');
+  expect(panel).toContain('Open Full Investigation');
+  expect(panel).not.toContain('IncidentEvidenceTab');
 });
 
 test('the timeline response is fetched once and yields both shapes', () => {
-  for (const file of ['incidents-panel.tsx', 'incident-case-file-tabs.tsx']) {
-    const src = appSource(file);
-    expect(src, file).toContain('json?.timeline ?? []');
-    expect(src, file).toContain('setForensicTimeline');
-    expect(src, file).toContain('loadStateFor(');
-  }
+  // One request per incident returns the legacy projection and the forensic
+  // lifecycle together, on the surface that renders them.
+  const src = appSource('incident-case-file-tabs.tsx');
+  expect(src).toContain('json?.timeline ?? []');
+  expect(src).toContain('setForensicTimeline');
+  expect(src).toContain('loadStateFor(');
 });
 
 test('the forensic evidence proxy route exists and targets the backend', () => {

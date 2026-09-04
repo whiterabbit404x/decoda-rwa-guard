@@ -3,6 +3,7 @@
 import { Suspense, useCallback, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
+import AiInvestigationPanel from './ai-investigation-panel';
 import { TabStrip } from './components/ui-primitives';
 import IncidentCaseOverview from './incident-case-overview';
 import IncidentEvidenceTab from './incident-evidence-tab';
@@ -15,13 +16,19 @@ import {
 import { usePilotAuth } from './pilot-auth-context';
 import { useRuntimeSummary } from './runtime-summary-context';
 import { useIncidentEvidence } from './use-incident-forensics';
-// Reuse the SAME Case File tab bodies the /incidents drawer renders — but without the
+// Reuse the SAME Case File tab bodies the /incidents Case File links to — but without the
 // list shell (table, KPI tiles, filters, pagination, the create-incident control, or the
-// drawer itself). This is the standalone incident detail route's supplementary "case
-// record", sitting beneath the Digital Forensics Investigator hero. It deliberately does
-// NOT render the AI Investigation tab (the standalone triage panel) or the canonical
-// workflow / corroborated evidence — the forensic hero already owns those — so the
-// investigation payload is never fetched twice on this page.
+// Case File panel itself). This is the full investigation workspace's forensic record,
+// sitting beneath the Digital Forensics Investigator hero, and it is where the DETAIL
+// lives: the lifecycle chronology, the four evidence domains and their artifact
+// directory, the policy forensics, the response authorization trail and the AI
+// investigation — each at the full width of the main content area rather than squeezed
+// into the narrow Case File preview.
+//
+// It deliberately does NOT render the canonical workflow or the corroborated evidence —
+// the forensic hero already owns those — so the investigation payload is never fetched
+// twice on this page. The AI Investigation panel mounts here (and only here) under its
+// own tab: it runs its own /ai-triage lifecycle, which the hero does not fetch.
 import {
   AlertsTab,
   EvidenceTab,
@@ -56,6 +63,7 @@ const CASE_FILE_TABS = [
   { key: 'alerts',           label: 'Alerts' },
   { key: 'evidence',         label: 'Evidence' },
   { key: 'response-actions', label: 'Response Actions' },
+  { key: 'ai-investigation', label: 'AI Investigation' },
 ] as const;
 
 type CaseFileTabKey = (typeof CASE_FILE_TABS)[number]['key'];
@@ -259,8 +267,8 @@ function CaseFileTabsInner({ incidentId }: { incidentId: string }) {
   return (
     <section className="featureSection" aria-label="Incident record">
       <div className="dataCard sharedSurfaceCard" style={{ padding: '1.15rem' }}>
-        <p className="sectionEyebrow" style={{ margin: 0 }}>Incident record</p>
-        <h3 style={{ margin: '0.15rem 0 0.9rem', fontSize: '1rem' }}>Case summary, timeline, alerts, evidence &amp; response actions</h3>
+        <p className="sectionEyebrow" style={{ margin: 0 }}>Full investigation</p>
+        <h3 style={{ margin: '0.15rem 0 0.9rem', fontSize: '1rem' }}>Case record, timeline, alerts, evidence, response actions &amp; AI investigation</h3>
         <TabStrip
           tabs={CASE_FILE_TABS.map((t) => ({ key: t.key, label: t.label }))}
           active={activeTab}
@@ -314,6 +322,12 @@ function CaseFileTabsInner({ incidentId }: { incidentId: string }) {
               recommendError={recommendError}
             />
           )}
+          {/* Evidence-grounded AI investigation for this incident. Mounted only when its
+              tab is selected, so its own /ai-triage lifecycle is not started on page
+              load, and mounted only HERE — the forensic hero renders the deterministic
+              analysis, never this triage flow, so nothing is double-fetched. It fails
+              closed to a disabled/unavailable message when triage is off. */}
+          {activeTab === 'ai-investigation' && <AiInvestigationPanel incidentId={incidentId} />}
         </div>
       </div>
     </section>

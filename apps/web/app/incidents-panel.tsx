@@ -8,39 +8,28 @@ import {
   EmptyStateBlocker,
   MetricTile,
   StatusPill,
-  TabStrip,
   TableShell,
   type PillVariant,
 } from './components/ui-primitives';
-import AiInvestigationPanel from './ai-investigation-panel';
 import {
   investigationNextAction,
   investigationSummaryState,
   isAwaitingResponseStatus,
   linkedDetectionRef,
   summaryStateVariant,
-  workflowStateLabel,
-  workflowStateVariant,
   type ForensicInvestigation,
   type NextAction,
-  type WorkflowStage,
 } from './forensic-investigation-presentation';
-import IncidentCaseOverview from './incident-case-overview';
-import IncidentEvidenceTab from './incident-evidence-tab';
-import IncidentForensicTimeline from './incident-forensic-timeline';
 import {
-  caseStateLabel,
-  caseStateVariant,
+  buildIntegritySummary,
   loadStateFor,
   parseIncidentQueueCounts,
-  policyDecisionVariant,
-  responseStateVariant,
-  snapshotStatusLabel,
   summarizeResponseState,
+  summarizeWorkflowProgress,
   type ForensicLoadState,
-  type IncidentCaseSummary,
+  type IntegritySummaryRow,
   type IncidentQueueCounts,
-  type IncidentTimelineEvent,
+  type WorkflowProgress,
 } from './incident-forensics-presentation';
 import { usePilotAuth } from './pilot-auth-context';
 import { useRuntimeSummary } from './runtime-summary-context';
@@ -104,18 +93,6 @@ type TimelineEntry = {
   evidence_source?: string;
   created_at?: string;
   timestamp?: string;
-};
-
-// The canonical /incidents/{id}/timeline response. `timeline` is the legacy
-// newest-first projection (unchanged); `events` is the Screen 7 forensic
-// lifecycle assembled by the backend from canonical records, oldest-first.
-type ForensicTimelineResponse = {
-  incident_id?: string;
-  event_id?: string | null;
-  timeline?: TimelineEntry[];
-  events?: IncidentTimelineEvent[];
-  partial?: boolean;
-  unreadable?: string[];
 };
 
 type AlertRow = {
@@ -292,18 +269,6 @@ const INCIDENT_TABLE_HEADERS = ['Incident ID', 'Severity', 'Title', 'Asset', 'St
 // from an escalatable one, so it could not gate a creation control truthfully.
 const ESCALATION_CANDIDATE_SCAN_LIMIT = 50;
 
-const DETAIL_TABS = [
-  { key: 'overview',          label: 'Overview' },
-  { key: 'timeline',          label: 'Timeline' },
-  { key: 'alerts',            label: 'Alerts' },
-  { key: 'evidence',          label: 'Evidence' },
-  { key: 'response-actions',  label: 'Response Actions' },
-  { key: 'workflow',          label: 'Workflow' },
-  { key: 'ai-investigation',  label: 'AI Investigation' },
-] as const;
-
-type TabKey = typeof DETAIL_TABS[number]['key'];
-
 /* ── Main panel ─────────────────────────────────────────────────── */
 
 export default function IncidentsPanel({ initialSelectedId }: { initialSelectedId?: string } = {}) {
@@ -326,13 +291,6 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
   const [assigneeFilter, setAssigneeFilter] = useState('');
   const [dataLoading, setDataLoading] = useState(false);
   const [message, setMessage] = useState('');
-  const [activeTab, setActiveTab] = useState<TabKey>('overview');
-  const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
-  // Screen 7 forensic lifecycle: the same /timeline response, forensic shape.
-  const [forensicTimeline, setForensicTimeline] = useState<ForensicTimelineResponse | null>(null);
-  const [timelineLoad, setTimelineLoad] = useState<ForensicLoadState>('idle');
-  const [linkedAlert, setLinkedAlert] = useState<AlertRow | null>(null);
-  const [evidence, setEvidence] = useState<EvidenceRow[]>([]);
   const [responseActions, setResponseActions] = useState<ResponseActionRow[]>([]);
   // Whether the response-actions read has SETTLED. Without it an empty array during
   // the fetch would render as "no response action recommended" — a claim the data
@@ -580,64 +538,13 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
     [filteredIncidents, selectedId],
   );
 
-  /* ── Detail data loading ────────────────────────────────────── */
-  useEffect(() => {
-    if (!selectedId) {
-      setTimeline([]);
-      setForensicTimeline(null);
-      setTimelineLoad('idle');
-      setLinkedAlert(null);
-      setEvidence([]);
-      setResponseActions([]);
-      return;
-    }
-    setTimelineLoad('loading');
-    // ONE fetch returns both shapes: the legacy `timeline` projection this drawer
-    // already rendered, and the Screen 7 forensic `events` lifecycle beside it.
-    void fetch(`${apiUrl}/incidents/${selectedId}/timeline`, {
-      headers: authHeaders(),
-      cache: 'no-store',
-    })
-      .then(async (r) => {
-        if (!r.ok) {
-          setTimeline([]);
-          setForensicTimeline(null);
-          setTimelineLoad(loadStateFor(r.status, false));
-          return;
-        }
-        const json = (await r.json()) as ForensicTimelineResponse;
-        setTimeline(json?.timeline ?? []);
-        setForensicTimeline(json ?? null);
-        setTimelineLoad(loadStateFor(r.status, (json?.events ?? []).length > 0));
-      })
-      .catch(() => {
-        setTimeline([]);
-        setForensicTimeline(null);
-        setTimelineLoad('error');
-      });
-  }, [apiUrl, authHeaders, selectedId]);
-
-  useEffect(() => {
-    const alertId = selectedIncident?.source_alert_id;
-    if (!alertId) {
-      setLinkedAlert(null);
-      setEvidence([]);
-      return;
-    }
-    void fetch(`${apiUrl}/alerts/${alertId}`, { headers: authHeaders(), cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((json) => setLinkedAlert((json as any)?.alert ?? json ?? null))
-      .catch(() => setLinkedAlert(null));
-    void fetch(`${apiUrl}/alerts/${alertId}/evidence`, { headers: authHeaders(), cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((json) => {
-        const ev = (json as any)?.evidence;
-        if (!ev) { setEvidence([]); return; }
-        setEvidence(Array.isArray(ev) ? ev : [ev]);
-      })
-      .catch(() => setEvidence([]));
-  }, [apiUrl, authHeaders, selectedIncident?.source_alert_id]);
-
+  /* ── Case File data loading ─────────────────────────────────────
+     The Case File is a SUMMARY: it reads the response record, the canonical
+     investigation and the incident's forensic evidence record — the three
+     sources its integrity summary and progress line are folded from. The
+     detailed record (forensic timeline, artifact directory, linked alert,
+     per-action response table, AI triage) belongs to Open Full Investigation,
+     which fetches it there; the list page no longer pays for it per selection. */
   useEffect(() => {
     if (!selectedId) { setResponseActions([]); setResponseLoad('idle'); return; }
     let cancelled = false;
@@ -692,9 +599,9 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
     return () => { cancelled = true; controller.abort(); };
   }, [apiUrl, authHeaders, selectedId]);
 
-  // The selected incident's forensic evidence record — ONE fetch feeding the Case
-  // File header summary, the Overview and the Evidence directory, so all three
-  // describe the same evidence state and the drawer issues one request, not three.
+  // The selected incident's forensic evidence record — ONE fetch behind the Case
+  // File's integrity summary. It is the SAME payload the full investigation reads,
+  // so the summary and the detailed record can never describe different evidence.
   const incidentEvidence = useIncidentEvidence(selectedId);
 
   /* ── Empty state ─────────────────────────────────────────────── */
@@ -760,7 +667,7 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
       {/* ── Metric row ──────────────────────────────────────────── */}
       {/* Canonical, workspace-wide counters from the backend. Each tile states its
           own definition, so the number and the label can never drift apart. */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem', marginBottom: '1.5rem' }}>
+      <div className="incidentsQueueCounters">
         <QueueCounterTile label="Open Incidents" value={queueCounts?.open_incidents}
           load={queueCountsLoad} meta="Not resolved or closed" />
         <QueueCounterTile label="Critical Incidents" value={queueCounts?.critical_incidents}
@@ -818,10 +725,14 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
       ) : null}
 
       {/* ── Content ─────────────────────────────────────────────── */}
+      {/* The queue owns the main content area; the Case File is a compact preview
+          beside it (see styles.css · Screen 7 · Incident queue + Case File panel).
+          The column width and its responsive stacking live in CSS rather than an
+          inline pixel value, so the panel narrows and stacks with the layout. */}
       {blocker ? (
         <EmptyStateBlocker title={blocker.title} body={blocker.body} ctaHref={blocker.ctaHref} ctaLabel={blocker.ctaLabel} />
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: selectedIncident ? '1fr 400px' : '1fr', gap: '1rem', alignItems: 'start' }}>
+        <div className={`incidentsQueueLayout${selectedIncident ? ' incidentsQueueLayout-withCase' : ''}`}>
           {/* ── Incidents table ────────────────────────────────── */}
           <div>
             {filteredIncidents.length === 0 && !dataLoading ? (
@@ -875,22 +786,13 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
           {selectedIncident && (
             <IncidentDetailPanel
               incident={selectedIncident}
-              timeline={timeline}
-              forensicTimeline={forensicTimeline}
-              timelineLoad={timelineLoad}
-              linkedAlert={linkedAlert}
-              evidence={evidence}
               incidentEvidence={incidentEvidence.data}
               incidentEvidenceLoad={incidentEvidence.load}
-              onIncidentEvidenceRetry={incidentEvidence.refresh}
               responseActions={responseActions}
               responseLoad={responseLoad}
               investigation={investigation}
               investigationLoad={investigationLoad}
-              activeTab={activeTab}
-              onTabChange={(tab) => setActiveTab(tab as TabKey)}
               workspaceEvidenceSource={workspaceEvidenceSource}
-              onMessage={setMessage}
               onRecommend={handleRecommend}
               recommending={recommending}
               recommendError={recommendError}
@@ -906,26 +808,31 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
   );
 }
 
-/* ── Incident detail panel ──────────────────────────────────────── */
+/* ── Case File panel (compact case preview) ─────────────────────────
+   The narrow right-hand panel answers exactly two questions — "what is this
+   case?" and "what state is it in?" — and hands the forensic record to Open
+   Full Investigation, which has the width to render it.
 
-function IncidentDetailPanel({ incident, timeline, forensicTimeline, timelineLoad,
-  linkedAlert, evidence, incidentEvidence, incidentEvidenceLoad, onIncidentEvidenceRetry,
-  responseActions, responseLoad,
-  investigation, investigationLoad, activeTab, onTabChange, workspaceEvidenceSource,
-  onMessage: _onMessage, onRecommend, recommending, recommendError }: {
-  incident: IncidentRow; timeline: TimelineEntry[];
-  forensicTimeline: ForensicTimelineResponse | null; timelineLoad: ForensicLoadState;
-  linkedAlert: AlertRow | null;
-  evidence: EvidenceRow[];
+   Nothing here re-reads the backend: the integrity summary is folded from the
+   SAME canonical case record, response actions and investigation payload the
+   full investigation renders, so the summary and the detailed record can never
+   disagree. Every row fails closed — an absent, unreadable or still-loading
+   record is stated as such and carries no state badge, so absence can never be
+   read as a verdict (CLAUDE.md: no data must not be shown as safe). */
+function IncidentDetailPanel({ incident, incidentEvidence, incidentEvidenceLoad,
+  responseActions, responseLoad, investigation, investigationLoad,
+  workspaceEvidenceSource, onRecommend, recommending, recommendError }: {
+  incident: IncidentRow;
   incidentEvidence: IncidentEvidenceResponse | null;
   incidentEvidenceLoad: ForensicLoadState;
-  onIncidentEvidenceRetry: () => void;
   responseActions: ResponseActionRow[];
   responseLoad: ForensicLoadState;
-  investigation: ForensicInvestigation | null; investigationLoad: InvestigationLoad;
-  activeTab: string; onTabChange: (tab: string) => void;
-  workspaceEvidenceSource: string; onMessage: (msg: string) => void;
-  onRecommend: () => void; recommending: boolean; recommendError: string;
+  investigation: ForensicInvestigation | null;
+  investigationLoad: InvestigationLoad;
+  workspaceEvidenceSource: string;
+  onRecommend: () => void;
+  recommending: boolean;
+  recommendError: string;
 }) {
   const sev = severityPill(incident.severity);
   const st  = incidentStatusPill(incidentStatus(incident));
@@ -944,197 +851,204 @@ function IncidentDetailPanel({ incident, timeline, forensicTimeline, timelineLoa
   const rowDetectionId = incident.chain_linked_ids?.detection_id ?? incident.linked_detection_id ?? null;
   const detectionRef = linkedDetectionRef(investigation);
 
-  // Canonical case facts from the incident's own forensic evidence record (one
-  // fetch, shared with the Overview and the Evidence directory below).
+  // Canonical case facts from the incident's own forensic evidence record.
   const caseSummary = incidentEvidence?.case_summary ?? null;
-  const casePolicy = caseSummary?.policy ?? null;
-  const caseEvidence = caseSummary?.evidence ?? null;
-  const caseOperational = caseSummary?.operational ?? null;
   // Response state folded from Screen 8's own action records — never restated
   // from a Screen 7 copy of them.
   const responseState = summarizeResponseState(responseActions);
+  // The six operational-integrity answers, one compact line each. Reason-code
+  // lists, reconciliation detail and artifact metadata stay in the full record.
+  const integrityRows = buildIntegritySummary({
+    summary: caseSummary,
+    summaryLoad: incidentEvidenceLoad,
+    response: responseState,
+    responseLoad,
+  });
+  const progress = summarizeWorkflowProgress(workflowStages);
+  const summaryState = analysis
+    ? investigationSummaryState(analysis.status, investigation?.ai_triage?.status)
+    : null;
 
   return (
-    <aside className="dataCard sharedSurfaceCard"
-      style={{ padding: 0, borderLeft: '1px solid rgba(148,163,184,0.15)', overflow: 'hidden' }}
-      aria-label="Incident detail">
-      {/* ── Case file header ───────────────────────────────────── */}
-      <div style={{ padding: '1rem', background: 'rgba(59,130,246,0.06)', borderBottom: '1px solid rgba(148,163,184,0.12)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem' }}>
-          <p className="sectionEyebrow" style={{ margin: 0 }}>Case File</p>
+    <aside className="dataCard sharedSurfaceCard caseFilePanel" aria-label="Incident detail">
+      {/* ── Case identity + metadata ───────────────────────────── */}
+      <div className="caseFileHeader">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+          <p className="caseFileEyebrow">Case File</p>
           <StatusPill label={sev.label} variant={sev.variant} />
         </div>
-        <h4 style={{ margin: '0 0 0.75rem', fontSize: '0.95rem', lineHeight: 1.35 }}>
-          {incident.title ?? 'Untitled Incident'}
-        </h4>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem 1rem' }}>
-          <DetailField label="Incident ID" value={<span style={{ fontFamily: 'monospace', fontSize: '0.72rem' }}>{incident.id}</span>} />
-          <DetailField label="Status" value={<StatusPill label={st.label} variant={st.variant} />} />
-          <DetailField label="Created" value={fmtFull(incident.created_at)} />
-          <DetailField label="Updated" value={
-            incident.updated_at ? fmtFull(incident.updated_at) : <span className="muted" style={{ fontSize: '0.78rem' }}>Not recorded</span>
+        <h4 className="caseFileTitle">{incident.title ?? 'Untitled Incident'}</h4>
+        <div className="caseFileMeta">
+          <CaseFileField label="Incident ID" wide value={<span className="caseFileMonoValue">{incident.id}</span>} />
+          <CaseFileField label="Status" value={<StatusPill label={st.label} variant={st.variant} />} />
+          <CaseFileField label="Evidence Source" value={<StatusPill label={evSrc.label} variant={evSrc.variant} />} />
+          <CaseFileField label="Created" value={fmtFull(incident.created_at)} />
+          <CaseFileField label="Updated" value={
+            incident.updated_at ? fmtFull(incident.updated_at) : <span className="muted">Not recorded</span>
           } />
-          <DetailField label="Asset" value={incidentAsset(incident)} />
-          <DetailField label="Assigned To" value={incident.owner_user_id ?? incident.assignee_user_id ?? 'Unassigned'} />
-          <DetailField label="Linked Alert" value={
+          <CaseFileField label="Asset" value={incidentAsset(incident)} />
+          <CaseFileField label="Assigned" value={incident.owner_user_id ?? incident.assignee_user_id ?? 'Unassigned'} />
+          <CaseFileField label="Linked Alert" value={
             hasLinkedAlert
-              ? <Link href="/alerts" prefetch={false} style={{ fontSize: '0.78rem', color: 'var(--text-accent)' }}>{incident.source_alert_id}</Link>
-              : <span className="muted" style={{ fontSize: '0.78rem' }}>Linked alert unavailable</span>
+              ? <Link href="/alerts" prefetch={false} className="caseFileMonoValue" style={{ color: 'var(--text-accent)' }}>{incident.source_alert_id}</Link>
+              : <span className="muted">Linked alert unavailable</span>
           } />
-          <DetailField label="Linked Detection" value={
+          <CaseFileField label="Linked Detection" value={
             rowDetectionId
-              ? <span style={{ fontFamily: 'monospace', fontSize: '0.72rem', wordBreak: 'break-all' }}>{rowDetectionId}</span>
+              ? <span className="caseFileMonoValue">{rowDetectionId}</span>
               : detectionRef
-                ? <span style={{ fontFamily: 'monospace', fontSize: '0.72rem', wordBreak: 'break-all' }}
-                    title={detectionRef.reference}>{detectionRef.title ?? detectionRef.reference}</span>
+                ? <span className="caseFileMonoValue" title={detectionRef.reference}>{detectionRef.title ?? detectionRef.reference}</span>
                 : investigationLoad === 'loading'
-                  ? <span className="muted" style={{ fontSize: '0.78rem' }}>Loading…</span>
-                  : <span className="muted" style={{ fontSize: '0.78rem' }}>No linked detection</span>
+                  ? <span className="muted">Loading…</span>
+                  : <span className="muted">No linked detection</span>
           } />
-          <DetailField label="Evidence Source" value={<StatusPill label={evSrc.label} variant={evSrc.variant} />} />
           {/* The canonical correlation id the whole workflow is stamped with — the
               same value Screens 3, 5, 8, 9 and 11 carry for this case. Screen 7
               displays it; it never mints one. */}
-          <DetailField label="Canonical Event" value={
+          <CaseFileField label="Canonical Event" wide value={
             caseSummary?.event_id
-              ? <span style={{ fontFamily: 'monospace', fontSize: '0.72rem', wordBreak: 'break-all' }}
-                  title={caseSummary.event_id}>{caseSummary.event_id}</span>
+              ? <span className="caseFileMonoValue" title={caseSummary.event_id}>{caseSummary.event_id}</span>
               : <ForensicFieldFallback load={incidentEvidenceLoad} absent="No canonical event linked" />
           } />
-          {/* The deterministic engine's verdict, verbatim. A Screen 11 simulation is
-              excluded backend-side, so a what-if can never appear as the verdict. */}
-          <DetailField label="Policy" value={
-            casePolicy && casePolicy.state !== 'not_recorded'
-              ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem' }}>
-                  <StatusPill label={casePolicy.decision ?? 'No decision recorded'}
-                    variant={policyDecisionVariant(casePolicy.decision)} />
-                  {casePolicy.policy_key
-                    ? <span style={{ fontFamily: 'monospace', fontSize: '0.7rem' }}>{casePolicy.policy_key}</span>
-                    : null}
-                </div>
-              )
-              : <ForensicFieldFallback load={incidentEvidenceLoad} absent="No policy evaluation" />
-          } />
-          {/* Screen 8 owns the response; Screen 7 reports where it stands — and only
-              once Screen 8's records have actually been read. */}
-          <DetailField label="Response" value={
-            responseLoad === 'ready' || responseLoad === 'empty'
-              ? <StatusPill label={responseState.label} variant={responseStateVariant(responseState.state)} />
-              : <ForensicFieldFallback load={responseLoad} absent="No response action recommended yet" />
-          } />
-          {/* Collected artifacts + snapshot integrity, from the same evidence record
-              the Evidence tab renders. An absent count is never shown as zero. */}
-          <DetailField label="Evidence" value={
-            caseEvidence && typeof caseEvidence.artifact_count === 'number'
-              ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem' }}>
-                  <span>{caseEvidence.artifact_count} {caseEvidence.artifact_count === 1 ? 'artifact' : 'artifacts'} collected</span>
-                  <span className="muted" style={{ fontSize: '0.72rem' }}>
-                    Snapshot: {snapshotStatusLabel(caseEvidence.snapshot_status)}
-                  </span>
-                </div>
-              )
-              : <ForensicFieldFallback load={incidentEvidenceLoad} absent="No evidence collected" />
-          } />
-          <DetailField label="Operational" value={
-            caseOperational && caseOperational.state !== 'not_recorded'
-              ? <StatusPill label={caseStateLabel(caseOperational.state)} variant={caseStateVariant(caseOperational.state)} />
-              : <ForensicFieldFallback load={incidentEvidenceLoad} absent="Not reconciled" />
-          } />
-          <DetailField label="Next Action" value={
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem' }}>
-              <span>{nextAction.label}</span>
-              {nextAction.secondary
-                ? <span className="muted" style={{ fontSize: '0.72rem' }}>{nextAction.secondary.label}</span>
-                : null}
-            </div>
-          } />
         </div>
-        {/* Full investigation navigation — a SEPARATE action from drawer selection. Opens the
-            canonical incident detail page (Digital Forensics Investigator) for this incident's
-            canonical UUID (incident.id), never the displayed reference. An accessible <Link>, so
-            keyboard activation and browser back navigation both work; it never calls preventDefault. */}
+        {/* The primary action of the whole panel. The forensic record — reason
+            codes, reconciliation detail, the artifact directory, the lifecycle
+            chronology, the response authorization trail and the AI investigation
+            — is rendered there, at the width it needs. An accessible <Link>, so
+            keyboard activation and browser back navigation both work; it routes
+            on the incident's canonical UUID, never the displayed reference. */}
         <Link
           href={`/incidents/${encodeURIComponent(incident.id)}`}
           prefetch={false}
-          className="btn btn-primary"
-          style={{ marginTop: '0.85rem', width: '100%', fontSize: '0.8rem' }}
+          className="btn btn-primary caseFileCta"
         >
           Open Full Investigation
         </Link>
       </div>
 
-      {/* ── Tabs ───────────────────────────────────────────────── */}
-      <div style={{ padding: '0.75rem 1rem 0' }}>
-        <TabStrip tabs={DETAIL_TABS.map((t) => ({ key: t.key, label: t.label }))} active={activeTab} onChange={onTabChange} />
-      </div>
+      <div className="caseFileBody">
+        {/* ── Integrity summary ─────────────────────────────────── */}
+        <section className="caseFileSection" aria-label="Integrity summary">
+          <p className="caseFileSectionTitle">Integrity Summary</p>
+          <div className="caseFileIntegrity">
+            {integrityRows.map((row) => <IntegritySummaryLine key={row.key} row={row} />)}
+          </div>
+          {/* Screen 8 owns the response. Screen 7 reports where it stands and hands
+              over: the approval workflow when an action exists, the (approval-routed,
+              non-executing) recommendation when none does. */}
+          {responseLoad === 'ready' && responseState.total > 0 ? (
+            <Link
+              href={`/response-actions?incident_id=${encodeURIComponent(incident.id)}`}
+              prefetch={false}
+              className="btn btn-secondary"
+              style={{ fontSize: '0.75rem', padding: '0.2rem 0.55rem', alignSelf: 'flex-start' }}
+            >
+              Open in Response Actions
+            </Link>
+          ) : responseLoad === 'empty' ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem', alignItems: 'flex-start' }}>
+              {recommendError ? (
+                <p style={{ fontSize: '0.6875rem', color: 'var(--danger-fg)', margin: 0 }} role="alert">{recommendError}</p>
+              ) : null}
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ fontSize: '0.75rem', padding: '0.2rem 0.55rem' }}
+                onClick={onRecommend}
+                disabled={recommending}
+              >
+                {recommending ? 'Recommending…' : 'Recommend Response'}
+              </button>
+            </div>
+          ) : null}
+        </section>
 
-      {/* ── Tab content ────────────────────────────────────────── */}
-      <div style={{ padding: '0.75rem 1rem 1rem' }}>
-        {activeTab === 'overview' && (
-          <OverviewTab
-            incident={incident}
-            investigation={investigation}
-            stages={workflowStages}
-            load={investigationLoad}
-            caseSummary={caseSummary}
-            caseSummaryLoad={incidentEvidenceLoad}
-            responseActions={responseActions}
-            responseLoad={responseLoad}
-          />
-        )}
-        {/* Screen 7 forensic lifecycle — the deterministic event chain the backend
-            assembled from canonical records (chain observation, reconciliation,
-            policy decision, response gate, human decisions, snapshot/sealing),
-            ordered by canonical server timestamp. The legacy row projection is
-            kept below it so no previously visible entry is lost. */}
-        {activeTab === 'timeline' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-            <IncidentForensicTimeline
-              events={forensicTimeline?.events ?? []}
-              load={timelineLoad}
-              partial={forensicTimeline?.partial}
-              unreadable={forensicTimeline?.unreadable}
-            />
-            <TimelineTab timeline={timeline} />
+        {/* ── Investigation progress (compact) ──────────────────── */}
+        <section className="caseFileSection" aria-label="Investigation progress">
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
+            <p className="caseFileSectionTitle">Investigation</p>
+            {summaryState
+              ? <StatusPill label={summaryState} variant={summaryStateVariant(summaryState)} />
+              : null}
           </div>
-        )}
-        {activeTab === 'alerts' && <AlertsTab linkedAlert={linkedAlert} hasLinkedAlert={hasLinkedAlert} workspaceEvidenceSource={workspaceEvidenceSource} />}
-        {/* Incident-scoped forensic evidence directory (four provenance domains,
-            backend counts, snapshot integrity, Screen 9 package linkage). The
-            alert-scoped evidence list stays beneath it so the linked alert's own
-            records remain reachable from the same tab. */}
-        {activeTab === 'evidence' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-            <IncidentEvidenceTab
-              data={incidentEvidence}
-              load={incidentEvidenceLoad}
-              onRetry={onIncidentEvidenceRetry}
-            />
-            <EvidenceTab evidence={evidence} workspaceEvidenceSource={workspaceEvidenceSource} />
-          </div>
-        )}
-        {activeTab === 'response-actions' && (
-          <ResponseActionsTab
-            actions={responseActions}
-            incidentId={incident.id}
-            onRecommend={onRecommend}
-            recommending={recommending}
-            recommendError={recommendError}
-          />
-        )}
-        {/* Persisted forensic investigation workflow stages (Detection → Report Generated),
-            read from the SAME canonical investigation payload the full page and the Overview
-            progress use — never inferred in the browser, never a second fetch. */}
-        {activeTab === 'workflow' && <WorkflowTab stages={workflowStages} load={investigationLoad} />}
-        {/* Evidence-grounded AI investigation for the selected incident. The panel is
-            workspace-scoped, polls its own state, and exposes the Start AI Investigation
-            button; it fails closed to a disabled/unavailable message when triage is off
-            or migration 0123 is not yet applied. */}
-        {activeTab === 'ai-investigation' && <AiInvestigationPanel incidentId={incident.id} />}
+          <CompactWorkflowProgress progress={progress} load={investigationLoad} />
+          <p className="caseFileIntegrityDetail" style={{ margin: 0 }}>
+            Next: {nextAction.label}
+          </p>
+        </section>
       </div>
     </aside>
+  );
+}
+
+/* ── One integrity summary line ──────────────────────────────────── */
+// Heading, one primary value, at most one short secondary line and one machine
+// identifier. A row with no record renders muted with NO badge — a coloured pill
+// is reserved for a state the backend actually asserted.
+function IntegritySummaryLine({ row }: { row: IntegritySummaryRow }) {
+  return (
+    <div className="caseFileIntegrityRow">
+      <span className="caseFileIntegrityLabel">{row.label}</span>
+      <div className="caseFileIntegrityBody">
+        <div className="caseFileIntegrityHead">
+          {/* An empty value means the badge already states the fact verbatim. */}
+          {row.value ? (
+            <span className={row.recorded ? 'caseFileIntegrityValue' : 'caseFileIntegrityValue caseFileIntegrityValue-absent'}>
+              {row.value}
+            </span>
+          ) : null}
+          {row.badge ? <StatusPill label={row.badge.label} variant={row.badge.variant} /> : null}
+        </div>
+        {row.detail ? <span className="caseFileIntegrityDetail">{row.detail}</span> : null}
+        {row.code ? <span className="caseFileIntegrityCode">{row.code}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+/* ── Compact investigation progress ──────────────────────────────── */
+// The persisted workflow stages, counted. The full seven-stage checklist stays on
+// the full investigation workspace, where it is not pushed below the fold. Fails
+// closed: a loading, unavailable or unreadable investigation never renders a bar
+// that implies progress.
+function CompactWorkflowProgress({ progress, load }: {
+  progress: WorkflowProgress | null; load: InvestigationLoad;
+}) {
+  if (load === 'loading' || load === 'idle') {
+    return <p className="caseFileIntegrityDetail" style={{ margin: 0 }}>Loading investigation workflow…</p>;
+  }
+  if (load === 'unavailable') {
+    return <p className="caseFileIntegrityDetail" style={{ margin: 0 }}>Investigation workflow is not available for this deployment yet.</p>;
+  }
+  if (load === 'error') {
+    return <p className="caseFileIntegrityDetail" style={{ margin: 0 }}>Unable to load the investigation workflow.</p>;
+  }
+  if (!progress) {
+    return <p className="caseFileIntegrityDetail" style={{ margin: 0 }}>No workflow stages recorded yet.</p>;
+  }
+  return (
+    <>
+      <div className="caseFileProgressHead">
+        <span className="caseFileProgressCount">{progress.completed} / {progress.total} complete</span>
+        {progress.failed > 0 ? <StatusPill label={`${progress.failed} failed`} variant="danger" /> : null}
+      </div>
+      <div
+        className="caseFileProgressTrack"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={progress.total}
+        aria-valuenow={progress.completed}
+        aria-label="Investigation stages completed"
+      >
+        <div
+          className={progress.failed > 0 ? 'caseFileProgressFill caseFileProgressFill-failed' : 'caseFileProgressFill'}
+          style={{ width: `${progress.percent}%` }}
+        />
+      </div>
+      {progress.current
+        ? <span className="caseFileProgressCurrent">Current: {progress.current}</span>
+        : null}
+    </>
   );
 }
 
@@ -1170,86 +1084,14 @@ function ForensicFieldFallback({ load, absent }: { load: ForensicLoadState; abse
   return <span className="muted" style={{ fontSize: '0.78rem' }}>{text}</span>;
 }
 
-/* ── Detail field helper ─────────────────────────────────────────── */
-function DetailField({ label, value }: { label: string; value: ReactNode }) {
+/* ── Case File metadata field ────────────────────────────────────── */
+// One labelled case fact. `wide` spans both metadata columns, for values that
+// must wrap rather than truncate (identifiers an auditor copies).
+function CaseFileField({ label, value, wide = false }: { label: string; value: ReactNode; wide?: boolean }) {
   return (
-    <div>
-      <p className="tableMeta" style={{ margin: '0 0 0.1rem', fontSize: '0.72rem' }}>{label}</p>
-      <div style={{ fontSize: '0.8rem' }}>{value}</div>
-    </div>
-  );
-}
-
-/* ── Overview tab ────────────────────────────────────────────────── */
-function OverviewTab({ incident, investigation, stages, load, caseSummary, caseSummaryLoad, responseActions, responseLoad }: {
-  incident: IncidentRow;
-  investigation: ForensicInvestigation | null;
-  stages: WorkflowStage[];
-  load: InvestigationLoad;
-  caseSummary: IncidentCaseSummary | null;
-  caseSummaryLoad: ForensicLoadState;
-  responseActions: ResponseActionRow[];
-  responseLoad: ForensicLoadState;
-}) {
-  // Canonical investigation state — the same value the full page's AI Investigation
-  // Summary shows (derived from the deterministic analysis status + AI triage status).
-  const summaryState = investigation?.analysis
-    ? investigationSummaryState(investigation.analysis.status, investigation.ai_triage?.status)
-    : null;
-  return (
-    <div>
-      {/* The deterministic case summary FIRST: what was detected, what the chain
-          recorded, what the systems of record said, what policy decided, where the
-          response stands, and what evidence proves it. Records only — the AI
-          Investigation tab explains, it never supplies these fields. */}
-      <div style={{ marginBottom: '0.85rem' }}>
-        <IncidentCaseOverview
-          summary={caseSummary}
-          load={caseSummaryLoad}
-          responseActions={responseActions}
-          responseLoad={responseLoad}
-          incidentId={incident.id}
-        />
-      </div>
-      <div style={{ marginBottom: '0.75rem' }}>
-        <p className="sectionEyebrow">Description</p>
-        <p style={{ fontSize: '0.85rem', margin: 0, color: 'var(--text-secondary)' }}>
-          {incident.description ?? 'No description provided.'}
-        </p>
-      </div>
-      <div style={{ marginBottom: '0.75rem' }}>
-        <p className="sectionEyebrow">Impact</p>
-        <p style={{ fontSize: '0.85rem', margin: 0, color: 'var(--text-secondary)' }}>
-          {incident.impact ?? 'Impact not assessed.'}
-        </p>
-      </div>
-      {(incident.risk_score != null || incident.normalized_risk) && (
-        <div style={{ marginBottom: '0.75rem' }}>
-          <p className="sectionEyebrow">Risk Score</p>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <span style={{ fontSize: '1.4rem', fontWeight: 700 }}>
-              {incident.risk_score != null ? `${Math.round(Number(incident.risk_score))} / 100` : '-'}
-            </span>
-            {incident.normalized_risk && (
-              <StatusPill label={incident.normalized_risk}
-                variant={['high', 'critical'].includes(incident.normalized_risk.toLowerCase()) ? 'danger' : 'warning'} />
-            )}
-          </div>
-        </div>
-      )}
-      <div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
-          <p className="sectionEyebrow" style={{ margin: 0 }}>Investigation Progress</p>
-          {summaryState
-            ? <StatusPill label={summaryState} variant={summaryStateVariant(summaryState)} />
-            : null}
-        </div>
-        {/* Canonical Screen 7 workflow stages — identical source to the full incident
-            page and to the Workflow tab (no browser-inferred checklist). */}
-        <div style={{ marginTop: '0.5rem' }}>
-          <WorkflowStages stages={stages} load={load} />
-        </div>
-      </div>
+    <div className={wide ? 'caseFileMetaField caseFileMetaField-wide' : 'caseFileMetaField'}>
+      <p className="caseFileMetaLabel">{label}</p>
+      <div className="caseFileMetaValue">{value}</div>
     </div>
   );
 }
@@ -1465,50 +1307,6 @@ function ResponseActionsTab({ actions, incidentId, onRecommend, recommending, re
       ))}
     </TableShell>
     </div>
-  );
-}
-
-/* ── Workflow tab + shared canonical stage renderer ──────────────── */
-// Persisted forensic investigation workflow stages. Stages come from the canonical
-// `/incidents/{id}/investigation` payload (the SAME source the full incident page uses),
-// fetched once at the panel level and passed in — the browser never marks a stage
-// "Completed" on its own and never issues a second per-incident request.
-function WorkflowTab({ stages, load }: { stages: WorkflowStage[]; load: InvestigationLoad }) {
-  return <WorkflowStages stages={stages} load={load} />;
-}
-
-// Single rendering path for the canonical workflow stages, shared by the Overview
-// "Investigation Progress" and the Workflow tab, so the two drawer views (and the full
-// page, which renders the identical stages) can never disagree. Fails closed: a
-// loading/unavailable/error investigation never renders a stage as complete.
-function WorkflowStages({ stages, load }: { stages: WorkflowStage[]; load: InvestigationLoad }) {
-  if (load === 'loading' || load === 'idle') return <p className="muted" style={{ fontSize: '0.85rem' }}>Loading investigation workflow…</p>;
-  if (load === 'unavailable') return <p className="muted" style={{ fontSize: '0.85rem' }}>Investigation workflow is not available for this deployment yet.</p>;
-  if (load === 'error') return <p className="muted" style={{ fontSize: '0.85rem' }}>Unable to load the investigation workflow.</p>;
-  if (stages.length === 0) return <p className="muted" style={{ fontSize: '0.85rem' }}>No workflow stages recorded yet.</p>;
-
-  return (
-    <ol style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}
-      aria-label="Investigation workflow stages">
-      {stages.map((s, i) => {
-        const done = s.state === 'completed';
-        const failed = s.state === 'failed';
-        const active = s.state === 'in_progress' || s.state === 'queued';
-        return (
-          <li key={s.stage} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', fontSize: '0.83rem' }}>
-            <span aria-hidden="true" style={{
-              width: '18px', height: '18px', borderRadius: '50%', flexShrink: 0,
-              display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.62rem', fontWeight: 700,
-              background: done ? 'rgba(34,197,94,0.18)' : failed ? 'rgba(239,68,68,0.18)' : active ? 'rgba(59,130,246,0.18)' : 'rgba(148,163,184,0.12)',
-              border: `1px solid ${done ? 'rgba(34,197,94,0.5)' : failed ? 'rgba(239,68,68,0.5)' : active ? 'rgba(59,130,246,0.5)' : 'rgba(148,163,184,0.25)'}`,
-              color: done ? 'var(--success-fg)' : failed ? 'var(--danger-fg)' : 'var(--text-muted)',
-            }}>{done ? '✓' : failed ? '!' : i + 1}</span>
-            <span style={{ flex: 1, color: done ? 'var(--text-primary)' : 'var(--text-muted)' }}>{s.label}</span>
-            <StatusPill label={workflowStateLabel(s.state)} variant={workflowStateVariant(s.state)} />
-          </li>
-        );
-      })}
-    </ol>
   );
 }
 

@@ -62,23 +62,45 @@ test('incident table columns exist exactly', () => {
   );
 });
 
-test('detail tabs exist exactly', () => {
-  const panel = appSource('incidents-panel.tsx');
-  expect(panel).toContain("label: 'Overview'");
-  expect(panel).toContain("label: 'Timeline'");
-  expect(panel).toContain("label: 'Alerts'");
-  expect(panel).toContain("label: 'Evidence'");
-  expect(panel).toContain("label: 'Response Actions'");
+test('full investigation tabs exist exactly', () => {
+  // Screen 7 information architecture: the Case File beside the queue is a compact
+  // SUMMARY of the case; the tabbed forensic record lives on Open Full Investigation,
+  // which has the main content width to render it without compressing it.
+  const tabs = appSource('incident-case-file-tabs.tsx');
+  expect(tabs).toContain("label: 'Overview'");
+  expect(tabs).toContain("label: 'Timeline'");
+  expect(tabs).toContain("label: 'Alerts'");
+  expect(tabs).toContain("label: 'Evidence'");
+  expect(tabs).toContain("label: 'Response Actions'");
+  expect(tabs).toContain("label: 'AI Investigation'");
 });
 
-test('overview shows the canonical investigation workflow (not a browser-inferred checklist)', () => {
+test('the Case File is a summary, not a second copy of the forensic record', () => {
   const panel = appSource('incidents-panel.tsx');
-  // Investigation Progress renders the persisted Screen 7 workflow stages via the shared
-  // renderer + the canonical AI Investigation Summary state — never the old locally
-  // inferred five-step checklist that disagreed with the full incident page.
-  expect(panel).toContain('Investigation Progress');
-  expect(panel).toContain('<WorkflowStages stages={stages} load={load} />');
-  expect(panel).toContain('investigationSummaryState(investigation.analysis.status, investigation.ai_triage?.status)');
+  // It answers "what is this case and what state is it in" and hands over.
+  expect(panel).toContain('Integrity Summary');
+  expect(panel).toContain('Open Full Investigation');
+  // The detail — artifact directory, lifecycle chronology, AI triage — is not
+  // rendered into the narrow column.
+  expect(panel).not.toContain('IncidentEvidenceTab');
+  expect(panel).not.toContain('IncidentForensicTimeline');
+  expect(panel).not.toContain('AiInvestigationPanel');
+});
+
+test('investigation progress comes from the canonical workflow stages (not a browser-inferred checklist)', () => {
+  const panel = appSource('incidents-panel.tsx');
+  // The Case File states how far the case has got, folded from the persisted Screen 7
+  // workflow stages + the canonical AI Investigation Summary state — never the old
+  // locally inferred five-step checklist that disagreed with the full incident page.
+  const full = appSource('forensic-investigator-panel.tsx');
+  expect(panel).toContain('aria-label="Investigation progress"');
+  expect(panel).toContain('const workflowStages = analysis?.workflow_stages ?? [];');
+  expect(panel).toContain('summarizeWorkflowProgress(workflowStages)');
+  expect(panel).toContain('investigationSummaryState(analysis.status, investigation?.ai_triage?.status)');
+  // The full stage checklist stays on the full investigation workspace, where it is
+  // not pushed below the fold by a 360px column.
+  expect(full).toContain('Investigation Workflow');
+  expect(full).toContain('stages={analysis.workflow_stages ?? []}');
   // The legacy, browser-inferred progress labels are gone (they are what disagreed with
   // the canonical full page).
   expect(panel).not.toContain("label: 'Alert Received'");

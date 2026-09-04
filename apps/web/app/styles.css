@@ -8474,6 +8474,265 @@ a.mktTrustBadge:hover {
   color: var(--text-muted);
 }
 
+/* --- Screen 7 · Incident queue + Case File panel ---------------------------
+   The queue owns the main content area; the Case File is a compact preview
+   beside it, never the forensic workspace itself. The panel keeps a moderate
+   fixed width on desktop (inside the 320–380px band the layout budget allows)
+   and stacks beneath the table once there is no longer room for two readable
+   columns — the previous hard-coded 400px column applied at EVERY width, which
+   crushed the table on tablets and left the panel un-stacked on mobile. */
+.incidentsQueueLayout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+@media (min-width: 1180px) {
+  .incidentsQueueLayout-withCase {
+    grid-template-columns: minmax(0, 1fr) 376px;
+  }
+}
+
+/* The Case File itself. Enterprise density is kept, but the type scale is a
+   readable one: 14px panel heading, 11px section headings, 13px primary values,
+   11px secondary metadata. Nothing important is rendered below 11px. */
+.caseFilePanel {
+  padding: 0;
+  overflow: hidden;
+  min-width: 0;
+}
+
+/* The four canonical queue counters. auto-fit rather than a fixed four-column
+   grid: the fixed grid forced the whole page wider than a phone viewport, which
+   is what pushed the queue table and the Case File off-screen there. */
+.incidentsQueueCounters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.caseFileHeader {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.8rem 1rem;
+  background: rgba(59, 130, 246, 0.06);
+  border-bottom: 1px solid var(--border);
+}
+
+.caseFileEyebrow {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.caseFileTitle {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+/* Case metadata: two columns of label-over-value pairs. Long identifiers wrap
+   rather than truncate — an auditor copies these. */
+.caseFileMeta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.4rem 0.85rem;
+}
+
+.caseFileMetaField {
+  min-width: 0;
+}
+
+.caseFileMetaField-wide {
+  grid-column: 1 / -1;
+}
+
+.caseFileMetaLabel {
+  margin: 0 0 0.05rem;
+  font-size: 0.6875rem;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+}
+
+.caseFileMetaValue {
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.caseFileMetaValue .incidentMonoValue,
+.caseFileMonoValue {
+  font-family: monospace;
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+/* The primary CTA. The forensic record lives behind it, so it is a full-width
+   primary button rather than a link buried under the fields. */
+.caseFileCta {
+  width: 100%;
+  justify-content: center;
+  font-size: 0.8125rem;
+}
+
+.caseFileBody {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  padding: 0.85rem 1rem 0.95rem;
+}
+
+.caseFileSection {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.caseFileSectionTitle {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* One integrity fact per row: the domain in a fixed label column, then the primary
+   value with its state badge, and at most one short secondary line plus one machine
+   identifier. Six answers a reader scans down, not one wall of fields. */
+.caseFileIntegrity {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.caseFileIntegrityRow {
+  display: grid;
+  /* Wide enough for the longest domain word ("OPERATIONAL") at the 11px section
+     size, so a label can never collide with the value beside it. */
+  grid-template-columns: 5.5rem minmax(0, 1fr);
+  gap: 0.1rem 0.5rem;
+  align-items: start;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(148, 163, 184, 0.04);
+  min-width: 0;
+}
+
+.caseFileIntegrityBody {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+/* Value left, state badge hard right, on one line: the value wraps inside its own
+   box rather than pushing the badge onto a line of its own. */
+.caseFileIntegrityHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: nowrap;
+  gap: 0.4rem;
+}
+
+.caseFileIntegrityHead > .ruleChip {
+  flex: 0 0 auto;
+  /* Keeps the badge hard right even on a row whose value is blank because the
+     badge already states the fact. */
+  margin-left: auto;
+}
+
+.caseFileIntegrityLabel {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1.6;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.caseFileIntegrityValue {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.8125rem;
+  line-height: 1.35;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+/* An absent, unreadable or still-loading record is muted and carries no badge —
+   it must never read like a recorded state. */
+.caseFileIntegrityValue-absent {
+  color: var(--text-muted);
+}
+
+.caseFileIntegrityDetail {
+  font-size: 0.6875rem;
+  line-height: 1.35;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.caseFileIntegrityCode {
+  font-family: monospace;
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+/* Compact investigation progress. The seven-stage checklist stays on the full
+   investigation workspace; the drawer states how far the case has got. */
+.caseFileProgressHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.caseFileProgressCount {
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+}
+
+.caseFileProgressTrack {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.18);
+  overflow: hidden;
+}
+
+.caseFileProgressFill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--success-fg);
+}
+
+.caseFileProgressFill-failed {
+  background: var(--danger-fg);
+}
+
+.caseFileProgressCurrent {
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+}
+
+@media (max-width: 640px) {
+  .caseFileMeta { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* --- Screen 7 · Case summary (Overview + Case File snapshot) ---------------
    The deterministic executive summary: detection, on-chain state, operational
    state, policy verdict, response state, evidence state. Same institutional
@@ -8487,12 +8746,71 @@ a.mktTrustBadge:hover {
   gap: 0.55rem;
 }
 
-/* Two columns only where the caller says it has the room — the full-investigation
-   content area. The 400px Case File drawer stays single-column at every width. */
+/* The full-investigation content area gets the reference forensic layout: the
+   operational-integrity analysis on the left (~2fr) and the case state on the
+   right (~1fr). The Case File drawer never uses this — it renders the compact
+   integrity summary instead, and the detailed record lives here. */
+.incidentCaseOverview-wide {
+  gap: 1rem;
+}
+
 @media (min-width: 900px) {
   .incidentCaseOverview-wide {
+    grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr);
+  }
+}
+
+.incidentCaseAnalysis,
+.incidentCaseStateColumn {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.incidentCaseColumnTitle {
+  margin: 0 0 0.1rem;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* On-chain state beside operational state — the two readings whose disagreement
+   is the whole case. Side by side wherever the analysis column has the room. */
+.incidentCaseCompare {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.55rem;
+}
+
+@media (min-width: 1180px) {
+  .incidentCaseCompare {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+
+/* The reconciliation result sits between the two readings and the policy verdict,
+   in the order the lifecycle ran. It restates the operational record's own
+   reconciliation fields — it never computes a second verdict. */
+.incidentCaseReconciliation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(148, 163, 184, 0.06);
+}
+
+.incidentCaseReconciliationLabel {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
 }
 
 .incidentCaseSection {

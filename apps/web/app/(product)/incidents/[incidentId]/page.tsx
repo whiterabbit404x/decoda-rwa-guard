@@ -12,9 +12,14 @@ export const dynamic = 'force-dynamic';
 // Screen 7: the Digital Forensics Investigator is the whole hero of this route — the
 // deterministic, evidence-grounded investigation view (incident header, AI investigation
 // summary, canonical investigation workflow, corroborated evidence, the Investigator agent
-// findings, report generation, and re-run). Beneath it, the supplementary case-file tabs
-// reuse ONLY the drawer's tab bodies (Timeline / Alerts / Evidence / Response Actions) so
-// Timeline and Response Actions remain reachable — never the list shell.
+// findings, report generation, and re-run). Beneath it, the case-file tabs reuse ONLY the
+// tab bodies exported by the list panel (Timeline / Alerts / Evidence / Response Actions,
+// plus the AI investigation) — never the list shell.
+//
+// This route is where the forensic DETAIL belongs. The Case File beside the incident queue
+// is a compact preview of the same canonical records; the reason-code lists, reconciliation
+// detail, artifact directory, lifecycle chronology and response authorization trail are
+// rendered here, across the main content width, rather than compressed into that column.
 //
 // This route deliberately renders neither the incidents list, its KPI tiles, filters,
 // pagination, the create-incident control, nor the list drawer (those belong to
@@ -31,9 +36,11 @@ export default async function IncidentDetailPage({
       <section className="hero compactHero">
         <div>
           <p className="eyebrow">Investigation Workflow</p>
-          <h1>Incident</h1>
+          <h1>Full Investigation</h1>
           <p className="lede">
-            Investigate this alert-driven incident, its evidence, and response progress.
+            The complete forensic record for this incident: what the chain recorded, what the
+            operational systems of record said, what policy decided, where the response stands,
+            and the evidence that proves it.
           </p>
           {/* Back action near the full-page header — a real <Link> so keyboard activation
               and browser back navigation both work. Returns to the incidents list. */}
