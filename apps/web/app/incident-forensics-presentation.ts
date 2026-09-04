@@ -20,6 +20,7 @@ import {
   evidenceSourceLabel,
   evidenceSourceVariant,
   type PillVariant,
+  type WorkflowStage,
 } from './forensic-investigation-presentation';
 
 /* ── Evidence domains ─────────────────────────────────────────────── */
@@ -723,5 +724,295 @@ export function parseIncidentQueueCounts(payload: unknown): IncidentQueueCounts 
     in_investigation: investigating,
     awaiting_response: awaiting,
     total: counterValue(counts, 'total') ?? 0,
+  };
+}
+
+/* ── Compact integrity summary (Case File drawer) ─────────────────── */
+
+/**
+ * The six operational-integrity facts the narrow Case File answers at a glance:
+ * what was detected, what the chain recorded, what the systems of record said,
+ * what policy decided, where the response stands, and what evidence proves it.
+ *
+ * This is the SAME canonical case record the full-investigation Overview renders
+ * — folded into one line each, never a second reading of it. The full record
+ * (reason-code lists, reconciliation detail, artifact metadata, approval routing)
+ * belongs to Open Full Investigation; nothing is duplicated here.
+ */
+export type IntegritySummaryKey =
+  | 'detection' | 'on_chain' | 'operational' | 'policy' | 'response' | 'evidence';
+
+export type IntegritySummaryRow = {
+  key: IntegritySummaryKey;
+  /** Section heading, e.g. "On-Chain". */
+  label: string;
+  /** The one-line primary value. Absence is stated here, never left blank. */
+  value: string;
+  /** A short secondary line, or null. Never a paragraph — the drawer is a summary. */
+  detail: string | null;
+  /** A machine identifier (policy key, reason code) rendered monospace, or null. */
+  code: string | null;
+  /**
+   * The state badge. `null` whenever there is no state to report — a row that is
+   * loading, unreadable or genuinely absent gets NO coloured pill, so absence can
+   * never read as a verdict (CLAUDE.md: no data must not be shown as safe).
+   */
+  badge: { label: string; variant: PillVariant } | null;
+  /** True only when a real backend record stands behind the row. */
+  recorded: boolean;
+};
+
+/** Wording for a record that could not be read, is still being read, or is absent. */
+function absentValue(load: ForensicLoadState, absent: string): string {
+  switch (load) {
+    case 'idle':
+    case 'loading': return 'Loading…';
+    case 'unauthorized': return 'Not permitted in this workspace';
+    case 'not_found': return 'Incident not found';
+    case 'error': return 'Unavailable';
+    default: return absent;
+  }
+}
+
+/** Severity badge for the detection row. Absent severity earns no badge. */
+function detectionSeverityBadge(severity: string | null | undefined): { label: string; variant: PillVariant } | null {
+  const raw = (severity ?? '').trim().toLowerCase();
+  if (!raw) return null;
+  const label = humanizeToken(raw) ?? raw;
+  if (raw === 'critical' || raw === 'high') return { label, variant: 'danger' };
+  if (raw === 'medium') return { label, variant: 'warning' };
+  if (raw === 'low') return { label, variant: 'success' };
+  if (raw === 'info') return { label, variant: 'info' };
+  return { label, variant: 'neutral' };
+}
+
+/**
+ * Short state word for the response badge. The exact counts stay on the value line —
+ * the badge names the state an operator must act on, in the shared response vocabulary,
+ * short enough to sit beside the value in a 360px column rather than wrapping under it.
+ */
+const RESPONSE_STATE_BADGE: Record<CaseResponseState['state'], string> = {
+  none: 'None',
+  awaiting_approval: 'Awaiting',
+  approved: 'Approved',
+  executed: 'Executed',
+  failed: 'Failed',
+  recommended: 'Recommended',
+};
+
+/**
+ * Short snapshot label for the compact badge. Same four states the full label names
+ * ("Evidence snapshot ready" → "Ready"); the wording is shortened, never the meaning,
+ * and an unrecorded state stays "Unknown" rather than borrowing a good one.
+ */
+function snapshotStatusShortLabel(status: ForensicSnapshotStatus | null | undefined): string {
+  switch (status) {
+    case 'collecting': return 'Collecting';
+    case 'ready': return 'Ready';
+    case 'sealed': return 'Sealed';
+    case 'failed': return 'Integrity failed';
+    default: return 'Unknown';
+  }
+}
+
+/** "AUTH_MISSING" + 2 others → one short line, never a stack of pills in a 360px column. */
+function reasonCodeSummary(codes: readonly string[] | null | undefined): string | null {
+  const list = (codes ?? []).filter((code) => !!code && code.trim());
+  if (list.length === 0) return null;
+  const first = humanizeToken(list[0]) ?? list[0];
+  return list.length === 1 ? first : `${first} +${list.length - 1} more`;
+}
+
+/**
+ * Fold the canonical case record into the six compact rows.
+ *
+ * Truthfulness rules enforced here (CLAUDE.md):
+ *   * Observed / Not matched / DENY / Ready / Verified appear ONLY where the
+ *     backend state proves them. A section with no record says "Not available",
+ *     "Not collected", "Not evaluated", "No response action" or "No snapshot"
+ *     and carries no badge.
+ *   * A read that is still in flight, or that failed, is reported as such — it
+ *     never collapses into the "genuinely absent" wording.
+ *   * Nothing is derived that the backend did not send: counts, decisions and
+ *     states are read straight off the payload and only LABELLED here.
+ */
+export function buildIntegritySummary(input: {
+  summary: IncidentCaseSummary | null;
+  /** Load state of the incident's forensic evidence record (the case summary). */
+  summaryLoad: ForensicLoadState;
+  /** Screen 8's folded response state. */
+  response: CaseResponseState;
+  /** Whether Screen 8's action records have actually been read. */
+  responseLoad: ForensicLoadState;
+}): IntegritySummaryRow[] {
+  const { summary, summaryLoad, response, responseLoad } = input;
+  const known = summaryLoad === 'ready' || summaryLoad === 'empty';
+  const detection = summary?.detection ?? {};
+  const onChain = summary?.on_chain ?? {};
+  const operational = summary?.operational ?? {};
+  const policy = summary?.policy ?? {};
+  const evidence = summary?.evidence ?? {};
+
+  /* Detection — what the detector said. */
+  const detectionName =
+    detection.title ?? humanizeToken(detection.detection_type) ?? humanizeToken(detection.category);
+  const detectionRow: IntegritySummaryRow = known && detectionName
+    ? {
+      key: 'detection', label: 'Detection', value: detectionName,
+      detail: detection.category && detection.detection_type ? humanizeToken(detection.category) : null,
+      // The machine reason code is an auditor's key, not a summary fact: it is listed
+      // in the full record rather than stacked into the narrow column.
+      code: null,
+      badge: detectionSeverityBadge(detection.severity),
+      recorded: true,
+    }
+    : {
+      key: 'detection', label: 'Detection',
+      value: absentValue(known ? 'empty' : summaryLoad, 'No linked detection'),
+      detail: null, code: null, badge: null, recorded: false,
+    };
+
+  /* On-chain — what the chain recorded. */
+  const observedAmount = formatCaseAmount(onChain.observed_amount);
+  const onChainRecorded = known && caseSectionRecorded(onChain.state);
+  const onChainValue = [humanizeToken(onChain.operation), observedAmount].filter(Boolean).join(' ');
+  const onChainRow: IntegritySummaryRow = onChainRecorded
+    ? {
+      key: 'on_chain', label: 'On-Chain', value: onChainValue || 'Chain event recorded',
+      detail: onChain.block_number ? `Block ${onChain.block_number}` : null,
+      code: null,
+      badge: { label: caseStateLabel(onChain.state), variant: caseStateVariant(onChain.state) },
+      recorded: true,
+    }
+    : {
+      key: 'on_chain', label: 'On-Chain',
+      value: absentValue(known ? 'empty' : summaryLoad, 'Not available'),
+      detail: null, code: null, badge: null, recorded: false,
+    };
+
+  /* Operational — what the systems of record said. */
+  const operationalRecorded = known && caseSectionRecorded(operational.state);
+  const operationalRow: IntegritySummaryRow = operationalRecorded
+    ? {
+      key: 'operational', label: 'Operational',
+      value: humanizeToken(operational.reconciliation_status) ?? caseStateLabel(operational.state),
+      detail: formatCaseAmount(operational.variance_amount)
+        ? `Variance ${formatCaseAmount(operational.variance_amount)}`
+        : operational.authoritative_source ?? null,
+      code: null,
+      badge: { label: caseStateLabel(operational.state), variant: caseStateVariant(operational.state) },
+      recorded: true,
+    }
+    : {
+      key: 'operational', label: 'Operational',
+      value: absentValue(known ? 'empty' : summaryLoad, 'Not collected'),
+      detail: null, code: null, badge: null, recorded: false,
+    };
+
+  /* Policy — the deterministic engine's verdict, never an AI explanation. */
+  const policyRecorded = known && caseSectionRecorded(policy.state);
+  const policyRow: IntegritySummaryRow = policyRecorded
+    ? {
+      key: 'policy', label: 'Policy',
+      // The badge states the verdict; the line beneath it states why, in one short
+      // phrase. The complete reason-code list belongs to the full investigation.
+      value: reasonCodeSummary(policy.reason_codes) ?? policy.decision ?? 'No decision recorded',
+      detail: null,
+      code: policy.policy_key
+        ? `${policy.policy_key}${policy.policy_version !== null && policy.policy_version !== undefined ? ` v${policy.policy_version}` : ''}`
+        : null,
+      badge: policy.decision
+        ? { label: policy.decision, variant: policyDecisionVariant(policy.decision) }
+        : null,
+      recorded: true,
+    }
+    : {
+      key: 'policy', label: 'Policy',
+      value: absentValue(known ? 'empty' : summaryLoad, 'Not evaluated'),
+      detail: null, code: null, badge: null, recorded: false,
+    };
+
+  /* Response — Screen 8's state, reported not restated. */
+  const responseKnown = responseLoad === 'ready' || responseLoad === 'empty';
+  const responseRow: IntegritySummaryRow = responseKnown && response.total > 0
+    ? {
+      key: 'response', label: 'Response', value: response.label,
+      detail: `${response.total} recommended`,
+      code: null,
+      badge: { label: RESPONSE_STATE_BADGE[response.state], variant: responseStateVariant(response.state) },
+      recorded: true,
+    }
+    : {
+      key: 'response', label: 'Response',
+      value: absentValue(responseKnown ? 'empty' : responseLoad, 'No response action'),
+      detail: null, code: null, badge: null, recorded: false,
+    };
+
+  /* Evidence — what proves it. A count the backend did not report is not zero. */
+  const artifactCount = typeof evidence.artifact_count === 'number' ? evidence.artifact_count : null;
+  const evidenceRow: IntegritySummaryRow = known && artifactCount !== null
+    ? {
+      key: 'evidence', label: 'Evidence',
+      value: `${artifactCount} ${artifactCount === 1 ? 'artifact' : 'artifacts'}`,
+      // The badge already names a recorded snapshot state; the secondary line is used
+      // only to say that no state was recorded, rather than to repeat the badge.
+      detail: evidence.snapshot_status ? null : snapshotStatusLabel(evidence.snapshot_status),
+      code: evidence.package_number ?? null,
+      // A snapshot badge is shown only for a state the backend actually recorded —
+      // "unknown" is not a state worth colouring.
+      badge: evidence.snapshot_status
+        ? { label: snapshotStatusShortLabel(evidence.snapshot_status), variant: snapshotStatusVariant(evidence.snapshot_status) }
+        : null,
+      recorded: true,
+    }
+    : {
+      key: 'evidence', label: 'Evidence',
+      value: absentValue(known ? 'empty' : summaryLoad, 'No snapshot'),
+      detail: null, code: null, badge: null, recorded: false,
+    };
+
+  // A row whose value repeats its badge word for word prints the same fact twice in a
+  // column that has no room for it. The badge keeps the state; the value goes blank and
+  // the renderer skips it. Nothing is lost — the badge already says it.
+  return [detectionRow, onChainRow, operationalRow, policyRow, responseRow, evidenceRow].map((row) =>
+    row.badge && row.badge.label === row.value ? { ...row, value: '' } : row,
+  );
+}
+
+/* ── Compact investigation progress (Case File drawer) ────────────── */
+
+/**
+ * The persisted workflow stages, folded into a single progress line so the drawer
+ * does not push a seven-item checklist below the fold. The full checklist stays on
+ * the full-investigation workspace — this is the same canonical `workflow_stages`
+ * payload counted, never a second, browser-inferred definition of "done".
+ *
+ * Returns null when there are no stages: "0 / 0" would be a claim the data does
+ * not support.
+ */
+export type WorkflowProgress = {
+  total: number;
+  completed: number;
+  failed: number;
+  /** Floor-rounded completion percentage, 0–100. */
+  percent: number;
+  /** The stage an operator is on now (first in-progress/queued), else null. */
+  current: string | null;
+};
+
+export function summarizeWorkflowProgress(
+  stages: readonly WorkflowStage[] | null | undefined,
+): WorkflowProgress | null {
+  const rows = stages ?? [];
+  if (rows.length === 0) return null;
+  const completed = rows.filter((s) => s.state === 'completed').length;
+  const failed = rows.filter((s) => s.state === 'failed').length;
+  const active = rows.find((s) => s.state === 'in_progress') ?? rows.find((s) => s.state === 'queued');
+  return {
+    total: rows.length,
+    completed,
+    failed,
+    percent: Math.floor((completed / rows.length) * 100),
+    current: active?.label ?? null,
   };
 }

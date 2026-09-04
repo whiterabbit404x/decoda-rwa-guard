@@ -4,42 +4,49 @@ import path from 'node:path';
 import { expect, test } from '@playwright/test';
 
 // Static-source assertions (the repo's established frontend test style — no running
-// server) that pin the AI Investigation panel into the reachable Incidents UI. The
-// panel previously lived only on the standalone /incidents/[incidentId] route, which
-// "View Incident" never navigates to; these guard the fix that surfaces it inside the
-// case-file drawer that "View Incident" actually opens.
+// server) that pin the AI Investigation panel into the reachable Incidents UI. Both
+// Screen 7 navigation controls — the table's "View Incident" and the Case File's
+// "Open Full Investigation" — route to /incidents/[incidentId], and the panel is a tab
+// of that route's case record, where it has the width its citations and lifecycle need.
 const appRoot = path.join(process.cwd(), 'apps/web/app');
 
 function read(relativePath: string) {
   return readFileSync(path.join(appRoot, relativePath), 'utf8');
 }
 
-test('AI Investigation panel is wired into the incidents case-file drawer', async () => {
+test('AI Investigation panel is wired into the full investigation case record', async () => {
+  const tabs = read('incident-case-file-tabs.tsx');
+
+  // The merged AI Investigation component is imported and rendered in the case record.
+  expect(tabs).toContain("import AiInvestigationPanel from './ai-investigation-panel'");
+  expect(tabs).toContain('<AiInvestigationPanel incidentId={incidentId} />');
+  // Rendered for the dedicated tab (not double-rendered elsewhere), so its /ai-triage
+  // lifecycle does not start until an operator opens it.
+  expect(tabs).toContain("activeTab === 'ai-investigation'");
+
+  // The case record exposes an "AI Investigation" tab alongside the existing tabs.
+  expect(tabs).toContain("{ key: 'ai-investigation', label: 'AI Investigation' }");
+
+  // It is reachable from the incident queue in one click: the Case File's primary CTA
+  // routes to the same canonical /incidents/{id} detail route.
   const panel = read('incidents-panel.tsx');
-
-  // The merged AI Investigation component is imported and rendered inside the drawer.
-  expect(panel).toContain("import AiInvestigationPanel from './ai-investigation-panel'");
-  expect(panel).toContain('<AiInvestigationPanel incidentId={incident.id} />');
-  // Rendered for the dedicated tab (not double-rendered elsewhere).
-  expect(panel).toContain("activeTab === 'ai-investigation'");
-
-  // The drawer exposes an "AI Investigation" tab alongside the existing tabs.
-  expect(panel).toContain("{ key: 'ai-investigation',  label: 'AI Investigation' }");
+  expect(panel).toContain('Open Full Investigation');
+  expect(panel).toContain('href={`/incidents/${encodeURIComponent(incident.id)}`}');
 });
 
 test('existing Overview/Timeline/Alerts/Evidence/Response Actions tabs are preserved', async () => {
-  const panel = read('incidents-panel.tsx');
-  expect(panel).toContain("{ key: 'overview',          label: 'Overview' }");
-  expect(panel).toContain("{ key: 'timeline',          label: 'Timeline' }");
-  expect(panel).toContain("{ key: 'alerts',            label: 'Alerts' }");
-  expect(panel).toContain("{ key: 'evidence',          label: 'Evidence' }");
-  expect(panel).toContain("{ key: 'response-actions',  label: 'Response Actions' }");
+  const tabs = read('incident-case-file-tabs.tsx');
+  expect(tabs).toContain("{ key: 'overview',         label: 'Overview' }");
+  expect(tabs).toContain("{ key: 'timeline',         label: 'Timeline' }");
+  expect(tabs).toContain("{ key: 'alerts',           label: 'Alerts' }");
+  expect(tabs).toContain("{ key: 'evidence',         label: 'Evidence' }");
+  expect(tabs).toContain("{ key: 'response-actions', label: 'Response Actions' }");
   // Their tab bodies still render.
-  expect(panel).toContain("activeTab === 'overview'");
-  expect(panel).toContain("activeTab === 'timeline'");
-  expect(panel).toContain("activeTab === 'alerts'");
-  expect(panel).toContain("activeTab === 'evidence'");
-  expect(panel).toContain("activeTab === 'response-actions'");
+  expect(tabs).toContain("activeTab === 'overview'");
+  expect(tabs).toContain("activeTab === 'timeline'");
+  expect(tabs).toContain("activeTab === 'alerts'");
+  expect(tabs).toContain("activeTab === 'evidence'");
+  expect(tabs).toContain("activeTab === 'response-actions'");
 });
 
 test('Start AI Investigation button calls the authenticated per-incident ai-triage endpoint', async () => {
@@ -147,18 +154,22 @@ test('citations link to their telemetry/evidence record and missing evidence is 
   expect(panel).toContain("['completed', 'completed_with_warnings'].includes(state?.status ?? '')");
 });
 
-test('incident detail route has no duplicate standalone AI panel', async () => {
+test('incident detail route mounts the standalone AI panel exactly once', async () => {
   const detail = read('(product)/incidents/[incidentId]/page.tsx');
-  // The detail route is the standalone forensic experience — the list drawer no longer
-  // renders here (Screen 7 composition fix). The AI Investigation is represented by the
-  // forensic AI Investigation Summary, so the standalone AiInvestigationPanel (its own
-  // triage flow) must not double-render on this route.
+  // The detail route is the standalone forensic experience — the incidents list no longer
+  // renders here (Screen 7 composition fix), and the page itself does not mount the AI
+  // triage panel: the case record's own tab does, so it can never double-render.
   expect(detail).toContain('<ForensicInvestigatorPanel incidentId={incidentId} />');
   expect(detail).not.toContain('<IncidentsPanel');
   expect(detail).not.toContain('<AiInvestigationPanel');
-  // The supplementary Case File tabs reuse the drawer bodies but deliberately omit the AI
-  // Investigation tab, so AiInvestigationPanel is not pulled in there either.
   const tabs = read('incident-case-file-tabs.tsx');
-  expect(tabs).not.toContain('AiInvestigationPanel');
-  expect(tabs).not.toContain('ai-investigation');
+  expect(tabs.split('<AiInvestigationPanel').length - 1).toBe(1);
+  expect(tabs).toContain("activeTab === 'ai-investigation' && <AiInvestigationPanel");
+  // The forensic hero renders the deterministic AI Investigation Summary from the
+  // /investigation payload; the triage panel polls /ai-triage. Different lifecycles,
+  // one mount each — the case record never re-fetches /investigation.
+  expect(tabs).not.toContain('/investigation`');
+  // The Case File beside the incident queue no longer mounts it at all.
+  const panel = read('incidents-panel.tsx');
+  expect(panel).not.toContain('AiInvestigationPanel');
 });

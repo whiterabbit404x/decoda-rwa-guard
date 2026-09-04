@@ -98,13 +98,14 @@ test('5. navigation is a real link (works even when the same drawer is already o
   );
 });
 
-test('6. the Case File drawer exposes "Open Full Investigation" to the same canonical route', () => {
+test('6. the Case File exposes "Open Full Investigation" to the same canonical route', () => {
   const panel = appSource('incidents-panel.tsx');
   expect(panel).toContain('Open Full Investigation');
-  // It is the drawer's primary <Link> (btn-primary) to the identical canonical incident route.
-  const drawerLinkPattern =
-    /href=\{`\/incidents\/\$\{encodeURIComponent\(incident\.id\)\}`\}\s+prefetch=\{false\}\s+className="btn btn-primary"[\s\S]*?Open Full Investigation\s*<\/Link>/;
-  expect(panel).toMatch(drawerLinkPattern);
+  // It is the Case File's primary <Link> (btn-primary, plus the full-width CTA class)
+  // to the identical canonical incident route.
+  const caseFileLinkPattern =
+    /href=\{`\/incidents\/\$\{encodeURIComponent\(incident\.id\)\}`\}\s+prefetch=\{false\}\s+className="btn btn-primary[^"]*"[\s\S]*?Open Full Investigation\s*<\/Link>/;
+  expect(panel).toMatch(caseFileLinkPattern);
 });
 
 test('7. both nav controls URL-encode the incident id (long / unusual valid ids are safe)', () => {

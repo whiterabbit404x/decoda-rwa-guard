@@ -252,21 +252,23 @@ test('KPIs read canonical backend counters, never a fold of the loaded page', ()
   expect(panel).not.toContain('isAwaitingResponseStatus(incidentStatus(i))');
 });
 
-test('drawer and full page share one workflow-stage source + renderer (identical states)', () => {
+test('Case File and full page share one workflow-stage source (identical states)', () => {
   const panel = appSource('incidents-panel.tsx');
   const full = appSource('forensic-investigator-panel.tsx');
   // Both import the SAME canonical presentation selectors.
   for (const src of [panel, full]) {
     expect(src).toContain("from './forensic-investigation-presentation'");
-    expect(src).toContain('workflowStateLabel');
-    expect(src).toContain('workflowStateVariant');
   }
-  // Drawer stages come from the canonical analysis payload (not a second definition).
+  // Case File stages come from the canonical analysis payload (not a second definition) …
   expect(panel).toContain('const workflowStages = analysis?.workflow_stages ?? [];');
-  // Full page renders the same analysis.workflow_stages.
+  // … folded into the compact progress line by a shared pure helper, so the summary can
+  // only ever say what the canonical stages say.
+  expect(panel).toContain('summarizeWorkflowProgress(workflowStages)');
+  // The full page renders the same analysis.workflow_stages as the full checklist, with
+  // each stage's canonical label + state pill.
   expect(full).toContain('stages={analysis.workflow_stages ?? []}');
-  // Both render each stage's canonical label + state pill.
-  expect(panel).toContain('workflowStateLabel(s.state)');
+  expect(full).toContain('workflowStateLabel');
+  expect(full).toContain('workflowStateVariant');
   expect(full).toContain('workflowStateLabel(s.state)');
 });
 

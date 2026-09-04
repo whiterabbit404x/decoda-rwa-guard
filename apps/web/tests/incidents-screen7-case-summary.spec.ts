@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
+  buildIntegritySummary,
   caseSectionRecorded,
   caseStateLabel,
   caseStateVariant,
@@ -191,10 +192,22 @@ test('the fold is deterministic', () => {
 
 /* ───────────────── 5. Case File snapshot fields ────────────────────────── */
 
-test('the Case File panel shows the canonical event, policy, response and evidence state', () => {
+test('the Case File panel shows the case metadata and the six integrity states', () => {
   const panel = appSource('incidents-panel.tsx');
-  for (const label of ['Canonical Event', 'Policy', 'Response', 'Evidence', 'Updated', 'Operational']) {
+  // Case metadata stays in the header, as labelled fields.
+  for (const label of ['Incident ID', 'Status', 'Created', 'Updated', 'Asset', 'Assigned',
+    'Linked Alert', 'Linked Detection', 'Canonical Event', 'Evidence Source']) {
     expect(panel, label).toContain(`label="${label}"`);
+  }
+  // The operational-integrity state is one compact row per domain, folded by the shared
+  // pure builder — the panel labels nothing itself, so the summary can only say what the
+  // canonical record says.
+  expect(panel).toContain('Integrity Summary');
+  expect(panel).toContain('buildIntegritySummary(');
+  expect(panel).toContain('<IntegritySummaryLine key={row.key} row={row} />');
+  const builder = appSource('incident-forensics-presentation.ts');
+  for (const label of ['Detection', 'On-Chain', 'Operational', 'Policy', 'Response', 'Evidence']) {
+    expect(builder, label).toContain(`label: '${label}'`);
   }
   // Sourced from the incident's own forensic record + Screen 8's action rows.
   expect(panel).toContain('incidentEvidence?.case_summary');
@@ -203,12 +216,20 @@ test('the Case File panel shows the canonical event, policy, response and eviden
 
 test('a case-file field distinguishes loading, unreadable and genuinely absent', () => {
   const panel = appSource('incidents-panel.tsx');
+  const builder = appSource('incident-forensics-presentation.ts');
   expect(panel).toContain('ForensicFieldFallback');
   for (const text of ['Loading…', 'Not permitted in this workspace', 'Incident not found', 'Unavailable']) {
     expect(panel, text).toContain(text);
   }
   expect(panel).toContain('No canonical event linked');
-  expect(panel).toContain('No policy evaluation');
+  // Every integrity row makes the same three-way distinction, in one place.
+  for (const text of ['Loading…', 'Not permitted in this workspace', 'Incident not found', 'Unavailable']) {
+    expect(builder, text).toContain(text);
+  }
+  for (const absent of ['No linked detection', 'Not available', 'Not collected', 'Not evaluated',
+    'No response action', 'No snapshot']) {
+    expect(builder, absent).toContain(absent);
+  }
 });
 
 /* ───────────────── 6. Overview (executive forensic summary) ────────────── */
@@ -256,12 +277,35 @@ test('the policy verdict is the deterministic engine\'s, and Screen 8 still owns
   expect(src).not.toContain('fetch(');
 });
 
-test('both Screen 7 surfaces render the Overview from the shared case summary', () => {
-  for (const file of ['incidents-panel.tsx', 'incident-case-file-tabs.tsx']) {
-    const src = appSource(file);
-    expect(src, file).toContain('IncidentCaseOverview');
-    expect(src, file).toContain('case_summary');
-  }
+test('both Screen 7 surfaces read the same shared case summary', () => {
+  // The full investigation renders the complete Overview across the main content width …
+  const tabs = appSource('incident-case-file-tabs.tsx');
+  expect(tabs).toContain('IncidentCaseOverview');
+  expect(tabs).toContain('case_summary');
+  expect(tabs).toContain('layout="wide"');
+  // … and the Case File folds the SAME record into its compact integrity summary, from
+  // the same shared fetch — never a second reading of it.
+  const panel = appSource('incidents-panel.tsx');
+  expect(panel).toContain('useIncidentEvidence(');
+  expect(panel).toContain('incidentEvidence?.case_summary');
+  expect(panel).toContain('buildIntegritySummary(');
+});
+
+test('the wide Overview lays the record out in the order the investigation ran', () => {
+  const src = appSource('incident-case-overview.tsx');
+  // Chain reading beside operational reading, their reconciliation result, then the
+  // policy verdict — with the case state (response, evidence) in its own column.
+  expect(src).toContain('incidentCaseOverview-wide');
+  expect(src).toContain('incidentCaseAnalysis');
+  expect(src).toContain('incidentCaseCompare');
+  expect(src).toContain('incidentCaseStateColumn');
+  expect(src).toContain('Operational integrity analysis');
+  expect(src).toContain('Case state');
+  // The reconciliation band restates the operational record's own fields; it never
+  // computes a second verdict, and an unreconciled case stays neutral.
+  expect(src).toContain('aria-label="Reconciliation result"');
+  expect(src).toContain('Not reconciled');
+  expect(src).toContain('caseStateVariant(operational.state)');
 });
 
 /* ───────────────── 7. AI authority ─────────────────────────────────────── */
@@ -311,7 +355,18 @@ test('"no response action" is only claimed once Screen 8 has actually been read'
 });
 
 test('an evidence count the backend did not report is never rendered as zero', () => {
-  const panel = appSource('incidents-panel.tsx');
-  expect(panel).toContain("typeof caseEvidence.artifact_count === 'number'");
-  expect(panel).not.toContain('caseEvidence.artifact_count ?? 0');
+  const builder = appSource('incident-forensics-presentation.ts');
+  expect(builder).toContain("typeof evidence.artifact_count === 'number' ? evidence.artifact_count : null");
+  expect(builder).not.toContain('evidence.artifact_count ?? 0');
+  // Executable proof: an evidence section with no reported count says "No snapshot"
+  // and carries no badge, rather than claiming zero artifacts.
+  const row = buildIntegritySummary({
+    summary: { evidence: { snapshot_status: null } },
+    summaryLoad: 'ready',
+    response: summarizeResponseState([]),
+    responseLoad: 'empty',
+  }).find((r) => r.key === 'evidence');
+  expect(row?.value).toBe('No snapshot');
+  expect(row?.badge).toBeNull();
+  expect(row?.recorded).toBe(false);
 });

@@ -42,14 +42,20 @@ test('1. /incidents renders the incidents list + Case File drawer (IncidentsPane
   expect(list).not.toContain('IncidentCaseFileTabs');
 });
 
-test('1b. the Case File drawer (with its tabs) still lives in the list panel', () => {
+test('1b. the Case File panel still lives in the list panel, as a compact summary', () => {
   const panel = appSource(...PANEL);
-  // The drawer aside + its tab strip remain on the list page.
+  const tabs = appSource(...TABS);
+  // The Case File aside remains on the list page and answers "what is this case and
+  // what state is it in", with the full-investigation hand-off as its primary action.
   expect(panel).toContain('aria-label="Incident detail"');
   expect(panel).toContain('Case File');
-  expect(panel).toContain("label: 'Timeline'");
-  expect(panel).toContain("label: 'Evidence'");
-  expect(panel).toContain("label: 'Response Actions'");
+  expect(panel).toContain('Integrity Summary');
+  expect(panel).toContain('Open Full Investigation');
+  // The tabbed forensic record moved to the full investigation, which has the width
+  // for it — nothing was dropped, it was relocated.
+  expect(tabs).toContain("label: 'Timeline'");
+  expect(tabs).toContain("label: 'Evidence'");
+  expect(tabs).toContain("label: 'Response Actions'");
 });
 
 /* ── 2. /incidents/[incidentId] is the full investigator ────────────────────── */
@@ -180,17 +186,20 @@ test('6d. the Response Actions hand-off is preserved and stays approval-routed (
 
 /* ── 7. no duplicate investigation request is introduced ─────────────────────── */
 
-test('7. only the forensic hero fetches /investigation — the detail tabs never do', () => {
+test('7. only the forensic hero fetches /investigation — the case-file tabs never do', () => {
   const detail = appSource(...DETAIL_PAGE);
   const tabs = appSource(...TABS);
   const forensic = appSource(...FORENSIC);
   // The forensic panel is the single owner of the /investigation fetch on this route.
   expect(forensic).toContain('/investigation');
   // Removing IncidentsPanel removes its per-selection /investigation fetch, and the
-  // supplementary tabs deliberately do NOT fetch the investigation payload at all.
+  // case-file tabs deliberately do NOT fetch the investigation payload at all.
   expect(detail).not.toContain('IncidentsPanel');
-  expect(tabs).not.toContain('/investigation');
-  // …and the standalone AI triage panel is not double-mounted here either.
+  expect(tabs).not.toContain('/investigation`');
+  // The standalone AI triage panel mounts exactly once on this route — under its own
+  // tab, so its /ai-triage lifecycle does not start on page load — and never from the
+  // page itself, so there is still no double-mount.
   expect(detail).not.toContain('<AiInvestigationPanel');
-  expect(tabs).not.toContain('AiInvestigationPanel');
+  expect(tabs.split('<AiInvestigationPanel').length - 1).toBe(1);
+  expect(tabs).toContain("activeTab === 'ai-investigation' && <AiInvestigationPanel");
 });

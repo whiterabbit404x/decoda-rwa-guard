@@ -240,19 +240,25 @@ test('mandatory generated-content + non-execution disclaimer is shown', () => {
   expect(src).toContain('No fund-moving, contract-changing');
 });
 
-test('Workflow tab is wired into the incidents drawer and reads canonical backend state', () => {
+test('the investigation workflow reads canonical backend state on both Screen 7 surfaces', () => {
   const panel = appSource('incidents-panel.tsx');
-  expect(panel).toContain("{ key: 'workflow',          label: 'Workflow' }");
-  expect(panel).toContain("activeTab === 'workflow'");
-  // The drawer now sources workflow stages from the SAME canonical investigation payload
+  const full = appSource('forensic-investigator-panel.tsx');
+  const tabs = appSource('incident-case-file-tabs.tsx');
+  // The Case File sources workflow stages from the SAME canonical investigation payload
   // the full incident page uses (fetched once per selected incident), not a separate
-  // /workflow request — so the drawer and full page can never disagree.
+  // /workflow request — so the two surfaces can never disagree. It renders them as a
+  // compact progress line; the full checklist belongs to the full investigation.
   expect(panel).toContain('/incidents/${encodeURIComponent(selectedId)}/investigation');
-  expect(panel).toContain('<WorkflowTab stages={workflowStages} load={investigationLoad} />');
-  expect(panel).toContain('workflowStateLabel(s.state)');
-  // Existing tabs are preserved (regression).
-  expect(panel).toContain("{ key: 'overview',          label: 'Overview' }");
-  expect(panel).toContain("{ key: 'ai-investigation',  label: 'AI Investigation' }");
+  expect(panel).toContain('const workflowStages = analysis?.workflow_stages ?? [];');
+  expect(panel).toContain('summarizeWorkflowProgress(workflowStages)');
+  // The full investigation renders the same stages as the full workflow checklist …
+  expect(full).toContain('Investigation Workflow');
+  expect(full).toContain('stages={analysis.workflow_stages ?? []}');
+  expect(full).toContain('workflowStateLabel(s.state)');
+  // … and the tabbed case record beneath it carries the remaining forensic views.
+  expect(tabs).toContain("{ key: 'overview',         label: 'Overview' }");
+  expect(tabs).toContain("{ key: 'ai-investigation', label: 'AI Investigation' }");
+  expect(tabs).toContain("activeTab === 'ai-investigation'");
 });
 
 test('detail route renders the investigator hero as the standalone experience (no list panel)', () => {
