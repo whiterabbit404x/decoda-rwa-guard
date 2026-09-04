@@ -46,6 +46,14 @@
   --info-bg:   rgba(59, 130, 246, 0.12);
   --info-bdr:  rgba(59, 130, 246, 0.32);
 
+  /* Human/governance accent. These name the violet the product ALREADY uses
+     (#a78bfa — the chain/governance/isolation icons below) so the Screen 7
+     Human Actions evidence domain reuses an existing product colour through a
+     token instead of hard-coding a fifth one. */
+  --violet-fg:  #a78bfa;
+  --violet-bg:  rgba(167, 139, 250, 0.12);
+  --violet-bdr: rgba(167, 139, 250, 0.32);
+
   /* radii */
   --radius-xs: 0.35rem;
   --radius-sm: 0.6rem;
@@ -8319,4 +8327,149 @@ a.mktTrustBadge:hover {
   .integrityResultGridOuter,
   .integrityResultGrid { grid-template-columns: minmax(0, 1fr); }
   .drawerCardWide { width: 100%; }
+}
+
+/* --- Screen 7 · Incident forensic evidence directory + lifecycle timeline ---
+   A dense institutional forensic layout inside the existing Case File tab body.
+   No new visual language: every colour is one of the product's semantic tokens,
+   surfaces reuse the shared card treatment, and there are no gradients, glows or
+   animated states. Desktop-first, with the artifact table scrolling inside its
+   own wrapper (never the page) on narrow widths. */
+
+/* Four provenance domain cards plus an "All" card. auto-fit keeps them on one
+   dense row on desktop and wraps to two, then one, as width is removed. */
+.incidentEvidenceDomains {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 0.5rem;
+}
+
+.incidentEvidenceDomainCard {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.1rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.incidentEvidenceDomainCard:hover { border-color: var(--border-hover); }
+
+.incidentEvidenceDomainCard:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+/* Snapshot integrity + Screen 9 package state. Wraps to a single column on
+   narrow widths so neither half is truncated. */
+.incidentEvidenceSnapshot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(148, 163, 184, 0.05);
+}
+
+.incidentPolicyForensics {
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(148, 163, 184, 0.04);
+}
+
+.incidentPolicyRow + .incidentPolicyRow {
+  border-top: 1px solid var(--border);
+  padding-top: 0.5rem;
+}
+
+/* Deterministic machine reason codes stay monospace and uppercase-safe — they
+   are stable keys an auditor matches against, not prose. */
+.incidentReasonCode {
+  font-family: monospace;
+  font-size: 0.7rem;
+  padding: 0.05rem 0.35rem;
+  border: 1px solid var(--warning-bdr);
+  border-radius: var(--radius-xs);
+  color: var(--warning-fg);
+  overflow-wrap: anywhere;
+}
+
+.incidentDomainTag {
+  display: inline-block;
+  font-size: 0.7rem;
+  padding: 0.05rem 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  white-space: nowrap;
+}
+
+/* The artifact directory keeps a readable floor and scrolls inside its own
+   wrapper on genuinely narrow screens — the page never scrolls horizontally. */
+.incidentEvidenceTable { overflow-x: auto; }
+.incidentEvidenceTable table { min-width: 720px; }
+.incidentEvidenceTable th,
+.incidentEvidenceTable td { overflow-wrap: anywhere; }
+
+/* Lifecycle timeline: a single rail with one marker per recorded event. */
+.incidentForensicTimelineList {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 0.85rem;
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.incidentForensicTimelineItem {
+  position: relative;
+  display: flex;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.incidentForensicTimelineMarker {
+  position: absolute;
+  left: -1.13rem;
+  top: 0.42rem;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+@media (max-width: 640px) {
+  .incidentEvidenceDomains { grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); }
+  .incidentEvidenceSnapshot { flex-direction: column; align-items: flex-start; }
+}
+
+/* A record linked only by the asset — never by this incident's canonical event —
+   carries a subdued caveat so it cannot read as event evidence. */
+.incidentLinkScope {
+  display: inline-block;
+  margin-left: 0.35rem;
+  font-size: 0.66rem;
+  padding: 0 0.3rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* Day heading in the lifecycle timeline: emitted only when the calendar day
+   changes, so a run of bare times can never collapse several days into one. */
+.incidentTimelineDay {
+  margin: 0 0 0.2rem;
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
 }

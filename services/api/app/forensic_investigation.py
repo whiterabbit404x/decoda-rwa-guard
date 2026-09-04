@@ -858,10 +858,19 @@ def _unavailable(incident_id: str) -> dict[str, Any]:
     }
 
 
-def _serialize_header(header: dict[str, Any]) -> dict[str, Any]:
+def _serialize_header(header: dict[str, Any], case: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The Screen 7 case header.
+
+    ``case`` carries the canonical facts resolved by ``incident_forensics`` — the
+    registered ASSET the incident concerns and the detection CATEGORY/TYPE that
+    classified it. Each is passed through exactly as resolved: an asset that could
+    not be resolved stays ``None`` so the UI says "not available" rather than
+    showing a raw target UUID as if it were an asset name.
+    """
     def _iso(v: Any) -> Any:
         return v.isoformat() if hasattr(v, 'isoformat') else v
     reference = header.get('reference') or f"INC-{str(header.get('id'))[:8]}"
+    case = case or {}
     return {
         'incident_id': str(header.get('id')),
         'reference': reference,
@@ -874,6 +883,14 @@ def _serialize_header(header: dict[str, Any]) -> dict[str, Any]:
         'risk_score': _to_float(header.get('risk_score')),
         'detected_at': _iso(header.get('created_at')),
         'updated_at': _iso(header.get('updated_at')),
+        # Canonical case facts (Screen 7 header). None means "not resolved", which
+        # the UI renders as such — never as a placeholder or a raw identifier.
+        'asset_id': case.get('asset_id'),
+        'asset_label': case.get('asset_label'),
+        'detection_category': case.get('detection_category'),
+        'detection_type': case.get('detection_type'),
+        'detection_id': case.get('detection_id'),
+        'event_id': case.get('event_id'),
     }
 
 
@@ -919,10 +936,33 @@ def get_investigation(incident_id: str, request: Any) -> dict[str, Any]:
         connection.commit()
 
         evidence = build_evidence_rows(snap['snapshot'])
+        # Canonical case facts for the Screen 7 header — the registered asset and the
+        # detection category/type that classified the event. Resolved from the SAME
+        # canonical rows the evidence directory reads, so the header and the evidence
+        # tab can never name a different asset or category. A failure to resolve
+        # leaves the fields absent rather than guessing.
+        case_facts: dict[str, Any] = {}
+        try:
+            from services.api.app import incident_forensics
+            case_unreadable: list[str] = []
+            correlation = incident_forensics.resolve_correlation(
+                connection, workspace_id=workspace_id, incident=header,
+                unreadable=case_unreadable,
+            )
+            case_facts = incident_forensics.incident_header(
+                connection, workspace_id=workspace_id, incident=header,
+                correlation=correlation, unreadable=case_unreadable,
+            )
+            case_facts['detection_id'] = correlation.get('detection_id')
+            case_facts['event_id'] = correlation.get('event_id')
+        except Exception:
+            logger.warning('forensic_investigation_case_facts_failed incident_id=%s',
+                           incident_id, exc_info=True)
+            case_facts = {}
         return {
             'status': analysis['status'],
             'schema_ready': True,
-            'incident': _serialize_header(header),
+            'incident': _serialize_header(header, case_facts),
             'snapshot_hash': snap['snapshot_hash'],
             'analysis': analysis,
             'evidence': evidence,

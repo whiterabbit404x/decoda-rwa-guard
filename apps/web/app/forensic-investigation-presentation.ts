@@ -105,6 +105,15 @@ export type ForensicInvestigation = {
     risk_score?: number | null;
     detected_at?: string | null;
     updated_at?: string | null;
+    // Canonical Screen 7 case facts. Each is null when the backend could not
+    // resolve it — the header then states that, rather than substituting an
+    // identifier or a placeholder for a real asset name / detection category.
+    asset_id?: string | null;
+    asset_label?: string | null;
+    detection_category?: string | null;
+    detection_type?: string | null;
+    detection_id?: string | null;
+    event_id?: string | null;
   };
   snapshot_hash?: string;
   analysis?: ForensicAnalysis;

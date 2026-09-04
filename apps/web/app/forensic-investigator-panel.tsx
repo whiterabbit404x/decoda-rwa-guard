@@ -340,6 +340,28 @@ function HeaderField({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
+/** Operator label for the canonical detection category key. Unknown keys are
+ *  title-cased rather than dropped, so a new backend category stays readable. */
+function detectionCategoryLabel(category: string): string {
+  const key = category.trim().toUpperCase();
+  if (key === 'OPERATIONAL_INTEGRITY') return 'Operational Integrity';
+  if (key === 'CYBER_SECURITY') return 'Cyber Security';
+  return titleCaseToken(category);
+}
+
+/** Operator label for a snake_case detection type (e.g. unmatched_issuance). */
+function detectionTypeLabel(detectionType: string): string {
+  return titleCaseToken(detectionType);
+}
+
+function titleCaseToken(raw: string): string {
+  return raw
+    .split(/[_.\s]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(' ');
+}
+
 function severityVariant(severity?: string | null) {
   const s = (severity ?? '').toLowerCase();
   if (s === 'critical' || s === 'high') return 'danger' as const;
@@ -367,11 +389,28 @@ function HeaderCard({ investigation }: { investigation: ForensicInvestigation })
         </div>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.9rem 1.25rem', marginTop: '1.1rem' }}>
-        <HeaderField label="Detection time" value={fmtDateTime(incident.detected_at)} />
+        <HeaderField label="Opened" value={fmtDateTime(incident.detected_at)} />
         <HeaderField label="Last updated" value={fmtRelative(incident.updated_at)} />
-        <HeaderField label="Impacted asset" value={
-          incident.target_id
-            ? <CopyableId value={incident.target_id} label="target" />
+        {/* The registered ASSET this incident concerns, resolved by the backend from
+            the canonical detection/target link. A raw target UUID is a routing key,
+            not an asset name, so it is only shown when no asset resolved. */}
+        <HeaderField label="Asset" value={
+          incident.asset_label
+            ? <span title={incident.asset_id ?? undefined}>{incident.asset_label}</span>
+            : incident.target_id
+              ? <CopyableId value={incident.target_id} label="target" />
+              : <span className="muted">Not available</span>
+        } />
+        {/* Detection category + type from the canonical Screen 5 detection. Absent
+            when no detection is linked — never a default category. */}
+        <HeaderField label="Category" value={
+          incident.detection_category
+            ? <span>{detectionCategoryLabel(incident.detection_category)}</span>
+            : <span className="muted">Not classified</span>
+        } />
+        <HeaderField label="Detection" value={
+          incident.detection_type
+            ? <span title={incident.detection_id ?? undefined}>{detectionTypeLabel(incident.detection_type)}</span>
             : <span className="muted">Not available</span>
         } />
         <HeaderField label="Source alerts" value={String(linked.alerts ?? 0)} />
@@ -406,7 +445,16 @@ function AiSummaryCard({ investigation, summaryState }: { investigation: Forensi
       </p>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem 1rem' }}>
         <HeaderField label="Detection time" value={fmtDateTime(incident.detected_at)} />
-        <HeaderField label="Impacted asset" value={incident.target_id ? <CopyableId value={incident.target_id} label="target" /> : <span className="muted">Not available</span>} />
+        {/* Same resolution as the case header: the registered asset name when the
+            backend resolved one, so the two cards in this panel can never name the
+            impacted asset differently. */}
+        <HeaderField label="Impacted asset" value={
+          incident.asset_label
+            ? <span title={incident.asset_id ?? undefined}>{incident.asset_label}</span>
+            : incident.target_id
+              ? <CopyableId value={incident.target_id} label="target" />
+              : <span className="muted">Not available</span>
+        } />
         <HeaderField label="Confidence" value={<span><StatusPill label={confidenceBandLabel(analysis?.confidence_band)} variant={confidenceBandVariant(analysis?.confidence_band)} /> {confidencePercent(analysis?.confidence)}%</span>} />
         <HeaderField label="Evidence coverage" value={`${coveragePercent(analysis?.evidence_coverage)}%`} />
         <HeaderField label="Investigation status" value={<StatusPill label={summaryState} variant={summaryStateVariant(summaryState as never)} />} />
