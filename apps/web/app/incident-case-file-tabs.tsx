@@ -4,6 +4,13 @@ import { Suspense, useCallback, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
 import { TabStrip } from './components/ui-primitives';
+import IncidentEvidenceTab from './incident-evidence-tab';
+import IncidentForensicTimeline from './incident-forensic-timeline';
+import {
+  loadStateFor,
+  type ForensicLoadState,
+  type IncidentTimelineEvent,
+} from './incident-forensics-presentation';
 import { usePilotAuth } from './pilot-auth-context';
 import { useRuntimeSummary } from './runtime-summary-context';
 // Reuse the SAME Case File tab bodies the /incidents drawer renders — but without the
@@ -29,6 +36,17 @@ import {
 // only sees NEXT_PUBLIC_API_URL, often unset in production). Every call goes through the
 // Next.js /api/* proxy, the same transport the drawer and forensic panel already use.
 const API_PROXY_BASE = '/api';
+
+// The canonical /incidents/{id}/timeline response: the legacy newest-first
+// `timeline` projection plus the Screen 7 forensic `events` lifecycle.
+type ForensicTimelineResponse = {
+  incident_id?: string;
+  event_id?: string | null;
+  timeline?: TimelineEntry[];
+  events?: IncidentTimelineEvent[];
+  partial?: boolean;
+  unreadable?: string[];
+};
 
 const CASE_FILE_TABS = [
   { key: 'timeline',         label: 'Timeline' },
@@ -86,6 +104,8 @@ function CaseFileTabsInner({ incidentId }: { incidentId: string }) {
 
   const [sourceAlertId, setSourceAlertId] = useState<string | null>(null);
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
+  const [forensicTimeline, setForensicTimeline] = useState<ForensicTimelineResponse | null>(null);
+  const [timelineLoad, setTimelineLoad] = useState<ForensicLoadState>('idle');
   const [linkedAlert, setLinkedAlert] = useState<AlertRow | null>(null);
   const [evidence, setEvidence] = useState<EvidenceRow[]>([]);
   const [responseActions, setResponseActions] = useState<ResponseActionRow[]>([]);
@@ -113,17 +133,36 @@ function CaseFileTabsInner({ incidentId }: { incidentId: string }) {
     return () => { cancelled = true; };
   }, [apiUrl, authHeaders, incidentId]);
 
-  // Timeline
+  // Timeline — ONE fetch returns both the legacy projection and the Screen 7
+  // forensic lifecycle, so the case record never issues a second round trip.
   useEffect(() => {
-    if (!incidentId) { setTimeline([]); return; }
+    if (!incidentId) { setTimeline([]); setForensicTimeline(null); setTimelineLoad('idle'); return; }
     let cancelled = false;
+    setTimelineLoad('loading');
     void fetch(`${apiUrl}/incidents/${encodeURIComponent(incidentId)}/timeline`, {
       headers: authHeaders(),
       cache: 'no-store',
     })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((json) => { if (!cancelled) setTimeline((json as { timeline?: TimelineEntry[] } | null)?.timeline ?? []); })
-      .catch(() => { if (!cancelled) setTimeline([]); });
+      .then(async (r) => {
+        if (cancelled) return;
+        if (!r.ok) {
+          setTimeline([]);
+          setForensicTimeline(null);
+          setTimelineLoad(loadStateFor(r.status, false));
+          return;
+        }
+        const json = (await r.json()) as ForensicTimelineResponse;
+        if (cancelled) return;
+        setTimeline(json?.timeline ?? []);
+        setForensicTimeline(json ?? null);
+        setTimelineLoad(loadStateFor(r.status, (json?.events ?? []).length > 0));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setTimeline([]);
+        setForensicTimeline(null);
+        setTimelineLoad('error');
+      });
     return () => { cancelled = true; };
   }, [apiUrl, authHeaders, incidentId]);
 
@@ -210,7 +249,17 @@ function CaseFileTabsInner({ incidentId }: { incidentId: string }) {
           onChange={(tab) => setActiveTab(tab as CaseFileTabKey)}
         />
         <div style={{ marginTop: '0.9rem' }}>
-          {activeTab === 'timeline' && <TimelineTab timeline={timeline} />}
+          {activeTab === 'timeline' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+              <IncidentForensicTimeline
+                events={forensicTimeline?.events ?? []}
+                load={timelineLoad}
+                partial={forensicTimeline?.partial}
+                unreadable={forensicTimeline?.unreadable}
+              />
+              <TimelineTab timeline={timeline} />
+            </div>
+          )}
           {activeTab === 'alerts' && (
             <AlertsTab
               linkedAlert={linkedAlert}
@@ -219,7 +268,10 @@ function CaseFileTabsInner({ incidentId }: { incidentId: string }) {
             />
           )}
           {activeTab === 'evidence' && (
-            <EvidenceTab evidence={evidence} workspaceEvidenceSource={workspaceEvidenceSource} />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+              <IncidentEvidenceTab incidentId={incidentId} />
+              <EvidenceTab evidence={evidence} workspaceEvidenceSource={workspaceEvidenceSource} />
+            </div>
           )}
           {activeTab === 'response-actions' && (
             <ResponseActionsTab

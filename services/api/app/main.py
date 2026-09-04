@@ -303,6 +303,7 @@ from services.api.app.monitoring_runner import (
 )
 from services.api.app import ai_triage
 from services.api.app import forensic_investigation
+from services.api.app import incident_forensics
 from services.api.app import onboarding_agent
 from services.api.app import dashboard_summary
 from services.api.app.workspace_monitoring_summary import build_workspace_monitoring_summary_fallback
@@ -5217,7 +5218,36 @@ def incidents_patch(incident_id: str, payload: dict[str, Any], request: Request)
 
 @app.get('/incidents/{incident_id}/timeline', summary='List incident timeline entries')
 def incidents_timeline_list(incident_id: str, request: Request) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: list_incident_timeline(incident_id, request))
+    """The incident's timeline, in both the legacy and the forensic shape.
+
+    ``timeline`` is the existing newest-first ``incident_timeline`` projection and
+    is returned unchanged, so every current consumer keeps working. ``events``
+    adds the Screen 7 forensic lifecycle assembled from the canonical rows the
+    rest of the workflow already writes (detection, reconciliation, policy
+    evaluation, response gating, snapshot, sealing), ordered oldest-first by
+    canonical server timestamp. Only stages with a real record appear.
+    """
+    return with_auth_schema_json(lambda: incident_forensics.get_incident_timeline(incident_id, request))
+
+
+@app.get('/incidents/{incident_id}/evidence', summary='Incident forensic evidence directory (Screen 7)')
+def incidents_evidence_list(incident_id: str, request: Request) -> dict[str, Any]:
+    """Screen 7's forensic evidence directory for one incident.
+
+    Read-only and workspace-scoped. Returns the collected artifacts grouped into
+    the four provenance domains (on-chain / operational / policy / human action),
+    the deterministic per-domain counts, the evidence-snapshot integrity state,
+    the linked Screen 9 evidence package when one exists, and the deterministic
+    policy evaluations behind the case. It collects nothing, seals nothing, and
+    never duplicates Screen 9's packaging.
+    """
+    return with_auth_schema_json(lambda: incident_forensics.get_incident_evidence(incident_id, request))
+
+
+@app.get('/incidents/{incident_id}/forensic-timeline', summary='Incident forensic lifecycle timeline (Screen 7)')
+def incidents_forensic_timeline(incident_id: str, request: Request) -> dict[str, Any]:
+    """The deterministic incident lifecycle, oldest-first, records only."""
+    return with_auth_schema_json(lambda: incident_forensics.get_forensic_timeline(incident_id, request))
 
 
 @app.post('/incidents/{incident_id}/timeline', summary='Append incident timeline note')

@@ -26,6 +26,13 @@ import {
   type NextAction,
   type WorkflowStage,
 } from './forensic-investigation-presentation';
+import IncidentEvidenceTab from './incident-evidence-tab';
+import IncidentForensicTimeline from './incident-forensic-timeline';
+import {
+  loadStateFor,
+  type ForensicLoadState,
+  type IncidentTimelineEvent,
+} from './incident-forensics-presentation';
 import { usePilotAuth } from './pilot-auth-context';
 import { useRuntimeSummary } from './runtime-summary-context';
 // Canonical Detected By resolver + label map (single source of truth, mirrors the
@@ -87,6 +94,18 @@ type TimelineEntry = {
   evidence_source?: string;
   created_at?: string;
   timestamp?: string;
+};
+
+// The canonical /incidents/{id}/timeline response. `timeline` is the legacy
+// newest-first projection (unchanged); `events` is the Screen 7 forensic
+// lifecycle assembled by the backend from canonical records, oldest-first.
+type ForensicTimelineResponse = {
+  incident_id?: string;
+  event_id?: string | null;
+  timeline?: TimelineEntry[];
+  events?: IncidentTimelineEvent[];
+  partial?: boolean;
+  unreadable?: string[];
 };
 
 type AlertRow = {
@@ -299,6 +318,9 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
   const [message, setMessage] = useState('');
   const [activeTab, setActiveTab] = useState<TabKey>('overview');
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
+  // Screen 7 forensic lifecycle: the same /timeline response, forensic shape.
+  const [forensicTimeline, setForensicTimeline] = useState<ForensicTimelineResponse | null>(null);
+  const [timelineLoad, setTimelineLoad] = useState<ForensicLoadState>('idle');
   const [linkedAlert, setLinkedAlert] = useState<AlertRow | null>(null);
   const [evidence, setEvidence] = useState<EvidenceRow[]>([]);
   const [responseActions, setResponseActions] = useState<ResponseActionRow[]>([]);
@@ -514,18 +536,37 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
   useEffect(() => {
     if (!selectedId) {
       setTimeline([]);
+      setForensicTimeline(null);
+      setTimelineLoad('idle');
       setLinkedAlert(null);
       setEvidence([]);
       setResponseActions([]);
       return;
     }
+    setTimelineLoad('loading');
+    // ONE fetch returns both shapes: the legacy `timeline` projection this drawer
+    // already rendered, and the Screen 7 forensic `events` lifecycle beside it.
     void fetch(`${apiUrl}/incidents/${selectedId}/timeline`, {
       headers: authHeaders(),
       cache: 'no-store',
     })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((json) => setTimeline((json as any)?.timeline ?? []))
-      .catch(() => setTimeline([]));
+      .then(async (r) => {
+        if (!r.ok) {
+          setTimeline([]);
+          setForensicTimeline(null);
+          setTimelineLoad(loadStateFor(r.status, false));
+          return;
+        }
+        const json = (await r.json()) as ForensicTimelineResponse;
+        setTimeline(json?.timeline ?? []);
+        setForensicTimeline(json ?? null);
+        setTimelineLoad(loadStateFor(r.status, (json?.events ?? []).length > 0));
+      })
+      .catch(() => {
+        setTimeline([]);
+        setForensicTimeline(null);
+        setTimelineLoad('error');
+      });
   }, [apiUrl, authHeaders, selectedId]);
 
   useEffect(() => {
@@ -780,6 +821,8 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
             <IncidentDetailPanel
               incident={selectedIncident}
               timeline={timeline}
+              forensicTimeline={forensicTimeline}
+              timelineLoad={timelineLoad}
               linkedAlert={linkedAlert}
               evidence={evidence}
               responseActions={responseActions}
@@ -806,10 +849,13 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
 
 /* ── Incident detail panel ──────────────────────────────────────── */
 
-function IncidentDetailPanel({ incident, timeline, linkedAlert, evidence, responseActions,
+function IncidentDetailPanel({ incident, timeline, forensicTimeline, timelineLoad,
+  linkedAlert, evidence, responseActions,
   investigation, investigationLoad, activeTab, onTabChange, workspaceEvidenceSource,
   onMessage: _onMessage, onRecommend, recommending, recommendError }: {
-  incident: IncidentRow; timeline: TimelineEntry[]; linkedAlert: AlertRow | null;
+  incident: IncidentRow; timeline: TimelineEntry[];
+  forensicTimeline: ForensicTimelineResponse | null; timelineLoad: ForensicLoadState;
+  linkedAlert: AlertRow | null;
   evidence: EvidenceRow[]; responseActions: ResponseActionRow[];
   investigation: ForensicInvestigation | null; investigationLoad: InvestigationLoad;
   activeTab: string; onTabChange: (tab: string) => void;
@@ -906,9 +952,33 @@ function IncidentDetailPanel({ incident, timeline, linkedAlert, evidence, respon
             load={investigationLoad}
           />
         )}
-        {activeTab === 'timeline' && <TimelineTab timeline={timeline} />}
+        {/* Screen 7 forensic lifecycle — the deterministic event chain the backend
+            assembled from canonical records (chain observation, reconciliation,
+            policy decision, response gate, human decisions, snapshot/sealing),
+            ordered by canonical server timestamp. The legacy row projection is
+            kept below it so no previously visible entry is lost. */}
+        {activeTab === 'timeline' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+            <IncidentForensicTimeline
+              events={forensicTimeline?.events ?? []}
+              load={timelineLoad}
+              partial={forensicTimeline?.partial}
+              unreadable={forensicTimeline?.unreadable}
+            />
+            <TimelineTab timeline={timeline} />
+          </div>
+        )}
         {activeTab === 'alerts' && <AlertsTab linkedAlert={linkedAlert} hasLinkedAlert={hasLinkedAlert} workspaceEvidenceSource={workspaceEvidenceSource} />}
-        {activeTab === 'evidence' && <EvidenceTab evidence={evidence} workspaceEvidenceSource={workspaceEvidenceSource} />}
+        {/* Incident-scoped forensic evidence directory (four provenance domains,
+            backend counts, snapshot integrity, Screen 9 package linkage). The
+            alert-scoped evidence list stays beneath it so the linked alert's own
+            records remain reachable from the same tab. */}
+        {activeTab === 'evidence' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+            <IncidentEvidenceTab incidentId={incident.id} />
+            <EvidenceTab evidence={evidence} workspaceEvidenceSource={workspaceEvidenceSource} />
+          </div>
+        )}
         {activeTab === 'response-actions' && (
           <ResponseActionsTab
             actions={responseActions}
