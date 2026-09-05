@@ -8,6 +8,7 @@ import { TabStrip } from './components/ui-primitives';
 import IncidentCaseOverview from './incident-case-overview';
 import IncidentEvidenceTab from './incident-evidence-tab';
 import IncidentForensicTimeline from './incident-forensic-timeline';
+import IncidentWorkflowTab from './incident-workflow-tab';
 import {
   loadStateFor,
   type ForensicLoadState,
@@ -25,10 +26,13 @@ import { useIncidentEvidence } from './use-incident-forensics';
 // investigation — each at the full width of the main content area rather than squeezed
 // into the narrow Case File preview.
 //
-// It deliberately does NOT render the canonical workflow or the corroborated evidence —
-// the forensic hero already owns those — so the investigation payload is never fetched
-// twice on this page. The AI Investigation panel mounts here (and only here) under its
-// own tab: it runs its own /ai-triage lifecycle, which the hero does not fetch.
+// It deliberately does NOT render the corroborated evidence — the forensic hero already
+// owns that — so the /investigation payload is never fetched twice on this page. The
+// Workflow tab reads the dedicated /workflow endpoint instead, and only once its tab is
+// selected, so the stage model is available beside the rest of the record without a
+// second investigation fetch on load. The AI Investigation panel mounts here (and only
+// here) under its own tab: it runs its own /ai-triage lifecycle, which the hero does not
+// fetch.
 import {
   AlertsTab,
   EvidenceTab,
@@ -53,6 +57,7 @@ type ForensicTimelineResponse = {
   event_id?: string | null;
   timeline?: TimelineEntry[];
   events?: IncidentTimelineEvent[];
+  undated_events?: number;
   partial?: boolean;
   unreadable?: string[];
 };
@@ -63,6 +68,7 @@ const CASE_FILE_TABS = [
   { key: 'alerts',           label: 'Alerts' },
   { key: 'evidence',         label: 'Evidence' },
   { key: 'response-actions', label: 'Response Actions' },
+  { key: 'workflow',         label: 'Workflow' },
   { key: 'ai-investigation', label: 'AI Investigation' },
 ] as const;
 
@@ -292,6 +298,7 @@ function CaseFileTabsInner({ incidentId }: { incidentId: string }) {
                 load={timelineLoad}
                 partial={forensicTimeline?.partial}
                 unreadable={forensicTimeline?.unreadable}
+                undatedEvents={forensicTimeline?.undated_events}
               />
               <TimelineTab timeline={timeline} />
             </div>
@@ -320,6 +327,19 @@ function CaseFileTabsInner({ incidentId }: { incidentId: string }) {
               onRecommend={handleRecommend}
               recommending={recommending}
               recommendError={recommendError}
+            />
+          )}
+          {/* The canonical seven-stage model and the lifecycle coverage it implies.
+              Reads the dedicated /workflow endpoint, and only when its tab is
+              selected — so the page still does not fetch the full investigation
+              payload twice on load. */}
+          {activeTab === 'workflow' && (
+            <IncidentWorkflowTab
+              incidentId={incidentId}
+              summary={incidentEvidence.data?.case_summary ?? null}
+              summaryLoad={incidentEvidence.load}
+              responseActions={responseActions}
+              responseLoad={responseLoad}
             />
           )}
           {/* Evidence-grounded AI investigation for this incident. Mounted only when its

@@ -29,11 +29,14 @@ import {
  * the flow look complete, and every timestamp is the canonical server timestamp the
  * source row carries (millisecond precision shown only where the record has it).
  */
-export default function IncidentForensicTimeline({ events, load, partial, unreadable }: {
+export default function IncidentForensicTimeline({ events, load, partial, unreadable, undatedEvents }: {
   events: readonly IncidentTimelineEvent[];
   load: ForensicLoadState;
   partial?: boolean;
   unreadable?: string[];
+  /** Persisted records the backend could not place in time, because their source
+   *  timestamp column is null. Reported, never silently dropped. */
+  undatedEvents?: number;
 }) {
   // Ordering is by canonical server timestamp — never by array position.
   const ordered = useMemo(() => sortTimelineEvents(events), [events]);
@@ -72,6 +75,17 @@ export default function IncidentForensicTimeline({ events, load, partial, unread
       {partial ? (
         <p className="statusLine statusLine-warning" role="alert" style={{ margin: '0 0 0.6rem', fontSize: '0.8rem' }}>
           Partial history: {(unreadable ?? []).join(', ') || 'one or more sources'} could not be read.
+        </p>
+      ) : null}
+      {/* A record with no canonical timestamp cannot be placed in a chronology —
+          positioning it would state an order the data does not support. It is
+          withheld here and stated, so a filtered timeline is never presented as
+          the complete set of records. The evidence directory still lists it. */}
+      {(undatedEvents ?? 0) > 0 ? (
+        <p className="muted" style={{ margin: '0 0 0.6rem', fontSize: '0.78rem' }}>
+          {undatedEvents} recorded {undatedEvents === 1 ? 'event carries' : 'events carry'} no canonical
+          timestamp and {undatedEvents === 1 ? 'is' : 'are'} not placed on this chronology. They remain in the
+          evidence directory.
         </p>
       ) : null}
       <ol className="incidentForensicTimelineList" aria-label="Incident forensic timeline">

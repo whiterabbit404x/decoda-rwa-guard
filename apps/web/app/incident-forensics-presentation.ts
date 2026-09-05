@@ -490,6 +490,27 @@ export type CaseAmountFact = {
   unit?: string | null;
 };
 
+/**
+ * Whether a section's record was RETRIEVED, kept strictly apart from what the
+ * record then said. `not_collected` means nothing was compared — it is not a
+ * mismatch, and no label in this module may render it as one.
+ */
+export type CaseCollectionState = 'not_collected' | 'collected' | 'error';
+
+/** How a persisted decision was reached, as the backend resolved it. */
+export type PolicyDecisionSource =
+  | 'matched_policy'
+  | 'fail_closed_default'
+  | 'no_evaluation'
+  /** A decision is recorded but nothing in it establishes where it came from. */
+  | 'unattributed';
+
+/** How the incident came to exist, from persisted linkage only. */
+export type IncidentOrigin = 'detection' | 'alert' | 'manual' | 'system' | 'unknown';
+
+/** Which persisted record the on-chain identifying facts were read from. */
+export type OnChainFactSource = 'detection' | 'evidence_snapshot';
+
 export type IncidentCaseSummary = {
   event_id?: string | null;
   correlation?: {
@@ -499,6 +520,12 @@ export type IncidentCaseSummary = {
     detection_id?: string | null;
     asset_id?: string | null;
   };
+  origin?: {
+    origin?: IncidentOrigin | string;
+    detection_linked?: boolean;
+    alert_linked?: boolean;
+    source_event_type?: string | null;
+  };
   detection?: {
     detection_id?: string | null;
     category?: string | null;
@@ -507,9 +534,12 @@ export type IncidentCaseSummary = {
     severity?: string | null;
     reason_code?: string | null;
     detected_at?: string | null;
+    state?: CaseSectionState | string;
+    collection_state?: CaseCollectionState | string;
   };
   on_chain?: {
     state?: CaseSectionState | string;
+    collection_state?: CaseCollectionState | string;
     operation?: string | null;
     observed_amount?: CaseAmountFact | null;
     tx_hash?: string | null;
@@ -517,10 +547,13 @@ export type IncidentCaseSummary = {
     observed_at?: string | null;
     preconfirmation_at?: string | null;
     source?: string | null;
+    fact_source?: OnChainFactSource | string | null;
     artifact_count?: number;
   };
   operational?: {
     state?: CaseSectionState | string;
+    collection_state?: CaseCollectionState | string;
+    reconciliation_scope?: 'EVENT' | 'ASSET' | string | null;
     reason_code?: string | null;
     reconciliation_status?: string | null;
     expected_amount?: CaseAmountFact | null;
@@ -531,9 +564,13 @@ export type IncidentCaseSummary = {
   };
   policy?: {
     state?: CaseSectionState | string;
+    collection_state?: CaseCollectionState | string;
     decision?: string | null;
+    decision_source?: PolicyDecisionSource | string;
+    policy_id?: string | null;
     policy_key?: string | null;
     policy_version?: number | string | null;
+    engine_version?: string | null;
     evaluation_id?: string | null;
     evaluated_at?: string | null;
     reason_codes?: string[];
@@ -592,6 +629,210 @@ export function caseSectionRecorded(state: CaseSectionState | string | null | un
 }
 
 /**
+ * Whether any record was RETRIEVED for a section — the prior question to "what did
+ * it say". Prefers the backend's explicit `collection_state`; falls back to the
+ * verdict state for a payload from an older backend, which is the same rule the
+ * backend applies. Never guesses "collected" from a neighbouring section.
+ */
+export function sectionCollected(section: {
+  state?: CaseSectionState | string;
+  collection_state?: CaseCollectionState | string;
+} | null | undefined): boolean {
+  const collection = section?.collection_state;
+  if (collection === 'collected') return true;
+  if (collection === 'not_collected' || collection === 'error') return false;
+  return caseSectionRecorded(section?.state);
+}
+
+/**
+ * The operational half in the five words that must never be confused.
+ *
+ * NOT COLLECTED — no operational data was retrieved.
+ * NOT MATCHED   — operational data WAS retrieved and failed to match.
+ * MATCHED       — operational data was retrieved and matched.
+ * ERROR         — collection or reconciliation failed.
+ * UNKNOWN       — the system cannot determine the state.
+ *
+ * This distinction is the whole point of the operational domain: "we never looked"
+ * and "we looked and it did not add up" are opposite claims about a customer's
+ * books, and one must never be rendered in the other's words.
+ */
+export type OperationalOutcome = 'not_collected' | 'not_matched' | 'matched' | 'indeterminate' | 'error' | 'unknown';
+
+export function operationalOutcome(operational: IncidentCaseSummary['operational'] | null | undefined): OperationalOutcome {
+  if (!sectionCollected(operational)) {
+    return operational?.collection_state === 'error' ? 'error' : 'not_collected';
+  }
+  switch (operational?.state) {
+    case 'anomaly': return 'not_matched';
+    case 'reconciled': return 'matched';
+    case 'indeterminate': return 'indeterminate';
+    case 'observed': return 'matched';
+    default: return 'unknown';
+  }
+}
+
+const OPERATIONAL_OUTCOME_LABELS: Record<OperationalOutcome, string> = {
+  not_collected: 'Not collected',
+  not_matched: 'Not matched',
+  matched: 'Matched',
+  indeterminate: 'Could not be established',
+  error: 'Collection error',
+  unknown: 'Unknown',
+};
+
+export function operationalOutcomeLabel(outcome: OperationalOutcome): string {
+  return OPERATIONAL_OUTCOME_LABELS[outcome];
+}
+
+/** The sentence that says exactly what happened, so no label has to carry it alone. */
+const OPERATIONAL_OUTCOME_DETAIL: Record<OperationalOutcome, string> = {
+  not_collected: 'No operational data was retrieved for this event. This is not a mismatch — nothing was compared.',
+  not_matched: 'Operational data was retrieved and did not match the chain reading.',
+  matched: 'Operational data was retrieved and matched the chain reading.',
+  indeterminate: 'Operational data was retrieved but the reconciliation could not establish truth.',
+  error: 'The operational collection or reconciliation failed. No verdict is claimed.',
+  unknown: 'The operational state could not be determined from the recorded data.',
+};
+
+export function operationalOutcomeDetail(outcome: OperationalOutcome): string {
+  return OPERATIONAL_OUTCOME_DETAIL[outcome];
+}
+
+/** `not_collected` and `error` are NEUTRAL, never danger: absence is not an accusation. */
+export function operationalOutcomeVariant(outcome: OperationalOutcome): PillVariant {
+  if (outcome === 'not_matched') return 'danger';
+  if (outcome === 'matched') return 'success';
+  return 'neutral';
+}
+
+/* ── Policy decision provenance ───────────────────────────────────── */
+
+/**
+ * WHERE a persisted decision came from. A DENY reached because no policy governed
+ * the operation is the deterministic fail-closed rule doing its job — not a failed
+ * lookup of a policy record, which is how a bare "Policy Not Found" beside a DENY
+ * reads. An authoritative decision whose source is unexplained is exactly what this
+ * screen must not show.
+ */
+export function policyDecisionSourceLabel(source: PolicyDecisionSource | string | null | undefined): string {
+  switch (source) {
+    case 'matched_policy': return 'Matched policy';
+    case 'fail_closed_default': return 'Default fail-closed rule';
+    case 'unattributed': return 'Decision source not recorded';
+    default: return 'No evaluation recorded';
+  }
+}
+
+/**
+ * The decision source for a policy section, preferring the backend's own field.
+ *
+ * When a payload predates that field, the SAME rule the backend applies is used
+ * as the fallback — a recorded decision that carries a policy identity was made
+ * by that policy, and one that carries none was the fail-closed refusal. This is
+ * not a second, frontend-only definition of the state: it is the identical rule,
+ * kept here only so an older payload reports a truthful source instead of
+ * reporting "no evaluation" beside a real DENY.
+ */
+export function resolvePolicyDecisionSource(
+  policy: IncidentCaseSummary['policy'] | null | undefined,
+): PolicyDecisionSource {
+  const declared = policy?.decision_source;
+  if (declared === 'matched_policy' || declared === 'fail_closed_default'
+      || declared === 'no_evaluation' || declared === 'unattributed') {
+    return declared;
+  }
+  if (!policy?.decision) return 'no_evaluation';
+  if (policy.policy_key || policy.policy_id) return 'matched_policy';
+  // The fail-closed branch only ever produces DENY, so no other decision may be
+  // labelled with it — an unattributed ALLOW is reported as unattributed.
+  return policy.decision.toUpperCase() === 'DENY' ? 'fail_closed_default' : 'unattributed';
+}
+
+export function policyDecisionSourceDetail(source: PolicyDecisionSource | string | null | undefined): string | null {
+  switch (source) {
+    case 'matched_policy':
+      return 'Decided by the governing policy recorded on this evaluation.';
+    case 'fail_closed_default':
+      return 'No applicable policy governed this operation, so the deterministic engine refused it. Nothing authorized it.';
+    case 'unattributed':
+      return 'This evaluation records no policy identity and no fail-closed reason code, so its source cannot be established from the record.';
+    default:
+      return null;
+  }
+}
+
+/**
+ * The one-line reason a fail-closed DENY happened, from the persisted reason codes.
+ * Returns null for a decision a policy actually made — that one is explained by its
+ * policy identity, not by this sentence.
+ */
+export function failClosedReason(policy: IncidentCaseSummary['policy'] | null | undefined): string | null {
+  if (resolvePolicyDecisionSource(policy) !== 'fail_closed_default') return null;
+  const codes = (policy?.reason_codes ?? []).map((code) => code.toUpperCase());
+  if (codes.includes('OPERATION_NOT_ESTABLISHED')) {
+    return 'The governed operation could not be established, so no policy could be matched to it.';
+  }
+  if (codes.includes('POLICY_NOT_FOUND')) {
+    return 'No policy governs this operation.';
+  }
+  return 'No applicable policy was available at evaluation time.';
+}
+
+/**
+ * The policy identity AS RECORDED at evaluation time — the policy key and the
+ * version it carried, joined for display.
+ * Read only from the evaluation record, so it survives the policy being edited,
+ * archived or deleted afterwards. Returns null when the decision carried no policy
+ * identity at all — a fail-closed refusal, which `policyDecisionSourceLabel` names.
+ */
+export function evaluatedPolicyReference(policy: {
+  policy_key?: string | null;
+  policy_version?: number | string | null;
+} | null | undefined): string | null {
+  const key = (policy?.policy_key ?? '').toString().trim();
+  if (!key) return null;
+  const version = policy?.policy_version;
+  return version === null || version === undefined || version === '' ? key : `${key} v${version}`;
+}
+
+/* ── Incident origin ──────────────────────────────────────────────── */
+
+const ORIGIN_LABELS: Record<IncidentOrigin, string> = {
+  detection: 'Detection',
+  alert: 'Alert',
+  manual: 'Manual',
+  system: 'System',
+  unknown: 'Unknown',
+};
+
+export function incidentOriginLabel(origin: IncidentOrigin | string | null | undefined): string {
+  return ORIGIN_LABELS[(origin ?? 'unknown') as IncidentOrigin] ?? 'Unknown';
+}
+
+/**
+ * Why this incident has no linked detection, when it has none. An incident
+ * escalated from an alert or opened by hand never HAD a Screen 5 detection, and
+ * saying so is different from reporting a broken relationship. Returns null when a
+ * detection IS linked — there is nothing to explain.
+ */
+export function missingDetectionExplanation(
+  origin: IncidentCaseSummary['origin'] | null | undefined,
+): string {
+  if (origin?.detection_linked) return '';
+  switch (origin?.origin) {
+    case 'alert':
+      return 'No linked detection is recorded for this incident. It was raised from an alert, which does not itself create a detection record.';
+    case 'manual':
+      return 'No linked detection is recorded for this incident. It was opened directly rather than by the detection engine.';
+    case 'system':
+      return 'No linked detection is recorded for this incident. It was opened by an automated workflow rather than by the detection engine.';
+    default:
+      return 'No linked detection is recorded for this incident, and no origin is recorded to explain why.';
+  }
+}
+
+/**
  * An amount as the record stores it, with its unit. Exact ledger values are
  * passed through unscaled — a display-side conversion would be a second,
  * divergent reading of the same number. Returns null when nothing was recorded.
@@ -628,6 +869,12 @@ export type CaseResponseAction = {
   lifecycle_label?: string;
   approval_status?: string;
   execution_status?: string;
+  /** Screen 8's canonical approval gate. Present only for an approvable action. */
+  approval_gate?: {
+    required_approval_count?: number;
+    current_approval_count?: number;
+    approval_progress_label?: string | null;
+  } | null;
 };
 
 export type CaseResponseState = {
@@ -641,11 +888,22 @@ export type CaseResponseState = {
   failed: number;
 };
 
+/** Pluralise "action" against a count, so no label reads "1 actions". */
+function actionNoun(count: number): string {
+  return count === 1 ? 'action' : 'actions';
+}
+
 /**
  * Fold this incident's response actions into one truthful sentence for the Case
  * File and Overview. Ordered by what an operator must act on first: a failure
  * outranks a pending approval, which outranks an execution that already
  * happened. Screen 7 states this; Screen 8 remains the only place it can change.
+ *
+ * Every count here counts ACTIONS, not approvals. Each number is the number of
+ * response-action rows in that state — an action whose own approval quorum is
+ * "1 of 2 collected" still counts once. A bare "Awaiting approval (2)" cannot be
+ * read that way (2 approvals pending? 2 required? 2 actions?), so each label
+ * names its unit outright.
  */
 export function summarizeResponseState(
   actions: readonly CaseResponseAction[] | null | undefined,
@@ -661,13 +919,45 @@ export function summarizeResponseState(
   if (rows.length === 0) {
     return { ...base, state: 'none', label: 'No response action recommended yet' };
   }
-  if (failed > 0) return { ...base, state: 'failed', label: `${failed} execution failed` };
-  if (awaitingApproval > 0) {
-    return { ...base, state: 'awaiting_approval', label: `Awaiting approval (${awaitingApproval})` };
+  if (failed > 0) {
+    return { ...base, state: 'failed', label: `${failed} ${actionNoun(failed)} failed to execute` };
   }
-  if (executed > 0) return { ...base, state: 'executed', label: `${executed} executed` };
-  if (approved > 0) return { ...base, state: 'approved', label: `${approved} approved, not executed` };
-  return { ...base, state: 'recommended', label: `${rows.length} recommended` };
+  if (awaitingApproval > 0) {
+    return {
+      ...base,
+      state: 'awaiting_approval',
+      label: `${awaitingApproval} ${actionNoun(awaitingApproval)} awaiting approval`,
+    };
+  }
+  if (executed > 0) {
+    return { ...base, state: 'executed', label: `${executed} ${actionNoun(executed)} executed` };
+  }
+  if (approved > 0) {
+    return {
+      ...base,
+      state: 'approved',
+      label: `${approved} ${actionNoun(approved)} approved, not executed`,
+    };
+  }
+  return {
+    ...base,
+    state: 'recommended',
+    label: `${rows.length} ${actionNoun(rows.length)} recommended`,
+  };
+}
+
+/**
+ * The approval quorum for ONE action, as Screen 8's gate recorded it — "1 of 2
+ * approvals received". Returns null when the backend reported no quorum, so the
+ * UI says nothing rather than implying a single approval suffices.
+ */
+export function approvalQuorumLabel(action: CaseResponseAction | null | undefined): string | null {
+  const gate = action?.approval_gate;
+  const required = gate?.required_approval_count;
+  const current = gate?.current_approval_count;
+  if (typeof required !== 'number' || !Number.isFinite(required) || required <= 0) return null;
+  const received = typeof current === 'number' && Number.isFinite(current) ? current : 0;
+  return `${received} of ${required} ${required === 1 ? 'approval' : 'approvals'} received`;
 }
 
 export function responseStateVariant(state: CaseResponseState['state']): PillVariant {
@@ -815,6 +1105,26 @@ function snapshotStatusShortLabel(status: ForensicSnapshotStatus | null | undefi
   }
 }
 
+/**
+ * The artifact total, split by the domain each artifact was classified into —
+ * "3 on-chain · 2 policy · 8 human". A total is the sum of four provenance
+ * domains, and reading it as evidence for any one of them is precisely the
+ * mistake that makes "13 artifacts" look like it contradicts "Operational: not
+ * collected". A domain the backend did not report is omitted rather than shown
+ * as zero; a domain it reported as zero is omitted too, since naming it adds
+ * nothing to a one-line summary. Returns null when no domain count was reported.
+ */
+export function evidenceDomainBreakdown(
+  counts: IncidentEvidenceCounts | null | undefined,
+): string | null {
+  const parts = EVIDENCE_DOMAINS
+    .map((domain) => ({ domain, count: domainCount(counts, domain) }))
+    .filter((entry): entry is { domain: IncidentEvidenceDomain; count: number } =>
+      entry.count !== null && entry.count > 0)
+    .map((entry) => `${entry.count} ${domainLabel(entry.domain).toLowerCase()}`);
+  return parts.length === 0 ? null : parts.join(' · ');
+}
+
 /** "AUTH_MISSING" + 2 others → one short line, never a stack of pills in a 360px column. */
 function reasonCodeSummary(codes: readonly string[] | null | undefined): string | null {
   const list = (codes ?? []).filter((code) => !!code && code.trim());
@@ -856,6 +1166,7 @@ export function buildIntegritySummary(input: {
   /* Detection — what the detector said. */
   const detectionName =
     detection.title ?? humanizeToken(detection.detection_type) ?? humanizeToken(detection.category);
+  const origin = summary?.origin ?? {};
   const detectionRow: IntegritySummaryRow = known && detectionName
     ? {
       key: 'detection', label: 'Detection', value: detectionName,
@@ -869,7 +1180,11 @@ export function buildIntegritySummary(input: {
     : {
       key: 'detection', label: 'Detection',
       value: absentValue(known ? 'empty' : summaryLoad, 'No linked detection'),
-      detail: null, code: null, badge: null, recorded: false,
+      // An incident escalated from an alert or opened by hand never HAD a Screen 5
+      // detection. Naming the origin turns an empty section from something that
+      // reads like a broken relationship into a stated fact about how the case began.
+      detail: known && origin.origin ? `Origin: ${incidentOriginLabel(origin.origin)}` : null,
+      code: null, badge: null, recorded: false,
     };
 
   /* On-chain — what the chain recorded. */
@@ -890,37 +1205,53 @@ export function buildIntegritySummary(input: {
       detail: null, code: null, badge: null, recorded: false,
     };
 
-  /* Operational — what the systems of record said. */
-  const operationalRecorded = known && caseSectionRecorded(operational.state);
+  /* Operational — what the systems of record said, and whether they said anything.
+     The badge carries the outcome in the five-word vocabulary that keeps
+     "nothing was collected" apart from "collected and did not match". */
+  const operationalRecorded = known && sectionCollected(operational);
+  const outcome = operationalOutcome(operational);
   const operationalRow: IntegritySummaryRow = operationalRecorded
     ? {
       key: 'operational', label: 'Operational',
-      value: humanizeToken(operational.reconciliation_status) ?? caseStateLabel(operational.state),
+      value: humanizeToken(operational.reconciliation_status) ?? '',
       detail: formatCaseAmount(operational.variance_amount)
         ? `Variance ${formatCaseAmount(operational.variance_amount)}`
         : operational.authoritative_source ?? null,
       code: null,
-      badge: { label: caseStateLabel(operational.state), variant: caseStateVariant(operational.state) },
+      badge: { label: operationalOutcomeLabel(outcome), variant: operationalOutcomeVariant(outcome) },
       recorded: true,
     }
     : {
       key: 'operational', label: 'Operational',
       value: absentValue(known ? 'empty' : summaryLoad, 'Not collected'),
-      detail: null, code: null, badge: null, recorded: false,
+      // Stated so the absence cannot be read as a failed comparison. Operational
+      // artifacts may still exist for the ASSET; none was reconciled for this event.
+      detail: known ? 'Nothing was compared for this event' : null,
+      code: null, badge: null, recorded: false,
     };
 
-  /* Policy — the deterministic engine's verdict, never an AI explanation. */
+  /* Policy — the deterministic engine's verdict, never an AI explanation.
+     The badge states the DECISION; the value states where the decision came from.
+     A DENY reached because no policy governed the operation is the fail-closed rule
+     doing its job, and it is named as that rather than as "Policy Not Found", which
+     reads as a broken lookup of a policy record. An authoritative decision whose
+     source an operator cannot see is exactly what this screen must not show. */
   const policyRecorded = known && caseSectionRecorded(policy.state);
+  const policySource = resolvePolicyDecisionSource(policy);
+  const failClosed = policySource === 'fail_closed_default';
   const policyRow: IntegritySummaryRow = policyRecorded
     ? {
       key: 'policy', label: 'Policy',
-      // The badge states the verdict; the line beneath it states why, in one short
-      // phrase. The complete reason-code list belongs to the full investigation.
-      value: reasonCodeSummary(policy.reason_codes) ?? policy.decision ?? 'No decision recorded',
-      detail: null,
-      code: policy.policy_key
-        ? `${policy.policy_key}${policy.policy_version !== null && policy.policy_version !== undefined ? ` v${policy.policy_version}` : ''}`
-        : null,
+      value: failClosed
+        ? 'No applicable policy'
+        : reasonCodeSummary(policy.reason_codes) ?? policy.decision ?? 'No decision recorded',
+      // Where the verdict came from. Always stated for a recorded decision, so
+      // "who decided this" is never left to be inferred from a reason code.
+      detail: policyDecisionSourceLabel(policySource),
+      // The policy identity AS RECORDED at evaluation time — it survives the policy
+      // being edited or deleted afterwards. A fail-closed refusal names no policy,
+      // because none applied; inventing one here would fabricate a relationship.
+      code: evaluatedPolicyReference(policy),
       badge: policy.decision
         ? { label: policy.decision, variant: policyDecisionVariant(policy.decision) }
         : null,
@@ -928,6 +1259,7 @@ export function buildIntegritySummary(input: {
     }
     : {
       key: 'policy', label: 'Policy',
+      // No evaluation is NOT a DENY. It carries no decision badge at all.
       value: absentValue(known ? 'empty' : summaryLoad, 'Not evaluated'),
       detail: null, code: null, badge: null, recorded: false,
     };
@@ -937,7 +1269,9 @@ export function buildIntegritySummary(input: {
   const responseRow: IntegritySummaryRow = responseKnown && response.total > 0
     ? {
       key: 'response', label: 'Response', value: response.label,
-      detail: `${response.total} recommended`,
+      // Both numbers name their unit. "5 recommended" beside "Awaiting approval (2)"
+      // left an operator to guess whether the 2 were approvals or actions.
+      detail: `${response.total} response ${response.total === 1 ? 'action' : 'actions'} recommended in total`,
       code: null,
       badge: { label: RESPONSE_STATE_BADGE[response.state], variant: responseStateVariant(response.state) },
       recorded: true,
@@ -954,9 +1288,12 @@ export function buildIntegritySummary(input: {
     ? {
       key: 'evidence', label: 'Evidence',
       value: `${artifactCount} ${artifactCount === 1 ? 'artifact' : 'artifacts'}`,
-      // The badge already names a recorded snapshot state; the secondary line is used
-      // only to say that no state was recorded, rather than to repeat the badge.
-      detail: evidence.snapshot_status ? null : snapshotStatusLabel(evidence.snapshot_status),
+      // The total spans four provenance domains, so it must not be read as proof
+      // that any one of them was collected — 13 artifacts beside "Operational: not
+      // collected" is only contradictory if the total looks like an operational
+      // count. The breakdown is stated whenever the backend reported one.
+      detail: evidenceDomainBreakdown(evidence.counts)
+        ?? (evidence.snapshot_status ? null : snapshotStatusLabel(evidence.snapshot_status)),
       code: evidence.package_number ?? null,
       // A snapshot badge is shown only for a state the backend actually recorded —
       // "unknown" is not a state worth colouring.
@@ -971,11 +1308,16 @@ export function buildIntegritySummary(input: {
       detail: null, code: null, badge: null, recorded: false,
     };
 
-  // A row whose value repeats its badge word for word prints the same fact twice in a
-  // column that has no room for it. The badge keeps the state; the value goes blank and
-  // the renderer skips it. Nothing is lost — the badge already says it.
+  // A row whose value repeats its badge prints the same fact twice in a column that has
+  // no room for it. Compared case- and space-insensitively, because the two strings come
+  // from different vocabularies — the engine's own status token and this module's outcome
+  // word — and "Not Matched" beside "Not matched" is still one fact rendered twice. The
+  // badge keeps the state; the value goes blank and the renderer skips it. Nothing is
+  // lost — the badge already says it.
+  const sameFact = (value: string, badge: string): boolean =>
+    value.trim().toLowerCase() === badge.trim().toLowerCase();
   return [detectionRow, onChainRow, operationalRow, policyRow, responseRow, evidenceRow].map((row) =>
-    row.badge && row.badge.label === row.value ? { ...row, value: '' } : row,
+    row.badge && sameFact(row.value, row.badge.label) ? { ...row, value: '' } : row,
   );
 }
 
@@ -999,6 +1341,80 @@ export type WorkflowProgress = {
   /** The stage an operator is on now (first in-progress/queued), else null. */
   current: string | null;
 };
+
+/* ── Investigation coverage (which lifecycle stages have a record) ── */
+
+/**
+ * Coverage is deliberately NOT a completion score. It answers one question per
+ * lifecycle domain — "is there a persisted record for this?" — so a case whose
+ * flow never ran a policy evaluation shows a gap instead of a manufactured
+ * timeline event. `missing` is a truthful answer, never a failure.
+ */
+export type CoverageState = 'available' | 'missing' | 'not_applicable';
+
+export type CoverageRow = { key: string; label: string; state: CoverageState };
+
+export function coverageStateLabel(state: CoverageState): string {
+  switch (state) {
+    case 'available': return 'Available';
+    case 'not_applicable': return 'Not applicable';
+    default: return 'Missing';
+  }
+}
+
+/** Available is the only affirmative state; a gap is neutral, never success. */
+export function coverageStateVariant(state: CoverageState): PillVariant {
+  return state === 'available' ? 'success' : 'neutral';
+}
+
+/**
+ * One coverage row per lifecycle domain, from persisted records only.
+ *
+ * Detection is `not_applicable` — not `missing` — for an incident whose ORIGIN
+ * shows it was never raised by the detection engine: an alert escalation or a
+ * manually opened case never had a detection to collect, and reporting that as a
+ * gap would invent an expectation the workflow never set.
+ */
+export function investigationCoverage(input: {
+  summary: IncidentCaseSummary | null;
+  summaryLoad: ForensicLoadState;
+  responseTotal: number;
+  responseLoad: ForensicLoadState;
+}): CoverageRow[] {
+  const { summary, summaryLoad, responseTotal, responseLoad } = input;
+  const known = summaryLoad === 'ready' || summaryLoad === 'empty';
+  const origin = summary?.origin ?? {};
+  const evidence = summary?.evidence ?? {};
+  const seen = (available: boolean): CoverageState =>
+    known && available ? 'available' : 'missing';
+
+  const detectionState: CoverageState = !known
+    ? 'missing'
+    : origin.detection_linked
+      ? 'available'
+      : origin.origin === 'alert' || origin.origin === 'manual' || origin.origin === 'system'
+        ? 'not_applicable'
+        : 'missing';
+
+  return [
+    { key: 'on_chain', label: 'On-chain event', state: seen(sectionCollected(summary?.on_chain)) },
+    { key: 'operational', label: 'Operational state', state: seen(sectionCollected(summary?.operational)) },
+    { key: 'detection', label: 'Detection', state: detectionState },
+    { key: 'policy', label: 'Policy evaluation', state: seen(caseSectionRecorded(summary?.policy?.state)) },
+    {
+      key: 'response',
+      label: 'Response',
+      state: (responseLoad === 'ready' || responseLoad === 'empty') && responseTotal > 0
+        ? 'available'
+        : 'missing',
+    },
+    {
+      key: 'evidence',
+      label: 'Evidence',
+      state: seen(typeof evidence.artifact_count === 'number' && evidence.artifact_count > 0),
+    },
+  ];
+}
 
 export function summarizeWorkflowProgress(
   stages: readonly WorkflowStage[] | null | undefined,

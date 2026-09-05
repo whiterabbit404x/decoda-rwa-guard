@@ -23,6 +23,10 @@ import path from 'node:path';
 import {
   buildIntegritySummary,
   caseSectionRecorded,
+  operationalOutcome,
+  operationalOutcomeDetail,
+  operationalOutcomeLabel,
+  operationalOutcomeVariant,
   caseStateLabel,
   caseStateVariant,
   formatCaseAmount,
@@ -252,15 +256,30 @@ test('the Overview renders every load state and never a partial summary as compl
 test('each Overview section states its own absence rather than borrowing a verdict', () => {
   const src = appSource('incident-case-overview.tsx');
   for (const copy of [
-    'No detection is linked to this incident.',
     'No chain observation is recorded for this incident.',
-    'No operational record has been reconciled against this event.',
     'No policy evaluation is recorded for this incident.',
     'No response action has been recommended for this incident yet.',
     'No evidence package has been created for this incident yet.',
   ]) {
     expect(src, copy).toContain(copy);
   }
+  // Detection and operational absence are worded by the presentation module, which
+  // states WHY the record is missing rather than only that it is: the incident's
+  // origin for a detection, and "nothing was compared" for the operational half.
+  expect(src).toContain('missingDetectionExplanation(origin)');
+  expect(src).toContain('operationalOutcomeDetail(outcome)');
+});
+
+test('an absent operational record is never worded as a failed comparison', () => {
+  // NOT COLLECTED and NOT MATCHED are opposite claims about a customer's books.
+  expect(operationalOutcome({ state: 'not_recorded' })).toBe('not_collected');
+  expect(operationalOutcome({ state: 'anomaly' })).toBe('not_matched');
+  expect(operationalOutcomeLabel('not_collected')).toBe('Not collected');
+  expect(operationalOutcomeLabel('not_matched')).toBe('Not matched');
+  // Absence is neutral; only a real failed match is danger.
+  expect(operationalOutcomeVariant('not_collected')).toBe('neutral');
+  expect(operationalOutcomeVariant('not_matched')).toBe('danger');
+  expect(operationalOutcomeDetail('not_collected')).toContain('not a mismatch');
 });
 
 test('the policy verdict is the deterministic engine\'s, and Screen 8 still owns the response', () => {
@@ -304,8 +323,11 @@ test('the wide Overview lays the record out in the order the investigation ran',
   // The reconciliation band restates the operational record's own fields; it never
   // computes a second verdict, and an unreconciled case stays neutral.
   expect(src).toContain('aria-label="Reconciliation result"');
-  expect(src).toContain('Not reconciled');
-  expect(src).toContain('caseStateVariant(operational.state)');
+  // An uncollected operational half reads "Unavailable", never "Not matched": the
+  // reconciliation band must not turn a gap in coverage into a failed comparison.
+  expect(src).toContain('Unavailable');
+  expect(src).toContain('No operational data was collected for this event');
+  expect(src).toContain('operationalOutcomeVariant(outcome)');
 });
 
 /* ───────────────── 7. AI authority ─────────────────────────────────────── */

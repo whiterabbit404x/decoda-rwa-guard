@@ -114,6 +114,16 @@ export type ForensicInvestigation = {
     detection_type?: string | null;
     detection_id?: string | null;
     event_id?: string | null;
+    // How the incident came to exist, from persisted linkage only, and who owns
+    // it. Both null when the record says nothing — the header states that rather
+    // than substituting a default.
+    origin?: {
+      origin?: string;
+      detection_linked?: boolean;
+      alert_linked?: boolean;
+      source_event_type?: string | null;
+    } | null;
+    assigned_to_user_id?: string | null;
   };
   snapshot_hash?: string;
   analysis?: ForensicAnalysis;
