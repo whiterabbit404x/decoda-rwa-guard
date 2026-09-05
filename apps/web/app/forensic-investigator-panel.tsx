@@ -35,6 +35,7 @@ import {
   type RuleMatch,
   type WorkflowStage,
 } from './forensic-investigation-presentation';
+import { incidentOriginLabel } from './incident-forensics-presentation';
 
 // The Incidents UI never calls the backend directly (the browser only sees
 // NEXT_PUBLIC_API_URL, often unset in production). Every call goes through the
@@ -413,7 +414,29 @@ function HeaderCard({ investigation }: { investigation: ForensicInvestigation })
             ? <span title={incident.detection_id ?? undefined}>{detectionTypeLabel(incident.detection_type)}</span>
             : <span className="muted">Not available</span>
         } />
+        {/* How the case originated, from persisted linkage only. It is what makes an
+            empty Detection field legible: an incident escalated from an alert or
+            opened by hand never HAD a Screen 5 detection. */}
+        <HeaderField label="Origin" value={
+          incident.origin?.origin
+            ? incidentOriginLabel(incident.origin.origin)
+            : <span className="muted">Not recorded</span>
+        } />
         <HeaderField label="Source alerts" value={String(linked.alerts ?? 0)} />
+        {/* The analyst this case is assigned to, as the incident row records it. */}
+        <HeaderField label="Assigned analyst" value={
+          incident.assigned_to_user_id
+            ? <CopyableId value={incident.assigned_to_user_id} label="analyst" />
+            : <span className="muted">Unassigned</span>
+        } />
+        {/* The canonical correlation id the whole workflow is stamped with — the same
+            value Screens 3, 5, 8, 9 and 11 carry. Screen 7 displays it; it never
+            mints one. */}
+        <HeaderField label="Canonical event" value={
+          incident.event_id
+            ? <CopyableId value={incident.event_id} label="canonical event" />
+            : <span className="muted">Not linked</span>
+        } />
         <HeaderField label="Risk score" value={
           typeof incident.risk_score === 'number'
             ? `${Math.round(incident.risk_score)} / 100`

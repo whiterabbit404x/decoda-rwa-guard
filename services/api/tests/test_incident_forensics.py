@@ -41,6 +41,9 @@ DETECTION_ID = str(uuid.uuid4())
 ASSET_ID = str(uuid.uuid4())
 TARGET_ID = str(uuid.uuid4())
 EVALUATION_ID = str(uuid.uuid4())
+# Stable across reads: the evaluation row is one persisted record, so its policy
+# identity must not change between two fetches of the same case.
+POLICY_ID = str(uuid.uuid4())
 OTHER_EVALUATION_ID = str(uuid.uuid4())
 SNAPSHOT_ID = str(uuid.uuid4())
 PACKAGE_ID = str(uuid.uuid4())
@@ -486,7 +489,7 @@ class _ForensicConn:
             if str(params[0]) != WS_ID:
                 return _Result([])
             rows = [{
-                'id': EVALUATION_ID, 'policy_id': str(uuid.uuid4()), 'policy_key': 'POL-MINT-007',
+                'id': EVALUATION_ID, 'policy_id': POLICY_ID, 'policy_key': 'POL-MINT-007',
                 'policy_version': 7, 'decision': 'DENY',
                 'reason_codes': ['COMPLIANCE_APPROVAL_MISSING'],
                 'required_approvals': ['COMPLIANCE_APPROVER'],
@@ -981,8 +984,10 @@ def test_case_summary_is_a_pure_fold_and_opens_no_cursor():
     parameters = inspect.signature(f.build_case_summary).parameters
     assert 'connection' not in parameters
     assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in parameters.values())
+    # `incident` is the row `_require_incident` already read for the tenancy check,
+    # passed in rather than re-queried — the fold still opens nothing of its own.
     assert set(parameters) == {'correlation', 'artifacts', 'evaluations', 'counts',
-                               'snapshot', 'package'}
+                               'snapshot', 'package', 'incident'}
 
 
 def test_the_evidence_endpoint_reads_each_source_once(monkeypatch):

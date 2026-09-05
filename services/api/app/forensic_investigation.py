@@ -835,7 +835,7 @@ def _incident_header(connection: Any, *, workspace_id: str, incident_id: str) ->
     row = connection.execute(
         '''
         SELECT id, reference, title, severity, status, workflow_status, summary, target_id,
-               source_alert_id, created_at, updated_at
+               source_alert_id, event_type, assignee_user_id, owner, created_at, updated_at
         FROM incidents WHERE id = %s AND workspace_id = %s
         ''',
         (incident_id, workspace_id),
@@ -891,6 +891,11 @@ def _serialize_header(header: dict[str, Any], case: dict[str, Any] | None = None
         'detection_type': case.get('detection_type'),
         'detection_id': case.get('detection_id'),
         'event_id': case.get('event_id'),
+        # How the incident came to exist, and who owns it. Both are read from the
+        # incident row / canonical linkage: `None` means the record says nothing,
+        # which the UI states rather than filling in.
+        'origin': case.get('origin'),
+        'assigned_to_user_id': case.get('assigned_to_user_id'),
     }
 
 
@@ -955,6 +960,12 @@ def get_investigation(incident_id: str, request: Any) -> dict[str, Any]:
             )
             case_facts['detection_id'] = correlation.get('detection_id')
             case_facts['event_id'] = correlation.get('event_id')
+            # How the case originated, from the SAME resolver the evidence record
+            # uses — so the header and the Case File can never disagree about
+            # whether a detection was ever expected for this incident.
+            case_facts['origin'] = incident_forensics.incident_origin(
+                incident=header, correlation=correlation,
+            )
         except Exception:
             logger.warning('forensic_investigation_case_facts_failed incident_id=%s',
                            incident_id, exc_info=True)

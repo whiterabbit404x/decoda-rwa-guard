@@ -132,12 +132,19 @@ test('a recorded case states each backend fact, with its state badge', () => {
   expect(rows.on_chain.value).toBe('Mint 500000 units');
   expect(rows.on_chain.badge).toEqual({ label: 'Observed', variant: 'info' });
 
-  expect(rows.operational.value).toBe('Not Matched');
-  expect(rows.operational.badge).toEqual({ label: 'Mismatch', variant: 'danger' });
+  // The badge carries the five-word outcome vocabulary, which keeps "collected and
+  // did not match" apart from "nothing was collected". Here the engine's own status
+  // token says the same thing, so the value blanks rather than printing the fact
+  // twice in a 360px column.
+  expect(rows.operational.value).toBe('');
+  expect(rows.operational.badge).toEqual({ label: 'Not matched', variant: 'danger' });
+  expect(rows.operational.recorded).toBe(true);
 
-  // The badge carries the verdict; the value carries why, in one phrase.
+  // The badge carries the verdict; the value carries why, in one phrase; the detail
+  // states WHERE the verdict came from, so an authoritative DENY is never unexplained.
   expect(rows.policy.value).toBe('Compliance Approval Missing +2 more');
   expect(rows.policy.badge).toEqual({ label: 'DENY', variant: 'danger' });
+  expect(rows.policy.detail).toBe('Matched policy');
   expect(rows.policy.code).toBe('issuance-authorization v3');
 
   expect(rows.evidence.value).toBe('11 artifacts');
@@ -155,8 +162,19 @@ test('a row never prints its own badge twice', () => {
   expect(policy.recorded).toBe(true);
   const noStatus: IncidentCaseSummary = { operational: { state: 'anomaly' } };
   const operational = rowsFor(noStatus, 'ready').operational;
-  expect(operational.badge).toEqual({ label: 'Mismatch', variant: 'danger' });
+  expect(operational.badge).toEqual({ label: 'Not matched', variant: 'danger' });
   expect(operational.value).toBe('');
+  // The two strings come from different vocabularies — the engine's status token and
+  // the outcome word — so the comparison ignores case and surrounding space.
+  const differentCase: IncidentCaseSummary = {
+    operational: { state: 'anomaly', reconciliation_status: 'NOT_MATCHED' },
+  };
+  expect(rowsFor(differentCase, 'ready').operational.value).toBe('');
+  // A status that genuinely says something else is kept.
+  const distinct: IncidentCaseSummary = {
+    operational: { state: 'anomaly', reconciliation_status: 'UNEXPLAINED_VARIANCE' },
+  };
+  expect(rowsFor(distinct, 'ready').operational.value).toBe('Unexplained Variance');
 });
 
 test('a stack of reason codes becomes one short line, not a column of pills', () => {
@@ -216,10 +234,11 @@ test('the response row waits for Screen 8 to actually be read', () => {
   expect(rowsFor(RECORDED, 'ready', [], 'empty').response.value).toBe('No response action');
   const pending = rowsFor(RECORDED, 'ready', [{ id: 'a', approval_status: 'pending' }], 'ready').response;
   // The value carries Screen 8's canonical sentence (with its count); the badge names
-  // the state alone, so a 360px column is not asked to render the count twice.
-  expect(pending.value).toBe('Awaiting approval (1)');
+  // the state alone, so a 360px column is not asked to render the count twice. Both
+  // numbers name their unit: these count ACTIONS, never approvals.
+  expect(pending.value).toBe('1 action awaiting approval');
   expect(pending.badge).toEqual({ label: 'Awaiting', variant: 'warning' });
-  expect(pending.detail).toBe('1 recommended');
+  expect(pending.detail).toBe('1 response action recommended in total');
   const failed = rowsFor(RECORDED, 'ready', [{ id: 'a', execution_status: 'failed' }], 'ready').response;
   expect(failed.badge).toEqual({ label: 'Failed', variant: 'danger' });
 });

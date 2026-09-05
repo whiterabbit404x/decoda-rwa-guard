@@ -349,7 +349,8 @@ def _require_incident(connection: Any, *, workspace_id: str, incident_id: str) -
     row = connection.execute(
         '''
         SELECT id, reference, title, severity, status, workflow_status, summary,
-               target_id, source_alert_id, created_at, updated_at
+               target_id, source_alert_id, event_type, assignee_user_id, owner,
+               created_at, updated_at
         FROM incidents
         WHERE id = %s AND workspace_id = %s
         ''',
@@ -448,6 +449,9 @@ def incident_header(connection: Any, *, workspace_id: str, incident: dict[str, A
         'detection_category': _text(detection.get('category')),
         'detection_type': _text(detection.get('detection_type')),
         'detection_title': _text(detection.get('title')),
+        # The analyst this case is assigned to, as the incident row records it.
+        # ``None`` means unassigned, which the UI states — never a stand-in name.
+        'assigned_to_user_id': _text(incident.get('assignee_user_id')) or _text(incident.get('owner')),
         'opened_at': _iso(incident.get('created_at')),
         'updated_at': _iso(incident.get('updated_at')),
     }
@@ -1321,6 +1325,24 @@ def build_forensic_timeline(*, incident_id: str, correlation: dict[str, Any],
     return sort_timeline_events(events)
 
 
+def datable_timeline_events(
+    events: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Split assembled events into those a chronology can place, and a count of the rest.
+
+    A chronology can only position an event that carries a canonical timestamp. A
+    persisted row whose source timestamp column is NULL is a real record, but
+    giving it a position would state an order the data does not support, and the
+    sort would park it at the end regardless of when it actually happened.
+
+    Such a row is therefore withheld from the chronology and COUNTED, so the view
+    can say the timeline is not the complete set of records rather than quietly
+    shedding one. The evidence directory still lists it in full.
+    """
+    dated = [event for event in events if event.get('occurred_at')]
+    return dated, len(events) - len(dated)
+
+
 # ---------------------------------------------------------------------------
 # Case summary (the Screen 7 Overview / Case File snapshot)
 # ---------------------------------------------------------------------------
@@ -1333,6 +1355,137 @@ STATE_ANOMALY = 'anomaly'
 STATE_INDETERMINATE = 'indeterminate'
 STATE_RECONCILED = 'reconciled'
 STATE_DECIDED = 'decided'
+
+# ---------------------------------------------------------------------------
+# Collection state — deliberately SEPARATE from the verdict states above.
+#
+# "No operational data was retrieved" and "operational data was retrieved and did
+# not match" are different facts about the world, and conflating them is the
+# single most dangerous error this screen can make: it turns a gap in coverage
+# into an accusation, or an accusation into a gap. The verdict states answer
+# "what did the comparison say"; these answer the prior question "was there
+# anything to compare".
+# ---------------------------------------------------------------------------
+#: No record was retrieved for this section at all.
+COLLECTION_NOT_COLLECTED = 'not_collected'
+#: A record was retrieved and a verdict was reached on it.
+COLLECTION_COLLECTED = 'collected'
+#: A collection or reconciliation attempt is on record but produced no usable
+#: verdict. Never rendered as a mismatch, and never as agreement.
+COLLECTION_ERROR = 'error'
+
+#: Which verdict states prove a record was actually retrieved. ``indeterminate``
+#: counts as collected: the engine ran and could not establish truth, which is a
+#: different fact from never having looked.
+_COLLECTED_STATES = frozenset({STATE_OBSERVED, STATE_ANOMALY, STATE_RECONCILED,
+                               STATE_DECIDED, STATE_INDETERMINATE})
+
+
+def collection_state(state: str | None) -> str:
+    """Whether a section's record was retrieved at all, independent of its verdict."""
+    return COLLECTION_COLLECTED if (state or '') in _COLLECTED_STATES else COLLECTION_NOT_COLLECTED
+
+
+# ---------------------------------------------------------------------------
+# Policy decision provenance
+# ---------------------------------------------------------------------------
+# A DENY that names a policy and a DENY reached BECAUSE no policy applied are
+# both authoritative and both persisted — but an operator who cannot tell them
+# apart cannot act on either. The engine's own step-1 terminal branch
+# (``evaluate_policy`` with ``policy=None``) writes a decision row with a DENY,
+# a POLICY_NOT_FOUND reason code and NO policy identity; that is a deterministic
+# fail-closed refusal, not a failed lookup of a policy record, and it is labelled
+# as such rather than left to read like a broken join.
+#: The evaluation matched a governing policy, whose key/version it carries.
+DECISION_SOURCE_POLICY = 'matched_policy'
+#: The deterministic engine refused for want of an applicable policy.
+DECISION_SOURCE_FAIL_CLOSED = 'fail_closed_default'
+#: No enforcement evaluation is on record. NOT a decision — see below.
+DECISION_SOURCE_NONE = 'no_evaluation'
+#: A decision IS on record but nothing in it establishes where it came from. Kept
+#: distinct rather than folded into the fail-closed bucket: the fail-closed branch
+#: only ever produces DENY, so labelling any other unattributed decision as
+#: fail-closed would assert a mechanism that did not run.
+DECISION_SOURCE_UNATTRIBUTED = 'unattributed'
+
+#: Reason codes the engine emits when nothing governed the operation. Their
+#: presence on a persisted DENY is what makes it a fail-closed refusal rather
+#: than a policy's own verdict.
+FAIL_CLOSED_REASON_CODES = frozenset({'POLICY_NOT_FOUND', 'OPERATION_NOT_ESTABLISHED'})
+
+
+def decision_source(evaluation: dict[str, Any] | None) -> str:
+    """Where a persisted decision came from: a matched policy, or the fail-closed rule.
+
+    Reads only the persisted evaluation. A row that carries a policy identity was
+    decided BY that policy; a row with no identity whose reason codes name the
+    fail-closed branch was decided by the default rule. Nothing is inferred from
+    the current policy table, which may have changed since.
+    """
+    if not evaluation or not _text(evaluation.get('decision')):
+        return DECISION_SOURCE_NONE
+    if _text(evaluation.get('policy_key')) or _text(evaluation.get('policy_id')):
+        return DECISION_SOURCE_POLICY
+    codes = {str(code).upper() for code in (evaluation.get('reason_codes') or [])}
+    if codes & FAIL_CLOSED_REASON_CODES:
+        return DECISION_SOURCE_FAIL_CLOSED
+    # A DENY with no policy identity is the engine's step-1 terminal branch even if
+    # the reason codes were later extended; anything else with no identity is a
+    # decision whose source this record does not establish, and it says so.
+    if str(_text(evaluation.get('decision')) or '').upper() == 'DENY':
+        return DECISION_SOURCE_FAIL_CLOSED
+    return DECISION_SOURCE_UNATTRIBUTED
+
+
+# ---------------------------------------------------------------------------
+# Incident origin (provenance)
+# ---------------------------------------------------------------------------
+# How this incident came to exist, resolved from persisted linkage only. It is
+# what makes "no linked detection" legible rather than alarming: an incident
+# escalated from an alert, or opened by hand, never HAD a Screen 5 detection, and
+# saying so is different from saying one is missing.
+ORIGIN_DETECTION = 'detection'
+ORIGIN_ALERT = 'alert'
+ORIGIN_MANUAL = 'manual'
+ORIGIN_SYSTEM = 'system'
+ORIGIN_UNKNOWN = 'unknown'
+
+#: ``incidents.event_type`` values written by an automated creation path. Each is
+#: stamped by the code that opened the incident, so it is a persisted fact rather
+#: than a guess about intent.
+_SYSTEM_EVENT_TYPES = frozenset({'incident.monitoring_proof_chain', 'alert_escalation'})
+
+
+def incident_origin(*, incident: dict[str, Any], correlation: dict[str, Any]) -> dict[str, Any]:
+    """Resolve how this incident originated, from persisted linkage only.
+
+    Precedence follows the strength of the link, not the order the workflow runs
+    in: a linked Screen 5 detection is the strongest evidence of origin, then a
+    source alert, then the creation ``event_type`` the writer stamped. When none
+    of those is present the origin is ``unknown`` — never defaulted to "manual",
+    which would assert that a person opened it.
+    """
+    detection_linked = bool(correlation.get('detection_id'))
+    alert_linked = bool(correlation.get('alert_id'))
+    event_type = _text(incident.get('event_type'))
+    if detection_linked:
+        origin = ORIGIN_DETECTION
+    elif alert_linked:
+        origin = ORIGIN_ALERT
+    elif event_type in _SYSTEM_EVENT_TYPES:
+        origin = ORIGIN_SYSTEM
+    elif event_type:
+        origin = ORIGIN_MANUAL
+    else:
+        origin = ORIGIN_UNKNOWN
+    return {
+        'origin': origin,
+        # The two linkage facts, stated separately, so the UI can explain WHY the
+        # detection section is empty instead of implying a broken relationship.
+        'detection_linked': detection_linked,
+        'alert_linked': alert_linked,
+        'source_event_type': event_type,
+    }
 
 
 def _amount_fact(value: Any, *, decimals: Any, unit: Any) -> dict[str, Any] | None:
@@ -1368,6 +1521,25 @@ def _latest_reconciliation(artifacts: Iterable[dict[str, Any]]) -> dict[str, Any
     return latest
 
 
+def _latest_onchain_observation(artifacts: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
+    """The most recent chain-side artifact carrying a transaction identity.
+
+    Read from the directory rows this request already built — no second query.
+    These come from the incident's evidence snapshot, which exists independently
+    of any Screen 5 detection, so an incident with no linked detection can still
+    prove WHICH transaction it is about. Only a row that actually carries a
+    ``tx_hash`` qualifies: an on-chain artifact without one identifies nothing.
+    """
+    latest: dict[str, Any] | None = None
+    for artifact in artifacts:
+        if artifact.get('domain') != ON_CHAIN:
+            continue
+        if not _text((artifact.get('metadata') or {}).get('tx_hash')):
+            continue
+        latest = artifact
+    return latest
+
+
 def _operational_state(reconciliation: dict[str, Any] | None, detection: dict[str, Any]) -> str:
     """Classify the operational half of the case, fail-closed.
 
@@ -1393,7 +1565,8 @@ def _operational_state(reconciliation: dict[str, Any] | None, detection: dict[st
 
 def build_case_summary(*, correlation: dict[str, Any], artifacts: list[dict[str, Any]],
                        evaluations: list[dict[str, Any]], counts: dict[str, Any],
-                       snapshot: dict[str, Any], package: dict[str, Any]) -> dict[str, Any]:
+                       snapshot: dict[str, Any], package: dict[str, Any],
+                       incident: dict[str, Any] | None = None) -> dict[str, Any]:
     """The deterministic answer to "what happened, and what proves it".
 
     A pure fold over records this request has ALREADY read — it opens no cursor
@@ -1416,27 +1589,57 @@ def build_case_summary(*, correlation: dict[str, Any], artifacts: list[dict[str,
     on_chain_artifacts = int(counts.get(DOMAIN_COUNT_KEYS[ON_CHAIN]) or 0)
     tx_hash = _text(detection.get('tx_hash'))
 
+    # An incident with no linked detection can still have chain evidence: the
+    # evidence snapshot's telemetry is collected against the incident, not the
+    # detection. Claiming "observed" from those artifacts while sourcing the
+    # identifying facts only from a detection that does not exist would render an
+    # observation with nothing to show. So the persisted artifact stands in — and
+    # ``fact_source`` names which record the facts came from, because an operator
+    # checking a chain reading needs to know what they are checking.
+    observation = None if tx_hash else _latest_onchain_observation(artifacts)
+    observation_meta = (observation or {}).get('metadata') or {}
+    on_chain_state = (
+        STATE_OBSERVED if (tx_hash or on_chain_artifacts > 0) else STATE_NOT_RECORDED
+    )
     on_chain = {
         # A chain observation is claimed only where a transaction identity or a
         # real chain-side artifact exists. No detection row alone asserts it.
-        'state': STATE_OBSERVED if (tx_hash or on_chain_artifacts > 0) else STATE_NOT_RECORDED,
-        'operation': _text(detection.get('operation')),
+        'state': on_chain_state,
+        'operation': _text(detection.get('operation')) or _text(observation_meta.get('event_type')),
         'observed_amount': _amount_fact(
             detection.get('observed_amount'),
             decimals=detection.get('amount_decimals'), unit=detection.get('amount_unit'),
         ),
-        'tx_hash': tx_hash,
-        'block_number': _text(detection.get('block_number')),
-        'observed_at': _iso(detection.get('telemetry_observed_at')) or _iso(detection.get('detected_at')),
+        'tx_hash': tx_hash or _text(observation_meta.get('tx_hash')),
+        'block_number': _text(detection.get('block_number')) or _text(observation_meta.get('block_number')),
+        'observed_at': (_iso(detection.get('telemetry_observed_at')) or _iso(detection.get('detected_at'))
+                        or _iso((observation or {}).get('collected_at'))),
         'preconfirmation_at': _iso(detection.get('preconfirmation_received_at')),
-        'source': _text(detection.get('telemetry_source')),
+        'source': _text(detection.get('telemetry_source')) or _text((observation or {}).get('source')),
+        # Which persisted record the identifying facts above were read from.
+        'fact_source': ('detection' if tx_hash else 'evidence_snapshot' if observation
+                        else 'detection' if detection else None),
+        'collection_state': collection_state(on_chain_state),
         'artifact_count': on_chain_artifacts,
     }
 
     reconciliation = _latest_reconciliation(artifacts)
     reconciliation_meta = (reconciliation or {}).get('metadata') or {}
+    operational_state = _operational_state(reconciliation, detection)
+    operational_artifacts = int(counts.get(DOMAIN_COUNT_KEYS[OPERATIONAL]) or 0)
     operational = {
-        'state': _operational_state(reconciliation, detection),
+        'state': operational_state,
+        # Whether ANY operational record was retrieved, kept strictly apart from
+        # the verdict. ``not_collected`` means nothing was compared; it is not a
+        # mismatch, and the UI must never render it as one.
+        'collection_state': collection_state(operational_state),
+        # Operational artifacts CAN exist while no verdict was reached for this
+        # event — an asset-scoped reconciliation, a system-of-record reading, an
+        # authorized issuance. Carrying the count here stops the total artifact
+        # count from being read as proof that this event's operational state was
+        # collected.
+        'reconciliation_scope': ('EVENT' if reconciliation else
+                                 'ASSET' if operational_artifacts > 0 else None),
         'reason_code': _text(reconciliation_meta.get('reason_code'))
                        or _text(detection.get('deterministic_reason_code')),
         'reconciliation_status': _text(reconciliation_meta.get('status')),
@@ -1457,11 +1660,25 @@ def build_case_summary(*, correlation: dict[str, Any], artifacts: list[dict[str,
     # here, once, so no consumer can promote a what-if into the enforcement slot.
     enforcement = [row for row in evaluations if not row.get('simulation')]
     latest = enforcement[0] if enforcement else None
+    policy_state = STATE_DECIDED if (latest and _text(latest.get('decision'))) else STATE_NOT_RECORDED
     policy = {
-        'state': STATE_DECIDED if (latest and _text(latest.get('decision'))) else STATE_NOT_RECORDED,
+        'state': policy_state,
+        'collection_state': collection_state(policy_state),
         'decision': _text(latest.get('decision')) if latest else None,
+        # WHERE the decision came from. A DENY reached because no policy governed
+        # the operation is the deterministic fail-closed rule doing its job, not a
+        # failed lookup of a policy record — and an operator who cannot tell the
+        # two apart cannot act on either. Resolved from the PERSISTED evaluation,
+        # never from the current policy table.
+        'decision_source': decision_source(latest),
+        # The policy identity AS RECORDED AT EVALUATION TIME. These are columns on
+        # the evaluation row itself, so they survive the policy being edited,
+        # archived or deleted afterwards; the current policy record is never read
+        # to fill them in.
+        'policy_id': _text(latest.get('policy_id')) if latest else None,
         'policy_key': _text(latest.get('policy_key')) if latest else None,
         'policy_version': latest.get('policy_version') if latest else None,
+        'engine_version': _text(latest.get('engine_version')) if latest else None,
         'evaluation_id': _text(latest.get('evaluation_id')) if latest else None,
         'evaluated_at': _text(latest.get('evaluated_at')) if latest else None,
         'reason_codes': list(latest.get('reason_codes') or []) if latest else [],
@@ -1491,6 +1708,10 @@ def build_case_summary(*, correlation: dict[str, Any], artifacts: list[dict[str,
             'detection_id': correlation.get('detection_id'),
             'asset_id': correlation.get('asset_id'),
         },
+        # How the incident came to exist. An incident escalated from an alert or
+        # opened by hand never HAD a Screen 5 detection; stating that is what makes
+        # an empty detection section legible instead of reading like a broken link.
+        'origin': incident_origin(incident=incident or {}, correlation=correlation),
         'detection': {
             'detection_id': correlation.get('detection_id'),
             'category': _text(detection.get('category')),
@@ -1499,6 +1720,10 @@ def build_case_summary(*, correlation: dict[str, Any], artifacts: list[dict[str,
             'severity': _text(detection.get('severity')),
             'reason_code': _text(detection.get('deterministic_reason_code')),
             'detected_at': _iso(detection.get('detected_at')),
+            # A detection section with no record says so as a first-class state,
+            # rather than leaving every field null for the UI to interpret.
+            'state': STATE_OBSERVED if detection else STATE_NOT_RECORDED,
+            'collection_state': collection_state(STATE_OBSERVED if detection else STATE_NOT_RECORDED),
         },
         'on_chain': on_chain,
         'operational': operational,
@@ -1601,6 +1826,7 @@ def get_incident_evidence(incident_id: str, request: Any) -> dict[str, Any]:
             'case_summary': build_case_summary(
                 correlation=correlation, artifacts=page, evaluations=evaluations,
                 counts=counts, snapshot=snapshot_block, package=package,
+                incident=incident,
             ),
             'evidence_package': pilot._json_safe_value(package),
             'policy_evaluations': evaluations,
@@ -1688,10 +1914,15 @@ def _timeline_payload(connection: Any, *, workspace_id: str, incident_id: str,
         reconciliations=reconciliations, evaluations=evaluations,
         snapshot_row=snapshot_row, package=package,
     )
+    dated, undated = datable_timeline_events(events)
     return {
         'incident_id': incident_id,
         'event_id': correlation['event_id'],
-        'events': events,
+        'events': dated,
+        # Persisted records that carry no canonical timestamp, and so cannot be
+        # placed on a chronology. Reported rather than dropped silently — a
+        # filtered timeline must not be presented as the complete record.
+        'undated_events': undated,
         'unreadable': unreadable,
         'partial': bool(unreadable),
     }
@@ -1752,6 +1983,7 @@ def get_incident_timeline(incident_id: str, request: Any) -> dict[str, Any]:
             'timeline': legacy,
             'event_id': forensic.get('event_id'),
             'events': forensic.get('events') or [],
+            'undated_events': forensic.get('undated_events') or 0,
             'unreadable': unreadable,
             'partial': bool(unreadable),
         }

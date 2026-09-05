@@ -4,14 +4,28 @@ import Link from 'next/link';
 
 import { StatusPill } from './components/ui-primitives';
 import {
+  approvalQuorumLabel,
   caseSectionRecorded,
   caseStateLabel,
   caseStateVariant,
+  evaluatedPolicyReference,
+  evidenceDomainBreakdown,
+  failClosedReason,
   formatCaseAmount,
   formatForensicDate,
   humanizeToken,
+  incidentOriginLabel,
+  missingDetectionExplanation,
+  operationalOutcome,
+  operationalOutcomeDetail,
+  operationalOutcomeLabel,
+  operationalOutcomeVariant,
+  policyDecisionSourceDetail,
+  policyDecisionSourceLabel,
   policyDecisionVariant,
+  resolvePolicyDecisionSource,
   responseStateVariant,
+  sectionCollected,
   snapshotStatusLabel,
   snapshotStatusVariant,
   summarizeResponseState,
@@ -83,12 +97,21 @@ export default function IncidentCaseOverview({ summary, load, responseActions, r
   const response = summarizeResponseState(responseActions);
   const responseKnown = responseLoad === 'ready' || responseLoad === 'empty';
 
-  const detectionSection = <DetectionSection detection={detection} />;
+  const origin = summary.origin ?? {};
+
+  const summarySection = <IncidentSummarySection summary={summary} />;
+  const detectionSection = <DetectionSection detection={detection} origin={origin} />;
   const onChainSection = <OnChainSection onChain={onChain} />;
   const operationalSection = <OperationalSection operational={operational} />;
   const policySection = <PolicySection policy={policy} />;
   const responseSection = (
-    <ResponseSection response={response} responseKnown={responseKnown} responseLoad={responseLoad} incidentId={incidentId} />
+    <ResponseSection
+      response={response}
+      responseKnown={responseKnown}
+      responseLoad={responseLoad}
+      incidentId={incidentId}
+      actions={responseActions}
+    />
   );
   const evidenceSection = <EvidenceSection evidence={evidence} />;
 
@@ -98,6 +121,7 @@ export default function IncidentCaseOverview({ summary, load, responseActions, r
         {/* Left: how cryptographic validity and operational authorization came apart. */}
         <div className="incidentCaseAnalysis">
           <p className="incidentCaseColumnTitle">Operational integrity analysis</p>
+          {summarySection}
           {detectionSection}
           <div className="incidentCaseCompare">
             {onChainSection}
@@ -118,6 +142,7 @@ export default function IncidentCaseOverview({ summary, load, responseActions, r
 
   return (
     <div className="incidentCaseOverview" aria-label="Incident case summary">
+      {summarySection}
       {detectionSection}
       {onChainSection}
       {operationalSection}
@@ -128,8 +153,62 @@ export default function IncidentCaseOverview({ summary, load, responseActions, r
   );
 }
 
-/* ── What was detected ──────────────────────────────────────────────── */
-function DetectionSection({ detection }: { detection: NonNullable<IncidentCaseSummary['detection']> }) {
+/* ── Incident summary ───────────────────────────────────────────────
+   The case's own identity: how it originated and the canonical event every other
+   screen stamps for it. Stated first, because the sections beneath it only make
+   sense once an operator knows whether a detection was ever expected. */
+function IncidentSummarySection({ summary }: { summary: IncidentCaseSummary }) {
+  const origin = summary.origin ?? {};
+  const correlation = summary.correlation ?? {};
+  return (
+    <CaseSection title="Incident summary">
+      <CaseLine
+        label="Origin"
+        value={
+          origin.origin
+            ? incidentOriginLabel(origin.origin)
+            : <span className="muted">Not recorded</span>
+        }
+      />
+      {/* The canonical correlation id the whole workflow is stamped with. Screen 7
+          displays it; it never mints one. */}
+      <CaseLine
+        label="Canonical event"
+        value={
+          summary.event_id
+            ? <span className="incidentMonoValue" title={summary.event_id}>{summary.event_id}</span>
+            : <span className="muted">Not linked</span>
+        }
+      />
+      <CaseLine
+        label="Linked detection"
+        value={
+          correlation.detection_id
+            ? <span className="incidentMonoValue" title={correlation.detection_id}>{correlation.detection_id}</span>
+            : <span className="muted">None</span>
+        }
+      />
+      <CaseLine
+        label="Linked alert"
+        value={
+          correlation.alert_id
+            ? <span className="incidentMonoValue" title={correlation.alert_id}>{correlation.alert_id}</span>
+            : <span className="muted">None</span>
+        }
+      />
+    </CaseSection>
+  );
+}
+
+/* ── What was detected ──────────────────────────────────────────────
+   An incident escalated from an alert, or opened by hand, never HAD a Screen 5
+   detection. Where none is linked, the ORIGIN says why — the difference between
+   a case that never had one and a relationship that broke. No detection is ever
+   fabricated to fill the section. */
+function DetectionSection({ detection, origin }: {
+  detection: NonNullable<IncidentCaseSummary['detection']>;
+  origin: NonNullable<IncidentCaseSummary['origin']>;
+}) {
   return (
     <CaseSection title="Detection">
       {detection.category || detection.detection_type ? (
@@ -145,7 +224,7 @@ function DetectionSection({ detection }: { detection: NonNullable<IncidentCaseSu
         </>
       ) : (
         <p className="muted" style={{ margin: 0, fontSize: '0.82rem' }}>
-          No detection is linked to this incident.
+          {missingDetectionExplanation(origin)}
         </p>
       )}
     </CaseSection>
@@ -171,6 +250,13 @@ function OnChainSection({ onChain }: { onChain: NonNullable<IncidentCaseSummary[
           {onChain.block_number ? <CaseLine label="Block" value={onChain.block_number} /> : null}
           {onChain.observed_at ? <CaseLine label="Observed at" value={formatForensicDate(onChain.observed_at)} /> : null}
           {onChain.source ? <CaseLine label="Source" value={onChain.source} /> : null}
+          {/* WHICH persisted record these facts were read from. An incident with no
+              linked detection can still prove its transaction from the evidence
+              snapshot, and an operator checking a chain reading needs to know which
+              record they are checking. */}
+          {onChain.fact_source === 'evidence_snapshot' ? (
+            <CaseLine label="Read from" value="Evidence snapshot (no linked detection)" />
+          ) : null}
         </>
       ) : (
         <p className="muted" style={{ margin: 0, fontSize: '0.82rem' }}>
@@ -185,10 +271,15 @@ function OnChainSection({ onChain }: { onChain: NonNullable<IncidentCaseSummary[
 function OperationalSection({ operational }: { operational: NonNullable<IncidentCaseSummary['operational']> }) {
   const expectedAmount = formatCaseAmount(operational.expected_amount);
   const varianceAmount = formatCaseAmount(operational.variance_amount);
+  const outcome = operationalOutcome(operational);
   return (
-    <CaseSection title="Operational state" state={operational.state}>
-      {caseSectionRecorded(operational.state) ? (
+    <CaseSection
+      title="Operational state"
+      pill={<StatusPill label={operationalOutcomeLabel(outcome)} variant={operationalOutcomeVariant(outcome)} />}
+    >
+      {sectionCollected(operational) ? (
         <>
+          <CaseLine label="Authorization state" value={operationalOutcomeLabel(outcome)} />
           {operational.reconciliation_status ? (
             <CaseLine label="Reconciliation" value={humanizeToken(operational.reconciliation_status) ?? '—'} />
           ) : null}
@@ -199,11 +290,27 @@ function OperationalSection({ operational }: { operational: NonNullable<Incident
           {varianceAmount ? <CaseLine label="Variance" value={varianceAmount} /> : null}
           {operational.authoritative_source ? <CaseLine label="System of record" value={operational.authoritative_source} /> : null}
           {operational.evaluated_at ? <CaseLine label="Evaluated" value={formatForensicDate(operational.evaluated_at)} /> : null}
+          <p className="tableMeta" style={{ margin: '0.3rem 0 0', fontSize: '0.7rem' }}>
+            {operationalOutcomeDetail(outcome)}
+          </p>
         </>
       ) : (
-        <p className="muted" style={{ margin: 0, fontSize: '0.82rem' }}>
-          No operational record has been reconciled against this event.
-        </p>
+        <>
+          {/* NOT COLLECTED is not NOT MATCHED. Nothing was retrieved, so nothing was
+              compared, and no verdict is claimed either way. */}
+          <p className="muted" style={{ margin: 0, fontSize: '0.82rem' }}>
+            {operationalOutcomeDetail(outcome)}
+          </p>
+          {/* Operational artifacts may exist for the ASSET while none was reconciled
+              against THIS event. Saying so stops the evidence total from being read
+              as proof that this event's operational state was collected. */}
+          {(operational.artifact_count ?? 0) > 0 ? (
+            <p className="tableMeta" style={{ margin: '0.3rem 0 0', fontSize: '0.7rem' }}>
+              {operational.artifact_count} operational {operational.artifact_count === 1 ? 'artifact' : 'artifacts'} exist
+              for this asset, but none is linked to this event.
+            </p>
+          ) : null}
+        </>
       )}
     </CaseSection>
   );
@@ -216,21 +323,23 @@ function OperationalSection({ operational }: { operational: NonNullable<Incident
  * "could not be established" is never rendered as agreement.
  */
 function ReconciliationResult({ operational }: { operational: NonNullable<IncidentCaseSummary['operational']> }) {
-  const recorded = caseSectionRecorded(operational.state);
+  const collected = sectionCollected(operational);
+  const outcome = operationalOutcome(operational);
   const variance = formatCaseAmount(operational.variance_amount);
   return (
     <div className="incidentCaseReconciliation" aria-label="Reconciliation result">
       <span className="incidentCaseReconciliationLabel">Reconciliation result</span>
-      {recorded ? (
+      {collected ? (
         <>
-          <StatusPill
-            label={humanizeToken(operational.reconciliation_status) ?? caseStateLabel(operational.state)}
-            variant={caseStateVariant(operational.state)}
-          />
+          <StatusPill label={operationalOutcomeLabel(outcome)} variant={operationalOutcomeVariant(outcome)} />
           {variance ? <span className="tableMeta" style={{ fontSize: '0.72rem' }}>Variance {variance}</span> : null}
         </>
       ) : (
-        <span className="muted" style={{ fontSize: '0.8rem' }}>Not reconciled</span>
+        <>
+          {/* "Unavailable" — never "Not matched". Nothing was retrieved to compare. */}
+          <StatusPill label="Unavailable" variant="neutral" />
+          <span className="tableMeta" style={{ fontSize: '0.72rem' }}>No operational data was collected for this event</span>
+        </>
       )}
     </div>
   );
@@ -238,6 +347,8 @@ function ReconciliationResult({ operational }: { operational: NonNullable<Incide
 
 /* ── What the deterministic engine decided ──────────────────────────── */
 function PolicySection({ policy }: { policy: NonNullable<IncidentCaseSummary['policy']> }) {
+  const decisionSource = resolvePolicyDecisionSource(policy);
+  const policyReference = evaluatedPolicyReference(policy);
   return (
     <CaseSection title="Policy" state={policy.state}>
       {caseSectionRecorded(policy.state) ? (
@@ -246,16 +357,25 @@ function PolicySection({ policy }: { policy: NonNullable<IncidentCaseSummary['po
             label="Decision"
             value={<StatusPill label={policy.decision ?? 'No decision recorded'} variant={policyDecisionVariant(policy.decision)} />}
           />
-          {policy.policy_key ? (
+          {/* WHERE the decision came from. Always stated, so an authoritative DENY is
+              never left unexplained: a policy's own verdict and the deterministic
+              fail-closed refusal are both legitimate, and they are not the same
+              claim about the workspace's configuration. */}
+          <CaseLine label="Decision source" value={policyDecisionSourceLabel(decisionSource)} />
+          {failClosedReason(policy) ? (
+            <CaseLine label="Reason" value={failClosedReason(policy)} />
+          ) : null}
+          {/* The policy identity AS RECORDED at evaluation time. Read from the
+              evaluation row, so it survives the policy being edited, archived or
+              deleted afterwards — historical forensic truth outlives configuration. */}
+          {policyReference ? (
             <CaseLine
-              label="Policy"
-              value={
-                <span className="incidentMonoValue">
-                  {policy.policy_key}
-                  {policy.policy_version !== null && policy.policy_version !== undefined ? ` v${policy.policy_version}` : ''}
-                </span>
-              }
+              label="Policy at evaluation"
+              value={<span className="incidentMonoValue">{policyReference}</span>}
             />
+          ) : null}
+          {policy.engine_version ? (
+            <CaseLine label="Engine version" value={<span className="incidentMonoValue">{policy.engine_version}</span>} />
           ) : null}
           {policy.evaluation_id ? (
             <CaseLine label="Evaluation" value={<span className="incidentMonoValue" title={policy.evaluation_id}>{policy.evaluation_id}</span>} />
@@ -280,11 +400,13 @@ function PolicySection({ policy }: { policy: NonNullable<IncidentCaseSummary['po
               explanation never occupies this field. */}
           <p className="tableMeta" style={{ margin: '0.3rem 0 0', fontSize: '0.7rem' }}>
             Decided by the deterministic policy engine.
+            {policyDecisionSourceDetail(decisionSource) ? ` ${policyDecisionSourceDetail(decisionSource)}` : ''}
           </p>
         </>
       ) : (
+        /* NO POLICY EVALUATION is not DENY. Nothing is shown as a decision. */
         <p className="muted" style={{ margin: 0, fontSize: '0.82rem' }}>
-          No policy evaluation is recorded for this incident.
+          No policy evaluation is recorded for this incident. No decision is claimed — this is not a denial.
         </p>
       )}
     </CaseSection>
@@ -292,12 +414,22 @@ function PolicySection({ policy }: { policy: NonNullable<IncidentCaseSummary['po
 }
 
 /* ── Where the response stands (Screen 8 owns changing it) ──────────── */
-function ResponseSection({ response, responseKnown, responseLoad, incidentId }: {
+function ResponseSection({ response, responseKnown, responseLoad, incidentId, actions }: {
   response: ReturnType<typeof summarizeResponseState>;
   responseKnown: boolean;
   responseLoad: ForensicLoadState;
   incidentId: string;
+  actions: readonly CaseResponseAction[];
 }) {
+  // Only actions whose gate actually reported a quorum. An action with no recorded
+  // quorum says nothing here rather than implying one approval suffices.
+  const quorums = actions
+    .map((action) => ({
+      id: action.id ?? '',
+      title: action.display_title ?? 'Response action',
+      quorum: approvalQuorumLabel(action),
+    }))
+    .filter((entry): entry is { id: string; title: string; quorum: string } => entry.quorum !== null);
   return (
     <CaseSection
       title="Response"
@@ -315,11 +447,31 @@ function ResponseSection({ response, responseKnown, responseLoad, incidentId }: 
         </p>
       ) : response.total > 0 ? (
         <>
-          <CaseLine label="Recommended" value={String(response.total)} />
-          {response.awaitingApproval > 0 ? <CaseLine label="Awaiting approval" value={String(response.awaitingApproval)} /> : null}
-          {response.approved > 0 ? <CaseLine label="Approved" value={String(response.approved)} /> : null}
-          {response.executed > 0 ? <CaseLine label="Executed" value={String(response.executed)} /> : null}
-          {response.failed > 0 ? <CaseLine label="Failed" value={String(response.failed)} /> : null}
+          {/* Every number here counts ACTIONS. An action whose own quorum is
+              "1 of 2 approvals received" still counts once, so the unit is named
+              on every line rather than left to be inferred from a bare integer. */}
+          <CaseLine label="Actions recommended" value={String(response.total)} />
+          {response.awaitingApproval > 0 ? <CaseLine label="Actions awaiting approval" value={String(response.awaitingApproval)} /> : null}
+          {response.approved > 0 ? <CaseLine label="Actions approved" value={String(response.approved)} /> : null}
+          {response.executed > 0 ? <CaseLine label="Actions executed" value={String(response.executed)} /> : null}
+          {response.failed > 0 ? <CaseLine label="Actions failed" value={String(response.failed)} /> : null}
+          {/* Per-action approval quorum, as Screen 8's gate recorded it. */}
+          {quorums.length > 0 ? (
+            <CaseLine
+              label="Approval quorum"
+              value={
+                <span style={{ display: 'inline-flex', flexDirection: 'column', gap: '0.15rem' }}>
+                  {quorums.map((entry) => (
+                    <span key={entry.id}>{entry.title} — {entry.quorum}</span>
+                  ))}
+                </span>
+              }
+            />
+          ) : null}
+          {/* The authority boundary, stated where the response state is read. */}
+          <p className="tableMeta" style={{ margin: '0.3rem 0 0', fontSize: '0.7rem' }}>
+            AI authority: recommend only. Execution authority: deterministic policy engine plus required human authorization.
+          </p>
         </>
       ) : (
         <p className="muted" style={{ margin: 0, fontSize: '0.82rem' }}>
@@ -350,6 +502,12 @@ function EvidenceSection({ evidence }: { evidence: NonNullable<IncidentCaseSumma
         label="Collected"
         value={`${evidence.artifact_count ?? 0} ${evidence.artifact_count === 1 ? 'artifact' : 'artifacts'}`}
       />
+      {/* The total spans four provenance domains. Naming the split stops it from
+          being read as evidence for any one of them — an evidence count must never
+          imply operational evidence exists when no operational state was collected. */}
+      {evidenceDomainBreakdown(evidence.counts) ? (
+        <CaseLine label="By domain" value={evidenceDomainBreakdown(evidence.counts)} />
+      ) : null}
       {evidence.snapshot_hash_verified === true ? <CaseLine label="Snapshot hash" value="Verified" /> : null}
       {evidence.snapshot_hash_verified === false ? <CaseLine label="Snapshot hash" value="Mismatch" /> : null}
       {evidence.package_number ? (
