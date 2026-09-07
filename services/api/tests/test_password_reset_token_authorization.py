@@ -49,7 +49,7 @@ class FakeConn:
     """Minimal stand-in for the auth tables the reset flow touches."""
 
     def __init__(self, users=None, tokens=None):
-        # email -> {'id': ..., 'email': ...}
+        # email -> {'id': ..., 'email': ..., 'email_verified_at': ...}
         self.users = users or {}
         # token_hash -> {'id', 'user_id', 'expires_at', 'used_at'}
         self.tokens = tokens or {}
@@ -62,6 +62,12 @@ class FakeConn:
 
         if sql.startswith('SELECT id FROM users WHERE email'):
             return FakeResult(row=self.users.get(params[0]))
+
+        if sql.startswith('SELECT email, email_verified_at FROM users WHERE id'):
+            row = next((user for user in self.users.values() if user['id'] == params[0]), None)
+            return FakeResult(
+                row={'email': row['email'], 'email_verified_at': row['email_verified_at']} if row else None,
+            )
 
         if sql.startswith('SELECT email FROM users WHERE id'):
             row = next((user for user in self.users.values() if user['id'] == params[0]), None)
@@ -106,6 +112,13 @@ class FakeConn:
 
         if sql.startswith('UPDATE users SET password_hash'):
             self.writes['password_updates'].append({'password_hash': params[0], 'user_id': params[1], 'sql': sql})
+            # Mirror the statement's COALESCE: an unverified account is stamped now, an
+            # already-verified one keeps the timestamp it had.
+            row = next((user for user in self.users.values() if user['id'] == params[1]), None)
+            if row is not None and 'email_verified_at = COALESCE(email_verified_at, NOW())' in sql:
+                if row['email_verified_at'] is None:
+                    row['email_verified_at'] = pilot.utc_now()
+                    self.writes['email_verifications'].append(params[1])
             return FakeResult()
 
         if sql.startswith('UPDATE auth_sessions SET revoked_at'):
@@ -127,8 +140,9 @@ def _request():
     return SimpleNamespace(headers={}, client=SimpleNamespace(host='127.0.0.1'), method='POST')
 
 
-def _user(user_id: str, email: str):
-    return {'id': user_id, 'email': email}
+def _user(user_id: str, email: str, email_verified_at=None):
+    """A row from `users`. Unverified by default — the state a fresh signup is in."""
+    return {'id': user_id, 'email': email, 'email_verified_at': email_verified_at}
 
 
 @pytest.fixture

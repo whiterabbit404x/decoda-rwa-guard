@@ -3538,6 +3538,24 @@ td .tableMeta {
   text-align: center;
 }
 
+/* The unverified-email state on Sign In: a refusal the user can clear themselves,
+   so it is presented as a step with actions rather than an error line. */
+.siVerifyPanel {
+  display: block;
+}
+
+.siVerifyHeading {
+  margin: 0 0 0.35rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.siVerifyBody {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
 .siMuted {
   font-size: 0.8rem;
   color: #5a6478;

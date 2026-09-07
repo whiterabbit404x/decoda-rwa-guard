@@ -132,7 +132,11 @@ def check_user_auth_state(email: str) -> int:
     if not has_password:
         issues.append('no_password_hash: password was never set or was cleared')
     if not email_verified:
-        issues.append('email_unverified: user must verify email before signing in')
+        issues.append(
+            'email_unverified: user must prove control of the address before signing in — '
+            'either the signup verification link, or completing a password reset, which '
+            'consumes a link delivered to the same inbox'
+        )
     if suspended:
         issues.append('account_suspended: account is suspended')
 

@@ -120,6 +120,12 @@ RECONCILE_IDEMPOTENCY_HEADER = 'x-idempotency-key'
 DEFAULT_DEMO_EMAIL = 'demo@decoda.app'
 EMAIL_VERIFICATION_TTL_MINUTES = 60 * 24
 PASSWORD_RESET_TTL_MINUTES = 30
+
+# Sign-in refuses an account whose address was never verified. The code travels in a
+# response header so clients can branch on the state; the message is the copy shown to
+# the customer, which names the next step rather than only the refusal.
+EMAIL_NOT_VERIFIED_CODE = 'EMAIL_NOT_VERIFIED'
+EMAIL_NOT_VERIFIED_MESSAGE = 'Verify your email to continue.'
 # The canonical account-password policy. `_require_password` / `_require_strong_password`
 # below are the only enforcement point; PASSWORD_POLICY_RULES exists so the policy can be
 # *stated* (to the reset UI, to tests) without a second implementation drifting away from
@@ -3733,7 +3739,15 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='This account is suspended.')
             if not user['email_verified_at']:
                 _log_auth_failure('email_unverified', 403, user_id)
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Verify your email before signing in.')
+                # Carried as a machine-readable code so the sign-in screen can offer the
+                # recovery action (resend the link) instead of only printing a sentence.
+                # The client must never have to string-match customer-facing copy to
+                # tell this state apart from a suspension or a bad password.
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=EMAIL_NOT_VERIFIED_MESSAGE,
+                    headers={'X-Decoda-Error-Code': EMAIL_NOT_VERIFIED_CODE},
+                )
             if user['mfa_enabled_at']:
                 challenge_token = _create_user_token(connection, user_id, 'mfa_challenge', 10, request=request)
                 connection.commit()
@@ -4313,19 +4327,27 @@ def verify_session_step_up(payload: dict[str, Any], request: Request) -> dict[st
 
 
 def request_email_verification(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Send a fresh verification link, without saying whether one was needed.
+
+    The response is identical for an unknown address, an address that still needs
+    verifying, and one that is already verified: this endpoint is reachable from the
+    sign-in screen without a session, so a per-case answer would let a caller test
+    which addresses hold accounts and which of those are already verified. Nothing
+    is sent to an address that has no account or is already verified.
+    """
     require_live_mode()
     email = _normalize_email(str(payload.get('email', '')))
+    # tokens are never exposed in API responses
+    generic_response = {'sent': True, 'verification_token': None}
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = connection.execute('SELECT id, email_verified_at FROM users WHERE email = %s', (email,)).fetchone()
-        if user is None:
-            return {'sent': True}
-        if user['email_verified_at']:
-            return {'sent': True, 'already_verified': True}
+        if user is None or user['email_verified_at']:
+            return generic_response
         token = _create_user_token(connection, str(user['id']), 'email_verification', EMAIL_VERIFICATION_TTL_MINUTES, request=request)
         _dispatch_transactional_email(connection, to_email=email, purpose='email_verification', token=token, request=request)
         connection.commit()
-        return {'sent': True, 'verification_token': None}  # tokens never exposed in API responses
+        return generic_response
 
 
 def verify_email_token(payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -4454,15 +4476,40 @@ def reset_password(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             """,
             (token_row['user_id'], token_row['id']),
         )
+        # The account is resolved from the token record, never from the request body.
+        account = connection.execute(
+            'SELECT email, email_verified_at FROM users WHERE id = %s',
+            (token_row['user_id'],),
+        ).fetchone()
+        if account is None:
+            # The token outlived its account. Nothing to reset, and the claim above is
+            # rolled back with the rest of the transaction.
+            raise HTTPException(status_code=400, detail='Invalid or expired password reset token.')
+        email_was_unverified = account['email_verified_at'] is None
+        # Completing this reset required a single-use, expiring secret that was only
+        # ever delivered to the address on this account, so it proves control of that
+        # inbox exactly as the signup verification link does. Marking the address
+        # verified here is therefore a statement of a fact the request just
+        # established -- never an assumption from a submitted email -- and it happens
+        # in the same statement as the password change so the two cannot diverge.
+        # COALESCE keeps an existing verification timestamp intact.
         connection.execute(
-            'UPDATE users SET password_hash = %s, session_version = session_version + 1, updated_at = NOW() WHERE id = %s',
+            '''
+            UPDATE users
+               SET password_hash = %s,
+                   session_version = session_version + 1,
+                   email_verified_at = COALESCE(email_verified_at, NOW()),
+                   updated_at = NOW()
+             WHERE id = %s
+            ''',
             (hash_password(password), token_row['user_id']),
         )
         connection.execute('UPDATE auth_sessions SET revoked_at = NOW(), updated_at = NOW() WHERE user_id = %s AND revoked_at IS NULL', (token_row['user_id'],))
-        user_email_row = connection.execute('SELECT email FROM users WHERE id = %s', (token_row['user_id'],)).fetchone()
-        if user_email_row and user_email_row['email']:
-            _dispatch_transactional_email(connection, to_email=str(user_email_row['email']), purpose='password_reset_confirmation', request=request)
-        log_audit(connection, action='auth.password_reset', entity_type='user', entity_id=str(token_row['user_id']), request=request, user_id=str(token_row['user_id']), workspace_id=None, metadata={})
+        if account['email']:
+            _dispatch_transactional_email(connection, to_email=str(account['email']), purpose='password_reset_confirmation', request=request)
+        log_audit(connection, action='auth.password_reset', entity_type='user', entity_id=str(token_row['user_id']), request=request, user_id=str(token_row['user_id']), workspace_id=None, metadata={'email_verified_by_reset': email_was_unverified})
+        if email_was_unverified:
+            log_audit(connection, action='auth.email_verified', entity_type='user', entity_id=str(token_row['user_id']), request=request, user_id=str(token_row['user_id']), workspace_id=None, metadata={'method': 'password_reset_token'})
         connection.commit()
         return {'password_reset': True}
 
