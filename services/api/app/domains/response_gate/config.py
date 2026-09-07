@@ -199,6 +199,13 @@ DELEGATED_AUTHORITY_NOT_VERIFIED = 'DELEGATED_AUTHORITY_NOT_VERIFIED'
 #: Deliberately distinct from a fact that is absent: "we could not look" is not
 #: the same answer as "there is none", and neither one is an authorization.
 GATE_FACTS_UNAVAILABLE = 'GATE_FACTS_UNAVAILABLE'
+#: The tenant's PLAN does not include autonomous/production execution, so a live
+#: run is refused however well-authorized it otherwise is. This is a CAPABILITY
+#: fact like EXECUTION_ADAPTER_NOT_CONFIGURED, not an authorization verdict: a
+#: valid policy ALLOW is left standing and reported as such, and every
+#: non-executing operation on the screen (recommend, simulate, review, approve,
+#: reject) stays available. A Pilot evaluation runs in recommend-only mode.
+PLAN_EXECUTION_NOT_ENTITLED = 'PLAN_EXECUTION_NOT_ENTITLED'
 
 REASON_CODES = (
     EXECUTION_AUTHORIZED,
@@ -218,6 +225,7 @@ REASON_CODES = (
     EXECUTION_ADAPTER_NOT_CONFIGURED,
     DELEGATED_AUTHORITY_NOT_VERIFIED,
     GATE_FACTS_UNAVAILABLE,
+    PLAN_EXECUTION_NOT_ENTITLED,
 )
 
 #: Operator-facing sentence for each code. The KEY is authoritative; this map is
@@ -247,6 +255,10 @@ REASON_LABELS: dict[str, str] = {
         'verifiable delegation record evidences it. Collect the required human approvals.'
     ),
     GATE_FACTS_UNAVAILABLE: 'A required authorization fact could not be read, so the gate stays closed.',
+    PLAN_EXECUTION_NOT_ENTITLED: (
+        'Your plan operates in recommend-only mode, so this action cannot be executed against '
+        'production. Review the recommendation and its reasoning, or simulate it.'
+    ),
     # A Screen 11 policy reason code, reflected verbatim when a DENY reaches
     # this gate. Captioned here because Screen 8 renders the label THIS map
     # produces, and the code says something an operator must act on: the

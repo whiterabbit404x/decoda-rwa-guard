@@ -34,6 +34,7 @@ from services.api.app.domains.asset_integrity import endpoints as asset_integrit
 from services.api.app.domains.governance_policy import endpoints as governance_policy_endpoints
 from services.api.app.domains.threat_detection import endpoints as threat_detection_endpoints
 from services.api.app.domains.alert_triage import endpoints as alert_triage_endpoints
+from services.api.app.domains.tenancy import endpoints as tenancy_endpoints
 from services.api.app.domains.rate_limit import rate_limit_connectivity
 from services.api.app.quicknode_streams import (
     QUICKNODE_STREAMS_WEBHOOK_VERSION,
@@ -4249,6 +4250,64 @@ async def onboarding_agent_events(session_id: str, request: Request):
                                  subscribe_factory=alert_stream.subscribe_onboarding, stream_name='onboarding'),
         media_type='text/event-stream',
         headers=headers,
+    )
+
+
+# ── Organization plan, usage, and pilot feedback ─────────────────────────────
+# The organization is resolved from the authenticated session's workspace
+# membership. No route below accepts an organization id from the caller.
+
+@app.get('/account/plan', summary='Organization plan, lifecycle, usage, and entitlements')
+def account_plan(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: tenancy_endpoints.get_account_plan(request))
+
+
+@app.post('/account/feedback', summary='Submit pilot evaluation feedback')
+def account_feedback(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: tenancy_endpoints.submit_account_feedback(payload, request))
+
+
+# ── Internal founder admin ───────────────────────────────────────────────────
+# Authorization is server-side on users.is_internal_admin (or the exact-address
+# deployment allowlist) and is checked BEFORE any organization data is read. A
+# customer receives 403. The route is not hidden and does not need to be: hiding
+# it would not be a control.
+
+@app.get('/admin/customers', summary='Internal: list customer organizations')
+def admin_customers(request: Request, limit: int = 100, offset: int = 0) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: tenancy_endpoints.list_admin_customers(request, limit=limit, offset=offset))
+
+
+@app.get('/admin/customers/{organization_id}', summary='Internal: customer organization detail')
+def admin_customer_detail(organization_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: tenancy_endpoints.get_admin_customer(organization_id, request))
+
+
+@app.post('/admin/customers/{organization_id}/extend-evaluation', summary='Internal: extend a pilot evaluation')
+def admin_customer_extend_evaluation(organization_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: tenancy_endpoints.extend_admin_customer_evaluation(organization_id, payload, request)
+    )
+
+
+@app.post('/admin/customers/{organization_id}/status', summary='Internal: suspend or reactivate an organization')
+def admin_customer_status(organization_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: tenancy_endpoints.set_admin_customer_status(organization_id, payload, request)
+    )
+
+
+@app.post('/admin/customers/{organization_id}/plan', summary='Internal: change an organization plan')
+def admin_customer_plan(organization_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: tenancy_endpoints.set_admin_customer_plan(organization_id, payload, request)
+    )
+
+
+@app.get('/admin/feedback', summary='Internal: pilot evaluation feedback')
+def admin_feedback(request: Request, organization_id: str | None = None, limit: int = 100) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: tenancy_endpoints.list_admin_feedback(request, organization_id=organization_id, limit=limit)
     )
 
 

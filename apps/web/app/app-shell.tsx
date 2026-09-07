@@ -7,6 +7,8 @@ import { useEffect, useRef } from 'react';
 import AppNavigation from './app-navigation';
 import { containsDiagnosticEnvVars } from './diagnostic-message';
 import { usePilotAuth } from 'app/pilot-auth-context';
+import PlanBadge from './plan-badge';
+import { PlanStatusProvider } from './plan-status-context';
 import RuntimeBanner from './components/runtime-banner';
 import { RuntimeSummaryProvider } from './runtime-summary-context';
 
@@ -157,6 +159,7 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
 
   return (
     <RuntimeSummaryProvider>
+      <PlanStatusProvider>
       <RouteTransitionLogger pathname={pathname} />
       <div className="appShellFrame">
         {/* ── Sidebar ─────────────────────────────────── */}
@@ -205,6 +208,10 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
               <span className="shellHeaderSpacer" />
 
               <div className="shellHeaderActions">
+                {/* Plan chip: one compact control in the existing header. It opens
+                    the evaluation usage panel and the feedback form, so no screen
+                    needs its own plan banner. */}
+                <PlanBadge />
                 <button className="shellIconBtn" type="button" aria-label="Notifications">
                   <BellIcon />
                 </button>
@@ -236,6 +243,7 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
           <main className="appShellPage">{children}</main>
         </div>
       </div>
+      </PlanStatusProvider>
     </RuntimeSummaryProvider>
   );
 }

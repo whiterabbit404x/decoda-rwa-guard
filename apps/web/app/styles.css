@@ -8895,3 +8895,240 @@ a.mktTrustBadge:hover {
   font-size: 0.8rem;
   color: var(--text-primary);
 }
+
+/* ── Plan badge and evaluation usage panel ─────────────────────────
+   One compact chip in the existing app-shell header plus one panel. There is
+   deliberately no page-level upsell banner: a plan is a fact about the account,
+   not a message to repeat on every screen. */
+.planBadgeWrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.planBadge {
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-size: 0.72rem;
+  padding: 0.28rem 0.6rem;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.planBadge:hover {
+  filter: brightness(1.12);
+}
+
+.planPanel {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  z-index: 60;
+  width: min(22rem, calc(100vw - 2rem));
+  padding: 0.9rem 1rem 1rem;
+  border-radius: var(--radius-md, 10px);
+  border: 1px solid var(--border);
+  background: var(--surface, #10141b);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+  text-align: left;
+}
+
+.planPanelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.planPanelClose {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.15rem;
+}
+
+.planPanelOrg {
+  margin: 0.15rem 0 0.6rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.planPanelSectionLabel {
+  margin-top: 0.4rem;
+}
+
+.planPanelNotice {
+  margin: 0 0 0.7rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--radius-sm);
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+  border: 1px solid var(--warning-bdr);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.planPanelNote {
+  margin: 0.65rem 0 0;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.planUsageList {
+  list-style: none;
+  margin: 0.35rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.planUsageRow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0.2rem 0.75rem;
+  font-size: 0.8rem;
+}
+
+.planUsageLabel {
+  color: var(--text-secondary);
+}
+
+.planUsageValue {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+/* Only rendered when a real limit exists. An unlimited or unknown limit shows
+   the count alone rather than an empty bar implying measured headroom. */
+.planUsageMeter {
+  grid-column: 1 / -1;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.planUsageMeterFill {
+  display: block;
+  height: 100%;
+  background: #58a6ff;
+}
+
+.planFeedbackTrigger {
+  margin-top: 0.85rem;
+  background: none;
+  border: none;
+  padding: 0;
+  color: #8cc8ff;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.planFeedback {
+  margin-top: 0.85rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.planFeedbackLabel {
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+}
+
+.planFeedbackInput {
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  font-family: inherit;
+}
+
+.planFeedbackHint {
+  margin: 0.1rem 0 0;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+.planFeedbackOk {
+  margin: 0.2rem 0 0;
+  font-size: 0.76rem;
+  color: var(--success-fg);
+}
+
+.planFeedbackError {
+  margin: 0.2rem 0 0;
+  font-size: 0.76rem;
+  color: var(--danger-fg);
+}
+
+.planFeedbackActions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+}
+
+/* ── Internal customers console (/admin/customers) ─────────────────
+   Not part of the customer product shell and not linked from product
+   navigation. Authorization is enforced by the backend on every request; this
+   page simply reports what it is told. */
+.adminConsole {
+  padding: 2rem clamp(1rem, 4vw, 3rem);
+  max-width: 88rem;
+  margin: 0 auto;
+}
+
+.adminConsoleDenied {
+  max-width: 34rem;
+  margin: 4rem auto;
+  padding: 1.25rem 1.5rem;
+  border-radius: var(--radius-md, 10px);
+  border: 1px solid var(--danger-bdr);
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+.adminTableWrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 10px);
+}
+
+.adminTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.adminTable th,
+.adminTable td {
+  padding: 0.55rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.adminTable th {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+.adminRowActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.adminRowActions button {
+  font-size: 0.74rem;
+  padding: 0.25rem 0.55rem;
+}

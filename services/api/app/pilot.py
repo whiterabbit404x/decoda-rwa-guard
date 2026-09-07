@@ -51,6 +51,8 @@ from services.api.app.production_readiness import build_production_readiness
 from services.api.app.paid_launch_readiness import check_billing_readiness
 from services.api.app.observability import current_trace_id, increment, gauge, observe, report_error, span, send_external_oncall_alert
 from services.api.app.recovery_drills import RUN_TYPES as RECOVERY_DRILL_RUN_TYPES, recovery_drill_readiness
+from services.api.app import entitlements as plan_entitlement_engine
+from services.api.app import organizations as organization_service
 from services.api.app.credential_rotation import (
     SUPPORTED_CREDENTIAL_TYPES,
     automation_batch_size,
@@ -3304,6 +3306,80 @@ def resolve_workspace(connection: psycopg.Connection, user_id: str, requested_wo
     }
 
 
+def _provision_signup_organization(
+    connection: Any,
+    *,
+    user_id: str,
+    workspace_id: str,
+    organization_name: str,
+    request: Request | None = None,
+) -> dict[str, Any] | None:
+    """Create the Pilot organization that owns a newly signed-up workspace.
+
+    Returns ``None`` — without failing the signup — on a deployment whose API is
+    running ahead of migration 0150. The workspace is still created and usable;
+    the organization is healed onto it by ``resolve_context`` on the first
+    request made after the migration lands.
+    """
+    if not organization_service.tenancy_schema_ready(connection):
+        logger.warning(
+            'signup_organization_skipped reason=tenancy_schema_not_migrated workspace_id=%s', workspace_id,
+        )
+        return None
+    organization = organization_service.create_organization(
+        connection, name=organization_name, plan=plan_entitlement_engine.PLAN_PILOT,
+    )
+    organization_service.attach_workspace_to_organization(
+        connection, workspace_id=workspace_id, organization_id=str(organization['id']),
+    )
+    organization_service.upsert_membership(
+        connection, organization_id=str(organization['id']), user_id=user_id, role='owner',
+    )
+    log_audit(
+        connection,
+        action='organization.pilot_created',
+        entity_type='organization',
+        entity_id=str(organization['id']),
+        request=request,
+        user_id=user_id,
+        workspace_id=workspace_id,
+        metadata={
+            'plan': organization.get('plan'),
+            'evaluation_expires_at': (
+                organization['evaluation_expires_at'].isoformat()
+                if hasattr(organization.get('evaluation_expires_at'), 'isoformat')
+                else organization.get('evaluation_expires_at')
+            ),
+            'evaluation_days': plan_entitlement_engine.evaluation_days(),
+        },
+    )
+    return organization
+
+
+def organization_context(connection: Any, workspace_id: str, *, heal: bool = True) -> dict[str, Any]:
+    """Organization (tenant) context for the SESSION-resolved workspace.
+
+    The workspace id must already have been resolved from the authenticated
+    session via ``resolve_workspace`` / ``_require_workspace_permission``. Nothing
+    here reads an organization id from the request, so a browser cannot select
+    the tenant whose plan governs it.
+    """
+    return organization_service.resolve_context(connection, str(workspace_id or ''), heal=heal)
+
+
+def enforce_plan_creation_limit(connection: Any, workspace_id: str, limit_key: str) -> dict[str, Any]:
+    """Lifecycle + plan-limit gate before creating one more metered resource.
+
+    Raises 403 ``PLAN_LIMIT_REACHED`` at the limit, or 403
+    ``PLAN_EVALUATION_EXPIRED`` / ``ORGANIZATION_SUSPENDED`` when the tenant may
+    not provision at all. Returns the context so a caller that needs the
+    entitlements again does not resolve them twice.
+    """
+    context = organization_context(connection, workspace_id)
+    organization_service.enforce_creation(connection, context, limit_key)
+    return context
+
+
 def signup_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
     email = _normalize_email(str(payload.get('email', '')))
@@ -3350,6 +3426,16 @@ def signup_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             'UPDATE users SET current_workspace_id = %s, updated_at = NOW() WHERE id = %s',
             (workspace_id, user_id),
         )
+        # The tenant that OWNS this workspace. A self-serve signup starts a Pilot
+        # evaluation whose length comes from the one configured default; the
+        # signup itself never accepts a plan from the request body.
+        organization = _provision_signup_organization(
+            connection,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            organization_name=workspace_name,
+            request=request,
+        )
         log_audit(
             connection,
             action='auth.signup',
@@ -3358,7 +3444,12 @@ def signup_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             request=request,
             user_id=user_id,
             workspace_id=workspace_id,
-            metadata={'email': email, 'workspace_name': workspace_name},
+            metadata={
+                'email': email,
+                'workspace_name': workspace_name,
+                'organization_id': (organization or {}).get('id'),
+                'plan': (organization or {}).get('plan'),
+            },
         )
         verification_token = _create_user_token(connection, user_id, 'email_verification', EMAIL_VERIFICATION_TTL_MINUTES, request=request)
         try:
@@ -4126,6 +4217,55 @@ def reset_password(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         return {'password_reset': True}
 
 
+def _resolve_organization_for_new_workspace(
+    connection: Any,
+    *,
+    user_id: str,
+    workspace_name: str,
+    request: Request | None = None,
+) -> dict[str, Any] | None:
+    """The organization a newly created workspace must belong to.
+
+    Reuses the tenant that owns the caller's current workspace so that adding a
+    workspace is an operation INSIDE one organization — the case the plan limit
+    governs. A user who has no workspace at all (an invited account, or one whose
+    membership was removed) gets a fresh Pilot organization instead.
+
+    Returns ``None`` when the tenancy schema has not been migrated yet, which
+    leaves the pre-0150 behaviour in place rather than blocking workspace
+    creation during a rolling deploy.
+    """
+    if not organization_service.tenancy_schema_ready(connection):
+        return None
+    current = connection.execute(
+        'SELECT current_workspace_id FROM users WHERE id = %s', (user_id,),
+    ).fetchone()
+    current_workspace_id = str((current or {}).get('current_workspace_id') or '')
+    organization: dict[str, Any] | None = None
+    if current_workspace_id:
+        # Membership is re-verified here: current_workspace_id is server state,
+        # but a stale value must not be able to attach a new workspace to a tenant
+        # the caller no longer belongs to.
+        membership = connection.execute(
+            'SELECT 1 FROM workspace_members WHERE user_id = %s AND workspace_id = %s',
+            (user_id, current_workspace_id),
+        ).fetchone()
+        if membership is not None:
+            organization = organization_service.ensure_organization_for_workspace(
+                connection, workspace_id=current_workspace_id, owner_user_id=user_id,
+            )
+    if organization is None:
+        return organization_service.create_organization(
+            connection, name=workspace_name, plan=plan_entitlement_engine.PLAN_PILOT,
+        )
+    plan_entitlement_engine.enforce_resource_creation(
+        organization,
+        plan_entitlement_engine.LIMIT_WORKSPACES,
+        organization_service.count_workspaces(connection, str(organization['id'])),
+    )
+    return organization
+
+
 def create_workspace_for_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
     workspace_name = str(payload.get('name', '')).strip()
@@ -4135,6 +4275,14 @@ def create_workspace_for_user(payload: dict[str, Any], request: Request) -> dict
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
+        # The tenant this workspace will belong to is the one that owns the
+        # caller's CURRENT workspace — derived server-side from their session, not
+        # from anything in the request body. A user with no workspace yet gets a
+        # new organization; every additional workspace is counted against that
+        # organization's plan limit before any row is written.
+        organization = _resolve_organization_for_new_workspace(
+            connection, user_id=str(user['id']), workspace_name=workspace_name, request=request,
+        )
         workspace_id = str(uuid.uuid4())
         slug_base = _slugify(workspace_name)
         slug = slug_base
@@ -4146,6 +4294,13 @@ def create_workspace_for_user(payload: dict[str, Any], request: Request) -> dict
             'INSERT INTO workspaces (id, name, slug, created_by_user_id, created_at) VALUES (%s, %s, %s, %s, NOW())',
             (workspace_id, workspace_name, slug, user['id']),
         )
+        if organization is not None:
+            organization_service.attach_workspace_to_organization(
+                connection, workspace_id=workspace_id, organization_id=str(organization['id']),
+            )
+            organization_service.upsert_membership(
+                connection, organization_id=str(organization['id']), user_id=str(user['id']), role=role,
+            )
         connection.execute(
             'INSERT INTO workspace_members (id, workspace_id, user_id, role, created_at) VALUES (%s, %s, %s, %s, NOW())',
             (str(uuid.uuid4()), workspace_id, user['id'], role),
@@ -4159,7 +4314,11 @@ def create_workspace_for_user(payload: dict[str, Any], request: Request) -> dict
             request=request,
             user_id=user['id'],
             workspace_id=workspace_id,
-            metadata={'name': workspace_name, 'role': role},
+            metadata={
+                'name': workspace_name,
+                'role': role,
+                'organization_id': (organization or {}).get('id'),
+            },
         )
         connection.commit()
         logger.info(
@@ -9774,7 +9933,52 @@ def _workspace_plan(connection: Any, workspace_id: str) -> dict[str, Any]:
             'alert_retention_days': 14,
             'features': {},
         }
-    return _json_safe_value(dict(plan))
+    return _json_safe_value(_apply_organization_plan_overlay(connection, workspace_id, dict(plan)))
+
+
+#: What ``max_targets`` becomes when the organization plan says "unlimited". The
+#: legacy row is an INTEGER column read as ``int(value or 0)``, so an unlimited
+#: entitlement cannot be written as NULL there without turning into a hard zero.
+LEGACY_UNLIMITED_TARGETS = 1_000_000
+
+
+def _apply_organization_plan_overlay(
+    connection: Any, workspace_id: str, plan: dict[str, Any],
+) -> dict[str, Any]:
+    """Let the organization's plan widen the legacy per-workspace entitlement row.
+
+    Two plan systems exist in this codebase: the older workspace-scoped
+    ``plan_entitlements`` / ``billing_subscriptions`` pair, and the organization
+    plan introduced with the tenancy foundation. The ORGANIZATION is authoritative
+    for what the published pricing promises, so its ceiling is overlaid here — in
+    one place — rather than by teaching every call site about both systems.
+
+    The overlay only ever WIDENS. It cannot be used to take capability away from a
+    workspace that a paid legacy subscription already granted, and a deployment
+    whose tenancy schema is not migrated keeps the legacy row untouched.
+    """
+    try:
+        if not organization_service.tenancy_schema_ready(connection):
+            return plan
+        organization = organization_service.organization_for_workspace(connection, workspace_id)
+        if organization is None:
+            return plan
+        entitlements = plan_entitlement_engine.get_entitlements(organization)
+        target_limit = plan_entitlement_engine.limit_for(
+            entitlements, plan_entitlement_engine.LIMIT_MONITORING_TARGETS,
+        )
+        overlay_targets = LEGACY_UNLIMITED_TARGETS if target_limit is None else int(target_limit)
+        plan['max_targets'] = max(int(plan.get('max_targets') or 0), overlay_targets)
+        if plan_entitlement_engine.has_entitlement(
+            entitlements, plan_entitlement_engine.FEATURE_EVIDENCE_EXPORT,
+        ):
+            plan['exports_enabled'] = True
+    except Exception:
+        # A plan read must never take the product down. The legacy row still
+        # applies, and the organization limits are separately enforced at every
+        # creation endpoint, so failing to widen is safe.
+        logger.warning('organization_plan_overlay_failed workspace_id=%s', workspace_id, exc_info=True)
+    return plan
 
 
 def _validate_target_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -14729,6 +14933,13 @@ def create_asset(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
         workspace_id = workspace_context['workspace_id']
+        # Organization plan limit first: a registered RWA contract IS an asset, so
+        # this is the "monitored contracts" number the public pricing states. It
+        # raises the canonical PLAN_LIMIT_REACHED body, and refuses outright when
+        # the evaluation has expired or the tenant is suspended.
+        enforce_plan_creation_limit(
+            connection, workspace_id, plan_entitlement_engine.LIMIT_MONITORED_CONTRACTS,
+        )
         entitlements = _workspace_plan(connection, workspace_id)
         max_targets = int(entitlements.get('max_targets') or 0)
         max_assets = max(5, max_targets)
@@ -15524,6 +15735,11 @@ def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_permission(connection, request, 'monitoring.configure')
         workspace_id = workspace_context['workspace_id']
+        # A monitoring target is what actually consumes RPC/QuickNode capacity, so
+        # the organization ceiling is checked before anything is written.
+        enforce_plan_creation_limit(
+            connection, workspace_id, plan_entitlement_engine.LIMIT_MONITORING_TARGETS,
+        )
         entitlements = _workspace_plan(connection, workspace_id)
         count_row = connection.execute('SELECT COUNT(*) AS count FROM targets WHERE workspace_id = %s AND deleted_at IS NULL', (workspace_id,)).fetchone()
         if int((count_row or {}).get('count') or 0) >= int(entitlements.get('max_targets') or 0):
@@ -22985,6 +23201,13 @@ def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dic
                 (_json_dumps(filters), pkg_id, workspace_id),
             )
         else:
+            # Plan limit is checked HERE rather than at the top of the handler, so
+            # that reusing an already-generated package for the same incident is
+            # never refused by a cap it does not add to. Only minting a NEW package
+            # counts against the evaluation's evidence allowance.
+            enforce_plan_creation_limit(
+                connection, workspace_id, plan_entitlement_engine.LIMIT_EVIDENCE_PACKAGES,
+            )
             connection.execute(
                 """INSERT INTO export_jobs (id, workspace_id, requested_by_user_id, export_type, format, filters, status, output_path, storage_backend, storage_object_key)
                    VALUES (%s, %s, %s, 'proof_bundle', 'json', %s::jsonb, 'queued', %s, %s, %s)""",
@@ -24056,6 +24279,103 @@ def response_action_approval_gate(
 # the result onto the DTO and into the audit trail.
 
 
+def plan_execution_lock(
+    connection: Any, workspace_id: str, *, cache: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Whether this tenant's PLAN permits executing an action against production.
+
+    Pilot evaluations run in recommend-only mode: the deterministic policy engine
+    still decides, humans still approve, evidence is still produced — but no run
+    reaches a production provider. Returns
+    ``{'locked': bool, 'reason': str|None, 'plan': str|None}``.
+
+    Fail-closed on a read error. Once the tenancy schema exists, an entitlement we
+    could not read is not permission to execute — the same rule the rest of this
+    gate follows for every other authorization fact. A deployment that has not
+    run migration 0150 yet is NOT locked, because there is no organization plan to
+    consult and the pre-existing gates all still apply.
+    """
+    cache_key = f'plan_execution_lock:{workspace_id}'
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
+    result: dict[str, Any]
+    try:
+        schema_state = organization_service.tenancy_schema_state(connection)
+        if schema_state == organization_service.SCHEMA_UNKNOWN:
+            # The probe itself failed. That is not evidence the schema is absent,
+            # and an entitlement we could not read is not permission to execute.
+            result = {'locked': True, 'reason': 'entitlement_unavailable', 'plan': None}
+        elif schema_state == organization_service.SCHEMA_ABSENT:
+            result = {'locked': False, 'reason': 'tenancy_schema_not_migrated', 'plan': None}
+        else:
+            organization = organization_service.organization_for_workspace(connection, workspace_id)
+            if organization is None:
+                result = {'locked': True, 'reason': 'organization_not_linked', 'plan': None}
+            else:
+                entitlements = plan_entitlement_engine.get_entitlements(organization)
+                allowed = plan_entitlement_engine.has_entitlement(
+                    entitlements, plan_entitlement_engine.FEATURE_AUTOMATIC_EXECUTION,
+                )
+                result = {
+                    'locked': not allowed,
+                    'reason': None if allowed else 'plan_recommend_only',
+                    'plan': plan_entitlement_engine.normalize_plan(organization.get('plan')),
+                }
+    except Exception:
+        logger.warning('plan_execution_lock_read_failed workspace_id=%s', workspace_id, exc_info=True)
+        result = {'locked': True, 'reason': 'entitlement_unavailable', 'plan': None}
+    if cache is not None:
+        cache[cache_key] = result
+    return result
+
+
+def _apply_plan_execution_lock(
+    connection: Any,
+    gate: dict[str, Any],
+    *,
+    action: dict[str, Any],
+    workspace_id: str,
+    cache: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Overlay the plan's recommend-only lock onto a built execution gate.
+
+    Applies ONLY to a live run — the mode that would submit against production.
+    A simulation or a recommendation contacts nothing, so the lock leaves those
+    exactly as the deterministic gate found them and Screen 8 stays fully usable.
+
+    The AUTHORIZATION verdict is never rewritten: a valid ALLOW is still reported
+    as AUTHORIZED. What changes is ``can_execute``, plus an explicit
+    ``plan_execution_locked`` fact the UI renders as "Execution unavailable during
+    Pilot evaluation" rather than as a policy denial.
+    """
+    from services.api.app.domains.response_gate import config as _rgc
+
+    if str(action.get('mode') or '').strip().lower() != 'live':
+        gate['plan_execution_locked'] = False
+        return gate
+    lock = plan_execution_lock(connection, workspace_id, cache=cache)
+    gate['plan_execution_locked'] = bool(lock['locked'])
+    gate['plan_execution_lock_reason'] = lock['reason']
+    gate['plan'] = lock['plan']
+    if not lock['locked']:
+        return gate
+    codes = [str(code) for code in (gate.get('reason_codes') or [])]
+    if _rgc.PLAN_EXECUTION_NOT_ENTITLED not in codes:
+        codes.append(_rgc.PLAN_EXECUTION_NOT_ENTITLED)
+    gate['reason_codes'] = codes
+    reasons = list(gate.get('reasons') or [])
+    if not any(str(item.get('code')) == _rgc.PLAN_EXECUTION_NOT_ENTITLED for item in reasons if isinstance(item, dict)):
+        reasons.append({
+            'code': _rgc.PLAN_EXECUTION_NOT_ENTITLED,
+            'label': _rgc.reason_label(_rgc.PLAN_EXECUTION_NOT_ENTITLED),
+        })
+    gate['reasons'] = reasons
+    gate['can_execute'] = False
+    gate['decision'] = _rgc.GATE_LOCKED
+    gate['decision_label'] = _rgc.GATE_DECISION_LABELS[_rgc.GATE_LOCKED]
+    return gate
+
+
 def response_action_execution_gate(
     connection: Any,
     action: dict[str, Any],
@@ -24126,7 +24446,9 @@ def response_action_execution_gate(
             now=now,
             cache=cache,
         )
-        return gate.as_dict()
+        return _apply_plan_execution_lock(
+            connection, gate.as_dict(), action=action, workspace_id=workspace_id, cache=cache,
+        )
     except Exception:  # pragma: no cover - fail closed, never fail open
         logger.exception('response_action_execution_gate_failed action_id=%s', action.get('id'))
         return {
@@ -24186,6 +24508,10 @@ _GATE_BLOCKING_REASON_CODES = frozenset({
     'ACTION_ALREADY_EXECUTED',
     'ACTION_CANCELLED',
     'INCIDENT_CLOSED',
+    # The tenant's plan does not include production execution. No other handler
+    # enforces it, and the lock must hold for a direct API call that never
+    # rendered Screen 8 — a UI that hides the button is not the control.
+    'PLAN_EXECUTION_NOT_ENTITLED',
     # A canonical authorization fact the gate could not READ. Unlike the codes
     # left out above, NO other handler enforces this one, and an unreadable fact
     # produces no other blocking code either (an unreadable evaluation looks like
@@ -25219,6 +25545,11 @@ def create_evidence_package_from_response_action(action_id: str, request: Reques
         if alert_id:
             filters['alert_id'] = alert_id
 
+        # Same rule as the incident-scoped package: only a NEW package is metered,
+        # so the idempotent reuse path above is never blocked by the cap.
+        enforce_plan_creation_limit(
+            connection, workspace_id, plan_entitlement_engine.LIMIT_EVIDENCE_PACKAGES,
+        )
         connection.execute(
             '''INSERT INTO export_jobs (id, workspace_id, requested_by_user_id, export_type, format, filters, status, output_path, storage_backend, storage_object_key)
                VALUES (%s, %s, %s, 'proof_bundle', %s, %s::jsonb, 'queued', %s, %s, %s)''',

@@ -13,9 +13,52 @@
 
 ## 1. Tenant Isolation Model
 
-The **workspace** is the isolation boundary.  Every customer operates within
-one or more workspaces.  All data objects carry a `workspace_id` foreign key
-that ties them to exactly one workspace.
+There are **two** nested tenant scopes.
+
+The **organization** is the customer (the company). It owns the plan, the
+lifecycle status, the evaluation window, and the usage that plan limits are
+measured against. Introduced by migration `0150_organization_tenancy_foundation`.
+
+The **workspace** is the DATA isolation boundary, unchanged. Every customer
+operates within one or more workspaces, and all data objects carry a
+`workspace_id` foreign key that ties them to exactly one workspace.
+
+```
+organization
+  ├── users            (organization_memberships)
+  ├── workspaces       (workspaces.organization_id)
+  ├── entitlements     (plan + entitlement_overrides)
+  └── usage            (counted across the organization's workspaces)
+
+workspace
+  ├── assets  ├── monitoring sources  ├── alerts
+  ├── incidents  ├── response actions  └── evidence
+```
+
+The organization scope governs **what a tenant may do** (plan limits, lifecycle,
+the execution lock). The workspace scope governs **which rows a request may
+touch**. Adding the organization layer did not relax any workspace rule: every
+object lookup still carries `workspace_id`, and every check in sections 2–5
+below still applies exactly as written.
+
+**The organization is never named by the caller.** It is resolved server-side
+from the session's workspace membership:
+
+```
+Bearer token → user → workspace_members → workspace_id → workspaces.organization_id
+```
+
+There is no header, query parameter, or body field that selects an organization
+on a customer endpoint. The only endpoints that address an organization by id
+are the internal founder-admin endpoints under `/admin/customers`, which
+authorize on `users.is_internal_admin` (or an exact-address deployment
+allowlist) **before** reading any organization data, and return `403` to a
+customer.
+
+`services/api/app/organizations.resolve_context()` is the one entry point; it
+returns `available = False` (rather than a default plan) when the tenancy schema
+has not been migrated on a deployment, so an unmigrated API reports the
+condition instead of rendering it as a healthy Pilot.
 
 Users access workspace data only after:
 1. Presenting a valid Bearer token (JWT).
@@ -50,6 +93,84 @@ be accessible to a user from a different workspace:
 | Action history | `action_history` | `workspace_id` |
 | API key | `api_keys` | `workspace_id` |
 | Auth session | `auth_sessions` | `workspace_id` |
+
+Organization-scoped objects (the tenant layer, not the data layer):
+
+| Object | Table | Isolation column |
+|---|---|---|
+| Organization | `organizations` | `id` (is the scope) |
+| Organization membership | `organization_memberships` | `organization_id` |
+| Workspace → tenant link | `workspaces` | `organization_id` |
+| Pilot evaluator feedback | `organization_feedback` | `organization_id` |
+
+`organization_feedback` is readable only through the internal admin endpoints.
+It is never returned on a customer surface, and security feedback in particular
+never becomes visible to another tenant. `record_feedback()` REFUSES a message
+that carries something shaped like a private key, a PEM key block, or a BIP-39
+mnemonic, so such a message never reaches the database at all — there is nothing
+to leak later from the console or from an audit row.
+
+---
+
+## 2b. Plan Entitlements and Lifecycle
+
+`services/api/app/entitlements.py` is the single definition of what each plan
+allows. Nothing else in the codebase branches on `if plan == 'pilot'`.
+
+| | Pilot | Scale | Enterprise |
+|---|---|---|---|
+| Workspaces | 1 | 3 | unlimited |
+| Monitored contracts | 5 | 25 | unlimited |
+| Monitoring targets | 10 | 50 | unlimited |
+| Evidence packages | 10 | unlimited | unlimited |
+| Threat / compliance monitoring | ✓ | ✓ | ✓ |
+| AI investigation | ✓ | ✓ | ✓ |
+| Response recommendations | ✓ | ✓ | ✓ |
+| **Automatic execution** | — | — | — (explicit override only) |
+
+These numbers must not contradict `apps/web/app/pricing-plans.ts`; the tests in
+`services/api/tests/test_plan_entitlements_engine.py` are what hold the two
+together. `max_monitoring_targets` is a derived operational bound rather than a
+published price term: a monitored contract is registered as an asset, each asset
+may carry several monitoring targets, and bounding targets is what actually
+bounds RPC/QuickNode consumption.
+
+Limits are enforced **backend-side**, immediately before the write, and return:
+
+```json
+{ "code": "PLAN_LIMIT_REACHED", "resource": "monitored_contracts",
+  "limit": 5, "current": 5, "plan": "pilot" }
+```
+
+Lifecycle states are `ACTIVE_PILOT`, `EXPIRED_PILOT`, `SUSPENDED`,
+`ACTIVE_SCALE`, `ENTERPRISE`. A suspended or expired tenant stops **initiating
+new expensive work** — new assets, targets, evidence packages, and monitoring
+polls — and keeps everything it already has. Nothing is deleted, disabled, or
+hidden: sign-in works, and every incident, alert, evidence package, and
+investigation stays readable. The refusal carries its own code
+(`PLAN_EVALUATION_EXPIRED` / `ORGANIZATION_SUSPENDED`) rather than a limit
+message that would imply a different remedy.
+
+Pilot → Scale is one row update on `organizations.plan`. No new account, no new
+workspace, no data migration, no different dashboard.
+
+### The Pilot execution lock
+
+Pilot runs in **recommend-only** mode. Monitoring, detection, alerts, incidents,
+AI investigation, evidence, and response recommendations are all fully enabled;
+what is refused is a LIVE run against production.
+
+The lock lives in the same deterministic execution gate that Screen 8 already
+renders (`pilot.plan_execution_lock` → reason code
+`PLAN_EXECUTION_NOT_ENTITLED`), so a direct API call that never rendered the UI
+hits exactly the same refusal, and the block is written to the audit log as
+`response_action.execution_gate_locked`. It is a CAPABILITY fact, not an
+authorization verdict: a valid policy ALLOW is still reported as `AUTHORIZED`,
+and simulate / review / approve / reject stay available.
+
+It fails **closed** — an entitlement that could not be read is not permission to
+execute — while being absent entirely on a deployment that has not yet run
+migration 0150, where there is no organization plan to consult.
 
 ---
 
@@ -201,6 +322,11 @@ authorization at both the read and write level:
 - **Export / proof bundle**: `get_export`, `get_export_artifact_content`, `list_exports`, `_generate_export_artifact`
 - **Members / invitations**: `list_workspace_members`, `create_workspace_invitation`
 - **Audit log**: `log_audit` always records the session workspace_id
+- **Organization plan / usage**: `GET /account/plan` (session-derived tenant only)
+- **Pilot feedback**: `POST /account/feedback` (organization, workspace, and user
+  all stamped server-side; a body naming another tenant changes nothing)
+- **Internal founder admin**: `/admin/customers` and `/admin/feedback`
+  (`users.is_internal_admin`, checked before any organization data is read)
 
 ---
 
@@ -211,6 +337,26 @@ cd /home/user/decoda-rwa-guard
 
 # Session 14 isolation tests (32 tests, cases A–X)
 python -m pytest services/api/tests/test_multi_tenant_isolation.py -q
+
+# Organization tenancy: entitlements, cross-tenant isolation, admin authz,
+# plan-limit wiring, and the Pilot execution lock
+python -m pytest \
+  services/api/tests/test_plan_entitlements_engine.py \
+  services/api/tests/test_organization_tenancy_isolation.py \
+  services/api/tests/test_organization_plan_limit_wiring.py \
+  services/api/tests/test_pilot_execution_lock.py \
+  -q
+
+# Migration 0150 against a REAL PostgreSQL with pre-existing data in it.
+# Skipped without the DSN, so the default suite stays hermetic.
+DECODA_MIGRATION_TEST_DSN=postgresql://…/disposable_empty_db \
+  python -m pytest services/api/tests/test_organization_tenancy_migration_postgres.py -q
+
+# Frontend presentation (badge, usage meters, plan-limit copy, execution lock)
+npx playwright test \
+  apps/web/tests/plan-status-presentation.spec.ts \
+  apps/web/tests/plan-limit-message.spec.ts \
+  apps/web/tests/response-action-plan-lock.spec.ts
 
 # Ensure prior sessions still pass
 python -m pytest \
@@ -241,6 +387,19 @@ python -m pytest services/api/tests/test_runtime_truthfulness.py -q
 - **Cross-workspace admin queries**: Ops-internal admin routes may aggregate
   across workspaces for platform health monitoring.  These are not customer-
   facing and must be protected by an ops-role guard (`require_ops_rbac_guard`).
+  The founder console under `/admin/customers` aggregates across
+  ORGANIZATIONS and is protected by `require_internal_admin`.
+- **Per-tenant RPC request metering**: the tenancy layer bounds RPC consumption
+  by capping monitored contracts and targets and by removing suspended or
+  expired tenants from monitoring due-selection. It does not count individual
+  RPC requests per organization; that would require instrumenting the provider
+  layer and is deliberately deferred.
+- **`workspaces.organization_id` is still NULLABLE**: the column is backfilled
+  for every existing row by migration 0150, and application code sets it on
+  every new workspace, but `NOT NULL` is deliberately not enforced in the same
+  migration that introduces the column — that would fail closed against any row
+  written by an API process still rolling out. A follow-up migration can enforce
+  it once every deployment has run 0150.
 
 ---
 
