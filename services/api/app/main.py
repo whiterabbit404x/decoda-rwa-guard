@@ -164,6 +164,7 @@ from services.api.app.pilot import (
     signup_user,
     verify_email_token,
     reset_password,
+    validate_password_reset_token,
     update_webhook,
     update_slack_integration,
     delete_slack_integration,
@@ -2856,6 +2857,14 @@ def auth_verify_email(payload: dict[str, Any], request: Request) -> dict[str, An
 def auth_forgot_password(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     enforce_auth_rate_limit(request, 'forgot_password', payload.get('email'))
     return with_auth_schema_json(lambda: request_password_reset(payload, request))
+
+
+@app.post('/auth/reset-password/validate', summary='Check whether a password reset link is still usable')
+def auth_reset_password_validate(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    # Rate limited like every other token-bearing auth endpoint: this one answers
+    # questions about tokens, so unlimited calls would make it a guessing oracle.
+    enforce_auth_rate_limit(request, 'reset_password_validate')
+    return with_auth_schema_json(lambda: validate_password_reset_token(payload, request))
 
 
 @app.post('/auth/reset-password', summary='Reset password using one-time token')

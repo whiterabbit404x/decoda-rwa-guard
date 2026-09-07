@@ -13,6 +13,7 @@ Follows the repo's fake-connection unit style (no real DB, network, or mail prov
 """
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from contextlib import contextmanager
 from datetime import timedelta
@@ -83,11 +84,24 @@ class FakeConn:
             }
             return FakeResult()
 
-        if sql.startswith('UPDATE auth_tokens SET used_at'):
-            self.writes['token_consumptions'].append(params[0])
+        if sql.startswith('UPDATE auth_tokens SET used_at = NOW() WHERE id = %s AND used_at IS NULL RETURNING id'):
+            # The atomic single-use claim: only an unused row is won, and only the
+            # winner gets a row back.
             for row in self.tokens.values():
-                if row['id'] == params[0]:
+                if row['id'] == params[0] and row['used_at'] is None:
                     row['used_at'] = pilot.utc_now()
+                    self.writes['token_consumptions'].append(params[0])
+                    return FakeResult(row={'id': params[0]})
+            self.writes['claim_losses'].append(params[0])
+            return FakeResult(row=None)
+
+        if sql.startswith('UPDATE auth_tokens SET used_at = NOW() WHERE user_id'):
+            # Every other outstanding reset link for the account is voided.
+            user_id, keep_id = params[0], params[1]
+            for row in self.tokens.values():
+                if row['user_id'] == user_id and row['used_at'] is None and row['id'] != keep_id:
+                    row['used_at'] = pilot.utc_now()
+                    self.writes['sibling_revocations'].append(row['id'])
             return FakeResult()
 
         if sql.startswith('UPDATE users SET password_hash'):
@@ -127,8 +141,8 @@ def sent_email(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, str]]:
     monkeypatch.setattr(
         pilot,
         '_send_email',
-        lambda to_email, subject, text_body: outbox.append(
-            {'to': to_email, 'subject': subject, 'body': text_body},
+        lambda to_email, subject, text_body, html_body=None: outbox.append(
+            {'to': to_email, 'subject': subject, 'body': text_body, 'html': html_body or ''},
         ),
     )
     return outbox
@@ -141,13 +155,23 @@ def _bootstrap(monkeypatch: pytest.MonkeyPatch, conn: FakeConn) -> None:
     monkeypatch.setattr(pilot, 'log_audit', lambda *a, **k: None)
 
 
+def _token_from_reset_url(text: str) -> str:
+    """The token in the first reset URL in a message body.
+
+    Parsed the way a mail client would: the query value ends at the first whitespace,
+    so surrounding copy in the message never becomes part of the token.
+    """
+    match = re.search(r'/reset-password\?token=(\S+)', text)
+    assert match, f'no reset link found in message: {text!r}'
+    return match.group(1)
+
+
 def _issue_reset_token(monkeypatch, conn, sent_email, email: str) -> str:
     """Runs the real request path and returns the raw token from the delivered mail."""
     before = len(sent_email)
     pilot.request_password_reset({'email': email}, _request())
     assert len(sent_email) == before + 1, 'expected exactly one reset email'
-    body = sent_email[-1]['body']
-    return body.split('token=', 1)[1].strip()
+    return _token_from_reset_url(sent_email[-1]['body'])
 
 
 # ---------------------------------------------------------------------------

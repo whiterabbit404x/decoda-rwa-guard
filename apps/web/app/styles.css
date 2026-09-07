@@ -3794,6 +3794,396 @@ td .tableMeta {
     padding: 1rem 1.25rem;
   }
 }
+
+/* --- Field-level error text (sign-in, sign-up, account recovery) ------------
+   The `siFieldError` class was already applied in the auth markup but had no
+   rule, so validation messages rendered as unstyled body text. */
+.siFieldError {
+  margin: 0.4rem 0 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: #fca5a5;
+}
+
+/* === ACCOUNT RECOVERY (/reset-password) START === */
+.rpOuter {
+  align-items: stretch;
+}
+
+/* Step indicator ---------------------------------------------------------- */
+.rpSteps {
+  list-style: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0 0 2rem;
+  padding: 0;
+}
+
+.rpStep {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.rpStepMarker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: #0d1422;
+  color: #6e7e8f;
+  font-size: 0.8rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.rpStepLabel {
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: #6e7e8f;
+}
+
+.rpStep--active .rpStepMarker {
+  border-color: #3b82f6;
+  background: #2563eb;
+  color: #fff;
+}
+
+.rpStep--active .rpStepLabel {
+  color: #e6edf3;
+  font-weight: 600;
+}
+
+.rpStep--done .rpStepMarker {
+  border-color: rgba(59, 130, 246, 0.5);
+  background: rgba(59, 130, 246, 0.12);
+  color: #93c5fd;
+}
+
+.rpStep--done .rpStepLabel {
+  color: #8b949e;
+}
+
+/* Left-panel assurances --------------------------------------------------- */
+.rpAssurances {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 1.1rem;
+}
+
+.rpAssurance {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.rpAssuranceIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  background: rgba(59, 130, 246, 0.1);
+  color: #60a5fa;
+  flex-shrink: 0;
+}
+
+.rpAssuranceTitle {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #e6edf3;
+}
+
+.rpAssuranceBody {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: #8b949e;
+}
+
+/* Card content ------------------------------------------------------------ */
+.rpCentered {
+  text-align: center;
+}
+
+.rpStatusIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  margin: 0 0 1.1rem;
+  border: 1px solid transparent;
+}
+
+.rpCentered .rpStatusIcon {
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.rpStatusIcon--info {
+  border-color: rgba(59, 130, 246, 0.35);
+  background: rgba(59, 130, 246, 0.12);
+  color: #60a5fa;
+}
+
+.rpStatusIcon--success {
+  border-color: rgba(74, 222, 128, 0.35);
+  background: rgba(74, 222, 128, 0.12);
+  color: #4ade80;
+}
+
+.rpStatusIcon--warn {
+  border-color: rgba(251, 191, 36, 0.35);
+  background: rgba(251, 191, 36, 0.12);
+  color: #fbbf24;
+}
+
+.rpEmphasis {
+  color: #e6edf3;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.rpFieldNote {
+  margin: 0.45rem 0 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: #6e7e8f;
+}
+
+.rpBlockError {
+  margin-bottom: 1rem;
+}
+
+.rpTopSpaced {
+  margin-top: 1.25rem;
+}
+
+.rpPrimaryBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.rpLinkBtn {
+  text-decoration: none;
+  text-align: center;
+}
+
+.rpReadOnlyInput {
+  padding-right: 5.5rem;
+  color: #8b949e;
+  cursor: default;
+}
+
+.rpReadOnlyTag {
+  position: absolute;
+  right: 0.85rem;
+  font-size: 0.72rem;
+  font-style: italic;
+  color: #5a6478;
+  pointer-events: none;
+}
+
+/* Password policy --------------------------------------------------------- */
+.rpPolicy {
+  margin: 0 0 1.25rem;
+}
+
+.rpStrengthHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.45rem;
+}
+
+.rpStrengthLabel {
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: #c9d1d9;
+}
+
+.rpStrengthValue {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #8b949e;
+}
+
+.rpStrengthValue--too-weak {
+  color: #8b949e;
+}
+
+.rpStrengthValue--weak {
+  color: #fca5a5;
+}
+
+.rpStrengthValue--good {
+  color: #fbbf24;
+}
+
+.rpStrengthValue--strong {
+  color: #4ade80;
+}
+
+.rpStrengthTrack {
+  display: flex;
+  gap: 0.35rem;
+  margin-bottom: 0.85rem;
+}
+
+.rpStrengthSegment {
+  flex: 1;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.rpStrengthSegment--weak {
+  background: #ef4444;
+}
+
+.rpStrengthSegment--good {
+  background: #fbbf24;
+}
+
+.rpStrengthSegment--strong {
+  background: #4ade80;
+}
+
+.rpRequirements {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem 1rem;
+}
+
+.rpRequirement {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: #8b949e;
+}
+
+.rpRequirementMark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: transparent;
+  flex-shrink: 0;
+}
+
+.rpRequirement--met {
+  color: #c9d1d9;
+}
+
+.rpRequirement--met .rpRequirementMark {
+  border-color: rgba(74, 222, 128, 0.55);
+  background: rgba(74, 222, 128, 0.14);
+  color: #4ade80;
+}
+
+/* Verifying --------------------------------------------------------------- */
+.rpSpinner {
+  display: inline-block;
+  width: 30px;
+  height: 30px;
+  margin-bottom: 1.1rem;
+  border-radius: 50%;
+  border: 2px solid rgba(59, 130, 246, 0.22);
+  border-top-color: #3b82f6;
+  animation: rpSpin 0.8s linear infinite;
+}
+
+@keyframes rpSpin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rpSpinner {
+    animation-duration: 2.4s;
+  }
+}
+
+.rpVisuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 900px) {
+  /* The brand column is supporting context: on tablet and below the recovery card
+     is the whole page, so the decorative assurances step out of the way. */
+  .rpAssurances {
+    display: none;
+  }
+}
+
+@media (max-width: 600px) {
+  /* On a phone the recovery form should own the screen. The brand column shrinks to
+     an identity strip — logo and label only — instead of a headline block the user
+     has to scroll past to reach the field they came for. */
+  .rpOuter .siBrand {
+    padding: 1rem 1.25rem 0.85rem;
+  }
+
+  .rpOuter .siHeadline,
+  .rpOuter .siBrandFooter {
+    display: none;
+  }
+
+  .rpOuter .siLogoHeader {
+    margin-bottom: 0.85rem;
+  }
+
+  .rpOuter .siBadge {
+    margin-bottom: 0;
+  }
+
+  .rpSteps {
+    gap: 0.35rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .rpStepLabel {
+    font-size: 0.7rem;
+  }
+
+  .rpRequirements {
+    grid-template-columns: 1fr;
+  }
+}
+/* === ACCOUNT RECOVERY (/reset-password) END === */
+
 /* === SIGN IN SAAS REDESIGN END === */
 
 /* ============================================================
