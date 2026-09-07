@@ -14,10 +14,14 @@ import {
 const SIGN_IN_CLIENT_PATH = path.resolve(__dirname, '../app/sign-in/sign-in-page-client.tsx');
 const RESET_CLIENT_PATH = path.resolve(__dirname, '../app/reset-password/reset-password-client.tsx');
 const RESET_MODULE_PATH = path.resolve(__dirname, '../app/password-reset-request.ts');
+const REQUEST_FORM_PATH = path.resolve(__dirname, '../app/reset-password/components/request-reset-form.tsx');
+const NEW_PASSWORD_FORM_PATH = path.resolve(__dirname, '../app/reset-password/components/set-new-password-form.tsx');
 
 const signInSource = readFileSync(SIGN_IN_CLIENT_PATH, 'utf8');
 const resetClientSource = readFileSync(RESET_CLIENT_PATH, 'utf8');
 const resetModuleSource = readFileSync(RESET_MODULE_PATH, 'utf8');
+const requestFormSource = readFileSync(REQUEST_FORM_PATH, 'utf8');
+const newPasswordFormSource = readFileSync(NEW_PASSWORD_FORM_PATH, 'utf8');
 
 // The pilot account that was surfacing on /reset-password for unrelated users.
 const PILOT_EMAIL = 'decoda.guard@gmail.com';
@@ -106,14 +110,15 @@ test.describe('a direct /reset-password visit shows a blank email field', () => 
   test('the empty field is opted out of browser credential autofill', () => {
     // An unnamed <input type="email"> on a same-origin page is a credential-manager
     // fill target: that is how a saved pilot account appeared for other users.
-    expect(resetClientSource).toContain('id="reset-request-email"');
-    expect(resetClientSource).toContain('name="reset_request_email"');
-    expect(resetClientSource).toContain('autoComplete="off"');
-    expect(resetClientSource).toContain('data-lpignore="true"');
-    expect(resetClientSource).toContain('data-1p-ignore');
-    expect(resetClientSource).toContain('htmlFor="reset-request-email"');
-    // The new-password box must not be filled with a saved current password either.
-    expect(resetClientSource).toContain('autoComplete="new-password"');
+    expect(requestFormSource).toContain('id="reset-request-email"');
+    expect(requestFormSource).toContain('name="reset_request_email"');
+    expect(requestFormSource).toContain('autoComplete="off"');
+    expect(requestFormSource).toContain('data-lpignore="true"');
+    expect(requestFormSource).toContain('data-1p-ignore');
+    expect(requestFormSource).toContain('htmlFor="reset-request-email"');
+    // The new-password boxes must not be filled with a saved current password either.
+    expect(newPasswordFormSource).toContain('autoComplete="new-password"');
+    expect(newPasswordFormSource).not.toContain('autoComplete="current-password"');
   });
 });
 
@@ -123,7 +128,7 @@ test.describe('no pilot account is hardcoded or defaulted', () => {
     // auth sources; any other hardcoded address is a defaulted account.
     const allowedPlaceholders = new Set(['you@company.com']);
 
-    for (const source of [resetModuleSource, resetClientSource, signInSource]) {
+    for (const source of [resetModuleSource, resetClientSource, signInSource, requestFormSource, newPasswordFormSource]) {
       expect(source).not.toContain(PILOT_EMAIL);
       expect(source).not.toContain('decoda.guard');
 
@@ -144,7 +149,10 @@ test.describe('no pilot account is hardcoded or defaulted', () => {
 
   test('a blank field sends no reset request rather than a defaulted one', () => {
     expect(buildResetRequestPayload('')).toBeNull();
-    expect(resetClientSource).toContain('disabled={!requestPayload}');
+    // Submission is gated on a payload the blank field cannot produce.
+    expect(resetClientSource).toContain('canSubmit={Boolean(requestPayload)}');
+    expect(resetClientSource).toContain('if (!requestPayload) {');
+    expect(requestFormSource).toContain('disabled={!canSubmit || submitting}');
   });
 });
 
@@ -189,15 +197,25 @@ test.describe('only a reset token can change a password', () => {
   });
 
   test('the reset page gates submission on the built payload, not on the email field', () => {
-    expect(resetClientSource).toContain('disabled={!submissionPayload}');
     expect(resetClientSource).toContain('JSON.stringify(submissionPayload)');
     expect(resetClientSource).toContain('if (!submissionPayload)');
-    // requestEmail is never part of the password-change request.
+    // A verified token is a precondition of submitting at all.
+    expect(resetClientSource).toContain('if (submitting || !canSubmitNewPassword(tokenState)) return;');
+
+    // No address — carried, typed, or displayed — is read by the password change.
     const submitBlock = resetClientSource.slice(
       resetClientSource.indexOf('async function submitReset'),
-      resetClientSource.indexOf('return ('),
+      resetClientSource.indexOf('if (succeeded) {'),
     );
-    expect(submitBlock).not.toContain('requestEmail');
+    expect(submitBlock.length).toBeGreaterThan(0);
+    expect(submitBlock).toContain('buildResetSubmissionPayload(token, password)');
+    for (const addressSource of ['accountEmail', 'tokenState.email', 'searchParams', 'requestEmail']) {
+      expect(submitBlock).not.toContain(addressSource);
+    }
+
+    // The address on the reset screen is display-only and never re-submitted.
+    expect(newPasswordFormSource).toContain('readOnly');
+    expect(newPasswordFormSource).not.toContain('onChange={(event) => onAccountEmailChange');
   });
 });
 

@@ -31,6 +31,45 @@ def test_auth_reset_password_route_applies_rate_limit(monkeypatch):
     assert calls == ['reset_password']
 
 
+def test_auth_reset_password_validate_route_applies_rate_limit(monkeypatch):
+    """The link check is rate limited too: it answers questions about tokens, so
+    unlimited calls would turn it into a guessing oracle."""
+    calls: list[str] = []
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(api_main, 'enforce_auth_rate_limit', lambda request, action, identifier=None: calls.append(action))
+    monkeypatch.setattr(
+        api_main,
+        'validate_password_reset_token',
+        lambda payload, request: {'status': 'valid', 'email': 'user@example.com'},
+    )
+
+    response = client.post('/auth/reset-password/validate', json={'token': 't'})
+
+    assert response.status_code == 200
+    assert response.json() == {'status': 'valid', 'email': 'user@example.com'}
+    assert calls == ['reset_password_validate']
+
+
+def test_auth_reset_password_validate_route_is_distinct_from_the_reset_route(monkeypatch):
+    """Checking a link and spending it are separate endpoints; the check never
+    reaches the handler that changes a password."""
+    reset_calls: list[dict] = []
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(api_main, 'enforce_auth_rate_limit', lambda request, action, identifier=None: None)
+    monkeypatch.setattr(api_main, 'reset_password', lambda payload, request: reset_calls.append(payload) or {})
+    monkeypatch.setattr(
+        api_main,
+        'validate_password_reset_token',
+        lambda payload, request: {'status': 'expired', 'email': None},
+    )
+
+    response = client.post('/auth/reset-password/validate', json={'token': 'expired-token'})
+
+    assert response.status_code == 200
+    assert response.json() == {'status': 'expired', 'email': None}
+    assert reset_calls == []
+
+
 def test_auth_signout_all_route_delegates(monkeypatch):
     monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
     monkeypatch.setattr(api_main, 'signout_all_sessions', lambda request: {'signed_out_all': True})

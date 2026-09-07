@@ -120,6 +120,18 @@ RECONCILE_IDEMPOTENCY_HEADER = 'x-idempotency-key'
 DEFAULT_DEMO_EMAIL = 'demo@decoda.app'
 EMAIL_VERIFICATION_TTL_MINUTES = 60 * 24
 PASSWORD_RESET_TTL_MINUTES = 30
+# The canonical account-password policy. `_require_password` / `_require_strong_password`
+# below are the only enforcement point; PASSWORD_POLICY_RULES exists so the policy can be
+# *stated* (to the reset UI, to tests) without a second implementation drifting away from
+# the one that actually rejects a password. Every rule listed here is enforced, and every
+# rule enforced is listed here — a UI that renders this list can never promise the user a
+# stricter or looser policy than the API applies.
+PASSWORD_MIN_LENGTH = 10
+PASSWORD_POLICY_RULES: tuple[dict[str, str], ...] = (
+    {'id': 'min_length', 'label': f'At least {PASSWORD_MIN_LENGTH} characters'},
+    {'id': 'lower_and_upper', 'label': 'Uppercase & lowercase letters'},
+    {'id': 'number', 'label': 'One number'},
+)
 SESSION_TTL_HOURS = 24
 MFA_RECOVERY_CODE_COUNT = 10
 # A pending TOTP enrollment is short-lived: the operator scans the setup key and
@@ -1968,6 +1980,14 @@ def _normalize_workspace_role(role: str) -> str:
     return normalized
 
 
+def password_policy() -> dict[str, Any]:
+    """The password rules a client may display, mirroring what the API enforces."""
+    return {
+        'min_length': PASSWORD_MIN_LENGTH,
+        'rules': [dict(rule) for rule in PASSWORD_POLICY_RULES],
+    }
+
+
 def _require_strong_password(password: str) -> None:
     _require_password(password)
     if not re.search(r'[A-Z]', password) or not re.search(r'[a-z]', password) or not re.search(r'\d', password):
@@ -2099,17 +2119,167 @@ def _send_email(to_email: str, subject: str, text_body: str, html_body: str | No
     raise RuntimeError('EMAIL_PROVIDER must be one of: console, resend')
 
 
-def _email_message(purpose: str, *, token: str | None = None) -> tuple[str, str]:
+def _app_public_url() -> str:
+    """Environment-aware base URL for links we mail out.
+
+    Staging and production each set APP_PUBLIC_URL, so a reset link is never
+    hardcoded to one deployment's hostname.
+    """
+    return os.getenv('APP_PUBLIC_URL', 'http://localhost:3000').rstrip('/')
+
+
+def _html_escape(value: str) -> str:
+    return (
+        value.replace('&', '&amp;')
+        .replace('<', '&lt;')
+        .replace('>', '&gt;')
+        .replace('"', '&quot;')
+    )
+
+
+def _format_duration_phrase(minutes: int) -> str:
+    """'30 minutes' / '24 hours' — the wording used for a link's stated lifetime."""
+    if minutes % (60 * 24) == 0 and minutes >= 60 * 24:
+        days = minutes // (60 * 24)
+        return f'{days} day' if days == 1 else f'{days} days'
+    if minutes % 60 == 0 and minutes >= 60:
+        hours = minutes // 60
+        return f'{hours} hour' if hours == 1 else f'{hours} hours'
+    return f'{minutes} minute' if minutes == 1 else f'{minutes} minutes'
+
+
+def _email_html_document(
+    *,
+    brand: str,
+    heading: str,
+    paragraphs: list[str],
+    action: tuple[str, str] | None = None,
+    footnote: str | None = None,
+) -> str:
+    """A deliberately plain transactional email.
+
+    Table layout, inline styles and no external assets: the combination every mail
+    client renders the same way. `action` is (label, url); its target is repeated as
+    a visible plain-text link underneath for clients that strip the button.
+    """
+    body_parts = [
+        f'<p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#3d4a5c;">{_html_escape(text)}</p>'
+        for text in paragraphs
+    ]
+    if action is not None:
+        label, url = action
+        safe_url = _html_escape(url)
+        body_parts.append(
+            '<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:24px 0;">'
+            '<tr><td align="center" bgcolor="#2563eb" style="border-radius:8px;">'
+            f'<a href="{safe_url}" style="display:inline-block;padding:12px 28px;font-size:15px;'
+            'font-weight:600;color:#ffffff;text-decoration:none;border-radius:8px;">'
+            f'{_html_escape(label)}</a></td></tr></table>'
+        )
+        body_parts.append(
+            '<p style="margin:0 0 16px;font-size:13px;line-height:1.6;color:#6b7688;">'
+            "If the button doesn't work, copy and paste this link into your browser:<br />"
+            f'<a href="{safe_url}" style="color:#2563eb;word-break:break-all;">{safe_url}</a></p>'
+        )
+    if footnote:
+        body_parts.append(
+            '<p style="margin:0;font-size:13px;line-height:1.6;color:#6b7688;">'
+            f'{_html_escape(footnote)}</p>'
+        )
+
+    return (
+        '<!doctype html><html><body style="margin:0;padding:0;background:#f4f6fa;">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        'style="background:#f4f6fa;padding:32px 12px;">'
+        '<tr><td align="center">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        'style="max-width:520px;background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;'
+        'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Arial,sans-serif;">'
+        '<tr><td style="padding:28px 32px 8px;">'
+        f'<p style="margin:0 0 20px;font-size:13px;font-weight:700;letter-spacing:0.12em;'
+        f'text-transform:uppercase;color:#2563eb;">{_html_escape(brand)}</p>'
+        f'<h1 style="margin:0 0 16px;font-size:20px;line-height:1.35;color:#111827;">'
+        f'{_html_escape(heading)}</h1>'
+        + ''.join(body_parts)
+        + '</td></tr>'
+        '<tr><td style="padding:8px 32px 28px;border-top:1px solid #eef1f6;">'
+        f'<p style="margin:16px 0 0;font-size:12px;color:#8b94a3;">{_html_escape(brand)}</p>'
+        '</td></tr></table></td></tr></table></body></html>'
+    )
+
+
+def _email_message(purpose: str, *, token: str | None = None) -> tuple[str, str, str]:
+    """(subject, text_body, html_body) for one transactional message.
+
+    The text body stays the authoritative copy — it is what a text-only client and
+    the console provider show — and the HTML is the same content, formatted.
+    """
     brand = _email_brand_name()
-    app_url = os.getenv('APP_PUBLIC_URL', 'http://localhost:3000').rstrip('/')
+    app_url = _app_public_url()
     if purpose == 'email_verification':
         url = f'{app_url}/verify-email?token={token}'
-        return (f'[{brand}] Verify your email', f'Welcome to {brand}. Verify your email: {url}')
+        expiry = _format_duration_phrase(EMAIL_VERIFICATION_TTL_MINUTES)
+        text = (
+            f'Welcome to {brand}.\n\n'
+            f'Confirm your email address to finish setting up your account:\n{url}\n\n'
+            f'This link expires after {expiry}.\n\n'
+            f'{brand}'
+        )
+        html = _email_html_document(
+            brand=brand,
+            heading='Confirm your email address',
+            paragraphs=[
+                f'Welcome to {brand}. Confirm your email address to finish setting up your account.',
+            ],
+            action=('Verify email', url),
+            footnote=f'This link expires after {expiry}.',
+        )
+        return (f'[{brand}] Verify your email', text, html)
     if purpose == 'password_reset':
         url = f'{app_url}/reset-password?token={token}'
-        return (f'[{brand}] Reset your password', f'Reset your {brand} password: {url}')
+        expiry = _format_duration_phrase(PASSWORD_RESET_TTL_MINUTES)
+        text = (
+            'Password reset requested\n\n'
+            f'We received a request to reset the password for your {brand} account.\n\n'
+            f'Reset your password:\n{url}\n\n'
+            f'This link expires after {expiry}.\n\n'
+            "If you didn't request this, you can safely ignore this email.\n\n"
+            f'{brand}'
+        )
+        html = _email_html_document(
+            brand=brand,
+            heading='Password reset requested',
+            paragraphs=[
+                f'We received a request to reset the password for your {brand} account.',
+            ],
+            action=('Reset password', url),
+            footnote=(
+                f"This link expires after {expiry}. If you didn't request this, "
+                'you can safely ignore this email.'
+            ),
+        )
+        return (f'Reset your {brand} password', text, html)
     if purpose == 'password_reset_confirmation':
-        return (f'[{brand}] Password changed', f'Your {brand} password was changed successfully.')
+        sign_in_url = f'{app_url}/sign-in'
+        text = (
+            'Your password was changed\n\n'
+            f'The password for your {brand} account was changed successfully, and any '
+            'existing sessions were signed out.\n\n'
+            f'Sign in:\n{sign_in_url}\n\n'
+            "If you didn't make this change, contact your administrator immediately.\n\n"
+            f'{brand}'
+        )
+        html = _email_html_document(
+            brand=brand,
+            heading='Your password was changed',
+            paragraphs=[
+                f'The password for your {brand} account was changed successfully, and any '
+                'existing sessions were signed out.',
+            ],
+            action=('Sign in', sign_in_url),
+            footnote="If you didn't make this change, contact your administrator immediately.",
+        )
+        return (f'[{brand}] Password changed', text, html)
     raise RuntimeError(f'Unsupported email purpose: {purpose}')
 
 
@@ -2121,10 +2291,10 @@ def _dispatch_transactional_email(
     token: str | None = None,
     request: Request | None = None,
 ) -> None:
-    subject, text_body = _email_message(purpose, token=token)
+    subject, text_body, html_body = _email_message(purpose, token=token)
     mode = os.getenv('BACKGROUND_JOBS_MODE', 'inline').strip().lower() or 'inline'
     if mode == 'inline':
-        _send_email(to_email, subject, text_body)
+        _send_email(to_email, subject, text_body, html_body)
         return
     _queue_background_job(
         connection,
@@ -2133,6 +2303,9 @@ def _dispatch_transactional_email(
             'to_email': to_email,
             'subject': subject,
             'text_body': text_body,
+            # Queued mail must render the same as inline mail; without this the
+            # worker path would silently downgrade every message to plain text.
+            'html_body': html_body,
             'workspace_id': None,
             'request_ip': request.client.host if request and request.client else None,
         },
@@ -2296,8 +2469,11 @@ def _normalize_email(email: str) -> str:
 
 
 def _require_password(password: str) -> None:
-    if len(password) < 10:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Password must be at least 10 characters long.')
+    if len(password) < PASSWORD_MIN_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'Password must be at least {PASSWORD_MIN_LENGTH} characters long.',
+        )
 
 
 def _slugify(value: str) -> str:
@@ -4190,6 +4366,57 @@ def request_password_reset(payload: dict[str, Any], request: Request) -> dict[st
         return {'sent': True, 'reset_token': None}  # tokens never exposed in API responses
 
 
+# The states a reset link can be in, as reported to the reset screen. `invalid` is
+# the fail-closed default: an unknown token is never distinguished from a malformed
+# one, so the endpoint cannot be used to probe which token strings ever existed.
+RESET_TOKEN_STATUS_VALID = 'valid'
+RESET_TOKEN_STATUS_EXPIRED = 'expired'
+RESET_TOKEN_STATUS_USED = 'used'
+RESET_TOKEN_STATUS_INVALID = 'invalid'
+
+
+def validate_password_reset_token(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Report whether a reset link can still be completed, without consuming it.
+
+    The reset screen needs this because token *presence* in a URL says nothing about
+    token validity: without it the page would render a password form that only fails
+    at submit time. Nothing here mutates the token, so a user can reload the page.
+
+    The response deliberately carries no token material, no user id, and no internal
+    reason codes — only one of four states, plus the account address for a token that
+    is actually valid, so the user can confirm which account they are about to change.
+    """
+    require_live_mode()
+    raw_token = str(payload.get('token', '')).strip()
+    if not raw_token:
+        return {'status': RESET_TOKEN_STATUS_INVALID, 'email': None}
+
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        token_row = connection.execute(
+            "SELECT id, user_id, expires_at, used_at FROM auth_tokens WHERE token_hash = %s AND purpose = 'password_reset'",
+            (_auth_token_hash(raw_token),),
+        ).fetchone()
+        if token_row is None:
+            return {'status': RESET_TOKEN_STATUS_INVALID, 'email': None}
+        if token_row['used_at'] is not None:
+            return {'status': RESET_TOKEN_STATUS_USED, 'email': None}
+        if token_row['expires_at'] < utc_now():
+            return {'status': RESET_TOKEN_STATUS_EXPIRED, 'email': None}
+
+        # The account is resolved from the token record, never from a query string.
+        user_row = connection.execute('SELECT email FROM users WHERE id = %s', (token_row['user_id'],)).fetchone()
+        if user_row is None or not user_row['email']:
+            # A token whose account no longer exists cannot complete a reset.
+            return {'status': RESET_TOKEN_STATUS_INVALID, 'email': None}
+
+        return {
+            'status': RESET_TOKEN_STATUS_VALID,
+            'email': str(user_row['email']),
+            'password_policy': password_policy(),
+        }
+
+
 def reset_password(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
     raw_token = str(payload.get('token', '')).strip()
@@ -4203,7 +4430,30 @@ def reset_password(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         ).fetchone()
         if token_row is None or token_row['used_at'] is not None or token_row['expires_at'] < utc_now():
             raise HTTPException(status_code=400, detail='Invalid or expired password reset token.')
-        connection.execute('UPDATE auth_tokens SET used_at = NOW() WHERE id = %s', (token_row['id'],))
+        # Claim the token atomically. The SELECT above is only a fast pre-check: two
+        # concurrent submissions of the same link both pass it, so single-use has to be
+        # decided by the database. `used_at IS NULL` in the UPDATE means exactly one
+        # request can win the row; the loser gets no row back and changes nothing.
+        claimed = connection.execute(
+            'UPDATE auth_tokens SET used_at = NOW() WHERE id = %s AND used_at IS NULL RETURNING id',
+            (token_row['id'],),
+        ).fetchone()
+        if claimed is None:
+            raise HTTPException(status_code=400, detail='Invalid or expired password reset token.')
+        # Any other reset link outstanding for this account is now void: a user who
+        # clicked "resend" several times must not leave usable links behind, and a
+        # link requested by an attacker before the takeover must not survive it.
+        connection.execute(
+            """
+            UPDATE auth_tokens
+               SET used_at = NOW()
+             WHERE user_id = %s
+               AND purpose = 'password_reset'
+               AND used_at IS NULL
+               AND id <> %s
+            """,
+            (token_row['user_id'], token_row['id']),
+        )
         connection.execute(
             'UPDATE users SET password_hash = %s, session_version = session_version + 1, updated_at = NOW() WHERE id = %s',
             (hash_password(password), token_row['user_id']),
@@ -6886,7 +7136,13 @@ def run_background_jobs(*, worker_id: str = 'worker', limit: int = 20) -> dict[s
             )
             try:
                 if row['job_type'] == 'send_email':
-                    _send_email(str(payload.get('to_email', '')), str(payload.get('subject', '')), str(payload.get('text_body', '')))
+                    queued_html = payload.get('html_body')
+                    _send_email(
+                        str(payload.get('to_email', '')),
+                        str(payload.get('subject', '')),
+                        str(payload.get('text_body', '')),
+                        str(queued_html) if queued_html else None,
+                    )
                 elif row['job_type'] == 'send_webhook':
                     _deliver_webhook_attempt(payload)
                     if payload.get('delivery_id'):

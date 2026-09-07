@@ -6,7 +6,7 @@ Prints structured output with no secrets or passwords exposed.
 Exits 0 if user is found and can sign in, non-zero otherwise.
 
 Usage:
-    python -m services.api.scripts.check_user_auth_state decoda.guard@gmail.com
+    python -m services.api.scripts.check_user_auth_state <email>
 """
 from __future__ import annotations
 
@@ -172,5 +172,10 @@ def check_user_auth_state(email: str) -> int:
 
 
 if __name__ == '__main__':
-    target_email = sys.argv[1] if len(sys.argv) > 1 else 'decoda.guard@gmail.com'
-    sys.exit(check_user_auth_state(target_email))
+    # No default account: a diagnostic that silently inspects one real operator's
+    # record when run without arguments is how a pilot address becomes a de-facto
+    # default elsewhere. The caller must name the account they mean.
+    if len(sys.argv) < 2 or not sys.argv[1].strip():
+        print('usage: python -m services.api.scripts.check_user_auth_state <email>', file=sys.stderr)
+        sys.exit(2)
+    sys.exit(check_user_auth_state(sys.argv[1].strip()))

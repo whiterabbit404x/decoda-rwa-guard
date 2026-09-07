@@ -26,9 +26,11 @@ def test_validate_runtime_configuration_production_requires_core_secrets(monkeyp
 
 def test_email_message_contains_frontend_url(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv('APP_PUBLIC_URL', 'https://app.example.com')
-    subject, body = pilot._email_message('email_verification', token='token-123')
+    subject, body, html_body = pilot._email_message('email_verification', token='token-123')
     assert 'Verify your email' in subject
     assert 'https://app.example.com/verify-email?token=token-123' in body
+    # The HTML alternative links to the same environment-aware URL, never a hardcoded host.
+    assert 'https://app.example.com/verify-email?token=token-123' in html_body
 
 
 def test_onboarding_state_merges_manual_and_automatic_steps() -> None:
