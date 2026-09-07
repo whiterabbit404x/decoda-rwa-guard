@@ -835,6 +835,13 @@ export type ExecutionGate = {
   expiresAt: string | null;
   executionAdapterConfigured: boolean;
   executionAdapterLabel: string | null;
+  /** True when the TENANT'S PLAN, not policy, is what keeps the lock closed —
+   *  a Pilot evaluation runs in recommend-only mode. Reported separately from
+   *  the policy verdict so the screen says "execution is unavailable on this
+   *  plan" rather than implying a policy denied the action. */
+  planExecutionLocked: boolean;
+  /** The plan the backend evaluated the lock against, when it named one. */
+  plan: string | null;
   aiAuthority: string;
   executionAuthority: string;
   gateVersion: string | null;
@@ -923,11 +930,17 @@ export function normalizeExecutionGate(input: unknown): ExecutionGate | null {
     expiresAt: gateStr(raw.expires_at),
     executionAdapterConfigured: raw.execution_adapter_configured === true,
     executionAdapterLabel: gateStr(raw.execution_adapter_label),
+    planExecutionLocked: raw.plan_execution_locked === true,
+    plan: gateStr(raw.plan),
     aiAuthority: gateStr(raw.ai_authority) ?? AI_AUTHORITY_FALLBACK,
     executionAuthority: gateStr(raw.execution_authority) ?? EXECUTION_AUTHORITY_FALLBACK,
     gateVersion: gateStr(raw.gate_version),
   };
 }
+
+/** Reason code the backend adds when the tenant's plan is recommend-only.
+ *  Mirrors services/api/app/domains/response_gate/config.PLAN_EXECUTION_NOT_ENTITLED. */
+export const PLAN_EXECUTION_NOT_ENTITLED = 'PLAN_EXECUTION_NOT_ENTITLED';
 
 export type ExecutionLock = {
   locked: boolean;
@@ -970,9 +983,11 @@ export function executionLockPresentation(gate: ExecutionGate | null | undefined
     return {
       locked: true,
       icon: '🔒',
-      title: 'Execution Locked',
+      title: gate.planExecutionLocked ? 'Recommend-only mode' : 'Execution Locked',
       subtitle: executionLockSubtitle(gate),
-      variant: 'warning',
+      // Informational, not a warning: a recommend-only plan is the account
+      // operating as designed, not a fault the operator must repair.
+      variant: gate.planExecutionLocked ? 'info' : 'warning',
     };
   }
   return {
@@ -989,6 +1004,17 @@ export function executionLockPresentation(gate: ExecutionGate | null | undefined
 /** The most specific reason the lock is closed, preferring the human quorum
  *  (the operator's actionable next step) over advisory codes. */
 export function executionLockSubtitle(gate: ExecutionGate): string {
+  // The plan lock comes first. When execution is unavailable on this plan, the
+  // outstanding approvals are not the operator's next step — nothing they can
+  // collect will unlock it — so naming a quorum here would misdirect them.
+  if (gate.planExecutionLocked) {
+    return (
+      gate.reasons.find((r) => r.code === PLAN_EXECUTION_NOT_ENTITLED)?.label
+      ?? (gate.plan === 'pilot'
+        ? 'Execution unavailable during Pilot evaluation.'
+        : 'Execution against production is unavailable on this plan.')
+    );
+  }
   if (gate.missingRoles.length > 0) {
     const labels = gate.missingRoleLabels.length ? gate.missingRoleLabels : gate.missingRoles;
     return `Waiting for required approvals: ${labels.join(', ')}.`;

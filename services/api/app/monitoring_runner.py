@@ -130,6 +130,55 @@ MONITOR_POLL_INTERVAL_SECONDS = int(os.getenv('MONITOR_POLL_INTERVAL_SECONDS', '
 QUICKNODE_STREAM_STALE_SECONDS = max(60, int(os.getenv('QUICKNODE_STREAM_STALE_SECONDS', '300')))
 
 
+#: Extra WHERE fragment that removes a suspended or evaluation-expired tenant's
+#: targets from monitoring due-selection. Written as a NOT EXISTS so it can be
+#: appended to an existing query without changing any of its joins.
+_ORGANIZATION_MONITORING_EXCLUSION_SQL = """
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM workspaces tenant_ws
+                  JOIN organizations tenant_org ON tenant_org.id = tenant_ws.organization_id
+                  WHERE tenant_ws.id = t.workspace_id
+                    AND (
+                        tenant_org.status <> 'active'
+                        OR (
+                            tenant_org.plan = 'pilot'
+                            AND tenant_org.evaluation_expires_at IS NOT NULL
+                            AND tenant_org.evaluation_expires_at <= NOW()
+                        )
+                    )
+              )
+"""
+
+
+def _organization_monitoring_exclusion_sql(connection: Any) -> str:
+    """The tenant-status exclusion clause, or '' when the tenancy schema is absent.
+
+    A workspace with no organization link is NOT excluded: an unlinked workspace
+    predates migration 0150, and silently stopping its monitoring would be a
+    far worse failure than briefly not applying the new rule to it. The API heals
+    the link on the tenant's next request.
+    """
+    try:
+        row = connection.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM information_schema.tables
+                  WHERE table_schema = 'public' AND table_name = 'organizations') AS org_table,
+                (SELECT COUNT(*) FROM information_schema.columns
+                  WHERE table_schema = 'public' AND table_name = 'workspaces'
+                    AND column_name = 'organization_id') AS link_column
+            """,
+        ).fetchone()
+    except Exception:
+        logger.warning('organization_monitoring_filter_probe_failed action=filter_not_applied')
+        return ''
+    data = dict(row or {})
+    if int(data.get('org_table') or 0) < 1 or int(data.get('link_column') or 0) < 1:
+        return ''
+    return _ORGANIZATION_MONITORING_EXCLUSION_SQL
+
+
 def canonical_runtime_telemetry_window_seconds(max_enabled_interval_seconds: int | None = None) -> int:
     """The single canonical runtime telemetry freshness window (seconds).
 
@@ -6069,8 +6118,14 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             logger.warning(
                 'dead_letter_fast_recovery_failed retry_seconds=%s', _dead_letter_retry_seconds
             )
+        # Phase 10 — expensive-workload protection. A suspended organization, or a
+        # Pilot whose evaluation window has passed, stops INITIATING new polling
+        # work: no RPC/QuickNode request is issued on its behalf. Nothing is
+        # deleted and no record is hidden; the tenant keeps every asset, alert,
+        # incident, and evidence package it already has.
+        _tenant_clause = _organization_monitoring_exclusion_sql(connection)
         candidate_systems = connection.execute(
-            '''
+            f'''
             SELECT ms.id AS monitored_system_id,
                    ms.workspace_id,
                    ms.target_id,
@@ -6097,9 +6152,51 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
               AND LOWER(COALESCE(mc.provider_type, '')) NOT IN ('default')
               AND COALESCE(mc.enabled, FALSE) = TRUE
               AND mc.provider_type NOT IN ('demo', 'simulator', 'replay', 'unknown', 'target_bridge', 'guided_workflow')
+              {_tenant_clause}
             ORDER BY COALESCE(ms.last_heartbeat, t.last_checked_at, '1970-01-01'::timestamptz) ASC, ms.created_at ASC
             ''',
         ).fetchall()
+        # Name the targets the tenant-state filter removed. An absence must be
+        # explainable: without this line a suspended tenant's monitoring would
+        # simply stop with no record of why, which is exactly the kind of silent
+        # gap the runtime-truth rules forbid.
+        if _tenant_clause:
+            try:
+                _tenant_skipped = connection.execute(
+                    '''
+                    SELECT t.id AS target_id,
+                           t.workspace_id,
+                           tenant_org.id AS organization_id,
+                           tenant_org.plan AS plan,
+                           tenant_org.status AS status,
+                           tenant_org.evaluation_expires_at AS evaluation_expires_at
+                    FROM targets t
+                    JOIN workspaces tenant_ws ON tenant_ws.id = t.workspace_id
+                    JOIN organizations tenant_org ON tenant_org.id = tenant_ws.organization_id
+                    WHERE t.deleted_at IS NULL
+                      AND COALESCE(t.enabled, FALSE) = TRUE
+                      AND COALESCE(t.monitoring_enabled, FALSE) = TRUE
+                      AND (
+                          tenant_org.status <> 'active'
+                          OR (
+                              tenant_org.plan = 'pilot'
+                              AND tenant_org.evaluation_expires_at IS NOT NULL
+                              AND tenant_org.evaluation_expires_at <= NOW()
+                          )
+                      )
+                    ''',
+                ).fetchall()
+                for _skipped in (_tenant_skipped or []):
+                    _srow = dict(_skipped)
+                    logger.info(
+                        'event=monitoring_skipped_for_tenant_state target_id=%s workspace_id=%s '
+                        'organization_id=%s plan=%s status=%s evaluation_expires_at=%s '
+                        'action=no_rpc_requests_issued',
+                        _srow.get('target_id'), _srow.get('workspace_id'), _srow.get('organization_id'),
+                        _srow.get('plan'), _srow.get('status'), _srow.get('evaluation_expires_at'),
+                    )
+            except Exception:
+                logger.debug('monitoring_tenant_state_skip_diagnostics_failed', exc_info=True)
         # Log detailed candidate breakdown for diagnostics
         try:
             _total_targets = connection.execute(
