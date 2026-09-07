@@ -44,7 +44,9 @@ test.describe('sign-in page redesign source checks', () => {
   test('contains expected auth actions and links', () => {
     expect(clientSource).toContain('Sign in');
     expect(clientSource).toContain('Forgot password?');
-    expect(clientSource).toContain('/reset-password');
+    // The reset link carries the entered email, so it is built rather than literal.
+    expect(clientSource).toContain('buildResetPasswordHref(email)');
+    expect(clientSource).toContain("from '../password-reset-request'");
     expect(clientSource).toContain('Create one');
     expect(clientSource).toContain('/sign-up');
     expect(clientSource).toContain('await signIn(');
