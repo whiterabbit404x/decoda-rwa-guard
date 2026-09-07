@@ -60,6 +60,12 @@ class FakeConn:
         if sql.startswith('SELECT id FROM users WHERE email'):
             return FakeResult(row=self.users.get(params[0]))
 
+        if sql.startswith('SELECT email, email_verified_at FROM users WHERE id'):
+            row = next((user for user in self.users.values() if user['id'] == params[0]), None)
+            return FakeResult(
+                row={'email': row['email'], 'email_verified_at': row.get('email_verified_at')} if row else None,
+            )
+
         if sql.startswith('SELECT email FROM users WHERE id'):
             row = next((user for user in self.users.values() if user['id'] == params[0]), None)
             return FakeResult(row={'email': row['email']} if row else None)
@@ -104,6 +110,11 @@ class FakeConn:
 
         if sql.startswith('UPDATE users SET password_hash'):
             self.writes['password_updates'].append({'password_hash': params[0], 'user_id': params[1]})
+            # Mirror the statement's COALESCE onto the fake row.
+            row = next((user for user in self.users.values() if user['id'] == params[1]), None)
+            if row is not None and 'email_verified_at = COALESCE(email_verified_at, NOW())' in sql:
+                if row.get('email_verified_at') is None:
+                    row['email_verified_at'] = pilot.utc_now()
             return FakeResult()
 
         if sql.startswith('UPDATE auth_sessions SET revoked_at'):
@@ -157,8 +168,8 @@ def _issue_reset_token(conn, sent_email, email: str) -> str:
     return match.group(1)
 
 
-def _user(user_id: str, email: str):
-    return {'id': user_id, 'email': email}
+def _user(user_id: str, email: str, email_verified_at=None):
+    return {'id': user_id, 'email': email, 'email_verified_at': email_verified_at}
 
 
 # ---------------------------------------------------------------------------

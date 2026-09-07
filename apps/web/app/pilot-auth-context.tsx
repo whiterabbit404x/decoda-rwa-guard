@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 import { classifyAuthResponseError, classifyAuthTransportError } from './auth-diagnostics';
+import { AuthStateError, EMAIL_NOT_VERIFIED_CODE, isEmailNotVerifiedResponse } from './sign-in/email-verification-state';
 import { normalizeWorkspaceHeaderValue } from './workspace-header';
 import type { RuntimeConfig } from './runtime-config-schema';
 
@@ -80,6 +81,9 @@ type PilotAuthContextValue = {
   // rotates a secret or returns recovery codes; it only raises this session's assurance.
   verifySessionStepUp: (code: string) => Promise<{ verified: boolean; assurance_expires_at: string | null; valid_for_minutes: number | null }>;
   signUp: (payload: { email: string; password: string; full_name: string; workspace_name: string }) => Promise<{ user: PilotUser | null; verificationRequired: boolean }>;
+  // Send a fresh verification link. The backend answers identically for every address,
+  // so this reports only whether the REQUEST was accepted, never whether mail was sent.
+  resendVerificationEmail: (email: string) => Promise<{ ok: boolean; status: number; body: unknown }>;
   signOut: () => Promise<void>;
   refreshUser: () => Promise<PilotUser | null>;
   refreshCsrfToken: () => Promise<string | null>;
@@ -418,7 +422,14 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       access_token?: string;
     }>(response);
     if (!response.ok) {
-      throw new Error(classifyAuthResponseError('sign in', proxyUrl, response.status, data.detail, data));
+      const message = classifyAuthResponseError('sign in', proxyUrl, response.status, data.detail, data);
+      if (isEmailNotVerifiedResponse(response.status, data)) {
+        // Not a dead end: the account and password are right, only the address is
+        // unproven. The code lets the screen offer the resend action instead of
+        // string-matching the sentence above.
+        throw new AuthStateError(message, EMAIL_NOT_VERIFIED_CODE);
+      }
+      throw new Error(message);
     }
     if (data.mfa_required) {
       if (!data.mfa_token) {
@@ -604,6 +615,26 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     return { user: data.user, verificationRequired: false };
   }, [saveAuthPayload, fetchAndStoreCsrfToken]);
 
+  const resendVerificationEmail = useCallback(async (email: string) => {
+    const proxyUrl = '/api/auth/resend-verification';
+    let response: Response;
+
+    try {
+      response = await fetch(proxyUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+    } catch {
+      // A transport failure is not an answer about the account, so it is reported as
+      // an unreachable service rather than as a rejected request.
+      return { ok: false, status: 0, body: { detail: 'We could not reach the account service. Please try again shortly.' } };
+    }
+
+    const body = await readApiResponse<{ sent?: boolean; detail?: string }>(response);
+    return { ok: response.ok, status: response.status, body };
+  }, []);
+
   const signOut = useCallback(async () => {
     await fetch('/api/auth/signout', { method: 'POST', headers: authHeaders() }).catch(() => undefined);
     setUser(null);
@@ -679,6 +710,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     disableMfa,
     verifySessionStepUp,
     signUp,
+    resendVerificationEmail,
     signOut,
     refreshUser,
     refreshCsrfToken: fetchAndStoreCsrfToken,
@@ -686,7 +718,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     selectWorkspace,
     authHeaders,
     setError,
-  }), [authHeaders, completeMfaSignIn, configLoading, confirmMfaEnrollment, createWorkspace, csrfToken, disableMfa, enrollMfa, error, fetchAndStoreCsrfToken, loading, mfaChallengeToken, refreshUser, runtimeConfig, selectWorkspace, signIn, signOut, signUp, user, verifySessionStepUp]);
+  }), [authHeaders, completeMfaSignIn, configLoading, confirmMfaEnrollment, createWorkspace, csrfToken, disableMfa, enrollMfa, error, fetchAndStoreCsrfToken, loading, mfaChallengeToken, refreshUser, resendVerificationEmail, runtimeConfig, selectWorkspace, signIn, signOut, signUp, user, verifySessionStepUp]);
 
   return <PilotAuthContext.Provider value={value}>{children}</PilotAuthContext.Provider>;
 }

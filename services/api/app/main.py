@@ -44,6 +44,8 @@ from services.api.app.quicknode_streams import (
 )
 
 from services.api.app.pilot import (
+    EMAIL_NOT_VERIFIED_CODE,
+    EMAIL_NOT_VERIFIED_MESSAGE,
     accept_workspace_invitation,
     auth_token_secret_configured,
     authenticate_request,
@@ -1384,6 +1386,32 @@ def auth_backend_error_response(exc: HTTPException) -> JSONResponse | None:
     return JSONResponse(payload, status_code=exc.status_code, headers={'Cache-Control': 'no-store'})
 
 
+def auth_email_verification_error_response(exc: HTTPException) -> JSONResponse | None:
+    """Render the unverified-email refusal as a state the sign-in screen can act on.
+
+    Sign-in refuses an account whose address was never verified. Returned as a bare
+    sentence that state is indistinguishable to a client from a suspension or any
+    other 403, so the screen can only print it and leave the user stuck. The code
+    below lets the screen offer the one action that resolves it -- resend the
+    verification link -- without string-matching customer-facing copy.
+    """
+    if exc.status_code != 403:
+        return None
+    if (exc.headers or {}).get('X-Decoda-Error-Code') != EMAIL_NOT_VERIFIED_CODE:
+        return None
+    detail = str(exc.detail or EMAIL_NOT_VERIFIED_MESSAGE)
+    payload: dict[str, Any] = {
+        'code': EMAIL_NOT_VERIFIED_CODE,
+        'detail': detail,
+        'message': detail,
+        # The account exists and the password was correct; only the address is
+        # unproven. That is recoverable by the user, unlike a suspension.
+        'recoverable': True,
+        'recovery_action': 'resend_verification',
+    }
+    return JSONResponse(payload, status_code=exc.status_code, headers={'Cache-Control': 'no-store'})
+
+
 def with_auth_schema_json(handler):
     try:
         return handler()
@@ -1391,6 +1419,9 @@ def with_auth_schema_json(handler):
         backend_response = auth_backend_error_response(exc)
         if backend_response is not None:
             return backend_response
+        verification_response = auth_email_verification_error_response(exc)
+        if verification_response is not None:
+            return verification_response
         response = auth_schema_error_response(exc)
         if response is not None:
             return response

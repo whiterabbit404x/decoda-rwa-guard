@@ -7,6 +7,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { BuildInfo } from '../build-info';
 import { resolveAuthFormState } from '../auth-form-state';
 import { buildResetPasswordHref } from '../password-reset-request';
+import {
+  EMAIL_NOT_VERIFIED_BODY,
+  EMAIL_NOT_VERIFIED_HEADING,
+  VERIFICATION_RESEND_COOLDOWN_SECONDS,
+  describeResendOutcome,
+  formatVerificationResendLabel,
+  isEmailNotVerifiedError,
+  type ResendOutcome,
+} from './email-verification-state';
 import { usePilotAuth } from 'app/pilot-auth-context';
 
 type SignInRuntimeConfig = {
@@ -238,6 +247,7 @@ export default function SignInPageClient({
     signIn,
     completeMfaSignIn,
     refreshUser,
+    resendVerificationEmail,
     mfaChallengeToken,
     apiUrl,
   } = usePilotAuth();
@@ -249,6 +259,12 @@ export default function SignInPageClient({
   const [error, setError] = useState<string | null>(null);
   const [mfaCode, setMfaCode] = useState('');
   const [mfaRequired, setMfaRequired] = useState(false);
+  // The address the backend refused as unverified. Held separately from the input so
+  // the panel keeps naming the account it is actually about.
+  const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
+  const [resendOutcome, setResendOutcome] = useState<ResendOutcome | null>(null);
+  const [resending, setResending] = useState(false);
+  const [resendCooldown, setResendCooldown] = useState(0);
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showDiag, setShowDiag] = useState(false);
@@ -279,6 +295,12 @@ export default function SignInPageClient({
   );
 
   const formState = resolveAuthFormState(runtimeConfig, configLoading, loading);
+
+  useEffect(() => {
+    if (resendCooldown <= 0) return undefined;
+    const timer = setTimeout(() => setResendCooldown((seconds) => Math.max(0, seconds - 1)), 1000);
+    return () => clearTimeout(timer);
+  }, [resendCooldown]);
 
   useEffect(() => {
     let active = true;
@@ -335,12 +357,47 @@ export default function SignInPageClient({
       if (message === 'MFA_REQUIRED') {
         setMfaRequired(true);
         setError(null);
+      } else if (isEmailNotVerifiedError(submitError)) {
+        // The one refusal the user can clear themselves. Switch to the panel that
+        // says so and offers the link, instead of printing a sentence they cannot act on.
+        setUnverifiedEmail(email.trim());
+        setResendOutcome(null);
+        setResendCooldown(0);
+        setError(null);
       } else {
         setError(message);
       }
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleResendVerification() {
+    if (!unverifiedEmail || resending || resendCooldown > 0) return;
+
+    setResending(true);
+    try {
+      const result = await resendVerificationEmail(unverifiedEmail);
+      setResendOutcome(describeResendOutcome(result, result.body));
+      if (result.ok) {
+        setResendCooldown(VERIFICATION_RESEND_COOLDOWN_SECONDS);
+      }
+    } finally {
+      setResending(false);
+    }
+  }
+
+  function handleUseAnotherAccount() {
+    // Back to an empty form, as the label says. The previous account's password in
+    // particular must not survive into whichever address is typed next.
+    setUnverifiedEmail(null);
+    setResendOutcome(null);
+    setResendCooldown(0);
+    setEmail('');
+    setPassword('');
+    setEmailError('');
+    setPasswordError('');
+    setError(null);
   }
 
   async function handleMfaSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -439,7 +496,39 @@ export default function SignInPageClient({
               <h2 id="sign-in-heading" className="siFormTitle">Welcome back</h2>
               <p className="siFormSubtitle">Sign in to your workspace</p>
 
-              {mfaRequired ? (
+              {unverifiedEmail ? (
+                <div className="siVerifyPanel" data-testid="email-verification-required">
+                  <div className="siAlert siAlertWarn" role="status">
+                    <p className="siVerifyHeading">{EMAIL_NOT_VERIFIED_HEADING}</p>
+                    <p className="siVerifyBody">{EMAIL_NOT_VERIFIED_BODY}</p>
+                  </div>
+
+                  <p className="siMuted">Account: {unverifiedEmail}</p>
+
+                  {resendOutcome ? (
+                    <div
+                      className={`siAlert ${resendOutcome.tone === 'ok' ? 'siAlertWarn' : 'siAlertError'}`}
+                      role={resendOutcome.tone === 'ok' ? 'status' : 'alert'}
+                    >
+                      {resendOutcome.message}
+                    </div>
+                  ) : null}
+
+                  <button
+                    type="button"
+                    className="siSubmitBtn"
+                    onClick={() => void handleResendVerification()}
+                    disabled={resending || resendCooldown > 0}
+                    aria-busy={resending}
+                  >
+                    {formatVerificationResendLabel(resendCooldown, resending)}
+                  </button>
+
+                  <button type="button" className="siSecondaryBtn" onClick={handleUseAnotherAccount}>
+                    Use another account
+                  </button>
+                </div>
+              ) : mfaRequired ? (
                 <form onSubmit={handleMfaSubmit} noValidate>
                   <div className="siFormGroup">
                     <label className="siLabel" htmlFor="si-mfa-code">Authenticator code</label>
