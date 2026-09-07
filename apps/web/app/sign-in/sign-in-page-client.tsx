@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { BuildInfo } from '../build-info';
 import { resolveAuthFormState } from '../auth-form-state';
+import { buildResetPasswordHref } from '../password-reset-request';
 import { usePilotAuth } from 'app/pilot-auth-context';
 
 type SignInRuntimeConfig = {
@@ -552,7 +553,7 @@ export default function SignInPageClient({
                       <input type="checkbox" className="siCheckbox" defaultChecked />
                       <span>Remember me</span>
                     </label>
-                    <Link href="/reset-password" className="siLink">Forgot password?</Link>
+                    <Link href={buildResetPasswordHref(email)} className="siLink" prefetch={false}>Forgot password?</Link>
                   </div>
 
                   {error ? <div className="siAlert siAlertError" role="alert">{error}</div> : null}
