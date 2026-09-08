@@ -3188,6 +3188,7 @@ def build_user_response(connection: psycopg.Connection, user_id: str) -> dict[st
         ),
         membership_payload[0]['workspace'] if membership_payload else None,
     )
+    internal_admin = organization_service.is_internal_admin(connection, str(user['id']))
     onboarding_summary = None
     if current_workspace:
         try:
@@ -3216,6 +3217,13 @@ def build_user_response(connection: psycopg.Connection, user_id: str) -> dict[st
         'email_verified': bool(user['email_verified_at']),
         'email_verified_at': user['email_verified_at'].isoformat() if user['email_verified_at'] else None,
         'mfa_enabled': bool(user['mfa_enabled_at']),
+        # Internal (founder) staff access, reported from the SAME server-side
+        # fact /admin/customers authorizes on. It is a privilege of the account,
+        # deliberately independent of the organization's subscription plan, and
+        # it is published here only so the app can decide whether to render the
+        # internal link. Rendering is not the control: every internal request is
+        # authorized again by require_internal_admin.
+        'is_internal_admin': internal_admin,
         'current_workspace': current_workspace,
         'onboarding_summary': onboarding_summary,
         'memberships': membership_payload,

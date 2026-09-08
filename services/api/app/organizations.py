@@ -524,12 +524,21 @@ def is_internal_admin(connection: Any, user_id: str) -> bool:
     Two independent sources, both server-side: the ``users.is_internal_admin``
     column and the exact-address deployment allowlist. Neither can be influenced
     by a request parameter, a header, a body field, or a workspace role.
+
+    A flag that could not be READ is not a grant. On a deployment whose API is
+    running ahead of migration 0150 the column does not exist yet, and on any
+    other read failure the answer is unknown — both report False, so the failure
+    mode is a refusal rather than an accidental internal-admin session.
     """
-    row = _row_dict(
-        connection.execute(
-            'SELECT email, is_internal_admin FROM users WHERE id = %s', (str(user_id),),
-        ).fetchone()
-    )
+    try:
+        row = _row_dict(
+            connection.execute(
+                'SELECT email, is_internal_admin FROM users WHERE id = %s', (str(user_id),),
+            ).fetchone()
+        )
+    except Exception:
+        logger.warning('internal_admin_read_failed user_id=%s', user_id, exc_info=True)
+        return False
     if row is None:
         return False
     if bool(row.get('is_internal_admin')):
