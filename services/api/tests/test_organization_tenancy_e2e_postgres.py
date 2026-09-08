@@ -389,6 +389,11 @@ def test_H2_an_internal_admin_sees_every_tenant_with_real_usage(live, tenants) -
     assert row['usage']['workspaces']['current'] == 2
     assert row['usage']['monitored_contracts']['current'] == 6
     assert row['last_activity_at'] is not None
+    # Each tenant is named by the human who signed it up — its organization
+    # owner — so the console can tell "ABC Tokenization" from "XYZ Capital".
+    assert row['primary_contact_email'] == 'owner@abc.example'
+    other = next(item for item in listing['customers'] if item['id'] == tenants['b']['organization_id'])
+    assert other['primary_contact_email'] == 'owner@xyz.example'
 
 
 def test_H3_suspend_reactivate_and_plan_change_work_in_place(live, tenants) -> None:
@@ -541,3 +546,41 @@ def test_feedback_is_stamped_to_the_submitting_tenant_and_refuses_secrets(live, 
     assert exc_info.value.detail['code'] == 'FEEDBACK_CONTAINS_SECRET'
     stored = live.execute('SELECT COUNT(*) AS n FROM organization_feedback').fetchone()['n']
     assert int(stored) == 1, 'a message carrying a credential must never reach the database'
+
+
+# ── Primary contact selection, in real PostgreSQL ────────────────────────────
+
+def test_primary_contact_prefers_the_owner_over_a_later_admin(live, tenants) -> None:
+    """The role ranking is executed by PostgreSQL, so prove it there too.
+
+    The in-memory suite runs the same query against SQLite; this is the one that
+    proves the ORDER BY behaves identically on the real engine, with a real UUID
+    ``user_id`` tie-break rather than a text one.
+    """
+    from services.api.app import organizations as org_service
+    from services.api.app.domains.tenancy import endpoints as tenancy
+
+    admin, target = tenants['b'], tenants['a']
+    extra_user_id = str(uuid.uuid4())
+    live.execute(
+        'INSERT INTO users (id, email, password_hash, full_name, created_at, updated_at)'
+        ' VALUES (%s, %s, %s, %s, NOW(), NOW())',
+        (extra_user_id, 'later-admin@abc.example', 'not-a-real-hash', 'Later Admin'),
+    )
+    org_service.upsert_membership(
+        live, organization_id=target['organization_id'], user_id=extra_user_id, role='admin',
+    )
+    try:
+        listing = tenancy.list_admin_customers(_request(admin['token'], admin['workspace_id']))
+        row = next(
+            item for item in listing['customers'] if item['id'] == target['organization_id']
+        )
+        # An admin who joined later never displaces the owner…
+        assert row['primary_contact_email'] == 'owner@abc.example'
+        # …but the console still says how many people are in the tenant.
+        assert row['members'] == 2
+    finally:
+        live.execute(
+            'DELETE FROM organization_memberships WHERE user_id = %s', (extra_user_id,),
+        )
+        live.execute('DELETE FROM users WHERE id = %s', (extra_user_id,))

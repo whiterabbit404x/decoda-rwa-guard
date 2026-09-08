@@ -102,6 +102,17 @@ def _iso(value: Any) -> str | None:
     return value.isoformat() if hasattr(value, 'isoformat') else str(value)
 
 
+def _email_or_none(value: Any) -> str | None:
+    """A usable address, or None.
+
+    A blank or whitespace-only column is reported as ABSENT rather than as an
+    empty string: the console renders "no contact on record" for None, and an
+    empty cell that looks like a resolved person would be a quieter lie.
+    """
+    text = str(value).strip() if value is not None else ''
+    return text or None
+
+
 def _row_dict(row: Any) -> dict[str, Any] | None:
     if row is None:
         return None
@@ -795,21 +806,57 @@ def sanitize_feedback_context(context: Mapping[str, Any] | None) -> dict[str, An
 
 
 # ── founder admin reads ──────────────────────────────────────────────────────
+#: Membership roles that outrank plain membership when the founder console picks
+#: ONE contact per organization, best first. Every other role in
+#: ``ORGANIZATION_ROLES`` ranks equal and is separated by join order alone, so
+#: 'analyst' never silently outranks 'viewer'.
+PRIMARY_CONTACT_ROLE_PRIORITY: tuple[str, ...] = ('owner', 'admin')
+
+_PRIMARY_CONTACT_ROLE_RANK = ' '.join(
+    f"WHEN '{role}' THEN {rank}" for rank, role in enumerate(PRIMARY_CONTACT_ROLE_PRIORITY)
+)
+
+#: One correlated subquery evaluated inside the single listing query — NOT a
+#: second round trip per tenant. idx_organization_memberships_org_created narrows
+#: it to one organization's handful of rows before the ranking below sorts them.
+#: It is derived from PRIMARY_CONTACT_ROLE_PRIORITY so the rule has one home.
+#:
+#: The tie-break (membership created_at, then user_id) is what makes the choice
+#: DETERMINISTIC. Two owners enrolled in the same transaction must resolve to the
+#: same address on every refresh; a column that named a different person each
+#: time it was read would be worse than no column at all.
+_PRIMARY_CONTACT_EMAIL_SQL = f"""(
+                   SELECT u.email FROM organization_memberships m
+                     JOIN users u ON u.id = m.user_id
+                    WHERE m.organization_id = o.id
+                    ORDER BY CASE m.role {_PRIMARY_CONTACT_ROLE_RANK}
+                                  ELSE {len(PRIMARY_CONTACT_ROLE_PRIORITY)} END,
+                             m.created_at ASC, m.user_id ASC
+                    LIMIT 1
+               )"""
+
+
 def list_customer_organizations(
     connection: Any, *, limit: int = 100, offset: int = 0, now: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    """Every organization with its plan, lifecycle, usage, and last activity.
+    """Every organization with its plan, lifecycle, usage, last activity, contact.
 
     One query with correlated aggregates rather than N+1 per-organization counts,
-    because the console lists every tenant at once.
+    because the console lists every tenant at once. The primary contact is chosen
+    by the same query for the same reason — see ``_PRIMARY_CONTACT_EMAIL_SQL``.
+
+    Cross-organization by design: this is the internal founder read, and every
+    caller of it authorizes internal staff first. It is reached from no
+    customer-facing endpoint.
     """
     bounded_limit = max(1, min(int(limit or 100), 500))
     bounded_offset = max(0, int(offset or 0))
     rows = connection.execute(
-        '''
+        f'''
         SELECT o.id, o.name, o.slug, o.plan, o.status,
                o.evaluation_started_at, o.evaluation_expires_at, o.entitlement_overrides,
                o.created_at, o.updated_at,
+               {_PRIMARY_CONTACT_EMAIL_SQL} AS primary_contact_email,
                (SELECT COUNT(*) FROM workspaces w WHERE w.organization_id = o.id) AS workspace_count,
                (SELECT COUNT(*) FROM organization_memberships m WHERE m.organization_id = o.id) AS member_count,
                (SELECT COUNT(*) FROM assets a JOIN workspaces w ON w.id = a.workspace_id
@@ -842,6 +889,10 @@ def _customer_row(row: dict[str, Any], *, now: datetime | None = None) -> dict[s
         'evaluation': ent.evaluation_payload(row, now=now),
         'created_at': _iso(row.get('created_at')),
         'last_activity_at': _iso(row.get('last_activity_at')),
+        # The ONLY personal field on this row, and only ever an address: it tells
+        # internal staff which human to contact about a tenant. No credential,
+        # session, or authentication column is read by the query above.
+        'primary_contact_email': _email_or_none(row.get('primary_contact_email')),
         'members': int(row.get('member_count') or 0),
         'feedback_count': int(row.get('feedback_count') or 0),
         'usage': {

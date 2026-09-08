@@ -9530,6 +9530,23 @@ a.mktTrustBadge:hover {
   color: var(--text-secondary);
 }
 
+/* Primary contact cell. .adminTable td is nowrap, so the address truncates
+   inside a fixed-width block rather than widening the table and pushing the
+   row actions off-screen; the full value stays in the title tooltip. */
+.adminContactEmail {
+  display: block;
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.adminContactMembers {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
 .adminRowActions {
   display: flex;
   flex-wrap: wrap;
