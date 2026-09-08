@@ -25,6 +25,12 @@ anything, so a customer receives 403 and no organization data.
 
 Nothing here can grant internal admin: there is no write path to
 ``users.is_internal_admin`` in the API at all.
+
+The one personal datum the admin listing carries is each organization's primary
+contact ADDRESS — which human to contact about a tenant — resolved from
+membership by ``organizations.list_customer_organizations``. No credential,
+session, or authentication column is read, and no customer-facing endpoint
+returns another organization's contact.
 """
 
 from __future__ import annotations

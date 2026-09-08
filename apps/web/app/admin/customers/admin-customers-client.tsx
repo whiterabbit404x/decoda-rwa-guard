@@ -2,6 +2,11 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
+import {
+  otherMembersLabel,
+  primaryContactEmail,
+  primaryContactLabel,
+} from 'app/admin-customer-contact';
 import { usePilotAuth } from 'app/pilot-auth-context';
 import { PLAN_LABELS, usageLabel, type UsageEntry } from 'app/plan-status';
 
@@ -15,6 +20,8 @@ type AdminCustomer = {
   evaluation: { expires_at: string | null; days_remaining: number | null; expired: boolean } | null;
   created_at: string | null;
   last_activity_at: string | null;
+  /** Owner, else admin, else earliest member — resolved by the backend. */
+  primary_contact_email: string | null;
   members: number;
   feedback_count: number;
   usage: Record<string, UsageEntry>;
@@ -155,6 +162,7 @@ export default function AdminCustomersClient() {
             <thead>
               <tr>
                 <th>Organization</th>
+                <th>Primary contact</th>
                 <th>Plan</th>
                 <th>Status</th>
                 <th>Evaluation expires</th>
@@ -170,6 +178,19 @@ export default function AdminCustomersClient() {
               {customers.map((customer) => (
                 <tr key={customer.id}>
                   <td>{customer.name ?? customer.slug ?? customer.id}</td>
+                  <td>
+                    {/* Truncated for layout only; the full address stays reachable
+                        as the title tooltip so a long one is never silently cut. */}
+                    <span
+                      className="adminContactEmail"
+                      title={primaryContactEmail(customer) ?? undefined}
+                    >
+                      {primaryContactLabel(customer)}
+                    </span>
+                    {otherMembersLabel(customer) ? (
+                      <span className="adminContactMembers">{otherMembersLabel(customer)}</span>
+                    ) : null}
+                  </td>
                   <td>{PLAN_LABELS[customer.plan] ?? customer.plan}</td>
                   <td>{customer.status}</td>
                   <td>{evaluationCell(customer)}</td>
