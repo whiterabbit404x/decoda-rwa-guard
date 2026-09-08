@@ -6,6 +6,7 @@ import { useEffect, useRef } from 'react';
 
 import AppNavigation from './app-navigation';
 import { containsDiagnosticEnvVars } from './diagnostic-message';
+import { INTERNAL_ADMIN_HREF, INTERNAL_ADMIN_LABEL, showsInternalAdminLink } from './internal-admin';
 import { usePilotAuth } from 'app/pilot-auth-context';
 import PlanBadge from './plan-badge';
 import { PlanStatusProvider } from './plan-status-context';
@@ -183,6 +184,12 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
             <p className="muted" style={{ margin: '0 0 0.75rem', fontSize: '0.78rem' }}>{user?.email ?? 'Guest mode'}</p>
             <div className="overviewActions" style={{ marginTop: 0, gap: '0.5rem' }}>
               <Link href="/workspaces" prefetch={false} style={{ fontSize: '0.8rem' }}>Switch workspace</Link>
+              {/* Internal staff only, and only because the BACKEND said so. This is
+                  navigation, not authorization: /admin/customers authorizes every
+                  request itself and answers a customer with 403. */}
+              {showsInternalAdminLink(user) ? (
+                <Link href={INTERNAL_ADMIN_HREF} prefetch={false} style={{ fontSize: '0.8rem' }}>{INTERNAL_ADMIN_LABEL}</Link>
+              ) : null}
               <button type="button" onClick={() => void handleSignOut()} style={{ fontSize: '0.8rem', background: 'none', border: 'none', color: '#8cc8ff', cursor: 'pointer', padding: 0, fontWeight: 600 }}>Sign out</button>
             </div>
             <p className="tableMeta" style={{ marginTop: '0.6rem', fontSize: '0.72rem' }}>

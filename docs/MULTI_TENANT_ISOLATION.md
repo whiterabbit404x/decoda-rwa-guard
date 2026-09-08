@@ -330,6 +330,87 @@ authorization at both the read and write level:
 
 ---
 
+## 8b. Internal Admin (Founder) Accounts
+
+Decoda runs ONE product. There is no management application, no founder plan,
+and no second dashboard. The founder signs in as an ordinary user, works in an
+ordinary workspace, and is governed by that workspace's organization plan. One
+extra privilege on the user row opens one extra door.
+
+### The two facts, and why they never merge
+
+| Fact | Where it lives | What it governs |
+| --- | --- | --- |
+| `users.is_internal_admin` | the ACCOUNT | access to `/admin/customers` and `/admin/feedback` |
+| `organizations.plan` | the ORGANIZATION | limits, entitlements, execution, lifecycle |
+
+The privilege grants nothing on the customer path. It raises no limit, unlocks
+no entitlement, does not lift the Pilot recommend-only execution lock, does not
+extend an evaluation, and does not widen a single query. A founder whose active
+workspace belongs to a Pilot organization gets the Pilot badge, the 1-workspace
+limit, the 5-contract limit, the 10-evidence-package limit, and the recommend-
+only lock — the same as any evaluator. That is intentional: the founder uses a
+real customer workspace to test the real customer experience.
+
+Structurally this holds because the entitlement engine has no way to learn who
+is asking: `entitlements.get_entitlements`, `organizations.enforce_creation` and
+`pilot.plan_execution_lock` take an organization or a workspace and no user,
+request, or role.
+
+    NORMAL PRODUCT PATH   auth → session workspace → RBAC → entitlements → tenant-scoped row
+    INTERNAL ADMIN PATH   auth → require_internal_admin → explicit admin service
+
+### Granting it
+
+There is no API that writes `users.is_internal_admin`. A customer cannot grant
+it to themselves through any body, header, role, or plan. It is set out of band
+by someone who already has database access:
+
+```bash
+# Grant (the durable, auditable form)
+python -m services.api.scripts.grant_internal_admin decoda.guard@gmail.com
+
+# Revoke
+python -m services.api.scripts.grant_internal_admin decoda.guard@gmail.com --revoke
+
+# Who holds it today
+python -m services.api.scripts.grant_internal_admin --list
+```
+
+The script updates exactly one column on one row. It creates no organization, no
+plan, and no override, and it never touches workspaces, assets, incidents, or
+evidence. Exit codes: `0` granted/revoked, `2` bad usage, `3` migration 0150 has
+not run, `4` no such user (nothing written).
+
+For a fresh deployment where nobody holds the flag yet, `DECODA_INTERNAL_ADMIN_EMAILS`
+accepts a comma-separated list of EXACT addresses as a bootstrap. Wildcard,
+domain-only, and bare-domain entries are discarded with a warning — there is no
+syntax that grants everyone at a domain. Prefer the database flag; the
+environment variable is for the first grant, not for standing access.
+
+### How it is enforced
+
+`organizations.require_internal_admin` authenticates, then checks the flag (or
+the exact-address allowlist) and raises 403 `INTERNAL_ADMIN_REQUIRED` before any
+organization data is read. It fails closed: a flag that could not be READ — an
+unmigrated deployment, a database error — is not a grant.
+
+`GET /auth/me` reports the same fact as `is_internal_admin` so the app can decide
+whether to render the "Customer Admin" link in the sidebar. That is presentation
+only. Hiding the link protects nothing, showing it authorizes nothing, and a
+customer who edits the flag in their browser gets a link that returns 403.
+
+### What a normal customer account gets
+
+A self-serve signup writes no `is_internal_admin` value at all, so the column's
+`DEFAULT FALSE` governs. The signup body cannot request the privilege, a Scale or
+Enterprise plan, or an entitlement override: `_provision_signup_organization`
+hard-codes `PLAN_PILOT` and writes `'{}'::jsonb` overrides, and no plan field is
+read from the request. Every new organization starts `plan=pilot`,
+`status=active`, with an evaluation window whose length is `PILOT_EVALUATION_DAYS`.
+
+---
+
 ## 9. Testing Commands
 
 ```bash
@@ -347,6 +428,10 @@ python -m pytest \
   services/api/tests/test_pilot_execution_lock.py \
   -q
 
+# Founder vs customer account model: the privilege opens the console and
+# nothing else — no entitlement, limit, execution, or isolation bypass
+python -m pytest services/api/tests/test_internal_admin_account_model.py -q
+
 # Migration 0150 against a REAL PostgreSQL with pre-existing data in it.
 # Skipped without the DSN, so the default suite stays hermetic.
 DECODA_MIGRATION_TEST_DSN=postgresql://…/disposable_empty_db \
@@ -356,7 +441,8 @@ DECODA_MIGRATION_TEST_DSN=postgresql://…/disposable_empty_db \
 npx playwright test \
   apps/web/tests/plan-status-presentation.spec.ts \
   apps/web/tests/plan-limit-message.spec.ts \
-  apps/web/tests/response-action-plan-lock.spec.ts
+  apps/web/tests/response-action-plan-lock.spec.ts \
+  apps/web/tests/internal-admin-link.spec.ts
 
 # Ensure prior sessions still pass
 python -m pytest \

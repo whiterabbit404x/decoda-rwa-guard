@@ -48,6 +48,12 @@ export type PilotUser = {
   email_verified: boolean;
   email_verified_at: string | null;
   mfa_enabled: boolean;
+  // Internal (founder) staff access, as the BACKEND reports it. Optional because
+  // an API that predates the field simply omits it, and an absent field must read
+  // as "not internal staff" rather than as an unknown that some caller treats as
+  // permission. Nothing is authorized here: this decides whether the internal link
+  // is rendered, and every internal request is authorized again server-side.
+  is_internal_admin?: boolean;
   current_workspace: WorkspaceSummary | null;
   memberships: WorkspaceMembership[];
 };
