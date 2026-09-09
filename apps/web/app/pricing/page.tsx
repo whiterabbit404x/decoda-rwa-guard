@@ -10,6 +10,10 @@ const faqs = [
     a: 'The Pilot is a scoped, no-cost evaluation of the full product — monitoring, detection, alerts, incidents, and evidence export — for one workspace and up to five monitored contracts. It runs against your live RWA assets so you can validate Decoda before a production rollout.',
   },
   {
+    q: 'How do I get a Pilot evaluation?',
+    a: 'Submit a Pilot request with your work email, company, role, and intended use case. Decoda reviews each request individually and emails an invitation to approved applicants; the evaluation starts when you accept it. There is no self-service sign-up for the Pilot.',
+  },
+  {
     q: 'Why does Scale start "from" $999?',
     a: 'Scale starts at $999 per month for the published limits — 3 workspaces and 25 monitored contracts. Deployments that need more workspaces, more monitored contracts, or additional networks are quoted on the Enterprise tier. Contact sales@decodasecurity.com to confirm your configuration.',
   },
@@ -77,7 +81,7 @@ export default function PricingPage() {
           </nav>
           <div className="mktStandaloneNavRight">
             <Link href="/sign-in" className="mktStandaloneNavSignIn" prefetch={false}>Sign in</Link>
-            <Link href="/sign-up" className="mktStandaloneNavCta" prefetch={false}>Request Pilot →</Link>
+            <Link href="/request-pilot" className="mktStandaloneNavCta" prefetch={false}>Request Pilot →</Link>
           </div>
         </div>
       </header>
@@ -195,7 +199,7 @@ export default function PricingPage() {
       <div className="trustFooterLinks">
         <Link href="/" prefetch={false} className="trustLink">← Home</Link>
         <Link href="/trust" prefetch={false} className="trustLink">Security &amp; Trust</Link>
-        <Link href="/sign-up" prefetch={false} className="trustLink">Request a pilot</Link>
+        <Link href="/request-pilot" prefetch={false} className="trustLink">Request a pilot</Link>
         <a href="mailto:support@decodasecurity.com" className="trustLink">Support</a>
       </div>
     </main>

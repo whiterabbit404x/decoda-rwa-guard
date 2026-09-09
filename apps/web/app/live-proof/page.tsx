@@ -291,7 +291,7 @@ export default function LiveProofPage() {
         <Link href="/" prefetch={false} className="trustLink">← Home</Link>
         <Link href="/evidence" prefetch={false} className="trustLink">Evidence viewer</Link>
         <Link href="/trust" prefetch={false} className="trustLink">Security &amp; Trust</Link>
-        <Link href="/sign-up" prefetch={false} className="trustLink">Start monitoring</Link>
+        <Link href="/request-pilot" prefetch={false} className="trustLink">Request Pilot</Link>
       </div>
     </main>
   );

@@ -2125,6 +2125,16 @@ def _send_email(to_email: str, subject: str, text_body: str, html_body: str | No
     raise RuntimeError('EMAIL_PROVIDER must be one of: console, resend')
 
 
+SUPPORT_EMAIL_ENV = 'SUPPORT_EMAIL'
+DEFAULT_SUPPORT_EMAIL = 'support@decodasecurity.com'
+
+
+def _support_contact_line() -> str:
+    """Where a recipient can reach a human about a message we sent them."""
+    address = (os.getenv(SUPPORT_EMAIL_ENV) or '').strip() or DEFAULT_SUPPORT_EMAIL
+    return f'Questions? Contact {address}.'
+
+
 def _app_public_url() -> str:
     """Environment-aware base URL for links we mail out.
 
@@ -2214,14 +2224,21 @@ def _email_html_document(
     )
 
 
-def _email_message(purpose: str, *, token: str | None = None) -> tuple[str, str, str]:
+def _email_message(
+    purpose: str, *, token: str | None = None, context: dict[str, Any] | None = None,
+) -> tuple[str, str, str]:
     """(subject, text_body, html_body) for one transactional message.
 
     The text body stays the authoritative copy — it is what a text-only client and
     the console provider show — and the HTML is the same content, formatted.
+
+    ``context`` carries per-purpose display values (a company name, a reference,
+    a lifetime). It never carries a secret: the only secret in any of these
+    messages is ``token``, which appears once, in the link.
     """
     brand = _email_brand_name()
     app_url = _app_public_url()
+    context = context or {}
     if purpose == 'email_verification':
         url = f'{app_url}/verify-email?token={token}'
         expiry = _format_duration_phrase(EMAIL_VERIFICATION_TTL_MINUTES)
@@ -2241,6 +2258,51 @@ def _email_message(purpose: str, *, token: str | None = None) -> tuple[str, str,
             footnote=f'This link expires after {expiry}.',
         )
         return (f'[{brand}] Verify your email', text, html)
+    if purpose == 'pilot_invitation':
+        url = f'{app_url}/accept-invitation?token={token}'
+        expiry = _format_duration_phrase(int(context.get('ttl_hours') or 0) * 60)
+        company = str(context.get('company_name') or '').strip()
+        reference = str(context.get('reference') or '').strip()
+        evaluation_days = int(context.get('evaluation_days') or 0)
+        company_line = (
+            f'Your Pilot evaluation request for {company} has been approved by Decoda.'
+            if company
+            else 'Your Decoda Pilot evaluation request has been approved.'
+        )
+        support = _support_contact_line()
+        text = (
+            f'Your {brand} Pilot evaluation is approved\n\n'
+            f'{company_line}\n\n'
+            f'Accept your invitation:\n{url}\n\n'
+            f'This invitation expires after {expiry} and can be used once, by this '
+            'email address only.\n\n'
+            f'Accepting starts a {evaluation_days}-day Pilot evaluation.\n\n'
+            f'Reference: {reference}\n\n'
+            f'{brand} will never ask you for private keys, seed phrases, or wallet '
+            f'recovery information.\n\n'
+            f'{support}\n\n'
+            f'{brand}'
+        )
+        html = _email_html_document(
+            brand=brand,
+            heading='Your Pilot evaluation is approved',
+            paragraphs=[
+                company_line,
+                f'Accepting starts a {evaluation_days}-day Pilot evaluation in the Decoda product.',
+                f'Reference: {reference}',
+                (
+                    f'{brand} will never ask you for private keys, seed phrases, or wallet '
+                    'recovery information.'
+                ),
+                support,
+            ],
+            action=('Accept invitation', url),
+            footnote=(
+                f'This invitation expires after {expiry} and can be used once, by this '
+                'email address only.'
+            ),
+        )
+        return (f'Your {brand} Pilot evaluation is approved', text, html)
     if purpose == 'password_reset':
         url = f'{app_url}/reset-password?token={token}'
         expiry = _format_duration_phrase(PASSWORD_RESET_TTL_MINUTES)
@@ -2296,8 +2358,9 @@ def _dispatch_transactional_email(
     purpose: str,
     token: str | None = None,
     request: Request | None = None,
+    context: dict[str, Any] | None = None,
 ) -> None:
-    subject, text_body, html_body = _email_message(purpose, token=token)
+    subject, text_body, html_body = _email_message(purpose, token=token, context=context)
     mode = os.getenv('BACKGROUND_JOBS_MODE', 'inline').strip().lower() or 'inline'
     if mode == 'inline':
         _send_email(to_email, subject, text_body, html_body)
@@ -3496,32 +3559,78 @@ def resolve_workspace(connection: psycopg.Connection, user_id: str, requested_wo
     }
 
 
-def _provision_signup_organization(
+def _unique_workspace_slug(connection: Any, workspace_name: str) -> str:
+    """A workspace slug that is not already taken."""
+    slug_base = _slugify(workspace_name)
+    slug = slug_base
+    suffix = 1
+    while connection.execute('SELECT 1 FROM workspaces WHERE slug = %s', (slug,)).fetchone() is not None:
+        suffix += 1
+        slug = f'{slug_base}-{suffix}'
+    return slug
+
+
+def provision_pilot_organization(
     connection: Any,
     *,
     user_id: str,
-    workspace_id: str,
     organization_name: str,
     request: Request | None = None,
-) -> dict[str, Any] | None:
-    """Create the Pilot organization that owns a newly signed-up workspace.
+) -> dict[str, Any]:
+    """Create an APPROVED tenant: its Pilot organization and its first workspace.
 
-    Returns ``None`` — without failing the signup — on a deployment whose API is
-    running ahead of migration 0150. The workspace is still created and usable;
-    the organization is healed onto it by ``resolve_context`` on the first
-    request made after the migration lands.
+    The one place a new Pilot tenant comes into existence. It is reached only
+    from invitation acceptance, which has already proved that Decoda internal
+    staff approved this person and that the authenticated address matches the
+    approved one. Signing up does not reach it, and neither does any
+    customer-facing route.
+
+    Every value that governs entitlement is decided HERE, server-side: plan is
+    Pilot, status is active, and the evaluation window is the one configured
+    length. Nothing is read from a request body, so there is no field an
+    applicant could set to arrive on Scale, on Enterprise, or without a deadline.
+
+    Raises 503 when the tenancy schema has not been migrated: activating a
+    workspace with no organization to own it would create exactly the unscoped,
+    un-metered tenant this whole change exists to prevent.
     """
     if not organization_service.tenancy_schema_ready(connection):
-        logger.warning(
-            'signup_organization_skipped reason=tenancy_schema_not_migrated workspace_id=%s', workspace_id,
+        logger.warning('pilot_provisioning_blocked reason=tenancy_schema_not_migrated user_id=%s', user_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                'code': plan_entitlement_engine.CODE_ORGANIZATION_CONTEXT_MISSING,
+                'message': 'Pilot activation is unavailable until this deployment finishes migrating.',
+            },
         )
-        return None
+    workspace_name = str(organization_name or '').strip() or 'Workspace'
+    workspace_id = str(uuid.uuid4())
+    connection.execute(
+        '''
+        INSERT INTO workspaces (id, name, slug, created_by_user_id, created_at)
+        VALUES (%s, %s, %s, %s, NOW())
+        ''',
+        (workspace_id, workspace_name, _unique_workspace_slug(connection, workspace_name), user_id),
+    )
+    connection.execute(
+        '''
+        INSERT INTO workspace_members (id, workspace_id, user_id, role, created_at)
+        VALUES (%s, %s, %s, %s, NOW())
+        ''',
+        (str(uuid.uuid4()), workspace_id, user_id, 'owner'),
+    )
+    connection.execute(
+        'UPDATE users SET current_workspace_id = %s, updated_at = NOW() WHERE id = %s',
+        (workspace_id, user_id),
+    )
     organization = organization_service.create_organization(
-        connection, name=organization_name, plan=plan_entitlement_engine.PLAN_PILOT,
+        connection, name=workspace_name, plan=plan_entitlement_engine.PLAN_PILOT,
     )
     organization_service.attach_workspace_to_organization(
         connection, workspace_id=workspace_id, organization_id=str(organization['id']),
     )
+    # The first user of a new organization is its owner — the existing RBAC
+    # convention for "the person who brought this tenant into existence".
     organization_service.upsert_membership(
         connection, organization_id=str(organization['id']), user_id=user_id, role='owner',
     )
@@ -3543,7 +3652,11 @@ def _provision_signup_organization(
             'evaluation_days': plan_entitlement_engine.evaluation_days(),
         },
     )
-    return organization
+    return {
+        'organization': organization,
+        'workspace_id': workspace_id,
+        'workspace_name': workspace_name,
+    }
 
 
 def organization_context(connection: Any, workspace_id: str, *, heal: bool = True) -> dict[str, Any]:
@@ -3571,6 +3684,22 @@ def enforce_plan_creation_limit(connection: Any, workspace_id: str, limit_key: s
 
 
 def signup_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Create an ACCOUNT. Deliberately not a tenant, a workspace, or a Pilot.
+
+    Signing up proves one thing: that someone is claiming an email address, which
+    they then verify. It does not prove Decoda approved them to evaluate against
+    live assets, so it provisions nothing — no workspace, no organization, no
+    plan, no evaluation window, no monitoring, and no paid infrastructure.
+
+    Pilot access arrives on exactly one path: an internal admin approves a Pilot
+    request, and the approved person accepts the invitation sent to that address
+    (``services.api.app.pilot_access``). Until then the account authenticates and
+    sees the "Pilot access required" state.
+
+    ``workspace_name`` is still accepted and still recorded on the audit row,
+    because it is a useful hint for the eventual activation, but it now names
+    nothing that exists yet.
+    """
     require_live_mode()
     email = _normalize_email(str(payload.get('email', '')))
     password = str(payload.get('password', ''))
@@ -3584,47 +3713,12 @@ def signup_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         if existing is not None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='An account with that email already exists.')
         user_id = str(uuid.uuid4())
-        workspace_id = str(uuid.uuid4())
-        slug_base = _slugify(workspace_name)
-        slug = slug_base
-        suffix = 1
-        while connection.execute('SELECT 1 FROM workspaces WHERE slug = %s', (slug,)).fetchone() is not None:
-            suffix += 1
-            slug = f'{slug_base}-{suffix}'
         connection.execute(
             '''
             INSERT INTO users (id, email, password_hash, full_name, current_workspace_id, email_verified_at, session_version, created_at, updated_at, last_sign_in_at)
             VALUES (%s, %s, %s, %s, %s, NULL, 1, NOW(), NOW(), NULL)
             ''',
             (user_id, email, password_hash, full_name, None),
-        )
-        connection.execute(
-            '''
-            INSERT INTO workspaces (id, name, slug, created_by_user_id, created_at)
-            VALUES (%s, %s, %s, %s, NOW())
-            ''',
-            (workspace_id, workspace_name, slug, user_id),
-        )
-        connection.execute(
-            '''
-            INSERT INTO workspace_members (id, workspace_id, user_id, role, created_at)
-            VALUES (%s, %s, %s, %s, NOW())
-            ''',
-            (str(uuid.uuid4()), workspace_id, user_id, 'owner'),
-        )
-        connection.execute(
-            'UPDATE users SET current_workspace_id = %s, updated_at = NOW() WHERE id = %s',
-            (workspace_id, user_id),
-        )
-        # The tenant that OWNS this workspace. A self-serve signup starts a Pilot
-        # evaluation whose length comes from the one configured default; the
-        # signup itself never accepts a plan from the request body.
-        organization = _provision_signup_organization(
-            connection,
-            user_id=user_id,
-            workspace_id=workspace_id,
-            organization_name=workspace_name,
-            request=request,
         )
         log_audit(
             connection,
@@ -3633,12 +3727,15 @@ def signup_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             entity_id=user_id,
             request=request,
             user_id=user_id,
-            workspace_id=workspace_id,
+            workspace_id=None,
             metadata={
                 'email': email,
-                'workspace_name': workspace_name,
-                'organization_id': (organization or {}).get('id'),
-                'plan': (organization or {}).get('plan'),
+                'requested_workspace_name': workspace_name,
+                # Stated explicitly so the audit trail shows that this signup
+                # granted no tenant, rather than leaving it to be inferred.
+                'organization_id': None,
+                'plan': None,
+                'pilot_access_granted': False,
             },
         )
         verification_token = _create_user_token(connection, user_id, 'email_verification', EMAIL_VERIFICATION_TTL_MINUTES, request=request)
@@ -4522,19 +4619,52 @@ def reset_password(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         return {'password_reset': True}
 
 
+#: Refusal returned when an authenticated account that no organization has
+#: admitted tries to provision tenant-level resources. Kept as one constant so
+#: the API, the tests, and the frontend copy agree on the machine code.
+PILOT_ACCESS_REQUIRED_CODE = 'PILOT_ACCESS_REQUIRED'
+
+
+def _organization_from_membership(connection: Any, *, user_id: str) -> dict[str, Any] | None:
+    """The organization this user already belongs to, oldest membership first.
+
+    Reads ``organization_memberships`` — the tenant-level fact — so an existing
+    customer whose ``current_workspace_id`` is empty keeps working. It creates
+    nothing: an account with no membership gets ``None`` and is refused.
+    """
+    row = connection.execute(
+        '''
+        SELECT o.id, o.name, o.slug, o.plan, o.status, o.evaluation_started_at,
+               o.evaluation_expires_at, o.entitlement_overrides, o.created_at, o.updated_at
+        FROM organization_memberships m
+        JOIN organizations o ON o.id = m.organization_id
+        WHERE m.user_id = %s
+        ORDER BY m.created_at ASC
+        LIMIT 1
+        ''',
+        (str(user_id),),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
 def _resolve_organization_for_new_workspace(
     connection: Any,
     *,
     user_id: str,
-    workspace_name: str,
     request: Request | None = None,
 ) -> dict[str, Any] | None:
     """The organization a newly created workspace must belong to.
 
     Reuses the tenant that owns the caller's current workspace so that adding a
     workspace is an operation INSIDE one organization — the case the plan limit
-    governs. A user who has no workspace at all (an invited account, or one whose
-    membership was removed) gets a fresh Pilot organization instead.
+    governs.
+
+    It NEVER mints a new tenant. That was the second self-serve Pilot loophole:
+    an account with no workspace could call this route and receive a brand-new
+    active Pilot organization, which is the same unapproved grant that signup
+    used to hand out. A caller who belongs to no organization is refused with
+    ``PILOT_ACCESS_REQUIRED``; the only path to a first organization is accepting
+    an approved Pilot invitation.
 
     Returns ``None`` when the tenancy schema has not been migrated yet, which
     leaves the pre-0150 behaviour in place rather than blocking workspace
@@ -4560,8 +4690,23 @@ def _resolve_organization_for_new_workspace(
                 connection, workspace_id=current_workspace_id, owner_user_id=user_id,
             )
     if organization is None:
-        return organization_service.create_organization(
-            connection, name=workspace_name, plan=plan_entitlement_engine.PLAN_PILOT,
+        # No current workspace, or a stale one. An EXISTING member of some
+        # organization still gets to create a workspace inside it — this is the
+        # case that keeps accounts working when their current_workspace_id is
+        # empty — but the tenant comes from their membership, never from the
+        # request, and its workspace limit is enforced below exactly as usual.
+        organization = _organization_from_membership(connection, user_id=user_id)
+    if organization is None:
+        logger.warning('workspace_create_denied reason=no_approved_organization user_id=%s', user_id)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                'code': PILOT_ACCESS_REQUIRED_CODE,
+                'message': (
+                    'Your Decoda Pilot evaluation has not been activated. '
+                    'Request a Pilot evaluation, or accept the invitation sent to your work email.'
+                ),
+            },
         )
     plan_entitlement_engine.enforce_resource_creation(
         organization,
@@ -4586,7 +4731,7 @@ def create_workspace_for_user(payload: dict[str, Any], request: Request) -> dict
         # new organization; every additional workspace is counted against that
         # organization's plan limit before any row is written.
         organization = _resolve_organization_for_new_workspace(
-            connection, user_id=str(user['id']), workspace_name=workspace_name, request=request,
+            connection, user_id=str(user['id']), request=request,
         )
         workspace_id = str(uuid.uuid4())
         slug_base = _slugify(workspace_name)

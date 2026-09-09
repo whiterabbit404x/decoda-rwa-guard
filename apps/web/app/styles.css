@@ -9575,3 +9575,140 @@ a.mktTrustBadge:hover {
   font-size: 0.74rem;
   padding: 0.25rem 0.55rem;
 }
+
+/* ── Public Pilot application / invitation acceptance ─────────────────────────
+   Reuses the sign-up form primitives (.suFormGroup / .suLabel / .suInput /
+   .suSubmitBtn) so the application looks like the rest of the product rather
+   than a bolted-on marketing form. Only the page frame is new. */
+.pilotRequestPage {
+  min-height: 100vh;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 6.5rem 1.25rem 4rem;
+  background: var(--bg, #070b14);
+}
+
+.pilotRequestCard {
+  width: 100%;
+  max-width: 34rem;
+  background: rgba(15, 23, 42, 0.62);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 14px;
+  padding: 2rem 1.9rem;
+  box-shadow: 0 20px 50px rgba(2, 6, 23, 0.45);
+}
+
+.pilotRequestTitle {
+  font-size: 1.5rem;
+  line-height: 1.25;
+  margin: 0.4rem 0 0.6rem;
+  color: var(--fg, #e2e8f0);
+}
+
+.pilotRequestLede {
+  margin: 0 0 1.4rem;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: rgba(226, 232, 240, 0.72);
+}
+
+.pilotRequestTextarea {
+  min-height: 6.5rem;
+  padding: 0.7rem 0.85rem;
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.pilotRequestSuggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+  margin-top: 0.55rem;
+}
+
+.pilotRequestSuggestionsLabel {
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(148, 163, 184, 0.85);
+}
+
+.pilotRequestSuggestion {
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(30, 41, 59, 0.55);
+  color: rgba(226, 232, 240, 0.9);
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+
+.pilotRequestSuggestion:hover {
+  border-color: rgba(59, 130, 246, 0.5);
+  color: #fff;
+}
+
+/* The "no secrets" instruction. Rendered as a persistent rule, not a transient
+   hint, because the backend REFUSES a submission that looks like it carries a
+   credential and the form must say so before the applicant types one. */
+.pilotRequestWarning {
+  margin: 0.6rem 0 0;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: rgba(251, 191, 36, 0.92);
+}
+
+.pilotRequestOptional {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: rgba(148, 163, 184, 0.8);
+}
+
+.pilotRequestAlert {
+  margin: 0 0 1rem;
+  padding: 0.7rem 0.85rem;
+  border-radius: 10px;
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  background: rgba(127, 29, 29, 0.28);
+  color: #fecaca;
+  font-size: 0.83rem;
+  line-height: 1.5;
+}
+
+.pilotRequestFootnote {
+  margin: 1.1rem 0 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: rgba(148, 163, 184, 0.85);
+}
+
+.pilotRequestSecondary {
+  display: inline-block;
+  margin-top: 0.8rem;
+  font-size: 0.83rem;
+  color: rgba(96, 165, 250, 0.95);
+}
+
+.pilotRequestDetails {
+  margin: 0 0 1.3rem;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.pilotRequestDetails dt {
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(148, 163, 184, 0.85);
+}
+
+.pilotRequestDetails dd {
+  margin: 0.15rem 0 0;
+  font-size: 0.9rem;
+  color: var(--fg, #e2e8f0);
+  word-break: break-word;
+}

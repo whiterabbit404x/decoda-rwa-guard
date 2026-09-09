@@ -539,9 +539,16 @@ def test_seed_demo_workspace_marks_seeded_demo_user_as_verified_for_signin(pilot
     )
 
 
-def test_signup_user_inserts_user_with_null_workspace_then_backfills_current_workspace(
+def test_signup_user_creates_the_account_only_and_provisions_no_tenant(
     pilot_module, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Signing up is authentication, not authorization to evaluate.
+
+    Pilot access is approval-only, so a signup writes ONE row — the user — and
+    nothing that costs money or grants entitlement: no workspace, no membership,
+    no organization, and no current_workspace_id. Those arrive when an approved
+    applicant accepts their invitation.
+    """
     executed: list[tuple[str, object]] = []
 
     class _Request:
@@ -590,9 +597,11 @@ def test_signup_user_inserts_user_with_null_workspace_then_backfills_current_wor
     assert payload['verification_required'] is True
     user_insert = next(params for statement, params in executed if 'INSERT INTO users' in statement)
     assert user_insert == ('user-1', 'new@decoda.app', 'hashed-password', 'Decoda User', None)
-    assert any('INSERT INTO workspaces' in statement for statement, _ in executed)
-    assert any('INSERT INTO workspace_members' in statement for statement, _ in executed)
-    assert ('UPDATE users SET current_workspace_id = %s, updated_at = NOW() WHERE id = %s', ('workspace-1', 'user-1')) in executed
+    assert not any('INSERT INTO workspaces' in statement for statement, _ in executed)
+    assert not any('INSERT INTO workspace_members' in statement for statement, _ in executed)
+    assert not any('INSERT INTO organizations' in statement for statement, _ in executed)
+    assert not any('INSERT INTO organization_memberships' in statement for statement, _ in executed)
+    assert not any('current_workspace_id = %s' in statement for statement, _ in executed)
 
 
 def test_demo_seed_status_requires_workspace_and_membership_for_present_state(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:

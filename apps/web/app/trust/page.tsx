@@ -148,7 +148,7 @@ export default function TrustPage() {
           </nav>
           <div className="mktStandaloneNavRight">
             <Link href="/sign-in" className="mktStandaloneNavSignIn" prefetch={false}>Sign in</Link>
-            <Link href="/sign-up" className="mktStandaloneNavCta" prefetch={false}>Start free →</Link>
+            <Link href="/request-pilot" className="mktStandaloneNavCta" prefetch={false}>Request Pilot →</Link>
           </div>
         </div>
       </header>
