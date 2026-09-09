@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 
 import { resolveAuthFormState } from '../auth-form-state';
+import { acceptInvitationPath, invitationSignInHref } from '../invitation-routing';
 import {
   ACCOUNT_CREATED_BODY,
   ACCOUNT_CREATED_HEADLINE,
@@ -12,12 +13,17 @@ import {
   APPROVAL_ONLY_HEADLINE,
   CHECKING_HEADLINE,
   INVITATION_UNAVAILABLE,
+  INVITED_ACCOUNT_EXISTS,
+  INVITED_CONFIRM_PASSWORD_LABEL,
+  INVITED_EMAIL_HINT,
+  INVITED_EMAIL_LABEL,
   INVITED_HEADLINE,
+  INVITED_PASSWORD_MISMATCH,
+  INVITED_SUBMIT_CTA,
   INVITED_SUBTITLE,
   REQUEST_PILOT_CTA,
   SIGN_IN_CTA,
   SIGN_IN_PROMPT,
-  acceptInvitationPath,
   resolveInvitationToken,
 } from '../signup-access';
 import { usePilotAuth } from 'app/pilot-auth-context';
@@ -113,7 +119,7 @@ export default function SignUpPageClient({ previewNotice }: { previewNotice?: Re
     liveModeEnabled,
     runtimeConfigDiagnostic,
     runtimeConfigSource,
-    signUp,
+    signUpWithInvitation,
     apiUrl,
     isAuthenticated,
     loading: authLoading,
@@ -126,6 +132,7 @@ export default function SignUpPageClient({ previewNotice }: { previewNotice?: Re
 
   const [fullName, setFullName] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -197,25 +204,36 @@ export default function SignUpPageClient({ previewNotice }: { previewNotice?: Re
       setError('Decoda reviews and approves each Pilot evaluation before an account can be created.');
       return;
     }
+    if (password !== confirmPassword) {
+      setError(INVITED_PASSWORD_MISMATCH);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
-      const result = await signUp({
-        // The approved address, as the backend reported it — never a value typed
-        // into this page. Acceptance re-checks it server-side regardless.
-        email: gate.invitation.email,
+      // Two fields, and only two. The approved address is NOT sent: the backend
+      // reads it from the invitation the token resolves to, so nothing this page
+      // submits — and nothing a browser could edit into it — chooses whose
+      // account is created, on which plan, in which organization.
+      const result = await signUpWithInvitation({
+        token: invitationToken,
         password,
         full_name: fullName,
-        // An audit hint only. The organization and workspace names come from the
-        // approved pilot_requests row when the invitation is accepted; nothing in
-        // this payload can choose a tenant, a plan, or a role.
-        workspace_name: gate.invitation.company_name ?? '',
       });
-      if (result.verificationRequired) {
-        setAccountCreated(true);
+      if (result.accountExists) {
+        // The address already has an account. Signup will not touch it — an
+        // invitation is not a password reset — so continue on the path that can
+        // actually work, with the invitation still in hand. The reason is stated
+        // as well as acted on, so a slow redirect is not a silent one.
+        setError(INVITED_ACCOUNT_EXISTS);
+        router.replace(invitationSignInHref(invitationToken));
         return;
       }
-      router.push(acceptInvitationPath(invitationToken));
+      // The account and its session now exist; the evaluation does not yet.
+      // Activation is the accept page's job, and it re-checks the invitation
+      // against this session before provisioning anything.
+      setAccountCreated(true);
+      router.replace(acceptInvitationPath(invitationToken));
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : String(submitError));
     } finally {
@@ -375,7 +393,7 @@ export default function SignUpPageClient({ previewNotice }: { previewNotice?: Re
                     </div>
 
                     <div className="suFormGroup">
-                      <label className="suLabel" htmlFor="su-email">APPROVED WORK EMAIL</label>
+                      <label className="suLabel" htmlFor="su-email">{INVITED_EMAIL_LABEL}</label>
                       <div className="suInputWrap">
                         <span className="suInputIcon" aria-hidden="true">
                           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -398,9 +416,7 @@ export default function SignUpPageClient({ previewNotice }: { previewNotice?: Re
                           aria-readonly="true"
                         />
                       </div>
-                      <p className="suInputHint">
-                        This evaluation was approved for this address. Your account must use it.
-                      </p>
+                      <p className="suInputHint">{INVITED_EMAIL_HINT}</p>
                     </div>
 
                     <div className="suFormGroup">
@@ -446,6 +462,38 @@ export default function SignUpPageClient({ previewNotice }: { previewNotice?: Re
                       <p className="suInputHint">Minimum 10 characters with a mix of letters, numbers &amp; symbols.</p>
                     </div>
 
+                    <div className="suFormGroup">
+                      <label className="suLabel" htmlFor="su-confirm-password">{INVITED_CONFIRM_PASSWORD_LABEL}</label>
+                      <div className="suInputWrap">
+                        <span className="suInputIcon" aria-hidden="true">
+                          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                            <rect x="4" y="7" width="8" height="7" rx="1.2" stroke="currentColor" strokeWidth="1.4" />
+                            <path d="M5.5 7V5.5a2.5 2.5 0 015 0V7" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                          </svg>
+                        </span>
+                        {/* A typo in a password nobody can see is the one signup
+                            failure that locks an approved applicant out of their
+                            own evaluation. The comparison is local — it guards a
+                            mistake, not an attacker — and the backend enforces
+                            the policy regardless. */}
+                        <input
+                          id="su-confirm-password"
+                          className="suInput suInputWithIcon"
+                          type={showPassword ? 'text' : 'password'}
+                          value={confirmPassword}
+                          onChange={(e) => setConfirmPassword(e.target.value)}
+                          autoComplete="new-password"
+                          placeholder="Re-enter your password"
+                          minLength={10}
+                          required
+                          aria-invalid={Boolean(confirmPassword) && confirmPassword !== password}
+                        />
+                      </div>
+                      {confirmPassword && confirmPassword !== password ? (
+                        <p className="suInputHint" role="alert">{INVITED_PASSWORD_MISMATCH}</p>
+                      ) : null}
+                    </div>
+
                     {error ? <div className="suAlert suAlertError" role="alert">{error}</div> : null}
 
                     {!configLoading && !configured ? (
@@ -455,17 +503,18 @@ export default function SignUpPageClient({ previewNotice }: { previewNotice?: Re
                     ) : null}
 
                     <button type="submit" className="suSubmitBtn" disabled={formState.submitDisabled} aria-busy={loading}>
-                      {loading ? 'Creating account…' : 'Create account'}
+                      {loading ? 'Creating account…' : INVITED_SUBMIT_CTA}
                     </button>
                   </form>
 
+                  {/* Carries the SAME invitation to /sign-in — both as `invite`,
+                      so that screen knows what the sign-in is for and keeps its
+                      own "Create one" link inside this flow, and as `next`, so
+                      authenticating lands on activation. A bare /sign-in here is
+                      how the invitation gets dropped mid-flow. */}
                   <p className="suAccountRow">
                     Already have an account?{' '}
-                    <Link
-                      href={`/sign-in?next=${encodeURIComponent(acceptInvitationPath(invitationToken))}`}
-                      className="suLink"
-                      prefetch={false}
-                    >
+                    <Link href={invitationSignInHref(invitationToken)} className="suLink" prefetch={false}>
                       Sign in to accept
                     </Link>
                   </p>

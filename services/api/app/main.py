@@ -2217,6 +2217,11 @@ _CSRF_EXEMPT_PREFIXES = (
     # both are rate limited. Accepting an invitation is NOT exempt: it is an
     # authenticated mutation and keeps full CSRF enforcement.
     '/pilot-requests',
+    # Invitation-aware signup: no session, so no CSRF cookie to double-submit —
+    # the same posture as /auth/signup. Written as the full path on purpose: the
+    # prefix match would otherwise cover /pilot-invitations/accept, which is an
+    # authenticated mutation and keeps full CSRF enforcement.
+    '/pilot-invitations/signup',
 )
 
 
@@ -4377,6 +4382,16 @@ def pilot_request_submit(payload: dict[str, Any], request: Request) -> dict[str,
 def pilot_invitation_lookup(request: Request, token: str = '') -> dict[str, Any]:
     enforce_auth_rate_limit(request, 'pilot_invitation_lookup', None)
     return with_auth_schema_json(lambda: tenancy_endpoints.lookup_pilot_invitation(token, request))
+
+
+@app.post('/pilot-invitations/signup', summary='Public: create the account an approved invitation is for')
+def pilot_invitation_signup(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    # Unauthenticated by definition: the person this invitation was approved for
+    # has no Decoda account yet, which is the whole reason this route exists. The
+    # token in the body is the credential; the address, company, and every
+    # entitlement decision are read from the invitation row it resolves to.
+    enforce_auth_rate_limit(request, 'pilot_invitation_signup', None)
+    return with_auth_schema_json(lambda: tenancy_endpoints.signup_invited_user(payload, request))
 
 
 @app.post('/pilot-invitations/accept', summary='Accept a Pilot invitation and activate the organization')

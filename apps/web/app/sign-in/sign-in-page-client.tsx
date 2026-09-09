@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { BuildInfo } from '../build-info';
 import { resolveAuthFormState } from '../auth-form-state';
+import { acceptInvitationPath, invitationSignUpHref } from '../invitation-routing';
 import { buildResetPasswordHref } from '../password-reset-request';
 import { safeInternalReturnTo } from '../safe-internal-return-to';
 import {
@@ -230,11 +231,26 @@ function DiagnosticsExpanded({
   );
 }
 
+/**
+ * What the backend said about the invitation this sign-in is for.
+ *
+ * `null` while unknown, and while unknown the screen behaves exactly as it did
+ * before: an invitation the backend has not confirmed changes nothing about
+ * what is offered here.
+ */
+type SignInInvitation = {
+  email: string;
+  company_name: string | null;
+  account_exists?: boolean | null;
+};
+
 export default function SignInPageClient({
   nextPath,
+  invitationToken,
   previewNotice,
 }: {
   nextPath?: string;
+  invitationToken?: string;
   previewNotice?: React.ReactNode;
 }) {
   const router = useRouter();
@@ -276,6 +292,7 @@ export default function SignInPageClient({
   const [showPassword, setShowPassword] = useState(false);
   const [showDiag, setShowDiag] = useState(false);
   const [systemStatus, setSystemStatus] = useState<'checking' | 'healthy' | 'unavailable'>('checking');
+  const [invitation, setInvitation] = useState<SignInInvitation | null>(null);
   const lastRedirectPath = useRef<string | null>(null);
 
   function validateEmail(value: string): string {
@@ -315,7 +332,9 @@ export default function SignInPageClient({
     && lastRedirectPath.current === null
     && !mfaRequired
     && !unverifiedEmail;
-  const continueHref = safeInternalReturnTo(nextPath ?? null) ?? '/dashboard';
+  const continueHref = invitationToken
+    ? acceptInvitationPath(invitationToken)
+    : (safeInternalReturnTo(nextPath ?? null) ?? '/dashboard');
 
   async function handleSignInAsAnotherUser() {
     // Clears the session through the canonical provider (which calls /api/auth/signout
@@ -329,6 +348,39 @@ export default function SignInPageClient({
     const timer = setTimeout(() => setResendCooldown((seconds) => Math.max(0, seconds - 1)), 1000);
     return () => clearTimeout(timer);
   }, [resendCooldown]);
+
+  // What this sign-in is for, answered by the backend rather than assumed. Two
+  // things come out of it: the address to sign in as, so the screen names the
+  // account instead of leaving it to be guessed, and `account_exists` — which,
+  // when it is false, means this person has no password and sign-in has nothing
+  // to offer them. That is the bug being fixed, so the screen says so and points
+  // at the account-creation form.
+  //
+  // It SAYS so rather than redirecting. /sign-up's own "Already have an account?
+  // Sign in" link lands here, and bouncing that click straight back would make
+  // the link look broken. The accept page — where the invitation email actually
+  // lands — is what routes; this screen recovers someone who arrived anyway.
+  useEffect(() => {
+    if (!invitationToken) {
+      setInvitation(null);
+      return undefined;
+    }
+    let active = true;
+    fetch(`/api/pilot-invitations?token=${encodeURIComponent(invitationToken)}`, { cache: 'no-store' })
+      .then((response) => response.json().catch(() => ({})))
+      .then((payload: Record<string, unknown>) => {
+        if (!active || payload.valid !== true || !payload.invitation) {
+          return;
+        }
+        const resolved = payload.invitation as SignInInvitation;
+        setInvitation(resolved);
+        setEmail((current) => current || resolved.email || '');
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [invitationToken]);
 
   useEffect(() => {
     let active = true;
@@ -355,7 +407,12 @@ export default function SignInPageClient({
       return;
     }
 
-    const targetPath = nextPath ?? '/dashboard';
+    // The invitation outranks `next` and the dashboard alike: an account that
+    // just authenticated inside an invitation flow has an evaluation waiting to
+    // be activated, and the dashboard cannot show it until that has happened.
+    // The token lives in this page's URL, so it survives the MFA challenge —
+    // which never navigates away — as well as the password path.
+    const targetPath = invitationToken ? acceptInvitationPath(invitationToken) : (nextPath ?? '/dashboard');
     if (lastRedirectPath.current === targetPath) return;
 
     lastRedirectPath.current = targetPath;
@@ -507,7 +564,7 @@ export default function SignInPageClient({
             <section className="siFormPanel" aria-labelledby="sign-in-heading">
               {previewNotice}
 
-              {nextPath ? (
+              {nextPath && !invitationToken ? (
                 <p className="siNextPath">
                   Sign in to continue to <strong>{nextPath}</strong>.
                 </p>
@@ -522,10 +579,18 @@ export default function SignInPageClient({
               ) : null}
 
               <h2 id="sign-in-heading" className="siFormTitle">
-                {alreadySignedIn ? 'You are already signed in' : 'Welcome back'}
+                {alreadySignedIn
+                  ? 'You are already signed in'
+                  : invitation
+                    ? 'Sign in to accept your Pilot invitation'
+                    : 'Welcome back'}
               </h2>
               <p className="siFormSubtitle">
-                {alreadySignedIn ? 'Continue to your workspace — no need to sign in again.' : 'Sign in to your workspace'}
+                {alreadySignedIn
+                  ? 'Continue to your workspace — no need to sign in again.'
+                  : invitation
+                    ? `Your evaluation is approved for ${invitation.email}. Sign in with that account to activate it.`
+                    : 'Sign in to your workspace'}
               </p>
 
               {unverifiedEmail ? (
@@ -689,6 +754,16 @@ export default function SignInPageClient({
                     <Link href={buildResetPasswordHref(email)} className="siLink" prefetch={false}>Forgot password?</Link>
                   </div>
 
+                  {invitation && invitation.account_exists === false ? (
+                    <div className="siAlert siAlertWarn" role="status">
+                      There is no Decoda account for <strong>{invitation.email}</strong> yet.{' '}
+                      <Link href={invitationSignUpHref(invitationToken ?? '')} className="siLink" prefetch={false}>
+                        Create your account
+                      </Link>{' '}
+                      to accept this invitation.
+                    </div>
+                  ) : null}
+
                   {error ? <div className="siAlert siAlertError" role="alert">{error}</div> : null}
 
                   {!configLoading && !configured ? (
@@ -701,9 +776,19 @@ export default function SignInPageClient({
                     {loading ? 'Signing in...' : 'Sign in'}
                   </button>
 
+                  {/* Inside an invitation flow this link carries the SAME token
+                      to /sign-up. A bare /sign-up would land an approved applicant
+                      on the approval-only state and strand them one click from the
+                      account they were invited to create. */}
                   <p className="siAccountRow">
                     Don&apos;t have an account?{' '}
-                    <Link href="/sign-up" className="siLink" prefetch={false}>Create one</Link>
+                    <Link
+                      href={invitationToken ? invitationSignUpHref(invitationToken) : '/sign-up'}
+                      className="siLink"
+                      prefetch={false}
+                    >
+                      Create one
+                    </Link>
                   </p>
                 </form>
               )}

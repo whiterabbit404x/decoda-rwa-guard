@@ -108,6 +108,9 @@ CODE_INVITATION_INVALID = 'PILOT_INVITATION_INVALID'
 CODE_INVITATION_EXPIRED = 'PILOT_INVITATION_EXPIRED'
 CODE_INVITATION_USED = 'PILOT_INVITATION_ALREADY_ACCEPTED'
 CODE_INVITATION_EMAIL_MISMATCH = 'PILOT_INVITATION_EMAIL_MISMATCH'
+#: The approved address already has a Decoda account. Invitation-aware signup
+#: refuses rather than touching it, and the client routes to sign-in instead.
+CODE_INVITATION_ACCOUNT_EXISTS = 'PILOT_INVITATION_ACCOUNT_EXISTS'
 CODE_PILOT_ACCESS_REQUIRED = 'PILOT_ACCESS_REQUIRED'
 
 
@@ -612,6 +615,34 @@ def find_by_token(connection: Any, raw_token: str) -> dict[str, Any] | None:
             (token_hash(token),),
         ).fetchone()
     )
+
+
+def account_exists_for_email(connection: Any, email: str) -> bool:
+    """Whether a Decoda account already exists for this address.
+
+    Scope, not secrecy, is what makes this safe to expose. The only caller is the
+    invitation surface, and it passes the address the INVITATION names — read
+    from the row the token resolved to, never from a query string — so the answer
+    describes the one account the invitation is already about. There is no
+    parameter by which a caller could ask about an arbitrary address, which is
+    what an account-enumeration oracle would need.
+
+    Fails CLOSED. An unreadable probe answers "an account exists", so an
+    invitation is routed to sign-in rather than into an account-creation form
+    that would then fail on the duplicate. Sign-in states its own outcome
+    truthfully; a signup form that cannot succeed does not.
+    """
+    normalized = normalize_email(email)
+    if not normalized:
+        return True
+    try:
+        row = _row_dict(
+            connection.execute('SELECT id FROM users WHERE email = %s', (normalized,)).fetchone()
+        )
+    except Exception:
+        logger.warning('pilot_invitation_account_probe_failed result=unknown', exc_info=True)
+        return True
+    return row is not None
 
 
 def invitation_problem(row: Mapping[str, Any] | None, *, now: datetime | None = None) -> tuple[str, str] | None:

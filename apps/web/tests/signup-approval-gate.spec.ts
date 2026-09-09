@@ -128,7 +128,18 @@ test('the approved address is server-supplied and read-only in the form', () => 
 });
 
 test('the submitted address is the invitation address, not page input', () => {
-  expect(SIGN_UP_CLIENT).toContain('email: gate.invitation.email,');
+  // Stronger than it used to be: the form no longer submits an address at all.
+  // The backend reads the approved one from the invitation the token resolves to
+  // (services/api/app/domains/tenancy/endpoints.py:signup_invited_user), so there
+  // is no address field in the payload for a browser to edit.
+  const submit = SIGN_UP_CLIENT.slice(
+    SIGN_UP_CLIENT.indexOf('await signUpWithInvitation({'),
+    SIGN_UP_CLIENT.indexOf('if (result.accountExists)'),
+  );
+  expect(submit).toContain('token: invitationToken');
+  expect(submit).not.toContain('email:');
+  // The address the applicant SEES is still the one the backend named.
+  expect(SIGN_UP_CLIENT).toContain('value={gate.invitation.email}');
 });
 
 test('the submit handler refuses to run outside the invited state', () => {
@@ -159,7 +170,9 @@ test('signup creates no second activation path of its own', () => {
 
 test('the accept page hands the invitation to signup instead of dropping it', () => {
   const acceptClient = read('accept-invitation', 'accept-invitation-client.tsx');
-  expect(acceptClient).toContain('/sign-up?invite=${encodeURIComponent(token)}');
+  // Built by app/invitation-routing.ts now, so every screen composes the URL from
+  // one definition. That module's own spec pins the string it produces.
+  expect(acceptClient).toContain('invitationSignUpHref(token)');
 });
 
 // ── token resolution ────────────────────────────────────────────────────────
