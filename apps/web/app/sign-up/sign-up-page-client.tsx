@@ -1,11 +1,60 @@
 'use client';
 
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 
 import { resolveAuthFormState } from '../auth-form-state';
+import {
+  ACCOUNT_CREATED_BODY,
+  ACCOUNT_CREATED_HEADLINE,
+  APPROVAL_ONLY_BODY,
+  APPROVAL_ONLY_HEADLINE,
+  CHECKING_HEADLINE,
+  INVITATION_UNAVAILABLE,
+  INVITED_HEADLINE,
+  INVITED_SUBTITLE,
+  REQUEST_PILOT_CTA,
+  SIGN_IN_CTA,
+  SIGN_IN_PROMPT,
+  acceptInvitationPath,
+  resolveInvitationToken,
+} from '../signup-access';
 import { usePilotAuth } from 'app/pilot-auth-context';
+
+/**
+ * What the backend says about the invitation in the URL.
+ *
+ * `checking` renders no form: an unverified token must never produce a usable
+ * account-creation flow, not even for the moment before the answer arrives. The
+ * only state that renders inputs is `invited`, and the address it shows is the
+ * one the backend returned.
+ */
+type Invitation = {
+  email: string;
+  company_name: string | null;
+  expires_at: string | null;
+  evaluation_days: number | null;
+};
+
+type GateState =
+  | { kind: 'checking' }
+  | { kind: 'approval_required'; message: string | null }
+  | { kind: 'invited'; invitation: Invitation };
+
+function invitationRefusalMessage(payload: Record<string, unknown>): string {
+  if (typeof payload.message === 'string' && payload.message.trim()) {
+    return payload.message;
+  }
+  const detail = payload.detail;
+  if (detail && typeof detail === 'object' && typeof (detail as Record<string, unknown>).message === 'string') {
+    return String((detail as Record<string, unknown>).message);
+  }
+  if (typeof detail === 'string' && detail.trim()) {
+    return detail;
+  }
+  return INVITATION_UNAVAILABLE;
+}
 
 const FEATURES = [
   {
@@ -54,27 +103,9 @@ function FeatureCardIcon({ type }: { type: string }) {
   );
 }
 
-function GoogleIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
-      <path d="M16.5 9.2c0-.6-.05-1.2-.15-1.8H9v3.4h4.2c-.18 1-.73 1.85-1.55 2.4v2h2.5c1.48-1.36 2.35-3.36 2.35-5.7h-.7z" fill="#4285F4" />
-      <path d="M9 17c2.1 0 3.86-.7 5.15-1.9l-2.5-2c-.7.48-1.6.76-2.65.76-2.03 0-3.75-1.37-4.36-3.22H2.05v2.06C3.33 15.33 5.99 17 9 17z" fill="#34A853" />
-      <path d="M4.64 10.64c-.16-.48-.25-1-.25-1.64s.09-1.16.25-1.64V5.3H2.05A8 8 0 001 9c0 1.3.31 2.52.86 3.6l2.2-1.96-.42.01z" fill="#FBBC05" />
-      <path d="M9 3.58c1.14 0 2.17.39 2.98 1.16l2.23-2.23C12.86.8 11.1 0 9 0 5.99 0 3.33 1.67 2.05 4.1l2.59 2.03C5.25 4.95 6.97 3.58 9 3.58z" fill="#EA4335" />
-    </svg>
-  );
-}
-
-function GitHubIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 18 18" fill="currentColor" aria-hidden="true">
-      <path fillRule="evenodd" clipRule="evenodd" d="M9 0C4.03 0 0 4.03 0 9c0 3.98 2.58 7.35 6.16 8.54.45.08.61-.2.61-.43V15.6c-2.5.54-3.03-1.2-3.03-1.2-.41-1.04-1-1.32-1-1.32-.82-.56.06-.55.06-.55.9.06 1.38.93 1.38.93.8 1.37 2.1.97 2.61.74.08-.58.31-.97.57-1.2-1.99-.23-4.09-1-4.09-4.43 0-.98.35-1.78.93-2.4-.09-.23-.4-1.14.09-2.37 0 0 .76-.24 2.49.93a8.64 8.64 0 014.53 0c1.73-1.17 2.49-.93 2.49-.93.49 1.23.18 2.14.09 2.37.58.62.93 1.42.93 2.4 0 3.44-2.1 4.2-4.1 4.42.32.28.61.83.61 1.67v2.47c0 .24.16.52.62.43A9.01 9.01 0 0018 9c0-4.97-4.03-9-9-9z" />
-    </svg>
-  );
-}
-
 export default function SignUpPageClient({ previewNotice }: { previewNotice?: React.ReactNode }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const {
     apiTimeoutMs,
     configLoading,
@@ -88,13 +119,21 @@ export default function SignUpPageClient({ previewNotice }: { previewNotice?: Re
     loading: authLoading,
   } = usePilotAuth();
 
+  // The token is a lookup key, never a grant. It authorizes nothing on its own:
+  // the backend resolves it by hash and decides whether it is still approved,
+  // unexpired, and unused, and which address it belongs to.
+  const invitationToken = useMemo(() => resolveInvitationToken(searchParams), [searchParams]);
+
   const [fullName, setFullName] = useState('');
-  const [workspaceName, setWorkspaceName] = useState('');
-  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [accountCreated, setAccountCreated] = useState(false);
+  // Fail closed: with no token there is nothing to check and nothing to offer.
+  const [gate, setGate] = useState<GateState>(
+    invitationToken ? { kind: 'checking' } : { kind: 'approval_required', message: null },
+  );
 
   const runtimeConfig = useMemo(() => ({
     apiUrl: apiUrl || null,
@@ -109,19 +148,74 @@ export default function SignUpPageClient({ previewNotice }: { previewNotice?: Re
 
   useEffect(() => {
     if (!authLoading && isAuthenticated) {
-      router.replace('/dashboard');
+      // An account that already exists has no signup to do. With an invitation
+      // in hand it goes to the one activation path; otherwise to the product,
+      // where the Pilot access gate states its real access.
+      router.replace(invitationToken ? acceptInvitationPath(invitationToken) : '/dashboard');
     }
-  }, [authLoading, isAuthenticated, router]);
+  }, [authLoading, invitationToken, isAuthenticated, router]);
+
+  useEffect(() => {
+    if (!invitationToken) {
+      setGate({ kind: 'approval_required', message: null });
+      return;
+    }
+    let cancelled = false;
+    setGate({ kind: 'checking' });
+    void (async () => {
+      try {
+        const response = await fetch(`/api/pilot-invitations?token=${encodeURIComponent(invitationToken)}`, {
+          cache: 'no-store',
+        });
+        const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+        if (cancelled) return;
+        if (!response.ok || payload.valid !== true || !payload.invitation) {
+          // The backend's own reason, verbatim — expired, already used, or not
+          // valid at all — and the approval-only state, not a signup form.
+          setGate({ kind: 'approval_required', message: invitationRefusalMessage(payload) });
+          return;
+        }
+        setGate({ kind: 'invited', invitation: payload.invitation as Invitation });
+      } catch {
+        // An unreadable answer is not an approved one.
+        if (!cancelled) {
+          setGate({ kind: 'approval_required', message: INVITATION_UNAVAILABLE });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [invitationToken]);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (loading) return;
+    // Belt and braces: the submit control only exists in the invited state, and
+    // the handler refuses to run outside it too.
+    if (gate.kind !== 'invited') {
+      setError('Decoda reviews and approves each Pilot evaluation before an account can be created.');
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
-      const result = await signUp({ email, password, full_name: fullName, workspace_name: workspaceName });
-      if (result.verificationRequired) return;
-      router.push('/dashboard');
+      const result = await signUp({
+        // The approved address, as the backend reported it — never a value typed
+        // into this page. Acceptance re-checks it server-side regardless.
+        email: gate.invitation.email,
+        password,
+        full_name: fullName,
+        // An audit hint only. The organization and workspace names come from the
+        // approved pilot_requests row when the invitation is accepted; nothing in
+        // this payload can choose a tenant, a plan, or a role.
+        workspace_name: gate.invitation.company_name ?? '',
+      });
+      if (result.verificationRequired) {
+        setAccountCreated(true);
+        return;
+      }
+      router.push(acceptInvitationPath(invitationToken));
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : String(submitError));
     } finally {
@@ -196,167 +290,187 @@ export default function SignUpPageClient({ previewNotice }: { previewNotice?: Re
             </div>
           </section>
 
-          {/* Right signup card */}
+          {/* Right panel: approval-only unless the backend resolves an invitation */}
           <section className="suFormPanel" aria-labelledby="su-heading">
             <div className="suCard">
-              <h2 id="su-heading" className="suCardTitle">Get started with Decoda Security</h2>
-              <p className="suCardSubtitle">Create your workspace to start securing your RWA operations.</p>
-
-              {formState.statusMessage ? (
-                <div className="suAlert suAlertWarn" role="status">{formState.statusMessage}</div>
+              {gate.kind === 'checking' ? (
+                <>
+                  <h2 id="su-heading" className="suCardTitle">{CHECKING_HEADLINE}</h2>
+                  <p className="suCardSubtitle" role="status">
+                    We are checking the invitation on this link with Decoda.
+                  </p>
+                </>
               ) : null}
-              {formState.deploymentWarning ? (
-                <div className="suAlert suAlertWarn" role="status">{formState.deploymentWarning}</div>
+
+              {gate.kind === 'approval_required' ? (
+                <>
+                  {/* No form, no workspace-creation control, and no social
+                      buttons. An unapproved visitor is offered the two things
+                      that are actually true: apply, or sign in. */}
+                  <h2 id="su-heading" className="suCardTitle">{APPROVAL_ONLY_HEADLINE}</h2>
+                  <p className="suCardSubtitle">{APPROVAL_ONLY_BODY}</p>
+
+                  {gate.message ? (
+                    <div className="suAlert suAlertWarn" role="status">{gate.message}</div>
+                  ) : null}
+
+                  <Link href="/request-pilot" className="suSubmitBtn" prefetch={false}>
+                    {REQUEST_PILOT_CTA}
+                  </Link>
+
+                  <p className="suAccountRow">
+                    {SIGN_IN_PROMPT}{' '}
+                    <Link href="/sign-in" className="suLink" prefetch={false}>{SIGN_IN_CTA}</Link>
+                  </p>
+                </>
               ) : null}
 
-              <form onSubmit={handleSubmit} noValidate>
-                <div className="suFormGroup">
-                  <label className="suLabel" htmlFor="su-full-name">FULL NAME</label>
-                  <div className="suInputWrap">
-                    <span className="suInputIcon" aria-hidden="true">
-                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                        <circle cx="8" cy="5" r="3" stroke="currentColor" strokeWidth="1.4" />
-                        <path d="M2 14c0-3 2.7-5 6-5s6 2 6 5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-                      </svg>
-                    </span>
-                    <input
-                      id="su-full-name"
-                      className="suInput suInputWithIcon"
-                      type="text"
-                      value={fullName}
-                      onChange={(e) => setFullName(e.target.value)}
-                      autoComplete="name"
-                      placeholder="Enter your full name"
-                      required
-                    />
-                  </div>
-                </div>
+              {gate.kind === 'invited' && accountCreated ? (
+                <>
+                  <h2 id="su-heading" className="suCardTitle">{ACCOUNT_CREATED_HEADLINE}</h2>
+                  <p className="suCardSubtitle">{ACCOUNT_CREATED_BODY}</p>
+                  <Link
+                    href={acceptInvitationPath(invitationToken)}
+                    className="suSubmitBtn"
+                    prefetch={false}
+                  >
+                    Open your invitation
+                  </Link>
+                </>
+              ) : null}
 
-                <div className="suFormGroup">
-                  <label className="suLabel" htmlFor="su-workspace-name">WORKSPACE NAME</label>
-                  <div className="suInputWrap">
-                    <span className="suInputIcon" aria-hidden="true">
-                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                        <rect x="2" y="4" width="12" height="10" rx="1" stroke="currentColor" strokeWidth="1.4" />
-                        <path d="M5 4V3a1 1 0 011-1h4a1 1 0 011 1v1" stroke="currentColor" strokeWidth="1.4" />
-                        <path d="M6 9h4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-                      </svg>
-                    </span>
-                    <input
-                      id="su-workspace-name"
-                      className="suInput suInputWithIcon"
-                      type="text"
-                      value={workspaceName}
-                      onChange={(e) => setWorkspaceName(e.target.value)}
-                      autoComplete="organization"
-                      placeholder="Enter your workspace name"
-                      required
-                    />
-                  </div>
-                </div>
+              {gate.kind === 'invited' && !accountCreated ? (
+                <>
+                  <h2 id="su-heading" className="suCardTitle">{INVITED_HEADLINE}</h2>
+                  <p className="suCardSubtitle">{INVITED_SUBTITLE}</p>
 
-                <div className="suFormGroup">
-                  <label className="suLabel" htmlFor="su-email">WORK EMAIL</label>
-                  <div className="suInputWrap">
-                    <span className="suInputIcon" aria-hidden="true">
-                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                        <rect x="2" y="4" width="12" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.4" />
-                        <path d="M2 6.5l6 3.5 6-3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-                      </svg>
-                    </span>
-                    <input
-                      id="su-email"
-                      className="suInput suInputWithIcon"
-                      type="email"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      autoComplete="email"
-                      placeholder="you@company.com"
-                      required
-                    />
-                  </div>
-                </div>
+                  {formState.statusMessage ? (
+                    <div className="suAlert suAlertWarn" role="status">{formState.statusMessage}</div>
+                  ) : null}
+                  {formState.deploymentWarning ? (
+                    <div className="suAlert suAlertWarn" role="status">{formState.deploymentWarning}</div>
+                  ) : null}
 
-                <div className="suFormGroup">
-                  <label className="suLabel" htmlFor="su-password">PASSWORD</label>
-                  <div className="suInputWrap">
-                    <span className="suInputIcon" aria-hidden="true">
-                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                        <rect x="4" y="7" width="8" height="7" rx="1.2" stroke="currentColor" strokeWidth="1.4" />
-                        <path d="M5.5 7V5.5a2.5 2.5 0 015 0V7" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-                      </svg>
-                    </span>
-                    <input
-                      id="su-password"
-                      className="suInput suInputWithIcon suInputWithToggle"
-                      type={showPassword ? 'text' : 'password'}
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      autoComplete="new-password"
-                      placeholder="Create a strong password"
-                      minLength={10}
-                      required
-                    />
-                    <button
-                      type="button"
-                      className="suPasswordToggle"
-                      onClick={() => setShowPassword((v) => !v)}
-                      aria-label={showPassword ? 'Hide password' : 'Show password'}
-                    >
-                      {showPassword ? (
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                          <path d="M2 8s2.5-4 6-4 6 4 6 4-2.5 4-6 4-6-4-6-4z" stroke="currentColor" strokeWidth="1.4" />
-                          <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.4" />
-                          <path d="M3 3l10 10" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-                        </svg>
-                      ) : (
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                          <path d="M2 8s2.5-4 6-4 6 4 6 4-2.5 4-6 4-6-4-6-4z" stroke="currentColor" strokeWidth="1.4" />
-                          <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.4" />
-                        </svg>
-                      )}
+                  <form onSubmit={handleSubmit} noValidate>
+                    <div className="suFormGroup">
+                      <label className="suLabel" htmlFor="su-full-name">FULL NAME</label>
+                      <div className="suInputWrap">
+                        <span className="suInputIcon" aria-hidden="true">
+                          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                            <circle cx="8" cy="5" r="3" stroke="currentColor" strokeWidth="1.4" />
+                            <path d="M2 14c0-3 2.7-5 6-5s6 2 6 5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                          </svg>
+                        </span>
+                        <input
+                          id="su-full-name"
+                          className="suInput suInputWithIcon"
+                          type="text"
+                          value={fullName}
+                          onChange={(e) => setFullName(e.target.value)}
+                          autoComplete="name"
+                          placeholder="Enter your full name"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className="suFormGroup">
+                      <label className="suLabel" htmlFor="su-email">APPROVED WORK EMAIL</label>
+                      <div className="suInputWrap">
+                        <span className="suInputIcon" aria-hidden="true">
+                          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                            <rect x="2" y="4" width="12" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.4" />
+                            <path d="M2 6.5l6 3.5 6-3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                          </svg>
+                        </span>
+                        {/* Read-only, and read-only is not the control that
+                            matters: the address posted is gate.invitation.email
+                            and the backend re-compares it against the approved
+                            one when the invitation is accepted. Editing this
+                            field in a browser claims nobody else's invitation. */}
+                        <input
+                          id="su-email"
+                          className="suInput suInputWithIcon suInputLocked"
+                          type="email"
+                          value={gate.invitation.email}
+                          autoComplete="email"
+                          readOnly
+                          aria-readonly="true"
+                        />
+                      </div>
+                      <p className="suInputHint">
+                        This evaluation was approved for this address. Your account must use it.
+                      </p>
+                    </div>
+
+                    <div className="suFormGroup">
+                      <label className="suLabel" htmlFor="su-password">PASSWORD</label>
+                      <div className="suInputWrap">
+                        <span className="suInputIcon" aria-hidden="true">
+                          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                            <rect x="4" y="7" width="8" height="7" rx="1.2" stroke="currentColor" strokeWidth="1.4" />
+                            <path d="M5.5 7V5.5a2.5 2.5 0 015 0V7" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                          </svg>
+                        </span>
+                        <input
+                          id="su-password"
+                          className="suInput suInputWithIcon suInputWithToggle"
+                          type={showPassword ? 'text' : 'password'}
+                          value={password}
+                          onChange={(e) => setPassword(e.target.value)}
+                          autoComplete="new-password"
+                          placeholder="Create a strong password"
+                          minLength={10}
+                          required
+                        />
+                        <button
+                          type="button"
+                          className="suPasswordToggle"
+                          onClick={() => setShowPassword((v) => !v)}
+                          aria-label={showPassword ? 'Hide password' : 'Show password'}
+                        >
+                          {showPassword ? (
+                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                              <path d="M2 8s2.5-4 6-4 6 4 6 4-2.5 4-6 4-6-4-6-4z" stroke="currentColor" strokeWidth="1.4" />
+                              <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.4" />
+                              <path d="M3 3l10 10" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                            </svg>
+                          ) : (
+                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                              <path d="M2 8s2.5-4 6-4 6 4 6 4-2.5 4-6 4-6-4-6-4z" stroke="currentColor" strokeWidth="1.4" />
+                              <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.4" />
+                            </svg>
+                          )}
+                        </button>
+                      </div>
+                      <p className="suInputHint">Minimum 10 characters with a mix of letters, numbers &amp; symbols.</p>
+                    </div>
+
+                    {error ? <div className="suAlert suAlertError" role="alert">{error}</div> : null}
+
+                    {!configLoading && !configured ? (
+                      <div className="suAlert suAlertWarn" role="status">
+                        Auth is disabled until this deployment exposes a valid API_URL.
+                      </div>
+                    ) : null}
+
+                    <button type="submit" className="suSubmitBtn" disabled={formState.submitDisabled} aria-busy={loading}>
+                      {loading ? 'Creating account…' : 'Create account'}
                     </button>
-                  </div>
-                  <p className="suInputHint">Minimum 10 characters with a mix of letters, numbers &amp; symbols.</p>
-                </div>
+                  </form>
 
-                {error ? <div className="suAlert suAlertError" role="alert">{error}</div> : null}
-
-                {!configLoading && !configured ? (
-                  <div className="suAlert suAlertWarn" role="status">
-                    Auth is disabled until this deployment exposes a valid API_URL.
-                  </div>
-                ) : null}
-
-                <button type="submit" className="suSubmitBtn" disabled={formState.submitDisabled} aria-busy={loading}>
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" style={{ marginRight: '0.4rem' }}>
-                    <path d="M8 2l1.5 3.5L13 7l-3.5 1.5L8 12l-1.5-3.5L3 7l3.5-1.5L8 2z" fill="currentColor" />
-                  </svg>
-                  {loading ? 'Creating workspace…' : 'Create workspace'}
-                </button>
-              </form>
-
-              <div className="suDivider" aria-hidden="true">
-                <span className="suDividerLine" />
-                <span className="suDividerText">OR CONTINUE WITH</span>
-                <span className="suDividerLine" />
-              </div>
-
-              <div className="suSocialRow">
-                <button type="button" className="suSocialBtn" disabled aria-disabled="true" title="Google sign-up coming soon">
-                  <GoogleIcon />
-                  Continue with Google
-                </button>
-                <button type="button" className="suSocialBtn" disabled aria-disabled="true" title="GitHub sign-up coming soon">
-                  <GitHubIcon />
-                  Continue with GitHub
-                </button>
-              </div>
-
-              <p className="suAccountRow">
-                Already have an account?{' '}
-                <Link href="/sign-in" className="suLink">Sign in</Link>
-              </p>
+                  <p className="suAccountRow">
+                    Already have an account?{' '}
+                    <Link
+                      href={`/sign-in?next=${encodeURIComponent(acceptInvitationPath(invitationToken))}`}
+                      className="suLink"
+                      prefetch={false}
+                    >
+                      Sign in to accept
+                    </Link>
+                  </p>
+                </>
+              ) : null}
 
               <p className="suPrivacyNote">
                 <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">

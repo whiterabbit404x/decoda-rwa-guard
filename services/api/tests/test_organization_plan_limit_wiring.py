@@ -76,6 +76,19 @@ class _RecordingConn:
         return _noop()
 
 
+def _tenancy_schema(monkeypatch: pytest.MonkeyPatch, *, ready: bool) -> None:
+    """Stub the tenancy-schema probe the caller under test actually reads.
+
+    The workspace-creation gate reads ``tenancy_schema_state`` because it makes a
+    security decision and must tell ABSENT apart from UNKNOWN; the plan overlay
+    reads the boolean wrapper. Both are set here so a test cannot pass by
+    stubbing whichever one the code no longer calls.
+    """
+    state = org_service.SCHEMA_READY if ready else org_service.SCHEMA_ABSENT
+    monkeypatch.setattr(org_service, 'tenancy_schema_state', lambda *_a, **_k: state)
+    monkeypatch.setattr(org_service, 'tenancy_schema_ready', lambda *_a, **_k: ready)
+
+
 def _request() -> SimpleNamespace:
     return SimpleNamespace(headers={'x-workspace-id': WS}, client=None)
 
@@ -182,7 +195,7 @@ def test_create_workspace_refuses_at_the_workspace_limit_before_writing(
 ) -> None:
     connection = _RecordingConn(reads={'select current_workspace_id from users': {'current_workspace_id': WS}})
     _connection(monkeypatch, connection)
-    monkeypatch.setattr(org_service, 'tenancy_schema_ready', lambda *_: True)
+    _tenancy_schema(monkeypatch, ready=True)
     monkeypatch.setattr(
         org_service, 'ensure_organization_for_workspace',
         lambda *_a, **_k: {'id': 'org-1', 'plan': 'pilot', 'status': 'active',
@@ -208,7 +221,7 @@ def test_create_workspace_reuses_the_callers_tenant_not_a_new_one(
         'select 1 from workspace_members': {'1': 1},
     })
     _connection(monkeypatch, connection)
-    monkeypatch.setattr(org_service, 'tenancy_schema_ready', lambda *_: True)
+    _tenancy_schema(monkeypatch, ready=True)
     monkeypatch.setattr(
         org_service, 'ensure_organization_for_workspace',
         lambda *_a, **_k: {'id': 'org-1', 'plan': 'scale', 'status': 'active',
@@ -241,7 +254,7 @@ def test_create_workspace_ignores_a_stale_current_workspace_without_membership(
     what makes "no new tenant" an assertion rather than an assumption.
     """
     connection = _RecordingConn(reads={'select current_workspace_id from users': {'current_workspace_id': WS}})
-    monkeypatch.setattr(org_service, 'tenancy_schema_ready', lambda *_: True)
+    _tenancy_schema(monkeypatch, ready=True)
     monkeypatch.setattr(
         org_service, 'ensure_organization_for_workspace',
         lambda *_a, **_k: pytest.fail('must not resolve a tenant without membership'),
@@ -276,7 +289,7 @@ def test_create_workspace_uses_the_organization_the_caller_already_belongs_to(
         'select current_workspace_id from users': {'current_workspace_id': None},
         'from organization_memberships m join organizations o': organization,
     })
-    monkeypatch.setattr(org_service, 'tenancy_schema_ready', lambda *_: True)
+    _tenancy_schema(monkeypatch, ready=True)
     monkeypatch.setattr(
         org_service, 'create_organization',
         lambda *_a, **_k: pytest.fail('an existing member must not be given a second tenant'),

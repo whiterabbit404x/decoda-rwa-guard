@@ -120,6 +120,8 @@ class FakeConnection:
         users: dict[str, dict[str, Any]] | None = None,
         organizations: dict[str, dict[str, Any]] | None = None,
         memberships: dict[str, str] | None = None,
+        workspace_member_user_ids: set[str] | None = None,
+        workspace_counts: dict[str, int] | None = None,
         schema_ready: bool = True,
         pilot_requests_ready: bool = True,
     ) -> None:
@@ -127,6 +129,12 @@ class FakeConnection:
         self.users = users or {}
         self.organizations = dict(organizations or {})
         self.memberships = memberships or {}
+        #: workspace_members rows, by user. The PRE-tenancy proof of admission,
+        #: kept apart from organization_memberships so a test can describe an
+        #: account that holds one and not the other.
+        self.workspace_member_user_ids = set(workspace_member_user_ids or set())
+        #: Workspaces already owned by each organization, for the plan limit.
+        self.workspace_counts = dict(workspace_counts or {})
         self.schema_ready = schema_ready
         self.pilot_requests_ready = pilot_requests_ready
         self.writes: list[tuple[str, Any]] = []
@@ -278,6 +286,11 @@ class FakeConnection:
                 if status_filter is None or row.get('status') == status_filter
             ]
             return _Result(rows)
+
+        if 'select 1 from workspace_members where user_id' in lowered:
+            return _Result({'1': 1} if str(params[0]) in self.workspace_member_user_ids else None)
+        if 'count(*) as count from workspaces where organization_id' in lowered:
+            return _Result({'count': int(self.workspace_counts.get(str(params[0]), 0))})
 
         if 'count(*) as count from organization_memberships where user_id' in lowered:
             return _Result({'count': 1 if str(params[0]) in self.memberships else 0})
@@ -1117,6 +1130,162 @@ def test_36_b_an_unapproved_account_cannot_create_a_workspace(
 
     assert exc_info.value.status_code == 403
     assert exc_info.value.detail['code'] == pilot.PILOT_ACCESS_REQUIRED_CODE
+    assert connection.writes == []
+
+
+def test_36_b_2_a_crafted_signup_body_cannot_grant_a_tenant_plan_or_admin_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The direct-API version of the loophole.
+
+    Hiding the workspace field in React would stop a browser and nobody else, so
+    the check that matters is here: a body that names an organization, a plan, a
+    role, or the internal-admin flag still writes exactly one users row. Every
+    one of those fields is decided server-side at invitation acceptance.
+    """
+    written: list[tuple[str, Any]] = []
+
+    class _SignupConn:
+        def execute(self, query: str, params: Any = None) -> _Result:
+            sql = ' '.join(str(query).split())
+            if sql.lower().startswith(('insert', 'update', 'delete')):
+                written.append((sql.lower(), params))
+            return _Result(None)
+
+        def commit(self) -> None:
+            return None
+
+    @contextmanager
+    def _pg():
+        yield _SignupConn()
+
+    monkeypatch.setattr(pilot, 'pg_connection', _pg)
+    monkeypatch.setattr(pilot, 'hash_password', lambda _p: 'hashed')
+    monkeypatch.setattr(pilot, '_create_user_token', lambda *_a, **_k: 'verify-token')
+    monkeypatch.setattr(pilot, '_dispatch_transactional_email', lambda *_a, **_k: None)
+    monkeypatch.setattr(pilot, 'build_user_response', lambda *_a, **_k: {'id': 'user-new'})
+
+    pilot.signup_user(
+        {
+            'email': 'attacker@example.com', 'password': 'StrongPass1234',
+            'full_name': 'Crafted Body', 'workspace_name': 'Crafted Ops',
+            # None of these exist as inputs anywhere in the signup path.
+            'organization_id': 'org-scale', 'plan': ent.PLAN_SCALE, 'role': 'owner',
+            'is_internal_admin': True, 'status': ent.STATUS_ACTIVE,
+            'entitlement_overrides': {'monitored_contracts': 9999},
+            'evaluation_expires_at': '2099-01-01T00:00:00Z',
+        },
+        _request(),
+    )
+
+    inserts = [sql for sql, _params in written]
+    assert [sql for sql in inserts if sql.startswith('insert into users')], 'the account was not created'
+    for forbidden in ('insert into workspaces', 'insert into workspace_members',
+                      'insert into organizations', 'insert into organization_memberships'):
+        assert not any(sql.startswith(forbidden) for sql in inserts), forbidden
+    # Nothing the body named reached a statement, not even as a stored value.
+    flat = ' '.join(f'{sql} {params}' for sql, params in written)
+    for forbidden in ('org-scale', ent.PLAN_SCALE, 'is_internal_admin', 'entitlement_overrides'):
+        assert forbidden not in flat, forbidden
+
+
+def test_36_b_3_workspace_creation_fails_closed_when_approval_cannot_be_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreadable tenancy schema is not an approval.
+
+    organization_memberships is the only place approval is recorded. When the
+    probe cannot read it, the gate used to return None and let the workspace be
+    created anyway — an unapproved account's first workspace, owned by no
+    organization and therefore metered by no plan and expired by no evaluation
+    window. A caller with no membership is now refused instead.
+    """
+    connection = FakeConnection(schema_ready=False)
+    monkeypatch.setattr(
+        org_service, 'create_organization',
+        lambda *_a, **_k: pytest.fail('an unapproved account must not receive a tenant'),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        pilot._resolve_organization_for_new_workspace(connection, user_id='user-new')
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail['code'] == pilot.PILOT_ACCESS_REQUIRED_CODE
+    assert connection.writes == []
+
+
+def test_36_b_4_an_unreadable_probe_is_refused_the_same_as_an_absent_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UNKNOWN and ABSENT are both "we cannot say you were approved"."""
+    connection = FakeConnection()
+    monkeypatch.setattr(
+        org_service, 'tenancy_schema_state', lambda *_a, **_k: org_service.SCHEMA_UNKNOWN,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        pilot._resolve_organization_for_new_workspace(connection, user_id='user-new')
+
+    assert exc_info.value.detail['code'] == pilot.PILOT_ACCESS_REQUIRED_CODE
+    assert connection.writes == []
+
+
+def test_36_b_5_an_existing_member_still_creates_a_workspace_during_a_rolling_deploy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Failing closed must not lock out the people who were already admitted.
+
+    An account holding a workspace membership was admitted before the probe
+    broke, so it keeps working exactly as it did pre-0150 — the case the
+    unmigrated branch exists for.
+    """
+    connection = FakeConnection(schema_ready=False, workspace_member_user_ids={CUSTOMER_USER})
+
+    organization = pilot._resolve_organization_for_new_workspace(connection, user_id=CUSTOMER_USER)
+
+    assert organization is None  # pre-0150 behaviour: a workspace with no tenant to own it
+    assert connection.writes == []
+
+
+def test_36_b_6_an_existing_member_can_still_create_a_workspace_under_the_plan_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Phase 3: an authorized member adding a workspace inside their own tenant.
+
+    The tenant comes from their membership, never from the request body, and the
+    plan limit is enforced against it exactly as before.
+    """
+    connection = FakeConnection(
+        organizations=dict(EXISTING_ORGS),
+        memberships={CUSTOMER_USER: 'org-scale'},
+        workspace_counts={'org-scale': 1},
+    )
+
+    organization = pilot._resolve_organization_for_new_workspace(connection, user_id=CUSTOMER_USER)
+
+    assert organization is not None
+    assert str(organization['id']) == 'org-scale'
+    assert ent.normalize_plan(organization['plan']) == ent.PLAN_SCALE
+    assert connection.writes == []
+
+
+def test_36_b_7_the_plan_limit_still_refuses_a_tenant_at_its_workspace_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Activation does not lift a limit: a Pilot at its ceiling is still refused."""
+    limit = ent.limit_for(ent.plan_entitlements(ent.PLAN_PILOT), ent.LIMIT_WORKSPACES)
+    if limit is None:
+        pytest.skip('the Pilot plan does not cap workspaces')
+    connection = FakeConnection(
+        organizations=dict(EXISTING_ORGS),
+        memberships={APPLICANT_USER: 'org-datto'},
+        workspace_counts={'org-datto': int(limit)},
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        pilot._resolve_organization_for_new_workspace(connection, user_id=APPLICANT_USER)
+
+    assert exc_info.value.status_code == 403
     assert connection.writes == []
 
 

@@ -18,11 +18,14 @@ test('auth pages include guarded submit and authenticated redirect handling', as
   expect(signIn).toContain('if (loading) {');
   expect(signIn).toContain('setError(null);');
   expect(signIn).toContain('router.replace(targetPath);');
-  expect(signUp).toContain('if (loading) {');
+  // Signup is approval-only, so the guarded-submit shape is a gate check first:
+  // the handler refuses to run outside the invited state, and an authenticated
+  // caller is redirected rather than shown a form it has already outgrown.
+  expect(signUp).toContain("if (gate.kind !== 'invited') {");
   expect(signUp).toContain('setError(null);');
-  expect(signUp).toContain("router.replace('/dashboard')");
+  expect(signUp).toContain("acceptInvitationPath(invitationToken) : '/dashboard'");
   expect(signInPage).toContain("redirectTo: '/dashboard'");
-  expect(signUpPage).toContain("redirect('/dashboard')");
+  expect(signUpPage).toContain("acceptInvitationPath(invitationToken) : '/dashboard'");
   expect(signInPage).toContain('const cookieStore = await cookies();');
   expect(signUpPage).toContain('const cookieStore = await cookies();');
 });
@@ -33,9 +36,12 @@ test('authenticated route guards unauthenticated and missing-workspace users', a
 
   expect(guard).toContain('const redirectTo = `/sign-in?next=${next}`;');
   expect(guard).toContain('const redirectTo = `/workspaces?next=${next}`;');
-  expect(guard).toContain('/workspaces?reason=membership_required');
+  // An account with NO membership no longer reaches /workspaces at all: sending
+  // it there is what used to mint an unapproved tenant. It is held at the Pilot
+  // access gate instead, and only a member is offered the workspace picker.
+  expect(guard).toContain('<PilotAccessRequired');
   expect(guard).toContain('Preparing your workspace…');
-  expect(guard).toContain('Workspace access required…');
+  expect(guard).not.toContain('membership_required');
   expect(productLayout).toContain('const cookieStore = await cookies();');
   expect(productLayout).toContain('<Suspense fallback={<ProductLayoutLoading>{children}</ProductLayoutLoading>}>');
 });
