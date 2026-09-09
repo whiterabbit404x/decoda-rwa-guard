@@ -265,7 +265,13 @@ export type Harness = {
  * asserting on.
  */
 export async function startRenderHarness(options: { bootstrap: string; css?: boolean } = { bootstrap: '' }): Promise<Harness> {
-  const appCss = options.css === false ? '' : fs.readFileSync(path.join(APP_DIR, 'styles.css'), 'utf-8');
+  // styles.css starts with a UTF-8 BOM. The real build strips it, but inlined
+  // verbatim into <style> it becomes part of the FIRST selector — `\ufeff:root`
+  // never matches, so the whole design-token block would silently not apply and
+  // every var()-driven colour in here would render unstyled.
+  const appCss = options.css === false
+    ? ''
+    : fs.readFileSync(path.join(APP_DIR, 'styles.css'), 'utf-8').replace(/^\uFEFF/, '');
   const reactUmd = fs.readFileSync(path.join(NODE_MODULES, 'react', 'umd', 'react.development.js'), 'utf-8');
   const reactDomUmd = fs.readFileSync(path.join(NODE_MODULES, 'react-dom', 'umd', 'react-dom.development.js'), 'utf-8');
 

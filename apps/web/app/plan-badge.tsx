@@ -13,6 +13,7 @@ import {
   usageLabel,
   usageRatio,
 } from './plan-status';
+import { Select } from './components/ui-primitives';
 import { FEEDBACK_TYPE_OPTIONS, FEEDBACK_SECRET_WARNING } from './plan-feedback';
 
 /**
@@ -161,21 +162,23 @@ function FeedbackForm({ onSubmitted }: { onSubmitted: () => void }) {
 
   return (
     <div className="planFeedback">
-      <label className="planFeedbackLabel" htmlFor="plan-feedback-type">
+      {/* Shared in-app listbox rather than a native dropdown: Chrome hands the
+          native option popup to the OS, which composites the control's
+          translucent surface over white and left the dark theme's light option
+          text unreadable. The shared Select draws its menu inside the app from
+          the same theme tokens, so every row keeps product contrast. */}
+      <label className="planFeedbackLabel" id="plan-feedback-type-label" htmlFor="plan-feedback-type">
         Feedback type
       </label>
-      <select
+      <Select
         id="plan-feedback-type"
-        className="planFeedbackInput"
+        testId="plan-feedback-type"
+        className="planFeedbackSelect"
+        ariaLabelledBy="plan-feedback-type-label"
         value={feedbackType}
-        onChange={(event) => setFeedbackType(event.target.value)}
-      >
-        {FEEDBACK_TYPE_OPTIONS.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
+        onValueChange={(value) => setFeedbackType(value)}
+        options={FEEDBACK_TYPE_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
+      />
 
       <label className="planFeedbackLabel" htmlFor="plan-feedback-message">
         What happened?

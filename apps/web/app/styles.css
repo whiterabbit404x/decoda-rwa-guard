@@ -9459,6 +9459,17 @@ a.mktTrustBadge:hover {
   font-family: inherit;
 }
 
+/* The Feedback type control is the shared in-app Select, not a native <select>:
+   a native option popup is drawn by the OS, which composited the translucent
+   control background over white and left the light option text unreadable.
+   Only the trigger metrics are tuned to this compact panel — every colour,
+   hover / selected / focus state stays on the shared theme tokens, and the
+   menu keeps its own size so the options stay legible. */
+.planFeedbackSelect .dcSelectTrigger {
+  padding: 0.4rem 0.5rem;
+  font-size: 0.8rem;
+}
+
 .planFeedbackHint {
   margin: 0.1rem 0 0;
   font-size: 0.72rem;
