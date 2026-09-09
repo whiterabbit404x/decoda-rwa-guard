@@ -12,6 +12,10 @@
 // address, and whether it may still be used. A token in the URL is never
 // evidence on its own, and the address shown to the applicant is the one the
 // backend returns, never one typed into the browser.
+//
+// Which of /sign-up and /sign-in an approved applicant belongs on is decided in
+// app/invitation-routing.ts, from the backend's `account_exists`. This module
+// only finds the token and states the copy for the gate.
 // ─────────────────────────────────────────────────────────────
 
 /** The ungated state: no invitation, so no workspace-creation flow. */
@@ -36,10 +40,32 @@ export const INVITED_SUBTITLE =
  */
 export const CHECKING_HEADLINE = 'Checking your invitation…';
 
-/** After the account exists but before the evaluation does. */
-export const ACCOUNT_CREATED_HEADLINE = 'Verify your email to continue';
+/**
+ * After the account exists but before the evaluation does.
+ *
+ * Two facts kept apart on purpose: the ACCOUNT is created, the PILOT is not.
+ * Invitation-aware signup establishes a session and hands off to activation; it
+ * does not start an evaluation, so this copy does not say it did.
+ */
+export const ACCOUNT_CREATED_HEADLINE = 'Activating your Pilot evaluation…';
 export const ACCOUNT_CREATED_BODY =
-  'Your account was created. Verify your email address, sign in, and then accept your invitation — your evaluation starts when you accept it.';
+  'Your account was created. We are taking you to accept your invitation — your evaluation starts when you accept it.';
+
+/** The invited form's own labels, pinned here so tests read one definition. */
+export const INVITED_EMAIL_LABEL = 'APPROVED WORK EMAIL';
+export const INVITED_EMAIL_HINT =
+  'This evaluation was approved for this address. Your account must use it.';
+export const INVITED_CONFIRM_PASSWORD_LABEL = 'CONFIRM PASSWORD';
+export const INVITED_PASSWORD_MISMATCH = 'Both passwords must match.';
+export const INVITED_SUBMIT_CTA = 'Activate Pilot';
+
+/**
+ * The approved address already has an account. Signup refuses rather than
+ * touching it — an invitation must never be a way to reset someone's password —
+ * so the person is sent to sign in with the invitation still in hand.
+ */
+export const INVITED_ACCOUNT_EXISTS =
+  'An account already exists for this address. Sign in to accept your invitation.';
 
 /** Fallback when the backend declines to resolve the token. */
 export const INVITATION_UNAVAILABLE =
@@ -83,7 +109,11 @@ export function resolveInvitationToken(
   return (new URLSearchParams(next.slice(queryAt + 1)).get('token') ?? '').trim();
 }
 
-/** Where an applicant goes to activate: the one activation path, not a new one. */
-export function acceptInvitationPath(token: string): string {
-  return `/accept-invitation?token=${encodeURIComponent(token)}`;
-}
+/**
+ * Where an applicant goes to activate: the one activation path, not a new one.
+ *
+ * Re-exported from app/invitation-routing so the accept page, /sign-in and
+ * /sign-up all build the same URL from one definition — a second copy is how a
+ * screen ends up dropping the invitation.
+ */
+export { acceptInvitationPath } from './invitation-routing';

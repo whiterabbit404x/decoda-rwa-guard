@@ -2,8 +2,13 @@
 
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
+import {
+  invitationDestination,
+  invitationSignInHref,
+  invitationSignUpHref,
+} from '../invitation-routing';
 import { usePilotAuth } from 'app/pilot-auth-context';
 
 type Invitation = {
@@ -11,6 +16,12 @@ type Invitation = {
   company_name: string | null;
   expires_at: string | null;
   evaluation_days: number | null;
+  status?: string | null;
+  /**
+   * Answered by the backend, from the database, about the address THIS invitation
+   * names. The page never guesses it, and never asks about any other address.
+   */
+  account_exists?: boolean | null;
 };
 
 type LookupState =
@@ -31,7 +42,7 @@ function detailMessage(payload: unknown, fallback: string): string {
   return fallback;
 }
 
-export default function AcceptInvitationClient() {
+export default function AcceptInvitationClient({ hasSessionCookie = false }: { hasSessionCookie?: boolean }) {
   const searchParams = useSearchParams();
   const router = useRouter();
   const token = searchParams?.get('token')?.trim() ?? '';
@@ -40,6 +51,13 @@ export default function AcceptInvitationClient() {
   const [lookup, setLookup] = useState<LookupState>({ kind: 'loading' });
   const [accepting, setAccepting] = useState(false);
   const [acceptError, setAcceptError] = useState<string | null>(null);
+  // Activation is attempted at most once per page load. A double-click, a React
+  // re-mount, or a refresh mid-flight must not post a second acceptance; the
+  // backend is race-safe too (the activating UPDATE is conditional and rolls the
+  // organization back when it loses), but the cheapest duplicate is the one that
+  // is never sent.
+  const activationStarted = useRef(false);
+  const routed = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -108,6 +126,43 @@ export default function AcceptInvitationClient() {
     }
   }, [accepting, authHeaders, refreshUser, router, token]);
 
+  const invitation = lookup.kind === 'valid' ? lookup.invitation : null;
+  const signedInEmail = (user?.email ?? '').trim().toLowerCase();
+  const invitedEmail = (invitation?.email ?? '').trim().toLowerCase();
+  const emailMatches = Boolean(signedInEmail) && signedInEmail === invitedEmail;
+
+  // ── the fork ──────────────────────────────────────────────────────────────
+  // Where an unauthenticated holder of a valid invitation belongs, decided from
+  // the backend's `account_exists`. Armed only with no session cookie present:
+  // /sign-up bounces a cookie-holding visitor straight back here, so routing on
+  // a stale cookie is how the two pages would ping-pong.
+  useEffect(() => {
+    if (authLoading || isAuthenticated || hasSessionCookie || routed.current) {
+      return;
+    }
+    const destination = invitationDestination(
+      invitation ? { valid: true, account_exists: invitation.account_exists } : null,
+      token,
+    );
+    if (!destination) {
+      return;
+    }
+    routed.current = true;
+    router.replace(destination);
+  }, [authLoading, hasSessionCookie, invitation, isAuthenticated, router, token]);
+
+  // Coming back from sign-in or invitation-aware signup, the click that started
+  // this was "Accept invitation" in the approved email. Finish it rather than
+  // asking for the same consent a second time. Every check that matters still
+  // runs server-side on the POST.
+  useEffect(() => {
+    if (authLoading || !isAuthenticated || !emailMatches || !csrfReady || activationStarted.current) {
+      return;
+    }
+    activationStarted.current = true;
+    void accept();
+  }, [accept, authLoading, csrfReady, emailMatches, isAuthenticated]);
+
   if (lookup.kind === 'loading' || authLoading) {
     return (
       <main className="pilotRequestPage">
@@ -129,17 +184,22 @@ export default function AcceptInvitationClient() {
               valid. The page never softens it into something that sounds like
               access is still coming. */}
           <p className="pilotRequestLede">{lookup.message}</p>
-          <Link href="/request-pilot" className="suSubmitBtn" prefetch={false}>Request a Pilot evaluation</Link>
+          {/* An invitation that was already accepted is the common case here, and
+              the account it activated still works — so offer the way back in
+              rather than only the application form. */}
+          <Link href={isAuthenticated ? '/dashboard' : '/sign-in'} className="suSubmitBtn" prefetch={false}>
+            {isAuthenticated ? 'Go to your dashboard' : 'Sign in'}
+          </Link>
+          <Link href="/request-pilot" className="pilotRequestSecondary" prefetch={false}>
+            Request a Pilot evaluation
+          </Link>
         </section>
       </main>
     );
   }
 
-  const { invitation } = lookup;
-  const signedInEmail = (user?.email ?? '').trim().toLowerCase();
-  const invitedEmail = (invitation.email ?? '').trim().toLowerCase();
-  const emailMatches = Boolean(signedInEmail) && signedInEmail === invitedEmail;
-  const nextPath = `/accept-invitation?token=${encodeURIComponent(token)}`;
+  const validInvitation = lookup.invitation;
+  const accountExists = validInvitation.account_exists !== false;
 
   return (
     <main className="pilotRequestPage">
@@ -147,22 +207,22 @@ export default function AcceptInvitationClient() {
         <p className="mktSectionLabel">PILOT EVALUATION</p>
         <h1 className="pilotRequestTitle">Your Pilot evaluation is approved</h1>
         <p className="pilotRequestLede">
-          {invitation.company_name
-            ? `Decoda approved a Pilot evaluation for ${invitation.company_name}.`
+          {validInvitation.company_name
+            ? `Decoda approved a Pilot evaluation for ${validInvitation.company_name}.`
             : 'Decoda approved your Pilot evaluation.'}
-          {typeof invitation.evaluation_days === 'number' && invitation.evaluation_days > 0
-            ? ` Accepting starts a ${invitation.evaluation_days}-day evaluation.`
+          {typeof validInvitation.evaluation_days === 'number' && validInvitation.evaluation_days > 0
+            ? ` Accepting starts a ${validInvitation.evaluation_days}-day evaluation.`
             : ''}
         </p>
         <dl className="pilotRequestDetails">
           <div>
             <dt>Invitation issued to</dt>
-            <dd>{invitation.email}</dd>
+            <dd>{validInvitation.email}</dd>
           </div>
-          {invitation.expires_at ? (
+          {validInvitation.expires_at ? (
             <div>
               <dt>Expires</dt>
-              <dd>{new Date(invitation.expires_at).toLocaleString()}</dd>
+              <dd>{new Date(validInvitation.expires_at).toLocaleString()}</dd>
             </div>
           ) : null}
         </dl>
@@ -170,28 +230,37 @@ export default function AcceptInvitationClient() {
         {acceptError ? <div className="pilotRequestAlert" role="alert">{acceptError}</div> : null}
 
         {!isAuthenticated ? (
-          <>
-            <p className="pilotRequestFootnote">
-              Sign in as <strong>{invitation.email}</strong> to accept this invitation. If you do not
-              have an account yet, create one with that address first.
-            </p>
-            <Link
-              href={`/sign-in?next=${encodeURIComponent(nextPath)}`}
-              className="suSubmitBtn"
-              prefetch={false}
-            >
-              Sign in to accept
-            </Link>
-            {/* Carries the invitation to /sign-up, which offers account
-                creation ONLY for an invitation the backend still recognises. */}
-            <Link
-              href={`/sign-up?invite=${encodeURIComponent(token)}`}
-              className="pilotRequestSecondary"
-              prefetch={false}
-            >
-              Create an account
-            </Link>
-          </>
+          accountExists ? (
+            <>
+              {/* An account already exists for the approved address, so the way
+                  in is sign-in — and the invitation travels with it. */}
+              <p className="pilotRequestFootnote">
+                Sign in as <strong>{validInvitation.email}</strong> to accept this invitation.
+              </p>
+              <Link href={invitationSignInHref(token)} className="suSubmitBtn" prefetch={false}>
+                Sign in to accept
+              </Link>
+              <Link href={invitationSignUpHref(token)} className="pilotRequestSecondary" prefetch={false}>
+                Create an account instead
+              </Link>
+            </>
+          ) : (
+            <>
+              {/* No Decoda account for the approved address yet. Sign-in has
+                  nothing to offer this person — they have no password — so the
+                  primary action creates the account. */}
+              <p className="pilotRequestFootnote">
+                Create your Decoda account for <strong>{validInvitation.email}</strong> to accept this
+                invitation. You will choose your own password.
+              </p>
+              <Link href={invitationSignUpHref(token)} className="suSubmitBtn" prefetch={false}>
+                Create your Decoda account
+              </Link>
+              <Link href={invitationSignInHref(token)} className="pilotRequestSecondary" prefetch={false}>
+                Already have an account? Sign in
+              </Link>
+            </>
+          )
         ) : !emailMatches ? (
           <>
             {/* Rendering guidance only. The refusal that matters is server-side:
@@ -199,7 +268,7 @@ export default function AcceptInvitationClient() {
                 approved one and returns 403 regardless of what this page shows. */}
             <div className="pilotRequestAlert" role="alert">
               You are signed in as <strong>{user?.email}</strong>. This invitation was issued to{' '}
-              <strong>{invitation.email}</strong> and can only be accepted by that account.
+              <strong>{validInvitation.email}</strong> and can only be accepted by that account.
             </div>
             <Link href="/sign-out" className="suSubmitBtn" prefetch={false}>Sign out and switch account</Link>
           </>

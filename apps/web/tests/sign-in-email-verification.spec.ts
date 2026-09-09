@@ -177,7 +177,17 @@ test.describe('the sign-in screen wires the state to real controls', () => {
   });
 
   test('the panel does not print a token, a password, or account internals', () => {
-    for (const pattern of [/token=/, /password_hash/, /email_verified_at/]) {
+    // Scoped to the panel. The screen as a whole now carries an invitation token
+    // in a lookup URL — the Pilot invitation flow signs in through here — and a
+    // file-wide /token=/ would flag that unrelated, non-rendered use.
+    const panelStart = signInSource.indexOf('<div className="siVerifyPanel" data-testid="email-verification-required">');
+    const panel = signInSource.slice(panelStart, signInSource.indexOf('</div>', signInSource.indexOf('Use another account')));
+    expect(panelStart).toBeGreaterThan(-1);
+    for (const pattern of [/token/, /password/, /email_verified_at/]) {
+      expect(panel).not.toMatch(pattern);
+    }
+    // And nothing anywhere on this screen renders a raw credential field.
+    for (const pattern of [/password_hash/, /email_verified_at/]) {
       expect(signInSource).not.toMatch(pattern);
     }
   });

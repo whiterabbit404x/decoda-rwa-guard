@@ -196,7 +196,13 @@ test.describe('sign-in page for an already authenticated visitor', () => {
 
   test('the continue destination is validated as a safe internal path', () => {
     const signIn = read(APP_DIR, 'sign-in', 'sign-in-page-client.tsx');
-    expect(signIn).toContain("const continueHref = safeInternalReturnTo(nextPath ?? null) ?? '/dashboard';");
+    // A `next` from the URL is still passed through safeInternalReturnTo before it
+    // becomes a destination. The one other branch is an invitation, whose path is
+    // BUILT here (acceptInvitationPath) rather than taken from the query string,
+    // so there is no attacker-supplied value in it to validate.
+    expect(signIn).toContain("safeInternalReturnTo(nextPath ?? null) ?? '/dashboard'");
+    expect(signIn).toContain('const continueHref = invitationToken');
+    expect(signIn).toContain('? acceptInvitationPath(invitationToken)');
   });
 });
 

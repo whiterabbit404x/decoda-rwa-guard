@@ -3683,6 +3683,99 @@ def enforce_plan_creation_limit(connection: Any, workspace_id: str, limit_key: s
     return context
 
 
+def create_invited_account(
+    connection: Any,
+    *,
+    email: str,
+    password: str,
+    full_name: str,
+    request: Request | None = None,
+) -> dict[str, Any]:
+    """Create the account an APPROVED invitation is for, and sign it in.
+
+    Reached from exactly one caller — ``tenancy.endpoints.signup_invited_user``,
+    after it has resolved a valid, unexpired, unused invitation by token hash.
+    ``email`` is the address stored on that invitation row; this function never
+    reads one from a request body, so there is no field a browser could edit to
+    claim someone else's invitation.
+
+    What it creates is an ACCOUNT and a SESSION. Not a tenant: no workspace, no
+    organization, no plan, no evaluation window. The Pilot still comes into
+    existence only at ``POST /pilot-invitations/accept``, which re-checks the
+    invitation against the now-authenticated session before provisioning.
+
+    Why the address counts as verified
+    ----------------------------------
+    ``email_verified_at`` is stamped here because the invitation token IS an
+    email-control challenge: a cryptographically random, single-use, expiring
+    secret that Decoda delivered to this address and nowhere else. Presenting it
+    proves exactly what the signup verification link proves — the same reasoning
+    already applied to password reset. Requiring both would strand an approved
+    applicant between two challenges answering the same question. Nothing short
+    of a resolved invitation verifies anything: not opening /sign-up, not a token
+    in a URL, and not an email in the request body.
+
+    Refuses an address that already has an account. An invitation must never be
+    a way to overwrite an existing account's password, so a duplicate is a 409
+    that routes the person to sign-in, not a silent credential reset.
+    """
+    # Local import: pilot_access imports this module, so the error vocabulary is
+    # borrowed at call time rather than creating an import cycle. One definition
+    # of the code, in the module that owns the invitation state machine.
+    from services.api.app import pilot_access
+
+    normalized_email = _normalize_email(str(email or ''))
+    _require_strong_password(password)
+    display_name = str(full_name or '').strip() or normalized_email.split('@', 1)[0]
+    password_hash = hash_password(password)
+    existing = connection.execute(
+        'SELECT id FROM users WHERE email = %s', (normalized_email,),
+    ).fetchone()
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                'code': pilot_access.CODE_INVITATION_ACCOUNT_EXISTS,
+                'message': 'An account already exists for this address. Sign in to accept your invitation.',
+                'account_exists': True,
+            },
+        )
+    user_id = str(uuid.uuid4())
+    connection.execute(
+        '''
+        INSERT INTO users (id, email, password_hash, full_name, current_workspace_id, email_verified_at, session_version, created_at, updated_at, last_sign_in_at)
+        VALUES (%s, %s, %s, %s, NULL, NOW(), 1, NOW(), NOW(), NOW())
+        ''',
+        (user_id, normalized_email, password_hash, display_name),
+    )
+    log_audit(
+        connection,
+        action='auth.signup',
+        entity_type='user',
+        entity_id=user_id,
+        request=request,
+        user_id=user_id,
+        workspace_id=None,
+        metadata={
+            'email': normalized_email,
+            'invited': True,
+            # Stated rather than inferred: creating this account granted no
+            # tenant. Activation is a separate, audited step.
+            'organization_id': None,
+            'plan': None,
+            'pilot_access_granted': False,
+            'email_verified_by': 'pilot_invitation',
+        },
+    )
+    access_token = create_access_token(user_id, 1)
+    _store_session(connection, user_id, access_token, None, request=request)
+    return {
+        'user_id': user_id,
+        'email': normalized_email,
+        'access_token': access_token,
+    }
+
+
 def signup_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     """Create an ACCOUNT. Deliberately not a tenant, a workspace, or a Pilot.
 

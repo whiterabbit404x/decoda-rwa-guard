@@ -663,6 +663,14 @@ def lookup_pilot_invitation(token: str, request: Any) -> dict[str, Any]:
     invitation was mailed to and the company they named — so the page can say
     "sign in as security@company.com" instead of failing mysteriously after
     sign-in. It never carries an organization id, a plan, or an entitlement.
+
+    ``account_exists`` is the fact that decides where an approved person is sent:
+    to sign-in if they already have a Decoda account, to invitation-aware signup
+    if they do not. It is answered HERE, from the database, rather than guessed
+    in a browser — a page cannot know it, and sending everyone to sign-in strands
+    every brand-new applicant at "Invalid email or password". It is disclosed only
+    for an invitation that still resolves, and only about the address that
+    invitation already names, so it is not an oracle for arbitrary addresses.
     """
     pilot.require_live_mode()
     with pilot.pg_connection() as connection:
@@ -697,8 +705,88 @@ def lookup_pilot_invitation(token: str, request: Any) -> dict[str, Any]:
                     else record.get('invitation_expires_at')
                 ),
                 'evaluation_days': pilot_access.evaluation_days(),
+                'status': str(record.get('status') or ''),
+                'account_exists': pilot_access.account_exists_for_email(
+                    connection, str(record['email']),
+                ),
             },
         }
+
+
+def signup_invited_user(payload: dict[str, Any], request: Any) -> dict[str, Any]:
+    """Create the account for an approved invitation, and sign it in.
+
+    The half of the flow that did not exist. An approved applicant who has never
+    had a Decoda account had nowhere to go: every route out of the invitation
+    email led to sign-in, and sign-in cannot help someone who has no password.
+
+    What the request body is allowed to say is exactly two things — a full name
+    and a password. Everything that governs identity or entitlement is read from
+    the invitation row the TOKEN resolved to:
+
+        email          the approved address, never a body field
+        company_name   the approved company, used later at activation
+
+    So there is no ``email``, ``organization_id``, ``plan``, ``role``, or
+    ``is_internal_admin`` a caller could supply that this function would read. An
+    invitation approved for ``security@company.com`` creates an account for
+    ``security@company.com`` and no other address, whatever the body says.
+
+    This creates an ACCOUNT, not a Pilot. The organization, workspace, plan, and
+    evaluation window still come into existence only in
+    ``accept_pilot_invitation`` → ``pilot.provision_pilot_organization``, which
+    re-validates the same invitation against the now-authenticated session. The
+    invitation token is NOT consumed here; acceptance consumes it, exactly once.
+    """
+    pilot.require_live_mode()
+    body = payload if isinstance(payload, dict) else {}
+    token = str(body.get('token') or '').strip()
+    if not token:
+        raise _invitation_refusal(
+            pilot_access.CODE_INVITATION_INVALID, 'This invitation link is not valid.',
+        )
+    with pilot.pg_connection() as connection:
+        pilot.ensure_pilot_schema(connection)
+        pilot_access.require_schema(connection)
+        record = pilot_access.find_by_token(connection, token)
+        problem = pilot_access.invitation_problem(record)
+        if problem is not None:
+            code, message = problem
+            if record is not None and code == pilot_access.CODE_INVITATION_EXPIRED:
+                pilot_access.expire_invitation(connection, request_id=str(record['id']))
+                connection.commit()
+            logger.warning('pilot_invitation_signup_refused code=%s', code)
+            raise _invitation_refusal(code, message)
+        created = pilot.create_invited_account(
+            connection,
+            email=str(record['email']),
+            password=str(body.get('password') or ''),
+            full_name=str(body.get('full_name') or ''),
+            request=request,
+        )
+        _pilot_request_audit(
+            connection, request,
+            actor_user_id=str(created['user_id']),
+            action='pilot_request.invited_account_created',
+            record=record,
+            # The invitation is not spent by this: it is still the thing that
+            # must be accepted before any tenant exists.
+            metadata={'invitation_accepted': False, 'pilot_access_granted': False},
+        )
+        connection.commit()
+        user_payload = pilot.build_user_response(connection, str(created['user_id']))
+    logger.info('pilot_invitation_account_created user_id=%s', created['user_id'])
+    return {
+        # Shaped like /auth/signin so the existing same-origin auth proxy turns it
+        # into the session cookie without a second cookie-writing convention.
+        'access_token': created['access_token'],
+        'token_type': 'bearer',
+        'user': user_payload,
+        # Creating the account is not the evaluation. The client still posts to
+        # /pilot-invitations/accept, and says so rather than implying a Pilot is
+        # already running.
+        'invitation_accepted': False,
+    }
 
 
 def accept_pilot_invitation(payload: dict[str, Any], request: Any) -> dict[str, Any]:

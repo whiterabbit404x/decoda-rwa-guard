@@ -87,6 +87,13 @@ type PilotAuthContextValue = {
   // rotates a secret or returns recovery codes; it only raises this session's assurance.
   verifySessionStepUp: (code: string) => Promise<{ verified: boolean; assurance_expires_at: string | null; valid_for_minutes: number | null }>;
   signUp: (payload: { email: string; password: string; full_name: string; workspace_name: string }) => Promise<{ user: PilotUser | null; verificationRequired: boolean }>;
+  // Create the account an APPROVED Pilot invitation is for, and sign it in. The
+  // approved address is NOT a parameter: the backend reads it from the invitation
+  // the token resolves to, so nothing this call sends can choose whose account is
+  // created. `accountExists` reports the one refusal the caller can act on — the
+  // address already has an account — so the screen routes to sign-in instead of
+  // printing a dead end.
+  signUpWithInvitation: (payload: { token: string; password: string; full_name: string }) => Promise<{ user: PilotUser | null; accountExists: boolean }>;
   // Send a fresh verification link. The backend answers identically for every address,
   // so this reports only whether the REQUEST was accepted, never whether mail was sent.
   resendVerificationEmail: (email: string) => Promise<{ ok: boolean; status: number; body: unknown }>;
@@ -621,6 +628,54 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     return { user: data.user, verificationRequired: false };
   }, [saveAuthPayload, fetchAndStoreCsrfToken]);
 
+  const signUpWithInvitation = useCallback(async (payload: { token: string; password: string; full_name: string }) => {
+    const proxyUrl = '/api/pilot-invitations/signup';
+    let response: Response;
+
+    try {
+      response = await fetch(proxyUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    } catch (submitError) {
+      throw new Error(classifyAuthTransportError('create an account', proxyUrl, submitError));
+    }
+
+    const data = await readApiResponse<{
+      user?: PilotUser;
+      code?: string;
+      access_token?: string;
+    }>(response);
+
+    if (!response.ok) {
+      // The backend states its refusals as a structured `detail` object; the shared
+      // payload type narrows `detail` to a string, so the object form is read from
+      // the raw value rather than fought with.
+      const rawDetail: unknown = (data as { detail?: unknown }).detail;
+      const structured =
+        rawDetail && typeof rawDetail === 'object'
+          ? (rawDetail as { message?: string; account_exists?: boolean })
+          : null;
+      // 409 is not a failure the person can only stare at: the address is already
+      // theirs, so the screen sends them to sign in with the invitation intact.
+      if (response.status === 409 || structured?.account_exists === true) {
+        return { user: null, accountExists: true };
+      }
+      const message = typeof rawDetail === 'string' ? rawDetail : structured?.message;
+      throw new Error(classifyAuthResponseError('create an account', proxyUrl, response.status, message, data));
+    }
+
+    if (!data.user) {
+      throw new Error(classifyAuthResponseError('create an account', proxyUrl, response.status, undefined, data));
+    }
+    saveAuthPayload(data.user, data.access_token ?? null);
+    // Activation is an authenticated mutation, so the anti-CSRF token has to exist
+    // before the very next call. Same order sign-in uses.
+    await fetchAndStoreCsrfToken();
+    return { user: data.user, accountExists: false };
+  }, [saveAuthPayload, fetchAndStoreCsrfToken]);
+
   const resendVerificationEmail = useCallback(async (email: string) => {
     const proxyUrl = '/api/auth/resend-verification';
     let response: Response;
@@ -716,6 +771,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     disableMfa,
     verifySessionStepUp,
     signUp,
+    signUpWithInvitation,
     resendVerificationEmail,
     signOut,
     refreshUser,
@@ -724,7 +780,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     selectWorkspace,
     authHeaders,
     setError,
-  }), [authHeaders, completeMfaSignIn, configLoading, confirmMfaEnrollment, createWorkspace, csrfToken, disableMfa, enrollMfa, error, fetchAndStoreCsrfToken, loading, mfaChallengeToken, refreshUser, resendVerificationEmail, runtimeConfig, selectWorkspace, signIn, signOut, signUp, user, verifySessionStepUp]);
+  }), [authHeaders, completeMfaSignIn, configLoading, confirmMfaEnrollment, createWorkspace, csrfToken, disableMfa, enrollMfa, error, fetchAndStoreCsrfToken, loading, mfaChallengeToken, refreshUser, resendVerificationEmail, runtimeConfig, selectWorkspace, signIn, signOut, signUp, signUpWithInvitation, user, verifySessionStepUp]);
 
   return <PilotAuthContext.Provider value={value}>{children}</PilotAuthContext.Provider>;
 }
