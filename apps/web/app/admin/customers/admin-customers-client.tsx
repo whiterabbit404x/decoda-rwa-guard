@@ -15,6 +15,7 @@ import {
   statusLabel,
   type PilotRequest,
 } from 'app/admin/pilot-requests-view';
+import { mutateWithCsrfRetry } from 'app/csrf-retry';
 import { usePilotAuth } from 'app/pilot-auth-context';
 import { PLAN_LABELS, usageLabel, type UsageEntry } from 'app/plan-status';
 
@@ -67,8 +68,22 @@ function evaluationCell(customer: AdminCustomer): string {
   return typeof days === 'number' ? `${date} (${days}d)` : date;
 }
 
+const SESSION_EXPIRED_MESSAGE = 'Your session is missing or expired. Please sign in again.';
+
+/** The message shown for a failed mutation, preferring the backend's own words. */
+function failureMessage(status: number, payload: Record<string, unknown>): string {
+  if (status === 401) {
+    return SESSION_EXPIRED_MESSAGE;
+  }
+  const detail = payload.detail;
+  if (detail && typeof detail === 'object' && typeof (detail as Record<string, unknown>).message === 'string') {
+    return String((detail as Record<string, unknown>).message);
+  }
+  return `Action failed (HTTP ${status}).`;
+}
+
 export default function AdminCustomersClient() {
-  const { authHeaders, csrfReady, isAuthenticated } = usePilotAuth();
+  const { authHeaders, csrfReady, isAuthenticated, refreshCsrfToken } = usePilotAuth();
   const [customers, setCustomers] = useState<AdminCustomer[]>([]);
   const [pilotRequests, setPilotRequests] = useState<PilotRequest[]>([]);
   const [feedback, setFeedback] = useState<FeedbackItem[]>([]);
@@ -126,23 +141,37 @@ export default function AdminCustomersClient() {
     void load();
   }, [load]);
 
+  // The provider mints the anti-CSRF token once, at sign-in and at session
+  // restore. If that single attempt failed (a backend blip), every action button
+  // below stays disabled on `!csrfReady` until the founder reloads the page —
+  // the other half of the "a refresh fixes it" report. Minting one here when the
+  // console opens without a token closes that hole. Nothing is re-minted when a
+  // token already exists, and a token that dies LATER is handled by the
+  // per-mutation retry rather than here.
+  useEffect(() => {
+    if (!isAuthenticated || csrfReady) {
+      return;
+    }
+    void refreshCsrfToken().catch(() => undefined);
+  }, [csrfReady, isAuthenticated, refreshCsrfToken]);
+
+  // Extend 30d / Suspend / Reactivate / Upgrade to Scale. Routed through
+  // mutateWithCsrfRetry so an anti-CSRF token that expired while this tab was
+  // open heals itself instead of surfacing a 403 the founder has to fix with a
+  // browser refresh. A non-CSRF 403 (INTERNAL_ADMIN_REQUIRED) is NOT retried and
+  // is reported exactly as the backend stated it.
   async function act(organizationId: string, path: string, body: Record<string, unknown>) {
     setBusyId(organizationId);
     setError(null);
     try {
-      const response = await fetch(`/api/admin/customers/${organizationId}/${path}`, {
-        method: 'POST',
-        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+      const { response, payload } = await mutateWithCsrfRetry({
+        url: `/api/admin/customers/${organizationId}/${path}`,
+        body,
+        authHeaders,
+        refreshCsrfToken,
       });
       if (!response.ok) {
-        const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-        const detail = payload.detail;
-        setError(
-          detail && typeof detail === 'object' && typeof (detail as Record<string, unknown>).message === 'string'
-            ? String((detail as Record<string, unknown>).message)
-            : `Action failed (HTTP ${response.status}).`,
-        );
+        setError(failureMessage(response.status, payload));
         return;
       }
       await load();
@@ -153,23 +182,22 @@ export default function AdminCustomersClient() {
     }
   }
 
+  // Approve / Reject / Resend invitation. Same self-healing anti-CSRF path as
+  // act(): the CSRF middleware refuses BEFORE the route handler runs, so a
+  // rejected attempt minted no invitation and sent no email, and replaying it
+  // once with a current token cannot duplicate either.
   async function actOnRequest(requestId: string, path: string, body: Record<string, unknown> = {}) {
     setBusyId(requestId);
     setError(null);
     try {
-      const response = await fetch(`/api/admin/pilot-requests/${requestId}/${path}`, {
-        method: 'POST',
-        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+      const { response, payload } = await mutateWithCsrfRetry({
+        url: `/api/admin/pilot-requests/${requestId}/${path}`,
+        body,
+        authHeaders,
+        refreshCsrfToken,
       });
-      const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
       if (!response.ok) {
-        const detail = payload.detail;
-        setError(
-          detail && typeof detail === 'object' && typeof (detail as Record<string, unknown>).message === 'string'
-            ? String((detail as Record<string, unknown>).message)
-            : `Action failed (HTTP ${response.status}).`,
-        );
+        setError(failureMessage(response.status, payload));
         return;
       }
       // An approval whose email failed is reported here rather than being
