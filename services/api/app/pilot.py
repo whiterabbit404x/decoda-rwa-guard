@@ -4625,6 +4625,33 @@ def reset_password(payload: dict[str, Any], request: Request) -> dict[str, Any]:
 PILOT_ACCESS_REQUIRED_CODE = 'PILOT_ACCESS_REQUIRED'
 
 
+def _pilot_access_required() -> HTTPException:
+    """The one refusal for "authenticated, but no organization has admitted you"."""
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            'code': PILOT_ACCESS_REQUIRED_CODE,
+            'message': (
+                'Your Decoda Pilot evaluation has not been activated. '
+                'Request a Pilot evaluation, or accept the invitation sent to your work email.'
+            ),
+        },
+    )
+
+
+def _has_any_workspace_membership(connection: Any, *, user_id: str) -> bool:
+    """Whether this account already holds a workspace membership of any kind.
+
+    The pre-tenancy proof that somebody was already admitted. Used only to keep
+    an existing member working while the tenancy schema cannot be read; it is
+    never a substitute for the organization check below.
+    """
+    return connection.execute(
+        'SELECT 1 FROM workspace_members WHERE user_id = %s LIMIT 1',
+        (str(user_id),),
+    ).fetchone() is not None
+
+
 def _organization_from_membership(connection: Any, *, user_id: str) -> dict[str, Any] | None:
     """The organization this user already belongs to, oldest membership first.
 
@@ -4666,11 +4693,31 @@ def _resolve_organization_for_new_workspace(
     ``PILOT_ACCESS_REQUIRED``; the only path to a first organization is accepting
     an approved Pilot invitation.
 
-    Returns ``None`` when the tenancy schema has not been migrated yet, which
-    leaves the pre-0150 behaviour in place rather than blocking workspace
-    creation during a rolling deploy.
+    Returns ``None`` — leaving the pre-0150 behaviour in place — only for a
+    caller who ALREADY holds a workspace membership and whose tenancy schema
+    cannot be read. A caller with no membership is refused in that case too,
+    because a schema that cannot be read cannot be said to have approved anyone.
     """
-    if not organization_service.tenancy_schema_ready(connection):
+    schema_state = organization_service.tenancy_schema_state(connection)
+    if schema_state != organization_service.SCHEMA_READY:
+        # organization_memberships is the ONLY place approval is recorded, so a
+        # schema that is unmigrated or unreadable cannot answer "has this caller
+        # been approved?". Returning None here used to let the caller create the
+        # workspace anyway — an unapproved account's FIRST workspace, owned by no
+        # organization, so metered by no plan and expired by no evaluation
+        # window. That is the signup loophole one route further along, reachable
+        # by anyone who could make the probe fail.
+        #
+        # Fail closed on the fact we cannot read, and open only on one we can: an
+        # account that already holds a workspace membership was admitted before
+        # the probe broke, so it keeps working (the rolling-deploy case this
+        # branch exists for). An account with no membership at all is refused.
+        if not _has_any_workspace_membership(connection, user_id=user_id):
+            logger.warning(
+                'workspace_create_denied reason=tenancy_schema_%s user_id=%s',
+                schema_state, user_id,
+            )
+            raise _pilot_access_required()
         return None
     current = connection.execute(
         'SELECT current_workspace_id FROM users WHERE id = %s', (user_id,),
@@ -4698,16 +4745,7 @@ def _resolve_organization_for_new_workspace(
         organization = _organization_from_membership(connection, user_id=user_id)
     if organization is None:
         logger.warning('workspace_create_denied reason=no_approved_organization user_id=%s', user_id)
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                'code': PILOT_ACCESS_REQUIRED_CODE,
-                'message': (
-                    'Your Decoda Pilot evaluation has not been activated. '
-                    'Request a Pilot evaluation, or accept the invitation sent to your work email.'
-                ),
-            },
-        )
+        raise _pilot_access_required()
     plan_entitlement_engine.enforce_resource_creation(
         organization,
         plan_entitlement_engine.LIMIT_WORKSPACES,

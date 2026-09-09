@@ -182,8 +182,10 @@ export default function AcceptInvitationClient() {
             >
               Sign in to accept
             </Link>
+            {/* Carries the invitation to /sign-up, which offers account
+                creation ONLY for an invitation the backend still recognises. */}
             <Link
-              href={`/sign-up?next=${encodeURIComponent(nextPath)}`}
+              href={`/sign-up?invite=${encodeURIComponent(token)}`}
               className="pilotRequestSecondary"
               prefetch={false}
             >

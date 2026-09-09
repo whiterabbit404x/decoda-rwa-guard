@@ -7317,6 +7317,15 @@ a.mktTrustBadge:hover {
   padding-right: 2.8rem;
 }
 
+/* A field the applicant may read but not choose: the approved invitation
+   address. Styled as locked so the page does not look like it is inviting an
+   edit that the backend would refuse anyway. */
+.suInputLocked {
+  background: #0a0f1a;
+  color: #9aa8bb;
+  cursor: not-allowed;
+}
+
 .suPasswordToggle {
   position: absolute;
   right: 0.8rem;
