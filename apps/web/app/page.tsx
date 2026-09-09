@@ -1,3 +1,5 @@
+import { cookies } from 'next/headers';
+
 import { MarketingHeader } from 'app/components/home/marketing-header';
 import { HeroSection } from 'app/components/home/hero-section';
 import { OperatingLayerSection } from 'app/components/home/operating-layer-section';
@@ -11,6 +13,7 @@ import { PricingSection, type PricingTier } from 'app/components/home/pricing-se
 import { FinalCTA } from 'app/components/home/final-cta';
 import { MarketingFooter } from 'app/components/home/marketing-footer';
 import { PRICING_PLANS, PRICING_NOTE } from 'app/pricing-plans';
+import { SESSION_COOKIE_NAME, readLandingSessionHint } from 'app/auth-guards';
 import styles from 'app/components/home/home.module.css';
 
 export const dynamic = 'force-dynamic';
@@ -32,8 +35,16 @@ const pricingTiers: PricingTier[] = PRICING_PLANS.map((plan) => ({
   features: plan.highlights,
 }));
 
-export default function MarketingHomePage() {
+export default async function MarketingHomePage() {
   const supportEmail = process.env.NEXT_PUBLIC_SUPPORT_EMAIL ?? 'support@decodasecurity.com';
+
+  // Server-side session HINT only (see app/auth-guards.ts). It decides whether the
+  // auth-aware navbar starts neutral instead of flashing "Sign in" at a signed-in
+  // visitor. It never renders an authenticated state on its own: PilotAuthProvider
+  // confirms the session against the backend through /api/auth/me, and an authenticated
+  // visitor is never redirected away from this public page.
+  const cookieStore = await cookies();
+  const sessionHint = readLandingSessionHint(cookieStore.get(SESSION_COOKIE_NAME)?.value);
 
   return (
     <div className={styles.page}>
@@ -41,10 +52,10 @@ export default function MarketingHomePage() {
         Skip to main content
       </a>
 
-      <MarketingHeader />
+      <MarketingHeader sessionHint={sessionHint} />
 
       <main id="main">
-        <HeroSection />
+        <HeroSection sessionHint={sessionHint} />
         <OperatingLayerSection />
         <IncidentLifecycleSection />
         <ProductConsoleSection />
@@ -53,7 +64,7 @@ export default function MarketingHomePage() {
         <PolicyAutomationSection />
         <TeamsSection />
         <PricingSection tiers={pricingTiers} note={PRICING_NOTE} />
-        <FinalCTA />
+        <FinalCTA sessionHint={sessionHint} />
       </main>
 
       <MarketingFooter supportEmail={supportEmail} />

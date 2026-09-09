@@ -3511,6 +3511,13 @@ td .tableMeta {
   cursor: not-allowed;
   box-shadow: none;
 }
+/* Same primary action rendered as a link (the "already signed in" continue action).
+   An <a> is inline by default, so it needs block layout to pick up the width. */
+.siSubmitBtnLink {
+  display: block;
+  text-align: center;
+  text-decoration: none;
+}
 
 .siSecondaryBtn {
   width: 100%;

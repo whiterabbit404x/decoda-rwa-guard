@@ -320,6 +320,16 @@ ${options.bootstrap}
           res.writeHead(404).end('not found');
           return;
         }
+        // CSS Modules: the real bundler hands the component an object mapping the
+        // class names it wrote to hashed ones. The harness serves the identity
+        // mapping instead, so `styles.navRight` renders as class "navRight" and the
+        // element stays selectable. Layout/media-query behaviour is out of scope
+        // here — these specs assert structure and behaviour, not painted styles.
+        if (file.endsWith('.css')) {
+          res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' });
+          res.end('export default new Proxy({}, { get: (_t, key) => (typeof key === "string" ? key : undefined) });');
+          return;
+        }
         // Transpile BEFORE the headers go out, so a resolution failure can
         // still be answered with a module that throws the real reason.
         const compiled = transpile(file);

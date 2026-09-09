@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { BuildInfo } from '../build-info';
 import { resolveAuthFormState } from '../auth-form-state';
 import { buildResetPasswordHref } from '../password-reset-request';
+import { safeInternalReturnTo } from '../safe-internal-return-to';
 import {
   EMAIL_NOT_VERIFIED_BODY,
   EMAIL_NOT_VERIFIED_HEADING,
@@ -250,6 +251,12 @@ export default function SignInPageClient({
     resendVerificationEmail,
     mfaChallengeToken,
     apiUrl,
+    // Canonical session (same provider the dashboard and the protected route guard
+    // use). Aliased because this screen already has its own submit-in-flight `loading`.
+    loading: sessionLoading,
+    isAuthenticated,
+    user,
+    signOut,
   } = usePilotAuth();
 
   const [email, setEmail] = useState('');
@@ -295,6 +302,27 @@ export default function SignInPageClient({
   );
 
   const formState = resolveAuthFormState(runtimeConfig, configLoading, loading);
+
+  // An already-authenticated visitor is shown a "continue" state instead of a second
+  // login form. Deliberately NOT a redirect: /sign-in is reachable from the protected
+  // route guard, so redirecting on a cookie the backend has not confirmed could bounce
+  // a visitor between /sign-in and /dashboard. This renders only once the canonical
+  // session check has actually returned a user, and `lastRedirectPath` keeps it from
+  // flashing during the normal post-sign-in navigation on this very screen.
+  const alreadySignedIn =
+    !sessionLoading
+    && isAuthenticated
+    && lastRedirectPath.current === null
+    && !mfaRequired
+    && !unverifiedEmail;
+  const continueHref = safeInternalReturnTo(nextPath ?? null) ?? '/dashboard';
+
+  async function handleSignInAsAnotherUser() {
+    // Clears the session through the canonical provider (which calls /api/auth/signout
+    // and drops the HttpOnly cookie server-side), leaving the empty form on this page.
+    await signOut();
+    handleUseAnotherAccount();
+  }
 
   useEffect(() => {
     if (resendCooldown <= 0) return undefined;
@@ -493,8 +521,12 @@ export default function SignInPageClient({
                 <div className="siAlert siAlertWarn" role="status">{formState.deploymentWarning}</div>
               ) : null}
 
-              <h2 id="sign-in-heading" className="siFormTitle">Welcome back</h2>
-              <p className="siFormSubtitle">Sign in to your workspace</p>
+              <h2 id="sign-in-heading" className="siFormTitle">
+                {alreadySignedIn ? 'You are already signed in' : 'Welcome back'}
+              </h2>
+              <p className="siFormSubtitle">
+                {alreadySignedIn ? 'Continue to your workspace — no need to sign in again.' : 'Sign in to your workspace'}
+              </p>
 
               {unverifiedEmail ? (
                 <div className="siVerifyPanel" data-testid="email-verification-required">
@@ -526,6 +558,18 @@ export default function SignInPageClient({
 
                   <button type="button" className="siSecondaryBtn" onClick={handleUseAnotherAccount}>
                     Use another account
+                  </button>
+                </div>
+              ) : alreadySignedIn ? (
+                <div className="siVerifyPanel" data-testid="already-signed-in">
+                  <p className="siMuted">Signed in as {user?.email ?? 'your account'}</p>
+
+                  <Link href={continueHref} className="siSubmitBtn siSubmitBtnLink" prefetch={false}>
+                    Continue to dashboard
+                  </Link>
+
+                  <button type="button" className="siSecondaryBtn" onClick={() => void handleSignInAsAnotherUser()}>
+                    Sign in as a different user
                   </button>
                 </div>
               ) : mfaRequired ? (
