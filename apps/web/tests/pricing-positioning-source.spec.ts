@@ -82,7 +82,10 @@ test('comparison rows stay index-aligned across every plan', () => {
 
 test('CTA routes stay on real, existing destinations', () => {
   const [pilot, scale, enterprise] = PRICING_PLANS;
-  expect(pilot.ctaHref).toBe('/sign-up');
+  // Approval-only: the Pilot CTA leads to the APPLICATION, not to sign-up.
+  // Sending it to sign-up was the self-serve path, where anyone who found the
+  // URL received an active evaluation without Decoda approving them.
+  expect(pilot.ctaHref).toBe('/request-pilot');
   expect(scale.ctaHref.startsWith('/sign-up')).toBe(true);
   expect(enterprise.ctaHref).toBe('mailto:sales@decodasecurity.com');
 });

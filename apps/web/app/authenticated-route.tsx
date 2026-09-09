@@ -3,6 +3,7 @@
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef } from 'react';
 
+import { PilotAccessRequired, usePilotAccessState } from 'app/pilot-access-gate';
 import { usePilotAuth } from 'app/pilot-auth-context';
 
 export default function AuthenticatedRoute({ children }: { children: React.ReactNode }) {
@@ -12,7 +13,12 @@ export default function AuthenticatedRoute({ children }: { children: React.React
   const { loading, isAuthenticated, liveModeConfigured, user } = usePilotAuth();
   const lastRouteGuardRedirect = useRef<string | null>(null);
   const lastWorkspaceRedirect = useRef<string | null>(null);
-  const lastMembershipRedirect = useRef<string | null>(null);
+  // An authenticated account with no workspace membership belongs to no
+  // organization, so it has no Pilot access. It is NOT sent to the workspace
+  // creation prompt any more: creating a workspace used to mint an active Pilot
+  // tenant, which is exactly the unapproved grant this flow removes.
+  const hasMembership = (user?.memberships?.length ?? 0) > 0;
+  const { state: pilotAccessState } = usePilotAccessState();
 
   const currentPath = `${pathname || '/dashboard'}${searchParams?.toString() ? `?${searchParams.toString()}` : ''}`;
 
@@ -36,7 +42,9 @@ export default function AuthenticatedRoute({ children }: { children: React.React
   }, [currentPath, isAuthenticated, liveModeConfigured, loading, router]);
 
   useEffect(() => {
-    if (!loading && isAuthenticated && liveModeConfigured && !user?.current_workspace && pathname !== '/workspaces') {
+    // Only a member of some organization is offered the workspace picker. An
+    // account with no membership at all is held at the Pilot-access gate below.
+    if (!loading && isAuthenticated && liveModeConfigured && hasMembership && !user?.current_workspace && pathname !== '/workspaces') {
       const next = encodeURIComponent(currentPath);
       const redirectTo = `/workspaces?next=${next}`;
       if (lastWorkspaceRedirect.current === redirectTo) {
@@ -54,18 +62,7 @@ export default function AuthenticatedRoute({ children }: { children: React.React
       });
       router.replace(redirectTo);
     }
-  }, [currentPath, isAuthenticated, liveModeConfigured, loading, pathname, router, user?.current_workspace]);
-
-  useEffect(() => {
-    if (!loading && isAuthenticated && liveModeConfigured && (user?.memberships?.length ?? 0) === 0 && pathname !== '/workspaces') {
-      const redirectTo = '/workspaces?reason=membership_required';
-      if (lastMembershipRedirect.current === redirectTo) {
-        return;
-      }
-      lastMembershipRedirect.current = redirectTo;
-      router.replace(redirectTo);
-    }
-  }, [isAuthenticated, liveModeConfigured, loading, pathname, router, user?.memberships?.length]);
+  }, [currentPath, hasMembership, isAuthenticated, liveModeConfigured, loading, pathname, router, user?.current_workspace]);
 
   if (loading) {
     return (
@@ -89,20 +86,18 @@ export default function AuthenticatedRoute({ children }: { children: React.React
     );
   }
 
+  if (!hasMembership) {
+    // Fail closed while the access state is still unknown: an account with no
+    // membership is shown the gate, never the product, and never a workspace
+    // creation prompt that would provision an unapproved tenant.
+    return <PilotAccessRequired state={pilotAccessState === 'active' ? 'none' : (pilotAccessState ?? 'none')} />;
+  }
+
   if (!user?.current_workspace && pathname !== '/workspaces') {
     return (
       <section className="emptyStatePanel">
         <h1>Preparing your workspace…</h1>
         <p>We need a workspace selection before loading protected product data.</p>
-      </section>
-    );
-  }
-
-  if ((user?.memberships?.length ?? 0) === 0 && pathname !== '/workspaces') {
-    return (
-      <section className="emptyStatePanel">
-        <h1>Workspace access required…</h1>
-        <p>Your account does not currently have workspace membership. Ask a workspace owner/admin for access or create a workspace.</p>
       </section>
     );
   }

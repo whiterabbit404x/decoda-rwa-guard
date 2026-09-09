@@ -7,6 +7,14 @@ import {
   primaryContactEmail,
   primaryContactLabel,
 } from 'app/admin-customer-contact';
+import {
+  canApprove,
+  canReject,
+  canResendInvitation,
+  formatDate as formatRequestDate,
+  statusLabel,
+  type PilotRequest,
+} from 'app/admin/pilot-requests-view';
 import { usePilotAuth } from 'app/pilot-auth-context';
 import { PLAN_LABELS, usageLabel, type UsageEntry } from 'app/plan-status';
 
@@ -62,6 +70,7 @@ function evaluationCell(customer: AdminCustomer): string {
 export default function AdminCustomersClient() {
   const { authHeaders, csrfReady, isAuthenticated } = usePilotAuth();
   const [customers, setCustomers] = useState<AdminCustomer[]>([]);
+  const [pilotRequests, setPilotRequests] = useState<PilotRequest[]>([]);
   const [feedback, setFeedback] = useState<FeedbackItem[]>([]);
   const [denied, setDenied] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -89,6 +98,17 @@ export default function AdminCustomersClient() {
       setDenied(false);
       const payload = (await response.json()) as { customers?: AdminCustomer[] };
       setCustomers(payload.customers ?? []);
+
+      // The review queue. It is loaded from the same internal-admin session and
+      // is never reachable by a customer: the backend authorizes before reading.
+      const requestsResponse = await fetch('/api/admin/pilot-requests', {
+        headers: authHeaders(),
+        cache: 'no-store',
+      });
+      if (requestsResponse.ok) {
+        const requestsPayload = (await requestsResponse.json()) as { requests?: PilotRequest[] };
+        setPilotRequests(requestsPayload.requests ?? []);
+      }
 
       const feedbackResponse = await fetch('/api/admin/feedback', { headers: authHeaders(), cache: 'no-store' });
       if (feedbackResponse.ok) {
@@ -133,6 +153,41 @@ export default function AdminCustomersClient() {
     }
   }
 
+  async function actOnRequest(requestId: string, path: string, body: Record<string, unknown> = {}) {
+    setBusyId(requestId);
+    setError(null);
+    try {
+      const response = await fetch(`/api/admin/pilot-requests/${requestId}/${path}`, {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!response.ok) {
+        const detail = payload.detail;
+        setError(
+          detail && typeof detail === 'object' && typeof (detail as Record<string, unknown>).message === 'string'
+            ? String((detail as Record<string, unknown>).message)
+            : `Action failed (HTTP ${response.status}).`,
+        );
+        return;
+      }
+      // An approval whose email failed is reported here rather than being
+      // rendered as a clean success: the founder needs to know the applicant
+      // received nothing.
+      if (payload.invitation_sent === false) {
+        setError(
+          'Approved, but the invitation email did not send. Use "Resend invitation" once email delivery is working.',
+        );
+      }
+      await load();
+    } catch {
+      setError('Action failed.');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   if (denied) {
     return (
       <main className="adminConsole">
@@ -149,10 +204,95 @@ export default function AdminCustomersClient() {
   return (
     <main className="adminConsole">
       <p className="sectionEyebrow">Decoda internal</p>
-      <h1 style={{ fontSize: '1.3rem', margin: '0 0 1rem' }}>Customer organizations</h1>
+      <h1 style={{ fontSize: '1.3rem', margin: '0 0 1rem' }}>Pilot requests &amp; customers</h1>
 
       {error ? <p className="statusLine" style={{ color: 'var(--danger-fg)' }}>{error}</p> : null}
       {loading ? <p className="muted">Loading…</p> : null}
+
+      <h2 style={{ fontSize: '1.05rem', margin: '0 0 0.6rem' }}>Pilot requests</h2>
+      <p className="muted" style={{ margin: '0 0 0.6rem', fontSize: '0.82rem' }}>
+        Approving sends a single-use invitation to the applicant. It does not activate anything:
+        the Pilot organization is created when the approved person accepts.
+      </p>
+      {!loading && pilotRequests.length === 0 ? (
+        <p className="muted">No Pilot requests yet.</p>
+      ) : (
+        <div className="adminTableWrap">
+          <table className="adminTable">
+            <thead>
+              <tr>
+                <th>Company</th>
+                <th>Primary contact</th>
+                <th>Role</th>
+                <th>Requested</th>
+                <th>Status</th>
+                <th>Use case</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pilotRequests.map((request) => (
+                <tr key={request.id}>
+                  <td>
+                    {request.company_name ?? '—'}
+                    {request.company_website ? (
+                      <span className="adminContactMembers">{request.company_website}</span>
+                    ) : null}
+                  </td>
+                  <td>
+                    <span className="adminContactEmail" title={request.email}>{request.email}</span>
+                  </td>
+                  <td>{request.role ?? '—'}</td>
+                  <td>{formatRequestDate(request.requested_at)}</td>
+                  <td>
+                    {statusLabel(request)}
+                    {request.invitation_delivery_error ? (
+                      <span className="adminContactMembers">Email delivery failed</span>
+                    ) : null}
+                  </td>
+                  <td style={{ whiteSpace: 'normal', maxWidth: '22rem' }}>{request.use_case ?? '—'}</td>
+                  <td>
+                    <div className="adminRowActions">
+                      {canApprove(request) ? (
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={!csrfReady || busyId === request.id}
+                          onClick={() => void actOnRequest(request.id, 'approve')}
+                        >
+                          Approve
+                        </button>
+                      ) : null}
+                      {canResendInvitation(request) ? (
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={!csrfReady || busyId === request.id}
+                          onClick={() => void actOnRequest(request.id, 'resend-invitation')}
+                        >
+                          Resend invitation
+                        </button>
+                      ) : null}
+                      {canReject(request) ? (
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={!csrfReady || busyId === request.id}
+                          onClick={() => void actOnRequest(request.id, 'reject')}
+                        >
+                          Reject
+                        </button>
+                      ) : null}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <h2 style={{ fontSize: '1.05rem', margin: '2rem 0 0.6rem' }}>Customer organizations</h2>
 
       {!loading && customers.length === 0 ? (
         <p className="muted">No organizations yet.</p>

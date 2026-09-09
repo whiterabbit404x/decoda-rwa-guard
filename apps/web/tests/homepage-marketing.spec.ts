@@ -134,7 +134,9 @@ test('homepage links point at real existing routes only', () => {
   const plans = read(APP_DIR, 'pricing-plans.ts');
   expect(plans).toContain('Request Pilot');
   expect(plans).toContain('Contact Sales');
-  expect(plans).toContain("ctaHref: '/sign-up'");
+  // The Pilot CTA is an application for review, not a self-service sign-up.
+  expect(plans).toContain("ctaHref: '/request-pilot'");
+  expect(plans).toContain("ctaHref: '/sign-up?plan=pro'");
   expect(plans).toContain("ctaHref: 'mailto:sales@decodasecurity.com'");
   expect(plans).not.toContain('Start free trial');
 

@@ -2211,6 +2211,12 @@ _CSRF_EXEMPT_PREFIXES = (
     '/auth/mfa/complete-signin',
     '/auth/resend-verification',
     '/auth/csrf-token',
+    # Public, unauthenticated by definition: the applicant has no session and no
+    # CSRF cookie. Neither endpoint mutates anything a session owns — the first
+    # records a PENDING application, the second only reads an invitation — and
+    # both are rate limited. Accepting an invitation is NOT exempt: it is an
+    # authenticated mutation and keeps full CSRF enforcement.
+    '/pilot-requests',
 )
 
 
@@ -4348,6 +4354,74 @@ def admin_customer_plan(organization_id: str, payload: dict[str, Any], request: 
 def admin_feedback(request: Request, organization_id: str | None = None, limit: int = 100) -> dict[str, Any]:
     return with_auth_schema_json(
         lambda: tenancy_endpoints.list_admin_feedback(request, organization_id=organization_id, limit=limit)
+    )
+
+
+# ── Approval-only Pilot access ───────────────────────────────────────────────
+# Public request → internal review → invitation → acceptance → activation.
+# Finding this API grants nothing: POST /pilot-requests only records a PENDING
+# application, and the only route that brings an organization into existence is
+# POST /pilot-invitations/accept, which requires BOTH a valid single-use token
+# and an authenticated account whose address matches the approved one.
+
+@app.post('/pilot-requests', summary='Public: request a Pilot evaluation')
+def pilot_request_submit(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    # Same limiter the public auth endpoints use, keyed on IP + applicant
+    # address, so the form cannot be used to flood the review queue or to
+    # amplify mail.
+    enforce_auth_rate_limit(request, 'pilot_request', (payload or {}).get('email'))
+    return with_auth_schema_json(lambda: tenancy_endpoints.submit_pilot_request(payload, request))
+
+
+@app.get('/pilot-invitations', summary='Public: describe a Pilot invitation')
+def pilot_invitation_lookup(request: Request, token: str = '') -> dict[str, Any]:
+    enforce_auth_rate_limit(request, 'pilot_invitation_lookup', None)
+    return with_auth_schema_json(lambda: tenancy_endpoints.lookup_pilot_invitation(token, request))
+
+
+@app.post('/pilot-invitations/accept', summary='Accept a Pilot invitation and activate the organization')
+def pilot_invitation_accept(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    enforce_auth_rate_limit(request, 'pilot_invitation_accept', None)
+    return with_auth_schema_json(lambda: tenancy_endpoints.accept_pilot_invitation(payload, request))
+
+
+@app.get('/account/pilot-access', summary='Whether this account has Pilot access')
+def account_pilot_access(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: tenancy_endpoints.get_pilot_access_state(request))
+
+
+@app.get('/admin/pilot-requests', summary='Internal: Pilot evaluation request queue')
+def admin_pilot_requests(
+    request: Request, status: str | None = None, limit: int = 100, offset: int = 0,
+) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: tenancy_endpoints.list_admin_pilot_requests(
+            request, status_filter=status, limit=limit, offset=offset,
+        )
+    )
+
+
+@app.post('/admin/pilot-requests/{request_id}/approve', summary='Internal: approve a Pilot request')
+def admin_pilot_request_approve(request_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: tenancy_endpoints.approve_admin_pilot_request(request_id, payload, request)
+    )
+
+
+@app.post('/admin/pilot-requests/{request_id}/reject', summary='Internal: reject a Pilot request')
+def admin_pilot_request_reject(request_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: tenancy_endpoints.reject_admin_pilot_request(request_id, payload, request)
+    )
+
+
+@app.post(
+    '/admin/pilot-requests/{request_id}/resend-invitation',
+    summary='Internal: re-issue and re-send a Pilot invitation',
+)
+def admin_pilot_request_resend(request_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: tenancy_endpoints.resend_admin_pilot_invitation(request_id, request)
     )
 
 

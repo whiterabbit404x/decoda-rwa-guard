@@ -701,7 +701,11 @@ def test_08c_the_founders_own_plan_endpoint_reports_only_their_tenant(
     assert plan['organization']['id'] == ORG_A
 
 
-# ── 9 / 10 / 11 / 12 — what a self-serve signup may and may not ask for ──────
+# ── 9 / 10 / 11 / 12 — what signup and activation may and may not ask for ───
+#
+# Signup creates an ACCOUNT and nothing else (9, 10). The only path that
+# creates a tenant is invitation acceptance, and it decides plan, status and
+# evaluation window itself (11, 12).
 
 PILOT_PATH = Path(__file__).resolve().parents[1] / 'app' / 'pilot.py'
 
@@ -784,6 +788,29 @@ def _organization_insert(connection: _SignupConnection) -> tuple[str, Any]:
     )
 
 
+def _provision(
+    module: Any, monkeypatch: pytest.MonkeyPatch, claim: dict[str, Any] | None = None,
+) -> _SignupConnection:
+    """Drive the ONE path that brings a Pilot tenant into existence.
+
+    Since Pilot access became approval-only, ``signup_user`` provisions nothing;
+    an organization is created only by ``provision_pilot_organization``, reached
+    from invitation acceptance. ``claim`` is passed in the shape a hostile client
+    would use — and is deliberately NOT threaded into the call, because the
+    function takes no plan, status, role, or entitlement argument at all. That
+    absence is the control being asserted: there is no parameter to abuse.
+    """
+    connection = _SignupConnection()
+    monkeypatch.setattr(module, 'log_audit', lambda *_a, **_k: None)
+    module.provision_pilot_organization(
+        connection,
+        user_id='user-1',
+        organization_name=str((claim or {}).get('workspace_name') or 'Evaluator Ops'),
+        request=SimpleNamespace(headers={}, client=None),
+    )
+    return connection
+
+
 def test_09_a_normal_signup_never_writes_the_internal_admin_column(
     signup_pilot: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -815,8 +842,34 @@ def test_10_a_signup_body_cannot_ask_for_internal_admin(
     })
 
     assert not any('is_internal_admin' in sql.lower() for sql, _ in connection.writes)
-    _statement, params = _organization_insert(connection)
-    assert params[3] == ent.PLAN_PILOT
+
+
+@pytest.mark.parametrize('claim', [
+    {'is_internal_admin': True},
+    {'plan': 'enterprise'},
+    {'organization_id': 'aaaaaaaa-1111-1111-1111-111111111111'},
+])
+def test_10_b_a_signup_grants_no_tenant_at_all(
+    signup_pilot: Any, monkeypatch: pytest.MonkeyPatch, claim: dict[str, Any],
+) -> None:
+    """Pilot access is approval-only, so signing up provisions NOTHING.
+
+    This is the loophole that used to exist: anyone who found the product URL
+    could sign up and be handed an active Pilot organization, with its own
+    workspace and a live evaluation window, without Decoda approving them.
+    """
+    connection = _signup(signup_pilot, monkeypatch, {
+        'email': CUSTOMER_EMAIL, 'password': 'StrongPass1234',
+        'full_name': 'Pilot Evaluator', 'workspace_name': 'Evaluator Ops',
+        **claim,
+    })
+
+    written = [sql.lower() for sql, _ in connection.writes]
+    assert not any(sql.startswith('insert into organizations') for sql in written)
+    assert not any(sql.startswith('insert into organization_memberships') for sql in written)
+    assert not any(sql.startswith('insert into workspaces') for sql in written)
+    assert not any(sql.startswith('insert into workspace_members') for sql in written)
+    assert connection.organizations == {}
 
 
 @pytest.mark.parametrize('claim', [
@@ -826,14 +879,16 @@ def test_10_a_signup_body_cannot_ask_for_internal_admin(
     {'plan': 'enterprise', 'entitlement_overrides': {'max_monitored_contracts': 9999}},
     {'entitlements': {'automatic_execution': True}},
 ])
-def test_11_a_signup_body_cannot_ask_for_a_paid_plan_or_an_override(
+def test_11_a_activation_cannot_be_asked_for_a_paid_plan_or_an_override(
     signup_pilot: Any, monkeypatch: pytest.MonkeyPatch, claim: dict[str, Any],
 ) -> None:
-    connection = _signup(signup_pilot, monkeypatch, {
-        'email': CUSTOMER_EMAIL, 'password': 'StrongPass1234',
-        'full_name': 'Pilot Evaluator', 'workspace_name': 'Evaluator Ops',
-        **claim,
-    })
+    """The one tenant-creating path decides plan and status by itself.
+
+    ``provision_pilot_organization`` accepts a user, a name, and a request — and
+    no plan, status, role, or entitlement. A client asking for Scale, Enterprise,
+    or a raised limit has nowhere to put the request.
+    """
+    connection = _provision(signup_pilot, monkeypatch, claim)
 
     statement, params = _organization_insert(connection)
     assert params[3] == ent.PLAN_PILOT
@@ -849,10 +904,7 @@ def test_11_a_signup_body_cannot_ask_for_a_paid_plan_or_an_override(
 def test_12_a_new_organization_defaults_to_pilot_with_a_real_evaluation_window(
     signup_pilot: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connection = _signup(signup_pilot, monkeypatch, {
-        'email': CUSTOMER_EMAIL, 'password': 'StrongPass1234',
-        'full_name': 'Pilot Evaluator', 'workspace_name': 'Evaluator Ops',
-    })
+    connection = _provision(signup_pilot, monkeypatch)
 
     _statement, params = _organization_insert(connection)
     _org_id, _name, _slug, plan, status_value, started_at, expires_at = params
@@ -868,10 +920,7 @@ def test_12b_the_pilot_evaluation_length_follows_its_configured_value(
     signup_pilot: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(ent.EVALUATION_DAYS_ENV, '14')
-    connection = _signup(signup_pilot, monkeypatch, {
-        'email': CUSTOMER_EMAIL, 'password': 'StrongPass1234',
-        'full_name': 'Pilot Evaluator', 'workspace_name': 'Evaluator Ops',
-    })
+    connection = _provision(signup_pilot, monkeypatch)
 
     _statement, params = _organization_insert(connection)
     assert (params[6] - params[5]).days == 14

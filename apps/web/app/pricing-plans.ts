@@ -7,9 +7,13 @@
 // labels and CTA routes cannot drift apart between the two surfaces.
 //
 // Positioning for institutional RWA security buyers:
-//   Pilot      — evaluation against live assets
+//   Pilot      — evaluation against live assets, by approval only
 //   Scale      — production monitoring / incident response / evidence
 //   Enterprise — institutional, custom deployment
+//
+// The Pilot CTA leads to /request-pilot, which records an application for review.
+// It is not a self-service trial: no plan, workspace, or monitoring exists until
+// Decoda approves the request and the applicant accepts the invitation.
 //
 // Truthfulness: every feature string below describes a capability the product
 // actually ships, or — for Enterprise — a service that is explicitly custom or
@@ -62,7 +66,10 @@ export const PRICING_PLANS: PricingPlan[] = [
       'Validate Decoda’s monitoring, threat detection, and evidence workflows against your live RWA assets.',
     featured: false,
     ctaLabel: 'Request Pilot →',
-    ctaHref: '/sign-up',
+    // Approval-only: this goes to the Pilot APPLICATION, not to sign-up. Sending
+    // it to sign-up would be the old self-serve path, where anyone who found the
+    // URL received an active evaluation without Decoda approving them.
+    ctaHref: '/request-pilot',
     highlights: [
       '1 workspace',
       '5 monitored contracts',

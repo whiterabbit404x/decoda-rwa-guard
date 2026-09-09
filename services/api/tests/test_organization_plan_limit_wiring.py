@@ -222,7 +222,7 @@ def test_create_workspace_reuses_the_callers_tenant_not_a_new_one(
     )
 
     resolved = pilot._resolve_organization_for_new_workspace(
-        connection, user_id=USER, workspace_name='Second workspace',
+        connection, user_id=USER,
     )
     assert resolved['id'] == 'org-1'
     assert created == []
@@ -232,19 +232,61 @@ def test_create_workspace_ignores_a_stale_current_workspace_without_membership(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A current_workspace_id the caller no longer belongs to must not attach a
-    new workspace to that tenant."""
+    new workspace to that tenant — and must not mint a fresh one either.
+
+    Minting was the second self-serve Pilot loophole: any authenticated account
+    could reach the workspace route and receive a brand-new ACTIVE Pilot
+    organization without anyone at Decoda approving them. The refusal is the
+    behaviour under test; ``create_organization`` failing the test if called is
+    what makes "no new tenant" an assertion rather than an assumption.
+    """
     connection = _RecordingConn(reads={'select current_workspace_id from users': {'current_workspace_id': WS}})
     monkeypatch.setattr(org_service, 'tenancy_schema_ready', lambda *_: True)
     monkeypatch.setattr(
         org_service, 'ensure_organization_for_workspace',
         lambda *_a, **_k: pytest.fail('must not resolve a tenant without membership'),
     )
-    monkeypatch.setattr(org_service, 'create_organization', lambda *_a, **_k: {'id': 'org-new'})
+    monkeypatch.setattr(
+        org_service, 'create_organization',
+        lambda *_a, **_k: pytest.fail('must not mint a tenant for an unapproved account'),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        pilot._resolve_organization_for_new_workspace(
+            connection, user_id=USER,
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail['code'] == pilot.PILOT_ACCESS_REQUIRED_CODE
+
+
+def test_create_workspace_uses_the_organization_the_caller_already_belongs_to(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An existing member with no current workspace keeps working.
+
+    This is the case that must NOT be caught by the refusal above: a customer
+    whose ``current_workspace_id`` is empty still belongs to a tenant, so the new
+    workspace joins that tenant and is counted against its limit. The tenant is
+    read from membership, never from the request.
+    """
+    organization = {'id': 'org-existing', 'plan': ent.PLAN_PILOT, 'status': ent.STATUS_ACTIVE,
+                    'entitlement_overrides': {}, 'evaluation_expires_at': None}
+    connection = _RecordingConn(reads={
+        'select current_workspace_id from users': {'current_workspace_id': None},
+        'from organization_memberships m join organizations o': organization,
+    })
+    monkeypatch.setattr(org_service, 'tenancy_schema_ready', lambda *_: True)
+    monkeypatch.setattr(
+        org_service, 'create_organization',
+        lambda *_a, **_k: pytest.fail('an existing member must not be given a second tenant'),
+    )
+    monkeypatch.setattr(org_service, 'count_workspaces', lambda *_a, **_k: 0)
 
     resolved = pilot._resolve_organization_for_new_workspace(
-        connection, user_id=USER, workspace_name='Fresh workspace',
+        connection, user_id=USER,
     )
-    assert resolved['id'] == 'org-new'
+    assert resolved['id'] == 'org-existing'
 
 
 # ── 4 — evidence packages ─────────────────────────────────────────────────────

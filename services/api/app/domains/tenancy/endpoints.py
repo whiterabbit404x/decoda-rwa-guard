@@ -2,9 +2,15 @@
 
 Contract
 --------
+Public (no session at all):
+  * ``POST /pilot-requests``     apply for a Pilot evaluation → PENDING
+  * ``GET  /pilot-invitations``  describe an invitation to its token holder
+
 Customer-facing (organization derived from the authenticated session only):
-  * ``GET  /account/plan``       plan, lifecycle, usage, entitlements
-  * ``POST /account/feedback``   one pilot feedback row
+  * ``GET  /account/plan``               plan, lifecycle, usage, entitlements
+  * ``POST /account/feedback``           one pilot feedback row
+  * ``GET  /account/pilot-access``       does THIS account have Pilot access
+  * ``POST /pilot-invitations/accept``   activate the approved organization
 
 Internal founder admin (``users.is_internal_admin`` or the exact-address
 deployment allowlist — never a workspace role, never a request parameter):
@@ -14,6 +20,10 @@ deployment allowlist — never a workspace role, never a request parameter):
   * ``POST  /admin/customers/{id}/status``            suspend / reactivate / expire
   * ``POST  /admin/customers/{id}/plan``              change plan in place
   * ``GET   /admin/feedback``                         evaluator feedback
+  * ``GET   /admin/pilot-requests``                   the review queue
+  * ``POST  /admin/pilot-requests/{id}/approve``      approve + invite
+  * ``POST  /admin/pilot-requests/{id}/reject``       decline
+  * ``POST  /admin/pilot-requests/{id}/resend-invitation``  re-issue the link
 
 What these handlers deliberately do NOT do
 ------------------------------------------
@@ -24,7 +34,10 @@ their purpose — and every one of them authorizes internal staff BEFORE reading
 anything, so a customer receives 403 and no organization data.
 
 Nothing here can grant internal admin: there is no write path to
-``users.is_internal_admin`` in the API at all.
+``users.is_internal_admin`` in the API at all. Nor can anything here grant Pilot
+access: the public request endpoint only records an application, and the only
+route that creates an organization is invitation acceptance, which first proves
+internal staff approved the address AND that the authenticated account owns it.
 
 The one personal datum the admin listing carries is each organization's primary
 contact ADDRESS — which human to contact about a tenant — resolved from
@@ -41,6 +54,7 @@ from typing import Any
 from services.api.app import entitlements as ent
 from services.api.app import organizations as org_service
 from services.api.app import pilot
+from services.api.app import pilot_access
 
 try:  # fastapi is stubbed in the offline test runner
     from fastapi import HTTPException, status
@@ -369,3 +383,432 @@ def list_admin_feedback(request: Any, organization_id: str | None = None, limit:
         _require_tenancy_schema(connection)
         items = org_service.list_feedback(connection, organization_id=organization_id, limit=limit)
         return {'feedback': items, 'count': len(items)}
+
+
+# ── approval-only Pilot access ───────────────────────────────────────────────
+# Three surfaces with three different authorization postures:
+#
+#   PUBLIC    POST /pilot-requests            unauthenticated; creates a PENDING
+#                                             row and provisions nothing
+#   INTERNAL  GET/POST /admin/pilot-requests… require_internal_admin FIRST
+#   INVITEE   GET  /pilot-invitations         unauthenticated token lookup
+#             POST /pilot-invitations/accept  authenticated; email must match
+#
+# No surface below reads an organization_id, plan, role, or entitlement from the
+# caller. Those are server-decided at activation time, in pilot.provision_pilot_
+# organization.
+
+def submit_pilot_request(payload: dict[str, Any], request: Any) -> dict[str, Any]:
+    """Record one PENDING Pilot evaluation request from the public website.
+
+    What this deliberately does not do: create an organization, create a
+    workspace, grant an entitlement, start monitoring, touch an RPC provider, or
+    queue a background job. A pending row is a queue entry for a human reviewer,
+    and it stays inert until internal staff approve it.
+
+    The response never says whether the address already applied in a way that
+    changes the outcome — a duplicate is reported as "already under review",
+    which is what the applicant needs to know and reveals nothing about anyone
+    else's request.
+    """
+    pilot.require_live_mode()
+    fields = pilot_access.validate_submission(payload)
+    client = getattr(request, 'client', None)
+    source_ip = client.host if client else None
+    with pilot.pg_connection() as connection:
+        pilot.ensure_pilot_schema(connection)
+        pilot_access.require_schema(connection)
+        result = pilot_access.submit_request(connection, fields=fields, source_ip=source_ip)
+        record = result['request']
+        if not result['duplicate']:
+            # The applicant is not an authenticated user, so the audit row has no
+            # actor and no workspace. It records the FACT of the submission and
+            # its business context — never a credential, and never the free-text
+            # use case, which stays in the one table internal staff read.
+            pilot.log_audit(
+                connection,
+                action='pilot_request.submitted',
+                entity_type='pilot_request',
+                entity_id=str(record['id']),
+                request=request,
+                user_id=None,
+                workspace_id=None,
+                metadata={
+                    'email': record['email'],
+                    'company_name': record['company_name'],
+                    'status': record['status'],
+                },
+            )
+        connection.commit()
+    logger.info(
+        'pilot_request_submitted duplicate=%s status=%s', result['duplicate'], record['status'],
+    )
+    return {
+        'received': True,
+        'duplicate': bool(result['duplicate']),
+        'status': record['status'],
+        'message': (
+            'An evaluation request for this email is already under review.'
+            if result['duplicate']
+            else 'Pilot request received. We will review your request and contact you by email.'
+        ),
+        'request': pilot_access.public_request_summary(record),
+    }
+
+
+def get_pilot_access_state(request: Any) -> dict[str, Any]:
+    """Whether the CALLER has Pilot access, and if not, which state they are in.
+
+    Reported from the caller's own session only. There is no parameter naming a
+    user or an email, so this cannot be used to probe whether someone else has
+    applied.
+    """
+    pilot.require_live_mode()
+    with pilot.pg_connection() as connection:
+        pilot.ensure_pilot_schema(connection)
+        user = pilot.authenticate_with_connection(connection, request)
+        state = pilot_access.access_state_for_user(
+            connection, user_id=str(user['id']), email=str(user.get('email') or ''),
+        )
+        return {
+            'state': state['state'],
+            'has_access': bool(state['has_access']),
+            'request': state['request'],
+        }
+
+
+# ── internal review ──────────────────────────────────────────────────────────
+def _require_pilot_request_schema(connection: Any) -> None:
+    pilot_access.require_schema(connection)
+
+
+def list_admin_pilot_requests(
+    request: Any, status_filter: str | None = None, limit: int = 100, offset: int = 0,
+) -> dict[str, Any]:
+    pilot.require_live_mode()
+    with pilot.pg_connection() as connection:
+        pilot.ensure_pilot_schema(connection)
+        org_service.require_internal_admin(connection, request)
+        _require_pilot_request_schema(connection)
+        requests = pilot_access.list_requests(
+            connection, status=status_filter, limit=limit, offset=offset,
+        )
+        return {'requests': requests, 'count': len(requests)}
+
+
+def _pilot_request_audit(
+    connection: Any,
+    request: Any,
+    *,
+    actor_user_id: str | None,
+    action: str,
+    record: dict[str, Any],
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """One audit row per Pilot-request lifecycle action.
+
+    ``workspace_id`` is None: these are TENANT-level decisions taken before any
+    workspace exists. The raw invitation token is never a member of ``metadata``
+    — only the fact that one was issued, and when it expires.
+    """
+    pilot.log_audit(
+        connection,
+        action=action,
+        entity_type='pilot_request',
+        entity_id=str(record['id']),
+        request=request,
+        user_id=actor_user_id,
+        workspace_id=None,
+        metadata={
+            'email': record.get('email'),
+            'company_name': record.get('company_name'),
+            'status': record.get('status'),
+            **(metadata or {}),
+        },
+    )
+
+
+def approve_admin_pilot_request(
+    request_id: str, payload: dict[str, Any], request: Any,
+) -> dict[str, Any]:
+    """Approve a request and send its single-use invitation.
+
+    Approving is NOT activation. No organization, workspace, plan, or monitoring
+    is created here; the invitation only grants the right to activate, and only
+    to the approved address, once, before it expires.
+
+    If email delivery fails the approval still stands and the console shows
+    "Approved — invitation not sent" with a retry, because telling the founder
+    that a link was delivered when it was not is precisely the kind of quiet
+    falsehood this product refuses to render.
+    """
+    pilot.require_live_mode()
+    with pilot.pg_connection() as connection:
+        pilot.ensure_pilot_schema(connection)
+        admin = org_service.require_internal_admin(connection, request)
+        _require_pilot_request_schema(connection)
+        record, raw_token = pilot_access.approve_request(
+            connection, request_id=request_id, reviewer_user_id=str(admin['id']),
+        )
+        _pilot_request_audit(
+            connection, request,
+            actor_user_id=str(admin['id']),
+            action='pilot_request.approved',
+            record=record,
+            metadata={
+                'invitation_issued': True,
+                'invitation_expires_at': (
+                    record['invitation_expires_at'].isoformat()
+                    if hasattr(record.get('invitation_expires_at'), 'isoformat')
+                    else record.get('invitation_expires_at')
+                ),
+            },
+        )
+        delivery_error: str | None = None
+        try:
+            pilot._dispatch_transactional_email(
+                connection,
+                to_email=str(record['email']),
+                purpose='pilot_invitation',
+                token=raw_token,
+                request=request,
+                context={
+                    'company_name': record.get('company_name'),
+                    'reference': str(record['id']),
+                    'ttl_hours': pilot_access.invitation_ttl_hours(),
+                    'evaluation_days': pilot_access.evaluation_days(),
+                },
+            )
+        except Exception as exc:  # delivery is best-effort; the approval is not
+            delivery_error = f'{type(exc).__name__}: {exc}'
+            logger.warning('pilot_invitation_delivery_failed request_id=%s', record['id'], exc_info=True)
+            record = pilot_access.mark_invitation_failed(
+                connection, request_id=str(record['id']), error=delivery_error,
+            ) or record
+            _pilot_request_audit(
+                connection, request,
+                actor_user_id=str(admin['id']),
+                action='pilot_request.invitation_delivery_failed',
+                record=record,
+                metadata={'error_type': type(exc).__name__},
+            )
+        else:
+            record = pilot_access.mark_invitation_sent(connection, request_id=str(record['id'])) or record
+            _pilot_request_audit(
+                connection, request,
+                actor_user_id=str(admin['id']),
+                action='pilot_request.invitation_sent',
+                record=record,
+                metadata={'delivered': True},
+            )
+        connection.commit()
+        return {
+            'request': pilot_access.admin_view(record),
+            'invitation_sent': delivery_error is None,
+            # The failure reason is internal-console detail. The raw token is
+            # NOT returned: it lives in the email, and nowhere else.
+            'invitation_error': delivery_error,
+        }
+
+
+def resend_admin_pilot_invitation(request_id: str, request: Any) -> dict[str, Any]:
+    """Re-issue and re-send an invitation for an already-approved request.
+
+    A retry mints a FRESH token and a fresh expiry rather than resending the old
+    one, so a link that leaked from a failed delivery attempt is dead once the
+    replacement is issued.
+    """
+    return approve_admin_pilot_request(request_id, {}, request)
+
+
+def reject_admin_pilot_request(
+    request_id: str, payload: dict[str, Any], request: Any,
+) -> dict[str, Any]:
+    """Decline a request. No invitation, no workspace, no monitoring, no cost."""
+    pilot.require_live_mode()
+    body = payload if isinstance(payload, dict) else {}
+    with pilot.pg_connection() as connection:
+        pilot.ensure_pilot_schema(connection)
+        admin = org_service.require_internal_admin(connection, request)
+        _require_pilot_request_schema(connection)
+        record = pilot_access.reject_request(
+            connection,
+            request_id=request_id,
+            reviewer_user_id=str(admin['id']),
+            internal_note=body.get('internal_note'),
+        )
+        _pilot_request_audit(
+            connection, request,
+            actor_user_id=str(admin['id']),
+            action='pilot_request.rejected',
+            record=record,
+            # Whether a note was written is auditable; its text is not copied
+            # into a log that more surfaces read.
+            metadata={'internal_note_recorded': bool(record.get('internal_note'))},
+        )
+        connection.commit()
+        return {'request': pilot_access.admin_view(record)}
+
+
+# ── invitation lookup and acceptance ─────────────────────────────────────────
+def _invitation_refusal(code: str, message: str) -> Exception:
+    return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={'code': code, 'message': message})
+
+
+def lookup_pilot_invitation(token: str, request: Any) -> dict[str, Any]:
+    """Describe an invitation to whoever holds its token.
+
+    The token IS the credential, so holding it is what authorizes this read. The
+    response carries only what the recipient already has — the address the
+    invitation was mailed to and the company they named — so the page can say
+    "sign in as security@company.com" instead of failing mysteriously after
+    sign-in. It never carries an organization id, a plan, or an entitlement.
+    """
+    pilot.require_live_mode()
+    with pilot.pg_connection() as connection:
+        pilot.ensure_pilot_schema(connection)
+        pilot_access.require_schema(connection)
+        record = pilot_access.find_by_token(connection, token)
+        problem = pilot_access.invitation_problem(record)
+        if problem is not None:
+            code, message = problem
+            if record is not None and code == pilot_access.CODE_INVITATION_EXPIRED:
+                # Retire the token as we discover it has lapsed, so the same link
+                # stops resolving from this point on.
+                pilot_access.expire_invitation(connection, request_id=str(record['id']))
+                _pilot_request_audit(
+                    connection, request,
+                    actor_user_id=None,
+                    action='pilot_request.invitation_expired',
+                    record=record,
+                )
+                connection.commit()
+            return {'valid': False, 'code': code, 'message': message, 'invitation': None}
+        return {
+            'valid': True,
+            'code': None,
+            'message': None,
+            'invitation': {
+                'email': record['email'],
+                'company_name': record['company_name'],
+                'expires_at': (
+                    record['invitation_expires_at'].isoformat()
+                    if hasattr(record.get('invitation_expires_at'), 'isoformat')
+                    else record.get('invitation_expires_at')
+                ),
+                'evaluation_days': pilot_access.evaluation_days(),
+            },
+        }
+
+
+def accept_pilot_invitation(payload: dict[str, Any], request: Any) -> dict[str, Any]:
+    """Activate the approved Pilot organization for the invited person.
+
+    Three facts must all hold, and all are checked server-side:
+
+      1. the token resolves to a request that is approved, unused, and unexpired
+      2. the authenticated account has VERIFIED its address, so ownership of it
+         is proven rather than merely claimed
+      3. that address equals the approved address, under the same normalisation
+         the auth model uses
+
+    An invitation approved for ``security@company.com`` therefore cannot be
+    accepted by ``attacker@gmail.com``, whatever the request body says. The body
+    is read for exactly one field — the token — so there is no organization id,
+    plan, role, or internal-admin flag a caller could supply.
+    """
+    pilot.require_live_mode()
+    body = payload if isinstance(payload, dict) else {}
+    token = str(body.get('token') or '').strip()
+    if not token:
+        raise _invitation_refusal(
+            pilot_access.CODE_INVITATION_INVALID, 'This invitation link is not valid.',
+        )
+    with pilot.pg_connection() as connection:
+        pilot.ensure_pilot_schema(connection)
+        user = pilot.authenticate_with_connection(connection, request)
+        pilot_access.require_schema(connection)
+        record = pilot_access.find_by_token(connection, token)
+        problem = pilot_access.invitation_problem(record)
+        if problem is not None:
+            code, message = problem
+            if record is not None and code == pilot_access.CODE_INVITATION_EXPIRED:
+                pilot_access.expire_invitation(connection, request_id=str(record['id']))
+                connection.commit()
+            logger.warning('pilot_invitation_refused code=%s user_id=%s', code, user.get('id'))
+            raise _invitation_refusal(code, message)
+        # Owning the address is the whole claim being checked, so it must be
+        # PROVEN, not asserted. Sign-in already refuses an unverified account;
+        # this states the requirement where the grant is made, so the guarantee
+        # does not depend on a policy decision made in another module.
+        if not user.get('email_verified'):
+            logger.warning('pilot_invitation_refused code=email_unverified user_id=%s', user.get('id'))
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    'code': pilot_access.CODE_INVITATION_EMAIL_MISMATCH,
+                    'message': (
+                        'Verify your email address before accepting this invitation.'
+                    ),
+                },
+            )
+        account_email = pilot_access.normalize_email(user.get('email'))
+        invited_email = pilot_access.normalize_email(record['email'])
+        if not account_email or account_email != invited_email:
+            logger.warning(
+                'pilot_invitation_email_mismatch request_id=%s user_id=%s', record['id'], user.get('id'),
+            )
+            # The invited address is NOT echoed back to a non-matching caller:
+            # someone holding a leaked link learns nothing about who it was for.
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    'code': pilot_access.CODE_INVITATION_EMAIL_MISMATCH,
+                    'message': (
+                        'This invitation was issued to a different email address. '
+                        'Sign in with the address the invitation was sent to.'
+                    ),
+                },
+            )
+        provisioned = pilot.provision_pilot_organization(
+            connection,
+            user_id=str(user['id']),
+            organization_name=str(record['company_name'] or '').strip() or 'Workspace',
+            request=request,
+        )
+        organization = provisioned['organization']
+        updated = pilot_access.mark_activated(
+            connection, request_id=str(record['id']), organization_id=str(organization['id']),
+        )
+        if updated is None or str(updated.get('status')) != pilot_access.STATUS_ACTIVATED:
+            # Another acceptance won the race. Nothing is committed, so the
+            # organization and workspace written above are rolled back with it.
+            connection.rollback()
+            raise _invitation_refusal(
+                pilot_access.CODE_INVITATION_USED, 'This invitation has already been used.',
+            )
+        _pilot_request_audit(
+            connection, request,
+            actor_user_id=str(user['id']),
+            action='pilot_request.invitation_accepted',
+            record=updated,
+            metadata={
+                'organization_id': str(organization['id']),
+                'workspace_id': provisioned['workspace_id'],
+                'plan': ent.normalize_plan(organization.get('plan')),
+            },
+        )
+        connection.commit()
+        user_payload = pilot.build_user_response(connection, str(user['id']))
+        return {
+            'activated': True,
+            'organization': {
+                'id': str(organization['id']),
+                'name': organization.get('name'),
+                'plan': ent.normalize_plan(organization.get('plan')),
+                'status': ent.normalize_status(organization.get('status')),
+            },
+            'evaluation': ent.evaluation_payload(organization),
+            'workspace': {'id': provisioned['workspace_id'], 'name': provisioned['workspace_name']},
+            'user': user_payload,
+        }
