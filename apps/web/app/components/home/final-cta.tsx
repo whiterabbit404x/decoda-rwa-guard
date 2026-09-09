@@ -1,10 +1,10 @@
-import Link from 'next/link';
-
+import type { LandingSessionHint } from '../../auth-guards';
 import { HomeIcon } from './home-icons';
 import { ROUTES } from './home-data';
+import { StartMonitoringCta } from './start-monitoring-cta';
 import styles from './home.module.css';
 
-export function FinalCTA() {
+export function FinalCTA({ sessionHint }: { sessionHint: LandingSessionHint }) {
   return (
     <section className={styles.finalCta}>
       <div className={styles.finalInner}>
@@ -18,10 +18,7 @@ export function FinalCTA() {
           </p>
         </div>
         <div className={styles.finalActions}>
-          <Link href={ROUTES.startMonitoring} className={styles.btnPrimary} prefetch={false}>
-            Start monitoring
-            <HomeIcon name="arrowRight" className={styles.btnArrow} />
-          </Link>
+          <StartMonitoringCta sessionHint={sessionHint} withArrow />
           <a href={ROUTES.demoMailto} className={styles.btnSecondary}>
             Book a demo
           </a>

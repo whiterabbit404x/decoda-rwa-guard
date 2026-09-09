@@ -1,11 +1,11 @@
-import Link from 'next/link';
-
+import type { LandingSessionHint } from '../../auth-guards';
 import { HomeIcon } from './home-icons';
 import { heroCapabilities, ROUTES } from './home-data';
 import { IncidentWorkflowDemo } from './incident-workflow-demo';
+import { StartMonitoringCta } from './start-monitoring-cta';
 import styles from './home.module.css';
 
-export function HeroSection() {
+export function HeroSection({ sessionHint }: { sessionHint: LandingSessionHint }) {
   return (
     <section className={styles.hero}>
       <div className={styles.heroInner}>
@@ -26,10 +26,7 @@ export function HeroSection() {
           </p>
 
           <div className={styles.heroCtas}>
-            <Link href={ROUTES.startMonitoring} className={styles.btnPrimary} prefetch={false}>
-              Start monitoring
-              <HomeIcon name="arrowRight" className={styles.btnArrow} />
-            </Link>
+            <StartMonitoringCta sessionHint={sessionHint} withArrow />
             <a href={ROUTES.platformAnchor} className={styles.btnSecondary}>
               Explore the platform
             </a>

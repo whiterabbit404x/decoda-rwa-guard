@@ -225,6 +225,124 @@
   font-size: 14px;
 }
 
+/* ── Auth-aware header controls ───────────────────────────── */
+/* Neutral placeholder shown while the canonical session check is still in
+   flight for a visitor whose request carried a session cookie. It deliberately
+   asserts nothing: not "signed in", not "signed out". Static (no animation) so
+   it is safe under prefers-reduced-motion. */
+.authPending {
+  display: inline-block;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: var(--surface-2);
+  border: 1px solid var(--line-soft);
+}
+.authPendingWide {
+  width: 104px;
+}
+
+.accountMenu {
+  position: relative;
+  display: inline-flex;
+}
+.accountTrigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--surface-hi);
+  color: var(--ink);
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease;
+}
+.accountTrigger:hover {
+  border-color: var(--line-blue);
+  background: rgba(96, 165, 250, 0.1);
+}
+.accountAvatar {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.accountPanel {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 70;
+  min-width: 220px;
+  max-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: rgba(10, 15, 26, 0.98);
+  box-shadow: 0 18px 40px -20px rgba(0, 0, 0, 0.9);
+}
+.accountIdentity {
+  margin: 0;
+  padding: 4px 8px 2px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.accountIdentitySub {
+  margin: 0 0 6px;
+  padding: 0 8px 6px;
+  font-size: 12px;
+  color: var(--ink-3);
+  border-bottom: 1px solid var(--line-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.accountItem {
+  display: block;
+  width: 100%;
+  padding: 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  color: var(--ink-2);
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 0.16s ease, background 0.16s ease;
+}
+.accountItem:hover {
+  color: var(--ink);
+  background: var(--surface-2);
+}
+
+.mobileAuth {
+  display: flex;
+  flex-direction: column;
+}
+.mobileAccountIdentity {
+  margin: 14px 0 0;
+  padding: 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobileAuth .mobileRow {
+  margin-top: 10px;
+}
+
 .hamburger {
   display: none;
   flex-direction: column;

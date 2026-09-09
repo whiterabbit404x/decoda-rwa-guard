@@ -3,6 +3,8 @@
 import Link from 'next/link';
 import { useState } from 'react';
 
+import type { LandingSessionHint } from '../../auth-guards';
+import { AuthNav } from './auth-nav';
 import { DecodaLogo } from './home-icons';
 import { ROUTES } from './home-data';
 import styles from './home.module.css';
@@ -14,7 +16,7 @@ const NAV_LINKS = [
   { label: 'Pricing', href: ROUTES.pricingAnchor },
 ];
 
-export function MarketingHeader() {
+export function MarketingHeader({ sessionHint }: { sessionHint: LandingSessionHint }) {
   const [open, setOpen] = useState(false);
   const close = () => setOpen(false);
 
@@ -34,14 +36,7 @@ export function MarketingHeader() {
           ))}
         </nav>
 
-        <div className={styles.navRight}>
-          <Link href={ROUTES.signIn} className={styles.signIn} prefetch={false}>
-            Sign in
-          </Link>
-          <Link href={ROUTES.startMonitoring} className={`${styles.btnPrimary} ${styles.headerCta}`} prefetch={false}>
-            Start monitoring
-          </Link>
-        </div>
+        <AuthNav sessionHint={sessionHint} variant="desktop" />
 
         <button
           type="button"
@@ -62,14 +57,7 @@ export function MarketingHeader() {
             {link.label}
           </a>
         ))}
-        <div className={styles.mobileRow}>
-          <Link href={ROUTES.signIn} className={styles.btnSecondary} prefetch={false} onClick={close}>
-            Sign in
-          </Link>
-          <Link href={ROUTES.startMonitoring} className={styles.btnPrimary} prefetch={false} onClick={close}>
-            Start monitoring
-          </Link>
-        </div>
+        <AuthNav sessionHint={sessionHint} variant="mobile" onNavigate={close} />
       </div>
     </header>
   );
