@@ -75,6 +75,86 @@ export type VerificationResult = {
   signer?: SignerMetadata;
 };
 
+/**
+ * THE canonical verification contract (backend ``build_verification_contract``).
+ *
+ * One backend result. The package table's Integrity column, the package detail
+ * view, the Crypto-Auditing Clerk and the Verification Checklist all render THIS
+ * — none of them computes a verification outcome of its own. That is the fix for
+ * the contradiction production showed, where the checklist was served from a
+ * build-time completeness snapshot frozen before verification could have run and
+ * therefore said "Hashes verified ✗" beside Files Verified = 9.
+ */
+export type VerificationContract = {
+  overall_status: string;
+  overall_label?: string;
+  verified?: boolean;
+  /** A real server-side verification has run. False => nothing to render as an outcome. */
+  executed?: boolean;
+  verified_at?: string | null;
+  integrity_status?: string | null;
+  shield?: { state: string; label: string; verified?: boolean };
+  artifact_hashes?: {
+    /** Artifacts carrying a stored SHA-256 (a packaging fact). */
+    files_hashed?: number;
+    /** Artifacts whose current bytes were recomputed AND matched. */
+    files_verified?: number;
+    verifiable_count?: number;
+    total?: number;
+    hash_failures?: number;
+    failed_artifact_ids?: string[];
+    missing_artifact_ids?: string[];
+    hashes_verified?: boolean;
+    status?: string;
+    label?: string;
+  };
+  merkle_root?: VerificationCategory;
+  manifest_signature?: VerificationCategory;
+  policy_snapshot?: VerificationCategory;
+  provenance?: VerificationCategory;
+  required_evidence?: VerificationCategory;
+  manifest_hash?: VerificationCategory;
+  /** Evidence completeness — reported alongside, never an input to the status. */
+  completeness?: {
+    score?: number | null;
+    status?: string | null;
+    required_count?: number | null;
+    present_count?: number | null;
+    missing_count?: number | null;
+    unverifiable_count?: number | null;
+    complete?: boolean;
+  };
+  checklist?: VerificationChecklistItem[];
+  checks?: VerificationCheck[];
+  signer?: SignerMetadata | null;
+  failed_checks?: string[];
+  unavailable_checks?: string[];
+};
+
+export type VerificationCategory = {
+  status: string;
+  valid?: boolean;
+  label?: string;
+  detail?: string | null;
+  expected?: string | null;
+  computed?: string | null;
+  state?: string | null;
+  key_id?: string | null;
+  provider?: string | null;
+  algorithm?: string | null;
+};
+
+export type VerificationChecklistItem = {
+  code: string;
+  label: string;
+  /** passed | failed | not_verified | unavailable | not_applicable */
+  state: string;
+  present?: boolean;
+  /** verification | completeness | packaging — what kind of fact this row is. */
+  source?: string;
+  detail?: string | null;
+};
+
 export type PolicySnapshot = {
   present?: boolean;
   reason?: string | null;
@@ -119,6 +199,51 @@ const STATUS_PRESENTATION: Record<string, { label: string; variant: PillVariant;
 
 const NOT_VERIFIED = { label: 'Not Verified', variant: 'neutral' as PillVariant, tone: '#94a3b8' };
 
+// Canonical shield states (backend ``_shield_for``). The green shield is licensed
+// by exactly ONE of them — never by an evidence-completeness percentage.
+export const SHIELD_PRESENTATION: Record<string, { label: string; tone: string; body: string }> = {
+  VERIFIED: {
+    label: 'Verified',
+    tone: '#22c55e',
+    body: 'This package is cryptographically sealed and tamper-evident: every artifact hash, the Merkle root and the manifest signature were recomputed on the server and matched.',
+  },
+  READY_FOR_VERIFICATION: {
+    label: 'Ready for Verification',
+    tone: '#60a5fa',
+    body: 'All required evidence is present and hashed, but integrity has not been verified yet. Run Verify Integrity to check this package against its stored bytes.',
+  },
+  INTEGRITY_CHECK_FAILED: {
+    label: 'Integrity Check Failed',
+    tone: '#ef4444',
+    body: 'One or more cryptographic checks FAILED. This package must not be presented as proof.',
+  },
+  NOT_FULLY_VERIFIED: {
+    label: 'Not Fully Verified',
+    tone: '#f59e0b',
+    body: 'Everything checkable passed, but at least one check could not be run. This package is not fully verified — that is not evidence of tampering.',
+  },
+  INCOMPLETE_PACKAGE: {
+    label: 'Incomplete Package',
+    tone: '#f59e0b',
+    body: 'Evidence this package declares is missing, so it cannot be verified in full.',
+  },
+  NOT_VERIFIABLE: {
+    label: 'Not Verifiable',
+    tone: '#94a3b8',
+    body: 'This package has no retrievable signed manifest, so its integrity cannot be verified.',
+  },
+  SUPERSEDED: {
+    label: 'Superseded',
+    tone: '#94a3b8',
+    body: 'A newer package supersedes this one. Its historical state is preserved as-is.',
+  },
+  BUILDING: {
+    label: 'Building',
+    tone: '#f59e0b',
+    body: 'This package is still being generated. There is nothing to verify yet.',
+  },
+};
+
 export function verificationStatusPresentation(status?: string | null) {
   if (!status) return NOT_VERIFIED;
   return STATUS_PRESENTATION[status] ?? NOT_VERIFIED;
@@ -128,6 +253,10 @@ const CHECK_MARKS: Record<string, { glyph: string; color: string; srLabel: strin
   passed: { glyph: '✓', color: '#22c55e', srLabel: 'passed' },
   failed: { glyph: '✕', color: '#ef4444', srLabel: 'failed' },
   unavailable: { glyph: '?', color: '#f59e0b', srLabel: 'could not be checked' },
+  // A check that has never been RUN is not a failure. Rendering it as a red ✗ is
+  // exactly as untruthful as rendering it as a green ✓ — it gets its own neutral
+  // "○ Not verified" mark.
+  not_verified: { glyph: '○', color: '#94a3b8', srLabel: 'not verified yet' },
   not_applicable: { glyph: '–', color: '#94a3b8', srLabel: 'not applicable to this package' },
 };
 
@@ -169,25 +298,32 @@ function MetaRow({ label, children }: { label: string; children: React.ReactNode
 export function PackageCryptoSummary({
   packageNumber,
   incidentLabel,
+  createdAt,
   artifactCount,
   merkleRoot,
+  manifestSha256,
   hashAlgorithm,
   merkleScheme,
   manifestSchemaVersion,
   signing,
   policySnapshot,
   verificationStatus,
+  lastVerifiedAt,
 }: {
   packageNumber: string;
   incidentLabel?: string | null;
+  createdAt?: string | null;
   artifactCount?: number | null;
   merkleRoot?: string | null;
+  manifestSha256?: string | null;
   hashAlgorithm?: string | null;
   merkleScheme?: string | null;
   manifestSchemaVersion?: string | null;
   signing?: SignerMetadata | null;
   policySnapshot?: PolicySnapshot | null;
   verificationStatus?: string | null;
+  /** From the canonical contract. Null means never verified — never "unknown". */
+  lastVerifiedAt?: string | null;
 }) {
   const presentation = verificationStatusPresentation(verificationStatus);
   const signed = Boolean(signing?.signed);
@@ -215,7 +351,13 @@ export function PackageCryptoSummary({
 
       <div>
         <MetaRow label="Incident">{incidentLabel || '—'}</MetaRow>
+        <MetaRow label="Created">
+          {createdAt ? new Date(createdAt).toLocaleString() : '—'}
+        </MetaRow>
         <MetaRow label="Artifacts">{typeof artifactCount === 'number' ? artifactCount : '—'}</MetaRow>
+        <MetaRow label="Package Version">
+          {manifestSchemaVersion ? `Manifest schema ${manifestSchemaVersion}` : '—'}
+        </MetaRow>
         <MetaRow label="Merkle Root">
           {merkleRoot ? (
             <code title={merkleRoot} style={{ fontSize: '0.76rem' }}>{truncateHash(merkleRoot)}</code>
@@ -228,6 +370,13 @@ export function PackageCryptoSummary({
             </span>
           )}
         </MetaRow>
+        <MetaRow label="Manifest Hash">
+          {manifestSha256 ? (
+            <code title={manifestSha256} style={{ fontSize: '0.76rem' }}>{truncateHash(manifestSha256)}</code>
+          ) : (
+            <span style={{ color: '#94a3b8' }}>No retrievable manifest</span>
+          )}
+        </MetaRow>
         <MetaRow label="Hash Algorithm">{hashAlgorithm || '—'}</MetaRow>
         {merkleScheme ? <MetaRow label="Merkle Scheme">{merkleScheme}</MetaRow> : null}
         <MetaRow label="Signature">
@@ -237,6 +386,7 @@ export function PackageCryptoSummary({
           ) : null}
         </MetaRow>
         <MetaRow label="Signing Key">{signing?.key_id || '—'}</MetaRow>
+        <MetaRow label="Signing Provider">{signing?.provider || '—'}</MetaRow>
         <MetaRow label="Signing Authority">
           {signing?.hardware_backed ? (
             <span style={{ color: '#4ade80' }}>HSM/KMS-backed</span>
@@ -259,6 +409,13 @@ export function PackageCryptoSummary({
             <span style={{ color: '#94a3b8' }}>
               {policySnapshot?.reason || 'Not sealed in this package'}
             </span>
+          )}
+        </MetaRow>
+        <MetaRow label="Last Verified">
+          {lastVerifiedAt ? (
+            new Date(lastVerifiedAt).toLocaleString()
+          ) : (
+            <span style={{ color: '#94a3b8' }}>Never verified</span>
           )}
         </MetaRow>
       </div>
@@ -404,26 +561,37 @@ export function PackageVerificationPanel({
 export function VerificationShield({
   result,
   phase,
+  contract,
 }: {
   result?: VerificationResult | null;
   phase: VerifyPhase;
+  /** The canonical contract. When present its ``shield`` state is authoritative. */
+  contract?: VerificationContract | null;
 }) {
   const status = phase === 'verifying' ? 'VERIFYING' : result?.status;
-  // The single gate for the green affordance. Anything short of a backend
-  // VERIFIED conclusion renders a non-green panel — a package that generated
-  // successfully, or that is signed but whose Merkle tree failed, is not verified.
-  const isVerified = status === VERIFIED_STATUS;
-  const presentation = verificationStatusPresentation(status);
-  const hardwareBacked = Boolean(result?.signer?.hardware_backed);
+  // The single gate for the green affordance: the BACKEND's shield state, which
+  // is derived from the canonical verification status alone. Evidence
+  // completeness never turns this green — a 100%-complete package that has not
+  // been verified reads READY FOR VERIFICATION, and a failed one reads INTEGRITY
+  // CHECK FAILED.
+  const shieldState =
+    phase === 'verifying'
+      ? 'VERIFYING'
+      : (contract?.shield?.state ?? (status === VERIFIED_STATUS ? 'VERIFIED' : null));
+  const isVerified = shieldState === VERIFIED_STATUS;
+  const shield = shieldState ? SHIELD_PRESENTATION[shieldState] : undefined;
+  const presentation = shield
+    ? { label: shield.label, variant: 'neutral' as PillVariant, tone: shield.tone }
+    : verificationStatusPresentation(status);
+  const hardwareBacked = Boolean((contract?.signer ?? result?.signer)?.hardware_backed);
 
   const body = (() => {
     if (phase === 'verifying') return 'Verifying this package against its stored bytes…';
-    if (!result) return 'This package has not been verified yet.';
-    if (isVerified) {
-      return hardwareBacked
-        ? 'This package is cryptographically sealed and tamper-evident. Its manifest was signed by the configured hardware-backed key.'
-        : 'This package is cryptographically sealed and tamper-evident: every artifact hash, the Merkle root and the manifest signature were recomputed on the server and matched.';
+    if (isVerified && hardwareBacked) {
+      return 'This package is cryptographically sealed and tamper-evident. Its manifest was signed by the configured hardware-backed key.';
     }
+    if (shield) return shield.body;
+    if (!result) return 'This package has not been verified yet.';
     switch (status) {
       case 'VERIFICATION_FAILED':
         return 'One or more cryptographic checks FAILED. This package must not be presented as proof.';
@@ -561,5 +729,86 @@ export function PackageContents({ contents }: { contents?: PackageContentEntry[]
         </ul>
       ) : null}
     </section>
+  );
+}
+
+
+/* ── 5. Verification Checklist (canonical) ────────────────────────── */
+
+/**
+ * The Screen 9 Verification Checklist.
+ *
+ * Every row comes from the backend contract's ``checklist``, which is computed
+ * at READ time from the recorded verification result — never from the frozen
+ * build-time completeness snapshot that made a verified package display
+ * "Hashes verified ✗".
+ *
+ * Rows are tri-state and never lie by omission:
+ *   ✓  the check ran and passed
+ *   ✕  the check ran and FAILED
+ *   ○  the check has not been run (never rendered as a failure)
+ *   ?  the check could not be completed (e.g. no verification key)
+ *   –  this package's schema never declared the fact, so there is nothing to check
+ *
+ * Only checks the backend actually supports appear here — the component renders
+ * the rows it is given and invents none.
+ */
+export function VerificationChecklist({
+  checklist,
+  executed,
+  phase,
+}: {
+  checklist?: VerificationChecklistItem[] | null;
+  /** Whether a real server-side verification has run for this package. */
+  executed?: boolean;
+  phase?: VerifyPhase;
+}) {
+  const rows = checklist ?? [];
+  if (rows.length === 0) {
+    return (
+      <p className="tableMeta" style={{ marginBottom: '0.75rem', fontSize: '0.72rem' }}>
+        Select a completed package to see its verification checklist.
+      </p>
+    );
+  }
+  return (
+    <div style={{ marginBottom: '0.75rem' }} aria-busy={phase === 'verifying'}>
+      <p className="sectionEyebrow" style={{ marginBottom: '0.4rem' }}>
+        Verification Checklist
+      </p>
+      {rows.map((item) => {
+        const mark = checkMark(String(item.state ?? (item.present ? 'passed' : 'not_verified')));
+        return (
+          <div
+            key={item.code}
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: '0.4rem',
+              marginBottom: '0.25rem',
+              fontSize: '0.75rem',
+            }}
+          >
+            <span aria-hidden="true" style={{ color: mark.color, fontWeight: 700, lineHeight: 1.5 }}>
+              {mark.glyph}
+            </span>
+            <span style={{ flex: 1 }}>
+              <span style={{ color: item.state === 'failed' ? '#f87171' : undefined }}>
+                {item.label}
+              </span>
+              {item.state === 'not_verified' ? (
+                <span style={{ color: '#94a3b8' }}> — not verified</span>
+              ) : null}
+              <span className="sr-only"> {mark.srLabel}</span>
+            </span>
+          </div>
+        );
+      })}
+      {executed === false ? (
+        <p className="tableMeta" style={{ margin: '0.35rem 0 0', fontSize: '0.68rem' }}>
+          Cryptographic checks have not been run for this package yet. Run Verify Integrity.
+        </p>
+      ) : null}
+    </div>
   );
 }

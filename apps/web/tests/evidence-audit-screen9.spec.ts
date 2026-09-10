@@ -555,8 +555,25 @@ test('truthful: row selection drives the Crypto-Auditing Clerk card', () => {
   // The agent card receives the selected package + its detail.
   expect(source).toContain('<CryptoAuditingClerkPanel');
   expect(source).toContain('selectedPkg={selectedPkg}');
-  // View Package selects the row (opens its report).
-  expect(source).toContain('onView={() => setSelectedPkgId(pkg.id)}');
+  // View Package selects the row AND opens its full detail drawer. Selection and
+  // the drawer are separate state, so closing the drawer returns to the list
+  // with the Clerk still scoped to the package.
+  expect(source).toContain('onView={() => openPackage(pkg.id)}');
+  expect(source).toContain('const openPackage = useCallback');
+  expect(source).toContain('setSelectedPkgId(id);');
+  expect(source).toContain('setPackageDrawerId(id);');
+});
+
+test('truthful: View Package opens a detail drawer without replacing the list', () => {
+  const source = read(PANEL);
+  // The list stays mounted behind a large drawer (the app's existing pattern).
+  expect(source).toContain('className="drawerOverlay"');
+  expect(source).toContain('drawerCard drawerCardWide');
+  expect(source).toContain('<PackageDetailPanel');
+  // …and there is always an obvious way back.
+  expect(source).toContain('Back to Evidence Packages');
+  expect(source).toContain('closePackageDrawer');
+  expect(source).toContain("event.key === 'Escape'");
 });
 
 test('truthful: filtering clears a selection it has hidden', () => {

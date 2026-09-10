@@ -28329,6 +28329,9 @@ def list_exports(request: Request) -> dict[str, Any]:
             get_package_allowed_actions as _allowed_actions,
             integrity_status_label as _integrity_label,
         )
+        from services.api.app.evidence_verification import (
+            build_verification_contract as _verification_contract,
+        )
         # Evidence-package export types build a signed manifest; the same type set
         # defines what "superseded" means (a newer package for the same incident).
         _EVIDENCE_EXPORT_TYPES = ('proof_bundle', 'incident_report')
@@ -28401,6 +28404,16 @@ def list_exports(request: Request) -> dict[str, Any]:
             item['is_manifest_missing'] = _state['is_manifest_missing']
             item['manifest_reference'] = _state['manifest_reference']
             item['ready_for_verification'] = _state['ready_for_verification']
+            # The SAME canonical verification contract the detail view returns, in
+            # its compact form (per-check detail omitted; no storage read per row).
+            # The table's Integrity column and the detail view therefore project ONE
+            # backend result — they can never disagree about whether a package is
+            # verified.
+            item['verification_contract'] = _verification_contract(
+                package=item, display_state=_state, verification=_verification,
+                completeness=None, include_checks=False,
+            )
+            item['verification_overall_status'] = item['verification_contract']['overall_status']
             # Backend-authoritative action gating consumed by the row overflow menu.
             item['allowed_actions'] = _allowed_actions(item, can_export=can_export)
             # Scope descriptors so the table can label incident vs. response-action
@@ -28897,6 +28910,36 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
             item['package_contents'] = []
             item['archive_download_url'] = None
 
+        # ── THE canonical Screen 9 verification contract ───────────────────────
+        # One backend result, rendered by the package table's Integrity column, this
+        # detail view, the Crypto-Auditing Clerk sidebar and the Verification
+        # Checklist. None of them computes a verification outcome of its own.
+        #
+        # This is the fix for the contradiction production showed: the checklist was
+        # served from `completeness.checklist`, a snapshot FROZEN at package build
+        # time (computed with manifest_verified=None, before any verification could
+        # have run) and returned unchanged by reconcile_completeness_hash_evidence
+        # whenever the hash categories already agreed — i.e. for every healthy
+        # package. So a package that verified successfully kept a checklist reading
+        # "Hashes verified ✗" beside Files Verified = 9 and Integrity = Verified.
+        # The canonical checklist below is computed at READ time from the recorded
+        # verification result, and it OVERWRITES the frozen snapshot's checklist so
+        # the stale one can never reach any consumer.
+        from services.api.app.evidence_verification import (
+            build_verification_contract as _build_verification_contract,
+        )
+        _contract = _build_verification_contract(
+            package=item,
+            display_state=_state,
+            verification=verification,
+            completeness=completeness if isinstance(completeness, dict) else None,
+        )
+        item['verification_contract'] = _contract
+        if isinstance(completeness, dict):
+            completeness = dict(completeness)
+            completeness['checklist'] = _contract['checklist']
+            item['completeness'] = completeness
+
         # Agent findings — every statement references package records, never invented.
         findings: list[dict[str, Any]] = []
         missing_codes = (completeness or {}).get('missing_codes') or []
@@ -29156,6 +29199,27 @@ def verify_evidence_package(export_id: str, request: Request) -> dict[str, Any]:
         manifest = resolved['manifest']
         file_values = resolved['file_values']
 
+        # PACKAGE_VERIFICATION_STARTED — recorded and COMMITTED before the checks
+        # run, so an attempt is attributable even if verification then raises or
+        # the request is abandoned. A verification that begins is always visible in
+        # the audit trail, never only the ones that reach a verdict.
+        log_audit(
+            connection,
+            action='evidence_package_verification_started',
+            entity_type='export_job',
+            entity_id=export_id,
+            request=request,
+            user_id=user['id'],
+            workspace_id=workspace_id,
+            metadata={
+                'event_type': 'evidence_package_verification_started',
+                'result': 'started',
+                'manifest_sha256': str(manifest.get('manifest_sha256') or '') or None,
+                'artifact_count': len(manifest.get('files') or []),
+            },
+        )
+        connection.commit()
+
         verified_at = utc_now_iso()
         result = _verification_service.verify_evidence_package_document(
             manifest=manifest,
@@ -29237,6 +29301,15 @@ def verify_evidence_package(export_id: str, request: Request) -> dict[str, Any]:
             export_id, result['status'], files_verified, len(files_failed), manifest_ok,
             result['merkle_root']['valid'],
         )
+        # This endpoint persists the result and reports what it computed. It does
+        # NOT assemble the canonical verification contract: that is built by the
+        # READ endpoints (GET /exports and GET /exports/{id}) from the persisted
+        # state plus the lifecycle facts only they resolve — supersession, manifest
+        # retrievability, evidence completeness. Building a second contract here,
+        # from a partial row, would be exactly the parallel derivation this change
+        # exists to remove. The client refreshes both read endpoints on completion,
+        # which is what updates the table badge, the detail view, the Clerk sidebar,
+        # the checklist and Last Verified.
         return {
             'package_id': export_id,
             'integrity_status': integrity_status,

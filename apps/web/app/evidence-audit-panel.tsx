@@ -32,12 +32,14 @@ import {
   PackageContents,
   PackageCryptoSummary,
   PackageVerificationPanel,
+  VerificationChecklist,
   VerificationShield,
   truncateHash as truncateCryptoHash,
   verificationStatusPresentation,
   type PackageContentEntry,
   type PolicySnapshot,
   type SignerMetadata,
+  type VerificationContract,
   type VerificationResult,
   type VerifyPhase,
 } from './evidence-package-verification';
@@ -225,6 +227,10 @@ type PackageDetail = EvidencePackage & {
   // actually been verified — never an optimistic initial value.
   verification_result?: VerificationResult | null;
   verification_result_status?: string | null;
+  // THE canonical verification contract. The Integrity badge, this detail view,
+  // the Crypto-Auditing Clerk and the Verification Checklist all project it, so
+  // no two surfaces can disagree about whether a package is verified.
+  verification_contract?: VerificationContract | null;
   package_contents?: PackageContentEntry[] | null;
   archive_download_url?: string | null;
 };
@@ -745,6 +751,12 @@ export default function EvidenceAuditPanel() {
   const [auditRows, setAuditRows] = useState<AuditRow[]>([]);
   const [activeTab, setActiveTab] = useState<'packages' | 'audit' | 'history'>('packages');
   const [selectedPkgId, setSelectedPkgId] = useState(urlPackageId);
+  // View Package opens the full package detail in a large drawer over the list —
+  // the same pattern the asset registry uses. It is DISTINCT from row selection:
+  // closing the drawer returns to the Evidence Packages table with the row still
+  // selected (so the Crypto-Auditing Clerk keeps its package scope), and the list
+  // is never permanently replaced.
+  const [packageDrawerId, setPackageDrawerId] = useState(urlPackageId);
   const [selectedAuditId, setSelectedAuditId] = useState('');
   const [message, setMessage] = useState('');
   // Technical error code shown only inside an expandable diagnostics disclosure,
@@ -1622,6 +1634,34 @@ export default function EvidenceAuditPanel() {
     () => packages.find((p) => p.id === selectedPkgId) ?? null,
     [packages, selectedPkgId],
   );
+  // Selecting a package and opening its detail are one gesture from the table
+  // (row click, Enter/Space, or the View Package menu item). They stay separate
+  // state so the drawer can close without deselecting.
+  const openPackage = useCallback((id: string) => {
+    setSelectedPkgId(id);
+    setPackageDrawerId(id);
+  }, []);
+  const closePackageDrawer = useCallback(() => setPackageDrawerId(''), []);
+  // Escape closes the drawer, matching the rest of the app's overlays.
+  useEffect(() => {
+    if (!packageDrawerId) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closePackageDrawer();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [packageDrawerId, closePackageDrawer]);
+  // A drawer open on a package that has left the list (filtered out, deleted)
+  // would strand the user on an empty overlay — close it instead.
+  useEffect(() => {
+    if (packageDrawerId && !packages.some((p) => p.id === packageDrawerId)) {
+      setPackageDrawerId('');
+    }
+  }, [packages, packageDrawerId]);
+  const drawerPkg = useMemo(
+    () => packages.find((p) => p.id === packageDrawerId) ?? null,
+    [packages, packageDrawerId],
+  );
   const selectedAudit = useMemo(
     () => auditRows.find((r, i) => (r.id ?? String(i)) === selectedAuditId) ?? null,
     [auditRows, selectedAuditId],
@@ -1951,12 +1991,12 @@ export default function EvidenceAuditPanel() {
                       <tr
                         key={pkg.id}
                         aria-selected={isSelected}
-                        onClick={() => setSelectedPkgId(isSelected ? '' : pkg.id)}
+                        onClick={() => openPackage(pkg.id)}
                         tabIndex={0}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter' || e.key === ' ') {
                             e.preventDefault();
-                            setSelectedPkgId(isSelected ? '' : pkg.id);
+                            openPackage(pkg.id);
                           }
                         }}
                         style={{
@@ -2016,7 +2056,7 @@ export default function EvidenceAuditPanel() {
                             copied={copiedHash === pkg.id}
                             onToggle={() => setOpenMenuId((cur) => (cur === pkg.id ? '' : pkg.id))}
                             onClose={() => setOpenMenuId('')}
-                            onView={() => setSelectedPkgId(pkg.id)}
+                            onView={() => openPackage(pkg.id)}
                             onDownload={() => void downloadPackage(pkg)}
                             onManifest={() => void downloadManifest(pkg)}
                             onGenerateManifest={() => void generateManifest(pkg)}
@@ -2030,28 +2070,38 @@ export default function EvidenceAuditPanel() {
                 )}
               </TableShell>
 
-              {selectedPkg && (
-                <div style={{ marginTop: '1rem' }}>
-                  <PackageDetailPanel
-                    pkg={selectedPkg}
-                    detail={selectedDetail}
-                    detailLoading={detailLoading}
-                    detailRefreshing={detailRefreshing}
-                    detailError={detailError}
-                    workspaceEvidenceSource={workspaceEvidenceSource}
-                    onDownload={downloadPackage}
-                    onDownloadArchive={downloadArchive}
-                    onDownloadManifest={downloadManifest}
-                    onGenerateManifest={generateManifest}
-                    onRegeneratePackage={regeneratePackage}
-                    onVerify={verifyPackage}
-                    verifying={verifyingId === selectedPkg.id}
-                    verifyError={verifyError}
-                    archiving={archivingId === selectedPkg.id}
-                    generating={generatingId === selectedPkg.id}
-                    regenerating={regeneratingId === selectedPkg.id}
-                    recovery={recovery && recovery.id === selectedPkg.id ? recovery : null}
-                  />
+              {/* A package is selected but its detail is closed: a compact,
+                  non-blocking way back into the full detail. The list is never
+                  replaced — the detail lives in the drawer below. */}
+              {selectedPkg && !packageDrawerId && (
+                <div
+                  style={{
+                    marginTop: '0.75rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '0.75rem',
+                    flexWrap: 'wrap',
+                    padding: '0.55rem 0.7rem',
+                    background: 'rgba(148,163,184,0.05)',
+                    border: '1px solid rgba(148,163,184,0.14)',
+                    borderRadius: '6px',
+                  }}
+                >
+                  <span style={{ fontSize: '0.78rem' }}>
+                    <strong style={{ fontFamily: 'monospace' }}>
+                      {selectedPkg.package_number ?? selectedPkg.id}
+                    </strong>{' '}
+                    selected
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ fontSize: '0.75rem' }}
+                    onClick={() => openPackage(selectedPkg.id)}
+                  >
+                    View Package
+                  </button>
                 </div>
               )}
             </div>
@@ -2064,7 +2114,7 @@ export default function EvidenceAuditPanel() {
               detailLoading={detailLoading}
               lastRefreshAt={lastRefreshAt}
               onViewReport={() => {
-                if (selectedPkg) setSelectedPkgId(selectedPkg.id);
+                if (selectedPkg) openPackage(selectedPkg.id);
               }}
             />
           </div>
@@ -2289,6 +2339,100 @@ export default function EvidenceAuditPanel() {
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {/* ── View Package: the full package detail experience ─────────
+          A large drawer over the Evidence Packages list (the same pattern the
+          asset registry uses), NOT a replacement for the table: the list stays
+          mounted behind it, and Escape, the Close button or a click on the
+          backdrop returns to it with the row still selected. */}
+      {drawerPkg && (
+        <div
+          className="drawerOverlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Evidence package ${drawerPkg.package_number ?? drawerPkg.id}`}
+          onClick={closePackageDrawer}
+        >
+          <aside
+            className="drawerCard drawerCardWide"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                justifyContent: 'space-between',
+                gap: '1rem',
+                marginBottom: '0.75rem',
+              }}
+            >
+              <div>
+                <p className="eyebrow" style={{ margin: 0, fontSize: '0.7rem' }}>
+                  Evidence Package
+                </p>
+                <h2 style={{ margin: '0.15rem 0 0', fontSize: '1.05rem', fontFamily: 'monospace' }}>
+                  {drawerPkg.package_number ?? drawerPkg.id}
+                </h2>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                {/* The SAME canonical Integrity state the table row shows. */}
+                <StatusPill
+                  label={integrityPill(selectedDetail ?? drawerPkg).label}
+                  variant={integrityPill(selectedDetail ?? drawerPkg).variant}
+                />
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ fontSize: '0.75rem' }}
+                  onClick={closePackageDrawer}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            {/* Explicit way back, for a viewport where the Close button scrolls away. */}
+            <button
+              type="button"
+              className="linkButton"
+              style={{
+                background: 'none',
+                border: 'none',
+                padding: 0,
+                marginBottom: '0.6rem',
+                color: '#60a5fa',
+                fontSize: '0.75rem',
+                cursor: 'pointer',
+              }}
+              onClick={closePackageDrawer}
+            >
+              ← Back to Evidence Packages
+            </button>
+            <PackageDetailPanel
+              pkg={drawerPkg}
+              // Fail closed: the authoritative detail is rendered ONLY when it is
+              // this package's. A detail belonging to another row would present one
+              // package's verification state under another's identity.
+              detail={selectedDetail && selectedDetail.id === drawerPkg.id ? selectedDetail : null}
+              detailLoading={detailLoading}
+              detailRefreshing={detailRefreshing}
+              detailError={detailError}
+              workspaceEvidenceSource={workspaceEvidenceSource}
+              onDownload={downloadPackage}
+              onDownloadArchive={downloadArchive}
+              onDownloadManifest={downloadManifest}
+              onGenerateManifest={generateManifest}
+              onRegeneratePackage={regeneratePackage}
+              onVerify={verifyPackage}
+              verifying={verifyingId === drawerPkg.id}
+              verifyError={verifyError}
+              archiving={archivingId === drawerPkg.id}
+              generating={generatingId === drawerPkg.id}
+              regenerating={regeneratingId === drawerPkg.id}
+              recovery={recovery && recovery.id === drawerPkg.id ? recovery : null}
+            />
+          </aside>
         </div>
       )}
 
@@ -2985,6 +3129,12 @@ function PackageDetailPanel({
   const verificationPanelStatus = verifying
     ? 'VERIFYING'
     : (detail?.verification_result?.status ?? detail?.verification_result_status ?? null);
+  // The canonical contract. The shield state, the checklist and the verification
+  // counters below all come from it — the panel derives no outcome of its own.
+  // While a run is in flight the prior contract is withheld so a stale green
+  // shield can never appear to describe THIS run.
+  const verificationContract =
+    verifying || verifyError ? null : (detail?.verification_contract ?? null);
   // Download Evidence Package (.zip) rides the SAME backend-authoritative export
   // gate as the raw bundle download: without `evidence.export` the API refuses
   // it, and the button is not offered.
@@ -3131,14 +3281,19 @@ function PackageDetailPanel({
       <PackageCryptoSummary
         packageNumber={String(pkg.package_number ?? pkg.id)}
         incidentLabel={detail?.incident_short_id ?? pkg.incident_short_id ?? pkg.incident_id ?? null}
+        createdAt={detail?.created_at ?? pkg.created_at ?? null}
         artifactCount={detail?.artifact_count ?? detail?.files_hashed ?? null}
         merkleRoot={detail?.merkle_root ?? null}
+        manifestSha256={detail?.manifest_sha256 ?? null}
         hashAlgorithm={detail?.hash_algorithm ?? null}
         merkleScheme={detail?.merkle_scheme ?? null}
         manifestSchemaVersion={detail?.manifest_schema_version ?? null}
         signing={detail?.signing ?? null}
         policySnapshot={detail?.policy_snapshot ?? null}
         verificationStatus={verificationPanelStatus}
+        // From the CANONICAL contract, so Last Verified can never disagree with
+        // the checklist or the Clerk's own "Last verified" line.
+        lastVerifiedAt={verificationContract?.verified_at ?? null}
       />
 
       <div style={{ display: 'grid', gap: '0.75rem', marginBottom: '0.25rem' }}>
@@ -3147,7 +3302,11 @@ function PackageDetailPanel({
           phase={verifyPhase}
           error={verifyError ?? null}
         />
-        <VerificationShield result={verificationPanelResult} phase={verifyPhase} />
+        <VerificationShield
+          result={verificationPanelResult}
+          phase={verifyPhase}
+          contract={verificationContract}
+        />
       </div>
 
       {/* ── Integrity summary (three explicit, backend-authoritative states) ──
@@ -4020,6 +4179,20 @@ function PackageDetailPanel({
           rendering is not configured) is shown as UNAVAILABLE with the reason,
           never as present. */}
       <PackageContents contents={detail?.package_contents ?? null} />
+
+      {/* ── Verification Checklist ────────────────────────────────────────────
+          The SAME rows the Crypto-Auditing Clerk renders, from the SAME backend
+          contract — the detail view and the sidebar cannot disagree because
+          neither computes anything. */}
+      {verificationContract ? (
+        <div style={{ marginTop: '0.9rem' }}>
+          <VerificationChecklist
+            checklist={verificationContract.checklist}
+            executed={verificationContract.executed}
+            phase={verifyPhase}
+          />
+        </div>
+      ) : null}
     </aside>
   );
 }
@@ -4081,7 +4254,20 @@ function CryptoAuditingClerkPanel({
           : (typeof selectedPkg?.completeness_score === 'number' ? selectedPkg.completeness_score : null))
       : (typeof metrics?.average_completeness === 'number' ? metrics.average_completeness : null);
   const statusLabel = completenessStatusLabel(score);
-  const checklist = completeness?.checklist ?? [];
+  // ── THE canonical verification result ─────────────────────────────────────
+  // The Clerk is ADVISORY: it summarizes and explains the deterministic backend
+  // result, it never decides cryptographic truth. Every verification number and
+  // every checklist row below is read from ONE backend contract — the same one
+  // the table's Integrity badge and the package detail view render.
+  //
+  // Before this, the checklist came from `completeness.checklist`, a snapshot
+  // frozen into the package summary at BUILD time (before any verification could
+  // have run), while Files Verified / Integrity Failures came from the live
+  // verification record. That is how a package could show Files Verified = 9,
+  // Integrity Failures = 0 and Integrity = Verified beside "Hashes verified ✗".
+  const contract = detail?.verification_contract ?? null;
+  const checklist = contract?.checklist ?? [];
+  const artifactHashes = contract?.artifact_hashes ?? null;
   // Recovery gate for the selected package, from the authoritative detail. Drives the
   // agent's evidence-chain summary. file_hashes / manifest_hash are DERIVED artifacts —
   // resolveRecoveryRequirements never counts them as operator-collected source evidence,
@@ -4170,17 +4356,24 @@ function CryptoAuditingClerkPanel({
             <ClerkMetric label="Present" value={completeness.present_count ?? 0} />
             <ClerkMetric label="Missing" value={completeness.missing_count ?? 0} />
             <ClerkMetric label="Unverifiable" value={completeness.unverifiable_count ?? 0} />
-            <ClerkMetric label="Files Hashed" value={selectedPkg?.files_hashed ?? 0} />
-            <ClerkMetric label="Files Verified" value={detail?.verification?.files_verified ?? 0} />
+            {/* Files Hashed  = artifacts carrying a stored SHA-256 (a packaging fact).
+                Files Verified = artifacts whose current bytes were independently
+                recomputed on the server and MATCHED. The two are deliberately
+                distinct, and both come from the canonical contract. */}
+            <ClerkMetric
+              label="Files Hashed"
+              value={artifactHashes?.files_hashed ?? selectedPkg?.files_hashed ?? 0}
+            />
+            <ClerkMetric label="Files Verified" value={artifactHashes?.files_verified ?? 0} />
             <ClerkMetric
               label="Integrity Failures"
-              value={detail?.verification?.files_failed?.length ?? 0}
-              danger={(detail?.verification?.files_failed?.length ?? 0) > 0}
+              value={artifactHashes?.hash_failures ?? 0}
+              danger={(artifactHashes?.hash_failures ?? 0) > 0}
             />
           </div>
-          {detail?.verification?.verified_at ? (
+          {contract?.verified_at ? (
             <p className="tableMeta" style={{ margin: '0.35rem 0 0', fontSize: '0.68rem' }}>
-              Last verified {fmt(detail.verification.verified_at)}
+              Last verified {fmt(contract.verified_at)} · {contract.overall_label ?? contract.overall_status}
             </p>
           ) : (
             <p className="tableMeta" style={{ margin: '0.35rem 0 0', fontSize: '0.68rem' }}>
@@ -4190,33 +4383,11 @@ function CryptoAuditingClerkPanel({
         </div>
       ) : null}
 
-      {/* Verification checklist — only when a package is selected (real values). */}
-      {packageScope && checklist.length > 0 && (
-        <div style={{ marginBottom: '0.75rem' }}>
-          <p className="sectionEyebrow" style={{ marginBottom: '0.4rem' }}>
-            Verification Checklist
-          </p>
-          {checklist.map((item) => (
-            <div
-              key={item.code}
-              style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.25rem', fontSize: '0.75rem' }}
-            >
-              <span
-                aria-hidden="true"
-                style={{ color: item.present ? '#22c55e' : '#ef4444', fontWeight: 700 }}
-              >
-                {item.present ? '✓' : '✗'}
-              </span>
-              <span style={{ color: item.present ? undefined : '#f87171' }}>{item.label}</span>
-              <span className="sr-only">{item.present ? 'present' : 'missing'}</span>
-            </div>
-          ))}
-        </div>
-      )}
-      {packageScope && checklist.length === 0 && !detailLoading && (
-        <p className="tableMeta" style={{ marginBottom: '0.75rem', fontSize: '0.72rem' }}>
-          Select a completed package to see its verification checklist.
-        </p>
+      {/* Verification Checklist — rendered from the CANONICAL contract, tri-state.
+          A check that has never run shows "○ … — not verified", never a red ✗,
+          and only checks the backend actually supports appear at all. */}
+      {packageScope && (checklist.length > 0 || !detailLoading) && (
+        <VerificationChecklist checklist={checklist} executed={contract?.executed} />
       )}
 
       {/* Evidence Metrics (workspace-level) */}

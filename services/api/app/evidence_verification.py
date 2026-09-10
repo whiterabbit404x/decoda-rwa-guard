@@ -601,3 +601,462 @@ def legacy_verification_view(result: dict[str, Any]) -> dict[str, Any]:
         'merkle_root_valid': result['merkle_root']['valid'],
         'merkle_root': result['merkle_root'].get('expected'),
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THE CANONICAL SCREEN 9 VERIFICATION CONTRACT
+# ─────────────────────────────────────────────────────────────────────────────
+# One backend result. Four surfaces.
+#
+# The Evidence Package table's Integrity column, the package detail view, the
+# Crypto-Auditing Clerk sidebar and the Verification Checklist ALL render
+# ``build_verification_contract(...)``. None of them may compute a verification
+# outcome of their own — that is what produced the contradiction this contract
+# exists to make impossible (a package showing Integrity=Verified, Files
+# Verified=9, Integrity Failures=0 beside a checklist saying "Hashes verified"
+# was false, because the checklist was a FROZEN BUILD-TIME snapshot taken before
+# any verification could have run).
+#
+# COMPLETENESS is not INTEGRITY
+# ----------------------------
+# ``Evidence Completeness`` answers "do we hold all the required evidence?" and
+# is computed by ``evidence_completeness``. ``Integrity Verification`` answers
+# "was that evidence cryptographically re-validated on the server?" and is
+# computed HERE. A package can be 100% complete and NOT_VERIFIED; it can be 100%
+# complete and VERIFICATION_FAILED. Completeness never upgrades a package to
+# VERIFIED, and this module never reads a completeness score to decide one.
+
+#: A package that is complete and manifested but on which server-side
+#: verification has NEVER been executed. It is not a failure and not a pass.
+STATUS_NOT_VERIFIED = 'NOT_VERIFIED'
+#: A newer package supersedes this one; its historical state is preserved as-is.
+STATUS_SUPERSEDED = 'SUPERSEDED'
+#: A completed export that never built a tamper-evident manifest at all.
+STATUS_LEGACY_EXPORT = 'LEGACY_EXPORT'
+#: Built as an evidence bundle, but no manifest is retrievable — unverifiable.
+STATUS_MANIFEST_MISSING = 'MANIFEST_MISSING'
+#: The package artifact is still being generated; there is nothing to verify yet.
+STATUS_BUILDING = 'BUILDING'
+#: Package generation itself failed. Distinct from VERIFICATION_FAILED.
+STATUS_PACKAGE_FAILED = 'PACKAGE_FAILED'
+
+STATUS_LABELS.update({
+    STATUS_NOT_VERIFIED: 'Not Verified',
+    STATUS_SUPERSEDED: 'Superseded',
+    STATUS_LEGACY_EXPORT: 'Legacy Export',
+    STATUS_MANIFEST_MISSING: 'Manifest Missing',
+    STATUS_BUILDING: 'Building',
+    STATUS_PACKAGE_FAILED: 'Failed',
+})
+
+#: A check that has not been executed. Distinct from ``failed`` (it ran and did
+#: not match) and from ``unavailable`` (it ran and could not be completed).
+CHECK_NOT_VERIFIED = 'not_verified'
+
+# Shield states. The green shield is licensed by exactly ONE of them.
+SHIELD_VERIFIED = 'VERIFIED'
+SHIELD_READY_FOR_VERIFICATION = 'READY_FOR_VERIFICATION'
+SHIELD_INTEGRITY_CHECK_FAILED = 'INTEGRITY_CHECK_FAILED'
+SHIELD_NOT_FULLY_VERIFIED = 'NOT_FULLY_VERIFIED'
+SHIELD_INCOMPLETE_PACKAGE = 'INCOMPLETE_PACKAGE'
+SHIELD_NOT_VERIFIABLE = 'NOT_VERIFIABLE'
+SHIELD_SUPERSEDED = 'SUPERSEDED'
+SHIELD_BUILDING = 'BUILDING'
+
+_SHIELD_LABELS: dict[str, str] = {
+    SHIELD_VERIFIED: 'Verified',
+    SHIELD_READY_FOR_VERIFICATION: 'Ready for Verification',
+    SHIELD_INTEGRITY_CHECK_FAILED: 'Integrity Check Failed',
+    SHIELD_NOT_FULLY_VERIFIED: 'Not Fully Verified',
+    SHIELD_INCOMPLETE_PACKAGE: 'Incomplete Package',
+    SHIELD_NOT_VERIFIABLE: 'Not Verifiable',
+    SHIELD_SUPERSEDED: 'Superseded',
+    SHIELD_BUILDING: 'Building',
+}
+
+#: Overall statuses that mean "a real server-side verification produced this".
+_EXECUTED_STATUSES = frozenset({
+    STATUS_VERIFIED,
+    STATUS_PARTIALLY_VERIFIED,
+    STATUS_VERIFICATION_FAILED,
+    STATUS_SIGNATURE_UNAVAILABLE,
+    STATUS_INCOMPLETE_PACKAGE,
+})
+
+#: Screen 9 checklist rows sourced from the CANONICAL verification checks.
+#: Every row names the backend check it renders — no row exists without one, so
+#: the checklist can never display a check the backend does not actually run.
+_VERIFICATION_CHECKLIST_ROWS: tuple[tuple[str, str, str], ...] = (
+    ('hashes_verified', CHECK_ARTIFACT_HASHES, 'File hashes verified'),
+    ('merkle_root', CHECK_MERKLE_ROOT, 'Merkle root matches'),
+    ('manifest_signature', CHECK_MANIFEST_SIGNATURE, 'Manifest signature valid'),
+    ('policy_snapshot', CHECK_POLICY_SNAPSHOT, 'Policy snapshot present'),
+    ('provenance', CHECK_PROVENANCE, 'Provenance complete'),
+)
+
+#: Screen 9 checklist rows sourced from EVIDENCE COMPLETENESS (what the package
+#: contains), not from cryptography. Each maps to completeness category codes;
+#: a row is satisfied when every mapped category is 'present' or 'not_applicable'.
+_COMPLETENESS_CHECKLIST_ROWS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ('required_fields', 'Required fields present',
+     ('incident_identity', 'original_alert', 'detection_provenance', 'manifest_hash', 'file_hashes')),
+    ('chain_data', 'Chain data complete', ('chain_metadata',)),
+    ('logs_included', 'Logs included', ('audit_events',)),
+    ('approvals_included', 'Response approvals included', ('approval_decision',)),
+    ('execution_included', 'Execution outcome included', ('execution_result',)),
+)
+
+
+def _completeness_category_status(completeness: dict[str, Any] | None, code: str) -> str | None:
+    categories = (completeness or {}).get('categories')
+    if not isinstance(categories, list):
+        return None
+    for category in categories:
+        if isinstance(category, dict) and category.get('code') == code:
+            return str(category.get('status') or '')
+    return None
+
+
+def _checklist_row(code: str, label: str, state: str, *, source: str, detail: str | None = None) -> dict[str, Any]:
+    """One checklist row.
+
+    ``state`` is tri-state-plus: ``passed`` / ``failed`` / ``not_verified`` /
+    ``unavailable`` / ``not_applicable`` / ``missing``. ``present`` is kept for
+    existing readers and is True ONLY for ``passed`` — an unexecuted check is
+    never rendered as a pass, and never as a failure either.
+    """
+    return {
+        'code': code,
+        'label': label,
+        'state': state,
+        'present': state == CHECK_PASSED,
+        'source': source,
+        'detail': detail,
+    }
+
+
+def resolve_hashes_verified(artifact_check: dict[str, Any] | None, *, executed: bool) -> bool:
+    """The ONE definition of "file hashes verified".
+
+    ``files_hashed``   artifacts carrying a stored SHA-256 (a packaging fact).
+    ``files_verified`` artifacts whose CURRENT stored bytes were independently
+                       recomputed and matched the expected digest.
+
+    Hashes are verified when every artifact that could be recomputed WAS
+    recomputed and matched::
+
+        files_verified == verifiable_file_count AND hash_failures == 0
+
+    Artifacts listed in the manifest but absent from storage are not verifiable,
+    so they are excluded from the denominator — they make the package
+    INCOMPLETE, which is a separate, independently reported fact. The existence
+    of SHA-256 fields is never sufficient: without an executed verification this
+    returns False.
+    """
+    if not executed or not isinstance(artifact_check, dict):
+        return False
+    total = int(artifact_check.get('total') or 0)
+    verified = int(artifact_check.get('valid') or 0)
+    failures = len(artifact_check.get('failed_artifact_paths') or artifact_check.get('failed_artifact_ids') or [])
+    missing = len(artifact_check.get('missing_artifact_paths') or artifact_check.get('missing_artifact_ids') or [])
+    verifiable = max(total - missing, 0)
+    if verifiable <= 0:
+        return False
+    return verified == verifiable and failures == 0
+
+
+def _overall_status_for_package(
+    *,
+    job_status: str,
+    superseded: bool,
+    manifest_exists: bool,
+    manifest_retrievable: bool,
+    is_manifest_missing: bool,
+    is_legacy_export: bool,
+    executed_status: str | None,
+) -> str:
+    """Canonical overall status for a package, verification-executed or not.
+
+    Lifecycle states that make verification IMPOSSIBLE are reported as
+    themselves (SUPERSEDED / LEGACY_EXPORT / MANIFEST_MISSING / BUILDING /
+    PACKAGE_FAILED) rather than being collapsed into a generic "not verified" —
+    each one tells the operator something different about what to do next.
+
+    A historical package is never silently upgraded. The lifecycle gates are
+    evaluated BEFORE any recorded verification result, so:
+
+      * a superseded package stays SUPERSEDED,
+      * a package that never built a manifest stays LEGACY_EXPORT even if a
+        stale ``verification`` record claims VERIFIED — a verification covers a
+        manifest, so with no manifest there is nothing it could have covered,
+      * a package built as an evidence bundle whose manifest is gone stays
+        MANIFEST_MISSING.
+
+    ``manifest_exists`` (a manifest was built) is deliberately distinct from
+    ``manifest_retrievable`` (its bytes can be read right now). A verified
+    package whose storage is momentarily unreadable keeps its VERIFIED result —
+    a transient outage is not a retraction — but a package that never had a
+    manifest can never reach it.
+    """
+    if superseded:
+        return STATUS_SUPERSEDED
+    status = str(job_status or '').lower()
+    if status in {'queued', 'pending', 'building', 'running'}:
+        return STATUS_BUILDING
+    if status == 'failed':
+        return STATUS_PACKAGE_FAILED
+    if is_legacy_export:
+        return STATUS_LEGACY_EXPORT
+    if is_manifest_missing:
+        return STATUS_MANIFEST_MISSING
+    if not manifest_exists:
+        # No manifest was ever sealed for this export. Any verification record
+        # attached to it describes something else and must not be honoured.
+        return STATUS_LEGACY_EXPORT if status == 'completed' else STATUS_BUILDING
+    if executed_status in _EXECUTED_STATUSES:
+        return executed_status
+    if not manifest_retrievable:
+        return STATUS_MANIFEST_MISSING if status == 'completed' else STATUS_BUILDING
+    return STATUS_NOT_VERIFIED
+
+
+def _shield_for(overall_status: str, *, evidence_complete: bool) -> dict[str, Any]:
+    """The shield state. Derived from the verification status ONLY.
+
+    Evidence completeness may not turn a shield green — it only distinguishes
+    "ready for verification" (all required evidence held, nothing verified yet)
+    from a package still short of evidence.
+    """
+    if overall_status == STATUS_VERIFIED:
+        state = SHIELD_VERIFIED
+    elif overall_status == STATUS_VERIFICATION_FAILED:
+        state = SHIELD_INTEGRITY_CHECK_FAILED
+    elif overall_status == STATUS_INCOMPLETE_PACKAGE:
+        state = SHIELD_INCOMPLETE_PACKAGE
+    elif overall_status in {STATUS_PARTIALLY_VERIFIED, STATUS_SIGNATURE_UNAVAILABLE}:
+        state = SHIELD_NOT_FULLY_VERIFIED
+    elif overall_status == STATUS_SUPERSEDED:
+        state = SHIELD_SUPERSEDED
+    elif overall_status == STATUS_BUILDING:
+        state = SHIELD_BUILDING
+    elif overall_status == STATUS_NOT_VERIFIED:
+        state = SHIELD_READY_FOR_VERIFICATION if evidence_complete else SHIELD_NOT_VERIFIABLE
+    else:
+        # LEGACY_EXPORT / MANIFEST_MISSING / PACKAGE_FAILED — nothing to verify.
+        state = SHIELD_NOT_VERIFIABLE
+    return {
+        'state': state,
+        'label': _SHIELD_LABELS.get(state, state.replace('_', ' ').title()),
+        # The ONE boolean that may render the large green shield anywhere.
+        'verified': state == SHIELD_VERIFIED,
+    }
+
+
+def build_verification_contract(
+    *,
+    package: dict[str, Any],
+    display_state: dict[str, Any],
+    verification: dict[str, Any] | None = None,
+    completeness: dict[str, Any] | None = None,
+    include_checks: bool = True,
+) -> dict[str, Any]:
+    """THE canonical Screen 9 verification result. Every surface renders this.
+
+    ``package``        the package projection (list row or detail item).
+    ``display_state``  ``get_evidence_package_display_state`` output — owns the
+                       lifecycle facts (superseded / manifest retrievable /
+                       legacy / files_hashed) this contract must respect.
+    ``verification``   the persisted ``filters.verification`` record, whose
+                       ``result`` key holds the structured outcome written by
+                       ``verify_evidence_package_document``. ``None`` (or a
+                       record with no structured result) means verification has
+                       never been executed — reported as NOT_VERIFIED, never as
+                       an optimistic pass and never as a failure.
+    ``completeness``   the evidence-completeness snapshot. Used ONLY for the
+                       evidence-collection checklist rows and the separately
+                       reported completeness block. It can never decide
+                       ``overall_status``.
+
+    The returned ``checklist`` is computed HERE, at read time, from this
+    contract — never read back from the build-time completeness snapshot, which
+    is frozen before any verification can have run and whose "Hashes verified"
+    row was therefore permanently false.
+    """
+    result = verification.get('result') if isinstance(verification, dict) else None
+    result = result if isinstance(result, dict) else None
+    executed_status = str(result.get('status')) if result else (
+        str((verification or {}).get('verification_status') or '') or None
+    )
+    if executed_status not in _EXECUTED_STATUSES:
+        executed_status = None
+
+    _manifest_ref = display_state.get('manifest_reference') or {}
+    overall_status = _overall_status_for_package(
+        job_status=str(package.get('status') or ''),
+        superseded=bool(package.get('superseded')),
+        manifest_exists=bool(_manifest_ref.get('exists')),
+        manifest_retrievable=bool(display_state.get('manifest_retrievable')),
+        is_manifest_missing=bool(display_state.get('is_manifest_missing')),
+        is_legacy_export=bool(display_state.get('is_legacy_export')),
+        executed_status=executed_status,
+    )
+    # "Executed" describes THIS package's live state: a superseded or legacy
+    # package never presents a stale run as a current verification.
+    executed = overall_status in _EXECUTED_STATUSES and result is not None
+
+    checks_by_key: dict[str, dict[str, Any]] = {}
+    if executed and isinstance(result.get('checks'), list):
+        for check in result['checks']:
+            if isinstance(check, dict) and check.get('check'):
+                checks_by_key[str(check['check'])] = check
+
+    artifact_check = checks_by_key.get(CHECK_ARTIFACT_HASHES)
+    files_hashed = int(display_state.get('files_hashed') or 0)
+    total = int((artifact_check or {}).get('total') or 0)
+    files_verified = int((artifact_check or {}).get('valid') or 0) if executed else 0
+    hash_failures = list((artifact_check or {}).get('failed_artifact_paths') or []) if executed else []
+    missing_artifacts = list((artifact_check or {}).get('missing_artifact_paths') or []) if executed else []
+    verifiable_count = max(total - len(missing_artifacts), 0) if executed else 0
+    hashes_verified = resolve_hashes_verified(artifact_check, executed=executed)
+
+    def category(key: str) -> dict[str, Any]:
+        """One verification category, in the SAME shape whether or not it ran."""
+        check = checks_by_key.get(key)
+        if not executed or check is None:
+            return {
+                'status': CHECK_NOT_VERIFIED,
+                'valid': False,
+                'label': 'Not verified',
+                'detail': 'Server-side verification has not been run for this package.',
+            }
+        return {
+            'status': str(check.get('status')),
+            'valid': check.get('status') == CHECK_PASSED,
+            'label': str(check.get('label') or ''),
+            'detail': check.get('detail'),
+        }
+
+    merkle = category(CHECK_MERKLE_ROOT)
+    signature = category(CHECK_MANIFEST_SIGNATURE)
+    if executed and result:
+        merkle.update({
+            'expected': (result.get('merkle_root') or {}).get('expected'),
+            'computed': (result.get('merkle_root') or {}).get('computed'),
+        })
+        signature.update({
+            'state': (result.get('manifest_signature') or {}).get('state'),
+            'key_id': (result.get('manifest_signature') or {}).get('key_id'),
+            'provider': (result.get('manifest_signature') or {}).get('provider'),
+            'algorithm': (result.get('manifest_signature') or {}).get('algorithm'),
+        })
+
+    # ── Checklist: verification rows from the canonical checks, evidence rows
+    # from completeness. Every row states which it is, so the UI never presents
+    # a completeness fact as a cryptographic one.
+    checklist: list[dict[str, Any]] = []
+    for code, label, codes in _COMPLETENESS_CHECKLIST_ROWS[:1]:
+        statuses = [_completeness_category_status(completeness, item) for item in codes]
+        if all(item is None for item in statuses):
+            state = CHECK_NOT_VERIFIED if completeness is None else CHECK_NOT_APPLICABLE
+        elif all(item in {'present', 'not_applicable', None} for item in statuses):
+            state = CHECK_PASSED
+        else:
+            state = CHECK_FAILED
+        checklist.append(_checklist_row(code, label, state, source='completeness'))
+    # "File hashes generated" is a PACKAGING fact (stored SHA-256s exist), kept
+    # deliberately distinct from "File hashes verified" below.
+    checklist.append(_checklist_row(
+        'hashes_generated', 'File hashes generated',
+        CHECK_PASSED if files_hashed > 0 else CHECK_FAILED, source='packaging',
+    ))
+    for code, check_key, label in _VERIFICATION_CHECKLIST_ROWS:
+        if code == 'hashes_verified':
+            if not executed:
+                state = CHECK_NOT_VERIFIED
+            else:
+                state = CHECK_PASSED if hashes_verified else CHECK_FAILED
+            checklist.append(_checklist_row(
+                code, label, state, source='verification',
+                detail=(artifact_check or {}).get('detail') if executed else None,
+            ))
+            continue
+        resolved = category(check_key)
+        checklist.append(_checklist_row(
+            code, label, str(resolved['status']), source='verification',
+            detail=resolved.get('detail'),
+        ))
+    for code, label, codes in _COMPLETENESS_CHECKLIST_ROWS[1:]:
+        statuses = [_completeness_category_status(completeness, item) for item in codes]
+        if all(item is None for item in statuses):
+            state = CHECK_NOT_VERIFIED if completeness is None else CHECK_NOT_APPLICABLE
+        elif all(item in {'present', 'not_applicable', None} for item in statuses):
+            state = CHECK_PASSED
+        else:
+            state = CHECK_FAILED
+        checklist.append(_checklist_row(code, label, state, source='completeness'))
+
+    required_count = (completeness or {}).get('required_count')
+    present_count = (completeness or {}).get('present_count')
+    evidence_complete = (
+        isinstance(required_count, int)
+        and isinstance(present_count, int)
+        and required_count > 0
+        and present_count >= required_count
+    )
+    required_evidence = category(CHECK_REQUIRED_EVIDENCE)
+
+    verified_at = (verification or {}).get('verified_at') if executed else None
+    contract = {
+        # ── The single authoritative status ────────────────────────────────
+        'overall_status': overall_status,
+        'overall_label': STATUS_LABELS.get(overall_status, overall_status.replace('_', ' ').title()),
+        'verified': overall_status == STATUS_VERIFIED,
+        'executed': executed,
+        'verified_at': verified_at,
+        'verified_by_user_id': (verification or {}).get('verified_by_user_id') if executed else None,
+        # The lifecycle projection the Integrity column renders. Emitted from the
+        # SAME builder call as overall_status so the table and the detail view
+        # cannot drift apart.
+        'integrity_status': display_state.get('integrity_status'),
+        'shield': _shield_for(overall_status, evidence_complete=evidence_complete),
+        # ── Per-category outcomes ──────────────────────────────────────────
+        'artifact_hashes': {
+            'files_hashed': files_hashed,
+            'files_verified': files_verified,
+            'verifiable_count': verifiable_count,
+            'total': total,
+            'hash_failures': len(hash_failures),
+            'failed_artifact_ids': hash_failures,
+            'missing_artifact_ids': missing_artifacts,
+            'hashes_verified': hashes_verified,
+            'status': (artifact_check or {}).get('status') if executed else CHECK_NOT_VERIFIED,
+            'label': (
+                f'{files_verified} / {verifiable_count} valid' if executed
+                else f'{files_hashed} hashed · not verified'
+            ),
+        },
+        'merkle_root': merkle,
+        'manifest_signature': signature,
+        'policy_snapshot': category(CHECK_POLICY_SNAPSHOT),
+        'provenance': category(CHECK_PROVENANCE),
+        'required_evidence': required_evidence,
+        'manifest_hash': category(CHECK_MANIFEST_HASH),
+        # ── Completeness, reported as its OWN axis. Never an input to status. ──
+        'completeness': {
+            'score': (completeness or {}).get('score'),
+            'status': (completeness or {}).get('status'),
+            'required_count': required_count,
+            'present_count': present_count,
+            'missing_count': (completeness or {}).get('missing_count'),
+            'unverifiable_count': (completeness or {}).get('unverifiable_count'),
+            'complete': evidence_complete,
+        },
+        'checklist': checklist,
+        'signer': (result or {}).get('signer') if executed else None,
+        'failed_checks': (result or {}).get('failed_checks') or [] if executed else [],
+        'unavailable_checks': (result or {}).get('unavailable_checks') or [] if executed else [],
+    }
+    if include_checks:
+        # The full per-check detail the Package Verification panel renders.
+        contract['checks'] = (result or {}).get('checks') or [] if executed else []
+    return contract
