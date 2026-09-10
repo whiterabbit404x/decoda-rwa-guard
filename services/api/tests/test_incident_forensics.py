@@ -985,9 +985,10 @@ def test_case_summary_is_a_pure_fold_and_opens_no_cursor():
     assert 'connection' not in parameters
     assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in parameters.values())
     # `incident` is the row `_require_incident` already read for the tenancy check,
-    # passed in rather than re-queried — the fold still opens nothing of its own.
+    # and `snapshot_payload` is the snapshot JSON `_latest_snapshot` already loaded —
+    # both passed in rather than re-queried, so the fold still opens nothing of its own.
     assert set(parameters) == {'correlation', 'artifacts', 'evaluations', 'counts',
-                               'snapshot', 'package', 'incident'}
+                               'snapshot', 'package', 'incident', 'snapshot_payload'}
 
 
 def test_the_evidence_endpoint_reads_each_source_once(monkeypatch):

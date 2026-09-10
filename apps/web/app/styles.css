@@ -2334,6 +2334,45 @@ td .tableMeta {
   }
 }
 
+/* Screen 7 · incident header information hierarchy.
+   Three tiers so UUID-heavy metadata cannot visually dominate the case title:
+   identity (reference/severity/status/title) reads first, then what the case is
+   about, then its provenance, then quieter case metadata. Every tier uses the
+   same auto-fit grid so no tier introduces its own breakpoint behaviour. */
+.forensicHeaderGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.9rem 1.25rem;
+  min-width: 0;
+}
+
+/* Provenance sits under a hairline rule: where the case came from is a
+   different question from what it is about, and the separation is what keeps a
+   rule name from reading as a linked detection record. */
+.forensicHeaderProvenance {
+  margin-top: 0.9rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.forensicHeaderNote {
+  margin: 0.5rem 0 0;
+  font-size: 0.7rem;
+}
+
+/* Tertiary metadata: present and auditable, deliberately quieter. */
+.forensicHeaderTertiary {
+  margin-top: 0.9rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+  gap: 0.6rem 1.25rem;
+  opacity: 0.85;
+}
+
+.forensicHeaderTertiary .tableMeta {
+  font-size: 0.7rem;
+}
+
 /* Evidence — Corroborated: a fixed-layout table that fits the card width
    with no desktop horizontal scrollbar. Type / Source / Observed / State
    stay compact; Title absorbs the remaining space; long hashes, ids and

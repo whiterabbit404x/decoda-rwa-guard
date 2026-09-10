@@ -71,9 +71,9 @@ test('2b. the investigator hero still exposes header / AI summary / workflow / e
   // detail route renders — assert the panel still provides each required area/action.
   const forensic = appSource(...FORENSIC);
   expect(forensic).toContain('Incident header');            // incident header
-  expect(forensic).toContain('AI Investigation Summary');   // AI Investigation Summary
+  expect(forensic).toContain('Investigation Status');       // investigation control summary
   expect(forensic).toContain('Investigation Workflow');     // canonical workflow
-  expect(forensic).toContain('Evidence — Corroborated');    // corroborated evidence
+  expect(forensic).toContain('Key corroborating evidence'); // corroborated snapshot records
   expect(forensic).toContain('Digital Forensics Investigator'); // investigator findings
   expect(forensic).toContain('Generate Report');            // Generate Report
   expect(forensic).toContain('Re-run Investigation');       // Re-run Investigation

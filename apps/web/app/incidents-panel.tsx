@@ -13,10 +13,11 @@ import {
 } from './components/ui-primitives';
 import {
   investigationNextAction,
-  investigationSummaryState,
   isAwaitingResponseStatus,
   linkedDetectionRef,
-  summaryStateVariant,
+  investigationLifecycle,
+  investigationLifecycleLabel,
+  investigationLifecycleVariant,
   type ForensicInvestigation,
   type NextAction,
 } from './forensic-investigation-presentation';
@@ -865,9 +866,12 @@ function IncidentDetailPanel({ incident, incidentEvidence, incidentEvidenceLoad,
     responseLoad,
   });
   const progress = summarizeWorkflowProgress(workflowStages);
-  const summaryState = analysis
-    ? investigationSummaryState(analysis.status, investigation?.ai_triage?.status)
-    : null;
+  // The drawer's "Investigation" verdict is the LIFECYCLE, derived from the same
+  // canonical stage list the progress bar beneath it counts. It used to be the
+  // deterministic analyzer's own status, which is how "Completed" could sit
+  // directly above a partially-complete stage count — two truthful facts, one
+  // misleading pairing.
+  const lifecycle = analysis ? investigationLifecycle(workflowStages, analysis.status) : null;
 
   return (
     <aside className="dataCard sharedSurfaceCard caseFilePanel" aria-label="Incident detail">
@@ -967,8 +971,8 @@ function IncidentDetailPanel({ incident, incidentEvidence, incidentEvidenceLoad,
         <section className="caseFileSection" aria-label="Investigation progress">
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
             <p className="caseFileSectionTitle">Investigation</p>
-            {summaryState
-              ? <StatusPill label={summaryState} variant={summaryStateVariant(summaryState)} />
+            {lifecycle
+              ? <StatusPill label={investigationLifecycleLabel(lifecycle)} variant={investigationLifecycleVariant(lifecycle)} />
               : null}
           </div>
           <CompactWorkflowProgress progress={progress} load={investigationLoad} />

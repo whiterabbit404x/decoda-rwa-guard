@@ -536,6 +536,10 @@ export type IncidentCaseSummary = {
     detected_at?: string | null;
     state?: CaseSectionState | string;
     collection_state?: CaseCollectionState | string;
+    /** The rule that ORIGINATED the case, read from the immutable evidence
+     *  snapshot. An alert-escalated incident carries a rule name while having
+     *  no detection record at all, so this never implies `detection_id`. */
+    originating_rule?: { rule_id?: string | null; rule_name?: string | null } | null;
   };
   on_chain?: {
     state?: CaseSectionState | string;
@@ -1408,6 +1412,14 @@ export function investigationCoverage(input: {
         ? 'available'
         : 'missing',
     },
+    // Human actions are a forensic domain in their own right — an approval, a
+    // note, an assignment. Reported from the SAME domain counts the evidence
+    // directory renders, so the coverage table and the tally cannot disagree.
+    {
+      key: 'human_actions',
+      label: 'Human actions',
+      state: seen((domainCount(evidence.counts, 'HUMAN_ACTION') ?? 0) > 0),
+    },
     {
       key: 'evidence',
       label: 'Evidence',
@@ -1432,3 +1444,127 @@ export function summarizeWorkflowProgress(
     current: active?.label ?? null,
   };
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Screen 7 — evidence tally and response ladder
+ *
+ * Both exist because a single number was being asked to answer a question it
+ * could not: "13 artifacts" beside "Operational: not collected", and "5
+ * recommended" beside "2 awaiting approval". Each helper states every category
+ * the model actually has, including the zeros, so no category can be inferred
+ * from another.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+export type EvidenceDomainTallyRow = {
+  key: string;
+  label: string;
+  count: number;
+};
+
+export type EvidenceDomainTally = {
+  /** One row per canonical domain, INCLUDING zeros — a domain that collected
+   *  nothing is a fact worth stating, not a row to hide. */
+  rows: EvidenceDomainTallyRow[];
+  classified: number;
+  /** Artifacts the backend counted in the total but classified into no domain.
+   *  `count_domains` deliberately never folds these into a domain to make the
+   *  numbers add up, so the residual is surfaced here instead. */
+  unclassified: number;
+  total: number;
+  /** Whether the four domain counts account for the whole total. */
+  reconciles: boolean;
+};
+
+/**
+ * The artifact total split across the four provenance domains, with the
+ * residual named.
+ *
+ * `sum(domains)` can legitimately be less than `total`: the backend counts an
+ * artifact it could not classify toward the total only. Showing four numbers
+ * that silently fail to add up is the bug; showing an explicit "Unclassified"
+ * row is the fix. Returns null when the backend reported no total — a missing
+ * count is not zero.
+ */
+export function evidenceDomainTally(
+  counts: IncidentEvidenceCounts | null | undefined,
+): EvidenceDomainTally | null {
+  const total = typeof counts?.total === 'number' && Number.isFinite(counts.total) ? counts.total : null;
+  if (total === null) return null;
+  const rows = EVIDENCE_DOMAINS.map((domain) => ({
+    key: domain,
+    label: domainLabel(domain),
+    count: domainCount(counts, domain) ?? 0,
+  }));
+  const classified = rows.reduce((sum, row) => sum + row.count, 0);
+  const unclassified = Math.max(0, total - classified);
+  return { rows, classified, unclassified, total, reconciles: unclassified === 0 };
+}
+
+/**
+ * The response ladder, as Screen 8's own model records it.
+ *
+ * "Recommended" is the total number of response ACTIONS that exist; it is not a
+ * claim that any of them was submitted, approved or executed. Every rung below
+ * it is rendered even at zero, so "5 recommended" can never be read as
+ * "5 awaiting approval" — and an AI recommendation, a requested action, an
+ * approved action and an executed action stay four different things.
+ *
+ * Only rungs the model actually has appear: `approval_status` and
+ * `execution_status` are the persisted fields, so there is no invented
+ * "submitted" or "authorized" tier. `Failed` appears only when a failure
+ * exists, because a zero there is not a state an action can rest in.
+ */
+export type ResponseLadderRow = { key: string; label: string; count: number };
+
+export function responseLadder(state: CaseResponseState): ResponseLadderRow[] {
+  if (state.total <= 0) return [];
+  const rows: ResponseLadderRow[] = [
+    { key: 'recommended', label: 'Recommended actions', count: state.total },
+    { key: 'awaiting_approval', label: 'Awaiting approval', count: state.awaitingApproval },
+    { key: 'approved', label: 'Approved', count: state.approved },
+    { key: 'executed', label: 'Executed', count: state.executed },
+  ];
+  if (state.failed > 0) rows.push({ key: 'failed', label: 'Failed to execute', count: state.failed });
+  return rows;
+}
+
+/** The sentence that keeps the four authorities apart wherever the ladder is shown. */
+export const RESPONSE_AUTHORITY_CAPTION =
+  'An AI recommendation, a requested action, an approved action and an executed action are four '
+  + 'different states. Screen 7 reports them; approval and execution happen in Response Actions.';
+
+/* ── Evidence snapshot vs evidence package ────────────────────────── */
+
+/**
+ * The snapshot's integrity state, in words. A VERIFIED snapshot hash means the
+ * persisted digest re-computes over the stored payload — it does NOT mean a
+ * Screen 9 export package has been generated or sealed, which is a separate,
+ * later, and stronger claim.
+ */
+export function evidenceSnapshotVerificationLabel(
+  verified: boolean | null | undefined,
+): string {
+  if (verified === true) return 'Verified';
+  if (verified === false) return 'Mismatch';
+  return 'Not verified';
+}
+
+export function evidenceSnapshotVerificationVariant(
+  verified: boolean | null | undefined,
+): PillVariant {
+  if (verified === true) return 'success';
+  if (verified === false) return 'danger';
+  return 'neutral';
+}
+
+/** "Not generated" — never inferred from a verified snapshot. */
+export function evidencePackageStateLabel(
+  pkg: { package_number?: string | null } | null | undefined,
+): string {
+  const number = (pkg?.package_number ?? '').trim();
+  return number ? number : 'Not generated';
+}
+
+export const SNAPSHOT_VS_PACKAGE_CAPTION =
+  'A verified evidence snapshot is a hashed point-in-time copy held by this incident. An evidence '
+  + 'package is a separate export, generated and sealed in Evidence & Audit. Neither implies the other.';

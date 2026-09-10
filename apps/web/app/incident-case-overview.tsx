@@ -9,7 +9,10 @@ import {
   caseStateLabel,
   caseStateVariant,
   evaluatedPolicyReference,
-  evidenceDomainBreakdown,
+  evidenceDomainTally,
+  evidencePackageStateLabel,
+  evidenceSnapshotVerificationLabel,
+  evidenceSnapshotVerificationVariant,
   failClosedReason,
   formatCaseAmount,
   formatForensicDate,
@@ -24,11 +27,14 @@ import {
   policyDecisionSourceLabel,
   policyDecisionVariant,
   resolvePolicyDecisionSource,
+  responseLadder,
   responseStateVariant,
   sectionCollected,
   snapshotStatusLabel,
   snapshotStatusVariant,
   summarizeResponseState,
+  RESPONSE_AUTHORITY_CAPTION,
+  SNAPSHOT_VS_PACKAGE_CAPTION,
   type CaseResponseAction,
   type ForensicLoadState,
   type IncidentCaseSummary,
@@ -100,7 +106,7 @@ export default function IncidentCaseOverview({ summary, load, responseActions, r
   const origin = summary.origin ?? {};
 
   const summarySection = <IncidentSummarySection summary={summary} />;
-  const detectionSection = <DetectionSection detection={detection} origin={origin} />;
+  const detectionSection = <DetectionSection detection={detection} origin={origin} correlation={summary.correlation ?? {}} />;
   const onChainSection = <OnChainSection onChain={onChain} />;
   const operationalSection = <OperationalSection operational={operational} />;
   const policySection = <PolicySection policy={policy} />;
@@ -158,18 +164,9 @@ export default function IncidentCaseOverview({ summary, load, responseActions, r
    screen stamps for it. Stated first, because the sections beneath it only make
    sense once an operator knows whether a detection was ever expected. */
 function IncidentSummarySection({ summary }: { summary: IncidentCaseSummary }) {
-  const origin = summary.origin ?? {};
-  const correlation = summary.correlation ?? {};
+  const asset = summary.correlation?.asset_id ?? null;
   return (
     <CaseSection title="Incident summary">
-      <CaseLine
-        label="Origin"
-        value={
-          origin.origin
-            ? incidentOriginLabel(origin.origin)
-            : <span className="muted">Not recorded</span>
-        }
-      />
       {/* The canonical correlation id the whole workflow is stamped with. Screen 7
           displays it; it never mints one. */}
       <CaseLine
@@ -181,21 +178,16 @@ function IncidentSummarySection({ summary }: { summary: IncidentCaseSummary }) {
         }
       />
       <CaseLine
-        label="Linked detection"
+        label="Impacted asset"
         value={
-          correlation.detection_id
-            ? <span className="incidentMonoValue" title={correlation.detection_id}>{correlation.detection_id}</span>
-            : <span className="muted">None</span>
+          asset
+            ? <span className="incidentMonoValue" title={asset}>{asset}</span>
+            : <span className="muted">Not resolved</span>
         }
       />
-      <CaseLine
-        label="Linked alert"
-        value={
-          correlation.alert_id
-            ? <span className="incidentMonoValue" title={correlation.alert_id}>{correlation.alert_id}</span>
-            : <span className="muted">None</span>
-        }
-      />
+      {/* Origin, detection record, originating alert and originating rule are the
+          provenance section's facts, immediately below. They used to be restated
+          here too, which put the same four values on the screen twice. */}
     </CaseSection>
   );
 }
@@ -205,13 +197,47 @@ function IncidentSummarySection({ summary }: { summary: IncidentCaseSummary }) {
    detection. Where none is linked, the ORIGIN says why — the difference between
    a case that never had one and a relationship that broke. No detection is ever
    fabricated to fill the section. */
-function DetectionSection({ detection, origin }: {
+function DetectionSection({ detection, origin, correlation }: {
   detection: NonNullable<IncidentCaseSummary['detection']>;
   origin: NonNullable<IncidentCaseSummary['origin']>;
+  correlation: NonNullable<IncidentCaseSummary['correlation']>;
 }) {
+  // The canonical Screen 5 DETECTION ENTITY, keyed on its id alone. The
+  // originating rule below can never promote this to "linked".
+  const detectionLinked = !!correlation.detection_id;
+  const rule = detection.originating_rule ?? null;
+  const ruleName = (rule?.rule_name ?? rule?.rule_id ?? '').trim();
   return (
-    <CaseSection title="Detection">
-      {detection.category || detection.detection_type ? (
+    <CaseSection title="Detection / provenance">
+      {/* Detection record and originating rule are DIFFERENT facts and are stated
+          as separate lines. An alert-escalated incident legitimately carries a
+          rule name with no detection record at all; collapsing the two would
+          fabricate a linked detection. */}
+      <CaseLine
+        label="Detection record"
+        value={detectionLinked
+          ? <span className="incidentMonoValue" title={correlation.detection_id ?? undefined}>{correlation.detection_id}</span>
+          : <span className="muted">None linked</span>}
+      />
+      <CaseLine
+        label="Incident origin"
+        value={origin.origin ? incidentOriginLabel(origin.origin) : <span className="muted">Not recorded</span>}
+      />
+      <CaseLine
+        label="Originating alert"
+        value={correlation.alert_id
+          ? <span className="incidentMonoValue" title={correlation.alert_id}>{correlation.alert_id}</span>
+          : <span className="muted">None linked</span>}
+      />
+      {/* Read from the immutable evidence snapshot — the same record the
+          investigation payload cites, so the two surfaces name one rule. */}
+      <CaseLine
+        label="Originating rule"
+        value={ruleName
+          ? <span title={rule?.rule_id ?? undefined}>{ruleName}</span>
+          : <span className="muted">Not recorded</span>}
+      />
+      {detectionLinked ? (
         <>
           {detection.category ? <CaseLine label="Category" value={humanizeToken(detection.category) ?? '—'} /> : null}
           {detection.detection_type ? (
@@ -223,8 +249,9 @@ function DetectionSection({ detection, origin }: {
           {detection.detected_at ? <CaseLine label="Detected" value={formatForensicDate(detection.detected_at)} /> : null}
         </>
       ) : (
-        <p className="muted" style={{ margin: 0, fontSize: '0.82rem' }}>
+        <p className="muted" style={{ margin: '0.3rem 0 0', fontSize: '0.82rem' }}>
           {missingDetectionExplanation(origin)}
+          {ruleName ? ' The originating rule above is the rule that record carried; it is provenance, not a linked detection.' : ''}
         </p>
       )}
     </CaseSection>
@@ -362,24 +389,24 @@ function PolicySection({ policy }: { policy: NonNullable<IncidentCaseSummary['po
               fail-closed refusal are both legitimate, and they are not the same
               claim about the workspace's configuration. */}
           <CaseLine label="Decision source" value={policyDecisionSourceLabel(decisionSource)} />
-          {failClosedReason(policy) ? (
-            <CaseLine label="Reason" value={failClosedReason(policy)} />
-          ) : null}
           {/* The policy identity AS RECORDED at evaluation time. Read from the
               evaluation row, so it survives the policy being edited, archived or
-              deleted afterwards — historical forensic truth outlives configuration. */}
-          {policyReference ? (
-            <CaseLine
-              label="Policy at evaluation"
-              value={<span className="incidentMonoValue">{policyReference}</span>}
-            />
+              deleted afterwards — historical forensic truth outlives configuration.
+              A fail-closed refusal matched no policy, and says so outright: leaving
+              the line off would let "Policy Not Found" read as a policy name. */}
+          <CaseLine
+            label="Matched policy"
+            value={policyReference
+              ? <span className="incidentMonoValue">{policyReference}</span>
+              : <span className="muted">None</span>}
+          />
+          {policy.evaluation_id ? (
+            <CaseLine label="Evaluation ID" value={<span className="incidentMonoValue" title={policy.evaluation_id}>{policy.evaluation_id}</span>} />
           ) : null}
           {policy.engine_version ? (
             <CaseLine label="Engine version" value={<span className="incidentMonoValue">{policy.engine_version}</span>} />
           ) : null}
-          {policy.evaluation_id ? (
-            <CaseLine label="Evaluation" value={<span className="incidentMonoValue" title={policy.evaluation_id}>{policy.evaluation_id}</span>} />
-          ) : null}
+          {policy.evaluated_at ? <CaseLine label="Evaluated at" value={formatForensicDate(policy.evaluated_at)} /> : null}
           {(policy.reason_codes ?? []).length > 0 ? (
             <CaseLine
               label="Reason codes"
@@ -395,7 +422,12 @@ function PolicySection({ policy }: { policy: NonNullable<IncidentCaseSummary['po
           {(policy.required_approvals ?? []).length > 0 ? (
             <CaseLine label="Required approvals" value={(policy.required_approvals ?? []).join(', ')} />
           ) : null}
-          {policy.evaluated_at ? <CaseLine label="Evaluated" value={formatForensicDate(policy.evaluated_at)} /> : null}
+          {/* The deterministic explanation of the verdict, last, after the machine
+              reason codes it explains. A fail-closed DENY says WHY no policy could
+              be matched rather than leaving the reason codes to be interpreted. */}
+          {failClosedReason(policy) ? (
+            <CaseLine label="Explanation" value={failClosedReason(policy)} />
+          ) : null}
           {/* The verdict is the deterministic engine's, stated as such. An AI
               explanation never occupies this field. */}
           <p className="tableMeta" style={{ margin: '0.3rem 0 0', fontSize: '0.7rem' }}>
@@ -449,12 +481,13 @@ function ResponseSection({ response, responseKnown, responseLoad, incidentId, ac
         <>
           {/* Every number here counts ACTIONS. An action whose own quorum is
               "1 of 2 approvals received" still counts once, so the unit is named
-              on every line rather than left to be inferred from a bare integer. */}
-          <CaseLine label="Actions recommended" value={String(response.total)} />
-          {response.awaitingApproval > 0 ? <CaseLine label="Actions awaiting approval" value={String(response.awaitingApproval)} /> : null}
-          {response.approved > 0 ? <CaseLine label="Actions approved" value={String(response.approved)} /> : null}
-          {response.executed > 0 ? <CaseLine label="Actions executed" value={String(response.executed)} /> : null}
-          {response.failed > 0 ? <CaseLine label="Actions failed" value={String(response.failed)} /> : null}
+              on every line rather than left to be inferred from a bare integer.
+              Every rung is rendered INCLUDING its zeros: "5 recommended" beside a
+              blank approval line reads as "5 awaiting", which is a claim the
+              record does not make. */}
+          {responseLadder(response).map((row) => (
+            <CaseLine key={row.key} label={row.label} value={String(row.count)} />
+          ))}
           {/* Per-action approval quorum, as Screen 8's gate recorded it. */}
           {quorums.length > 0 ? (
             <CaseLine
@@ -471,6 +504,9 @@ function ResponseSection({ response, responseKnown, responseLoad, incidentId, ac
           {/* The authority boundary, stated where the response state is read. */}
           <p className="tableMeta" style={{ margin: '0.3rem 0 0', fontSize: '0.7rem' }}>
             AI authority: recommend only. Execution authority: deterministic policy engine plus required human authorization.
+          </p>
+          <p className="tableMeta" style={{ margin: '0.3rem 0 0', fontSize: '0.7rem' }}>
+            {RESPONSE_AUTHORITY_CAPTION}
           </p>
         </>
       ) : (
@@ -493,6 +529,7 @@ function ResponseSection({ response, responseKnown, responseLoad, incidentId, ac
 
 /* ── What proves it ─────────────────────────────────────────────────── */
 function EvidenceSection({ evidence }: { evidence: NonNullable<IncidentCaseSummary['evidence']> }) {
+  const tally = evidenceDomainTally(evidence.counts);
   return (
     <CaseSection
       title="Evidence"
@@ -502,18 +539,46 @@ function EvidenceSection({ evidence }: { evidence: NonNullable<IncidentCaseSumma
         label="Collected"
         value={`${evidence.artifact_count ?? 0} ${evidence.artifact_count === 1 ? 'artifact' : 'artifacts'}`}
       />
-      {/* The total spans four provenance domains. Naming the split stops it from
-          being read as evidence for any one of them — an evidence count must never
-          imply operational evidence exists when no operational state was collected. */}
-      {evidenceDomainBreakdown(evidence.counts) ? (
-        <CaseLine label="By domain" value={evidenceDomainBreakdown(evidence.counts)} />
+      {/* The total spans four provenance domains. Every domain is named INCLUDING
+          the zeros, so the total can never be read as evidence for any one of
+          them — "13 artifacts" beside "Operational: not collected" is only
+          contradictory while the operational zero is invisible. */}
+      {tally ? (
+        <>
+          {tally.rows.map((row) => (
+            <CaseLine key={row.key} label={row.label} value={String(row.count)} />
+          ))}
+          {/* The backend counts an artifact it could not classify toward the total
+              only, and never folds it into a domain to make the numbers add up.
+              When that residual exists it is named here rather than leaving four
+              counts that silently fail to sum. */}
+          {!tally.reconciles ? (
+            <>
+              <CaseLine label="Unclassified" value={String(tally.unclassified)} />
+              <p className="tableMeta" style={{ margin: '0.2rem 0 0', fontSize: '0.7rem' }}>
+                {tally.classified} of {tally.total} artifacts carry a provenance domain. The remaining
+                {' '}{tally.unclassified} could not be classified and are counted in the total only.
+              </p>
+            </>
+          ) : null}
+        </>
       ) : null}
-      {evidence.snapshot_hash_verified === true ? <CaseLine label="Snapshot hash" value="Verified" /> : null}
-      {evidence.snapshot_hash_verified === false ? <CaseLine label="Snapshot hash" value="Mismatch" /> : null}
-      {evidence.package_number ? (
-        <CaseLine
-          label="Evidence package"
-          value={
+      {/* Snapshot verification and export packaging are two different claims and
+          are stated as two lines. A verified snapshot hash means the persisted
+          digest re-computes; it does not mean an export package exists. */}
+      <CaseLine
+        label="Evidence snapshot"
+        value={
+          <StatusPill
+            label={evidenceSnapshotVerificationLabel(evidence.snapshot_hash_verified)}
+            variant={evidenceSnapshotVerificationVariant(evidence.snapshot_hash_verified)}
+          />
+        }
+      />
+      <CaseLine
+        label="Evidence package"
+        value={
+          evidence.package_number ? (
             <Link
               href={evidence.package_route ?? `/evidence?package_id=${encodeURIComponent(evidence.package_id ?? '')}`}
               prefetch={false}
@@ -521,13 +586,14 @@ function EvidenceSection({ evidence }: { evidence: NonNullable<IncidentCaseSumma
             >
               {evidence.package_number}
             </Link>
-          }
-        />
-      ) : (
-        <p className="muted" style={{ margin: 0, fontSize: '0.82rem' }}>
-          No evidence package has been created for this incident yet.
-        </p>
-      )}
+          ) : (
+            <span className="muted">{evidencePackageStateLabel(evidence)}</span>
+          )
+        }
+      />
+      <p className="tableMeta" style={{ margin: '0.3rem 0 0', fontSize: '0.7rem' }}>
+        {SNAPSHOT_VS_PACKAGE_CAPTION}
+      </p>
     </CaseSection>
   );
 }

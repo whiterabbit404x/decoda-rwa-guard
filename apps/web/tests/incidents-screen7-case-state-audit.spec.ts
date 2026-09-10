@@ -210,7 +210,7 @@ test('the policy reference is read from the evaluation, so it survives a deleted
 
 test('the Overview renders the evaluation-time identity, not the current policy record', () => {
   const src = appSource('incident-case-overview.tsx');
-  expect(src).toContain('Policy at evaluation');
+  expect(src).toContain('Matched policy');
   expect(src).toContain('evaluatedPolicyReference(policy)');
   expect(src).toContain('Decision source');
   // The engine version travels with the decision, so a re-run under a newer
@@ -358,8 +358,9 @@ test('a per-action approval quorum is shown only when the gate reported one', ()
 
 test('the Overview labels each response count with its unit and states the authority boundary', () => {
   const src = appSource('incident-case-overview.tsx');
-  expect(src).toContain('Actions recommended');
-  expect(src).toContain('Actions awaiting approval');
+  // The ladder names every rung, including its zeros, so "5 recommended" cannot
+  // be read as "5 awaiting approval".
+  expect(src).toContain('responseLadder(response)');
   expect(src).toContain('Approval quorum');
   // AI recommends; the deterministic engine plus a human authorizes. Screen 7
   // reports this, and never approves or executes anything itself.
@@ -389,6 +390,9 @@ test('investigation coverage answers availability, never completion', () => {
     detection: 'not_applicable',
     policy: 'missing',
     response: 'available',
+    // Human actions are a forensic domain in their own right. With no domain
+    // counts reported, the honest answer is "missing", not a borrowed total.
+    human_actions: 'missing',
     evidence: 'available',
   });
 });

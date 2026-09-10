@@ -159,8 +159,11 @@ test('investigator panel fetches the real per-incident endpoint (no hardcoded da
 
 test('investigator panel renders the four required panels', () => {
   const src = appSource('forensic-investigator-panel.tsx');
-  expect(src).toContain('AI Investigation Summary');
-  expect(src).toContain('Evidence — Corroborated');
+  // The status card is titled for what it reports (the investigation's state),
+  // not for the AI layer — it renders deterministic facts, and the AI narrative
+  // job is one clearly-labelled row inside it.
+  expect(src).toContain('Investigation Status');
+  expect(src).toContain('Key corroborating evidence');
   expect(src).toContain('Investigation Workflow');
   expect(src).toContain('Digital Forensics Investigator');
 });
@@ -189,11 +192,13 @@ test('findings distinguish verified fact / rule match / AI interpretation / hypo
 
 test('header renders incident metadata from API data', () => {
   const src = appSource('forensic-investigator-panel.tsx');
-  expect(src).toContain('Detection time');
-  expect(src).toContain('Last updated');
-  expect(src).toContain('Impacted asset');
-  expect(src).toContain('Source alerts');
-  expect(src).toContain('Risk score');
+  // The case header owns the incident's identity, what it is about, where it came
+  // from, and its metadata. The status card no longer restates any of it.
+  expect(src).toContain('label="Opened"');
+  expect(src).toContain('label="Last updated"');
+  expect(src).toContain('label="Asset"');
+  expect(src).toContain('label="Source alerts"');
+  expect(src).toContain('label="Risk score"');
   expect(src).toContain('incidentReference(incident.reference, incident.incident_id)');
 });
 

@@ -439,3 +439,346 @@ export function isAwaitingResponseStatus(status?: string | null): boolean {
   const s = (status ?? '').toLowerCase();
   return s === 'awaiting_response' || s === 'contained';
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Screen 7 — separated investigation states
+ *
+ * The panel used to render ONE word ("Completed") for four different backend
+ * facts, which is why a 4/7 workflow could sit under it. These selectors keep
+ * the concepts apart, each derived from its OWN persisted fact and from
+ * nothing else:
+ *
+ *   investigationLifecycle     ← the canonical workflow stages
+ *   deterministicAnalysisState ← analysis.status (the analyzer run)
+ *   aiInvestigatorState        ← ai_triage.status (the narrative job)
+ *   reportState                ← ai_triage.report_available
+ *
+ * None is derived from another. In particular the AI investigator is never
+ * reported "running" because the deterministic analysis finished, and the
+ * investigation is never reported "completed" because the analyzer did.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Investigation lifecycle (the page-level verdict) ─────────────── */
+
+/**
+ * Where the INVESTIGATION stands, from the canonical seven-stage model alone.
+ *
+ * `completed` requires every stage to be terminal-and-done (`completed`, or
+ * `skipped` where the deployment genuinely has no such step). A stage still
+ * `pending`, `degraded`, `queued` or `in_progress` means the investigation is
+ * not complete, whatever the deterministic analyzer's own status says — a
+ * finished analyzer run is one stage of seven, not the case.
+ */
+export type InvestigationLifecycle =
+  | 'pending'
+  | 'running'
+  | 'awaiting_action'
+  | 'completed'
+  | 'failed';
+
+export function investigationLifecycle(
+  stages?: readonly WorkflowStage[] | null,
+  analysisStatus?: string,
+): InvestigationLifecycle {
+  if ((analysisStatus ?? '').toLowerCase() === 'failed') return 'failed';
+  const rows = stages ?? [];
+  // No stage model at all is not "nothing to do" — it is "nothing recorded yet".
+  if (rows.length === 0) return 'pending';
+  const state = (s: WorkflowStage): string => (s.state ?? '').toLowerCase();
+  if (rows.some((s) => state(s) === 'failed')) return 'failed';
+  if (rows.some((s) => state(s) === 'in_progress' || state(s) === 'queued')) return 'running';
+  if (rows.every((s) => state(s) === 'completed' || state(s) === 'skipped')) return 'completed';
+  // Terminal but incomplete: nothing is running, and stages remain outstanding.
+  if (!rows.some((s) => state(s) === 'completed')) return 'pending';
+  return 'awaiting_action';
+}
+
+export function investigationLifecycleLabel(state: InvestigationLifecycle): string {
+  switch (state) {
+    case 'running': return 'In progress';
+    case 'awaiting_action': return 'Awaiting action';
+    case 'completed': return 'Completed';
+    case 'failed': return 'Failed';
+    default: return 'Not started';
+  }
+}
+
+// Only a genuinely complete investigation is coloured as success.
+export function investigationLifecycleVariant(state: InvestigationLifecycle): PillVariant {
+  switch (state) {
+    case 'completed': return 'success';
+    case 'running': return 'info';
+    case 'awaiting_action': return 'warning';
+    case 'failed': return 'danger';
+    default: return 'neutral';
+  }
+}
+
+/* ── AI investigator job state (ai_triage.status ONLY) ────────────── */
+
+export type AiInvestigatorState =
+  | 'idle'
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'blocked'
+  | 'unavailable'
+  | 'cancelled';
+
+/**
+ * The AI narrative job's own status. `idle` is the truthful reading of
+ * `not_requested`: the agent has not been asked to do anything, which is NOT
+ * the same claim as "the agent is active".
+ */
+export function aiInvestigatorState(aiStatus?: string | null): AiInvestigatorState {
+  switch ((aiStatus ?? '').toLowerCase()) {
+    case 'queued': return 'queued';
+    case 'running': return 'running';
+    case 'completed':
+    case 'completed_with_warnings': return 'completed';
+    case 'failed':
+    case 'validation_failed': return 'failed';
+    case 'budget_blocked': return 'blocked';
+    case 'disabled':
+    case 'unavailable': return 'unavailable';
+    case 'cancelled': return 'cancelled';
+    default: return 'idle';
+  }
+}
+
+export function aiInvestigatorLabel(state: AiInvestigatorState): string {
+  switch (state) {
+    case 'queued': return 'Queued';
+    case 'running': return 'Running';
+    case 'completed': return 'Completed';
+    case 'failed': return 'Failed';
+    case 'blocked': return 'Blocked';
+    case 'unavailable': return 'Unavailable';
+    case 'cancelled': return 'Cancelled';
+    default: return 'Idle';
+  }
+}
+
+export function aiInvestigatorVariant(state: AiInvestigatorState): PillVariant {
+  switch (state) {
+    case 'running': return 'info';
+    case 'queued': return 'info';
+    case 'completed': return 'success';
+    case 'failed': return 'danger';
+    case 'blocked': return 'warning';
+    default: return 'neutral';
+  }
+}
+
+/** The sentence that says what an idle/unavailable agent means, so absence is
+ *  never read as a silent success. */
+export function aiInvestigatorDetail(state: AiInvestigatorState): string {
+  switch (state) {
+    case 'idle': return 'No AI narrative has been requested for this incident. Deterministic findings below are unaffected.';
+    case 'queued': return 'An AI narrative job is queued. Deterministic findings are already final.';
+    case 'running': return 'An AI narrative job is running. Deterministic findings are already final.';
+    case 'completed': return 'An AI narrative was produced for this incident and is labelled as generated content.';
+    case 'failed': return 'The AI narrative job failed. Deterministic findings are preserved and unaffected.';
+    case 'blocked': return 'The AI narrative job was blocked by budget controls. Deterministic findings are preserved.';
+    case 'cancelled': return 'The AI narrative job was cancelled. Deterministic findings are preserved.';
+    default: return 'The AI narrative layer is not available for this deployment. Deterministic findings are preserved.';
+  }
+}
+
+/* ── Deterministic analysis state (analysis.status ONLY) ──────────── */
+
+export type AnalysisState = 'complete' | 'degraded' | 'failed' | 'unavailable';
+
+/**
+ * The deterministic analyzer's own run state. `degraded` means the analyzer ran
+ * over an INCOMPLETE evidence snapshot — a real result with stated gaps, never
+ * a failure and never a clean bill of health.
+ */
+export function deterministicAnalysisState(
+  investigation?: ForensicInvestigation | null,
+): AnalysisState {
+  if (!investigation || investigation.schema_ready === false) return 'unavailable';
+  if ((investigation.status ?? '').toLowerCase() === 'unavailable') return 'unavailable';
+  const status = (investigation.analysis?.status ?? '').toLowerCase();
+  if (status === 'degraded') return 'degraded';
+  if (status === 'failed') return 'failed';
+  if (status === 'completed') return 'complete';
+  return 'unavailable';
+}
+
+export function analysisStateLabel(state: AnalysisState): string {
+  switch (state) {
+    case 'complete': return 'Complete';
+    case 'degraded': return 'Degraded';
+    case 'failed': return 'Failed';
+    default: return 'Unavailable';
+  }
+}
+
+export function analysisStateVariant(state: AnalysisState): PillVariant {
+  switch (state) {
+    case 'complete': return 'success';
+    case 'degraded': return 'warning';
+    case 'failed': return 'danger';
+    default: return 'neutral';
+  }
+}
+
+/* ── Report state (persisted availability ONLY) ───────────────────── */
+
+export type ReportState = 'not_generated' | 'generated';
+
+/**
+ * Whether a persisted investigation report exists for this incident. Backed by
+ * `ai_triage.report_available`, which the backend sets from a COMPLETED triage
+ * job — a deterministic analysis finishing does not claim a report, and neither
+ * does pressing Generate Report, which returns a report body without persisting
+ * a report record.
+ */
+export function reportState(
+  aiTriage?: ForensicInvestigation['ai_triage'] | null,
+): ReportState {
+  return aiTriage?.report_available === true ? 'generated' : 'not_generated';
+}
+
+export function reportStateLabel(state: ReportState): string {
+  return state === 'generated' ? 'Generated' : 'Not generated';
+}
+
+export function reportStateVariant(state: ReportState): PillVariant {
+  return state === 'generated' ? 'success' : 'neutral';
+}
+
+/* ── Snapshot evidence dimensions (the honest reading of coverage) ── */
+
+/**
+ * `analysis.evidence_coverage` is the fraction of the backend's eight canonical
+ * SNAPSHOT evidence dimensions that are present — the linked alert, the
+ * originating rule, target/asset context, a correlated telemetry event, a
+ * transaction hash, a block number, an observed timestamp and a chain id.
+ *
+ * It is NOT forensic-domain coverage (on-chain / operational / detection /
+ * policy / response / human actions) and it is NOT an integrity check, so it
+ * must never be labelled "Evidence coverage" or "verified". 8 of 8 here is
+ * entirely compatible with "Operational: not collected", because operational
+ * state is not one of these eight dimensions.
+ */
+export type SnapshotDimensionCoverage = {
+  present: number;
+  expected: number;
+  percent: number;
+  missing: string[];
+};
+
+export const SNAPSHOT_DIMENSION_CAPTION =
+  'Canonical evidence dimensions present in the immutable snapshot: linked alert, originating rule, '
+  + 'target/asset context, correlated telemetry, transaction hash, block number, observed timestamp and '
+  + 'chain id. This is not forensic-domain coverage and not an integrity check.';
+
+/** Returns null when the backend reported no coverage detail — "0 of 0" would be
+ *  a claim the payload does not support. */
+export function snapshotDimensionCoverage(
+  analysis?: ForensicAnalysis | null,
+): SnapshotDimensionCoverage | null {
+  const detail = analysis?.coverage_detail;
+  const expected = typeof detail?.expected_count === 'number' ? detail.expected_count : 0;
+  if (!detail || expected <= 0) return null;
+  const present = typeof detail.present_count === 'number' ? detail.present_count : 0;
+  return {
+    present,
+    expected,
+    percent: coveragePercent(analysis?.evidence_coverage),
+    missing: (detail.missing ?? []).filter((label): label is string => !!label),
+  };
+}
+
+/* ── Confidence band documentation (never recomputed here) ────────── */
+
+/** The backend's own band boundaries (`forensic_investigation.confidence_band`),
+ *  documented so the UI can SAY what High/Medium/Low mean. The band itself is
+ *  always read from the payload — this constant never derives one. */
+export const CONFIDENCE_BAND_THRESHOLDS = { high: 0.75, medium: 0.4 } as const;
+
+export function confidenceBandCaption(): string {
+  const high = Math.round(CONFIDENCE_BAND_THRESHOLDS.high * 100);
+  const medium = Math.round(CONFIDENCE_BAND_THRESHOLDS.medium * 100);
+  return `Confidence is scored deterministically by the backend from the evidence in the snapshot. `
+    + `High is ${high}% or above, Medium ${medium}% or above, Low below ${medium}%. `
+    + `The band is read from the persisted analysis; it is never computed in the browser.`;
+}
+
+/* ── Detection record vs originating rule ─────────────────────────── */
+
+/**
+ * The provenance distinction Screen 7 must make explicit.
+ *
+ * An incident escalated from an alert carries a RULE NAME (the alert's own
+ * `rule_key` / matched pattern, resolved into the evidence snapshot) while
+ * having no Screen 5 detection entity at all. Rendering that rule where a
+ * detection record belongs would fabricate a linked detection.
+ *
+ * `detectionLinked` is therefore keyed on the canonical detection id ALONE.
+ * A rule reference can never promote it.
+ */
+export type DetectionProvenance = {
+  detectionLinked: boolean;
+  detectionId: string | null;
+  detectionType: string | null;
+  origin: string | null;
+  originatingAlertId: string | null;
+  originatingRule: { reference: string; ruleId: string; name: string } | null;
+};
+
+export function detectionProvenance(
+  investigation?: ForensicInvestigation | null,
+): DetectionProvenance {
+  const incident = investigation?.incident ?? {};
+  const detectionId = (incident.detection_id ?? '').trim() || null;
+  const ref = linkedDetectionRef(investigation);
+  const ruleId = ref ? ref.reference.split(':').slice(1).join(':') : '';
+  return {
+    // The canonical Screen 5 detection entity, and nothing else.
+    detectionLinked: !!detectionId,
+    detectionId,
+    detectionType: (incident.detection_type ?? '').trim() || null,
+    origin: incident.origin?.origin ?? null,
+    originatingAlertId: (incident.source_alert_id ?? '').trim() || null,
+    originatingRule: ref && ruleId
+      ? { reference: ref.reference, ruleId, name: (ref.title ?? '').trim() || ruleId }
+      : null,
+  };
+}
+
+/** The truthful one-liner for an absent detection record. */
+export function detectionRecordLabel(provenance: DetectionProvenance): string {
+  return provenance.detectionLinked ? 'Linked' : 'None linked';
+}
+
+/* ── The stage an operator is on, or the one waiting ──────────────── */
+
+/**
+ * Where the operator's attention belongs, and whether that stage is actually
+ * moving.
+ *
+ * `summarizeWorkflowProgress().current` names only a stage that is genuinely
+ * running or queued. A case whose remaining stages are all `pending` has no
+ * running stage at all — reporting the first outstanding one as "current" would
+ * claim work is under way that is not. So the stage is named either way and the
+ * VERB changes: "Current stage" while something runs, "Next stage" while
+ * something waits.
+ */
+export type OutstandingStage = { label: string; running: boolean } | null;
+
+export function outstandingStage(
+  stages?: readonly WorkflowStage[] | null,
+): OutstandingStage {
+  const rows = stages ?? [];
+  const state = (s: WorkflowStage): string => (s.state ?? '').toLowerCase();
+  const active = rows.find((s) => state(s) === 'in_progress') ?? rows.find((s) => state(s) === 'queued');
+  if (active) return { label: active.label, running: true };
+  // The first stage that is neither done nor deliberately skipped, in the
+  // backend's own canonical order.
+  const waiting = rows.find((s) => state(s) !== 'completed' && state(s) !== 'skipped');
+  return waiting ? { label: waiting.label, running: false } : null;
+}

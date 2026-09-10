@@ -1563,10 +1563,37 @@ def _operational_state(reconciliation: dict[str, Any] | None, detection: dict[st
     return STATE_NOT_RECORDED
 
 
+def originating_rule(snapshot_payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The rule that originated the case, read from the immutable snapshot.
+
+    An incident escalated from an alert carries a RULE identifier (the alert's
+    own ``rule_key`` / matched pattern, resolved once into the snapshot's
+    ``rule`` block) while having no Screen 5 detection entity at all. Screen 7
+    must be able to name that rule WITHOUT implying a linked detection record,
+    so it is returned as its own fact here rather than folded into the detection
+    section's identity fields.
+
+    Read from the persisted snapshot this request already loaded — the same
+    block the forensic investigation payload cites — so the two surfaces can
+    never name a different originating rule. ``None`` when the snapshot recorded
+    no rule; nothing is resolved a second time to fill the gap.
+    """
+    if not isinstance(snapshot_payload, dict):
+        return None
+    rule = snapshot_payload.get('rule')
+    if not isinstance(rule, dict):
+        return None
+    rule_id = _text(rule.get('rule_id'))
+    if not rule_id:
+        return None
+    return {'rule_id': rule_id, 'rule_name': _text(rule.get('name')) or rule_id}
+
+
 def build_case_summary(*, correlation: dict[str, Any], artifacts: list[dict[str, Any]],
                        evaluations: list[dict[str, Any]], counts: dict[str, Any],
                        snapshot: dict[str, Any], package: dict[str, Any],
-                       incident: dict[str, Any] | None = None) -> dict[str, Any]:
+                       incident: dict[str, Any] | None = None,
+                       snapshot_payload: dict[str, Any] | None = None) -> dict[str, Any]:
     """The deterministic answer to "what happened, and what proves it".
 
     A pure fold over records this request has ALREADY read — it opens no cursor
@@ -1721,9 +1748,12 @@ def build_case_summary(*, correlation: dict[str, Any], artifacts: list[dict[str,
             'reason_code': _text(detection.get('deterministic_reason_code')),
             'detected_at': _iso(detection.get('detected_at')),
             # A detection section with no record says so as a first-class state,
-            # rather than leaving every field null for the UI to interpret.
+            # rather than leaving every field null for the UI to interpret. The
+            # originating rule below NEVER changes this: naming the rule an alert
+            # carried is not the same claim as a linked detection record.
             'state': STATE_OBSERVED if detection else STATE_NOT_RECORDED,
             'collection_state': collection_state(STATE_OBSERVED if detection else STATE_NOT_RECORDED),
+            'originating_rule': originating_rule(snapshot_payload),
         },
         'on_chain': on_chain,
         'operational': operational,
@@ -1827,6 +1857,11 @@ def get_incident_evidence(incident_id: str, request: Any) -> dict[str, Any]:
                 correlation=correlation, artifacts=page, evaluations=evaluations,
                 counts=counts, snapshot=snapshot_block, package=package,
                 incident=incident,
+                # The snapshot payload this request already read, so the case
+                # summary can name the ORIGINATING RULE from the same immutable
+                # record the investigation payload cites — no second resolution,
+                # no second query, no chance of two different rule names.
+                snapshot_payload=snapshot_row.get('snapshot_json') if snapshot_row else None,
             ),
             'evidence_package': pilot._json_safe_value(package),
             'policy_evaluations': evaluations,

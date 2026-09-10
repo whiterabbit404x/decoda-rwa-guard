@@ -348,7 +348,7 @@ test('forensic panel wires the two-column layout and the fixed-layout evidence t
   expect(src).not.toContain('repeat(auto-fit, minmax(300px, 1fr))');
   // Evidence identifiers still truncate + copy (access to the full value preserved).
   expect(src).toContain('CopyableId');
-  expect(src).toContain('View all evidence');
+  expect(src).toContain('Open evidence directory');
 });
 
 test('TableShell forwards an optional className for opt-in table sizing', () => {
