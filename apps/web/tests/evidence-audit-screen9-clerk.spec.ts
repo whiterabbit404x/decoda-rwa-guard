@@ -29,11 +29,17 @@ test('clerk: agent sidebar renders with title and primary report action', () => 
 
 test('clerk: package mode shows real per-package evidence counts', () => {
   const source = read(PANEL);
-  // Package-scoped metrics come from the backend completeness + verification result.
+  // Evidence-COMPLETENESS counts come from the completeness snapshot...
   expect(source).toContain('completeness.present_count');
   expect(source).toContain('completeness.missing_count');
   expect(source).toContain('completeness.unverifiable_count');
-  expect(source).toContain('detail?.verification?.files_verified');
+  // ...and every INTEGRITY count comes from the canonical verification contract,
+  // never from a parallel read of the raw verification record. Files Hashed and
+  // Files Verified are distinct facts and both are backend-supplied.
+  expect(source).toContain('detail?.verification_contract');
+  expect(source).toContain('artifactHashes?.files_hashed');
+  expect(source).toContain('artifactHashes?.files_verified');
+  expect(source).toContain('artifactHashes?.hash_failures');
 });
 
 test('clerk: evidence metrics section lists the required tiles', () => {
@@ -66,10 +72,33 @@ test('clerk: completeness score is derived from backend values, never hardcoded'
   expect(source).not.toContain('97% Excellent');
 });
 
-test('clerk: verification checklist is computed from real package data', () => {
+test('clerk: verification checklist comes from the canonical backend contract', () => {
   const source = read(PANEL);
-  expect(source).toContain('Verification Checklist');
-  expect(source).toContain('completeness?.checklist');
+  const verification = read('app/evidence-package-verification.tsx');
+  // The checklist is rendered by the shared canonical component, fed from the
+  // contract — NOT from `completeness.checklist`, the build-time snapshot frozen
+  // before any verification could run, which is what made a fully verified
+  // package display "Hashes verified ✗" beside Files Verified = 9.
+  expect(source).toContain('VerificationChecklist');
+  expect(source).toContain("contract?.checklist");
+  expect(source).not.toContain('completeness?.checklist');
+  expect(verification).toContain('Verification Checklist');
+});
+
+test('clerk: an unrun check renders as "not verified", never as a red cross', () => {
+  const verification = read('app/evidence-package-verification.tsx');
+  // Tri-state marks: a check that never ran is neither a pass nor a failure.
+  expect(verification).toContain('not_verified');
+  expect(verification).toContain("glyph: '○'");
+  expect(verification).toContain('not verified yet');
+});
+
+test('clerk: the agent is advisory — it never decides cryptographic truth', () => {
+  const source = read(PANEL);
+  // Every verification value the Clerk shows is read from the backend contract.
+  // There is no locally computed pass/fail anywhere in the sidebar.
+  expect(source).toContain('const contract = detail?.verification_contract ?? null');
+  expect(source).not.toMatch(/files_verified\s*===\s*files_hashed/);
 });
 
 /* ── Hash (SHA-256) column ──────────────────────────────────────── */

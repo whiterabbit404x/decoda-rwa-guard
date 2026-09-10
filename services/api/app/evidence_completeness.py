@@ -296,11 +296,22 @@ def _category_status(categories: list[dict[str, Any]], code: str) -> str:
 
 
 def _build_checklist(facts: dict[str, Any], categories: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Sidebar checklist. Every item is computed from real package facts.
+    """Build-time evidence checklist. Every item is computed from real package facts.
 
-    ``verified`` is only true once a deterministic verification has passed
-    (facts['manifest_verified'] is True). Before then, hashes are 'generated'
-    but not 'verified' — the label reflects that truthfully.
+    IMPORTANT — this checklist is a COMPLETENESS artifact, frozen into the
+    package summary when the package is built. It is NOT the Screen 9
+    Verification Checklist: verification has not run at build time and cannot
+    run later against a frozen snapshot. The canonical read-time checklist is
+    ``evidence_verification.build_verification_contract(...)['checklist']``,
+    which every Screen 9 surface renders.
+
+    Serving this snapshot to the sidebar is precisely what made a fully verified
+    package display "Hashes verified ✗" beside Files Verified = 9 and
+    Integrity = Verified. To make that untruth impossible even at rest, the
+    verification-derived rows carry an explicit tri-state ``state``:
+    ``passed`` / ``failed`` / ``not_verified``. ``not_verified`` means the check
+    has never been executed — it is not a pass and it is NOT a failure, so it is
+    never rendered as a red ✗.
     """
     manifest_verified = facts.get('manifest_verified')
     files_hashed = int(facts.get('files_hashed') or 0)
@@ -308,23 +319,43 @@ def _build_checklist(facts: dict[str, Any], categories: list[dict[str, Any]]) ->
     def present(code: str) -> bool:
         return _category_status(categories, code) == 'present'
 
+    def state_of(value: bool) -> str:
+        return 'passed' if value else 'failed'
+
+    if manifest_verified is None:
+        hashes_verified_state = 'not_verified'
+    else:
+        hashes_verified_state = state_of(bool(manifest_verified))
+
     return [
         {'code': 'required_fields', 'label': 'Required fields present',
-         'present': _resolve_required_fields_present(categories)},
+         'present': _resolve_required_fields_present(categories),
+         'state': state_of(_resolve_required_fields_present(categories)), 'source': 'completeness'},
         {'code': 'hashes_generated', 'label': 'File hashes generated',
-         'present': files_hashed > 0},
-        {'code': 'hashes_verified', 'label': 'Hashes verified',
-         'present': bool(manifest_verified)},
+         'present': files_hashed > 0, 'state': state_of(files_hashed > 0), 'source': 'packaging'},
+        {'code': 'hashes_verified', 'label': 'File hashes verified',
+         'present': manifest_verified is True, 'state': hashes_verified_state, 'source': 'verification'},
         {'code': 'chain_data', 'label': 'Chain data complete',
-         'present': present('chain_metadata') or _category_status(categories, 'chain_metadata') == 'not_applicable'},
+         'present': present('chain_metadata') or _category_status(categories, 'chain_metadata') == 'not_applicable',
+         'state': state_of(present('chain_metadata') or _category_status(categories, 'chain_metadata') == 'not_applicable'),
+         'source': 'completeness'},
         {'code': 'logs_included', 'label': 'Logs included',
-         'present': bool(facts.get('has_audit_events'))},
+         'present': bool(facts.get('has_audit_events')),
+         'state': state_of(bool(facts.get('has_audit_events'))), 'source': 'completeness'},
         {'code': 'approvals_included', 'label': 'Response approvals included',
-         'present': present('approval_decision') or _category_status(categories, 'approval_decision') == 'not_applicable'},
+         'present': present('approval_decision') or _category_status(categories, 'approval_decision') == 'not_applicable',
+         'state': state_of(present('approval_decision') or _category_status(categories, 'approval_decision') == 'not_applicable'),
+         'source': 'completeness'},
         {'code': 'execution_included', 'label': 'Execution outcome included',
-         'present': present('execution_result') or _category_status(categories, 'execution_result') == 'not_applicable'},
+         'present': present('execution_result') or _category_status(categories, 'execution_result') == 'not_applicable',
+         'state': state_of(present('execution_result') or _category_status(categories, 'execution_result') == 'not_applicable'),
+         'source': 'completeness'},
+        # Packaging-level provenance only (a manifest exists and files are hashed).
+        # The CRYPTOGRAPHIC provenance-chain check lives in the canonical contract.
         {'code': 'provenance', 'label': 'Provenance complete',
-         'present': bool(facts.get('has_manifest')) and files_hashed > 0},
+         'present': bool(facts.get('has_manifest')) and files_hashed > 0,
+         'state': state_of(bool(facts.get('has_manifest')) and files_hashed > 0),
+         'source': 'packaging'},
     ]
 
 
@@ -531,12 +562,30 @@ def derive_integrity_status(
         return INTEGRITY_BUILDING
 
     # Completed job — resolve integrity from any recorded verification result.
+    #
+    # The CANONICAL structured status wins whenever one was recorded. Only an
+    # explicit ``VERIFIED`` conclusion from the verification service yields the
+    # verified state: a PARTIALLY_VERIFIED or SIGNATURE_UNAVAILABLE outcome
+    # ("we could not check everything") falls through to hash_generated rather
+    # than being read as either a pass or a tampering finding. The legacy
+    # tri-state ``valid`` boolean is consulted only for verification records
+    # written before the structured result existed.
     if verification is not None:
-        valid = verification.get('valid')
-        if valid is True:
+        canonical = str(
+            verification.get('verification_status')
+            or (verification.get('result') or {}).get('status')
+            or ''
+        ).strip().upper()
+        if canonical == 'VERIFIED':
             return INTEGRITY_VERIFIED
-        if valid is False:
+        if canonical in {'VERIFICATION_FAILED', 'INCOMPLETE_PACKAGE'}:
             return INTEGRITY_INTEGRITY_FAILED
+        if not canonical:
+            valid = verification.get('valid')
+            if valid is True:
+                return INTEGRITY_VERIFIED
+            if valid is False:
+                return INTEGRITY_INTEGRITY_FAILED
 
     # No verification recorded yet. If core required evidence is missing the
     # package still needs evidence (checked first so a hashed-but-incomplete

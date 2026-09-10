@@ -114,8 +114,23 @@ test('3d: an unavailable check is neither a pass nor a failure', () => {
 test('4a: the green shield renders only for a backend VERIFIED status', () => {
   const source = read(VERIFICATION);
   expect(source).toContain('export function VerificationShield');
-  expect(source).toContain('const isVerified = status === VERIFIED_STATUS');
+  // The shield state is the BACKEND's, taken from the canonical contract, and
+  // the green affordance is gated on it alone.
+  expect(source).toContain('const isVerified = shieldState === VERIFIED_STATUS');
+  expect(source).toContain('contract?.shield?.state');
   expect(source).toContain("export const VERIFIED_STATUS = 'VERIFIED'");
+});
+
+test('4a-ii: completeness never turns the shield green; it only distinguishes READY', () => {
+  const source = read(VERIFICATION);
+  // A 100%-complete package that has not been verified reads READY FOR
+  // VERIFICATION; a failed one reads INTEGRITY CHECK FAILED. Neither is green,
+  // and neither is derived from a completeness percentage in the browser.
+  expect(source).toContain('READY_FOR_VERIFICATION');
+  expect(source).toContain("label: 'Ready for Verification'");
+  expect(source).toContain('INTEGRITY_CHECK_FAILED');
+  expect(source).toContain("label: 'Integrity Check Failed'");
+  expect(source).not.toMatch(/score\s*(>=|===)\s*100/);
 });
 
 test('4b: a package with no recorded verification never shows a success state', () => {
@@ -125,7 +140,8 @@ test('4b: a package with no recorded verification never shows a success state', 
 
 test('4c: HSM/KMS backing is claimed only when the backend signer says hardware_backed', () => {
   const source = read(VERIFICATION);
-  expect(source).toContain('const hardwareBacked = Boolean(result?.signer?.hardware_backed)');
+  expect(source).toContain('hardware_backed);');
+  expect(source).toContain('(contract?.signer ?? result?.signer)?.hardware_backed');
   expect(source).toContain('signing?.hardware_backed ?');
   // And a verified software-key seal explicitly says it is not hardware-backed.
   expect(source).toContain('not an');
