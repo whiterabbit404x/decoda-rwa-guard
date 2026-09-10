@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 
 import {
   EmptyStateBlocker,
@@ -11,19 +11,35 @@ import {
 } from './components/ui-primitives';
 import { usePilotAuth } from './pilot-auth-context';
 import {
+  aiInvestigatorDetail,
+  aiInvestigatorLabel,
+  aiInvestigatorState,
+  aiInvestigatorVariant,
+  analysisStateLabel,
+  analysisStateVariant,
+  confidenceBandCaption,
   confidenceBandLabel,
   confidenceBandVariant,
   confidencePercent,
-  coveragePercent,
   corroborationLabel,
   corroborationVariant,
+  detectionProvenance,
+  detectionRecordLabel,
+  deterministicAnalysisState,
   evidenceSourceLabel,
   evidenceSourceVariant,
   incidentReference,
-  investigationSummaryState,
+  investigationLifecycle,
+  investigationLifecycleLabel,
+  investigationLifecycleVariant,
   isAiActive,
+  outstandingStage,
   refKindLabel,
-  summaryStateVariant,
+  reportState,
+  reportStateLabel,
+  reportStateVariant,
+  snapshotDimensionCoverage,
+  SNAPSHOT_DIMENSION_CAPTION,
   truncateMiddle,
   verificationStateLabel,
   verificationStateVariant,
@@ -35,7 +51,15 @@ import {
   type RuleMatch,
   type WorkflowStage,
 } from './forensic-investigation-presentation';
-import { incidentOriginLabel } from './incident-forensics-presentation';
+import {
+  incidentOriginLabel,
+  summarizeWorkflowProgress,
+} from './incident-forensics-presentation';
+
+// Corroborated snapshot records shown inline. The full artifact directory is a
+// DIFFERENT dataset and lives in the Evidence tab; this table is a bounded
+// preview of the snapshot's own corroboration set.
+const CORROBORATION_PREVIEW = 5;
 
 // The Incidents UI never calls the backend directly (the browser only sees
 // NEXT_PUBLIC_API_URL, often unset in production). Every call goes through the
@@ -152,7 +176,10 @@ export default function ForensicInvestigatorPanel({ incidentId }: { incidentId: 
   const [busy, setBusy] = useState(false);
   const [reporting, setReporting] = useState(false);
   const [reportError, setReportError] = useState('');
-  const [reportReady, setReportReady] = useState(false);
+  // What the report request ACTUALLY produced, read from its response. A
+  // deterministic report body with no AI narrative section is a real outcome and
+  // says so; it does not claim the Report workflow stage completed.
+  const [reportOutcome, setReportOutcome] = useState<{ aiSection: boolean } | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(async () => {
@@ -207,7 +234,7 @@ export default function ForensicInvestigatorPanel({ incidentId }: { incidentId: 
   const generateReport = useCallback(async () => {
     setReporting(true);
     setReportError('');
-    setReportReady(false);
+    setReportOutcome(null);
     try {
       const res = await fetch(`${API_PROXY_BASE}/incidents/${encodeURIComponent(incidentId)}/reports`, {
         method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, cache: 'no-store',
@@ -217,7 +244,9 @@ export default function ForensicInvestigatorPanel({ incidentId }: { incidentId: 
         setReportError(String(body.detail ?? 'Report generation failed.'));
         return;
       }
-      setReportReady(true);
+      // Report the response, not an assumption about it.
+      const body = (await res.json().catch(() => ({}))) as { ai_report?: unknown };
+      setReportOutcome({ aiSection: !!body.ai_report });
       await load();
     } catch {
       setReportError('Network error while generating the report.');
@@ -266,9 +295,6 @@ export default function ForensicInvestigatorPanel({ incidentId }: { incidentId: 
   if (!data || !data.analysis) return <LoadingSkeleton />;
 
   const analysis = data.analysis;
-  const incident = data.incident ?? {};
-  const aiStatus = data.ai_triage?.status;
-  const summaryState = investigationSummaryState(analysis.status, aiStatus);
 
   return (
     <div className="forensicInvestigator" aria-label="Digital Forensics Investigator" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
@@ -292,7 +318,7 @@ export default function ForensicInvestigatorPanel({ incidentId }: { incidentId: 
       <div className="forensicLayout">
         <div className="forensicMain">
           <div className="forensicMainTop">
-            <AiSummaryCard investigation={data} summaryState={summaryState} />
+            <InvestigationStatusCard investigation={data} />
             <WorkflowCard stages={analysis.workflow_stages ?? []} />
           </div>
           <EvidenceCorroboratedCard investigation={data} />
@@ -304,7 +330,7 @@ export default function ForensicInvestigatorPanel({ incidentId }: { incidentId: 
           busy={busy}
           reporting={reporting}
           reportError={reportError}
-          reportReady={reportReady}
+          reportOutcome={reportOutcome}
         />
       </div>
     </div>
@@ -376,6 +402,8 @@ function HeaderCard({ investigation }: { investigation: ForensicInvestigation })
   const analysis = investigation.analysis;
   const linked = investigation.linked ?? {};
   const reference = incidentReference(incident.reference, incident.incident_id);
+  // Detection record and originating rule are separate facts, resolved once.
+  const provenance = detectionProvenance(investigation);
   return (
     <section className="dataCard sharedSurfaceCard" aria-label="Incident header"
       style={{ padding: '1.25rem', background: 'rgba(59,130,246,0.06)' }}>
@@ -389,9 +417,9 @@ function HeaderCard({ investigation }: { investigation: ForensicInvestigation })
           <h2 style={{ margin: '0.45rem 0 0', fontSize: '1.1rem' }}>{incident.title ?? 'Untitled incident'}</h2>
         </div>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.9rem 1.25rem', marginTop: '1.1rem' }}>
-        <HeaderField label="Opened" value={fmtDateTime(incident.detected_at)} />
-        <HeaderField label="Last updated" value={fmtRelative(incident.updated_at)} />
+      {/* SECONDARY — what this case is about. The four facts an operator needs
+          before any number means anything. */}
+      <div className="forensicHeaderGrid" style={{ marginTop: '1.1rem' }}>
         {/* The registered ASSET this incident concerns, resolved by the backend from
             the canonical detection/target link. A raw target UUID is a routing key,
             not an asset name, so it is only shown when no asset resolved. */}
@@ -402,32 +430,23 @@ function HeaderCard({ investigation }: { investigation: ForensicInvestigation })
               ? <CopyableId value={incident.target_id} label="target" />
               : <span className="muted">Not available</span>
         } />
-        {/* Detection category + type from the canonical Screen 5 detection. Absent
-            when no detection is linked — never a default category. */}
-        <HeaderField label="Category" value={
-          incident.detection_category
-            ? <span>{detectionCategoryLabel(incident.detection_category)}</span>
-            : <span className="muted">Not classified</span>
-        } />
-        <HeaderField label="Detection" value={
-          incident.detection_type
-            ? <span title={incident.detection_id ?? undefined}>{detectionTypeLabel(incident.detection_type)}</span>
-            : <span className="muted">Not available</span>
-        } />
         {/* How the case originated, from persisted linkage only. It is what makes an
-            empty Detection field legible: an incident escalated from an alert or
+            empty Detection record legible: an incident escalated from an alert or
             opened by hand never HAD a Screen 5 detection. */}
-        <HeaderField label="Origin" value={
+        <HeaderField label="Incident origin" value={
           incident.origin?.origin
             ? incidentOriginLabel(incident.origin.origin)
             : <span className="muted">Not recorded</span>
         } />
-        <HeaderField label="Source alerts" value={String(linked.alerts ?? 0)} />
-        {/* The analyst this case is assigned to, as the incident row records it. */}
-        <HeaderField label="Assigned analyst" value={
-          incident.assigned_to_user_id
-            ? <CopyableId value={incident.assigned_to_user_id} label="analyst" />
-            : <span className="muted">Unassigned</span>
+        {/* The canonical Screen 5 DETECTION ENTITY — linked, or not. The originating
+            rule below is a separate fact and can never promote this to "linked". */}
+        <HeaderField label="Detection record" value={
+          provenance.detectionLinked
+            ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
+                <span>{incident.detection_type ? detectionTypeLabel(incident.detection_type) : 'Linked'}</span>
+                <CopyableId value={provenance.detectionId} label="detection" />
+              </span>
+            : <span className="muted">{detectionRecordLabel(provenance)}</span>
         } />
         {/* The canonical correlation id the whole workflow is stamped with — the same
             value Screens 3, 5, 8, 9 and 11 carry. Screen 7 displays it; it never
@@ -437,11 +456,67 @@ function HeaderCard({ investigation }: { investigation: ForensicInvestigation })
             ? <CopyableId value={incident.event_id} label="canonical event" />
             : <span className="muted">Not linked</span>
         } />
+      </div>
+
+      {/* PROVENANCE — where the case came from, kept apart from the detection
+          record above so a rule name can never be read as a linked detection. */}
+      <div className="forensicHeaderGrid forensicHeaderProvenance">
+        <HeaderField label="Originating alert" value={
+          provenance.originatingAlertId
+            ? <CopyableId value={provenance.originatingAlertId} label="originating alert" />
+            : <span className="muted">None linked</span>
+        } />
+        {/* The rule the ORIGINATING RECORD carried, resolved once into the immutable
+            snapshot. Chipped and captioned as a rule so it is never mistaken for a
+            detection record — the two are different entities. */}
+        <HeaderField label="Originating rule" value={
+          provenance.originatingRule
+            ? <span
+                title={provenance.originatingRule.reference}
+                style={{
+                  display: 'inline-block', fontSize: '0.78rem', padding: '0.1rem 0.45rem',
+                  background: 'rgba(59,130,246,0.12)', border: '1px solid rgba(59,130,246,0.25)',
+                  borderRadius: '5px', color: 'var(--text-accent)', maxWidth: '100%',
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}
+              >
+                {provenance.originatingRule.name}
+              </span>
+            : <span className="muted">Not recorded</span>
+        } />
+        {/* Detection category from the canonical Screen 5 detection. Absent when no
+            detection is linked — never a default category. */}
+        <HeaderField label="Category" value={
+          incident.detection_category
+            ? <span>{detectionCategoryLabel(incident.detection_category)}</span>
+            : <span className="muted">Not classified</span>
+        } />
+        <HeaderField label="Source alerts" value={String(linked.alerts ?? 0)} />
+      </div>
+      {!provenance.detectionLinked && provenance.originatingRule ? (
+        <p className="tableMeta forensicHeaderNote">
+          This incident has no Screen 5 detection record. The originating rule above is the rule the
+          source alert carried; it is provenance, not a linked detection.
+        </p>
+      ) : null}
+
+      {/* TERTIARY — case metadata. Present and auditable, deliberately quieter
+          than the identity and provenance above it. */}
+      <div className="forensicHeaderGrid forensicHeaderTertiary">
+        <HeaderField label="Opened" value={fmtDateTime(incident.detected_at)} />
+        <HeaderField label="Last updated" value={fmtRelative(incident.updated_at)} />
+        {/* The analyst this case is assigned to, as the incident row records it. */}
+        <HeaderField label="Assigned analyst" value={
+          incident.assigned_to_user_id
+            ? <CopyableId value={incident.assigned_to_user_id} label="analyst" />
+            : <span className="muted">Unassigned</span>
+        } />
         <HeaderField label="Risk score" value={
           typeof incident.risk_score === 'number'
             ? `${Math.round(incident.risk_score)} / 100`
             : <span className="muted">Not available</span>
         } />
+        {/* The band is the backend's; the browser only labels it. */}
         <HeaderField label="Confidence" value={
           analysis
             ? <span><StatusPill label={confidenceBandLabel(analysis.confidence_band)} variant={confidenceBandVariant(analysis.confidence_band)} /> {confidencePercent(analysis.confidence)}%</span>
@@ -452,47 +527,127 @@ function HeaderCard({ investigation }: { investigation: ForensicInvestigation })
   );
 }
 
-/* ── AI Investigation Summary ───────────────────────────────────── */
-function AiSummaryCard({ investigation, summaryState }: { investigation: ForensicInvestigation; summaryState: string }) {
+/* ── Investigation Status ────────────────────────────────────────────
+   The investigation's CONTROL SUMMARY: where the case stands, and which of the
+   four separately-tracked states each word belongs to.
+
+   This card used to be titled "AI Investigation Summary" and rendered ONE pill
+   for four different backend facts, which is how a 4/7 workflow could sit
+   beneath the word "Completed". Each row below now names the fact it reports:
+
+     Investigation  ← the canonical seven-stage workflow
+     Analysis       ← the deterministic analyzer's own run status
+     AI investigator← the AI narrative job's status (never the analyzer's)
+     Report         ← whether a report record exists
+
+   It deliberately does NOT repeat the detection time or the impacted asset: the
+   case header above states both, and one screen should name a fact once. */
+function InvestigationStatusCard({ investigation }: { investigation: ForensicInvestigation }) {
   const analysis = investigation.analysis;
-  const incident = investigation.incident ?? {};
   const linked = investigation.linked ?? {};
-  const ai = investigation.ai_triage ?? {};
+  const stages = analysis?.workflow_stages ?? [];
+  // The SAME selector the incident queue's Case File counts with — one stage
+  // model, one denominator, no second browser-side definition of "done".
+  const progress = summarizeWorkflowProgress(stages);
+  const lifecycle = investigationLifecycle(stages, analysis?.status);
+  const outstanding = outstandingStage(stages);
+  const analysisState = deterministicAnalysisState(investigation);
+  const aiState = aiInvestigatorState(investigation.ai_triage?.status);
+  const report = reportState(investigation.ai_triage);
+  const dimensions = snapshotDimensionCoverage(analysis);
   const facts = (analysis?.findings ?? []).filter((f) => f.verification_state === 'verified_fact' && f.finding_type !== 'evidence_gap');
   return (
-    <Card eyebrow="Digital Forensics Investigator" title="AI Investigation Summary" ariaLabel="AI Investigation Summary"
-      action={<StatusPill label={summaryState} variant={summaryStateVariant(summaryState as never)} />}>
-      <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: '0 0 0.75rem' }}>
-        {analysis?.confidence_explanation
-          ?? 'Deterministic analysis derived from the immutable evidence snapshot.'}
-      </p>
+    <Card eyebrow="Investigation" title="Investigation Status" ariaLabel="Investigation status"
+      action={<StatusPill label={investigationLifecycleLabel(lifecycle)} variant={investigationLifecycleVariant(lifecycle)} />}>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem 1rem' }}>
-        <HeaderField label="Detection time" value={fmtDateTime(incident.detected_at)} />
-        {/* Same resolution as the case header: the registered asset name when the
-            backend resolved one, so the two cards in this panel can never name the
-            impacted asset differently. */}
-        <HeaderField label="Impacted asset" value={
-          incident.asset_label
-            ? <span title={incident.asset_id ?? undefined}>{incident.asset_label}</span>
-            : incident.target_id
-              ? <CopyableId value={incident.target_id} label="target" />
-              : <span className="muted">Not available</span>
+        {/* Lifecycle progress and the current stage, from the stage model alone. */}
+        <HeaderField label="Workflow" value={
+          progress
+            ? <span>{progress.completed} / {progress.total} stages complete</span>
+            : <span className="muted">No stages recorded</span>
         } />
-        <HeaderField label="Confidence" value={<span><StatusPill label={confidenceBandLabel(analysis?.confidence_band)} variant={confidenceBandVariant(analysis?.confidence_band)} /> {confidencePercent(analysis?.confidence)}%</span>} />
-        <HeaderField label="Evidence coverage" value={`${coveragePercent(analysis?.evidence_coverage)}%`} />
-        <HeaderField label="Investigation status" value={<StatusPill label={summaryState} variant={summaryStateVariant(summaryState as never)} />} />
-        <HeaderField label="Estimated loss" value={<span className="muted">Not available</span>} />
+        {/* The stage is named whether or not it is moving, and the LABEL says
+            which: a pending stage is the next one, never the current one. */}
+        <HeaderField label={outstanding?.running === false ? 'Next stage' : 'Current stage'} value={
+          outstanding
+            ? <span>{outstanding.label}</span>
+            : <span className="muted">{lifecycle === 'completed' ? 'None — all stages complete' : 'No stages recorded'}</span>
+        } />
+        {/* The deterministic analyzer's OWN state — a finished analyzer run is one
+            stage of seven, so it is reported as itself and never as the case. */}
+        <HeaderField label="Deterministic analysis" value={
+          <StatusPill label={analysisStateLabel(analysisState)} variant={analysisStateVariant(analysisState)} />
+        } />
+        {/* The AI narrative job's own state, from ai_triage.status alone. */}
+        <HeaderField label="AI investigator" value={
+          <StatusPill label={aiInvestigatorLabel(aiState)} variant={aiInvestigatorVariant(aiState)} />
+        } />
+        <HeaderField label="Investigation report" value={
+          <StatusPill label={reportStateLabel(report)} variant={reportStateVariant(report)} />
+        } />
+        <HeaderField label="Confidence" value={
+          <span><StatusPill label={confidenceBandLabel(analysis?.confidence_band)} variant={confidenceBandVariant(analysis?.confidence_band)} /> {confidencePercent(analysis?.confidence)}%</span>
+        } />
       </div>
+
+      {/* Snapshot evidence dimensions — NOT "evidence coverage". It counts the
+          canonical dimensions present in the immutable snapshot, which is a
+          different question from which forensic domains were collected, and it
+          verifies nothing. 8 of 8 here is entirely compatible with "Operational:
+          not collected", because operational state is not one of the eight. */}
+      <div style={{ marginTop: '0.75rem' }}>
+        <HeaderField label="Snapshot evidence dimensions" value={
+          dimensions
+            ? <span>{dimensions.present} of {dimensions.expected} present</span>
+            : <span className="muted">Not recorded</span>
+        } />
+        <p className="tableMeta" style={{ margin: '0.25rem 0 0', fontSize: '0.7rem' }}>
+          {SNAPSHOT_DIMENSION_CAPTION}
+        </p>
+        {dimensions && dimensions.missing.length > 0 ? (
+          <p className="tableMeta" style={{ margin: '0.25rem 0 0', fontSize: '0.7rem' }}>
+            Missing: {dimensions.missing.join(', ')}.
+          </p>
+        ) : null}
+      </div>
+
       <div style={{ display: 'flex', gap: '1rem', marginTop: '0.75rem', flexWrap: 'wrap' }}>
         <MetricTile label="Linked alerts" value={linked.alerts ?? 0} />
         <MetricTile label="Verified facts" value={facts.length} />
-        <MetricTile label="Evidence records" value={linked.evidence_records ?? 0} />
+        {/* Corroborated SNAPSHOT records — the alert, the rule and the correlated
+            telemetry. This is not the artifact directory's count; the two are
+            different collections and are labelled as such wherever they appear. */}
+        <MetricTile label="Corroborated records" value={linked.evidence_records ?? 0} meta="snapshot" />
       </div>
-      {ai.status && ai.status !== 'not_requested' ? (
-        <p className="muted" style={{ fontSize: '0.78rem', marginTop: '0.6rem' }}>
-          AI narrative: {ai.status}{ai.status === 'unavailable' || ai.status === 'disabled' ? ' — deterministic findings preserved.' : ''}
+
+      {/* Why the confidence is what it is, from the backend's OWN recorded
+          factors. The browser never scores or re-bands anything. */}
+      <details style={{ marginTop: '0.75rem' }}>
+        <summary style={{ fontSize: '0.78rem', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+          Why this confidence
+        </summary>
+        <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: '0.4rem 0 0.3rem' }}>
+          {analysis?.confidence_explanation
+            ?? 'No confidence explanation was recorded for this analysis.'}
         </p>
-      ) : null}
+        {(analysis?.confidence_factors ?? []).length > 0 ? (
+          <ul style={{ margin: '0 0 0.3rem', paddingLeft: '1rem', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+            {(analysis?.confidence_factors ?? []).map((factor) => (
+              <li key={`${factor.factor}-${factor.weight}`}>
+                <strong>{factor.factor}</strong> ({factor.effect === 'decrease' ? '' : '+'}{factor.weight})
+                {factor.detail ? ` — ${factor.detail}` : ''}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        <p className="tableMeta" style={{ margin: 0, fontSize: '0.7rem' }}>{confidenceBandCaption()}</p>
+      </details>
+
+      {/* An idle or unavailable agent is stated, never left blank: a silent
+          absence would read as a clean result. */}
+      <p className="tableMeta" style={{ margin: '0.6rem 0 0', fontSize: '0.7rem' }}>
+        {aiInvestigatorDetail(aiState)}
+      </p>
     </Card>
   );
 }
@@ -502,12 +657,16 @@ const EVIDENCE_HEADERS = ['Type', 'Title', 'Source', 'Tx / Block', 'Observed', '
 
 function EvidenceCorroboratedCard({ investigation }: { investigation: ForensicInvestigation }) {
   const evidence = investigation.evidence;
-  const rows = evidence?.rows ?? [];
-  const total = evidence?.total ?? rows.length;
+  const allRows = evidence?.rows ?? [];
+  const total = evidence?.total ?? allRows.length;
+  // A bounded preview of the SNAPSHOT's corroboration set. The Evidence tab owns
+  // the forensic artifact directory, which is a different, larger collection —
+  // so this count is never presented as "N of <artifact total>".
+  const rows = allRows.slice(0, CORROBORATION_PREVIEW);
   const isDegraded = investigation.status === 'degraded';
   return (
-    <Card eyebrow="Evidence" title="Evidence — Corroborated" ariaLabel="Corroborated evidence"
-      action={<Link href={`/incidents/${encodeURIComponent(investigation.incident?.incident_id ?? '')}?tab=evidence`} prefetch={false} className="btn btn-secondary" style={{ fontSize: '0.78rem' }}>View all evidence</Link>}>
+    <Card eyebrow="Evidence" title="Key corroborating evidence" ariaLabel="Key corroborating evidence"
+      action={<Link href={`/incidents/${encodeURIComponent(investigation.incident?.incident_id ?? '')}?tab=evidence`} prefetch={false} className="btn btn-secondary" style={{ fontSize: '0.78rem' }}>Open evidence directory</Link>}>
       {rows.length === 0 ? (
         isDegraded ? (
           <p className="muted" style={{ fontSize: '0.85rem' }}>
@@ -538,19 +697,41 @@ function EvidenceCorroboratedCard({ investigation }: { investigation: ForensicIn
               </tr>
             ))}
           </TableShell>
-          {total > rows.length ? (
-            <p className="muted" style={{ fontSize: '0.78rem', marginTop: '0.5rem' }}>Showing {rows.length} of {total} evidence records.</p>
-          ) : null}
+          {/* Both numbers name the SAME collection, so the preview can never be
+              read as a subset of the artifact directory's total. */}
+          <p className="muted" style={{ fontSize: '0.78rem', marginTop: '0.5rem' }}>
+            {total > rows.length
+              ? `Showing ${rows.length} of ${total} corroborated snapshot records.`
+              : `${total} corroborated snapshot ${total === 1 ? 'record' : 'records'}.`}
+          </p>
         </div>
       )}
+      {/* The distinction that stops "3 records" and "13 artifacts" reading as a
+          contradiction: they count different things. */}
+      <p className="tableMeta" style={{ margin: '0.4rem 0 0', fontSize: '0.7rem' }}>
+        These are the immutable snapshot&apos;s corroboration records — the source alert, the originating
+        rule and the correlated telemetry. The forensic artifact directory in the Evidence tab is a
+        separate, four-domain collection with its own total; neither is a subset of the other.
+      </p>
     </Card>
   );
 }
 
 /* ── Investigation Workflow ─────────────────────────────────────── */
 function WorkflowCard({ stages }: { stages: WorkflowStage[] }) {
+  // Counted with the SAME selector the incident queue's Case File uses, over the
+  // same persisted stage list — so "4 / 7" means the same thing in both places.
+  const progress = summarizeWorkflowProgress(stages);
   return (
-    <Card eyebrow="Workflow" title="Investigation Workflow" ariaLabel="Investigation workflow">
+    <Card eyebrow="Workflow" title="Investigation Workflow" ariaLabel="Investigation workflow"
+      action={progress
+        ? <span className="tableMeta" style={{ fontSize: '0.75rem' }}>{progress.completed} of {progress.total} complete</span>
+        : null}>
+      {progress?.current ? (
+        <p className="tableMeta" style={{ margin: '0 0 0.5rem', fontSize: '0.72rem' }}>
+          Current stage: {progress.current}
+        </p>
+      ) : null}
       {stages.length === 0 ? (
         <p className="muted" style={{ fontSize: '0.85rem' }}>No workflow stages recorded yet.</p>
       ) : (
@@ -613,14 +794,14 @@ function RuleMatchItem({ match }: { match: RuleMatch }) {
   );
 }
 
-function InvestigatorAgentPanel({ investigation, onRerun, onGenerateReport, busy, reporting, reportError, reportReady }: {
+function InvestigatorAgentPanel({ investigation, onRerun, onGenerateReport, busy, reporting, reportError, reportOutcome }: {
   investigation: ForensicInvestigation;
   onRerun: () => void;
   onGenerateReport: () => void;
   busy: boolean;
   reporting: boolean;
   reportError: string;
-  reportReady: boolean;
+  reportOutcome: { aiSection: boolean } | null;
 }) {
   const analysis = investigation.analysis;
   const findings = analysis?.findings ?? [];
@@ -630,10 +811,24 @@ function InvestigatorAgentPanel({ investigation, onRerun, onGenerateReport, busy
   const ai = investigation.ai_triage ?? {};
   const incidentId = investigation.incident?.incident_id ?? '';
   const showHandoff = (ai.recommendation_count ?? 0) > 0 || ai.report_available;
+  // The AGENT's own status, from the AI triage job alone. It used to be derived
+  // from the deterministic analyzer's status, which meant an agent that had
+  // never been asked to do anything was labelled "Active".
+  const aiState = aiInvestigatorState(ai.status);
+  const analysisState = deterministicAnalysisState(investigation);
 
   return (
     <Card eyebrow="Agent" title="Digital Forensics Investigator" ariaLabel="Digital Forensics Investigator agent"
-      action={<StatusPill label={investigation.status === 'degraded' ? 'Degraded' : 'Active'} variant={investigation.status === 'degraded' ? 'warning' : 'success'} />}>
+      action={<StatusPill label={aiInvestigatorLabel(aiState)} variant={aiInvestigatorVariant(aiState)} />}>
+      {/* The card's pill IS the agent's status. Naming the OTHER state beside it is
+          what stops the findings below from being read as the agent's output: they
+          are deterministic and exist whatever the agent's job status is. */}
+      <p className="tableMeta" style={{ margin: '0 0 0.6rem', fontSize: '0.72rem' }}>
+        Deterministic analysis{' '}
+        <StatusPill label={analysisStateLabel(analysisState)} variant={analysisStateVariant(analysisState)} />
+        {' '}— the findings below are derived from the evidence snapshot, not by the agent.
+      </p>
+
       {/* Verified findings — distinct from rule matches / AI interpretation / hypotheses. */}
       <p className="sectionEyebrow" style={{ marginBottom: '0.25rem' }}>Top verified findings</p>
       {facts.length === 0 ? (
@@ -662,11 +857,9 @@ function InvestigatorAgentPanel({ investigation, onRerun, onGenerateReport, busy
         </div>
       ) : null}
 
-      <div style={{ display: 'flex', gap: '1rem', margin: '0.75rem 0', flexWrap: 'wrap' }}>
-        <MetricTile label="Evidence coverage" value={`${coveragePercent(analysis?.evidence_coverage)}%`} />
-        <MetricTile label="Confidence" value={`${confidencePercent(analysis?.confidence)}%`}
-          meta={confidenceBandLabel(analysis?.confidence_band)} />
-      </div>
+      {/* Confidence and the snapshot dimension count are stated ONCE, in the
+          Investigation Status card. Repeating them here was the same fact
+          rendered twice under two different names. */}
 
       {/* Recommended next step — always a recommendation, never executed here. */}
       <div style={{ padding: '0.65rem', background: 'rgba(148,163,184,0.06)', borderRadius: '8px', marginBottom: '0.6rem' }}>
@@ -681,8 +874,17 @@ function InvestigatorAgentPanel({ investigation, onRerun, onGenerateReport, busy
       </div>
 
       {reportError ? <p role="alert" className="statusLine statusLine-warning" style={{ margin: '0 0 0.5rem' }}>{reportError}</p> : null}
-      {reportReady && ai.report_available ? (
-        <p className="statusLine" style={{ margin: '0 0 0.5rem', fontSize: '0.82rem' }} aria-live="polite">Report generated and persisted.</p>
+      {/* What the request produced, stated exactly. Generating a report does not
+          complete the Report workflow stage — that stage tracks a persisted report
+          record — and saying otherwise would mark a stage complete that is not. */}
+      {reportOutcome ? (
+        <p className="statusLine" style={{ margin: '0 0 0.5rem', fontSize: '0.82rem' }} aria-live="polite">
+          Forensic report generated from the current evidence snapshot
+          {reportOutcome.aiSection ? ', including the AI narrative section.' : '. No AI narrative section was available, so the report is deterministic only.'}
+          {reportState(ai) === 'not_generated'
+            ? ' The Report Generated workflow stage remains pending until a report record exists for this incident.'
+            : ''}
+        </p>
       ) : null}
 
       <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>

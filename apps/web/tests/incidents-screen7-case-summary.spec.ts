@@ -240,7 +240,7 @@ test('a case-file field distinguishes loading, unreadable and genuinely absent',
 
 test('the Overview answers the case questions in order, from records only', () => {
   const src = appSource('incident-case-overview.tsx');
-  for (const section of ['Detection', 'On-chain state', 'Operational state', 'Policy', 'Response', 'Evidence']) {
+  for (const section of ['Detection / provenance', 'On-chain state', 'Operational state', 'Policy', 'Response', 'Evidence']) {
     expect(src, section).toContain(`title="${section}"`);
   }
 });
@@ -259,7 +259,7 @@ test('each Overview section states its own absence rather than borrowing a verdi
     'No chain observation is recorded for this incident.',
     'No policy evaluation is recorded for this incident.',
     'No response action has been recommended for this incident yet.',
-    'No evidence package has been created for this incident yet.',
+    'evidencePackageStateLabel(evidence)',
   ]) {
     expect(src, copy).toContain(copy);
   }

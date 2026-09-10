@@ -90,13 +90,14 @@ test('the Case File is a summary, not a second copy of the forensic record', () 
 test('investigation progress comes from the canonical workflow stages (not a browser-inferred checklist)', () => {
   const panel = appSource('incidents-panel.tsx');
   // The Case File states how far the case has got, folded from the persisted Screen 7
-  // workflow stages + the canonical AI Investigation Summary state — never the old
-  // locally inferred five-step checklist that disagreed with the full incident page.
+  // workflow stages — never the old locally inferred five-step checklist that
+  // disagreed with the full incident page. Its verdict is the LIFECYCLE derived
+  // from those same stages, so "Completed" can never sit above "4 / 7 complete".
   const full = appSource('forensic-investigator-panel.tsx');
   expect(panel).toContain('aria-label="Investigation progress"');
   expect(panel).toContain('const workflowStages = analysis?.workflow_stages ?? [];');
   expect(panel).toContain('summarizeWorkflowProgress(workflowStages)');
-  expect(panel).toContain('investigationSummaryState(analysis.status, investigation?.ai_triage?.status)');
+  expect(panel).toContain('investigationLifecycle(workflowStages, analysis.status)');
   // The full stage checklist stays on the full investigation workspace, where it is
   // not pushed below the fold by a 360px column.
   expect(full).toContain('Investigation Workflow');
