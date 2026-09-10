@@ -28,7 +28,8 @@ test('product route contracts keep required IA labels, page copy, tables, and tr
   const evidencePage = productSource('evidence/page.tsx');
   expect(evidencePage).toContain('Evidence &amp; Audit');
   expect(evidencePage).toContain("label: 'Evidence Packages'");
-  expect(evidencePage).toContain("label: 'Audit Logs'");
+  expect(evidencePage).toContain("label: 'Audit Log'");
+  expect(evidencePage).toContain("label: 'Export History'");
   expect(evidencePage).toContain("['Package ID', 'Incident', 'Date Created', 'Includes', 'Size', 'Evidence Source', 'Actions']");
 
   const systemHealthPage = productSource('system-health/page.tsx');

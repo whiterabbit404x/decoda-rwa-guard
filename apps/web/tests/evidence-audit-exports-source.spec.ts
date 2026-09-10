@@ -11,7 +11,8 @@ test('evidence page uses Evidence & Audit terminology with expected tabs and hea
 
   expect(source).toContain('Evidence &amp; Audit');
   expect(source).toContain("label: 'Evidence Packages'");
-  expect(source).toContain("label: 'Audit Logs'");
+  expect(source).toContain("label: 'Audit Log'");
+  expect(source).toContain("label: 'Export History'");
   expect(source).toContain("'Package ID'");
   expect(source).toContain("'Incident / Scope'");
   expect(source).toContain("'Created'");

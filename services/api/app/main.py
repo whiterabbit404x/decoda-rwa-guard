@@ -236,6 +236,8 @@ from services.api.app.pilot import (
     generate_evidence_package_manifest,
     regenerate_evidence_package,
     verify_evidence_package,
+    download_evidence_package_archive,
+    list_evidence_export_history,
     get_history_item,
     list_templates,
     apply_template,
@@ -5718,6 +5720,21 @@ def exports_list(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_exports(request))
 
 
+# Registered BEFORE /exports/{export_id} so the literal path wins the match.
+# GET here is the Screen 9 Export History tab; the pre-existing POST /exports/history
+# (analysis-history export job) is a different method on the same path and is unchanged.
+@app.get('/exports/history', summary='Evidence package export history (Screen 9)')
+def exports_history_list(request: Request) -> dict[str, Any]:
+    """Paged, workspace-scoped history of real evidence packages.
+
+    Newest first, bounded by `limit`/`offset` (never an unbounded history load).
+    Each row reports what the package actually sealed — artifact count, hash
+    algorithm, Merkle root, signer — plus its recorded verification and download
+    activity. A package that was never verified reports no verification status.
+    """
+    return with_auth_schema_json(lambda: list_evidence_export_history(request))
+
+
 @app.get('/exports/{export_id}', summary='Export detail')
 def exports_get(export_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_export(export_id, request))
@@ -5728,6 +5745,29 @@ def exports_download(export_id: str, request: Request) -> Response:
     content, filename = with_auth_schema_json(lambda: get_export_artifact_content(export_id, request))
     media_type = 'application/json' if filename.endswith('.json') else 'text/csv'
     return Response(content=content, media_type=media_type, headers={'Content-Disposition': f'attachment; filename={filename}'})
+
+
+@app.get('/exports/{export_id}/archive', summary='Download the structured evidence package (.zip)')
+def exports_archive(export_id: str, request: Request) -> Response:
+    """Stream the sealed evidence ZIP: original artifacts + manifest + signature.
+
+    Requires `evidence.export` and is workspace-scoped server-side. Responses are
+    `no-store` and marked non-transformable so sensitive evidence is never cached
+    by an intermediary, and the filename is derived from the backend package
+    number — never from a client-supplied value.
+    """
+    content, filename = with_auth_schema_json(lambda: download_evidence_package_archive(export_id, request))
+    return Response(
+        content=content,
+        media_type='application/zip',
+        headers={
+            'Content-Disposition': f'attachment; filename="{filename}"',
+            'Cache-Control': 'no-store, no-cache, must-revalidate, private, no-transform',
+            'Pragma': 'no-cache',
+            'X-Content-Type-Options': 'nosniff',
+            'Content-Length': str(len(content)),
+        },
+    )
 
 
 @app.get('/exports/{export_id}/manifest', summary='Download evidence package manifest')
