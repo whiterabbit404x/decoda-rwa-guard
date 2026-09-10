@@ -276,6 +276,14 @@ def _file_sha256(value: Any, *, logical_path: str = '$') -> tuple[bytes, str]:
     return b, _sha256_hex(b)
 
 
+#: Manifest schema that additionally SEALS the Merkle root over the artifact
+#: set, the incident-time policy snapshot, the declared required-artifact list
+#: and per-artifact provenance. Opt-in via ``seal_merkle``/``schema_version`` so
+#: every previously-persisted 1.0 manifest is byte-for-byte unchanged and still
+#: verifies exactly as before.
+MANIFEST_SCHEMA_V2 = '2.0'
+
+
 def build_evidence_manifest(
     *,
     export_id: str,
@@ -289,15 +297,44 @@ def build_evidence_manifest(
     file_values: dict[str, Any],
     previous_audit_anchor_hash: str | None = None,
     app_version: str | None = None,
+    seal_merkle: bool = False,
+    policy_snapshot: dict[str, Any] | None = None,
+    required_artifacts: list[str] | None = None,
+    file_provenance: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, bytes]]:
     """
     Build the evidence manifest and return (manifest_dict, file_bytes_map).
 
     file_bytes_map maps each file path to its canonical-JSON bytes so the
     caller can write them consistently with the hashes in the manifest.
+
+    Schema 2.0 (``seal_merkle=True``) additionally seals, INSIDE the hashed and
+    signed manifest body:
+
+      ``merkle_root`` / ``merkle_scheme`` / ``hash_algorithm`` / ``artifact_count``
+          A deterministic SHA-256 Merkle commitment over the ``(path, sha256)``
+          artifact set (see :mod:`evidence_merkle` for the exact leaf encoding,
+          canonical ordering and odd-node rule). Computed HERE, from the digests
+          this function just produced, so the sealed root can never describe a
+          different artifact set than the one the manifest lists.
+      ``policy_snapshot``
+          The INCIDENT-TIME policy version, resolved by the caller from the
+          persisted evaluation record — never the latest policy configuration.
+      ``required_artifacts``
+          The artifact paths this package schema declares mandatory, so
+          completeness is checkable against a declaration rather than a guess.
+      per-file ``domain`` / ``source_record_type``
+          Provenance metadata for each artifact.
+
+    Every one of these fields is inside the body that ``manifest_sha256`` covers
+    and that the seal signs, so altering any of them invalidates the signature.
+
+    All new parameters are OPT-IN and default to off: called without them this
+    function emits exactly the 1.0 manifest it always did, byte-for-byte.
     """
     file_bytes_map: dict[str, bytes] = {}
     file_list: list[dict[str, Any]] = []
+    provenance = file_provenance or {}
     for path in sorted(file_values.keys()):
         try:
             b, sha = _file_sha256(file_values[path], logical_path=path)
@@ -309,7 +346,13 @@ def build_evidence_manifest(
             exc.value_type = type(file_values[path]).__name__
             raise
         file_bytes_map[path] = b
-        file_list.append({'path': path, 'sha256': sha, 'size_bytes': len(b)})
+        entry: dict[str, Any] = {'path': path, 'sha256': sha, 'size_bytes': len(b)}
+        if seal_merkle:
+            meta = provenance.get(path) if isinstance(provenance.get(path), dict) else {}
+            entry['media_type'] = str(meta.get('media_type') or 'application/json')
+            entry['domain'] = str(meta.get('domain') or 'PACKAGE')
+            entry['source_record_type'] = str(meta.get('source_record_type') or 'evidence')
+        file_list.append(entry)
 
     manifest: dict[str, Any] = {
         'manifest_version': '1.0',
@@ -323,6 +366,25 @@ def build_evidence_manifest(
         'storage_backend': storage_backend,
         'files': file_list,
     }
+    if seal_merkle:
+        # Imported lazily so the 1.0 path keeps its exact import surface.
+        from services.api.app import evidence_merkle
+
+        tree = evidence_merkle.build_merkle_tree(
+            (str(entry['path']), str(entry['sha256'])) for entry in file_list
+        )
+        manifest['schema_version'] = MANIFEST_SCHEMA_V2
+        manifest['hash_algorithm'] = evidence_merkle.HASH_ALGORITHM
+        manifest['artifact_count'] = len(file_list)
+        manifest['merkle_root'] = tree.root
+        manifest['merkle_scheme'] = tree.scheme
+        # A policy snapshot is ALWAYS declared at 2.0 — its absence is itself a
+        # sealed fact with a reason, never a silently missing key.
+        manifest['policy_snapshot'] = policy_snapshot if isinstance(policy_snapshot, dict) else {
+            'present': False,
+            'reason': 'No policy evaluation was recorded for this incident.',
+        }
+        manifest['required_artifacts'] = sorted({str(item) for item in (required_artifacts or []) if str(item or '').strip()})
     if app_version:
         manifest['app_version'] = app_version
     if previous_audit_anchor_hash:

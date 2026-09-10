@@ -134,6 +134,11 @@ def test_generate_export_artifact_proof_bundle_contains_expected_files(monkeypat
         # Canonical Investigation Workflow / state-transition evidence (Incident-detail
         # parity) is captured for every proof bundle.
         'investigation_timeline.json',
+        # POLICY provenance domain (Screen 11 -> Screen 9): the deterministic policy
+        # decisions recorded against this incident's canonical event. Captured for
+        # EVERY proof bundle — an empty list is a truthful artifact ("no policy
+        # evaluation was recorded"), exactly like an empty alerts.json.
+        'policy_evaluations.json',
         'manifest.json', 'seal.json',
     }
     assert set(row.keys()) == expected_keys

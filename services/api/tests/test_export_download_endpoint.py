@@ -69,15 +69,38 @@ class _DownloadConnection:
 
     Returns the given row when queried with matching export_id + workspace_id,
     None otherwise (cross-workspace rejection).
+
+    Download is gated server-side by the ``evidence.export`` permission, so this
+    fake also answers the RBAC lookup (``workspace_role_permissions``) and the
+    workspace auth policy, and records the audit write the download emits.
     """
 
-    def __init__(self, row: dict | None, *, target_export_id: str = 'pkg-1', target_workspace_id: str = 'ws-1'):
+    def __init__(
+        self,
+        row: dict | None,
+        *,
+        target_export_id: str = 'pkg-1',
+        target_workspace_id: str = 'ws-1',
+        permission_row: dict | None = None,
+    ):
         self._row = row
         self._target_export_id = target_export_id
         self._target_workspace_id = target_workspace_id
+        self._permission_row = permission_row
+        self.audit_actions: list[str] = []
 
     def execute(self, stmt, params=None):
         params = params or ()
+        normalized = ' '.join(str(stmt).split())
+        if 'FROM workspace_role_permissions' in normalized:
+            return _Row(self._permission_row)
+        if 'FROM workspace_auth_policies' in normalized:
+            return _Row(None)
+        if 'INSERT INTO audit_logs' in normalized:
+            self.audit_actions.append(str(params[3]) if len(params) > 3 else '')
+            return _Row(None)
+        if 'FROM audit_logs' in normalized:
+            return _Row(None)
         export_id = params[0] if len(params) > 0 else None
         workspace_id = params[1] if len(params) > 1 else None
         match = (
@@ -110,11 +133,20 @@ def _monkeypatch_download(
     requester_workspace_id: str = 'ws-1',
     target_workspace_id: str = 'ws-1',
     target_export_id: str = 'pkg-1',
-) -> None:
+    role: str = 'admin',
+    permission_row: dict | None = None,
+) -> _DownloadConnection:
+    """Wire the download handler onto fakes and return the connection.
+
+    ``role`` drives the server-side ``evidence.export`` check: admin/owner/analyst
+    are granted by the role default, viewer is denied. ``permission_row`` supplies
+    an explicit workspace_role_permissions override when a test needs one.
+    """
     conn = _DownloadConnection(
         db_row,
         target_export_id=target_export_id,
         target_workspace_id=target_workspace_id,
+        permission_row=permission_row,
     )
 
     @contextmanager
@@ -128,10 +160,11 @@ def _monkeypatch_download(
     monkeypatch.setattr(
         pilot,
         'resolve_workspace',
-        lambda *_: {'workspace_id': requester_workspace_id},
+        lambda *_: {'workspace_id': requester_workspace_id, 'role': role},
     )
     if storage is not None:
         monkeypatch.setattr(pilot, 'load_export_storage', lambda: storage)
+    return conn
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
@@ -266,3 +299,76 @@ def test_download_falls_back_to_default_key_when_storage_object_key_null(monkeyp
     pilot.get_export_artifact_content('pkg-1', req)
 
     assert 'ws-1/pkg-1.json' in storage.read_calls, 'Must fall back to {workspace_id}/{export_id}.{format}'
+
+
+# ── Server-side export authorization (Screen 9) ───────────────────────────────
+# Download authorization is enforced by the API, never only by hiding a button.
+# A viewer whose UI would not show the action must still be refused when the
+# handler is called directly (a stale token, a scripted client, a curl).
+
+def test_viewer_without_export_permission_cannot_download_package(monkeypatch):
+    """A role without evidence.export is refused 403 and never reaches storage."""
+    row = _make_export_row()
+    storage = _FakeStorage(content=b'{"rows": []}')
+    _monkeypatch_download(monkeypatch, row, storage=storage, role='viewer')
+
+    with pytest.raises(HTTPException) as exc_info:
+        pilot.get_export_artifact_content('pkg-1', _fake_request())
+
+    exc = exc_info.value
+    assert exc.status_code == 403
+    assert isinstance(exc.detail, dict)
+    assert exc.detail.get('code') == 'PERMISSION_DENIED'
+    assert exc.detail.get('permission') == 'evidence.export'
+    assert storage.read_calls == [], 'Storage must never be read without export permission'
+
+
+def test_explicit_permission_revocation_blocks_download_for_an_admin(monkeypatch):
+    """An explicit workspace_role_permissions denial overrides the role default."""
+    row = _make_export_row()
+    storage = _FakeStorage(content=b'{"rows": []}')
+    _monkeypatch_download(
+        monkeypatch, row, storage=storage, role='admin', permission_row={'granted': False},
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        pilot.get_export_artifact_content('pkg-1', _fake_request())
+
+    assert exc_info.value.status_code == 403
+    assert storage.read_calls == []
+
+
+def test_viewer_without_export_permission_cannot_download_manifest(monkeypatch):
+    """The manifest names every artifact and its digest — it is gated identically."""
+    row = _make_export_row()
+    storage = _FakeStorage(content=b'{"rows": []}')
+    _monkeypatch_download(monkeypatch, row, storage=storage, role='viewer')
+
+    with pytest.raises(HTTPException) as exc_info:
+        pilot.get_evidence_package_manifest('pkg-1', _fake_request())
+
+    assert exc_info.value.status_code == 403
+    assert storage.read_calls == []
+
+
+def test_successful_download_records_an_audit_event(monkeypatch):
+    """Evidence leaving the platform is always attributable."""
+    row = _make_export_row(storage_object_key='ws-1/pkg-1.json')
+    storage = _FakeStorage(content=b'{"rows": []}')
+    conn = _monkeypatch_download(monkeypatch, row, storage=storage)
+
+    pilot.get_export_artifact_content('pkg-1', _fake_request())
+
+    assert 'evidence_package_downloaded' in conn.audit_actions
+
+
+def test_refused_download_records_no_audit_event(monkeypatch):
+    """A denied download must not write a download event — nothing was downloaded."""
+    row = _make_export_row()
+    storage = _FakeStorage(content=b'{"rows": []}')
+    conn = _monkeypatch_download(monkeypatch, row, storage=storage, role='viewer')
+
+    with pytest.raises(HTTPException):
+        pilot.get_export_artifact_content('pkg-1', _fake_request())
+
+    assert conn.audit_actions == []

@@ -26729,6 +26729,193 @@ def _build_customer_export_summary(
     }
 
 
+# ---------------------------------------------------------------------------
+# Screen 9 — sealed package facts (manifest schema 2.0)
+#
+# Three facts are sealed INSIDE the hashed + signed manifest so an auditor can
+# check them offline, years later, without trusting this process:
+#
+#   * the INCIDENT-TIME policy snapshot (never the latest policy configuration),
+#   * the artifact paths the package schema declares mandatory, and
+#   * each artifact's provenance domain and source record type.
+#
+# All three are derived from records that already exist. Nothing here creates a
+# second evidence model, and nothing is invented when a record is absent — an
+# absent fact is sealed as an explicit "not present, because <reason>".
+# ---------------------------------------------------------------------------
+
+#: Provenance domain for each logical package artifact, using Screen 7's
+#: canonical four-domain vocabulary (see incident_forensics.EVIDENCE_DOMAINS) so
+#: the package describes evidence with exactly the words the incident case file
+#: uses. A file with no domain is PACKAGE (descriptive package metadata), never
+#: guessed into an evidence domain it may not belong to.
+_PACKAGE_FILE_DOMAINS: dict[str, str] = {
+    'evidence.json': 'ON_CHAIN',
+    'detection_metrics.json': 'ON_CHAIN',
+    'telemetry_events.json': 'ON_CHAIN',
+    'alerts.json': 'OPERATIONAL',
+    'detections.json': 'OPERATIONAL',
+    'incidents.json': 'OPERATIONAL',
+    'incident.json': 'OPERATIONAL',
+    'linked_alerts.json': 'OPERATIONAL',
+    'policy_evaluations.json': 'POLICY',
+    'enforcement_actions.json': 'POLICY',
+    'response_actions.json': 'HUMAN_ACTION',
+    'audit_log.json': 'HUMAN_ACTION',
+    'investigation_timeline.json': 'HUMAN_ACTION',
+    'timeline.json': 'HUMAN_ACTION',
+    'summary.json': 'PACKAGE',
+    'metadata.json': 'PACKAGE',
+    'report.json': 'PACKAGE',
+}
+
+#: Artifacts each evidence package schema GUARANTEES. The collectors emit every
+#: one of these unconditionally (an empty list is still a present, hashable
+#: artifact), so a package that is missing one is genuinely incomplete and
+#: verification is right to say so. Declared in the manifest at schema 2.0 so
+#: completeness is checked against a declaration rather than a guess.
+_REQUIRED_PACKAGE_ARTIFACTS: dict[str, tuple[str, ...]] = {
+    'proof_bundle': (
+        'summary.json', 'incidents.json', 'alerts.json', 'detections.json',
+        'response_actions.json', 'audit_log.json', 'evidence.json',
+        'detection_metrics.json', 'investigation_timeline.json',
+        'policy_evaluations.json',
+    ),
+    'incident_report': (
+        'incident.json', 'timeline.json', 'linked_alerts.json', 'enforcement_actions.json',
+    ),
+}
+
+
+def _package_file_provenance(paths: Iterable[str]) -> dict[str, dict[str, Any]]:
+    """Per-artifact provenance metadata for the sealed manifest.
+
+    Reuses the SAME source-record-type map the detail view already exposes, so a
+    manifest entry and the Screen 9 file list can never describe one artifact
+    two different ways.
+    """
+    return {
+        str(path): {
+            'media_type': 'application/json',
+            'domain': _PACKAGE_FILE_DOMAINS.get(str(path), 'PACKAGE'),
+            'source_record_type': _PACKAGE_FILE_SOURCE_TYPES.get(str(path), 'evidence'),
+        }
+        for path in paths
+    }
+
+
+def _incident_policy_evaluation_rows(
+    connection: Any, *, workspace_id: str, incident_id: str, canonical_event_id: str | None,
+) -> list[dict[str, Any]]:
+    """The deterministic policy decisions recorded for this incident.
+
+    Resolved through the canonical identifiers the policy engine itself writes
+    (``incident_id`` / ``canonical_event_id``) — never by timestamp proximity and
+    never by "latest policy for this workspace". Returns [] when the table does
+    not exist yet or the incident has no evaluation; a read failure is never
+    turned into a fabricated decision.
+    """
+    try:
+        rows = connection.execute(
+            '''SELECT id, policy_id, policy_key, policy_version, decision, reason_codes,
+                      required_approvals, checks, operation, amount_usd, simulation,
+                      engine_version, canonical_event_id, asset_id, incident_id,
+                      input_snapshot, evaluated_at
+               FROM governance_policy_evaluations
+               WHERE workspace_id = %s
+                 AND (incident_id = %s::uuid
+                      OR (%s::text IS NOT NULL AND canonical_event_id = %s::text))
+               ORDER BY evaluated_at DESC, id DESC
+               LIMIT 50''',
+            (workspace_id, incident_id, canonical_event_id, canonical_event_id),
+        ).fetchall()
+    except Exception:
+        return []
+    return [_json_safe_value(dict(row)) for row in (rows or [])]
+
+
+def _incident_policy_snapshot(
+    connection: Any, *, workspace_id: str, evaluations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """The policy state that existed AT THE TIME OF THE INCIDENT.
+
+    This is deliberately NOT a query for the workspace's current policy
+    configuration. Policies change; an evidence package that re-read the live
+    policy when it was opened would describe a rule that may never have applied
+    to the incident. So the snapshot is anchored to the immutable evaluation
+    record the engine persisted — its ``policy_key`` and ``policy_version`` — and
+    the constraint values are read from ``governance_policy_versions`` AT THAT
+    EXACT VERSION.
+
+    An enforcement decision is preferred over a Screen 11 what-if simulation: a
+    simulation predicts, it never authorized anything. When only simulations
+    exist the snapshot says so in ``decision_kind`` rather than presenting one as
+    the verdict that gated the response.
+
+    Returns a dict that is ALWAYS sealed into the manifest — including the
+    ``present: False`` form with an explicit reason — so "no policy applied" is
+    a recorded fact rather than a missing key.
+    """
+    if not evaluations:
+        return {
+            'present': False,
+            'reason': 'No policy evaluation was recorded for this incident.',
+            'source': 'governance_policy_evaluations',
+        }
+    enforcement = [row for row in evaluations if not bool(row.get('simulation'))]
+    chosen = (enforcement or evaluations)[0]
+    policy_key = str(chosen.get('policy_key') or '').strip()
+    policy_version = chosen.get('policy_version')
+    if not policy_key or policy_version is None:
+        return {
+            'present': False,
+            'reason': 'The policy evaluation for this incident does not name a policy version.',
+            'source': 'governance_policy_evaluations',
+            'evaluation_id': chosen.get('id'),
+        }
+
+    # The immutable constraint values as they stood at that version. Missing is
+    # reported as missing — the CURRENT policy row is never substituted.
+    version_snapshot: Any = None
+    version_source = 'unavailable'
+    try:
+        version_row = connection.execute(
+            '''SELECT snapshot, status, changed_at FROM governance_policy_versions
+               WHERE workspace_id = %s AND policy_id = %s::uuid AND version = %s
+               LIMIT 1''',
+            (workspace_id, str(chosen.get('policy_id') or ''), int(policy_version)),
+        ).fetchone()
+        if version_row is not None:
+            version_snapshot = _json_safe_value(version_row.get('snapshot'))
+            version_source = 'governance_policy_versions'
+    except Exception:
+        version_snapshot = None
+        version_source = 'unavailable'
+
+    return {
+        'present': True,
+        'policy_id': str(chosen.get('policy_id') or '') or None,
+        'policy_key': policy_key,
+        'policy_version': int(policy_version),
+        'decision': str(chosen.get('decision') or '') or None,
+        'decision_kind': 'simulation' if bool(chosen.get('simulation')) else 'enforcement',
+        'operation': str(chosen.get('operation') or '') or None,
+        'reason_codes': [str(code) for code in (chosen.get('reason_codes') or [])],
+        'required_approvals': [str(role) for role in (chosen.get('required_approvals') or [])],
+        'engine_version': str(chosen.get('engine_version') or '') or None,
+        'evaluation_id': str(chosen.get('id') or '') or None,
+        'evaluated_at': chosen.get('evaluated_at'),
+        'canonical_event_id': str(chosen.get('canonical_event_id') or '') or None,
+        'evaluation_count': len(evaluations),
+        'enforcement_evaluation_count': len(enforcement),
+        # Where the constraint values came from. 'unavailable' means the version
+        # row could not be read — never that the current policy was used instead.
+        'source': version_source,
+        'policy_version_snapshot': version_snapshot,
+        'authority': 'deterministic_policy_engine',
+    }
+
+
 def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: str) -> dict[str, Any]:
     job = connection.execute('SELECT id, export_type, format, filters, requested_by_user_id FROM export_jobs WHERE id = %s AND workspace_id = %s', (export_id, workspace_id)).fetchone()
     if job is None:
@@ -26749,6 +26936,12 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
     )
     rows: list[dict[str, Any]]
     artifact_meta: dict[str, Any] = {}
+    # The INCIDENT-TIME policy snapshot the collector resolved, sealed into the
+    # manifest below. None means this export type has no policy dimension; the
+    # collector sets an explicit ``{'present': False, 'reason': …}`` when an
+    # incident genuinely had no policy evaluation, so "no policy" is a recorded
+    # fact and never an absent key.
+    _sealed_policy_snapshot: dict[str, Any] | None = None
     filters = job.get('filters') if isinstance(job.get('filters'), dict) else {}
     match str(job['export_type']):
         case 'history':
@@ -27193,6 +27386,33 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 'source': 'forensic_workflow+incident_timeline',
             }
 
+            # ── Canonical event id + POLICY domain (Screen 11 → Screen 9) ───────────
+            # The canonical event id is resolved through Screen 7's OWN correlation
+            # resolver, so the incident case file, the policy engine and this package
+            # all name the SAME canonical event. Screen 9 never mints an event id.
+            # The deterministic policy decisions recorded against that event become a
+            # real packaged artifact (the POLICY provenance domain), and the
+            # incident-time policy VERSION is sealed into the manifest below — so a
+            # later policy change can never rewrite what this package says was in
+            # force. Fail-closed: any resolution failure leaves the package without a
+            # policy claim rather than with an invented one.
+            _canonical_event_id: str | None = None
+            try:
+                from services.api.app import incident_forensics as _forensics
+                _corr = _forensics.resolve_correlation(
+                    connection, workspace_id=workspace_id, incident=dict(incident), unreadable=[],
+                )
+                _canonical_event_id = _corr.get('event_id')
+            except Exception:
+                _canonical_event_id = None
+            policy_evaluation_rows = _incident_policy_evaluation_rows(
+                connection, workspace_id=workspace_id, incident_id=incident_id,
+                canonical_event_id=_canonical_event_id,
+            )
+            policy_snapshot = _incident_policy_snapshot(
+                connection, workspace_id=workspace_id, evaluations=policy_evaluation_rows,
+            )
+
             # Determine evidence source type from linked alerts, detections and the
             # canonical telemetry resolved above (all workspace-scoped source records).
             all_sources: list[str] = []
@@ -27427,6 +27647,11 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 # parity). Captured for every package so the seven-stage workflow the
                 # Incident page shows is part of the evidence record.
                 'investigation_timeline.json': investigation_timeline,
+                # POLICY provenance domain: the deterministic decisions the policy
+                # engine recorded against this incident's canonical event. An empty
+                # list is a truthful artifact ("no policy evaluation was recorded"),
+                # exactly like an empty alerts.json — never an omitted file.
+                'policy_evaluations.json': policy_evaluation_rows,
             }
             # Canonical, reference-resolved telemetry — included only when the
             # detection_metrics relation yielded nothing, so historical incident
@@ -27489,6 +27714,8 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             artifact_meta['completeness'] = _completeness
             artifact_meta['integrity_status'] = _integrity_status
             artifact_meta['files_hashed'] = len(_bundle_data)
+            # Hoisted out of the match arm so the manifest builder below can seal it.
+            _sealed_policy_snapshot = policy_snapshot
             _redacted_bundle, _any_redacted = _redact_secret_fields(_bundle_data)
             if _any_redacted:
                 _redacted_bundle['summary.json']['redactions_applied'] = True
@@ -27617,6 +27844,14 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 _audit_chain_head = None
 
             _build_stage = 'artifact_hash_generation'
+            # Manifest schema 2.0: the per-artifact SHA-256 set is additionally
+            # committed to by a deterministic SHA-256 Merkle root (decoda-merkle-v1),
+            # and the manifest seals the incident-time policy snapshot, the artifacts
+            # this schema declares required, and each artifact's provenance domain.
+            # The Merkle root is computed INSIDE the builder from the digests it just
+            # produced, so the sealed root can never describe a different artifact set
+            # than the one the manifest lists — and because the whole body is then
+            # hashed and HMAC-sealed, altering any of it invalidates the signature.
             _manifest, _ = build_evidence_manifest(
                 export_id=export_id,
                 export_type=export_type_val,
@@ -27628,6 +27863,10 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 storage_backend=storage.backend_name,
                 file_values=_bundle_dict,
                 previous_audit_anchor_hash=_audit_chain_head,
+                seal_merkle=True,
+                policy_snapshot=_sealed_policy_snapshot,
+                required_artifacts=list(_REQUIRED_PACKAGE_ARTIFACTS.get(export_type_val, ())),
+                file_provenance=_package_file_provenance(_bundle_dict.keys()),
             )
             # A manifest MUST hash at least one finalized file, and every listed file
             # MUST carry a SHA-256. A one-file bundle is perfectly valid — a single
@@ -27648,12 +27887,28 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 raise ValueError('manifest_produced_no_files')
             logger.info('evidence_file_hashes_generated package_id=%s file_count=%d', export_id, len(_manifest_files))
             _build_stage = 'manifest_signing'
-            _seal = seal_manifest(_manifest)
+            # Signed through the ONE signer abstraction, so the seal carries the
+            # truthful assurance block (provider, algorithm, key custody and whether
+            # the signature is hardware-backed). Every provider in this build is an
+            # in-process shared-secret HMAC, so hardware_backed is False and the UI
+            # must never render "HSM" from it.
+            from services.api.app.evidence_manifest_signer import resolve_manifest_signer as _resolve_signer
+            _signer = _resolve_signer()
+            _seal = _signer.sign(_manifest)
             rows[0]['manifest.json'] = _manifest
             rows[0]['seal.json'] = _seal
             _build_stage = 'manifest_metadata'
             _signing_meta = _signing_metadata_fn(_manifest, _seal)
+            _signing_meta['signer'] = _signer.identity.as_dict()
             artifact_meta.update({'signing': _signing_meta})
+            # Canonical sealed-package facts, projected onto queryable columns so
+            # list/detail/export-history never re-read object storage to answer
+            # "what did this package commit to?".
+            artifact_meta['merkle_root'] = _manifest.get('merkle_root')
+            artifact_meta['merkle_scheme'] = _manifest.get('merkle_scheme')
+            artifact_meta['hash_algorithm'] = _manifest.get('hash_algorithm')
+            artifact_meta['artifact_count'] = _manifest.get('artifact_count')
+            artifact_meta['policy_snapshot'] = _manifest.get('policy_snapshot')
             # Canonical manifest-reference facts, captured only when the manifest is
             # actually built and sealed, so list/detail can describe the manifest
             # without re-reading storage — and never claim one that was not embedded.
@@ -27850,6 +28105,21 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             for _rk in ('manifest_file_count', 'manifest_size_bytes', 'manifest_generated_at'):
                 if artifact_meta.get(_rk) is not None:
                     _artifact_filters_patch[_rk] = artifact_meta[_rk]
+            # Sealed schema-2.0 facts, persisted the SAME way every other canonical
+            # package fact already is — in the export_jobs.filters JSONB alongside
+            # integrity_hash / manifest_sha256 / evidence_source_fingerprint /
+            # verification (the convention migration 0141 documents). They are
+            # written ONLY when a manifest was actually built and sealed, so a
+            # package can never record a Merkle root, an artifact count or a signer
+            # it did not commit to; a legacy package simply has none of these keys
+            # and the read path reports "not sealed in this package".
+            for _sk in ('merkle_root', 'merkle_scheme', 'hash_algorithm', 'artifact_count'):
+                if artifact_meta.get(_sk) is not None:
+                    _artifact_filters_patch[_sk] = artifact_meta[_sk]
+            if isinstance(artifact_meta.get('policy_snapshot'), dict):
+                _artifact_filters_patch['policy_snapshot'] = artifact_meta['policy_snapshot']
+            if isinstance(_signing_meta.get('signer'), dict):
+                _artifact_filters_patch['signer'] = _signing_meta['signer']
         connection.execute(
             "UPDATE export_jobs SET status = 'completed', error_message = NULL, storage_backend = %s, storage_object_key = %s, signing_key_id = %s, signing_key_version = %s, size_bytes = %s, filters = filters || %s::jsonb, updated_at = NOW() WHERE id = %s",
             (storage.backend_name, object_key, _signing_meta.get('key_id'), _signing_meta.get('key_version'), _content_size, _json_dumps(_artifact_filters_patch), export_id),
@@ -28545,6 +28815,88 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
         if isinstance(completeness, dict) and completeness.get('status'):
             item['evidence_completeness_status'] = str(completeness['status'])
 
+        # ── Sealed cryptographic facts (Screen 9 package summary panel) ─────────
+        # Read from the manifest that was actually read back out of storage when it
+        # is retrievable, and from the persisted package facts otherwise. A package
+        # that sealed no Merkle root reports None with an explicit reason — it never
+        # borrows a value from elsewhere and never displays a placeholder.
+        _manifest_doc = manifest_parts.get('manifest') if isinstance(manifest_parts, dict) else None
+        _manifest_doc = _manifest_doc if isinstance(_manifest_doc, dict) else {}
+        _seal_doc = manifest_parts.get('seal') if isinstance(manifest_parts, dict) else None
+        _seal_doc = _seal_doc if isinstance(_seal_doc, dict) else None
+        _filters_signer = filters_val.get('signer') if isinstance(filters_val.get('signer'), dict) else {}
+        _seal_signer = _seal_doc.get('signer') if isinstance((_seal_doc or {}).get('signer'), dict) else {}
+        item['merkle_root'] = str(_manifest_doc.get('merkle_root') or filters_val.get('merkle_root') or '') or None
+        item['merkle_scheme'] = str(_manifest_doc.get('merkle_scheme') or filters_val.get('merkle_scheme') or '') or None
+        item['hash_algorithm'] = str(_manifest_doc.get('hash_algorithm') or filters_val.get('hash_algorithm') or '') or None
+        _artifact_count = _manifest_doc.get('artifact_count')
+        if _artifact_count is None:
+            _artifact_count = filters_val.get('artifact_count')
+        if _artifact_count is None and isinstance(_manifest_doc.get('files'), list):
+            _artifact_count = len(_manifest_doc['files'])
+        item['artifact_count'] = _artifact_count
+        item['manifest_schema_version'] = str(
+            _manifest_doc.get('schema_version') or _manifest_doc.get('manifest_version') or ''
+        ) or None
+        # Truthful signing metadata. `hardware_backed` is the ONLY field that may
+        # license an HSM/KMS claim anywhere in the product, and every signer this
+        # build can construct reports it False.
+        _signer_facts = {**_filters_signer, **_seal_signer}
+        item['signing'] = {
+            'signed': bool(_seal_doc and str(_seal_doc.get('signature') or '').strip()),
+            'key_id': _seal_doc.get('key_id') if _seal_doc else (item.get('signing_key_id') or _signer_facts.get('key_id')),
+            'key_version': _seal_doc.get('key_version') if _seal_doc else item.get('signing_key_version'),
+            'provider': (_seal_doc or {}).get('key_provider') or _signer_facts.get('provider'),
+            'algorithm': (_seal_doc or {}).get('signature_algorithm') or _signer_facts.get('algorithm'),
+            'signed_at': (_seal_doc or {}).get('signed_at'),
+            'hardware_backed': bool(_signer_facts.get('hardware_backed')),
+            'assurance': _signer_facts.get('assurance'),
+            'assurance_label': _signer_facts.get('assurance_label'),
+            'key_custody': _signer_facts.get('key_custody'),
+            'production_grade': _signer_facts.get('production_grade'),
+            'warning': (_seal_doc or {}).get('warning') or _signer_facts.get('warning'),
+        }
+        # The INCIDENT-TIME policy snapshot the package sealed — never the current
+        # policy configuration. Absent for a package sealed before schema 2.0.
+        _policy_snapshot = _manifest_doc.get('policy_snapshot')
+        if not isinstance(_policy_snapshot, dict):
+            _policy_snapshot = filters_val.get('policy_snapshot') if isinstance(filters_val.get('policy_snapshot'), dict) else None
+        item['policy_snapshot'] = _policy_snapshot
+        # The last RECORDED structured verification. A package that has never been
+        # verified reports None — never an optimistic initial state.
+        _verification_result = verification.get('result') if isinstance(verification, dict) else None
+        item['verification_result'] = _verification_result if isinstance(_verification_result, dict) else None
+        # Deliberately a DISTINCT field from the canonical `verification_status`
+        # readiness axis (ready / not_ready / verified / failed) that the display
+        # state already owns. This one is the CRYPTOGRAPHIC outcome
+        # (VERIFIED / PARTIALLY_VERIFIED / VERIFICATION_FAILED /
+        # SIGNATURE_UNAVAILABLE / INCOMPLETE_PACKAGE), and None means the package
+        # has never been verified — never an optimistic initial value.
+        item['verification_result_status'] = (
+            (item['verification_result'] or {}).get('status')
+            or (verification or {}).get('verification_status')
+        )
+        # What the exported archive will contain, with per-entry availability. A
+        # file that is not produced is reported unavailable WITH a reason, so the
+        # UI never lists an absent file as present.
+        if _manifest_ref.retrievable and _manifest_doc:
+            from services.api.app.evidence_archive import archive_contents_listing as _contents
+            item['package_contents'] = _contents(
+                package_number=str(item.get('package_number') or ''),
+                manifest=_manifest_doc,
+                seal=_seal_doc,
+                file_values=(manifest_parts or {}).get('file_values') or {},
+                verification_available=bool(item['verification_result']),
+                # No PDF renderer is configured in this deployment; the archive
+                # ships the Markdown report instead and says so rather than
+                # listing a PDF it does not produce.
+                pdf_available=False,
+            )
+            item['archive_download_url'] = f'/exports/{export_id}/archive'
+        else:
+            item['package_contents'] = []
+            item['archive_download_url'] = None
+
         # Agent findings — every statement references package records, never invented.
         findings: list[dict[str, Any]] = []
         missing_codes = (completeness or {}).get('missing_codes') or []
@@ -28584,11 +28936,23 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
 
 
 def get_export_artifact_content(export_id: str, request: Request) -> tuple[bytes, str]:
+    """Stream a completed export's stored artifact to an authorized caller.
+
+    Authorization is enforced HERE, on the server, and never only in the UI:
+
+      * ``evidence.export`` is required (a viewer with a hidden button, a curl
+        call, or a stale token is refused with 403 PERMISSION_DENIED), and
+      * the row is loaded WITH ``workspace_id`` in the predicate, so a caller who
+        substitutes another tenant's package id gets 404 and never a byte of
+        another workspace's evidence.
+
+    Every download is recorded as an append-only audit event before the bytes are
+    returned, so an evidence export is always attributable.
+    """
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user = authenticate_with_connection(connection, request)
-        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        user, workspace_context = _require_workspace_permission(connection, request, 'evidence.export')
         row = connection.execute('SELECT id, workspace_id, format, status, storage_object_key FROM export_jobs WHERE id = %s AND workspace_id = %s', (export_id, workspace_context['workspace_id'])).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Export not found.')
@@ -28603,7 +28967,52 @@ def get_export_artifact_content(export_id: str, request: Request) -> tuple[bytes
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={'error': 'evidence_object_not_found', 'detail': 'Export artifact not found in storage.'},
             ) from exc
+        _audit_evidence_download(
+            connection, request, export_id=export_id, user_id=str(user['id']),
+            workspace_id=str(workspace_context['workspace_id']),
+            action='evidence_package_downloaded', artifact='bundle',
+            size_bytes=len(content),
+        )
         return content, f"{row['id']}.{row['format']}"
+
+
+def _audit_evidence_download(
+    connection: Any,
+    request: Request,
+    *,
+    export_id: str,
+    user_id: str,
+    workspace_id: str,
+    action: str,
+    artifact: str,
+    size_bytes: int | None = None,
+) -> None:
+    """Record an append-only audit event for an evidence download.
+
+    Evidence leaving the platform is always attributable, so this runs for the
+    package bundle, the archive and the manifest alike. It records WHAT was
+    downloaded and HOW BIG it was — never the evidence itself, and never any
+    signing material.
+    """
+    log_audit(
+        connection,
+        action=action,
+        entity_type='export_job',
+        entity_id=export_id,
+        request=request,
+        user_id=user_id,
+        workspace_id=workspace_id,
+        metadata={
+            'event_type': action,
+            'artifact': artifact,
+            'size_bytes': size_bytes,
+            'result': 'success',
+        },
+    )
+    try:
+        connection.commit()
+    except Exception:  # pragma: no cover — auditing must never break a download
+        logger.warning('evidence_download_audit_commit_failed package_id=%s artifact=%s', export_id, artifact)
 
 
 # ---------------------------------------------------------------------------
@@ -28698,16 +29107,30 @@ def _resolve_package_manifest(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def verify_evidence_package(export_id: str, request: Request) -> dict[str, Any]:
-    """Recalculate every file's SHA-256 and the manifest hash, compare against the
-    stored manifest, persist the result, and record an append-only audit event.
+    """Independently re-verify a sealed evidence package, server-side.
 
-    A package is reported verified only when every manifest file exists, every
-    recalculated SHA-256 and byte count matches, and the manifest hash matches.
-    The HMAC seal is reported as a separate signal and never fabricated.
+    Every check is recomputed from the persisted manifest and the artifact bytes
+    read back OUT OF STORAGE — never from a browser-supplied value and never
+    inferred from the package's lifecycle status:
+
+      1. recompute each artifact's SHA-256 and byte length from the stored bytes,
+      2. recompute the canonical manifest hash,
+      3. rebuild the deterministic Merkle tree and compare it to the sealed root,
+      4. re-derive the manifest signature with the trusted key,
+      5. validate the sealed incident-time policy snapshot,
+      6. validate required provenance metadata,
+      7. confirm every artifact the package schema declares required is present.
+
+    Each check is reported INDEPENDENTLY (see ``evidence_verification``), so a
+    single artifact-hash mismatch names that category rather than collapsing the
+    whole result into one boolean. ``VERIFIED`` is returned only when every
+    applicable check passes; a missing verification key reports
+    ``SIGNATURE_UNAVAILABLE``, which is never rendered as tampering and never as
+    a pass. The structured result is persisted and audited either way.
     """
-    from services.api.app.evidence_signing import verify_bundle as _vb
+    from services.api.app import evidence_verification as _verification_service
     from services.api.app.evidence_completeness import (
-        INTEGRITY_VERIFIED, INTEGRITY_INTEGRITY_FAILED, verify_files_and_manifest as _verify_files,
+        INTEGRITY_VERIFIED, INTEGRITY_INTEGRITY_FAILED,
     )
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
@@ -28733,42 +29156,50 @@ def verify_evidence_package(export_id: str, request: Request) -> dict[str, Any]:
         manifest = resolved['manifest']
         file_values = resolved['file_values']
 
-        _hashcheck = _verify_files(file_values, manifest)
-        files_verified = _hashcheck['files_verified']
-        files_failed = _hashcheck['files_failed']
-        missing_files = _hashcheck['missing_files']
-        manifest_ok = _hashcheck['manifest_ok']
-        valid = _hashcheck['valid']
-
-        # HMAC seal is an additional signal; a missing dev signing secret must not
-        # be reported as tampering — it is 'unverifiable', not 'invalid'.
-        seal_status = 'absent'
-        seal = resolved['seal']
-        if isinstance(seal, dict):
-            vb = _vb(file_values, manifest, seal)
-            if 'hmac_signature_invalid' in vb['errors']:
-                seal_status = 'invalid'
-            elif 'signing_secret_not_available' in vb['errors']:
-                seal_status = 'unverifiable'
-            else:
-                seal_status = 'valid'
-
         verified_at = utc_now_iso()
-        verification = {
-            'valid': valid,
-            'verified_at': verified_at,
-            'files_total': len(manifest.get('files', [])),
-            'files_verified': files_verified,
-            'files_failed': files_failed,
-            'missing_files': missing_files,
-            'manifest_ok': manifest_ok,
-            'seal_status': seal_status,
-            # The manifest that was verified — identical to the Download Manifest
-            # bytes. Persisted so the detail view can prove the two agree.
-            'manifest_sha256': str(manifest.get('manifest_sha256') or '') or None,
-            'verified_by_user_id': str(user['id']),
-        }
-        integrity_status = INTEGRITY_VERIFIED if valid else INTEGRITY_INTEGRITY_FAILED
+        result = _verification_service.verify_evidence_package_document(
+            manifest=manifest,
+            seal=resolved['seal'],
+            file_values=file_values,
+            verified_at=verified_at,
+            verified_by_user_id=str(user['id']),
+        )
+        valid = bool(result['verified'])
+        # The pre-existing ``verification`` shape is preserved verbatim (plus
+        # additive keys) so every existing reader — the list projection,
+        # derive_integrity_status, the per-file verification_status in the detail
+        # view and the Screen 9 regression suite — keeps working unchanged.
+        verification = _verification_service.legacy_verification_view(result)
+        verification['manifest_sha256'] = str(manifest.get('manifest_sha256') or '') or None
+        # The full structured, per-category result. This is what the Package
+        # Verification panel renders; the UI never re-derives a category outcome.
+        verification['result'] = result
+        files_verified = result['artifact_hashes']['valid']
+        files_failed = result['artifact_hashes']['failed_artifact_ids']
+        missing_files = result['artifact_hashes']['missing_artifact_ids']
+        manifest_ok = bool(result['manifest_hash']['valid'])
+        seal_status = verification['seal_status']
+
+        # A package reaches the VERIFIED integrity state only when the structured
+        # verification concluded VERIFIED — never when it merely generated cleanly.
+        # An UNCHECKABLE outcome (no verification key, so SIGNATURE_UNAVAILABLE /
+        # PARTIALLY_VERIFIED) is NOT integrity_failed: "we could not check this"
+        # must never be presented as "this was tampered with". It returns to the
+        # honest hash_generated state — hashes exist, verification is incomplete.
+        if result['status'] == _verification_service.STATUS_VERIFIED:
+            integrity_status = INTEGRITY_VERIFIED
+        elif result['status'] in {
+            _verification_service.STATUS_VERIFICATION_FAILED,
+            _verification_service.STATUS_INCOMPLETE_PACKAGE,
+        }:
+            integrity_status = INTEGRITY_INTEGRITY_FAILED
+        else:
+            from services.api.app.evidence_completeness import INTEGRITY_HASH_GENERATED
+            integrity_status = INTEGRITY_HASH_GENERATED
+        # The structured outcome travels INSIDE `verification` (as
+        # `verification.verification_status` and `verification.result`) rather than as
+        # a sibling key, so verification still writes exactly these three filter keys
+        # and can never rewrite a package's completeness or packaging facts.
         patch = {'verification': verification, 'integrity_status': integrity_status, 'verified_at': verified_at}
         connection.execute(
             'UPDATE export_jobs SET filters = filters || %s::jsonb, updated_at = NOW() WHERE id = %s AND workspace_id = %s',
@@ -28785,31 +29216,47 @@ def verify_evidence_package(export_id: str, request: Request) -> dict[str, Any]:
             metadata={
                 'event_type': 'evidence_package_verification_passed' if valid else 'evidence_package_verification_failed',
                 'result': 'success' if valid else 'failed',
+                # The structured outcome, so the audit trail records WHICH
+                # categories decided the verdict — never a bare boolean.
+                'verification_status': result['status'],
+                'failed_checks': result['failed_checks'],
+                'unavailable_checks': result['unavailable_checks'],
+                'merkle_root_valid': result['merkle_root']['valid'],
                 'files_verified': files_verified,
                 'files_failed': len(files_failed),
                 'missing_files': len(missing_files),
                 'manifest_ok': manifest_ok,
                 'seal_status': seal_status,
+                'signing_provider': result['signer'].get('provider'),
+                'hardware_backed': result['signer'].get('hardware_backed'),
             },
         )
         connection.commit()
         logger.info(
-            'evidence_package_verified package_id=%s valid=%s files_verified=%d files_failed=%d manifest_ok=%s',
-            export_id, valid, files_verified, len(files_failed), manifest_ok,
+            'evidence_package_verified package_id=%s status=%s files_verified=%d files_failed=%d manifest_ok=%s merkle_valid=%s',
+            export_id, result['status'], files_verified, len(files_failed), manifest_ok,
+            result['merkle_root']['valid'],
         )
         return {
             'package_id': export_id,
             'integrity_status': integrity_status,
+            'verification_status': result['status'],
             'verification': verification,
+            # The per-category result the Package Verification panel renders.
+            'verification_result': result,
         }
 
 
 def get_evidence_package_manifest(export_id: str, request: Request) -> tuple[bytes, str]:
-    """Return the package manifest as downloadable canonical bytes and audit it."""
+    """Return the package manifest as downloadable canonical bytes and audit it.
+
+    Requires ``evidence.export`` server-side and scopes the row by workspace, on
+    the same grounds as the package download: the manifest names every artifact
+    and its digest, so it is evidence metadata, not a public description.
+    """
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user = authenticate_with_connection(connection, request)
-        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        user, workspace_context = _require_workspace_permission(connection, request, 'evidence.export')
         workspace_id = workspace_context['workspace_id']
         row = connection.execute(
             'SELECT id, workspace_id, export_type, format, status, storage_object_key, filters FROM export_jobs WHERE id = %s AND workspace_id = %s',
@@ -28842,6 +29289,259 @@ def get_evidence_package_manifest(export_id: str, request: Request) -> tuple[byt
         connection.commit()
         logger.info('evidence_manifest_downloaded package_id=%s files=%d', export_id, len(manifest.get('files', [])))
         return manifest_bytes, f'evidence-manifest-{export_id}.json'
+
+
+def download_evidence_package_archive(export_id: str, request: Request) -> tuple[bytes, str]:
+    """Build and return the structured evidence ZIP for one sealed package.
+
+    The archive carries the ORIGINAL immutable evidence artifacts — the exact
+    canonical-JSON bytes whose SHA-256 the manifest records — grouped by their
+    provenance domain, alongside ``manifest.json``, the detached
+    ``manifest.sig``, ``verification.json``, a human-readable investigation
+    report and offline re-verification instructions. It is NOT a rendering of
+    the UI, and it is never rebuilt from live database state: everything comes
+    from the bytes already sealed in storage.
+
+    Authorization, tenancy and safety:
+      * ``evidence.export`` is required server-side (403 otherwise),
+      * the package row is scoped by ``workspace_id`` (404 across tenants),
+      * every entry name is validated against ZIP-slip / traversal, and
+      * the assembled bytes are scanned for credential material and the build
+        fails CLOSED if anything matches.
+
+    The download is audited before the bytes are returned.
+    """
+    from services.api.app import evidence_archive as _archive
+    from services.api.app import evidence_verification as _verification_service
+    from services.api.app.evidence_manifest_signer import resolve_manifest_signer as _resolve_signer
+
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_permission(connection, request, 'evidence.export')
+        workspace_id = workspace_context['workspace_id']
+        row = connection.execute(
+            'SELECT id, workspace_id, export_type, format, status, storage_object_key, package_number, filters FROM export_jobs WHERE id = %s AND workspace_id = %s',
+            (export_id, workspace_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={'error': 'PACKAGE_NOT_FOUND', 'message': 'Evidence package not found.'})
+        if str(row['status']) != 'completed':
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={'error': 'PACKAGE_NOT_READY', 'message': 'Package is not ready for export.'})
+
+        resolved = _resolve_package_manifest(dict(row))
+        if resolved['storage_error'] == 'storage_unavailable':
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail={'error': 'PACKAGE_STORAGE_UNAVAILABLE', 'message': 'Evidence storage is unavailable. Package metadata remains queryable.'})
+        if resolved['storage_error']:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={'error': 'PACKAGE_STORAGE_UNAVAILABLE', 'message': 'Package artifact not found in storage.'})
+        if not resolved['reference'].retrievable or not isinstance(resolved['manifest'], dict):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={'error': 'PACKAGE_NOT_READY', 'message': 'This package does not have a retrievable manifest yet, so a verifiable archive cannot be produced.'})
+
+        manifest = resolved['manifest']
+        file_values = resolved['file_values']
+        seal = resolved['seal']
+        summary = resolved['summary'] if isinstance(resolved['summary'], dict) else None
+        filters_val = row.get('filters') if isinstance(row.get('filters'), dict) else {}
+        package_number = str(row.get('package_number') or '').strip() or f'EV-{str(export_id)[:8].upper()}'
+
+        # The verification result shipped inside the archive is RECOMPUTED now, in
+        # this request, against these exact bytes — never a cached verdict that may
+        # predate the bytes it claims to describe.
+        signer = _resolve_signer()
+        verification_result = _verification_service.verify_evidence_package_document(
+            manifest=manifest, seal=seal, file_values=file_values, signer=signer,
+            verified_at=utc_now_iso(), verified_by_user_id=str(user['id']),
+        )
+
+        try:
+            archive_bytes = _archive.build_evidence_archive(
+                package_id=str(export_id),
+                package_number=package_number,
+                manifest=manifest,
+                seal=seal,
+                file_values=file_values,
+                verification=verification_result,
+                signer=signer.identity.as_dict(),
+                summary=summary,
+                generated_at=utc_now_iso(),
+                # Catch an accidental inclusion BY VALUE, not only by variable name.
+                secret_denylist=_evidence_secret_denylist(),
+            )
+        except _archive.ArchiveSafetyError as exc:
+            # A safety violation is a defect, never a warning. Refuse to emit the
+            # archive and say which rule tripped — never the offending content.
+            logger.error(
+                'evidence_archive_build_refused package_id=%s reason=%s',
+                export_id, exc.reason,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={'error': 'PACKAGE_ARCHIVE_UNSAFE', 'message': 'The evidence archive could not be assembled safely and was not produced.'},
+            ) from exc
+
+        _audit_evidence_download(
+            connection, request, export_id=str(export_id), user_id=str(user['id']),
+            workspace_id=str(workspace_id), action='evidence_package_downloaded',
+            artifact='archive_zip', size_bytes=len(archive_bytes),
+        )
+        logger.info(
+            'evidence_archive_downloaded package_id=%s bytes=%d artifacts=%d verification_status=%s',
+            export_id, len(archive_bytes), len(file_values), verification_result['status'],
+        )
+        _ = filters_val  # row filters are read through _resolve_package_manifest
+        return archive_bytes, f'{_archive.safe_archive_segment(package_number)}.zip'
+
+
+def _evidence_secret_denylist() -> tuple[bytes, ...]:
+    """Live signing-key material, so an archive can be scanned for it BY VALUE.
+
+    Returns an empty tuple when no key is configured. The bytes are used only for
+    an in-memory containment check and are never logged, persisted or exported.
+    """
+    from services.api.app import evidence_signing as _signing
+    values: list[bytes] = []
+    try:
+        secret = _signing._get_signing_secret()
+        if secret:
+            values.append(secret)
+    except Exception:
+        pass
+    values.append(_signing._DEV_FALLBACK_SECRET)
+    return tuple(values)
+
+
+def list_evidence_export_history(request: Request) -> dict[str, Any]:
+    """Paginated export history for the Screen 9 Export History tab.
+
+    Real export records only, workspace-scoped, newest first, and PAGED — never
+    an unbounded history load. Each row reports what the package actually sealed
+    (artifact count, hash algorithm, Merkle root, signer) plus its verification
+    and download activity, all read from persisted facts. Nothing is recomputed
+    from storage per row, so the listing stays cheap as history grows.
+    """
+    try:
+        limit = int(str(request.query_params.get('limit') or '25'))
+    except (TypeError, ValueError):
+        limit = 25
+    limit = max(1, min(limit, 100))
+    try:
+        offset = int(str(request.query_params.get('offset') or '0'))
+    except (TypeError, ValueError):
+        offset = 0
+    offset = max(0, offset)
+
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        workspace_id = workspace_context['workspace_id']
+        _role = _normalize_workspace_role(str(workspace_context.get('role') or 'viewer'))
+        try:
+            can_export = _workspace_permission_granted(connection, workspace_id, _role, 'evidence.export')
+        except Exception:
+            can_export = 'evidence.export' in DEFAULT_ROLE_PERMISSIONS.get(_role, frozenset())
+
+        total = 0
+        try:
+            total_row = connection.execute(
+                """SELECT COUNT(*) AS total FROM export_jobs
+                   WHERE workspace_id = %s AND export_type IN ('proof_bundle', 'incident_report')""",
+                (workspace_id,),
+            ).fetchone()
+            total = int((total_row or {}).get('total') or 0)
+        except Exception:
+            total = 0
+
+        rows = connection.execute(
+            """SELECT id, export_type, status, storage_object_key, size_bytes, package_number,
+                      requested_by_user_id, signing_key_id, signing_key_version, filters,
+                      created_at, updated_at
+               FROM export_jobs
+               WHERE workspace_id = %s AND export_type IN ('proof_bundle', 'incident_report')
+               ORDER BY created_at DESC, id DESC
+               LIMIT %s OFFSET %s""",
+            (workspace_id, limit, offset),
+        ).fetchall()
+
+        history: list[dict[str, Any]] = []
+        for raw in (rows or []):
+            item = _json_safe_value(dict(raw))
+            filters_val = item.get('filters') if isinstance(item.get('filters'), dict) else {}
+            verification = filters_val.get('verification') if isinstance(filters_val.get('verification'), dict) else None
+            signer = filters_val.get('signer') if isinstance(filters_val.get('signer'), dict) else {}
+            incident_id = str(filters_val.get('incident_id') or '').strip() or None
+            package_id = str(item.get('id'))
+            merkle_root = str(filters_val.get('merkle_root') or '') or None
+            history.append({
+                'package_id': package_id,
+                'package_number': str(item.get('package_number') or '').strip() or f'EV-{package_id[:8].upper()}',
+                'export_type': item.get('export_type'),
+                'incident_id': incident_id,
+                'incident_short_id': f'INC-{incident_id[:8]}' if incident_id else None,
+                'status': item.get('status'),
+                # Supersession lineage IS the package version chain: a sealed package
+                # is never rewritten, so a later snapshot mints a new package that
+                # supersedes the prior one rather than mutating it.
+                'supersedes_package_id': filters_val.get('supersedes_package_id') or filters_val.get('superseded_from'),
+                'retry_of_package_id': filters_val.get('retry_of'),
+                'created_at': item.get('created_at'),
+                'created_by_user_id': item.get('requested_by_user_id'),
+                'artifact_count': filters_val.get('artifact_count') or filters_val.get('files_hashed'),
+                'hash_algorithm': filters_val.get('hash_algorithm'),
+                'merkle_root': merkle_root,
+                'merkle_root_short': (f'{merkle_root[:10]}…{merkle_root[-6:]}' if merkle_root and len(merkle_root) > 20 else merkle_root),
+                'manifest_sha256': filters_val.get('manifest_sha256') or filters_val.get('integrity_hash'),
+                'size_bytes': item.get('size_bytes'),
+                # Truthful signer identity. Never claims hardware custody.
+                'signing_key_id': item.get('signing_key_id') or signer.get('key_id'),
+                'signing_provider': signer.get('provider'),
+                'signature_algorithm': signer.get('algorithm'),
+                'signer_hardware_backed': bool(signer.get('hardware_backed')),
+                # Verification is reported ONLY from a recorded result; a package
+                # that was never verified reports None, never an optimistic state.
+                'verification_status': (verification or {}).get('verification_status') or filters_val.get('verification_status'),
+                'last_verified_at': (verification or {}).get('verified_at') or filters_val.get('verified_at'),
+                'integrity_status': filters_val.get('integrity_status'),
+            })
+
+        # Download activity for exactly the packages on THIS page, so the query
+        # stays bounded and the tab never scans the workspace's whole audit log.
+        page_ids = [entry['package_id'] for entry in history]
+        downloads: dict[str, dict[str, Any]] = {}
+        if page_ids:
+            try:
+                download_rows = connection.execute(
+                    """SELECT entity_id, MAX(created_at) AS last_downloaded_at, COUNT(*) AS download_count
+                       FROM audit_logs
+                       WHERE workspace_id = %s
+                         AND entity_type = 'export_job'
+                         AND action IN ('evidence_package_downloaded', 'evidence_manifest_downloaded')
+                         AND entity_id = ANY(%s)
+                       GROUP BY entity_id""",
+                    (workspace_id, page_ids),
+                ).fetchall()
+                for drow in (download_rows or []):
+                    safe = _json_safe_value(dict(drow))
+                    downloads[str(safe.get('entity_id'))] = {
+                        'last_downloaded_at': safe.get('last_downloaded_at'),
+                        'download_count': int(safe.get('download_count') or 0),
+                    }
+            except Exception:
+                downloads = {}
+        for entry in history:
+            activity = downloads.get(entry['package_id']) or {}
+            # Absent activity is reported as "never downloaded", not as unknown.
+            entry['last_downloaded_at'] = activity.get('last_downloaded_at')
+            entry['download_count'] = activity.get('download_count', 0)
+
+        return {
+            'history': history,
+            'total': total,
+            'returned': len(history),
+            'limit': limit,
+            'offset': offset,
+            'has_more': (offset + len(history)) < total,
+            'can_export': can_export,
+        }
 
 
 def _manifest_recovery_response(

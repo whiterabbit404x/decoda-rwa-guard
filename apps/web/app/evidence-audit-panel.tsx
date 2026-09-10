@@ -28,6 +28,19 @@ import {
   resolveRecoveryRequirements,
   type IncidentTraceSource,
 } from './evidence-recovery-actions';
+import {
+  PackageContents,
+  PackageCryptoSummary,
+  PackageVerificationPanel,
+  VerificationShield,
+  truncateHash as truncateCryptoHash,
+  verificationStatusPresentation,
+  type PackageContentEntry,
+  type PolicySnapshot,
+  type SignerMetadata,
+  type VerificationResult,
+  type VerifyPhase,
+} from './evidence-package-verification';
 import { useRuntimeSummary } from './runtime-summary-context';
 
 /* ── Constants ──────────────────────────────────────────────────── */
@@ -197,7 +210,63 @@ type PackageDetail = EvidencePackage & {
   } | null;
   agent_findings?: Array<{ type?: string; code?: string; message?: string }>;
   storage_available?: boolean;
+  // ── Sealed cryptographic facts (manifest schema 2.0) ────────────────────
+  // All backend-authoritative. A package sealed before schema 2.0 simply has
+  // none of these, and the UI says "not sealed in this package" rather than
+  // rendering a placeholder value.
+  merkle_root?: string | null;
+  merkle_scheme?: string | null;
+  hash_algorithm?: string | null;
+  artifact_count?: number | null;
+  manifest_schema_version?: string | null;
+  signing?: SignerMetadata | null;
+  policy_snapshot?: PolicySnapshot | null;
+  // The last RECORDED structured verification. Absent until the package has
+  // actually been verified — never an optimistic initial value.
+  verification_result?: VerificationResult | null;
+  verification_result_status?: string | null;
+  package_contents?: PackageContentEntry[] | null;
+  archive_download_url?: string | null;
 };
+
+type ExportHistoryRow = {
+  package_id: string;
+  package_number?: string;
+  export_type?: string;
+  incident_id?: string | null;
+  incident_short_id?: string | null;
+  status?: string;
+  supersedes_package_id?: string | null;
+  created_at?: string;
+  created_by_user_id?: string | null;
+  artifact_count?: number | null;
+  hash_algorithm?: string | null;
+  merkle_root?: string | null;
+  merkle_root_short?: string | null;
+  manifest_sha256?: string | null;
+  size_bytes?: number | null;
+  signing_key_id?: string | null;
+  signing_provider?: string | null;
+  signer_hardware_backed?: boolean;
+  verification_status?: string | null;
+  last_verified_at?: string | null;
+  integrity_status?: string | null;
+  last_downloaded_at?: string | null;
+  download_count?: number;
+};
+
+const EXPORT_HISTORY_PAGE_SIZE = 25;
+
+const EXPORT_HISTORY_HEADERS = [
+  'Package',
+  'Incident',
+  'Created',
+  'Artifacts',
+  'Merkle Root',
+  'Signer',
+  'Verification',
+  'Downloads',
+] as const;
 
 type Completeness = {
   score?: number;
@@ -607,6 +676,48 @@ function friendlyPackageError(
   return { message: safeErrorMessage(detail, fallback), code };
 }
 
+// Human-readable names for the backend's verification check identifiers, so a
+// failure message names the CATEGORY a reader recognizes instead of a raw key.
+const VERIFICATION_CHECK_NAMES: Record<string, string> = {
+  artifact_hashes: 'artifact hashes',
+  merkle_root: 'Merkle root',
+  manifest_hash: 'manifest hash',
+  manifest_signature: 'manifest signature',
+  policy_snapshot: 'policy snapshot',
+  provenance_chain: 'provenance chain',
+  required_evidence: 'required evidence',
+};
+
+function readableCheckName(check: string): string {
+  return VERIFICATION_CHECK_NAMES[check] ?? check.replace(/_/g, ' ');
+}
+
+/**
+ * Filename from a Content-Disposition header, sanitized.
+ *
+ * The value is server-supplied, but it still reaches `a.download`, so any path
+ * separator or control character is rejected outright rather than stripped —
+ * a header that cannot be trusted falls back to the caller's own name.
+ */
+function filenameFromDisposition(header: string | null): string | null {
+  if (!header) return null;
+  const match = /filename\*?=(?:UTF-8''|")?([^";]+)/i.exec(header);
+  const raw = match?.[1]?.trim().replace(/"$/, '');
+  if (!raw) return null;
+  let name: string;
+  try {
+    name = decodeURIComponent(raw);
+  } catch {
+    name = raw;
+  }
+  // Reject path separators and control characters outright. A package number
+  // like EV-2026-017 is a fine filename; anything that could escape a directory
+  // or inject a terminal control sequence is not.
+  // eslint-disable-next-line no-control-regex
+  if (/[\\/\u0000-\u001f\u007f]/.test(name) || name === '.' || name === '..') return null;
+  return name.slice(0, 200);
+}
+
 async function copyToClipboard(text: string): Promise<boolean> {
   try {
     if (navigator?.clipboard?.writeText) {
@@ -632,7 +743,7 @@ export default function EvidenceAuditPanel() {
 
   const [packages, setPackages] = useState<EvidencePackage[]>([]);
   const [auditRows, setAuditRows] = useState<AuditRow[]>([]);
-  const [activeTab, setActiveTab] = useState<'packages' | 'audit'>('packages');
+  const [activeTab, setActiveTab] = useState<'packages' | 'audit' | 'history'>('packages');
   const [selectedPkgId, setSelectedPkgId] = useState(urlPackageId);
   const [selectedAuditId, setSelectedAuditId] = useState('');
   const [message, setMessage] = useState('');
@@ -665,6 +776,19 @@ export default function EvidenceAuditPanel() {
   // so the checklist/metrics never blink back to "Calculating…".
   const detailLoading = detailState.refreshing && selectedDetail == null;
   const [verifyingId, setVerifyingId] = useState('');
+  // Last verification REQUEST failure (transport / 4xx / 5xx), kept separate from
+  // the backend's verification RESULT: a request that never completed must not
+  // leave a previous result on screen as though it described this run.
+  const [verifyError, setVerifyError] = useState<string | null>(null);
+  // Evidence-ZIP download in flight, so a double click cannot start two archive
+  // builds (each of which re-reads and re-verifies the whole package).
+  const [archivingId, setArchivingId] = useState('');
+  // Export History tab — paged, never an unbounded history load.
+  const [historyRows, setHistoryRows] = useState<ExportHistoryRow[]>([]);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [historyOffset, setHistoryOffset] = useState(0);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState('');
   // Manifest-recovery (Generate Manifest) in-flight id + last per-package outcome,
   // so the recovery card can show Generating… / success / failure with a Retry.
   const [generatingId, setGeneratingId] = useState('');
@@ -946,11 +1070,74 @@ export default function EvidenceAuditPanel() {
     };
   }, [hasInFlightPackage, loadExportsOnce]);
 
+  /**
+   * Export History — real export records, paged, workspace-scoped.
+   *
+   * Fetched only while the tab is open and only for the current page, so the
+   * screen never loads an unbounded export history. A failed load shows an
+   * explicit error and NO rows: a partially-loaded history must never read as a
+   * complete one.
+   */
+  useEffect(() => {
+    if (activeTab !== 'history') return;
+    let cancelled = false;
+    setHistoryLoading(true);
+    setHistoryError('');
+    (async () => {
+      try {
+        const params = new URLSearchParams({
+          limit: String(EXPORT_HISTORY_PAGE_SIZE),
+          offset: String(historyOffset),
+        });
+        const res = await fetch(`/api/exports/history?${params.toString()}`, {
+          headers: authHeaders(),
+          cache: 'no-store',
+        });
+        if (cancelled) return;
+        if (!res.ok) {
+          setHistoryRows([]);
+          setHistoryTotal(0);
+          setHistoryError('Export history could not be loaded.');
+          return;
+        }
+        const body = (await res.json().catch(() => ({}))) as {
+          history?: ExportHistoryRow[];
+          total?: number;
+        };
+        if (cancelled) return;
+        setHistoryRows(Array.isArray(body.history) ? body.history : []);
+        setHistoryTotal(typeof body.total === 'number' ? body.total : 0);
+      } catch {
+        if (cancelled) return;
+        setHistoryRows([]);
+        setHistoryTotal(0);
+        setHistoryError('Export history could not be loaded: network error.');
+      } finally {
+        if (!cancelled) setHistoryLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, historyOffset, reloadKey, authHeaders]);
+
+  /**
+   * Verify Integrity: IDLE → VERIFYING → backend verification → VERIFIED / not.
+   *
+   * The outcome is ENTIRELY the backend's: this handler starts the request,
+   * shows the VERIFYING state, then reloads so every surface re-reads the
+   * persisted result. It never decides an outcome locally and never leaves a
+   * green state on screen for a run that failed.
+   */
   async function verifyPackage(pkg: EvidencePackage) {
     if (!pkg.id) return;
+    // A verification already in flight must not be issued twice by a double
+    // click — the second click is dropped rather than racing the first.
+    if (verifyingId) return;
     setMessage('');
     setDiagnostics(null);
     setRecovery(null);
+    setVerifyError(null);
     setVerifyingId(pkg.id);
     try {
       const res = await fetch(`/api/exports/${encodeURIComponent(pkg.id)}/verify`, {
@@ -960,17 +1147,37 @@ export default function EvidenceAuditPanel() {
       });
       const body = (await res.json().catch(() => ({}))) as {
         integrity_status?: string;
+        verification_status?: string;
+        verification_result?: VerificationResult;
         verification?: { valid?: boolean; files_failed?: string[] };
         detail?: unknown;
       };
       if (res.ok) {
-        const ok = body.verification?.valid;
-        setMessage(
-          ok
-            ? 'Integrity verified: content matches the generated package.'
-            : `Integrity check failed: ${body.verification?.files_failed?.length ?? 0} file(s) did not match.`,
-        );
-        // Reload so the persisted integrity_status and metrics refresh from the backend.
+        const result = body.verification_result;
+        const status = result?.status ?? body.verification_status;
+        // The message names the CATEGORIES that decided the verdict rather than
+        // collapsing every outcome into pass/fail.
+        if (status === 'VERIFIED') {
+          setMessage('Verified: every artifact hash, the Merkle root and the manifest signature were recomputed and matched.');
+        } else if (status) {
+          const failed = result?.failed_checks ?? [];
+          const unavailable = result?.unavailable_checks ?? [];
+          const parts = [
+            failed.length ? `failed: ${failed.map(readableCheckName).join(', ')}` : '',
+            unavailable.length ? `could not be checked: ${unavailable.map(readableCheckName).join(', ')}` : '',
+          ].filter(Boolean);
+          setMessage(
+            `${verificationStatusPresentation(status).label}${parts.length ? ` — ${parts.join('; ')}.` : '.'}`,
+          );
+        } else {
+          setMessage(
+            body.verification?.valid
+              ? 'Integrity verified: content matches the generated package.'
+              : `Integrity check failed: ${body.verification?.files_failed?.length ?? 0} file(s) did not match.`,
+          );
+        }
+        // Reload so the persisted integrity_status, verification result and
+        // metrics all refresh from the backend rather than from this response.
         setReloadKey((k) => k + 1);
       } else {
         // Never surface the raw {"error":...} envelope — friendly text + a
@@ -978,11 +1185,64 @@ export default function EvidenceAuditPanel() {
         const view = friendlyPackageError(body, 'Verification could not be completed.');
         setMessage(view.message);
         setDiagnostics(view.code);
+        // The panel must not keep showing a stale prior result as if it were
+        // the outcome of THIS run.
+        setVerifyError(view.message);
       }
     } catch {
       setMessage('Verification could not be completed: network error.');
+      setVerifyError('Verification could not be completed: network error.');
     } finally {
       setVerifyingId('');
+    }
+  }
+
+  /**
+   * Download Evidence Package (.zip) — the structured, verifiable archive.
+   *
+   * The backend assembles it (original artifacts + manifest + signature +
+   * verification + report), enforces `evidence.export` and workspace scoping,
+   * and supplies the filename. Nothing about the archive is built here.
+   */
+  async function downloadArchive(pkg: EvidencePackage) {
+    if (!pkg.id) return;
+    if (archivingId) return;
+    setMessage('');
+    setDiagnostics(null);
+    setRecovery(null);
+    setArchivingId(pkg.id);
+    try {
+      let resp: Response;
+      try {
+        resp = await fetch(`/api/exports/${encodeURIComponent(pkg.id)}/archive`, {
+          headers: authHeaders(),
+          cache: 'no-store',
+        });
+      } catch {
+        setMessage('Evidence package download could not be completed: network error.');
+        return;
+      }
+      if (!resp.ok) {
+        const errBody = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
+        const view = friendlyPackageError(errBody, 'Evidence package download could not be completed.');
+        setMessage(view.message);
+        setDiagnostics(view.code);
+        return;
+      }
+      const blob = await resp.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = blobUrl;
+      // Prefer the backend-supplied filename (derived from the server-generated
+      // package number); fall back to the package number the API already returned.
+      anchor.download = filenameFromDisposition(resp.headers.get('content-disposition'))
+        ?? `${pkg.package_number ?? `evidence-package-${pkg.id}`}.zip`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(blobUrl);
+    } finally {
+      setArchivingId('');
     }
   }
 
@@ -1557,10 +1817,11 @@ export default function EvidenceAuditPanel() {
       <TabStrip
         tabs={[
           { key: 'packages', label: 'Evidence Packages' },
-          { key: 'audit', label: 'Audit Logs' },
+          { key: 'audit', label: 'Audit Log' },
+          { key: 'history', label: 'Export History' },
         ]}
         active={activeTab}
-        onChange={(k) => setActiveTab(k as 'packages' | 'audit')}
+        onChange={(k) => setActiveTab(k as 'packages' | 'audit' | 'history')}
       />
 
       {message ? (
@@ -1779,11 +2040,14 @@ export default function EvidenceAuditPanel() {
                     detailError={detailError}
                     workspaceEvidenceSource={workspaceEvidenceSource}
                     onDownload={downloadPackage}
+                    onDownloadArchive={downloadArchive}
                     onDownloadManifest={downloadManifest}
                     onGenerateManifest={generateManifest}
                     onRegeneratePackage={regeneratePackage}
                     onVerify={verifyPackage}
                     verifying={verifyingId === selectedPkg.id}
+                    verifyError={verifyError}
+                    archiving={archivingId === selectedPkg.id}
                     generating={generatingId === selectedPkg.id}
                     regenerating={regeneratingId === selectedPkg.id}
                     recovery={recovery && recovery.id === selectedPkg.id ? recovery : null}
@@ -1889,6 +2153,141 @@ export default function EvidenceAuditPanel() {
 
           {selectedAudit && (
             <AuditDetailPanel row={selectedAudit} workspaceEvidenceSource={workspaceEvidenceSource} />
+          )}
+        </div>
+      )}
+
+      {/* ── Export History tab ───────────────────────────────────────
+          Real export records only, paged. A failed load shows an error and NO
+          rows — a partial history must never read as a complete one, and a
+          package that was never verified reports "Not verified", never a
+          green state it did not earn. */}
+      {activeTab === 'history' && (
+        <div>
+          {historyError ? (
+            <div className="dataCard sharedSurfaceCard" style={{ padding: '1.5rem', textAlign: 'center' }}>
+              <h3 style={{ marginTop: 0 }}>Export history could not be loaded.</h3>
+              <p className="muted" style={{ marginBottom: '1rem' }}>{historyError}</p>
+              <button type="button" className="btn btn-primary" onClick={() => setReloadKey((k) => k + 1)}>
+                Retry
+              </button>
+            </div>
+          ) : (
+            <>
+              <TableShell headers={[...EXPORT_HISTORY_HEADERS]}>
+                {historyLoading && historyRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={EXPORT_HISTORY_HEADERS.length} style={{ textAlign: 'center', padding: '1.25rem' }}>
+                      Loading export history…
+                    </td>
+                  </tr>
+                ) : historyRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={EXPORT_HISTORY_HEADERS.length} style={{ textAlign: 'center', padding: '1.25rem' }}>
+                      No evidence packages have been exported in this workspace yet.
+                    </td>
+                  </tr>
+                ) : (
+                  historyRows.map((row) => {
+                    const verification = verificationStatusPresentation(row.verification_status);
+                    return (
+                      <tr
+                        key={row.package_id}
+                        tabIndex={0}
+                        role="button"
+                        style={{ cursor: 'pointer' }}
+                        onClick={() => {
+                          setSelectedPkgId(row.package_id);
+                          setActiveTab('packages');
+                        }}
+                        onKeyDown={(event: ReactKeyboardEvent<HTMLTableRowElement>) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            setSelectedPkgId(row.package_id);
+                            setActiveTab('packages');
+                          }
+                        }}
+                      >
+                        <td>
+                          <strong style={{ fontSize: '0.8rem' }}>{row.package_number ?? row.package_id}</strong>
+                          {row.supersedes_package_id ? (
+                            <div className="tableMeta">supersedes an earlier package</div>
+                          ) : null}
+                        </td>
+                        <td style={{ fontSize: '0.78rem' }}>{row.incident_short_id ?? '—'}</td>
+                        <td style={{ fontSize: '0.75rem' }}>{fmt(row.created_at)}</td>
+                        <td style={{ fontSize: '0.78rem' }}>
+                          {typeof row.artifact_count === 'number' ? row.artifact_count : '—'}
+                          {row.hash_algorithm ? <div className="tableMeta">{row.hash_algorithm}</div> : null}
+                        </td>
+                        <td style={{ fontSize: '0.74rem' }}>
+                          {row.merkle_root ? (
+                            <code title={row.merkle_root}>{row.merkle_root_short ?? truncateCryptoHash(row.merkle_root)}</code>
+                          ) : (
+                            <span className="tableMeta">Not sealed</span>
+                          )}
+                        </td>
+                        <td style={{ fontSize: '0.74rem' }}>
+                          {row.signing_key_id ?? '—'}
+                          <div className="tableMeta">
+                            {row.signer_hardware_backed ? 'HSM/KMS-backed' : 'software key'}
+                          </div>
+                        </td>
+                        <td>
+                          <StatusPill label={verification.label} variant={verification.variant} />
+                          {row.last_verified_at ? (
+                            <div className="tableMeta">{fmt(row.last_verified_at)}</div>
+                          ) : null}
+                        </td>
+                        <td style={{ fontSize: '0.78rem' }}>
+                          {row.download_count ?? 0}
+                          {row.last_downloaded_at ? (
+                            <div className="tableMeta">last {fmt(row.last_downloaded_at)}</div>
+                          ) : null}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </TableShell>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '0.75rem',
+                  marginTop: '0.6rem',
+                  fontSize: '0.75rem',
+                  color: '#94a3b8',
+                }}
+              >
+                <span>
+                  {historyTotal === 0
+                    ? 'No packages'
+                    : `Showing ${historyOffset + 1}–${historyOffset + historyRows.length} of ${historyTotal}`}
+                </span>
+                <span style={{ display: 'flex', gap: '0.4rem' }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ fontSize: '0.74rem' }}
+                    disabled={historyOffset === 0 || historyLoading}
+                    onClick={() => setHistoryOffset((o) => Math.max(0, o - EXPORT_HISTORY_PAGE_SIZE))}
+                  >
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ fontSize: '0.74rem' }}
+                    disabled={historyLoading || historyOffset + historyRows.length >= historyTotal}
+                    onClick={() => setHistoryOffset((o) => o + EXPORT_HISTORY_PAGE_SIZE)}
+                  >
+                    Next
+                  </button>
+                </span>
+              </div>
+            </>
           )}
         </div>
       )}
@@ -2491,11 +2890,14 @@ function PackageDetailPanel({
   detailError,
   workspaceEvidenceSource,
   onDownload,
+  onDownloadArchive,
   onDownloadManifest,
   onGenerateManifest,
   onRegeneratePackage,
   onVerify,
   verifying,
+  verifyError,
+  archiving,
   generating,
   regenerating,
   recovery,
@@ -2509,11 +2911,16 @@ function PackageDetailPanel({
   detailError?: string | null;
   workspaceEvidenceSource: string;
   onDownload: (pkg: EvidencePackage) => Promise<void>;
+  /** Download Evidence Package (.zip) — the structured, verifiable archive. */
+  onDownloadArchive?: (pkg: EvidencePackage) => Promise<void>;
   onDownloadManifest?: (pkg: EvidencePackage) => Promise<void>;
   onGenerateManifest?: (pkg: EvidencePackage) => Promise<void>;
   onRegeneratePackage?: (pkg: EvidencePackage) => Promise<void>;
   onVerify?: (pkg: EvidencePackage) => Promise<void>;
   verifying?: boolean;
+  /** The last verification REQUEST failed (not a verification RESULT). */
+  verifyError?: string | null;
+  archiving?: boolean;
   generating?: boolean;
   regenerating?: boolean;
   recovery?: { id: string; phase: 'success' | 'error'; message: string } | null;
@@ -2567,6 +2974,23 @@ function PackageDetailPanel({
   // pre-`allowed_actions` responses; when detail is null the gate is PENDING and
   // `ready` is unused, so this can never fall back to the selectedPkg summary.
   const actionGate = resolveDetailActionState(detail ?? null, detail ? isPackageReady(detail) : false);
+  // ── Verification presentation state ───────────────────────────────────────
+  // VERIFYING is the ONLY state the frontend originates, and it carries no
+  // outcome. The result itself is always the backend's last recorded one; while
+  // a run is in flight (or a request failed) the stale prior result is withheld
+  // so a previous green VERIFIED can never appear to describe this run.
+  const verifyPhase: VerifyPhase = verifying ? 'verifying' : 'idle';
+  const verificationPanelResult =
+    verifying || verifyError ? null : (detail?.verification_result ?? null);
+  const verificationPanelStatus = verifying
+    ? 'VERIFYING'
+    : (detail?.verification_result?.status ?? detail?.verification_result_status ?? null);
+  // Download Evidence Package (.zip) rides the SAME backend-authoritative export
+  // gate as the raw bundle download: without `evidence.export` the API refuses
+  // it, and the button is not offered.
+  const canDownloadArchive = Boolean(
+    detailAvailable && detail?.archive_download_url && (detail?.allowed_actions?.download ?? false),
+  );
   const manifestMissing = actionGate.manifestMissing;
   const detailCanVerify = actionGate.canVerify;
   const detailCanManifest = actionGate.canDownloadManifest;
@@ -2696,6 +3120,35 @@ function PackageDetailPanel({
       <p className="tableMeta" style={{ marginBottom: '0.75rem', fontSize: '0.66rem', wordBreak: 'break-all' }}>
         Internal ID {pkg.id}
       </p>
+
+      {/* ── Cryptographic identity + verification (Screen 9 core) ─────────────
+          Every value below is backend-authoritative: the Merkle root and hash
+          algorithm come from the SEALED manifest, the signer block reports what
+          actually signed it (and never claims hardware custody the build does not
+          have), the policy snapshot is the INCIDENT-TIME policy version, and the
+          verification panel renders the backend's per-category result. Nothing
+          here is computed, defaulted or guessed in the browser. */}
+      <PackageCryptoSummary
+        packageNumber={String(pkg.package_number ?? pkg.id)}
+        incidentLabel={detail?.incident_short_id ?? pkg.incident_short_id ?? pkg.incident_id ?? null}
+        artifactCount={detail?.artifact_count ?? detail?.files_hashed ?? null}
+        merkleRoot={detail?.merkle_root ?? null}
+        hashAlgorithm={detail?.hash_algorithm ?? null}
+        merkleScheme={detail?.merkle_scheme ?? null}
+        manifestSchemaVersion={detail?.manifest_schema_version ?? null}
+        signing={detail?.signing ?? null}
+        policySnapshot={detail?.policy_snapshot ?? null}
+        verificationStatus={verificationPanelStatus}
+      />
+
+      <div style={{ display: 'grid', gap: '0.75rem', marginBottom: '0.25rem' }}>
+        <PackageVerificationPanel
+          result={verificationPanelResult}
+          phase={verifyPhase}
+          error={verifyError ?? null}
+        />
+        <VerificationShield result={verificationPanelResult} phase={verifyPhase} />
+      </div>
 
       {/* ── Integrity summary (three explicit, backend-authoritative states) ──
           Replaces the old ambiguous single "Integrity Status": Generation Status
@@ -3445,14 +3898,35 @@ function PackageDetailPanel({
         </div>
       )}
       <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
+        {/* Primary action: the structured, verifiable evidence archive — original
+            artifacts + manifest + signature + verification + report. Offered only
+            when the backend says this caller may export AND a retrievable manifest
+            exists, because an archive without one could not be verified offline. */}
+        {onDownloadArchive ? (
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={!canDownloadArchive || !!archiving}
+            title={
+              canDownloadArchive
+                ? 'Download the sealed evidence package: original artifacts, manifest, signature and verification result.'
+                : 'A verifiable evidence package requires a retrievable manifest and evidence export permission.'
+            }
+            style={{ fontSize: '0.75rem' }}
+            onClick={() => void onDownloadArchive(pkg)}
+          >
+            {archiving ? 'Preparing package…' : 'Download Evidence Package (.zip)'}
+          </button>
+        ) : null}
         <button
           type="button"
-          className="btn btn-primary"
+          className="btn btn-secondary"
           disabled={!ready}
+          title="Download the raw JSON bundle exactly as it is stored."
           style={{ fontSize: '0.75rem' }}
           onClick={() => void onDownload(pkg)}
         >
-          Download Package
+          Download Raw Bundle (JSON)
         </button>
         {actionsPending ? (
           <span
@@ -3522,7 +3996,7 @@ function PackageDetailPanel({
             style={{ fontSize: '0.75rem' }}
             onClick={() => void onDownloadManifest(pkg)}
           >
-            Download Manifest
+            Download Manifest (JSON)
           </button>
         ) : null}
           </>
@@ -3538,6 +4012,14 @@ function PackageDetailPanel({
           </Link>
         ) : null}
       </div>
+
+      {/* ── Package Contents ──────────────────────────────────────────────────
+          What the exported archive actually contains, reported by the backend's
+          own package manifest — never a list assembled here. A file that is not
+          produced (an unsigned package's manifest.sig, or the PDF report where
+          rendering is not configured) is shown as UNAVAILABLE with the reason,
+          never as present. */}
+      <PackageContents contents={detail?.package_contents ?? null} />
     </aside>
   );
 }

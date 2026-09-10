@@ -119,7 +119,22 @@ def test_guided_workflow_export_uses_canonical_evidence_source_labels() -> None:
 def test_evidence_audit_panel_uses_proof_bundle_endpoint_and_customer_labels() -> None:
     panel_source = (REPO_ROOT / 'apps/web/app/evidence-audit-panel.tsx').read_text(encoding='utf-8')
     assert '/exports/proof-bundle' in panel_source
-    assert '/exports/history' not in panel_source
+    # Screen 9 creates evidence packages through the proof-bundle endpoint ONLY. It
+    # must never mint one through the legacy analysis-history export job
+    # (POST /exports/history), which produces a non-evidentiary CSV/JSON export
+    # with no manifest and no seal.
+    #
+    # The Export History TAB reads GET /api/exports/history — the same path, a
+    # different method and a different feature — so the guard is on the legacy
+    # WRITE, not on the path string.
+    assert 'exports/history' not in panel_source.replace('/api/exports/history?', '')
+    history_calls = [
+        line for line in panel_source.splitlines() if 'exports/history' in line
+    ]
+    assert history_calls, 'the Export History tab must read the history endpoint'
+    for line in history_calls:
+        assert '/api/exports/history?' in line
+    assert "method: 'POST'" not in ''.join(history_calls)
     # The Create button is no longer gated on a linked incident (a prior Screen 9
     # pass removed that chain-readiness message); the truthful no-incident label
     # now lives in the creation flow's empty state.

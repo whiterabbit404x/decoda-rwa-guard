@@ -78,13 +78,14 @@ test('5: all four metric cards are present', () => {
 
 /* ── 6. Tabs ────────────────────────────────────────────────────── */
 
-test('6: tabs are exactly Evidence Packages and Audit Logs', () => {
+test('6: tabs are exactly Evidence Packages, Audit Log and Export History', () => {
   const source = read(PANEL);
   expect(source).toContain("label: 'Evidence Packages'");
-  expect(source).toContain("label: 'Audit Logs'");
-  // No unexpected third tab key
-  const tabMatches = [...source.matchAll(/key: '(packages|audit)'/g)];
-  expect(tabMatches.length).toBeGreaterThanOrEqual(2);
+  expect(source).toContain("label: 'Audit Log'");
+  expect(source).toContain("label: 'Export History'");
+  // Exactly the three canonical Screen 9 tab keys — no unexpected fourth tab.
+  const tabMatches = [...source.matchAll(/key: '(packages|audit|history)'/g)];
+  expect(tabMatches.length).toBe(3);
 });
 
 /* ── 7. Evidence Packages table columns ─────────────────────────── */
