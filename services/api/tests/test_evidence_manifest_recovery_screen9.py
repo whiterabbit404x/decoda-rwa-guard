@@ -455,7 +455,14 @@ def test_verified_package_not_mutated(monkeypatch):
     )
     verified_filters = {
         **_persisted_ok(manifest),
-        'verification': {'valid': True, 'verified_at': '2026-02-01T00:00:00Z'},
+        # A CANONICAL verification record — the only kind that makes a package
+        # 'verified'. A bare {'valid': True} is a pre-canonical hash check and
+        # reports as a legacy validation, not as a current verification.
+        'verification': {
+            'valid': True, 'verified_at': '2026-02-01T00:00:00Z',
+            'verification_status': 'VERIFIED',
+            'result': {'status': 'VERIFIED', 'checks': []},
+        },
     }
     storage = _RWStorage({OBJECT_KEY: _bundle_bytes(_PARTIAL_FILES, include_manifest=True)})
     conn = _RecoveryConn(filters=verified_filters)

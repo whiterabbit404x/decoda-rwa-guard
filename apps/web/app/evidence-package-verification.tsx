@@ -94,6 +94,45 @@ export type VerificationContract = {
   verified_at?: string | null;
   integrity_status?: string | null;
   shield?: { state: string; label: string; verified?: boolean };
+  /**
+   * THE badge. The package table's Integrity column and the detail overlay's
+   * header badge both render this and map nothing of their own, so they cannot
+   * disagree with each other or with the rest of this contract.
+   */
+  badge?: { label: string; variant: string; status?: string; verified?: boolean };
+  /**
+   * The Hash Verification field. `verified` only after the backend recomputed
+   * the stored artifact bytes and matched them — the presence of SHA-256 fields
+   * is reported as "Hashes Available — Not Verified", never as verified.
+   */
+  hash_verification?: { state: string; label: string; variant: string; verified?: boolean };
+  /**
+   * A PRE-CANONICAL hash check recorded before the structured verification
+   * service existed. Rendered as clearly-labelled HISTORY: it never fills
+   * "Last Verified", never colours a badge green and is never presented as the
+   * current verification result.
+   */
+  legacy_validation?: {
+    present?: boolean;
+    outcome?: string;
+    label?: string;
+    files_verified?: number;
+    files_total?: number;
+    files_failed?: number;
+    missing_files?: number;
+    manifest_ok?: boolean;
+    validated_at?: string | null;
+    manifest_schema_version?: string | null;
+    detail?: string | null;
+  } | null;
+  /** Why a package that failed nothing can still be short of VERIFIED. */
+  legacy_schema?: {
+    legacy?: boolean;
+    schema_version?: string | null;
+    required_schema_version?: string | null;
+    missing_sealed_facts?: string[];
+    reason?: string | null;
+  } | null;
   artifact_hashes?: {
     /** Artifacts carrying a stored SHA-256 (a packaging fact). */
     files_hashed?: number;
@@ -195,7 +234,60 @@ const STATUS_PRESENTATION: Record<string, { label: string; variant: PillVariant;
   SIGNATURE_UNAVAILABLE: { label: 'Signature Unavailable', variant: 'warning', tone: '#f59e0b' },
   INCOMPLETE_PACKAGE: { label: 'Incomplete Package', variant: 'warning', tone: '#f59e0b' },
   VERIFYING: { label: 'Verifying…', variant: 'info', tone: '#60a5fa' },
+  // Lifecycle statuses the contract also returns. Each names what it is rather
+  // than collapsing into a generic "Not Verified" that hides the next step.
+  NOT_VERIFIED: { label: 'Not Verified', variant: 'neutral', tone: '#94a3b8' },
+  SUPERSEDED: { label: 'Superseded', variant: 'neutral', tone: '#94a3b8' },
+  LEGACY_EXPORT: { label: 'Legacy Export', variant: 'warning', tone: '#f59e0b' },
+  MANIFEST_MISSING: { label: 'Manifest Missing', variant: 'danger', tone: '#ef4444' },
+  BUILDING: { label: 'Building', variant: 'warning', tone: '#f59e0b' },
+  PACKAGE_FAILED: { label: 'Failed', variant: 'danger', tone: '#ef4444' },
 };
+
+/** Pill variants the backend badge/hash-verification axes may name. */
+const CONTRACT_VARIANTS: Record<string, PillVariant> = {
+  success: 'success',
+  warning: 'warning',
+  danger: 'danger',
+  info: 'info',
+  neutral: 'neutral',
+};
+
+/**
+ * The canonical Integrity badge, rendered from the backend contract alone.
+ *
+ * Every surface that shows a package's verification state calls THIS. It maps no
+ * status of its own and reads no other field: that is what stopped the table and
+ * the detail header from badging a package "Verified" while the package's own
+ * detail said "Not Verified · Files Verified 0 · Never verified".
+ */
+export function contractBadge(
+  contract?: VerificationContract | null,
+): { label: string; variant: PillVariant } | null {
+  const badge = contract?.badge;
+  if (badge?.label) {
+    return { label: badge.label, variant: CONTRACT_VARIANTS[String(badge.variant)] ?? 'neutral' };
+  }
+  if (!contract?.overall_status) return null;
+  // Older responses without the badge field: fall back to the same contract's
+  // status, never to a locally derived one.
+  const presentation = verificationStatusPresentation(contract.overall_status);
+  return { label: contract.overall_label ?? presentation.label, variant: presentation.variant };
+}
+
+/**
+ * The Hash Verification field, from the contract alone.
+ *
+ * "This package carries SHA-256 hashes" and "those hashes were recomputed on the
+ * server and matched" are different facts. Only the second one reads "Verified".
+ */
+export function contractHashVerification(
+  contract?: VerificationContract | null,
+): { label: string; variant: PillVariant } | null {
+  const axis = contract?.hash_verification;
+  if (!axis?.label) return null;
+  return { label: axis.label, variant: CONTRACT_VARIANTS[String(axis.variant)] ?? 'neutral' };
+}
 
 const NOT_VERIFIED = { label: 'Not Verified', variant: 'neutral' as PillVariant, tone: '#94a3b8' };
 
@@ -552,6 +644,57 @@ export function PackageVerificationPanel({
           ) : null}
         </>
       )}
+    </section>
+  );
+}
+
+/* ── 2b. Legacy validation record (history, never a current result) ─ */
+
+/**
+ * A pre-canonical hash check, shown as what it is: HISTORY.
+ *
+ * Production rendered this record as the CURRENT verification result —
+ * "Integrity verified · 9/9 files matched · 8/17/2026 · seal valid" — on a
+ * package whose own detail said Files Verified 0 and Last Verified Never. It is
+ * preserved here (the record is real and must not be deleted), inside its own
+ * clearly-labelled section, stated in the past tense, with the schema it belongs
+ * to. It never says "verified", and it never mentions a seal: this package
+ * sealed no Merkle root, and "seal valid" read as a claim that it had.
+ */
+export function LegacyValidationRecord({
+  legacy,
+}: {
+  legacy?: VerificationContract['legacy_validation'];
+}) {
+  if (!legacy?.present) return null;
+  const failed = legacy.outcome === 'failed';
+  return (
+    <section
+      aria-label="Legacy validation record"
+      style={{
+        marginBottom: '0.75rem',
+        padding: '0.55rem 0.65rem',
+        background: failed ? 'rgba(239,68,68,0.07)' : 'rgba(148,163,184,0.05)',
+        border: '1px solid rgba(148,163,184,0.14)',
+        borderLeft: `3px solid ${failed ? '#ef4444' : '#94a3b8'}`,
+        borderRadius: '6px',
+      }}
+    >
+      <p className="sectionEyebrow" style={{ margin: '0 0 0.3rem' }}>
+        {legacy.label || 'Legacy Validation Record'}
+      </p>
+      <p style={{ margin: 0, fontSize: '0.76rem', color: failed ? '#fca5a5' : '#cbd5e1' }}>
+        {failed
+          ? `${legacy.files_failed ?? 0} hash mismatch(es) recorded`
+          : `${legacy.files_verified ?? 0}/${legacy.files_total ?? 0} hashes matched`}
+        {legacy.validated_at ? ` · validated ${new Date(legacy.validated_at).toLocaleString()}` : ''}
+        {legacy.manifest_schema_version ? ` · legacy schema ${legacy.manifest_schema_version}` : ''}
+      </p>
+      {legacy.detail ? (
+        <p style={{ margin: '0.3rem 0 0', fontSize: '0.71rem', color: '#94a3b8', lineHeight: 1.45 }}>
+          {legacy.detail}
+        </p>
+      ) : null}
     </section>
   );
 }

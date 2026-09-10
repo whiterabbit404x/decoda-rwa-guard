@@ -41,11 +41,27 @@ def _signed_bundle_bytes(*, tamper: bool = False) -> bytes:
         'response_actions.json': [{'id': 'act-1', 'status': 'executed'}],
         'audit_log.json': [{'id': 'aud-1', 'action': 'incident.opened'}],
     }
+    # Sealed in the CURRENT manifest schema, exactly as _generate_export_artifact
+    # seals one. A manifest that predates the sealed Merkle root verifies as a
+    # LEGACY package (PARTIALLY_VERIFIED) and never reaches VERIFIED.
     manifest, _ = build_evidence_manifest(
         export_id=PKG_ID, export_type='proof_bundle', workspace_id=WS_ID,
         generated_at='2026-01-01T00:00:00Z', generated_by_user_id=USER_ID,
         source_resource_type='incident', source_resource_id='inc-1',
         storage_backend='local', file_values=files,
+        seal_merkle=True,
+        policy_snapshot={
+            'present': True, 'policy_key': 'POL-VERIFY-1', 'policy_version': 2,
+            'decision': 'DENY', 'decision_kind': 'enforcement',
+            'evaluation_id': 'eval-v1', 'evaluated_at': '2026-01-01T00:00:00Z',
+            'source': 'governance_policy_versions',
+        },
+        required_artifacts=sorted(files),
+        file_provenance={
+            path: {'media_type': 'application/json', 'domain': 'OPERATIONAL',
+                   'source_record_type': 'evidence'}
+            for path in files
+        },
     )
     seal = seal_manifest(manifest)
     bundle = {**files, 'manifest.json': manifest, 'seal.json': seal}
@@ -200,7 +216,10 @@ class _ListConn:
             'storage_backend': 'local', 'storage_object_key': f'{WS_ID}/pkg-newer.json',
             'error_message': None,
             'filters': {'incident_id': 'inc-1', 'completeness_score': 96, 'files_hashed': 8, 'integrity_hash': 'def',
-                        'verification': {'valid': True}},
+                        # A CANONICAL verification record: only a structured
+                        # VERIFIED result makes a package 'verified'.
+                        'verification': {'valid': True, 'verification_status': 'VERIFIED',
+                                         'result': {'status': 'VERIFIED', 'checks': []}}},
             'size_bytes': 120, 'created_at': _dt.datetime(2026, 1, 2), 'updated_at': _dt.datetime(2026, 1, 2),
         }
         self._rows = [newer, older]

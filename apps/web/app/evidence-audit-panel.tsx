@@ -39,6 +39,9 @@ import {
   type PackageContentEntry,
   type PolicySnapshot,
   type SignerMetadata,
+  contractBadge,
+  contractHashVerification,
+  LegacyValidationRecord,
   type VerificationContract,
   type VerificationResult,
   type VerifyPhase,
@@ -77,6 +80,7 @@ const INTEGRITY_FILTER_OPTIONS = [
   { value: 'hash_generated', label: 'Hash Generated' },
   { value: 'verifying', label: 'Verifying' },
   { value: 'verified', label: 'Verified' },
+  { value: 'legacy_hash_validated', label: 'Legacy Hash Validated' },
   { value: 'needs_evidence', label: 'Needs Evidence' },
   { value: 'manifest_missing', label: 'Manifest Missing' },
   { value: 'integrity_failed', label: 'Integrity Failed' },
@@ -162,6 +166,12 @@ type EvidencePackage = {
   is_legacy_export?: boolean;
   is_manifest_missing?: boolean;
   ready_for_verification?: boolean;
+  // THE canonical verification contract, returned on every list row AND on the
+  // detail response. The table's Integrity badge, the detail overlay's header
+  // badge, the Package Verification panel, the Crypto-Auditing Clerk and the
+  // checklist all project THIS one field, so no two surfaces can disagree about
+  // whether a package is verified.
+  verification_contract?: VerificationContract | null;
   // Canonical status axes — manifest availability and evidence completeness are
   // SEPARATE concerns; the UI never infers one from the other.
   manifest_status?: string | null;
@@ -227,10 +237,6 @@ type PackageDetail = EvidencePackage & {
   // actually been verified — never an optimistic initial value.
   verification_result?: VerificationResult | null;
   verification_result_status?: string | null;
-  // THE canonical verification contract. The Integrity badge, this detail view,
-  // the Crypto-Auditing Clerk and the Verification Checklist all project it, so
-  // no two surfaces can disagree about whether a package is verified.
-  verification_contract?: VerificationContract | null;
   package_contents?: PackageContentEntry[] | null;
   archive_download_url?: string | null;
 };
@@ -458,6 +464,9 @@ function isPackageInProgress(pkg: EvidencePackage): boolean {
 const INTEGRITY_VARIANTS: Record<string, PillVariant> = {
   verified: 'success',
   hash_generated: 'info',
+  // An OLD hash check passed; the current cryptographic verification has not
+  // run. Deliberately not 'success' — it is a ready-to-verify state.
+  legacy_hash_validated: 'warning',
   verifying: 'warning',
   hashing: 'warning',
   building: 'warning',
@@ -477,6 +486,24 @@ function integrityPill(pkg: EvidencePackage): { label: string; variant: PillVari
     pkg.integrity_label ??
     (status ? status.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : 'Unknown');
   return { label, variant };
+}
+
+/**
+ * THE verification badge for a package — the table's Integrity column and the
+ * detail overlay's header both call this and nothing else.
+ *
+ * It renders the backend contract's own `badge`, so the two can never disagree
+ * with each other or with the Package Verification panel below them. Production
+ * showed exactly that disagreement: the table and the header badged a package
+ * "Verified" (from the lifecycle `integrity_status`, which an OLD hash-check
+ * record had set) while the package's own detail said Not Verified, Files
+ * Verified 0, Last Verified Never.
+ *
+ * `integrityPill` remains only as the fallback for a response that predates the
+ * contract; it is never consulted when a contract is present.
+ */
+function packageVerificationBadge(pkg: EvidencePackage): { label: string; variant: PillVariant } {
+  return contractBadge(pkg.verification_contract) ?? integrityPill(pkg);
 }
 
 // The package details panel shows three explicit, non-overlapping states instead
@@ -1986,7 +2013,9 @@ export default function EvidenceAuditPanel() {
                 ) : (
                   filteredPackages.map((pkg) => {
                     const isSelected = pkg.id === selectedPkgId;
-                    const integ = integrityPill(pkg);
+                    // The canonical contract badge — the same field the detail
+                    // overlay's header renders. No row maps a status of its own.
+                    const integ = packageVerificationBadge(pkg);
                     return (
                       <tr
                         key={pkg.id}
@@ -2377,10 +2406,12 @@ export default function EvidenceAuditPanel() {
                 </h2>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                {/* The SAME canonical Integrity state the table row shows. */}
+                {/* The SAME canonical contract badge the table row shows —
+                    one backend field, rendered twice, so this header can never
+                    contradict the Package Verification panel inside it. */}
                 <StatusPill
-                  label={integrityPill(selectedDetail ?? drawerPkg).label}
-                  variant={integrityPill(selectedDetail ?? drawerPkg).variant}
+                  label={packageVerificationBadge(selectedDetail ?? drawerPkg).label}
+                  variant={packageVerificationBadge(selectedDetail ?? drawerPkg).variant}
                 />
                 <button
                   type="button"
@@ -3077,9 +3108,7 @@ function PackageDetailPanel({
   // detail loads. The ACTION gate below never uses this fallback.
   const source = detail ?? pkg;
   const genStatus = generationStatus(source);
-  const hashStatus = hashVerification(source);
   const manifestState = manifestStatus(source);
-  const integrityStatus = (detail?.integrity_status ?? pkg.integrity_status ?? '').toLowerCase();
   // Whether the selected package's own storage-authoritative detail has loaded.
   // Until it has, the manifest/recovery/verify state is PENDING (refreshing), not
   // an authoritative denial — we never derive it from the list-row summary.
@@ -3126,15 +3155,26 @@ function PackageDetailPanel({
   const verifyPhase: VerifyPhase = verifying ? 'verifying' : 'idle';
   const verificationPanelResult =
     verifying || verifyError ? null : (detail?.verification_result ?? null);
-  const verificationPanelStatus = verifying
-    ? 'VERIFYING'
-    : (detail?.verification_result?.status ?? detail?.verification_result_status ?? null);
   // The canonical contract. The shield state, the checklist and the verification
   // counters below all come from it — the panel derives no outcome of its own.
   // While a run is in flight the prior contract is withheld so a stale green
   // shield can never appear to describe THIS run.
   const verificationContract =
     verifying || verifyError ? null : (detail?.verification_contract ?? null);
+  // The Evidence Package summary's own status. It is the contract's overall
+  // status — the SAME field the header badge and the table render — so the
+  // package header can never say Verified while the package says Not Verified.
+  const verificationPanelStatus = verifying
+    ? 'VERIFYING'
+    : (verificationContract?.overall_status ?? null);
+  // Hash Verification comes from the SAME contract as everything else. It reads
+  // "Verified" only after the backend recomputed the stored artifact bytes and
+  // matched them — never because SHA-256 fields exist. `hashVerification` is the
+  // fallback for a response that predates the contract.
+  const hashStatus = contractHashVerification(verificationContract) ?? hashVerification(source);
+  // Backend-authoritative: the package has a manifest and hashes and no current
+  // verification has run. Never inferred from an integrity label here.
+  const readyForVerification = Boolean(source.ready_for_verification);
   // Download Evidence Package (.zip) rides the SAME backend-authoritative export
   // gate as the raw bundle download: without `evidence.export` the API refuses
   // it, and the button is not offered.
@@ -3197,7 +3237,12 @@ function PackageDetailPanel({
     }
   }, [detail, detailActions, showGenerateManifest, pkg.id]);
   const detailCompletenessScore = detail?.completeness?.score ?? pkg.completeness_score ?? null;
-  const verification = detail?.verification ?? null;
+  // The raw persisted `detail.verification` record is deliberately NOT read
+  // here. It is the pre-canonical shape (a bare `valid` boolean with a
+  // files-matched count and a seal status) and rendering it directly is what put
+  // "Integrity verified · 9/9 files matched · seal valid" on a package the
+  // backend reports as Not Verified. Everything about verification on this panel
+  // comes from `verification_contract`.
   const completeness = detail?.completeness ?? null;
   const files = detail?.files ?? [];
   const chainEvidence = detail?.chain_evidence ?? [];
@@ -3356,7 +3401,11 @@ function PackageDetailPanel({
         </div>
       </div>
 
-      {(detail?.integrity_status ?? pkg.integrity_status) === 'integrity_failed' && (
+      {/* Integrity failure — raised from the CANONICAL contract, with the
+          contract's own counts, so the alert and the badge above it always
+          describe the same result. */}
+      {verificationContract &&
+      ['VERIFICATION_FAILED', 'INCOMPLETE_PACKAGE'].includes(verificationContract.overall_status) ? (
         <div
           role="alert"
           style={{
@@ -3370,14 +3419,14 @@ function PackageDetailPanel({
           }}
         >
           &#9888; Integrity Failed — this package content changed after generation. It is not verified and must not be presented as proof.
-          {verification ? (
+          {verificationContract.executed ? (
             <div style={{ marginTop: '0.25rem' }}>
-              {(verification.files_failed?.length ?? 0)} file(s) failed,{' '}
-              {(verification.missing_files?.length ?? 0)} missing.
+              {verificationContract.artifact_hashes?.hash_failures ?? 0} file(s) failed,{' '}
+              {verificationContract.artifact_hashes?.missing_artifact_ids?.length ?? 0} missing.
             </div>
           ) : null}
         </div>
-      )}
+      ) : null}
 
       {/* ── Recovery surface (customer-facing) ─────────────────────────
           Exactly ONE of three mutually-exclusive states, ALL resolved from the
@@ -3625,15 +3674,22 @@ function PackageDetailPanel({
         </div>
       ) : null}
 
-      {verification ? (
-        <div className="tableMeta" style={{ marginBottom: '0.75rem', fontSize: '0.72rem' }}>
-          {verification.valid
-            ? `Integrity verified · ${verification.files_verified ?? 0}/${verification.files_total ?? 0} files matched`
-            : 'Verification did not pass'}
-          {verification.verified_at ? ` · ${fmt(verification.verified_at)}` : ''}
-          {verification.seal_status ? ` · seal ${verification.seal_status}` : ''}
-        </div>
-      ) : manifestMissing ? null : integrityStatus === 'hash_generated' ? (
+      {/* A pre-canonical hash check, in its OWN clearly-labelled historical
+          section. This line used to read "Integrity verified · 9/9 files matched
+          · <date> · seal valid" as though it were the CURRENT result, on a
+          package whose summary above said Files Verified 0 and Last Verified
+          Never — and it claimed a valid seal for a package that sealed no Merkle
+          root. The record is preserved; the false present tense is not. */}
+      <LegacyValidationRecord legacy={verificationContract?.legacy_validation} />
+
+      {/* Why a package that failed nothing is still not VERIFIED. */}
+      {verificationContract?.legacy_schema?.legacy && verificationContract.legacy_schema.reason ? (
+        <p className="tableMeta" style={{ marginBottom: '0.75rem', fontSize: '0.72rem' }}>
+          {verificationContract.legacy_schema.reason}
+        </p>
+      ) : null}
+
+      {manifestMissing || verificationContract?.executed ? null : readyForVerification ? (
         <p className="tableMeta" style={{ marginBottom: '0.75rem', fontSize: '0.72rem' }}>
           Hashes generated. Run Verify Integrity to confirm content matches the generated package.
         </p>

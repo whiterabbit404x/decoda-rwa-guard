@@ -438,11 +438,13 @@ def build_recovery_manifest(
     ``file_values`` bytes — never regenerated from live DB state — so the
     recovered manifest describes the package exactly as it is stored.
 
-    Superset of :func:`build_evidence_manifest`: it keeps the same verifiable core
-    (a ``files`` list with per-file ``sha256``/``size_bytes`` and a canonical
-    ``manifest_sha256``) so the existing verify/download paths work unchanged, and
+    Superset of :func:`build_evidence_manifest` sealed at
+    :data:`MANIFEST_SCHEMA_V2` (Merkle root, declared policy-snapshot state and
+    per-artifact provenance): it keeps the same verifiable core (a ``files`` list
+    with per-file ``sha256``/``size_bytes`` and a canonical ``manifest_sha256``)
+    so the existing verify/download paths work unchanged, and
     adds the canonical descriptive fields the recovery manifest must carry:
-    ``schema_version``, ``package_id``/``package_number``, ``incident_id``,
+    ``package_id``/``package_number``, ``incident_id``,
     ``created_at``, ``evidence_window``, ``completeness_score``,
     ``missing_evidence_codes``/``unverifiable_evidence_codes`` and, per file, a
     ``media_type`` and ``source_record_type``.
@@ -453,6 +455,14 @@ def build_recovery_manifest(
     manifest hash is computed over the canonical serialized body WITHOUT its own
     ``manifest_sha256`` field, so it never recursively hashes its own hash.
     """
+    # A recovered manifest is sealed in the CURRENT schema, exactly like one
+    # embedded at package creation. Verification cannot reach VERIFIED without a
+    # sealed Merkle root — there is otherwise no commitment that the artifact SET
+    # is the one that was packaged — so emitting a 1.0 manifest here would hand
+    # the recovery flow a package that can never be fully verified. The Merkle
+    # root is computed from the digests of the EXACT stored bytes this manifest
+    # already hashes, so it commits to the recovered set and nothing else, and it
+    # stays deterministic for identical inputs.
     manifest, file_bytes_map = build_evidence_manifest(
         export_id=export_id,
         export_type=export_type,
@@ -464,6 +474,19 @@ def build_recovery_manifest(
         storage_backend=storage_backend,
         file_values=file_values,
         app_version=app_version,
+        seal_merkle=True,
+        # No incident-time policy evaluation is reconstructable from stored bytes,
+        # so the manifest seals that ABSENCE with its reason rather than implying
+        # a snapshot it does not hold.
+        policy_snapshot={
+            'present': False,
+            'reason': 'No policy evaluation was preserved for this package; this manifest was reconstructed from stored bytes.',
+        },
+        file_provenance={
+            path: {'media_type': 'application/json',
+                   'source_record_type': (file_source_types or {}).get(path, 'evidence')}
+            for path in file_values
+        },
     )
     # The core hash is recomputed after enrichment, so drop it first.
     manifest.pop('manifest_sha256', None)
@@ -476,7 +499,6 @@ def build_recovery_manifest(
         entry['media_type'] = 'application/json'
         entry['source_record_type'] = source_types.get(path, 'evidence')
 
-    manifest['schema_version'] = manifest.get('manifest_version', '1.0')
     manifest['package_id'] = export_id
     if package_number:
         manifest['package_number'] = package_number

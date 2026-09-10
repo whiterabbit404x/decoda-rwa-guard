@@ -55,6 +55,16 @@ INTEGRITY_LEGACY_EXPORT = 'legacy_export'
 # was supposed to have one and does not, so Verify/Download Manifest are
 # cryptographically impossible and must be disabled with a truthful label.
 INTEGRITY_MANIFEST_MISSING = 'manifest_missing'
+# A package carrying a PRE-CANONICAL verification record: an older hash-and-seal
+# check that passed, recorded before the structured verification service existed.
+# It proves an older hash check ran; it does NOT prove the current Merkle /
+# signature / policy / provenance verification ran, because that verification did
+# not exist when the record was written. Reading it as `verified` is what let a
+# schema-1.0 package show a green Integrity badge beside "Files Verified: 0" and
+# "Last Verified: Never verified". The historical record is preserved (see
+# `evidence_verification.resolve_legacy_validation`) and reported as history; the
+# package itself stays ready for a real verification run.
+INTEGRITY_LEGACY_HASH_VALIDATED = 'legacy_hash_validated'
 
 # Hash-column display states (kept separate from integrity so the two columns
 # can never contradict each other — a package with no stored hash is
@@ -78,6 +88,7 @@ INTEGRITY_LABELS: dict[str, str] = {
     INTEGRITY_SUPERSEDED: 'Superseded',
     INTEGRITY_LEGACY_EXPORT: 'Legacy Export',
     INTEGRITY_MANIFEST_MISSING: 'Manifest Missing',
+    INTEGRITY_LEGACY_HASH_VALIDATED: 'Legacy Hash Validated',
 }
 
 
@@ -546,10 +557,12 @@ def derive_integrity_status(
     inferred from ``completeness`` — so callers that have the canonical facts
     (list/detail views) should always pass it explicitly.
 
-    Never returns 'verified' unless a recorded verification actually passed, and
-    never returns 'hash_generated' for a completed export that has no hashes —
-    that is reported as 'legacy_export' so the hash and integrity columns cannot
-    contradict each other.
+    Never returns 'verified' unless the CURRENT verification service concluded
+    VERIFIED, and never returns 'hash_generated' for a completed export that has
+    no hashes — that is reported as 'legacy_export' so the hash and integrity
+    columns cannot contradict each other. A pre-canonical record that merely
+    passed an older hash check yields 'legacy_hash_validated', which is a
+    ready-to-verify state, not a verified one.
     """
     status = str(job_status or '').lower()
     if superseded:
@@ -561,15 +574,27 @@ def derive_integrity_status(
     if status != 'completed':
         return INTEGRITY_BUILDING
 
+    resolved_has_hashes = has_hashes if has_hashes is not None else _completeness_indicates_hashes(completeness)
+
     # Completed job — resolve integrity from any recorded verification result.
     #
     # The CANONICAL structured status wins whenever one was recorded. Only an
     # explicit ``VERIFIED`` conclusion from the verification service yields the
     # verified state: a PARTIALLY_VERIFIED or SIGNATURE_UNAVAILABLE outcome
     # ("we could not check everything") falls through to hash_generated rather
-    # than being read as either a pass or a tampering finding. The legacy
-    # tri-state ``valid`` boolean is consulted only for verification records
-    # written before the structured result existed.
+    # than being read as either a pass or a tampering finding.
+    #
+    # A record with NO canonical status is a PRE-CANONICAL one, written before
+    # the structured verification service existed. Its ``valid`` boolean is
+    # asymmetric on purpose:
+    #
+    #   ``True``   an older hash check passed. That is not the current
+    #              cryptographic verification, so the package reports
+    #              ``legacy_hash_validated`` — never ``verified``. Reading it as
+    #              verified is what produced a green Integrity badge on a package
+    #              whose own detail said "Files Verified: 0 · Never verified".
+    #   ``False``  an older hash check found a real mismatch. Fail closed: the
+    #              finding stands until a current verification supersedes it.
     if verification is not None:
         canonical = str(
             verification.get('verification_status')
@@ -580,12 +605,23 @@ def derive_integrity_status(
             return INTEGRITY_VERIFIED
         if canonical in {'VERIFICATION_FAILED', 'INCOMPLETE_PACKAGE'}:
             return INTEGRITY_INTEGRITY_FAILED
+        # A CURRENT run against a legacy (schema 1.0) manifest: every check the
+        # manifest can support passed, but the sealed facts the current schema
+        # requires were never written into it. Reported as the legacy state so
+        # the value recomputed here always matches the one the verify endpoint
+        # persisted for the same run.
+        if (
+            canonical == 'PARTIALLY_VERIFIED'
+            and resolved_has_hashes
+            and ((verification.get('result') or {}).get('legacy_schema') or {}).get('legacy')
+        ):
+            return INTEGRITY_LEGACY_HASH_VALIDATED
         if not canonical:
             valid = verification.get('valid')
-            if valid is True:
-                return INTEGRITY_VERIFIED
             if valid is False:
                 return INTEGRITY_INTEGRITY_FAILED
+            if valid is True and resolved_has_hashes:
+                return INTEGRITY_LEGACY_HASH_VALIDATED
 
     # No verification recorded yet. If core required evidence is missing the
     # package still needs evidence (checked first so a hashed-but-incomplete
@@ -605,7 +641,6 @@ def derive_integrity_status(
     # A low completeness score does NOT downgrade a properly-manifested package —
     # partial completeness is reported separately by the completeness score, and a
     # 40% package with a real manifest can still be hashed and then verified.
-    resolved_has_hashes = has_hashes if has_hashes is not None else _completeness_indicates_hashes(completeness)
     if not resolved_has_hashes:
         return INTEGRITY_LEGACY_EXPORT
     return INTEGRITY_HASH_GENERATED
@@ -963,7 +998,9 @@ def _resolve_verification_status(integrity_status: str, has_manifest: bool) -> s
         return VERIFICATION_STATUS_VERIFIED
     if integrity_status == INTEGRITY_INTEGRITY_FAILED:
         return VERIFICATION_STATUS_FAILED
-    if has_manifest and integrity_status == INTEGRITY_HASH_GENERATED:
+    # A legacy hash validation is a READY state, never a verified one: the package
+    # has a manifest and hashes, and the current verification has yet to run.
+    if has_manifest and integrity_status in {INTEGRITY_HASH_GENERATED, INTEGRITY_LEGACY_HASH_VALIDATED}:
         return VERIFICATION_STATUS_READY
     return VERIFICATION_STATUS_NOT_READY
 
@@ -1084,7 +1121,9 @@ def get_evidence_package_display_state(
         'is_downloadable': downloadable,
         'is_evidence_artifact': is_evidence_artifact,
         'is_export_ready': is_export_ready,
-        'ready_for_verification': downloadable and integrity_status == INTEGRITY_HASH_GENERATED,
+        'ready_for_verification': downloadable and integrity_status in {
+            INTEGRITY_HASH_GENERATED, INTEGRITY_LEGACY_HASH_VALIDATED,
+        },
     }
 
 

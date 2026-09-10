@@ -13,7 +13,8 @@ assumption. Concretely —
 plus the distinctions the truthfulness rules require:
   * "generated successfully" != "signed" != "verified" != "HSM-backed",
   * "we could not check the signature" != "this was tampered with",
-  * a legacy (schema 1.0) manifest is not FAILED for lacking facts it never sealed.
+  * a legacy (schema 1.0) manifest is not FAILED for lacking facts it never
+    sealed — and is not VERIFIED for passing only the subset it can support.
 """
 from __future__ import annotations
 
@@ -415,19 +416,47 @@ def _legacy_package():
     return manifest, resolve_manifest_signer().sign(manifest), values
 
 
-def test_legacy_manifest_still_verifies_and_is_not_failed_for_missing_v2_facts():
-    """Backward compatibility: a 1.0 package never sealed a Merkle root, a policy
-    snapshot or a required-artifact list. Reporting those as FAILED would be
-    untrue; reporting them as PASSED would claim commitments that do not exist."""
+def test_legacy_manifest_verifies_what_it_can_and_is_not_failed_for_missing_v2_facts():
+    """A 1.0 package never sealed a Merkle root, a policy snapshot or a
+    required-artifact list. Reporting those as FAILED would be untrue; reporting
+    them as PASSED would claim commitments that do not exist. Both untruths are
+    avoided by reporting them as ``not_applicable`` — and by settling the package
+    at PARTIALLY_VERIFIED, because a package that can only offer the subset of
+    checks its schema supports has not undergone the CURRENT verification."""
     result = _verify(*_legacy_package())
 
-    assert result['status'] == verification.STATUS_VERIFIED
+    assert result['status'] == verification.STATUS_PARTIALLY_VERIFIED
+    assert result['verified'] is False
     assert _check(result, verification.CHECK_MERKLE_ROOT)['status'] == verification.CHECK_NOT_APPLICABLE
     assert _check(result, verification.CHECK_POLICY_SNAPSHOT)['status'] == verification.CHECK_NOT_APPLICABLE
     assert _check(result, verification.CHECK_REQUIRED_EVIDENCE)['status'] == verification.CHECK_NOT_APPLICABLE
     # And those rows are explicitly non-mandatory with a stated reason.
     assert _check(result, verification.CHECK_MERKLE_ROOT)['mandatory'] is False
     assert _check(result, verification.CHECK_MERKLE_ROOT)['detail']
+    # The checks the schema DOES support really did run and really did pass —
+    # the legacy verdict withholds a claim, it does not invent a failure.
+    assert _check(result, verification.CHECK_ARTIFACT_HASHES)['status'] == verification.CHECK_PASSED
+    assert _check(result, verification.CHECK_MANIFEST_HASH)['status'] == verification.CHECK_PASSED
+    assert _check(result, verification.CHECK_MANIFEST_SIGNATURE)['status'] == verification.CHECK_PASSED
+    assert result['failed_checks'] == []
+
+
+def test_legacy_schema_report_names_the_sealed_facts_the_manifest_lacks():
+    """The legacy verdict always states its reason rather than implying one."""
+    result = _verify(*_legacy_package())
+    report = result['legacy_schema']
+    assert report['legacy'] is True
+    assert report['schema_version'] == '1.0'
+    assert report['required_schema_version'] == verification.MANIFEST_SCHEMA_SEALED_V2
+    assert set(report['missing_sealed_facts']) == {'merkle_root', 'policy_snapshot', 'required_artifacts'}
+    assert report['reason']
+
+
+def test_current_schema_package_is_not_reported_as_legacy():
+    result = _verify(*_sealed_package())
+    assert result['status'] == verification.STATUS_VERIFIED
+    assert result['legacy_schema']['legacy'] is False
+    assert result['legacy_schema']['missing_sealed_facts'] == []
 
 
 def test_legacy_manifest_tampering_is_still_caught():

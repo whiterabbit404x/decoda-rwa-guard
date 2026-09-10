@@ -50,10 +50,12 @@ test('contract: the package detail view renders the same contract as the sidebar
 
 test('contract: the table Integrity badge and the detail badge share one source', () => {
   const source = read(PANEL);
-  // The drawer header renders the SAME integrityPill the table row renders, off
-  // the backend's canonical integrity_status / integrity_label.
-  expect(source).toContain('integrityPill(selectedDetail ?? drawerPkg)');
-  expect(source).toContain('pkg.integrity_label');
+  // Both render the SAME canonical contract badge through one selector — the
+  // drawer header maps no status of its own, and neither does the table row.
+  expect(source).toContain('function packageVerificationBadge');
+  expect(source).toContain('return contractBadge(pkg.verification_contract) ?? integrityPill(pkg)');
+  expect(source).toContain('const integ = packageVerificationBadge(pkg)');
+  expect(source).toContain('packageVerificationBadge(selectedDetail ?? drawerPkg)');
 });
 
 /* ── Files Hashed is not Files Verified ──────────────────────────── */
