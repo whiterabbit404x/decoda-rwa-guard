@@ -15,6 +15,7 @@ from services.api.app.evidence_completeness import (
     INTEGRITY_FAILED,
     INTEGRITY_HASH_GENERATED,
     INTEGRITY_INTEGRITY_FAILED,
+    INTEGRITY_LEGACY_HASH_VALIDATED,
     INTEGRITY_NEEDS_EVIDENCE,
     INTEGRITY_SUPERSEDED,
     INTEGRITY_VERIFIED,
@@ -147,7 +148,16 @@ def test_integrity_status_lifecycle_states():
     ))
     assert derive_integrity_status(job_status='queued', verification=None, completeness=None) == INTEGRITY_BUILDING
     assert derive_integrity_status(job_status='failed', verification=None, completeness=None) == INTEGRITY_FAILED
-    assert derive_integrity_status(job_status='completed', verification={'valid': True}, completeness=None) == INTEGRITY_VERIFIED
+    # A CANONICAL verification result is the only route to 'verified'.
+    assert derive_integrity_status(
+        job_status='completed', verification={'verification_status': 'VERIFIED', 'valid': True},
+        completeness=None, has_hashes=True,
+    ) == INTEGRITY_VERIFIED
+    # A pre-canonical record that merely passed an older hash check is a LEGACY
+    # validation — ready to verify, never verified.
+    assert derive_integrity_status(
+        job_status='completed', verification={'valid': True}, completeness=None, has_hashes=True,
+    ) == INTEGRITY_LEGACY_HASH_VALIDATED
     assert derive_integrity_status(job_status='completed', verification={'valid': False}, completeness=None) == INTEGRITY_INTEGRITY_FAILED
     assert derive_integrity_status(job_status='completed', verification=None, completeness=full) == INTEGRITY_HASH_GENERATED
     assert derive_integrity_status(job_status='completed', verification=None, completeness=sparse) == INTEGRITY_NEEDS_EVIDENCE

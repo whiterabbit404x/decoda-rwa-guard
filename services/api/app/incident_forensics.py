@@ -192,8 +192,11 @@ SNAPSHOT_SEALED = 'sealed'
 SNAPSHOT_FAILED = 'failed'
 
 #: Screen 9 integrity states that mean the package really was built and its
-#: integrity confirmed. Only these promote the incident snapshot to ``sealed``.
-SEALING_INTEGRITY_STATES = frozenset({'verified', 'hash_generated'})
+#: artifacts hashed. Only these promote the incident snapshot to ``sealed``.
+#: ``legacy_hash_validated`` belongs here for the same reason ``hash_generated``
+#: does — the bundle exists and is hashed — and, like it, asserts nothing about
+#: whether the current cryptographic verification has run.
+SEALING_INTEGRITY_STATES = frozenset({'verified', 'hash_generated', 'legacy_hash_validated'})
 
 #: Bounded artifact page. The incident's full evidence inventory stays reachable
 #: through Screen 9; this keeps one forensic directory response from growing

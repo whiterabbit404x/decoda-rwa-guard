@@ -28677,6 +28677,20 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
                         file_verif[p] = 'failed'
                     for p in (verification.get('missing_files') or []):
                         file_verif[p] = 'missing'
+                # A file reads 'verified' ONLY when the CURRENT verification
+                # service recomputed its stored bytes and matched them. A
+                # pre-canonical record (a bare ``valid`` boolean written before
+                # that service existed) is history, not a current per-file
+                # result: it left every row saying "verified" beside a package
+                # whose own summary said Files Verified = 0.
+                _current_result = verification.get('result') if isinstance(verification, dict) else None
+                _hash_check_passed = False
+                if isinstance(_current_result, dict):
+                    for _check in (_current_result.get('checks') or []):
+                        if isinstance(_check, dict) and _check.get('check') == 'artifact_hashes':
+                            _hash_check_passed = _check.get('status') == 'passed'
+                            break
+                _default_file_state = 'verified' if _hash_check_passed else 'hash_generated'
                 for entry in manifest['files']:
                     path = str(entry.get('path') or '')
                     files.append({
@@ -28685,7 +28699,7 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
                         'size_bytes': entry.get('size_bytes'),
                         'sha256': entry.get('sha256'),
                         'source_record_type': _PACKAGE_FILE_SOURCE_TYPES.get(path, 'evidence'),
-                        'verification_status': file_verif.get(path, ('verified' if verification and verification.get('valid') else 'hash_generated')),
+                        'verification_status': file_verif.get(path, _default_file_state),
                     })
             if summary and isinstance(summary.get('completeness'), dict):
                 completeness = summary['completeness']
@@ -28806,7 +28820,15 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
             files_hashed=_state['files_hashed'],
             manifest_retrievable=_manifest_ref.retrievable,
             manifest_sha256=item['manifest_sha256'],
-            manifest_verified=bool(verification and verification.get('valid') is True),
+            # Only the CURRENT verification service concluding VERIFIED counts.
+            # A pre-canonical record's bare ``valid`` boolean is history, and
+            # feeding it in here would rebuild the frozen checklist with a
+            # "File hashes verified ✓" row no current run ever produced.
+            manifest_verified=(
+                str((verification or {}).get('verification_status')
+                    or ((verification or {}).get('result') or {}).get('status')
+                    or '').strip().upper() == 'VERIFIED'
+            ),
         )
         item['completeness'] = completeness
         # Canonical completeness is authoritative. The top-level `completeness_score`
@@ -29257,6 +29279,12 @@ def verify_evidence_package(export_id: str, request: Request) -> dict[str, Any]:
             _verification_service.STATUS_INCOMPLETE_PACKAGE,
         }:
             integrity_status = INTEGRITY_INTEGRITY_FAILED
+        elif (result.get('legacy_schema') or {}).get('legacy'):
+            # A legacy (schema 1.0) manifest: every check it can support passed,
+            # but the sealed facts the current schema requires were never written
+            # into it, so this is a legacy validation and is labelled as one.
+            from services.api.app.evidence_completeness import INTEGRITY_LEGACY_HASH_VALIDATED
+            integrity_status = INTEGRITY_LEGACY_HASH_VALIDATED
         else:
             from services.api.app.evidence_completeness import INTEGRITY_HASH_GENERATED
             integrity_status = INTEGRITY_HASH_GENERATED

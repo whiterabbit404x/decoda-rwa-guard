@@ -35,6 +35,19 @@ def _pkg(**over):
     return base
 
 
+def _verified(verified_at: str = '2026-01-01T00:00:00Z') -> dict:
+    """A CANONICAL verification record — the only kind that makes a package
+    'verified'. A bare ``{'valid': True}`` is a pre-canonical hash check written
+    before the structured verification service existed; it reports as a legacy
+    validation (see ``test_legacy_validation_record_is_not_current_verified``)."""
+    return {
+        'valid': True,
+        'verified_at': verified_at,
+        'verification_status': 'VERIFIED',
+        'result': {'status': 'VERIFIED', 'checks': []},
+    }
+
+
 def test_no_hash_is_legacy_export_not_hash_generated():
     """A completed export with no manifest/file hashes must be a legacy export,
     never 'hash_generated' — this is the root contradiction."""
@@ -59,11 +72,27 @@ def test_hashes_without_verification_is_hash_generated():
 
 def test_verified_requires_passing_verification():
     state = ec.get_evidence_package_display_state(
-        _pkg(integrity_hash='a' * 64, files_hashed=6,
-             verification={'valid': True, 'verified_at': '2026-01-01T00:00:00Z'}),
+        _pkg(integrity_hash='a' * 64, files_hashed=6, verification=_verified()),
     )
     assert state['integrity_status'] == ec.INTEGRITY_VERIFIED
     assert state['is_export_ready'] is True
+
+
+def test_legacy_validation_record_is_not_current_verified():
+    """A pre-canonical record (a bare ``valid`` boolean, no structured result)
+    proves an OLDER hash check passed. It is preserved as history and reported as
+    a legacy validation — never as the current cryptographic verification."""
+    state = ec.get_evidence_package_display_state(
+        _pkg(integrity_hash='a' * 64, files_hashed=9,
+             verification={'valid': True, 'verified_at': '2026-08-17T00:00:00Z',
+                           'files_total': 9, 'files_verified': 9, 'seal_status': 'valid'}),
+    )
+    assert state['integrity_status'] == ec.INTEGRITY_LEGACY_HASH_VALIDATED
+    assert state['integrity_status'] != ec.INTEGRITY_VERIFIED
+    # It is not export-ready (that requires a current VERIFIED result) but it IS
+    # ready for verification — the package has a manifest and hashes to check.
+    assert state['is_export_ready'] is False
+    assert state['ready_for_verification'] is True
 
 
 def test_failed_hash_comparison_is_integrity_failed():
@@ -101,7 +130,11 @@ def test_export_ready_excludes_non_terminal_and_failed_states():
     assert ec.is_evidence_package_export_ready(
         _pkg(integrity_hash='a' * 64, files_hashed=1, verification={'valid': False})) is False
     assert ec.is_evidence_package_export_ready(
-        _pkg(integrity_hash='a' * 64, files_hashed=1, verification={'valid': True})) is True
+        _pkg(integrity_hash='a' * 64, files_hashed=1, verification=_verified())) is True
+    # A legacy hash validation is never export-ready — export readiness means a
+    # CURRENT verification concluded VERIFIED.
+    assert ec.is_evidence_package_export_ready(
+        _pkg(integrity_hash='a' * 64, files_hashed=1, verification={'valid': True})) is False
 
 
 def test_superseded_wins_over_hashes():
@@ -115,7 +148,7 @@ def test_superseded_wins_over_hashes():
 def test_workspace_metrics_do_not_show_unknown_when_scores_exist():
     packages = [
         _pkg(id='p1', integrity_hash='a' * 64, files_hashed=6, completeness_score=90,
-             verification={'valid': True}),
+             verification=_verified()),
         _pkg(id='p2', integrity_hash='b' * 64, files_hashed=6, completeness_score=70),
         _pkg(id='p3'),  # legacy, no score
     ]
@@ -294,7 +327,7 @@ def test_list_exports_hashed_row_reports_hash_generated_and_files(monkeypatch):
 def test_list_exports_verified_row_counts_as_export_ready(monkeypatch):
     rows = [_export_row('u1', {
         'incident_id': 'inc-1', 'integrity_hash': 'c' * 64, 'files_hashed': 8,
-        'verification': {'valid': True, 'verified_at': '2026-06-22T00:05:00Z'},
+        'verification': _verified('2026-06-22T00:05:00Z'),
     })]
     _patch_exports(monkeypatch, rows)
     result = pilot.list_exports(_req())
@@ -303,6 +336,25 @@ def test_list_exports_verified_row_counts_as_export_ready(monkeypatch):
     assert pkg['export_ready'] is True
     assert result['metrics']['export_ready'] == 1
     assert result['metrics']['verified'] == 1
+
+
+def test_list_exports_legacy_validated_row_is_not_verified(monkeypatch):
+    """The EV-2026-007 row: a pre-canonical record on a completed, manifested
+    package. The table must not badge it Verified and the workspace metrics must
+    not count it — an older hash check is not the current verification."""
+    rows = [_export_row('u1', {
+        'incident_id': 'inc-1', 'integrity_hash': 'c' * 64, 'files_hashed': 9,
+        'verification': {'valid': True, 'verified_at': '2026-08-17T00:05:00Z',
+                         'files_total': 9, 'files_verified': 9, 'seal_status': 'valid'},
+    })]
+    _patch_exports(monkeypatch, rows)
+    result = pilot.list_exports(_req())
+    pkg = result['exports'][0]
+    assert pkg['integrity_status'] == 'legacy_hash_validated'
+    assert pkg['export_ready'] is False
+    assert pkg['verification_contract']['badge']['verified'] is False
+    assert pkg['verification_contract']['badge']['label'] != 'Verified'
+    assert result['metrics']['verified'] == 0
 
 
 def test_list_exports_returns_readable_ids_and_keeps_uuid(monkeypatch):

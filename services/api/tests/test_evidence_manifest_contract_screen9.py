@@ -49,11 +49,30 @@ _PARTIAL_FILES = {
 
 
 def _build_manifest(files: dict) -> dict:
+    """A manifest in the CURRENT schema, exactly as _generate_export_artifact
+    seals one: Merkle root, incident-time policy snapshot, the declared
+    required-artifact list and per-artifact provenance. Verification treats a
+    manifest that predates these sealed facts as a LEGACY package (it can never
+    reach VERIFIED), so a fixture that skipped them would no longer describe a
+    package this product actually produces."""
     manifest, _ = build_evidence_manifest(
         export_id=PKG_ID, export_type='proof_bundle', workspace_id=WS_ID,
         generated_at='2026-01-01T00:00:00Z', generated_by_user_id=USER_ID,
         source_resource_type='incident', source_resource_id='inc-1',
         storage_backend='local', file_values=files,
+        seal_merkle=True,
+        policy_snapshot={
+            'present': True, 'policy_key': 'POL-MANIFEST-1', 'policy_version': 3,
+            'decision': 'DENY', 'decision_kind': 'enforcement',
+            'evaluation_id': 'eval-m1', 'evaluated_at': '2026-01-01T00:00:00Z',
+            'source': 'governance_policy_versions',
+        },
+        required_artifacts=sorted(files),
+        file_provenance={
+            path: {'media_type': 'application/json', 'domain': 'OPERATIONAL',
+                   'source_record_type': 'evidence'}
+            for path in files
+        },
     )
     return manifest
 

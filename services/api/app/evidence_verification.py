@@ -47,13 +47,30 @@ Overall status precedence (highest first)
                           declared-required artifact is absent
 ``SIGNATURE_UNAVAILABLE`` the signature could not be checked at all
 ``PARTIALLY_VERIFIED``    everything checkable passed, but at least one check
-                          was ``unavailable``
-``VERIFIED``              every applicable check ``passed``
+                          was ``unavailable`` OR the manifest predates the
+                          current schema's sealed facts (see below)
+``VERIFIED``              every applicable check ``passed`` on a manifest that
+                          sealed the current schema's facts
 
-``VERIFIED`` therefore requires all of: every artifact hash matching real stored
-bytes, the manifest hash recomputing, the sealed Merkle root rebuilding (when
-the manifest sealed one), the signature verifying against the trusted key, and
-the declared policy/provenance/required-evidence facts holding.
+Legacy manifests (schema 1.0) — the explicit rule
+-------------------------------------------------
+A schema 1.0 manifest sealed no Merkle root, no policy snapshot and no
+required-artifact list. Those three checks therefore report ``not_applicable``:
+calling them failures would be untrue. But a package that can only offer the
+subset of checks its schema supports has NOT undergone the current
+cryptographic verification, so it can never reach ``VERIFIED`` either. It
+settles at ``PARTIALLY_VERIFIED`` and carries a ``legacy_schema`` report naming
+the sealed facts it lacks, so every surface can label it *legacy verification*
+rather than full current verification. Its artifact hashes really were
+recomputed from stored bytes and its signature really was re-checked — those
+facts are reported truthfully and independently; what is withheld is the single
+word that would claim more than was proven.
+
+``VERIFIED`` therefore requires all of: a manifest at schema
+:data:`MANIFEST_SCHEMA_SEALED_V2` or above, every artifact hash matching real
+stored bytes, the manifest hash recomputing, the sealed Merkle root rebuilding,
+the signature verifying against the trusted key, and the declared
+policy/provenance/required-evidence facts holding.
 """
 from __future__ import annotations
 
@@ -430,9 +447,59 @@ def check_required_evidence(manifest: dict[str, Any], file_values: dict[str, Any
     )
 
 
+# ── Legacy manifest schema (Screen 9, EV-2026-007) ──────────────────────────
+#: The sealed commitments the CURRENT manifest schema writes and a schema 1.0
+#: manifest never contained. They are not optional extras: the Merkle root is the
+#: commitment that the artifact SET is complete and unaltered, the policy snapshot
+#: preserves the incident-time policy, and the required-artifact list is what
+#: "required evidence" is checked against. A manifest that sealed none of them
+#: cannot have them recomputed, so however cleanly its artifact hashes and its
+#: signature re-check, the CURRENT cryptographic verification did not run in full.
+_CURRENT_SCHEMA_SEALED_FACTS: tuple[str, ...] = (
+    'merkle_root',
+    'policy_snapshot',
+    'required_artifacts',
+)
+
+
+def legacy_schema_report(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Which current-schema sealed facts this manifest predates.
+
+    ``legacy`` is True for any manifest below :data:`MANIFEST_SCHEMA_SEALED_V2`.
+    Such a package is never FAILED for lacking facts it never sealed — that would
+    be untrue — and never VERIFIED for passing only the subset it can support —
+    that would present a legacy hash-and-signature check as the current
+    cryptographic verification. It settles at ``PARTIALLY_VERIFIED`` with this
+    report attached, so the reason is always stated rather than implied.
+    """
+    version = _manifest_schema_version(manifest)
+    if _is_sealed_v2(manifest):
+        return {
+            'legacy': False,
+            'schema_version': version,
+            'required_schema_version': MANIFEST_SCHEMA_SEALED_V2,
+            'missing_sealed_facts': [],
+            'reason': None,
+        }
+    missing = [fact for fact in _CURRENT_SCHEMA_SEALED_FACTS if not manifest.get(fact)]
+    return {
+        'legacy': True,
+        'schema_version': version,
+        'required_schema_version': MANIFEST_SCHEMA_SEALED_V2,
+        'missing_sealed_facts': missing,
+        'reason': (
+            f'This package sealed manifest schema {version}. Its artifact hashes, its '
+            f'manifest hash and its manifest signature were recomputed and re-checked, '
+            f'but schema {MANIFEST_SCHEMA_SEALED_V2} sealed facts (Merkle root, policy '
+            f'snapshot, declared required artifacts) were never written into it, so they '
+            f'cannot be verified. This is a legacy verification, not the current one.'
+        ),
+    }
+
+
 # ── Orchestration ───────────────────────────────────────────────────────────
 
-def _overall_status(checks: list[dict[str, Any]]) -> str:
+def _overall_status(checks: list[dict[str, Any]], *, legacy_schema: dict[str, Any] | None = None) -> str:
     by_key = {check['check']: check for check in checks}
     artifacts = by_key.get(CHECK_ARTIFACT_HASHES, {})
     required = by_key.get(CHECK_REQUIRED_EVIDENCE, {})
@@ -463,7 +530,16 @@ def _overall_status(checks: list[dict[str, Any]]) -> str:
     if any(check['status'] == CHECK_UNAVAILABLE for check in checks):
         return STATUS_PARTIALLY_VERIFIED
 
-    # 5. Every applicable check passed.
+    # 5. A legacy manifest passed every check it can support — but the current
+    #    schema's sealed commitments were never written into it, so there was
+    #    nothing to recompute for the Merkle root, the policy snapshot or the
+    #    declared required-artifact list. Calling that VERIFIED would present a
+    #    legacy hash-and-signature check as the current cryptographic
+    #    verification, which is exactly the claim the product must not make.
+    if (legacy_schema or {}).get('legacy'):
+        return STATUS_PARTIALLY_VERIFIED
+
+    # 6. Every applicable check passed on a current-schema manifest.
     return STATUS_VERIFIED
 
 
@@ -496,7 +572,8 @@ def verify_evidence_package_document(
     order = {key: index for index, key in enumerate(CHECK_ORDER)}
     checks.sort(key=lambda check: order.get(check['check'], len(order)))
 
-    status = _overall_status(checks)
+    legacy_schema = legacy_schema_report(manifest)
+    status = _overall_status(checks, legacy_schema=legacy_schema)
     by_key = {check['check']: check for check in checks}
     artifacts = by_key[CHECK_ARTIFACT_HASHES]
     merkle = by_key[CHECK_MERKLE_ROOT]
@@ -511,6 +588,11 @@ def verify_evidence_package_document(
         'verified_at': verified_at,
         'verified_by_user_id': verified_by_user_id,
         'schema_version': _manifest_schema_version(manifest),
+        # Why a package that failed nothing can still be short of VERIFIED: the
+        # sealed facts the current schema requires were never written into this
+        # manifest. Empty ``missing_sealed_facts`` with ``legacy: False`` means
+        # the manifest is current-schema and this played no part in the status.
+        'legacy_schema': legacy_schema,
         'checks': checks,
         'failed_checks': [check['check'] for check in checks if check['status'] == CHECK_FAILED],
         'unavailable_checks': [check['check'] for check in checks if check['status'] == CHECK_UNAVAILABLE],
@@ -765,6 +847,171 @@ def resolve_hashes_verified(artifact_check: dict[str, Any] | None, *, executed: 
     return verified == verifiable and failures == 0
 
 
+# ── Legacy (pre-canonical) validation records ───────────────────────────────
+# Some packages carry a ``verification`` record written BEFORE the structured
+# verification service existed: a bare ``valid`` boolean with a files-matched
+# count and a seal status. It is HISTORY. It proves an older hash check ran; it
+# does not prove the current Merkle / signature / policy / provenance
+# verification ran, because that verification did not exist when it was written.
+#
+# The distinction this draws, and never collapses:
+#
+#     LEGACY_HASH_VALIDATED            an older hash check passed
+#     CURRENT_CRYPTOGRAPHICALLY_VERIFIED   this service ran and concluded VERIFIED
+#
+# The record is preserved and surfaced as a clearly labelled historical fact. It
+# never turns a badge green, never fills "Last Verified", and never contributes a
+# files-verified count to the current result.
+LEGACY_VALIDATION_PASSED = 'passed'
+LEGACY_VALIDATION_FAILED = 'failed'
+
+_LEGACY_VALIDATION_DETAIL = (
+    'Recorded by an earlier hash-and-seal validation, before the current verification '
+    'service existed. It is preserved as history and is not a current cryptographic '
+    'verification of this package.'
+)
+
+
+def resolve_legacy_validation(
+    verification: dict[str, Any] | None,
+    *,
+    manifest_schema_version: str | None = None,
+) -> dict[str, Any] | None:
+    """Project a pre-canonical ``verification`` record as a historical record.
+
+    Returns ``None`` when there is nothing legacy to report — either no record at
+    all, or a record carrying a structured result / canonical status, which is a
+    CURRENT verification and belongs in the contract's own fields.
+
+    ``seal_status`` is deliberately NOT projected. The phrase "seal valid" read as
+    a claim about a Merkle seal this package does not have; the manifest
+    signature's own state is reported by the signature category, which says
+    plainly whether the signature was verified or merely exists.
+    """
+    if not isinstance(verification, dict):
+        return None
+    if isinstance(verification.get('result'), dict):
+        return None
+    if str(verification.get('verification_status') or '').strip().upper() in _EXECUTED_STATUSES:
+        return None
+    valid = verification.get('valid')
+    if valid is None:
+        return None
+    try:
+        files_total = int(verification.get('files_total') or 0)
+    except (TypeError, ValueError):
+        files_total = 0
+    try:
+        files_verified = int(verification.get('files_verified') or 0)
+    except (TypeError, ValueError):
+        files_verified = 0
+    return {
+        'present': True,
+        'outcome': LEGACY_VALIDATION_PASSED if valid is True else LEGACY_VALIDATION_FAILED,
+        'label': 'Legacy Validation Record',
+        'files_verified': files_verified,
+        'files_total': files_total,
+        'files_failed': len(verification.get('files_failed') or []),
+        'missing_files': len(verification.get('missing_files') or []),
+        'manifest_ok': bool(verification.get('manifest_ok')),
+        'validated_at': verification.get('verified_at') or None,
+        'manifest_schema_version': manifest_schema_version,
+        'detail': _LEGACY_VALIDATION_DETAIL,
+    }
+
+
+# ── Hash Verification axis ──────────────────────────────────────────────────
+# "This package carries SHA-256 hashes" and "those hashes were independently
+# recomputed and matched" are different facts, and this axis never merges them.
+# ``Verified`` appears only after the verification service recomputed the stored
+# artifact bytes and confirmed them.
+HASH_VERIFICATION_VERIFIED = 'verified'
+HASH_VERIFICATION_FAILED = 'failed'
+HASH_VERIFICATION_AVAILABLE_NOT_VERIFIED = 'hashes_available_not_verified'
+HASH_VERIFICATION_NOT_VERIFIED = 'not_verified'
+HASH_VERIFICATION_NOT_AVAILABLE = 'not_available'
+
+_HASH_VERIFICATION_PRESENTATION: dict[str, tuple[str, str]] = {
+    HASH_VERIFICATION_VERIFIED: ('Verified', 'success'),
+    HASH_VERIFICATION_FAILED: ('Hash Verification Failed', 'danger'),
+    HASH_VERIFICATION_AVAILABLE_NOT_VERIFIED: ('Hashes Available — Not Verified', 'warning'),
+    HASH_VERIFICATION_NOT_VERIFIED: ('Not Verified', 'neutral'),
+    HASH_VERIFICATION_NOT_AVAILABLE: ('No Hashes Available', 'neutral'),
+}
+
+
+def _hash_verification_axis(
+    *,
+    executed: bool,
+    hashes_verified: bool,
+    hash_failures: int,
+    missing_artifacts: int,
+    files_hashed: int,
+) -> dict[str, Any]:
+    """The Hash Verification field, from the canonical counters only."""
+    if executed and hashes_verified:
+        state = HASH_VERIFICATION_VERIFIED
+    elif executed and (hash_failures or missing_artifacts):
+        state = HASH_VERIFICATION_FAILED
+    elif executed:
+        state = HASH_VERIFICATION_NOT_VERIFIED
+    elif files_hashed > 0:
+        state = HASH_VERIFICATION_AVAILABLE_NOT_VERIFIED
+    else:
+        state = HASH_VERIFICATION_NOT_AVAILABLE
+    label, variant = _HASH_VERIFICATION_PRESENTATION[state]
+    return {'state': state, 'label': label, 'variant': variant, 'verified': state == HASH_VERIFICATION_VERIFIED}
+
+
+# ── The one badge every surface renders ─────────────────────────────────────
+# The package table's Integrity column and the detail overlay's header badge are
+# the same fact, so they read the same field. Neither maps a status of its own.
+_BADGE_PRESENTATION: dict[str, tuple[str, str]] = {
+    STATUS_VERIFIED: ('Verified', 'success'),
+    STATUS_PARTIALLY_VERIFIED: ('Partially Verified', 'warning'),
+    STATUS_VERIFICATION_FAILED: ('Verification Failed', 'danger'),
+    STATUS_SIGNATURE_UNAVAILABLE: ('Signature Unavailable', 'warning'),
+    STATUS_INCOMPLETE_PACKAGE: ('Incomplete Package', 'warning'),
+    STATUS_NOT_VERIFIED: ('Not Verified', 'neutral'),
+    STATUS_SUPERSEDED: ('Superseded', 'neutral'),
+    STATUS_LEGACY_EXPORT: ('Legacy Export', 'warning'),
+    STATUS_MANIFEST_MISSING: ('Manifest Missing', 'danger'),
+    STATUS_BUILDING: ('Building', 'warning'),
+    STATUS_PACKAGE_FAILED: ('Failed', 'danger'),
+    STATUS_VERIFYING: ('Verifying', 'info'),
+}
+
+
+def _badge_for(
+    overall_status: str,
+    *,
+    shield_state: str,
+    legacy_validation: dict[str, Any] | None,
+    legacy_schema: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """The canonical badge. ``success`` is licensed by ``VERIFIED`` alone."""
+    label, variant = _BADGE_PRESENTATION.get(
+        overall_status, (STATUS_LABELS.get(overall_status, overall_status.replace('_', ' ').title()), 'neutral')
+    )
+    if overall_status == STATUS_NOT_VERIFIED:
+        if legacy_validation:
+            # A historical validation exists, but no current verification does.
+            label, variant = 'Legacy · Not Verified', 'warning'
+        elif shield_state == SHIELD_READY_FOR_VERIFICATION:
+            label, variant = 'Ready for Verification', 'info'
+    elif overall_status == STATUS_VERIFICATION_FAILED and legacy_validation:
+        label, variant = 'Legacy Validation Failed', 'danger'
+    elif overall_status == STATUS_PARTIALLY_VERIFIED and (legacy_schema or {}).get('legacy'):
+        label, variant = 'Partially Verified · Legacy', 'warning'
+    return {
+        'label': label,
+        'variant': variant,
+        'status': overall_status,
+        # The ONE boolean that may render a green Integrity badge anywhere.
+        'verified': overall_status == STATUS_VERIFIED,
+    }
+
+
 def _overall_status_for_package(
     *,
     job_status: str,
@@ -774,6 +1021,7 @@ def _overall_status_for_package(
     is_manifest_missing: bool,
     is_legacy_export: bool,
     executed_status: str | None,
+    legacy_validation_failed: bool = False,
 ) -> str:
     """Canonical overall status for a package, verification-executed or not.
 
@@ -797,6 +1045,13 @@ def _overall_status_for_package(
     package whose storage is momentarily unreadable keeps its VERIFIED result —
     a transient outage is not a retraction — but a package that never had a
     manifest can never reach it.
+
+    ``legacy_validation_failed`` is asymmetric on purpose. A legacy record that
+    PASSED never upgrades a package (an older hash check is not the current
+    cryptographic verification), but a legacy record that FAILED still blocks it:
+    softening a recorded mismatch into a neutral "not verified" would hide a
+    known integrity finding. Running a current verification supersedes it either
+    way, because ``executed_status`` is consulted first.
     """
     if superseded:
         return STATUS_SUPERSEDED
@@ -817,15 +1072,28 @@ def _overall_status_for_package(
         return executed_status
     if not manifest_retrievable:
         return STATUS_MANIFEST_MISSING if status == 'completed' else STATUS_BUILDING
+    if legacy_validation_failed:
+        # A pre-canonical validation recorded a real mismatch on this package.
+        # No current verification has superseded it, so the finding stands:
+        # fail closed rather than resetting a known failure to a neutral state.
+        return STATUS_VERIFICATION_FAILED
     return STATUS_NOT_VERIFIED
 
 
-def _shield_for(overall_status: str, *, evidence_complete: bool) -> dict[str, Any]:
+def _shield_for(overall_status: str, *, verifiable: bool) -> dict[str, Any]:
     """The shield state. Derived from the verification status ONLY.
 
-    Evidence completeness may not turn a shield green — it only distinguishes
-    "ready for verification" (all required evidence held, nothing verified yet)
-    from a package still short of evidence.
+    Evidence completeness plays no part. It is a different question ("do we hold
+    all the required evidence?") from the one the shield answers ("was this
+    evidence cryptographically re-validated?"), and letting it decide the shield
+    is the same completeness-to-integrity leak this module exists to prevent: a
+    package whose manifest is retrievable IS ready for verification — the Verify
+    action is enabled for it — however incomplete its evidence. Reading
+    "Not Verifiable" ("this package has no retrievable signed manifest") beside
+    an enabled Verify Integrity button was that leak, visible.
+
+    ``verifiable`` is the manifest fact the status already implies; it is passed
+    explicitly so the rule is stated rather than assumed.
     """
     if overall_status == STATUS_VERIFIED:
         state = SHIELD_VERIFIED
@@ -840,7 +1108,7 @@ def _shield_for(overall_status: str, *, evidence_complete: bool) -> dict[str, An
     elif overall_status == STATUS_BUILDING:
         state = SHIELD_BUILDING
     elif overall_status == STATUS_NOT_VERIFIED:
-        state = SHIELD_READY_FOR_VERIFICATION if evidence_complete else SHIELD_NOT_VERIFIABLE
+        state = SHIELD_READY_FOR_VERIFICATION if verifiable else SHIELD_NOT_VERIFIABLE
     else:
         # LEGACY_EXPORT / MANIFEST_MISSING / PACKAGE_FAILED — nothing to verify.
         state = SHIELD_NOT_VERIFIABLE
@@ -881,6 +1149,16 @@ def build_verification_contract(
     contract — never read back from the build-time completeness snapshot, which
     is frozen before any verification can have run and whose "Hashes verified"
     row was therefore permanently false.
+
+    Three fields exist so no surface has to derive anything of its own:
+
+    ``badge``              what the table's Integrity column and the detail
+                           overlay's header badge both render.
+    ``hash_verification``  the Hash Verification field, which reads ``Verified``
+                           only after stored bytes were recomputed and matched.
+    ``legacy_validation``  a pre-canonical hash-check record, projected as
+                           clearly-labelled HISTORY. It never fills
+                           ``verified_at`` and never turns ``badge`` green.
     """
     result = verification.get('result') if isinstance(verification, dict) else None
     result = result if isinstance(result, dict) else None
@@ -890,6 +1168,15 @@ def build_verification_contract(
     if executed_status not in _EXECUTED_STATUSES:
         executed_status = None
 
+    # A pre-canonical ``verification`` record (a bare ``valid`` boolean from
+    # before the structured service existed). Preserved as history, never read as
+    # a current verification — see ``resolve_legacy_validation``.
+    legacy_validation = resolve_legacy_validation(
+        verification,
+        manifest_schema_version=(
+            str(package.get('manifest_schema_version') or '') or None
+        ),
+    )
     _manifest_ref = display_state.get('manifest_reference') or {}
     overall_status = _overall_status_for_package(
         job_status=str(package.get('status') or ''),
@@ -899,7 +1186,14 @@ def build_verification_contract(
         is_manifest_missing=bool(display_state.get('is_manifest_missing')),
         is_legacy_export=bool(display_state.get('is_legacy_export')),
         executed_status=executed_status,
+        legacy_validation_failed=(
+            (legacy_validation or {}).get('outcome') == LEGACY_VALIDATION_FAILED
+        ),
     )
+    # A legacy record only stays reportable while nothing current supersedes it
+    # and the package is still in a state that record could describe.
+    if overall_status in _EXECUTED_STATUSES and overall_status != STATUS_VERIFICATION_FAILED:
+        legacy_validation = None
     # "Executed" describes THIS package's live state: a superseded or legacy
     # package never presents a stale run as a current verification.
     executed = overall_status in _EXECUTED_STATUSES and result is not None
@@ -1006,6 +1300,11 @@ def build_verification_contract(
     required_evidence = category(CHECK_REQUIRED_EVIDENCE)
 
     verified_at = (verification or {}).get('verified_at') if executed else None
+    legacy_schema = (result or {}).get('legacy_schema') if executed else None
+    # A package reaches NOT_VERIFIED only when a manifest is retrievable, so it is
+    # verifiable by construction; the flag is read from the display state rather
+    # than assumed.
+    shield = _shield_for(overall_status, verifiable=bool(display_state.get('manifest_retrievable')))
     contract = {
         # ── The single authoritative status ────────────────────────────────
         'overall_status': overall_status,
@@ -1018,7 +1317,30 @@ def build_verification_contract(
         # SAME builder call as overall_status so the table and the detail view
         # cannot drift apart.
         'integrity_status': display_state.get('integrity_status'),
-        'shield': _shield_for(overall_status, evidence_complete=evidence_complete),
+        'shield': shield,
+        # The ONE badge the package table's Integrity column and the detail
+        # overlay's header badge both render. Neither maps a status of its own,
+        # so they cannot disagree with each other or with this contract.
+        'badge': _badge_for(
+            overall_status,
+            shield_state=str(shield['state']),
+            legacy_validation=legacy_validation,
+            legacy_schema=legacy_schema,
+        ),
+        # The Hash Verification field. "Hashes exist" and "hashes were recomputed
+        # and matched" are separate facts and never collapse into one word.
+        'hash_verification': _hash_verification_axis(
+            executed=executed,
+            hashes_verified=hashes_verified,
+            hash_failures=len(hash_failures),
+            missing_artifacts=len(missing_artifacts),
+            files_hashed=files_hashed,
+        ),
+        # A pre-canonical hash validation, preserved as clearly-labelled history.
+        # ``None`` when there is none, or when a current verification covers it.
+        'legacy_validation': legacy_validation,
+        # Why a package that failed nothing can still be short of VERIFIED.
+        'legacy_schema': legacy_schema,
         # ── Per-category outcomes ──────────────────────────────────────────
         'artifact_hashes': {
             'files_hashed': files_hashed,

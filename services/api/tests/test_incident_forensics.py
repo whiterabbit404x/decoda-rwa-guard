@@ -478,7 +478,12 @@ class _ForensicConn:
             return _Result([{
                 'id': PACKAGE_ID, 'export_type': 'proof_bundle', 'status': 'completed',
                 'filters': {'incident_id': INCIDENT_ID, 'manifest_sha256': 'sha256:mm',
-                            'verification': {'valid': True}, 'completeness_score': 100},
+                            # A CANONICAL verification record — a bare
+                            # {'valid': True} is a pre-canonical hash check and
+                            # reports as a legacy validation, not as 'verified'.
+                            'verification': {'valid': True, 'verification_status': 'VERIFIED',
+                                             'result': {'status': 'VERIFIED', 'checks': []}},
+                            'completeness_score': 100},
                 'package_number': 'EV-2026-017', 'size_bytes': 1024,
                 'created_at': '2026-01-01T10:50:00+00:00',
                 'updated_at': '2026-01-01T10:51:00+00:00',
