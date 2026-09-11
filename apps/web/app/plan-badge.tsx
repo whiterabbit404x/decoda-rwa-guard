@@ -5,11 +5,12 @@ import { useState } from 'react';
 import { usePilotAuth } from './pilot-auth-context';
 import { usePlanStatus } from './plan-status-context';
 import {
+  PILOT_EVALUATION_ACCESS_NOTE,
   USAGE_ROWS,
-  isRestrictedLifecycle,
   planBadgeLabel,
   planBadgeTone,
   recommendOnlyNote,
+  restrictedPlanState,
   usageLabel,
   usageRatio,
 } from './plan-status';
@@ -60,8 +61,12 @@ export default function PlanBadge() {
 function PlanPanel({ onClose }: { onClose: () => void }) {
   const { plan, refresh } = usePlanStatus();
   const usage = plan?.usage ?? null;
-  const restricted = isRestrictedLifecycle(plan);
+  const restricted = restrictedPlanState(plan);
   const recommendOnly = recommendOnlyNote(plan);
+  // Stated only while the evaluation is RUNNING. Once it ends, the restricted
+  // notice above is the accurate thing to say, and repeating "your evaluation
+  // includes these workflows" underneath it would contradict it.
+  const evaluationAccess = plan?.lifecycle_state === 'ACTIVE_PILOT' ? PILOT_EVALUATION_ACCESS_NOTE : null;
 
   return (
     <div className="planPanel" role="dialog" aria-label="Plan and usage">
@@ -75,12 +80,15 @@ function PlanPanel({ onClose }: { onClose: () => void }) {
       {plan?.organization?.name ? <p className="planPanelOrg">{plan.organization.name}</p> : null}
 
       {restricted ? (
-        <p className="planPanelNotice">
-          {plan?.lifecycle_state === 'SUSPENDED'
-            ? 'This organization is suspended. Existing records remain available; contact Decoda to reactivate it.'
-            : 'Your evaluation window has closed. Existing assets, alerts, incidents, and evidence remain '
-              + 'available; upgrade to Scale to resume adding monitoring coverage.'}
-        </p>
+        <div className="planPanelNotice">
+          <p className="planPanelNoticeTitle">{restricted.title}</p>
+          <p className="planPanelNoticeBody">{restricted.body}</p>
+          {restricted.ctaHref && restricted.ctaLabel ? (
+            <a className="btn btn-primary planPanelNoticeCta" href={restricted.ctaHref}>
+              {restricted.ctaLabel}
+            </a>
+          ) : null}
+        </div>
       ) : null}
 
       <p className="sectionEyebrow planPanelSectionLabel">Usage</p>
@@ -102,6 +110,7 @@ function PlanPanel({ onClose }: { onClose: () => void }) {
         })}
       </ul>
 
+      {evaluationAccess ? <p className="planPanelNote">{evaluationAccess}</p> : null}
       {recommendOnly ? <p className="planPanelNote">{recommendOnly}</p> : null}
 
       <FeedbackForm onSubmitted={() => void refresh()} />

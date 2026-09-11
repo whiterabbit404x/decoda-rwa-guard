@@ -51,6 +51,7 @@ from services.api.app.proof_chain_sql import (
     _non_empty_jsonb_sql,
     incident_proof_chain_count_sql,
 )
+from services.api.app import organizations as organization_service
 from services.api.app.monitoring_canary import resolve_canary_config
 from services.api.app.monitoring_runtime_mode import realtime_streams_enabled
 from services.api.app.monitoring_reliability import MonitoringSLOs, evaluate_monitoring_slos, monitoring_slo_snapshot
@@ -130,53 +131,16 @@ MONITOR_POLL_INTERVAL_SECONDS = int(os.getenv('MONITOR_POLL_INTERVAL_SECONDS', '
 QUICKNODE_STREAM_STALE_SECONDS = max(60, int(os.getenv('QUICKNODE_STREAM_STALE_SECONDS', '300')))
 
 
-#: Extra WHERE fragment that removes a suspended or evaluation-expired tenant's
-#: targets from monitoring due-selection. Written as a NOT EXISTS so it can be
-#: appended to an existing query without changing any of its joins.
-_ORGANIZATION_MONITORING_EXCLUSION_SQL = """
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM workspaces tenant_ws
-                  JOIN organizations tenant_org ON tenant_org.id = tenant_ws.organization_id
-                  WHERE tenant_ws.id = t.workspace_id
-                    AND (
-                        tenant_org.status <> 'active'
-                        OR (
-                            tenant_org.plan = 'pilot'
-                            AND tenant_org.evaluation_expires_at IS NOT NULL
-                            AND tenant_org.evaluation_expires_at <= NOW()
-                        )
-                    )
-              )
-"""
+#: The monitoring worker's binding of the shared tenant exclusion, kept as a
+#: module constant because the due-selection queries below splice it in by name.
+#: One definition lives in ``organizations``; every worker binds it to its own
+#: workspace-id expression.
+_ORGANIZATION_MONITORING_EXCLUSION_SQL = organization_service.inactive_tenant_exclusion_sql('t.workspace_id')
 
 
 def _organization_monitoring_exclusion_sql(connection: Any) -> str:
-    """The tenant-status exclusion clause, or '' when the tenancy schema is absent.
-
-    A workspace with no organization link is NOT excluded: an unlinked workspace
-    predates migration 0150, and silently stopping its monitoring would be a
-    far worse failure than briefly not applying the new rule to it. The API heals
-    the link on the tenant's next request.
-    """
-    try:
-        row = connection.execute(
-            """
-            SELECT
-                (SELECT COUNT(*) FROM information_schema.tables
-                  WHERE table_schema = 'public' AND table_name = 'organizations') AS org_table,
-                (SELECT COUNT(*) FROM information_schema.columns
-                  WHERE table_schema = 'public' AND table_name = 'workspaces'
-                    AND column_name = 'organization_id') AS link_column
-            """,
-        ).fetchone()
-    except Exception:
-        logger.warning('organization_monitoring_filter_probe_failed action=filter_not_applied')
-        return ''
-    data = dict(row or {})
-    if int(data.get('org_table') or 0) < 1 or int(data.get('link_column') or 0) < 1:
-        return ''
-    return _ORGANIZATION_MONITORING_EXCLUSION_SQL
+    """The tenant-status exclusion clause, or '' when the tenancy schema is absent."""
+    return organization_service.worker_tenant_exclusion_sql(connection, 't.workspace_id')
 
 
 def canonical_runtime_telemetry_window_seconds(max_enabled_interval_seconds: int | None = None) -> int:

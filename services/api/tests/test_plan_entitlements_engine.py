@@ -73,6 +73,10 @@ def test_pilot_keeps_the_full_detection_and_evidence_workflow() -> None:
         ent.FEATURE_AI_INVESTIGATION,
         ent.FEATURE_RESPONSE_RECOMMENDATIONS,
         ent.FEATURE_EVIDENCE_EXPORT,
+        # An evaluation that cannot open a playbook cannot evaluate incident
+        # response. Withdrawn when the window closes, not because of the plan —
+        # see test_pilot_evaluation_entitlements.py.
+        ent.FEATURE_INCIDENT_PLAYBOOKS,
     ):
         assert ent.has_entitlement(entitlements, feature) is True
 

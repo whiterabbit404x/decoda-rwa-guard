@@ -707,6 +707,10 @@ def trigger_assessment_endpoint(asset_id: str, request: Any) -> dict[str, Any]:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Asset not found.')
         if not service._table_exists(connection, 'asset_risk_jobs'):
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='Asset risk assessment storage is provisioning. Try again shortly.')
+        # An explicitly triggered scan: bounded, but it spends provider and worker
+        # compute. Reading the LATEST assessment stays ungated, so an expired
+        # evaluation keeps every assessment it already produced.
+        pilot.enforce_plan_operation(connection, workspace_id)
 
         cfg = arc.assessor_config()
         now = pilot.utc_now()

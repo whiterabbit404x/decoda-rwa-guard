@@ -6288,6 +6288,9 @@ td .tableMeta {
 .pricingTierPrice--label {
   font-size: 1.5rem;
   letter-spacing: -0.01em;
+  /* A word label can run to two lines ("30-Day Free Evaluation"); line-height 1
+     from .pricingTierPrice would collide the rows. */
+  line-height: 1.15;
   display: flex;
   align-items: center;
   min-height: 2.4rem;
@@ -9375,6 +9378,7 @@ a.mktTrustBadge:hover {
   padding: 0.28rem 0.6rem;
   letter-spacing: 0.03em;
   white-space: nowrap;
+  text-transform: uppercase;
 }
 
 .planBadge:hover {
@@ -9431,6 +9435,24 @@ a.mktTrustBadge:hover {
   border: 1px solid var(--warning-bdr);
   font-size: 0.78rem;
   line-height: 1.4;
+}
+
+.planPanelNoticeTitle {
+  margin: 0;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+}
+
+.planPanelNoticeBody {
+  margin: 0.35rem 0 0;
+}
+
+.planPanelNoticeCta {
+  margin-top: 0.6rem;
+  display: inline-flex;
+  text-decoration: none;
 }
 
 .planPanelNote {

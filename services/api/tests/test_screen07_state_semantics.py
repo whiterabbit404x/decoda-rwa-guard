@@ -292,6 +292,12 @@ def _function_body(source: str, name: str, next_name: str) -> str:
     return source[start:end]
 
 
+#: The ONE family of "enforce*" calls this boundary permits: the read-only plan
+#: gate that decides whether the tenant may start new expensive work. It either
+#: returns or raises 403 BEFORE anything happens — it approves nothing, executes
+#: nothing, and writes nothing, which is exactly what the boundary protects.
+ALLOWED_PLAN_GATES = frozenset({'pilot.enforce_plan_operation'})
+
 FORBIDDEN_MUTATIONS = (
     'DELETE FROM',
     'UPDATE incident_evidence_snapshots',
@@ -315,12 +321,13 @@ def test_generate_report_cannot_mutate_deterministic_forensic_state():
     assert 'append_incident_timeline_event' in body
     assert 'log_audit' in body
     # The only SQL it runs goes through the connection; it calls no execution,
-    # approval or enforcement helper.
+    # approval or response-policy enforcement helper.
     calls = set(re.findall(r'\b([a-z_][a-z0-9_.]*)\(', body))
     for call in calls:
         assert not call.startswith('execute'), call
     for forbidden in ('approve', 'enforce', 'dispatch_action', 'run_action'):
-        assert not any(forbidden in call for call in calls), forbidden
+        offenders = sorted(c for c in calls if forbidden in c and c not in ALLOWED_PLAN_GATES)
+        assert not offenders, (forbidden, offenders)
 
 
 def test_generate_report_does_not_mark_the_report_stage_complete():

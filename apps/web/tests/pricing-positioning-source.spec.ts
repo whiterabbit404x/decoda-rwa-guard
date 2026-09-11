@@ -17,6 +17,7 @@ function read(...segments: string[]): string {
 }
 
 const CONSUMER_WORDING = [
+  'Base Mainnet telemetry',
   'Most popular',
   'most popular',
   '14-day trial',
@@ -33,7 +34,9 @@ test('pricing plans are the canonical Pilot / Scale / Enterprise ladder', () => 
 
   const [pilot, scale, enterprise] = PRICING_PLANS;
 
-  expect(pilot.price).toBe('Free Evaluation');
+  // The 30-day window is the product promise, so it belongs in the headline
+  // slot rather than only in a bullet a reader may not reach.
+  expect(pilot.price).toBe('30-Day Free Evaluation');
   expect(pilot.priceSub).toBe('');
   expect(pilot.ctaLabel).toBe('Request Pilot →');
   expect(pilot.badge).toBeUndefined();
@@ -65,6 +68,130 @@ test('plan limits match the published entitlements', () => {
 
   expect(enterprise.highlights).toContain('Custom workspaces & asset coverage');
   expect(enterprise.highlights).toContain('Custom SLA');
+});
+
+test('the Pilot card describes an evaluation of the production workflows', () => {
+  const [pilot] = PRICING_PLANS;
+
+  expect(pilot.description).toContain('production security workflows');
+  for (const bullet of [
+    '30-day evaluation',
+    '1 workspace',
+    '5 monitored contracts',
+    'Threat & compliance detection',
+    'Incident investigation & playbooks',
+    'Response recommendations — Recommend only',
+    'Evidence & audit workflows — up to 10 packages',
+    'Standard support',
+  ]) {
+    expect(pilot.highlights, bullet).toContain(bullet);
+  }
+
+  // Pilot evaluates playbooks and AI investigation WHILE the window is open —
+  // the entitlement engine turns both on for an ACTIVE_PILOT — so the card must
+  // not present them as withheld. The qualifier keeps it truthful once the
+  // window closes.
+  expect(value(pilot, 'Incident playbooks')).toBe('✓ During evaluation');
+  expect(value(pilot, 'AI investigation')).toBe('✓ During evaluation');
+});
+
+test('the Scale card describes ongoing production monitoring', () => {
+  const [, scale] = PRICING_PLANS;
+
+  expect(scale.description).toBe(
+    'Production monitoring and incident response for ongoing RWA operations.',
+  );
+  for (const bullet of [
+    'Continuous production monitoring',
+    'Priority alert routing',
+    'Incident playbooks',
+    'Unlimited evidence packages',
+    'Audit-ready exports',
+    'Priority email support',
+  ]) {
+    expect(scale.highlights, bullet).toContain(bullet);
+  }
+});
+
+test('no card advertises automatic production execution', () => {
+  // Every plan is recommend-only by default in entitlements.py. Advertising
+  // autonomous execution would promise a capability the execution gate refuses.
+  const copy = JSON.stringify(PRICING_PLANS) + PRICING_NOTE;
+  expect(copy).not.toMatch(/automatic (production )?execution/i);
+  expect(copy).not.toMatch(/autonomous/i);
+  expect(value(PRICING_PLANS[0], 'Response execution')).toBe('Recommend only');
+  for (const plan of PRICING_PLANS.slice(1)) {
+    expect(value(plan, 'Response execution')).toBe('Policy-gated, human-authorized');
+  }
+});
+
+test('public pricing does not present Decoda as a single-network product', () => {
+  // A primary supported network in the current deployment is an implementation
+  // fact, not a commercial limit, and it does not belong on a public card.
+  const copy = JSON.stringify(PRICING_PLANS) + PRICING_NOTE;
+  expect(copy).not.toMatch(/Base Mainnet/i);
+});
+
+test('the footnote states the evaluation model and claims no automatic billing', () => {
+  expect(PRICING_NOTE).toContain('30-day, approval-only evaluation');
+  expect(PRICING_NOTE).toContain('ongoing production monitoring');
+  expect(PRICING_NOTE).toContain('Enterprise pricing is custom');
+  // Checkout exists, but no provider webhook moves an organization onto Scale —
+  // `organizations.plan` is changed by internal admin only. Saying otherwise
+  // would describe billing behaviour the application does not implement.
+  expect(PRICING_NOTE).not.toMatch(/Paddle/i);
+  expect(PRICING_NOTE).not.toMatch(/billed (monthly|automatically)/i);
+});
+
+test('retention is not advertised as a plan tier it is not', () => {
+  // workspace_retention_policies is per-workspace and configurable 1–3650 days
+  // for every plan. The old "30 days" / "1 year" rows described a tiering the
+  // product does not implement.
+  for (const plan of PRICING_PLANS.slice(0, 2)) {
+    expect(value(plan, 'Audit log retention'), plan.key).toBe('Configurable per workspace');
+  }
+});
+
+test('published prices match the backend entitlement matrix', () => {
+  // docs/PLAN_ENTITLEMENT_MATRIX.md is GENERATED from
+  // services/api/app/entitlements.py :: capability_matrix(). Reading it here is
+  // what keeps the public numbers and the enforced numbers the same numbers —
+  // a limit changed in the engine fails this test until the card follows.
+  const matrix = read(APP_DIR, '..', '..', '..', 'docs', 'PLAN_ENTITLEMENT_MATRIX.md');
+
+  function matrixRow(capability: string): string[] {
+    const line = matrix
+      .split('\n')
+      .find((row) => row.startsWith(`| ${capability} `) || row.startsWith(`| ${capability}|`));
+    expect(line, `matrix is missing the "${capability}" row`).toBeDefined();
+    return line!.split('|').slice(1, -1).map((cell) => cell.trim());
+  }
+
+  // Columns: capability, ACTIVE PILOT, EXPIRED PILOT, SCALE, ENTERPRISE, decided by.
+  const [, pilotWorkspaces, , scaleWorkspaces] = matrixRow('Workspaces');
+  const [, pilotContracts, , scaleContracts] = matrixRow('Contracts');
+  const [, pilotEvidence, , scaleEvidence] = matrixRow('Evidence packages');
+
+  const [pilot, scale] = PRICING_PLANS;
+  expect(value(pilot, 'Workspaces')).toBe(pilotWorkspaces);
+  expect(value(pilot, 'Monitored contracts')).toBe(pilotContracts);
+  expect(value(pilot, 'Evidence packages')).toBe(`Up to ${pilotEvidence}`);
+  expect(pilot.highlights).toContain(`${pilotWorkspaces} workspace`);
+  expect(pilot.highlights).toContain(`${pilotContracts} monitored contracts`);
+
+  expect(value(scale, 'Workspaces')).toBe(scaleWorkspaces);
+  expect(value(scale, 'Monitored contracts')).toBe(scaleContracts);
+  expect(scaleEvidence).toBe('UNLIMITED');
+  expect(value(scale, 'Evidence packages')).toBe('Unlimited');
+
+  // Incident playbooks: ON for an active evaluation, OFF once it ends. That is
+  // exactly what the Pilot card's qualifier says, and what Scale states flatly.
+  const [, playbooksActive, playbooksExpired, playbooksScale] = matrixRow('Incident playbooks');
+  expect([playbooksActive, playbooksExpired, playbooksScale]).toEqual(['YES', 'NO', 'YES']);
+
+  // No plan advertises autonomous execution because no plan has it.
+  const [, ...execution] = matrixRow('Automatic production execution');
+  expect(execution.slice(0, 4)).toEqual(['NO', 'NO', 'NO', 'NO']);
 });
 
 test('no plan advertises a TVL or asset-value cap', () => {

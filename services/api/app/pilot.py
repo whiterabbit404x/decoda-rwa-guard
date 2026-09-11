@@ -3683,6 +3683,30 @@ def enforce_plan_creation_limit(connection: Any, workspace_id: str, limit_key: s
     return context
 
 
+def enforce_plan_operation(
+    connection: Any,
+    workspace_id: str,
+    feature_key: str | None = None,
+) -> dict[str, Any]:
+    """Lifecycle (+ optional entitlement) gate before starting NEW expensive work.
+
+    The counterpart to ``enforce_plan_creation_limit`` for operations that cost
+    compute or reach production but do not create a metered row: an AI
+    investigation, a monitoring (re)start, a production integration.
+
+    Read paths must never call this. An expired evaluation keeps every asset,
+    alert, incident, investigation, and evidence package it produced — what it
+    loses is the ability to start more. Raises 403 ``PLAN_EVALUATION_EXPIRED`` /
+    ``ORGANIZATION_SUSPENDED``, or ``PLAN_ENTITLEMENT_REQUIRED`` when the plan
+    itself does not include the capability.
+    """
+    context = organization_context(connection, workspace_id)
+    organization_service.enforce_lifecycle_active(context)
+    if feature_key is not None:
+        organization_service.enforce_entitlement(context, feature_key)
+    return context
+
+
 def create_invited_account(
     connection: Any,
     *,
@@ -9108,6 +9132,7 @@ def create_notification_destination(payload: dict[str, Any], request: Request) -
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user, workspace = _require_workspace_permission(connection, request, 'webhooks.manage')
+        enforce_plan_operation(connection, workspace['workspace_id'])
         destination_id = str(uuid.uuid4())
         encrypted = _encode_secret_value(secret, aad=f'notification:{workspace["workspace_id"]}:{destination_id}') if secret else None
         connection.execute(
@@ -9282,6 +9307,7 @@ def create_webhook(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_permission(connection, request, 'webhooks.manage')
+        enforce_plan_operation(connection, workspace_context['workspace_id'])
         secret = secrets.token_urlsafe(32)
         webhook_id = str(uuid.uuid4())
         connection.execute(
@@ -9551,6 +9577,7 @@ def create_slack_integration(payload: dict[str, Any], request: Request) -> dict[
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
+        enforce_plan_operation(connection, workspace_context['workspace_id'])
         integration_id = str(uuid.uuid4())
         connection.execute(
             '''
@@ -12017,6 +12044,12 @@ def _upsert_asset_monitoring_linkage(
         ''',
         (workspace_id, str(asset_row['id'])),
     ).fetchone()
+    if existing_target is None:
+        # Minting a NEW monitoring target here is the same billable act as
+        # POST /targets, so it answers to the same gate. Re-linking an EXISTING
+        # target adds nothing and is never refused — an expired evaluation must
+        # still be able to keep its own records consistent.
+        enforce_plan_creation_limit(connection, workspace_id, plan_entitlement_engine.LIMIT_MONITORING_TARGETS)
     target_id = str(existing_target['id']) if existing_target else str(uuid.uuid4())
     contract_identifier = normalized_identifier if target_type == 'contract' and is_evm else None
     wallet_address = normalized_identifier if target_type == 'wallet' and is_evm else None
@@ -12062,6 +12095,10 @@ def verify_asset(asset_id: str, request: Request) -> dict[str, Any]:
         ).fetchone()
         if asset is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Asset not found.')
+        # Verification probes the chain provider and then turns monitoring on for
+        # the asset: both are new billable work, so an expired evaluation stops
+        # here rather than after spending an RPC call.
+        enforce_plan_operation(connection, workspace_id)
         verification = _derive_asset_verification(identifier=str(asset['identifier'] or ''), chain_network=str(asset['chain_network'] or ''))
         connection.execute(
             '''
@@ -16821,6 +16858,11 @@ def set_target_enabled(target_id: str, enabled: bool, request: Request) -> dict[
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_permission(connection, request, 'monitoring.configure')
+        if enabled:
+            # Enabling starts a monitoring workload that consumes RPC/QuickNode
+            # budget on every cycle. Disabling is always allowed — stopping work
+            # is never something an expired evaluation should be refused.
+            enforce_plan_operation(connection, workspace_context['workspace_id'])
         row = connection.execute(
             'SELECT id, asset_id, chain_network FROM targets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL',
             (target_id, workspace_context['workspace_id']),
@@ -24899,13 +24941,27 @@ def plan_execution_lock(
             if organization is None:
                 result = {'locked': True, 'reason': 'organization_not_linked', 'plan': None}
             else:
-                entitlements = plan_entitlement_engine.get_entitlements(organization)
+                # EFFECTIVE entitlements: an expired evaluation or a suspended
+                # tenant has execution withdrawn even where the plan row lists
+                # it, and the reason names which of the two closed the lock so
+                # the operator is not sent to upgrade a plan that is not the
+                # obstacle.
+                entitlements = plan_entitlement_engine.effective_entitlements(organization)
                 allowed = plan_entitlement_engine.has_entitlement(
                     entitlements, plan_entitlement_engine.FEATURE_AUTOMATIC_EXECUTION,
                 )
+                lifecycle = plan_entitlement_engine.lifecycle_state(organization)
+                if allowed:
+                    reason = None
+                elif lifecycle == plan_entitlement_engine.LIFECYCLE_EXPIRED_PILOT:
+                    reason = 'evaluation_expired'
+                elif lifecycle == plan_entitlement_engine.LIFECYCLE_SUSPENDED:
+                    reason = 'organization_suspended'
+                else:
+                    reason = 'plan_recommend_only'
                 result = {
                     'locked': not allowed,
-                    'reason': None if allowed else 'plan_recommend_only',
+                    'reason': reason,
                     'plan': plan_entitlement_engine.normalize_plan(organization.get('plan')),
                 }
     except Exception:
@@ -24914,6 +24970,23 @@ def plan_execution_lock(
     if cache is not None:
         cache[cache_key] = result
     return result
+
+
+#: What to SAY when the plan lock is closed, per reason. A recommend-only plan
+#: and an ended evaluation both stop a live run, but only one of them is fixed by
+#: upgrading — telling an expired evaluator "your plan is recommend-only" would
+#: send them to review a recommendation they can no longer act on either way.
+PLAN_EXECUTION_LOCK_LABELS: dict[str, str] = {
+    'evaluation_expired': (
+        'Your Pilot evaluation has ended, so this action cannot be executed against '
+        'production. Your existing actions and evidence remain available; upgrade to '
+        'Scale to resume.'
+    ),
+    'organization_suspended': (
+        'This organization is suspended, so this action cannot be executed against '
+        'production. Existing records remain available; contact Decoda to reactivate it.'
+    ),
+}
 
 
 def _apply_plan_execution_lock(
@@ -24954,7 +25027,9 @@ def _apply_plan_execution_lock(
     if not any(str(item.get('code')) == _rgc.PLAN_EXECUTION_NOT_ENTITLED for item in reasons if isinstance(item, dict)):
         reasons.append({
             'code': _rgc.PLAN_EXECUTION_NOT_ENTITLED,
-            'label': _rgc.reason_label(_rgc.PLAN_EXECUTION_NOT_ENTITLED),
+            'label': PLAN_EXECUTION_LOCK_LABELS.get(
+                str(lock['reason'] or ''), _rgc.reason_label(_rgc.PLAN_EXECUTION_NOT_ENTITLED),
+            ),
         })
     gate['reasons'] = reasons
     gate['can_execute'] = False
